@@ -15,6 +15,7 @@ final class AuthService: @unchecked Sendable {
     private let launchPreferences: ProfileLaunchPreferences
     private let restoredSessionValidator: RestoredSessionValidator
     private let contractProbe: APIv2Probe
+    private let apiV2Client: APIv2Client
     private let httpClient: HTTPClient
     private let tokenStore: TokenStore
     private let sessionPersistence: AccountSessionPersistence
@@ -46,6 +47,7 @@ final class AuthService: @unchecked Sendable {
         launchPreferences: ProfileLaunchPreferences = .shared,
         restoredSessionValidator: RestoredSessionValidator = .live,
         contractProbe: APIv2Probe = APIv2Probe(),
+        apiV2Client: APIv2Client = SiloAPI.shared.apiV2Client,
         httpClient: HTTPClient = .shared,
         tokenStore: TokenStore = .shared,
         sessionPersistence: AccountSessionPersistence = AccountSessionPersistence(keychain: SharedKeychain()),
@@ -62,6 +64,7 @@ final class AuthService: @unchecked Sendable {
         self.launchPreferences = launchPreferences
         self.restoredSessionValidator = restoredSessionValidator
         self.contractProbe = contractProbe
+        self.apiV2Client = apiV2Client
         self.httpClient = httpClient
         self.tokenStore = tokenStore
         self.sessionPersistence = sessionPersistence
@@ -74,8 +77,8 @@ final class AuthService: @unchecked Sendable {
     /// also drops the result unless `serverId` is still the active server.
     /// Only `.v2` and `.updateServer` change the verdict; a transport or HTTP
     /// failure leaves the previous one in place (a timeout is not an old
-    /// server). Nothing here throws: v1 paths keep working against a v1-only
-    /// server, and the verdict only closes the v2 pilot gate.
+    /// server). Nothing here throws: the verdict closes the v2 gate, and
+    /// gated calls then report that the server needs an update.
     private func recordContractVerdict(serverId: String, serverURL: String) async {
         let generation = await MainActor.run {
             ConnectionMonitor.shared.beginContractProbe(serverId: serverId)
@@ -112,16 +115,16 @@ final class AuthService: @unchecked Sendable {
     // MARK: - Server Check
 
     /// Probe a candidate server: set it as the active server URL,
-    /// identify it via native branding (with a legacy health fallback),
-    /// register the entry, and
+    /// identify it via native branding, register the entry, and
     /// return the setup status so the caller can decide between initial
     /// setup and login.
     ///
     /// Candidate probes use their explicit URL and no active credentials.
     /// Global registry/default/token routing changes only after setup status
     /// succeeds. If both optional identity probes fail, the display name
-    /// falls back to the URL.
-    func checkServer(url: String) async throws -> SetupStatus {
+    /// falls back to the URL. A v1-only server fails the setup read with
+    /// `APIv2Error.serverUpdateRequired`, so it is never committed.
+    func checkServer(url: String) async throws -> APIv2SetupStatus {
         let normalized = ServerRegistry.normalize(url: url)
         let id = ServerRegistry.serverId(for: normalized)
 
@@ -136,10 +139,7 @@ final class AuthService: @unchecked Sendable {
         try Task.checkCancellation()
 
         // Commit only after the candidate proves it can serve setup status.
-        let status: SetupStatus = try await httpClient.getUnauthenticated(
-            serverURL: normalized,
-            path: "/api/v1/auth/setup"
-        )
+        let status = try await apiV2Client.setupStatus(serverURL: normalized)
         try Task.checkCancellation()
 
         // Success: upsert the registry entry and make it active.
@@ -188,6 +188,15 @@ final class AuthService: @unchecked Sendable {
         serverRegistry.updateFetchedName(for: serverId, fetchedName: name)
     }
 
+    /// Re-runs the contract probe for the active server and records the
+    /// verdict under the usual generation and active-server rules. The
+    /// restored-session validator calls this when a v2 read succeeds while
+    /// the verdict still says v1-only, so an in-place upgrade clears it.
+    func recheckActiveServerContract() async {
+        guard let server = serverRegistry.activeServer else { return }
+        await recordContractVerdict(serverId: server.id, serverURL: server.url)
+    }
+
     /// Learns (or re-learns) the deployment identity behind a saved server so
     /// SiloRemote and companion pairing can recognise it at other addresses.
     /// Servers added before the identity contract pick it up here on their
@@ -211,26 +220,37 @@ final class AuthService: @unchecked Sendable {
 
     // MARK: - Authentication
 
+    /// Password sign-in through `POST /api/v2/auth/login`. The token pair
+    /// names the account it authenticates, so the session is installed with
+    /// that verified account id. A v1-only server is refused before the
+    /// request leaves the device (`APIv2Error.serverUpdateRequired`).
     func login(username: String, password: String) async throws {
         guard let expectedAccount = await tokenStore.refreshAccountIdentity() else {
             throw HTTPError.serverUrlNotConfigured
         }
-        let response: LoginResponse = try await httpClient.post(
-            "/api/v1/auth/login",
-            body: LoginRequest(username: username, password: password)
+        let tokens = try await apiV2Client.login(
+            username: username,
+            password: password,
+            expectedAccount: expectedAccount
         )
         try await installSession(
-            accessToken: response.accessToken,
-            refreshToken: response.refreshToken,
+            accessToken: tokens.accessToken,
+            refreshToken: tokens.refreshToken,
+            accountID: tokens.user.id,
             expectedAccount: expectedAccount
         )
     }
 
     /// A new login clears the prior profile. Failed installation restores the
     /// previous session before releasing the identity transition.
+    ///
+    /// `accountID` is the account the server said the tokens authenticate
+    /// (v2 `TokenPair.user.id`); it binds the session so durable account work
+    /// can capture it.
     func installSession(
         accessToken: String,
         refreshToken: String,
+        accountID: String,
         expectedAccount: RefreshAccountIdentity
     ) async throws {
         guard let transitionLease = await httpClient.beginIdentityTransition() else {
@@ -251,11 +271,10 @@ final class AuthService: @unchecked Sendable {
             let previousProfileID = await tokenStore.getProfileId()
             await tokenStore.clearTokens()
             do {
-                // This v1 entry point installs an unverified account binding.
                 try await tokenStore.installAccountSession(
                     accessToken: accessToken,
                     refreshToken: refreshToken,
-                    accountID: nil
+                    accountID: accountID
                 )
             } catch {
                 // TokenStore blocks the session if restoration also fails.
@@ -613,15 +632,12 @@ final class AuthService: @unchecked Sendable {
         for prefix in CacheKey.perProfilePrefixes {
             ResponseCache.shared.removeAll(withPrefix: prefix)
         }
+        PersonalStateHolds.shared.reset()
         // Profiles are account-scoped and are the offline source for Who's
         // Watching. Keep that list across profile transitions; server/account
         // boundaries still clear it through `clearAllCaches()`.
-        // Overlay prefs are user-scoped on the server (not profile-scoped),
-        // so a profile switch within one account doesn't strictly require
-        // a re-fetch. We still clear: (a) freshness — a remote web edit
-        // between switches would otherwise serve stale prefs until app
-        // restart; (b) defensive — if the server ever moves overlays to
-        // a per-profile scope, this path keeps working.
+        // Overlay prefs are stored at profile scope (`ui.card_overlays`),
+        // so the next profile must re-read them.
         OverlayPrefsStore.shared.clear()
         // Profile's preferred subtitle language drives detail-page track
         // ordering; drop it so the next profile re-hydrates its own.
@@ -667,24 +683,29 @@ final class AuthService: @unchecked Sendable {
 
     // MARK: - Device Login (QR sign-in)
 
-    func startDeviceLogin(deviceName: String, devicePlatform: String) async throws -> DeviceLoginStartResponse {
-        try await HTTPClient.shared.post(
-            "/api/v1/auth/device/start",
-            body: DeviceLoginStartRequest(
-                deviceName: deviceName,
-                devicePlatform: devicePlatform
-            )
+    /// Opens a pairing request through `POST /api/v2/auth/device/start`
+    /// (`non_retryable`: one dispatch, no bearer). A v1-only server is refused
+    /// with `APIv2Error.serverUpdateRequired`.
+    func startDeviceLogin(
+        deviceName: String,
+        devicePlatform: String,
+        expectedAccount: RefreshAccountIdentity
+    ) async throws -> DeviceLoginStartResponse {
+        try await apiV2Client.startDeviceLogin(
+            DeviceLoginStartRequest(deviceName: deviceName, devicePlatform: devicePlatform),
+            expectedAccount: expectedAccount
         )
     }
 
-    /// Poll the pairing row for status. Terminal statuses (approved /
-    /// denied / expired / consumed) return HTTP 200 with a status field;
-    /// a 404 means the row no longer exists (cleaned up post-expiry).
-    func pollDeviceLogin(deviceCode: String) async throws -> DeviceLoginPollResponse {
-        try await HTTPClient.shared.post(
-            "/api/v1/auth/device/poll",
-            body: DeviceLoginPollRequest(deviceCode: deviceCode)
-        )
+    /// Polls the pairing request through `POST /api/v2/auth/device/poll`.
+    /// Terminal statuses answer 200 with a status field; a 404 problem means
+    /// the request no longer exists. Tokens arrive once, on the first
+    /// `approved` answer, so the caller must install them from this value.
+    func pollDeviceLogin(
+        deviceCode: String,
+        expectedAccount: RefreshAccountIdentity
+    ) async throws -> APIv2DevicePoll {
+        try await apiV2Client.pollDeviceLogin(deviceCode: deviceCode, expectedAccount: expectedAccount)
     }
 
     // MARK: - Sign Out
@@ -754,6 +775,7 @@ final class AuthService: @unchecked Sendable {
     private func clearAllCaches() {
         StartupContentPrefetcher.resetAllPrefetches()
         ResponseCache.shared.clearAll()
+        PersonalStateHolds.shared.reset()
         OverlayPrefsStore.shared.clear()
         ProfilePrefsStore.shared.clear()
         AICapabilities.shared.reset()

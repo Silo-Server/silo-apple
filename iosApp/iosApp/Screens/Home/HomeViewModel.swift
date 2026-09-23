@@ -172,6 +172,8 @@ class HomeViewModel {
     var isRefreshing = false
     var error: ErrorState?
     private(set) var actionError: ErrorState?
+    /// An unconfirmed watched change, offered for discard. Never re-sent.
+    var personalStateNotice: PersonalStateNotice?
     private var pendingContinueWatchingDismissals = Set<String>()
     private var pendingWatchedUpdates = Set<String>()
     private let dismissContinueWatching: DismissContinueWatching
@@ -209,7 +211,7 @@ class HomeViewModel {
             )
         },
         setWatched: @escaping SetWatched = { contentId, played in
-            try await SiloAPI.shared.setWatched(contentId: contentId, played: played)
+            try await PersonalStateSync.set(.watched, contentId: contentId, to: played)
         },
         fetchHomeSections: @escaping FetchHomeSections = {
             try await StartupContentPrefetcher.fetchHomeSections()
@@ -359,7 +361,11 @@ class HomeViewModel {
             await loadSections()
             return true
         } catch {
-            actionError = ErrorState(error)
+            switch PersonalStateSync.outcome(for: error) {
+            case .held(let change): personalStateNotice = .held(change)
+            case .skipped: break
+            case .applied, .failed: actionError = ErrorState(error)
+            }
             return false
         }
     }

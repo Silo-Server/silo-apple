@@ -96,7 +96,7 @@ final class AetherSubtitleOriginTests: XCTestCase {
         XCTAssertEqual(
             AetherLoadSpec.subtitleRequestHeaders(
                 headers,
-                resourceURL: URL(string: "https://silo.test/api/v1/stream/s/subtitles/1.vtt")!,
+                resourceURL: URL(string: "https://silo.test/api/v2/stream/s/subtitles/1.vtt")!,
                 trustedOriginURLs: [
                     URL(string: "https://proxy.silo.test:8443/stream/v3/s")!,
                     URL(string: "https://silo.test:443")!,

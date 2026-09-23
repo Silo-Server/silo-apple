@@ -1,0 +1,26 @@
+Source: silo-server docs/design/schemas/client-diagnostics/v1
+Server ref: 84ed9e596
+Server commit: 84ed9e59679e62b59bfe4bfffcf0cc644c5aee84 (2026-09-22)
+
+Written by scripts/sync-apiv2-fixtures.sh 84ed9e596, which mirrors the server
+directory with git show <commit>:<path>. README.md and this SOURCE are the
+only files not copied from the server. Do not hand-edit the rest.
+
+Vendored from the server, 17 files:
+  attr-registry.json
+  device.schema.json
+  fixtures/invalid/archive-entry-outside-allowlist.json
+  fixtures/invalid/bad-schema-version.json
+  fixtures/invalid/missing-consent.json
+  fixtures/invalid/platform-macos-reserved.json
+  fixtures/invalid/stack-excerpt-over-8kib.json
+  fixtures/invalid/unknown-report-type.json
+  fixtures/valid/android-manual-no-profile.json
+  fixtures/valid/android-manual.json
+  fixtures/valid/android-tv-crash-ueh.json
+  fixtures/valid/device.json
+  fixtures/valid/ios-hang-metrickit.json
+  fixtures/valid/loglines.jsonl
+  fixtures/valid/tvos-abnormal-exit.json
+  logline.schema.json
+  manifest.schema.json

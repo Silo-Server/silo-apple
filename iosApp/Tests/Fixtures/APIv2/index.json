@@ -19,6 +19,133 @@
       "body_file": "authentication_required.json"
     },
     {
+      "name": "download_capability",
+      "operation_id": "getDownloadCapability",
+      "scenario": "Download policy exposes ordered status support independently of registry contents.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/capabilities/downloads",
+        "headers": {
+          "Authorization": "Bearer tok-member",
+          "X-Profile-Id": "p-owner"
+        }
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "private, no-cache",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/DownloadCapability",
+      "body_file": "download_capability.json"
+    },
+    {
+      "name": "download_manifest",
+      "operation_id": "getDownloadManifest",
+      "scenario": "A complete native offline manifest preserves identity, chapters and quality, with string media_file_id and authenticated v2 asset references.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/downloads/entry/manifest",
+        "headers": {
+          "Authorization": "Bearer tok-member",
+          "X-Profile-Id": "p-owner",
+          "X-Silo-Device-Id": "device-one"
+        }
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/DownloadManifest",
+      "body_file": "download_manifest.json"
+    },
+    {
+      "name": "download_status_event",
+      "operation_id": "reportDownloadStatus",
+      "scenario": "A local completion report carries its retained event time and registry revision.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/v2/downloads/entry",
+        "headers": {
+          "Authorization": "Bearer tok-member",
+          "X-Profile-Id": "p-owner",
+          "X-Silo-Device-Id": "device-one"
+        },
+        "body": "{\"status\":\"completed\",\"updated_at\":\"2026-01-02T03:04:05.000Z\",\"revision\":1}"
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/DownloadEntry",
+      "body_file": "download_status_event.json"
+    },
+    {
+      "name": "downloads_empty",
+      "operation_id": "listDownloads",
+      "scenario": "An empty managed registry is a terminal bounded page.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/downloads",
+        "headers": {
+          "Authorization": "Bearer tok-member",
+          "X-Profile-Id": "p-owner",
+          "X-Silo-Device-Id": "device-one"
+        }
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/CollectionDownloadEntry",
+      "body_file": "downloads_empty.json"
+    },
+    {
+      "name": "get_catalog_filters_ok",
+      "operation_id": "getCatalogFilters",
+      "scenario": "The facet values of one library including the file-derived technical facets.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/catalog/filters?library_id=1",
+        "headers": {
+          "Authorization": "Bearer tok-member",
+          "X-Profile-Id": "p-owner"
+        }
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/CatalogFilters",
+      "body_file": "get_catalog_filters_ok.json"
+    },
+    {
+      "name": "get_catalog_search_capabilities_ok",
+      "operation_id": "getCatalogSearchCapabilities",
+      "scenario": "Search exposes its ranked result window and fixed session lifetime.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/catalog/search/capabilities",
+        "headers": {
+          "Authorization": "Bearer tok-member",
+          "X-Profile-Id": "p-owner"
+        }
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "private, no-cache",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/CatalogSearchCapabilities",
+      "body_file": "get_catalog_search_capabilities_ok.json"
+    },
+    {
       "name": "get_current_user_ok",
       "operation_id": "getCurrentUser",
       "scenario": "The signed-in account with no profile selected; impersonation is absent outside an admin impersonation session.",
@@ -37,6 +164,27 @@
       "response_media_type": "application/json",
       "schema": "#/components/schemas/Account",
       "body_file": "get_current_user_ok.json"
+    },
+    {
+      "name": "get_metadata_ai_capability_ok",
+      "operation_id": "getMetadataAICapability",
+      "scenario": "The metadata AI capability document on a server with on-view translation offered as a button.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/capabilities/metadata-ai",
+        "headers": {
+          "Authorization": "Bearer tok-member",
+          "X-Profile-Id": "p-owner"
+        }
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "private, no-cache",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/MetadataAICapability",
+      "body_file": "get_metadata_ai_capability_ok.json"
     },
     {
       "name": "get_setup_status_ok",
@@ -176,6 +324,180 @@
       "body_file": "not_found.json"
     },
     {
+      "name": "playback_capability_available",
+      "operation_id": "getPlaybackCapabilities",
+      "scenario": "The viewer receives the installation identifier, protocol versions, features and deliveries.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/playback/capabilities",
+        "headers": {
+          "Authorization": "Bearer tok-member",
+          "X-Profile-Id": "p-owner"
+        }
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "private, no-cache",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/PlaybackCapabilities",
+      "body_file": "playback_capability_available.json"
+    },
+    {
+      "name": "playback_capability_unconfigured",
+      "operation_id": "getPlaybackCapabilities",
+      "scenario": "Playback remains discoverable while its runtime is not configured.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/playback/capabilities",
+        "headers": {
+          "Authorization": "Bearer tok-admin",
+          "X-Profile-Id": "p-primary"
+        }
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "private, no-cache",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/PlaybackCapabilities",
+      "body_file": "playback_capability_unconfigured.json"
+    },
+    {
+      "name": "playback_installation_changed",
+      "operation_id": "startPlayback",
+      "scenario": "A different installation requires capability discovery before starting a new attempt.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v2/playback/start",
+        "headers": {
+          "Authorization": "Bearer tok-member",
+          "X-Profile-Id": "p-owner"
+        },
+        "body": "{\"audio_track_id\":\"file:42:audio:0\",\"audio_track_index\":0,\"client_capabilities\":{\"audio_evidence\":\"exact\",\"codecs_audio\":[\"aac\"],\"codecs_video\":[\"h264\"],\"codecs_video_hardware\":[\"h264\"],\"containers\":[\"mp4\"],\"hdr\":false,\"max_resolution\":\"1080p\",\"video_decode\":[{\"bit_depths\":[8],\"codec\":\"h264\",\"hardware\":true,\"levels\":[41],\"max_bitrate_kbps\":20000,\"max_frame_rate\":60,\"max_height\":1080,\"max_width\":1920,\"profiles\":[\"high\"]}],\"video_evidence\":\"exact\"},\"client_features\":[\"playback_plan_v3\"],\"client_playback_context\":{\"app_version\":\"3.0-test\",\"deliveries\":{\"original_http\":{\"audio_decode_codecs\":[\"aac\"],\"audio_passthrough_codecs\":[],\"auth_header_refresh\":true,\"containers\":[\"mp4\"],\"enabled\":true,\"features\":[],\"subtitles\":{\"ass_styling\":false,\"embedded_bitmap\":false,\"embedded_text\":true,\"font_attachments\":false,\"sidecar_bitmap\":false,\"sidecar_text\":true},\"supported_on_device\":true,\"transformations\":[],\"validated_claims\":[],\"video_codecs\":[\"h264\"]}},\"device\":{\"manufacturer\":\"NVIDIA\",\"model\":\"SHIELD Android TV\",\"os_version\":\"15\",\"platform\":\"android\",\"platform_details\":{\"abis\":\"arm64-v8a\",\"sdk_int\":\"35\"}},\"form_factor\":\"tv\",\"output\":{\"output_context_id\":\"7\"},\"protocol_version\":3},\"file_id\":\"42\",\"installation_id\":\"99999999-9999-4999-8999-999999999999\",\"metered\":false,\"playback_attempt_id\":\"attempt-golden-0001\",\"profile_id\":\"p-owner\",\"progress_persistence\":\"client\",\"protocol_version\":3,\"quality_preference\":\"original\",\"start_position\":12.5,\"subtitle_fidelity_preference\":\"compatible\"}"
+      },
+      "expected_status": 409,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/problem+json"
+      },
+      "response_media_type": "application/problem+json",
+      "schema": "#/components/schemas/Problem",
+      "body_file": "playback_installation_changed.json"
+    },
+    {
+      "name": "playback_invalid_protocol",
+      "operation_id": "startPlayback",
+      "scenario": "Protocol-version validation uses the v2 422 status.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v2/playback/start",
+        "headers": {
+          "Authorization": "Bearer tok-member",
+          "X-Profile-Id": "p-owner"
+        },
+        "body": "{\"audio_track_id\":\"file:42:audio:0\",\"audio_track_index\":0,\"client_capabilities\":{\"audio_evidence\":\"exact\",\"codecs_audio\":[\"aac\"],\"codecs_video\":[\"h264\"],\"codecs_video_hardware\":[\"h264\"],\"containers\":[\"mp4\"],\"hdr\":false,\"max_resolution\":\"1080p\",\"video_decode\":[{\"bit_depths\":[8],\"codec\":\"h264\",\"hardware\":true,\"levels\":[41],\"max_bitrate_kbps\":20000,\"max_frame_rate\":60,\"max_height\":1080,\"max_width\":1920,\"profiles\":[\"high\"]}],\"video_evidence\":\"exact\"},\"client_features\":[\"playback_plan_v3\"],\"client_playback_context\":{\"app_version\":\"3.0-test\",\"deliveries\":{\"original_http\":{\"audio_decode_codecs\":[\"aac\"],\"audio_passthrough_codecs\":[],\"auth_header_refresh\":true,\"containers\":[\"mp4\"],\"enabled\":true,\"features\":[],\"subtitles\":{\"ass_styling\":false,\"embedded_bitmap\":false,\"embedded_text\":true,\"font_attachments\":false,\"sidecar_bitmap\":false,\"sidecar_text\":true},\"supported_on_device\":true,\"transformations\":[],\"validated_claims\":[],\"video_codecs\":[\"h264\"]}},\"device\":{\"manufacturer\":\"NVIDIA\",\"model\":\"SHIELD Android TV\",\"os_version\":\"15\",\"platform\":\"android\",\"platform_details\":{\"abis\":\"arm64-v8a\",\"sdk_int\":\"35\"}},\"form_factor\":\"tv\",\"output\":{\"output_context_id\":\"7\"},\"protocol_version\":3},\"file_id\":\"42\",\"installation_id\":\"11111111-1111-4111-8111-111111111111\",\"metered\":false,\"playback_attempt_id\":\"attempt-golden-0001\",\"profile_id\":\"p-owner\",\"progress_persistence\":\"client\",\"protocol_version\":2,\"quality_preference\":\"original\",\"start_position\":12.5,\"subtitle_fidelity_preference\":\"compatible\"}"
+      },
+      "expected_status": 422,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/problem+json"
+      },
+      "response_media_type": "application/problem+json",
+      "schema": "#/components/schemas/Problem",
+      "body_file": "playback_invalid_protocol.json"
+    },
+    {
+      "name": "playback_progress_applied",
+      "operation_id": "updatePlaybackProgress",
+      "scenario": "Sequenced progress returns the committed accepted tuple, including after a stale sample.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v2/playback/11111111-1111-4111-8111-111111111111/progress",
+        "headers": {
+          "Authorization": "Bearer tok-member",
+          "X-Profile-Id": "p-owner"
+        },
+        "body": "{\"installation_id\":\"11111111-1111-4111-8111-111111111111\",\"is_paused\":false,\"position\":120,\"sequence\":42}"
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/PlaybackMutation",
+      "body_file": "playback_progress_applied.json"
+    },
+    {
+      "name": "playback_progress_stale",
+      "operation_id": "updatePlaybackProgress",
+      "scenario": "Sequenced progress returns the committed accepted tuple, including after a stale sample.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v2/playback/11111111-1111-4111-8111-111111111111/progress",
+        "headers": {
+          "Authorization": "Bearer tok-member",
+          "X-Profile-Id": "p-owner"
+        },
+        "body": "{\"installation_id\":\"11111111-1111-4111-8111-111111111111\",\"is_paused\":false,\"position\":120,\"sequence\":41}"
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/PlaybackMutation",
+      "body_file": "playback_progress_stale.json"
+    },
+    {
+      "name": "playback_start_opaque_ids",
+      "operation_id": "startPlayback",
+      "scenario": "A synthetic protocol-v3 plan represents every media file identifier as an opaque string.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v2/playback/start",
+        "headers": {
+          "Authorization": "Bearer tok-member",
+          "X-Profile-Id": "p-owner"
+        },
+        "body": "{\"audio_track_id\":\"file:42:audio:0\",\"audio_track_index\":0,\"client_capabilities\":{\"audio_evidence\":\"exact\",\"codecs_audio\":[\"aac\"],\"codecs_video\":[\"h264\"],\"codecs_video_hardware\":[\"h264\"],\"containers\":[\"mp4\"],\"hdr\":false,\"max_resolution\":\"1080p\",\"video_decode\":[{\"bit_depths\":[8],\"codec\":\"h264\",\"hardware\":true,\"levels\":[41],\"max_bitrate_kbps\":20000,\"max_frame_rate\":60,\"max_height\":1080,\"max_width\":1920,\"profiles\":[\"high\"]}],\"video_evidence\":\"exact\"},\"client_features\":[\"playback_plan_v3\"],\"client_playback_context\":{\"app_version\":\"3.0-test\",\"deliveries\":{\"original_http\":{\"audio_decode_codecs\":[\"aac\"],\"audio_passthrough_codecs\":[],\"auth_header_refresh\":true,\"containers\":[\"mp4\"],\"enabled\":true,\"features\":[],\"subtitles\":{\"ass_styling\":false,\"embedded_bitmap\":false,\"embedded_text\":true,\"font_attachments\":false,\"sidecar_bitmap\":false,\"sidecar_text\":true},\"supported_on_device\":true,\"transformations\":[],\"validated_claims\":[],\"video_codecs\":[\"h264\"]}},\"device\":{\"manufacturer\":\"NVIDIA\",\"model\":\"SHIELD Android TV\",\"os_version\":\"15\",\"platform\":\"android\",\"platform_details\":{\"abis\":\"arm64-v8a\",\"sdk_int\":\"35\"}},\"form_factor\":\"tv\",\"output\":{\"output_context_id\":\"7\"},\"protocol_version\":3},\"file_id\":\"42\",\"installation_id\":\"11111111-1111-4111-8111-111111111111\",\"metered\":false,\"playback_attempt_id\":\"attempt-golden-0001\",\"profile_id\":\"p-owner\",\"progress_persistence\":\"client\",\"protocol_version\":3,\"quality_preference\":\"original\",\"start_position\":12.5,\"subtitle_fidelity_preference\":\"compatible\"}"
+      },
+      "expected_status": 201,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/PlaybackDecision",
+      "body_file": "playback_start_opaque_ids.json"
+    },
+    {
+      "name": "playback_stop_completed",
+      "operation_id": "stopPlayback",
+      "scenario": "The first stop of a session applies the optional final sample and returns the stored receipt.",
+      "request": {
+        "method": "DELETE",
+        "path": "/api/v2/playback/11111111-1111-4111-8111-111111111111",
+        "headers": {
+          "Authorization": "Bearer tok-member",
+          "X-Profile-Id": "p-owner"
+        },
+        "body": "{\"installation_id\":\"11111111-1111-4111-8111-111111111111\",\"stop_id\":\"44444444-4444-4444-8444-444444444444\"}"
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/PlaybackMutation",
+      "body_file": "playback_stop_completed.json"
+    },
+    {
       "name": "profile_verification_required",
       "operation_id": null,
       "scenario": "A profile-scoped operation called for a PIN-locked profile without X-Profile-Token; clients start PIN entry on this type.",
@@ -220,6 +542,91 @@
       "body_file": "rate_limited.json"
     },
     {
+      "name": "subtitle_ai_job_opaque_id",
+      "operation_id": "getSubtitleAIJob",
+      "scenario": "Job IDs above JavaScript safe integer range remain strings; upstream errors are redacted and missing result stays null.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/subtitles/ai/jobs/9007199254740993",
+        "headers": {
+          "Authorization": "Bearer tok-member",
+          "X-Profile-Id": "p-owner"
+        }
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/SubtitleAIJobOutputBody",
+      "body_file": "subtitle_ai_job_opaque_id.json"
+    },
+    {
+      "name": "subtitle_ai_quota",
+      "operation_id": "getSubtitleAIQuota",
+      "scenario": "The selected viewer receives account-scoped transcription budget counters.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/subtitles/ai/quota",
+        "headers": {
+          "Authorization": "Bearer tok-member",
+          "X-Profile-Id": "p-owner"
+        }
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/QuotaStatus",
+      "body_file": "subtitle_ai_quota.json"
+    },
+    {
+      "name": "subtitles_search_partial",
+      "operation_id": "searchSubtitles",
+      "scenario": "Partial provider results omit unknown dates and replace upstream error details with a safe warning.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v2/subtitles/search",
+        "headers": {
+          "Authorization": "Bearer tok-member",
+          "X-Profile-Id": "p-owner"
+        },
+        "body": "{\"media_file_id\":\"42\",\"languages\":[\"en\"]}"
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/SubtitleSearchResults",
+      "body_file": "subtitles_search_partial.json"
+    },
+    {
+      "name": "subtitles_stored",
+      "operation_id": "listStoredSubtitles",
+      "scenario": "Stored tracks expose string IDs and public metadata without object keys or uploader identity.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/subtitles/42",
+        "headers": {
+          "Authorization": "Bearer tok-member",
+          "X-Profile-Id": "p-owner"
+        }
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/StoredSubtitles",
+      "body_file": "subtitles_stored.json"
+    },
+    {
       "name": "update_profile_null_not_clearable",
       "operation_id": "updateProfile",
       "scenario": "Explicit null on a member that does not admit clearing is a validation failure; omit it to leave it unchanged.",
@@ -262,6 +669,26 @@
       "response_media_type": "application/json",
       "schema": "#/components/schemas/Profile",
       "body_file": "update_profile_ok.json"
+    },
+    {
+      "name": "user_libraries",
+      "operation_id": "listUserLibraries",
+      "scenario": "Account library discovery returns string IDs and the viewer projection without administrator paths or scan metadata.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/user/libraries",
+        "headers": {
+          "Authorization": "Bearer tok-member"
+        }
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/CollectionUserLibrary",
+      "body_file": "user_libraries.json"
     },
     {
       "name": "validation_failed_body",

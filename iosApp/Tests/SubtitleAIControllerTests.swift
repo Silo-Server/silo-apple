@@ -118,7 +118,7 @@ final class SubtitleAIControllerTests: XCTestCase {
             handoffContext: {
                 SubtitleAIController.HandoffContext(
                     sessionId: "sess-1",
-                    baseTrackCount: 3,
+                    ordinals: DownloadedSubtitleOrdinals(published: [:], next: 3),
                     resolveURL: { path in URL(string: "https://host\(path)") }
                 )
             },
@@ -201,14 +201,14 @@ final class SubtitleAIControllerTests: XCTestCase {
     /// A persisted downloaded subtitle whose `id` matches a job's
     /// `result_subtitle_id` so the handoff can synthesize a descriptor.
     private func persisted(id: Int) -> DownloadedSubtitle {
-        DownloadedSubtitle(id: id, mediaFileId: 1, provider: "p", language: "es", format: "subrip", releaseName: "r")
+        DownloadedSubtitle(id: String(id), mediaFileId: 1, provider: "p", language: "es", format: "subrip", releaseName: "r")
     }
 
     private func runningJob(id: String, resultSubtitleId: Int? = nil) -> SubtitleJob {
-        aiJob(id: id, status: "running", resultSubtitleId: resultSubtitleId)
+        aiJob(id: id, status: .running, resultSubtitleId: resultSubtitleId)
     }
     private func completedJob(id: String, resultSubtitleId: Int) -> SubtitleJob {
-        aiJob(id: id, status: "completed", resultSubtitleId: resultSubtitleId)
+        aiJob(id: id, status: .completed, resultSubtitleId: resultSubtitleId)
     }
 
     private func started(_ trackKey: String) -> PlaybackRealtimeSubtitleEvent {
@@ -364,7 +364,7 @@ final class SubtitleAIControllerTests: XCTestCase {
         await h.waitForRegisterOnlyCount(1)
         XCTAssertEqual(h.registerSelectCount(), 1, "owned auto-select count unchanged")
         XCTAssertEqual(h.registerOnlyCount(), 1, "different ready id registered once (register-only)")
-        // baseTrackCount (3) + position of id 900 in the listing (1) == combined index 4.
+        // next ordinal (3) + unpublished rows before id 900 in the listing (1) == combined index 4.
         XCTAssertEqual(h.lastRegisterOnlyIndex(), 4)
     }
 
@@ -438,22 +438,12 @@ final class SubtitleAIControllerTests: XCTestCase {
 
 // MARK: - Local job builder (no network)
 
-/// Build a `SubtitleJob` from the REAL integer wire shape (`id` is a JSON
-/// number), decoded exactly as `HTTPClient` would.
-private func aiJob(id: String, status: String, resultSubtitleId: Int?) -> SubtitleJob {
-    let resultField = resultSubtitleId.map { "\"result_subtitle_id\": \($0)," } ?? ""
-    let json = """
-    {
-      "id": \(id),
-      "media_file_id": 1,
-      "kind": "translate",
-      "source_index": 0,
-      \(resultField)
-      "status": "\(status)",
-      "progress": \(status == "completed" ? 1 : 0)
-    }
-    """
-    let d = JSONDecoder()
-    d.keyDecodingStrategy = .convertFromSnakeCase
-    return try! d.decode(SubtitleJob.self, from: Data(json.utf8))
+/// Build a `SubtitleJob` the way the v2 projection does: opaque string IDs.
+private func aiJob(id: String, status: AIJobStatus, resultSubtitleId: Int?) -> SubtitleJob {
+    SubtitleJob(id: id, mediaFileId: 1, kind: .translate, sourceIndex: 0, sourceLanguage: nil,
+                targetLanguage: nil, engine: nil, model: nil, status: status,
+                progress: status == .completed ? 1 : 0, progressMessage: nil,
+                resultSubtitleId: resultSubtitleId.map(String.init), errorMessage: nil,
+                createdAt: nil, updatedAt: nil)
 }
+

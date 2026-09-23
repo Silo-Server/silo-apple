@@ -15,8 +15,9 @@
 //  whole series), movies under their own content id — which is exactly
 //  the key the server's detail resolver reads movie prefs back from.
 //
-//  Writes are best-effort fire-and-forget: a failed PUT costs the user
-//  a remembered preference, never playback. Reads never happen here —
+//  Writes go to `/api/v2/{audio,subtitle}-prefs/{key}` and are
+//  best-effort fire-and-forget: a failed PUT costs the user a
+//  remembered preference, never playback. Reads never happen here —
 //  the server folds saved prefs into `WatchDetail.effective_*` /
 //  `FileVersion.effectiveAudioTrackIndex`, which the detail page and
 //  player already consume.
@@ -155,57 +156,105 @@ enum TrackSelectionPersistence {
 
     // MARK: - Fire-and-forget writers
 
-    static func saveAudio(prefKey: String, request: AudioPrefRequest) {
-        Task {
-            do {
-                try await SiloAPI.shared.setAudioPref(seriesId: prefKey, body: request)
-            } catch {
-                logger.warning(
-                    "audio pref save failed key=\(prefKey, privacy: .public): \(String(describing: error), privacy: .public)"
-                )
-            }
+    // Each writer captures the signed-in owner when it is dispatched and the
+    // v2 client sends the write only while that owner is still current, so a
+    // pick made under one profile never lands on another. Writes for the same
+    // kind and key run one at a time in dispatch order, so a pick followed by
+    // "Auto" cannot be overtaken by the earlier PUT and leave a stale
+    // override. The writes are `natural_idempotent`, but a failed or
+    // unanswered write is logged and dropped rather than retried: the next
+    // explicit pick sends a fresh one.
+
+    @discardableResult
+    static func saveAudio(prefKey: String, request: AudioPrefRequest,
+                          client: APIv2Client = SiloAPI.shared.apiV2Client,
+                          tokenStore: TokenStore = .shared) -> Task<Void, Never> {
+        dispatch("audio pref save", kind: .audio, prefKey: prefKey, tokenStore: tokenStore) { auth in
+            try await client.writeTrackPreference(kind: .audio, seriesId: prefKey, body: request, auth: auth)
         }
     }
 
-    static func saveSubtitle(prefKey: String, request: SubtitlePrefRequest) {
-        Task {
-            do {
-                try await SiloAPI.shared.setSubtitlePref(seriesId: prefKey, body: request)
-            } catch {
-                logger.warning(
-                    "subtitle pref save failed key=\(prefKey, privacy: .public): \(String(describing: error), privacy: .public)"
-                )
-            }
+    @discardableResult
+    static func saveSubtitle(prefKey: String, request: SubtitlePrefRequest,
+                             client: APIv2Client = SiloAPI.shared.apiV2Client,
+                             tokenStore: TokenStore = .shared) -> Task<Void, Never> {
+        dispatch("subtitle pref save", kind: .subtitle, prefKey: prefKey, tokenStore: tokenStore) { auth in
+            try await client.writeTrackPreference(kind: .subtitle, seriesId: prefKey, body: request, auth: auth)
         }
     }
 
     /// The detail selectors' "Auto" choice — remove the sticky override
-    /// so the library/profile cascade applies again. A 404 just means
-    /// no override existed.
-    static func clearAudio(prefKey: String) {
-        Task {
+    /// so the library/profile cascade applies again. The server answers
+    /// 204 whether or not an override existed.
+    @discardableResult
+    static func clearAudio(prefKey: String,
+                           client: APIv2Client = SiloAPI.shared.apiV2Client,
+                           tokenStore: TokenStore = .shared) -> Task<Void, Never> {
+        dispatch("audio pref clear", kind: .audio, prefKey: prefKey, tokenStore: tokenStore) { auth in
+            try await client.deleteTrackPreference(kind: .audio, seriesId: prefKey, auth: auth)
+        }
+    }
+
+    @discardableResult
+    static func clearSubtitle(prefKey: String,
+                              client: APIv2Client = SiloAPI.shared.apiV2Client,
+                              tokenStore: TokenStore = .shared) -> Task<Void, Never> {
+        dispatch("subtitle pref clear", kind: .subtitle, prefKey: prefKey, tokenStore: tokenStore) { auth in
+            try await client.deleteTrackPreference(kind: .subtitle, seriesId: prefKey, auth: auth)
+        }
+    }
+
+    private static let writeOrder = WriteOrder()
+
+    private static func dispatch(
+        _ action: String,
+        kind: TrackPreferenceKind,
+        prefKey: String,
+        tokenStore: TokenStore,
+        operation: @escaping @Sendable (CapturedOrdinaryRequestAuth) async throws -> Void
+    ) -> Task<Void, Never> {
+        writeOrder.enqueue("\(kind.rawValue)/\(prefKey)") { previous in
+            let auth = await tokenStore.captureOrdinaryRequestAuth()
+            await previous?.value
             do {
-                try await SiloAPI.shared.deleteAudioPref(seriesId: prefKey)
-            } catch HTTPError.http(let code, _) where code == 404 {
-                // Nothing to clear.
+                guard let auth else { throw HTTPError.requestIdentityChanged }
+                try await operation(auth)
             } catch {
                 logger.warning(
-                    "audio pref clear failed key=\(prefKey, privacy: .public): \(String(describing: error), privacy: .public)"
+                    "\(action, privacy: .public) failed key=\(prefKey, privacy: .public): \(String(describing: error), privacy: .public)"
                 )
             }
         }
     }
 
-    static func clearSubtitle(prefKey: String) {
-        Task {
-            do {
-                try await SiloAPI.shared.deleteSubtitlePref(seriesId: prefKey)
-            } catch HTTPError.http(let code, _) where code == 404 {
-                // Nothing to clear.
-            } catch {
-                logger.warning(
-                    "subtitle pref clear failed key=\(prefKey, privacy: .public): \(String(describing: error), privacy: .public)"
-                )
+    /// Chains the writes for one kind and key: each write starts only after
+    /// the one dispatched before it has finished, whatever its outcome.
+    /// Callers dispatch synchronously, so dispatch order is pick order.
+    private final class WriteOrder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var tails: [String: (id: UInt64, task: Task<Void, Never>)] = [:]
+        private var nextId: UInt64 = 0
+
+        func enqueue(
+            _ key: String,
+            _ body: @escaping @Sendable (_ previous: Task<Void, Never>?) async -> Void
+        ) -> Task<Void, Never> {
+            lock.withLock {
+                nextId += 1
+                let id = nextId
+                let previous = tails[key]?.task
+                let task = Task {
+                    await body(previous)
+                    self.finish(key, id)
+                }
+                tails[key] = (id, task)
+                return task
+            }
+        }
+
+        private func finish(_ key: String, _ id: UInt64) {
+            lock.withLock {
+                if tails[key]?.id == id { tails[key] = nil }
             }
         }
     }

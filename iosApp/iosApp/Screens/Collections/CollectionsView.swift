@@ -34,17 +34,24 @@ struct CollectionsView: View {
                 )
             }
         }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if case .unknown(let message) = viewModel.groupSupport {
+                groupSupportNotice(message)
+            }
+        }
         .siloPageBackground()
         .navigationTitle("Collections")
         .siloNavigationTitleDisplayMode(.large)
         .toolbar {
             #if os(macOS)
-            ToolbarItem {
-                Button {
-                    viewModel.pendingGroupAction = .create
-                } label: {
-                    Image(systemName: "folder.badge.plus")
-                        .foregroundColor(.siloPrimary)
+            if viewModel.canManageGroups {
+                ToolbarItem {
+                    Button {
+                        viewModel.pendingGroupAction = .create
+                    } label: {
+                        Image(systemName: "folder.badge.plus")
+                            .foregroundColor(.siloPrimary)
+                    }
                 }
             }
             ToolbarItem {
@@ -56,12 +63,14 @@ struct CollectionsView: View {
                 }
             }
             #else
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    viewModel.pendingGroupAction = .create
-                } label: {
-                    Image(systemName: "folder.badge.plus")
-                        .foregroundColor(.siloPrimary)
+            if viewModel.canManageGroups {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        viewModel.pendingGroupAction = .create
+                    } label: {
+                        Image(systemName: "folder.badge.plus")
+                            .foregroundColor(.siloPrimary)
+                    }
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
@@ -106,16 +115,18 @@ struct CollectionsView: View {
                                 #if !os(tvOS)
                                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                     Button(role: .destructive) {
-                                        Task { await viewModel.deleteCollection(id: collection.id) }
+                                        viewModel.pendingGroupAction = .deleteCollection(collection)
                                     } label: {
                                         Label("Delete", systemImage: "trash")
                                     }
-                                    Button {
-                                        viewModel.pendingGroupAction = .move(collection)
-                                    } label: {
-                                        Label("Move", systemImage: "folder")
+                                    if viewModel.canManageGroups {
+                                        Button {
+                                            viewModel.pendingGroupAction = .move(collection)
+                                        } label: {
+                                            Label("Move", systemImage: "folder")
+                                        }
+                                        .tint(.siloPrimary)
                                     }
-                                    .tint(.siloPrimary)
                                 }
                                 #endif
                         }
@@ -140,7 +151,7 @@ struct CollectionsView: View {
                 .font(.siloCaption)
                 .foregroundColor(.siloSecondaryText)
             Spacer()
-            if let groupId = section.groupId,
+            if viewModel.canManageGroups, let groupId = section.groupId,
                let group = viewModel.groups.first(where: { $0.id == groupId }) {
                 Menu {
                     Button {
@@ -159,6 +170,24 @@ struct CollectionsView: View {
                 }
             }
         }
+    }
+
+    /// The capability read failed: groups can't be managed until it is
+    /// retried, but nothing concludes they are unsupported.
+    private func groupSupportNotice(_ message: String) -> some View {
+        HStack(spacing: SiloTheme.padding) {
+            Text(message)
+                .font(.siloCaption)
+                .foregroundColor(.siloSecondaryText)
+            Spacer()
+            Button("Retry") {
+                Task { await viewModel.retryGroupSupport() }
+            }
+            .foregroundColor(.siloPrimary)
+        }
+        .padding(.horizontal, SiloTheme.padding)
+        .padding(.vertical, 8)
+        .background(Color.siloSurface)
     }
 
     private func collectionRow(_ collection: UserCollection) -> some View {
@@ -202,11 +231,19 @@ struct CollectionsView: View {
                 TextField("Collection name", text: $viewModel.newCollectionName)
                     .textFieldStyle(SiloTextFieldStyle())
 
+                if let message = viewModel.createError {
+                    Text(message)
+                        .font(.siloCaption)
+                        .foregroundColor(.siloError)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
                 Button("Create Collection") {
                     Task { await viewModel.createCollection() }
                 }
                 .siloPrimaryButton()
-                .disabled(viewModel.newCollectionName.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(viewModel.isSaving
+                    || viewModel.newCollectionName.trimmingCharacters(in: .whitespaces).isEmpty)
 
                 Spacer()
             }
@@ -228,7 +265,10 @@ struct CollectionsView: View {
     }
 }
 
-/// Modal for create-group / rename-group / delete-group / move-collection.
+/// Modal for create-group / rename-group / delete-group / move-collection /
+/// delete-collection. Edits of an existing item read its current version when
+/// the sheet opens and send that version; after a conflict or an unknown
+/// outcome the sheet offers Reload instead of resending.
 private struct GroupActionSheet: View {
     let action: CollectionsViewModel.GroupAction
     let viewModel: CollectionsViewModel
@@ -256,6 +296,9 @@ private struct GroupActionSheet: View {
                 .siloNavigationBarSurfaceBackground()
         }
         .presentationDetents([.medium])
+        .task {
+            await viewModel.loadEditor()
+        }
         .onAppear {
             switch action {
             case .rename(let g): name = g.name
@@ -286,6 +329,20 @@ private struct GroupActionSheet: View {
             }
             .padding(SiloTheme.padding)
             .navigationTitle("Delete group")
+        case .deleteCollection(let collection):
+            VStack(spacing: SiloTheme.padding) {
+                Text("Delete “\(collection.name)”?")
+                    .font(.siloTitle)
+                    .foregroundStyle(Color.siloOnSurface)
+                Text("This cannot be undone.")
+                    .font(.siloBody)
+                    .foregroundStyle(Color.siloSecondaryText)
+                    .multilineTextAlignment(.center)
+                errorBanner
+                Spacer()
+            }
+            .padding(SiloTheme.padding)
+            .navigationTitle("Delete collection")
         case .move(let collection):
             VStack(spacing: 0) {
                 List {
@@ -339,6 +396,14 @@ private struct GroupActionSheet: View {
                 .foregroundColor(.siloError)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+        if viewModel.editorNeedsReload {
+            Button("Reload") {
+                Task { await viewModel.loadEditor() }
+            }
+            .foregroundColor(.siloPrimary)
+            .disabled(viewModel.isLoadingEditor)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     private func moveOptionRow(label: String, selected: Bool) -> some View {
@@ -358,16 +423,17 @@ private struct GroupActionSheet: View {
         switch action {
         case .create: return "Create"
         case .rename: return "Save"
-        case .delete: return "Delete"
+        case .delete, .deleteCollection: return "Delete"
         case .move: return "Move"
         }
     }
 
     private var canConfirm: Bool {
+        guard viewModel.canSubmitGroupAction else { return false }
         switch action {
         case .create, .rename:
             return !name.trimmingCharacters(in: .whitespaces).isEmpty
-        case .delete, .move:
+        case .delete, .move, .deleteCollection:
             return true
         }
     }
@@ -382,10 +448,12 @@ private struct GroupActionSheet: View {
             await viewModel.deleteGroup(id: group.id)
         case .move(let collection):
             await viewModel.moveCollection(id: collection.id, toGroupId: pendingMoveTarget)
+        case .deleteCollection(let collection):
+            await viewModel.deleteCollection(id: collection.id)
         }
         // The view model clears `pendingGroupAction` only on success;
-        // keep the sheet open on error so the user sees the failure
-        // surfaced on the main view.
+        // keep the sheet open on error so the failure and any Reload
+        // action show in the sheet, with the draft intact.
         if viewModel.pendingGroupAction == nil {
             dismiss()
         }
@@ -641,8 +709,9 @@ struct LibraryCollectionDetailView: View {
     @State private var error: ErrorState?
     @State private var hasMore = true
     @State private var totalItems: Int?
-    @State private var nextOffset = 0
-    @State private var snapshot: String?
+    /// Where the next page starts; `nil` before the live first page and
+    /// after the last one. A cached first page has no continuation.
+    @State private var continuation: APIv2CatalogContinuation?
 
     @Environment(AppRouter.self) private var router
 
@@ -717,61 +786,47 @@ struct LibraryCollectionDetailView: View {
 
     private func loadItems(reset: Bool) async {
         guard !isLoading else { return }
+        let cacheKey = CacheKey.catalogCollectionItems(collectionId)
         if reset {
-            // Surface the cached page-1 snapshot instantly so the grid
-            // doesn't blank out while the network call runs.
+            // Surface the cached first page instantly so the grid doesn't
+            // blank out while the network call runs.
             if items.isEmpty,
-               let cached: CatalogResponse = ResponseCache.shared.get(
-                   CacheKey.collectionItems(collectionId)
-               ) {
+               let cached: CatalogResponse = ResponseCache.shared.get(cacheKey) {
                 items = cached.items
                 hasMore = cached.hasMore ?? false
                 totalItems = cached.totalExact == false ? nil : cached.total
-                nextOffset = cached.items.count
-                snapshot = cached.snapshot
-            } else {
-                items = []
+            } else if items.isEmpty {
                 hasMore = true
                 totalItems = nil
-                nextOffset = 0
-                snapshot = nil
             }
         }
-        guard hasMore else { return }
+        guard reset || hasMore else { return }
 
         isLoading = true
         error = nil
 
+        // A reset, or a load-more over a cached first page, starts over from
+        // the first page and replaces the grid instead of appending to it.
+        let nextPage = reset ? nil : continuation
+
         do {
-            let response: CatalogResponse
-            if kind == .userCollections {
-                response = try await SiloAPI.shared.userCollectionItems(
-                    collectionId: collectionId,
-                    offset: nextOffset,
-                    limit: pageSize,
-                    snapshot: snapshot
-                )
+            let page: CatalogListPage
+            if let nextPage {
+                page = try await SiloAPI.shared.nextCatalogPage(nextPage)
             } else {
-                response = try await SiloAPI.shared.libraryCollectionItems(
-                    libraryId: libraryId,
-                    collectionId: collectionId,
-                    offset: nextOffset,
-                    limit: pageSize,
-                    snapshot: snapshot
-                )
+                page = try await SiloAPI.shared.catalogPage(.collectionItems(
+                    kind: kind ?? .regular, collectionId: collectionId, limit: pageSize
+                ))
             }
-            if reset {
-                items = response.items
-                ResponseCache.shared.set(response, for: CacheKey.collectionItems(collectionId))
+            if nextPage != nil, !page.startsOver {
+                items.append(contentsOf: page.response.items)
             } else {
-                items.append(contentsOf: response.items)
+                items = page.response.items
+                ResponseCache.shared.set(page.response, for: cacheKey)
             }
-            totalItems = response.totalExact == false ? nil : response.total
-            hasMore = response.hasMore ?? false
-            nextOffset += response.items.count
-            if snapshot == nil {
-                snapshot = response.snapshot
-            }
+            totalItems = page.response.totalExact == false ? nil : page.response.total
+            continuation = page.continuation
+            hasMore = page.continuation != nil
         } catch let err {
             if items.isEmpty {
                 error = ErrorState(err)

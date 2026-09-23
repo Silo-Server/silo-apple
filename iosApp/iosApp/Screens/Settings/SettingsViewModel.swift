@@ -262,9 +262,64 @@ final class SettingsViewModel {
         deinterlaceFieldRate = PlayerSettings.shared.deinterlaceFieldRate
     }
 
+    // MARK: Held and refused playback changes
+
+    /// A device playback change ran out of automatic retries and is held on
+    /// this device (owner decision D4).
+    var hasHeldPlaybackChanges: Bool { !PlayerSettings.shared.heldDeviceSettingKeys.isEmpty }
+
+    /// The server definitively refused a device playback change.
+    var playbackChangeWasRejected: Bool { PlayerSettings.shared.rejectedDeviceSettingChange }
+
+    static let rejectedPlaybackChangeMessage =
+        "The server didn't accept a change to this device's playback settings, so it wasn't saved."
+
+    /// The held keys a "Discard Held Change" could not discard because the
+    /// server was unreachable. The footer says so only while exactly these
+    /// keys are still held.
+    private var undiscardedHeldPlaybackKeys: [SettingKey]?
+
+    /// The footer for the held playback change rows.
+    var heldPlaybackChangesMessage: String {
+        let held = PlayerSettings.shared.heldDeviceSettingKeys
+        guard !held.isEmpty, undiscardedHeldPlaybackKeys == held else {
+            return HeldSettingChange.message
+        }
+        return HeldSettingChange.discardNeedsServerMessage
+    }
+
+    @MainActor
+    func retryHeldPlaybackChanges() async {
+        undiscardedHeldPlaybackKeys = nil
+        await PlayerSettings.shared.retryHeldDeviceSettingChanges()
+    }
+
+    @MainActor
+    func discardHeldPlaybackChanges() async {
+        let held = PlayerSettings.shared.heldDeviceSettingKeys
+        let discarded = await PlayerSettings.shared.discardHeldDeviceSettingChanges()
+        undiscardedHeldPlaybackKeys = discarded ? nil : held
+        adoptPlaybackSettings()
+    }
+
+    /// Clears the notice and repaints what the server holds.
+    @MainActor
+    func acknowledgeRejectedPlaybackChange() async {
+        PlayerSettings.shared.dismissDeviceSettingRejection()
+        await PlayerSettings.shared.refreshFromServer()
+        adoptPlaybackSettings()
+    }
+
     @MainActor
     func resetPlaybackDeviceSettings() async {
         await PlayerSettings.shared.resetAllDeviceSettings()
+        adoptPlaybackSettings()
+    }
+
+    /// Mirror every playback row from ``PlayerSettings`` after it changed
+    /// underneath the screen (a reset, a discarded or refused change).
+    @MainActor
+    private func adoptPlaybackSettings() {
         adoptQualityFromPlayerSettings()
         preferredAudioLanguage = PlayerSettings.shared.audioLanguage
         autoPlayNext = PlayerSettings.shared.autoPlayNextEpisode

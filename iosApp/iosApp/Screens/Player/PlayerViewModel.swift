@@ -2119,7 +2119,7 @@ class PlayerViewModel {
                 }
                 if previousSessionId != prepared.session.sessionId {
                     await self.realtimeClient.unbind()
-                    await self.realtimeClient.bind(sessionId: prepared.session.sessionId)
+                    await self.bindRealtimeControl(sessionId: prepared.session.sessionId)
                 }
                 await self.sessionBridge.reportProtocolV3PlanExecutionStarted(prepared)
             } catch is CancellationError {
@@ -2338,8 +2338,11 @@ class PlayerViewModel {
             }
 
             do {
-                let response = try await SiloAPI.shared.homeSections()
+                let read = try await SiloAPI.shared.homeSections()
+                let isCurrentOwner = await SiloAPI.shared.isCurrentOwner(read.auth)
                 guard !Task.isCancelled, !self.isDisposed else { return }
+                guard isCurrentOwner else { throw HTTPError.requestIdentityChanged }
+                let response = read.response
                 self.nextUpOnDeckItems = await self.resolveOnDeckItems(from: response, currentDetail: detail)
                 self.isLoadingNextUpOnDeck = false
                 self.updateNextUpPresentation(for: self.currentTime)
@@ -4244,7 +4247,7 @@ class PlayerViewModel {
                     // committed session. Binding before Aether accepts the
                     // candidate can leave commands attached to a rolled-back
                     // session after a failed load.
-                    await self.realtimeClient.bind(sessionId: session.sessionId)
+                    await self.bindRealtimeControl(sessionId: session.sessionId)
                     await self.sessionBridge.reportProtocolV3PlanExecutionStarted(prepared)
                     try self.requireCurrentStreamLoad(currentStreamLoadGeneration)
                     self.reapplyDeferredAutoSubtitlePolicyIfNeeded()
@@ -5674,15 +5677,15 @@ class PlayerViewModel {
     /// **Enablement** predicate: visible *and* the server actually has
     /// external subtitle providers configured.
     ///
-    /// The split exists because a server with no providers answers the search
-    /// endpoint `200 {"results": null}` — so without this the user picks a
+    /// The split exists because a server with no providers answers a search
+    /// with an empty result set — so without this the user picks a
     /// language, waits out the 20–30s provider fan-out, and gets "No subtitles
     /// found", which reads as a broken feature rather than an unconfigured
     /// one. The row instead renders disabled with
     /// ``subtitleSearchUnavailableReason``.
     ///
-    /// ``SubtitleProvidersStore/isAvailable`` fails **open**: older servers
-    /// that 404 the provider-status probe keep a fully enabled row.
+    /// ``SubtitleProvidersStore/isAvailable`` stays enabled until the
+    /// provider-status probe answers; a failed probe keeps the row enabled.
     @MainActor
     var subtitleSearchEnabled: Bool {
         subtitleSearchVisible && SubtitleProvidersStore.shared.isAvailable
@@ -5713,64 +5716,50 @@ class PlayerViewModel {
 
     /// Download a chosen search result and hand it to the picker (register +
     /// auto-select) with **no session restart** — the same sidecar path the AI
-    /// completion uses. Returns `true` on success.
+    /// completion uses.
     ///
     /// Mirrors `SubtitleAIController.completePersistedHandoff` minus the
-    /// job/latch/websocket machinery: the download response carries the DB
-    /// `id` but no combined index or stream URL, so we re-list to find the
-    /// track's *position* and synthesize both (see ``DownloadedSubtitle``).
+    /// job/latch/websocket machinery: the download response carries the stored
+    /// `id` but no stream URL, so we re-list to place the row in the plan's
+    /// subtitle ordinals and synthesize a URL pinned to that `id` (see
+    /// ``DownloadedSubtitleOrdinals``).
     ///
-    /// Idempotency vs the server's `subtitle_ready` broadcast that follows any
-    /// download: that path is register-only (never steals selection) and
-    /// `registerCompletedAISubtitle` de-dupes on combined index, so the echo
-    /// is a harmless no-op — no ownership latch is needed here.
+    /// The download is `non_retryable` and is sent once, for the owner
+    /// captured before the first await. The outcome tells the menu whether
+    /// the subtitle is stored, definitely not stored, or may be stored; the
+    /// menu never resends the last two cases' result on its own. The server
+    /// sends no `subtitle_ready` broadcast for provider downloads, so a
+    /// subtitle that is stored but not registered here appears only the next
+    /// time the file plays. ``SubtitleDownloadOutcome/resolve`` owns the
+    /// outcome mapping.
     @MainActor
-    func downloadSearchedSubtitle(_ result: SubtitleSearchResult) async -> Bool {
-        guard let fileId = currentSelectedVersion?.fileId else { return false }
-        do {
-            let subtitle = try await SiloAI.shared.downloadSubtitle(
-                SubtitleDownloadBody(from: result, mediaFileId: fileId)
-            )
-            let downloaded = try await SiloAI.shared.downloadedSubtitles(mediaFileId: fileId)
-            // Revalidate after the awaits: if playback moved to a different
-            // file while the download was in flight, `makeSubtitleHandoffContext`
-            // would now describe the NEW session, and registering the OLD
-            // file's listing position against it would select a wrong or
-            // invalid track. The download itself is persisted server-side
-            // either way; the next session of that file picks it up.
-            guard currentSelectedVersion?.fileId == fileId else {
-                Self.logger.info(
-                    "[SUB-SEARCH] media file changed during download of subtitle id=\(subtitle.id, privacy: .public); skipping live handoff"
-                )
-                return false
-            }
-            guard let position = downloaded.firstIndex(where: { $0.id == subtitle.id }) else {
-                Self.logger.warning(
-                    "[SUB-SEARCH] downloaded subtitle id=\(subtitle.id, privacy: .public) not in listing of \(downloaded.count, privacy: .public)"
-                )
-                return false
-            }
-            guard let context = makeSubtitleHandoffContext(),
-                  let descriptor = downloaded[position].synthesizedDescriptor(
-                      sessionId: context.sessionId,
-                      baseTrackCount: context.baseTrackCount,
-                      position: position,
-                      resolveURL: context.resolveURL
-                  )
-            else {
-                Self.logger.warning(
-                    "[SUB-SEARCH] no handoff context / unresolvable URL for subtitle id=\(subtitle.id, privacy: .public)"
-                )
-                return false
-            }
-            registerCompletedAISubtitle(descriptor, autoSelect: true)
-            return true
-        } catch {
-            Self.logger.warning(
-                "[SUB-SEARCH] download failed: \(error.localizedDescription, privacy: .public)"
-            )
-            return false
+    func downloadSearchedSubtitle(_ result: SubtitleSearchResult) async -> SubtitleDownloadOutcome {
+        guard let fileId = currentSelectedVersion?.fileId else {
+            return .failed(SubtitleDownloadOutcome.genericFailure)
         }
+        let body = SubtitleDownloadBody(from: result, mediaFileId: fileId)
+        return await SubtitleDownloadOutcome.resolve(
+            download: {
+                let auth = try await SiloAI.shared.captureAuthority()
+                return (auth, try await SiloAI.shared.downloadSubtitle(body, auth: auth))
+            },
+            relist: { auth in try await SiloAI.shared.downloadedSubtitles(mediaFileId: fileId, auth: auth) },
+            isStillCurrent: { auth in
+                guard await SiloAI.shared.matchesAuthority(auth) else { return false }
+                return self.currentSelectedVersion?.fileId == fileId
+            },
+            register: { listing, position in
+                guard let context = self.makeSubtitleHandoffContext(),
+                      let descriptor = listing[position].synthesizedDescriptor(
+                          sessionId: context.sessionId,
+                          ordinal: context.ordinals.ordinal(at: position, in: listing),
+                          resolveURL: context.resolveURL
+                      )
+                else { return false }
+                self.registerCompletedAISubtitle(descriptor, autoSelect: true)
+                return true
+            }
+        )
     }
 
     /// Build the context ``SubtitleAIController`` needs to synthesize a
@@ -5779,14 +5768,13 @@ class PlayerViewModel {
     /// the controller treats `nil` as a soft failure so the user isn't left on
     /// a dismissed menu with no track.
     ///
-    /// `baseTrackCount` is the combined ordinal the **first** downloaded track
-    /// occupies. The V3 plan's subtitle inventory is the authoritative track
-    /// list — it publishes every track, including burn-in-only bitmap streams
-    /// that carry no fetchable URL, over one dense ordinal space ordered
-    /// externals → embedded → downloaded. So the first downloaded ordinal is
-    /// exactly the number of non-downloaded inventory entries. Never derive
-    /// this by counting or max-ing the delivered sidecar URLs: those omit
-    /// burn-in-only tracks and would address the wrong track.
+    /// `ordinals` comes from the V3 plan's subtitle inventory, the
+    /// authoritative track list: it publishes every track, including
+    /// burn-in-only bitmap streams that carry no fetchable URL, over one dense
+    /// ordinal space ordered externals → embedded → downloaded. Never derive
+    /// ordinals by counting the delivered sidecar URLs or the v2 stored
+    /// listing: the first omits burn-in-only tracks and the second omits rows
+    /// whose language the server cannot canonicalize.
     @MainActor
     private func makeSubtitleHandoffContext() -> SubtitleAIController.HandoffContext? {
         guard let sessionId = activePlaybackSessionId, !sessionId.isEmpty else {
@@ -5798,20 +5786,28 @@ class PlayerViewModel {
             Self.logger.warning("[AI-SUB] no V3 subtitle inventory for subtitle handoff")
             return nil
         }
-        let baseTrackCount = Self.protocolV3DownloadedSubtitleBaseTrackCount(inventory)
         return SubtitleAIController.HandoffContext(
             sessionId: sessionId,
-            baseTrackCount: baseTrackCount,
+            ordinals: Self.protocolV3DownloadedSubtitleOrdinals(inventory),
             resolveURL: { [weak self] path in self?.resolveServerUrl(path, serverUrl: serverUrl) }
         )
     }
 
-    static func protocolV3DownloadedSubtitleBaseTrackCount(
+    /// Reads each published downloaded row's ordinal from the
+    /// `downloaded_subtitle_id` pin on its inventory URL.
+    static func protocolV3DownloadedSubtitleOrdinals(
         _ inventory: [PlaybackV3SubtitleInventoryItem]
-    ) -> Int {
-        inventory.filter {
-            $0.source.caseInsensitiveCompare("downloaded") != .orderedSame
-        }.count
+    ) -> DownloadedSubtitleOrdinals {
+        var published: [String: Int] = [:]
+        for item in inventory where item.source.caseInsensitiveCompare("downloaded") == .orderedSame {
+            guard let url = item.url,
+                  let rowID = URLComponents(string: url)?.queryItems?
+                      .first(where: { $0.name == "downloaded_subtitle_id" })?.value,
+                  !rowID.isEmpty else { continue }
+            published[rowID] = item.combinedIndex
+        }
+        let next = (inventory.map(\.combinedIndex).max() ?? -1) + 1
+        return DownloadedSubtitleOrdinals(published: published, next: next)
     }
 
     enum ProtocolV3SidecarRestoreIntent: Equatable {
@@ -6439,6 +6435,14 @@ class PlayerViewModel {
         }
     }
 
+    /// Binds the control socket to a committed session under the owner and
+    /// installation that started it.
+    @MainActor
+    private func bindRealtimeControl(sessionId: String) async {
+        guard let authority = await sessionBridge.committedProtocolV3Authority(sessionId: sessionId) else { return }
+        await realtimeClient.bind(sessionId: sessionId, authority: authority)
+    }
+
     @MainActor
     private func handleRealtimeEvent(_ event: PlaybackRealtimeEventEnvelope) async {
         guard event.sessionId == activePlaybackSessionId else { return }
@@ -6685,21 +6689,18 @@ class PlayerViewModel {
         )
     }
 
-    /// Turns a server-supplied URL (absolute or API-relative) into an absolute URL.
+    /// Turns a server-supplied URL (absolute or API-rooted) into an absolute URL.
     /// Local `file://` URLs (offline downloads and their cached sidecar
-    /// subtitles) pass through untouched.
+    /// subtitles) pass through untouched. v2 decisions mint every media,
+    /// subtitle and font URL under `/api/v2/`; a relative path without an API
+    /// root is refused rather than assigned a version.
     private func resolveServerUrl(_ raw: String, serverUrl: String) -> URL? {
         if raw.hasPrefix("http://") || raw.hasPrefix("https://") || raw.hasPrefix("file://") {
             return URL(string: raw)
         }
 
-        guard !serverUrl.isEmpty else { return nil }
-
-        let relativePath = raw.hasPrefix("/") ? raw : "/\(raw)"
-        let urlString = relativePath.hasPrefix("/api/")
-            ? "\(serverUrl)\(relativePath)"
-            : "\(serverUrl)/api/v1\(relativePath)"
-        return URL(string: urlString)
+        guard !serverUrl.isEmpty, raw.hasPrefix("/api/") else { return nil }
+        return URL(string: serverUrl + raw)
     }
 
     private func stablePlaybackFailureToken(for message: String) -> String {

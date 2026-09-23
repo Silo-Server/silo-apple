@@ -55,7 +55,11 @@ struct ContentView: View {
     /// the previous hydration succeeded.
     @Environment(\.scenePhase) private var scenePhase
 
-    var body: some View {
+    // The root modifier chain runs presentedContent -> appEventContent ->
+    // sessionTaskContent -> body. Swift 6.2 cannot type-check it as one
+    // expression, so it is split into stages; SwiftUI modifier order still
+    // follows that reading order.
+    private var presentedContent: some View {
         authContent
         // A server change is a hard data boundary even when both servers map
         // to the same auth state. Re-key the routed subtree so profile, home,
@@ -64,57 +68,7 @@ struct ContentView: View {
         .environment(audioStore)
         #if os(iOS)
         .environment(siloControl)
-        .onAppear {
-            // One routing decision for every streaming play on iOS: an
-            // engaged TV (including one mid-reconnect) takes the request;
-            // otherwise the local player opens as before.
-            router.remotePlaybackInterceptor = { [siloControl] request in
-                await siloControl.launchOnEngagedTV(request)
-            }
-            router.isRemotePlaybackEngaged = { [siloControl] in siloControl.remotePlaybackEngaged }
-            router.remotePlaybackCurrentTitle = { [siloControl] in
-                guard siloControl.remotePlaybackEngaged,
-                      let state = siloControl.state,
-                      let contentId = state.contentId, !contentId.isEmpty else { return nil }
-                return (
-                    title: state.title,
-                    contentId: contentId,
-                    targetName: siloControl.activeTarget?.name ?? siloControl.lastTarget?.name ?? "the TV"
-                )
-            }
-        }
-        .confirmationDialog(
-            "Replace what's playing?",
-            isPresented: Binding(
-                get: { router.pendingReplaceRemotePlayback != nil },
-                set: { if !$0 { router.pendingReplaceRemotePlayback = nil } }
-            ),
-            titleVisibility: .visible,
-            presenting: router.pendingReplaceRemotePlayback
-        ) { choice in
-            Button("Play on \(choice.targetName)") { router.confirmReplaceRemotePlayback() }
-            Button("Cancel", role: .cancel) { router.pendingReplaceRemotePlayback = nil }
-        } message: { choice in
-            Text("\(choice.targetName) is playing \(choice.currentTitle). Playing this will stop it.")
-        }
-        .confirmationDialog(
-            "A TV is connected",
-            isPresented: Binding(
-                get: { router.pendingOfflinePlayChoice != nil },
-                set: { if !$0 { router.pendingOfflinePlayChoice = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("Play on \(siloControl.activeTarget?.name ?? siloControl.lastTarget?.name ?? "TV")") {
-                router.sendPendingOfflinePlayToTV()
-            }
-            Button("Play on this \(UIDevice.current.model)") {
-                router.confirmOfflinePlayHere()
-            }
-            Button("Cancel", role: .cancel) { router.pendingOfflinePlayChoice = nil }
-        } message: {
-            Text("Downloads only play on this device. The TV can stream the same title from your server.")
-        }
+        .modifier(RemotePlaybackRoutingModifier(router: router, siloControl: siloControl))
         #endif
         .environmentObject(overlayPrefs)
         .preferredColorScheme(.dark)
@@ -126,6 +80,17 @@ struct ContentView: View {
         } message: {
             Text(router.accountActionError ?? "")
         }
+        #if !os(tvOS)
+        .alert(LegacyDownloadStorage.noticeMessage, isPresented: Binding(
+            get: {
+                didFinishStartupSplash && router.authState != .loading
+                    && DownloadManager.shared.legacyDownloadsNoticePending
+            },
+            set: { if !$0 { DownloadManager.shared.acknowledgeLegacyDownloadsNotice() } }
+        )) {
+            Button("OK", role: .cancel) { DownloadManager.shared.acknowledgeLegacyDownloadsNotice() }
+        }
+        #endif
         #if os(tvOS) && DEBUG
         .modifier(TVFocusDebugActivationModifier())
         #endif
@@ -151,6 +116,10 @@ struct ContentView: View {
             isEnabled: router.authState == .authenticated
         ))
         #endif
+    }
+
+    private var appEventContent: some View {
+        presentedContent
         .onChange(of: deepLinkCoordinator.pendingURL) { _, _ in
             drainIncomingDeepLink()
         }
@@ -255,6 +224,10 @@ struct ContentView: View {
             markProfileAwayStartForTermination()
         }
         #endif
+    }
+
+    private var sessionTaskContent: some View {
+        appEventContent
         #if DEBUG
         .task {
             // Debug: auto-play from launch argument -debugPlay <contentId>
@@ -385,6 +358,10 @@ struct ContentView: View {
                 #endif
             }
         }
+    }
+
+    var body: some View {
+        sessionTaskContent
         .onChange(of: scenePhase) { _, newPhase in
             #if os(iOS) || os(tvOS)
             // Single funnel for every scene edge. `LaunchTimeline` decides the
@@ -989,8 +966,8 @@ struct ContentView: View {
         didAttemptDebugAutoPlay = true
 
         do {
-            let sections = try await SiloAPI.shared.homeSections()
-            guard let contentId = sections.sections.lazy
+            let home = try await SiloAPI.shared.homeSections()
+            guard let contentId = home.sections.lazy
                 .compactMap({ $0.items.first?.contentId })
                 .first else {
                 return
@@ -1081,12 +1058,7 @@ struct ContentView: View {
         }
     }
     private func resolveDebugSearchContentId(query: String) async throws -> String {
-        let response = try await SiloAPI.shared.catalog(query: [
-            "source": "query",
-            "q": query,
-            "limit": "20",
-            "offset": "0",
-        ])
+        let response = try await SiloAPI.shared.catalogPage(.search(query, type: nil, limit: 20)).response
 
         let normalizedQuery = query.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
         let preferredItem = response.items.first { item in
@@ -1618,6 +1590,71 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
             }
             return nil
         }
+    }
+}
+#endif
+
+#if os(iOS)
+/// Routes every iOS streaming play through an engaged TV and asks before a
+/// play would replace the TV's title or bypass it for a download.
+private struct RemotePlaybackRoutingModifier: ViewModifier {
+    let router: AppRouter
+    let siloControl: SiloControlClient
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear {
+                // One routing decision for every streaming play on iOS: an
+                // engaged TV (including one mid-reconnect) takes the request;
+                // otherwise the local player opens as before.
+                router.remotePlaybackInterceptor = { [siloControl] request in
+                    await siloControl.launchOnEngagedTV(request)
+                }
+                router.isRemotePlaybackEngaged = { [siloControl] in siloControl.remotePlaybackEngaged }
+                router.remotePlaybackCurrentTitle = { [siloControl] in
+                    guard siloControl.remotePlaybackEngaged,
+                          let state = siloControl.state,
+                          let contentId = state.contentId, !contentId.isEmpty else { return nil }
+                    return (
+                        title: state.title,
+                        contentId: contentId,
+                        targetName: siloControl.activeTarget?.name ?? siloControl.lastTarget?.name ?? "the TV"
+                    )
+                }
+            }
+            .confirmationDialog(
+                "Replace what's playing?",
+                isPresented: Binding(
+                    get: { router.pendingReplaceRemotePlayback != nil },
+                    set: { if !$0 { router.pendingReplaceRemotePlayback = nil } }
+                ),
+                titleVisibility: .visible,
+                presenting: router.pendingReplaceRemotePlayback
+            ) { choice in
+                Button("Play on \(choice.targetName)") { router.confirmReplaceRemotePlayback() }
+                Button("Cancel", role: .cancel) { router.pendingReplaceRemotePlayback = nil }
+            } message: { choice in
+                Text("\(choice.targetName) is playing \(choice.currentTitle). Playing this will stop it.")
+            }
+            .confirmationDialog(
+                "A TV is connected",
+                isPresented: Binding(
+                    get: { router.pendingOfflinePlayChoice != nil },
+                    set: { if !$0 { router.pendingOfflinePlayChoice = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("Play on \(siloControl.activeTarget?.name ?? siloControl.lastTarget?.name ?? "TV")") {
+                    router.sendPendingOfflinePlayToTV()
+                }
+                Button("Play on this \(UIDevice.current.model)") {
+                    router.confirmOfflinePlayHere()
+                }
+                Button("Cancel", role: .cancel) { router.pendingOfflinePlayChoice = nil }
+            } message: {
+                Text("Downloads only play on this device. The TV can stream the same title from your server.")
+            }
+
     }
 }
 #endif

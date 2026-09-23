@@ -185,8 +185,7 @@ final class RemotePlaybackIdentityManager {
         let normalizedURL = try await resolveReachableURL(offer: offer, offeredURL: offeredURL)
 
         let capability = try await api.remotePlaybackCapability(serverURL: normalizedURL)
-        guard capability.remotePlaybackHandoff,
-              capability.protocolVersions.contains(SiloControlProtocol.version) else {
+        guard capability.offersRemotePlaybackHandoff(protocolVersion: SiloControlProtocol.version) else {
             throw HandoffError.unsupportedServer
         }
 
@@ -210,26 +209,32 @@ final class RemotePlaybackIdentityManager {
         let deadline = Date().addingTimeInterval(TimeInterval(started.expiresIn))
         while Date() < deadline {
             try Task.checkCancellation()
-            let poll = try await api.poll(serverURL: normalizedURL, deviceCode: started.deviceCode)
+            let poll: APIv2DevicePoll
+            do {
+                poll = try await api.poll(serverURL: normalizedURL, deviceCode: started.deviceCode)
+            } catch APIv2Error.problem(let problem) where problem.status == 404 {
+                throw HandoffError.expired // the server has expired and removed this request
+            } catch APIv2Error.incompleteAuthResponse {
+                throw HandoffError.invalidResponse
+            }
             try Task.checkCancellation()
             switch DeviceLoginStatus(raw: poll.status) {
             case .approved:
-                guard poll.temporary == true,
+                // `validated()` guarantees tokens, profile proof and expiry
+                // for an approved temporary session.
+                guard poll.temporary,
                       poll.profileId == offer.profileId,
-                      let accessToken = poll.accessToken, !accessToken.isEmpty,
-                      let refreshToken = poll.refreshToken, !refreshToken.isEmpty,
-                      let profileToken = poll.profileToken, !profileToken.isEmpty else {
+                      let tokens = poll.tokens,
+                      let expiresAt = poll.sessionExpiresAt else {
                     throw HandoffError.invalidResponse
                 }
-                let expiresAt = poll.sessionExpiresAt.flatMap(Self.parseISO8601)
-                    ?? Date().addingTimeInterval(24 * 60 * 60)
                 guard await activate(TemporaryAuthScope(
                     serverId: offer.serverId,
                     serverURL: normalizedURL,
-                    accessToken: accessToken,
-                    refreshToken: refreshToken,
+                    accessToken: tokens.accessToken,
+                    refreshToken: tokens.refreshToken,
                     profileId: offer.profileId,
-                    profileToken: profileToken,
+                    profileToken: poll.profileToken,
                     controllerDeviceId: controllerDeviceId,
                     expiresAt: expiresAt
                 ),
@@ -252,7 +257,7 @@ final class RemotePlaybackIdentityManager {
             case .expired, .consumed:
                 throw HandoffError.expired
             case .pending, .unknown:
-                try await Task.sleep(for: .seconds(max(1, poll.pollAfter ?? started.interval)))
+                try await Task.sleep(for: .seconds(max(1, poll.pollAfter)))
             }
         }
         throw HandoffError.expired
@@ -311,8 +316,9 @@ final class RemotePlaybackIdentityManager {
                   expectedGenerationID: expectedGenerationID
               ) else { return false }
         if let scope, notifyServer {
-            try? await HTTPClient.shared.postVoid(
-                "/api/v1/auth/logout",
+            // Best effort: the temporary session expires server-side when the
+            // revoke is refused, fails, or is skipped for a v1-only server.
+            try? await SiloAPI.shared.apiV2Client.logout(
                 expectedAccount: RefreshAccountIdentity(
                     serverId: scope.serverId,
                     serverURL: scope.serverURL,
@@ -487,10 +493,6 @@ final class RemotePlaybackIdentityManager {
 
     private static func iso8601(_ date: Date) -> String {
         ISO8601DateFormatter().string(from: date)
-    }
-
-    private static func parseISO8601(_ value: String) -> Date? {
-        ISO8601DateFormatter().date(from: value)
     }
 }
 #endif

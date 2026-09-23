@@ -2,12 +2,12 @@ import XCTest
 @testable import Silo
 
 /// Behaviour tests for the player's settings sync: the debounce window, the
-/// retry-with-the-same-mutation-id rule, and the typed defaults that replaced
-/// the legacy empty-string guard.
+/// bounded retry of a key's latest value and the hold after it (owner decision
+/// D4), and the typed defaults that replaced the legacy empty-string guard.
 ///
 /// Everything runs against a fake transport — no network, no singleton — so the
-/// failure modes that matter (a write dropped on a 500, a retry that mints a
-/// fresh id, a default-ON toggle flipping off on refresh) are reproducible
+/// failure modes that matter (a write dropped on a 500, a retry that never
+/// stops, a default-ON toggle flipping off on refresh) are reproducible
 /// rather than dependent on a server being reachable.
 ///
 /// Main-actor isolated because `PlayerSettings` is: its setters and its refresh
@@ -193,7 +193,6 @@ final class PlayerSettingsFlushTests: XCTestCase {
             journal: journal
         )
         dying.enqueue(.playerPlaybackSpeed, value: .double(1.5))
-        let queuedId = try XCTUnwrap(dying.mutationId(for: .playerPlaybackSpeed))
 
         // Relaunch: a fresh flusher over the same journal, nothing shared in
         // memory.
@@ -209,8 +208,6 @@ final class PlayerSettingsFlushTests: XCTestCase {
         let writes = transport.writes()
         XCTAssertEqual(writes.count, 1)
         XCTAssertEqual(writes.first?.value, .double(1.5))
-        XCTAssertEqual(writes.first?.mutationId, queuedId,
-                       "a restored write is the same logical write: replaying its id is what stops a double apply")
     }
 
     /// A write killed between the request leaving and its response arriving is
@@ -242,7 +239,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
     func testARestoredOpIsSupersededByANewerEditToTheSameKey() async throws {
         let journal = InMemoryWriteJournal()
         journal.stored = [
-            .playerAudioSyncMs: PendingSettingWrite(operation: .set(.int(-500)), mutationId: "stale"),
+            .playerAudioSyncMs: PendingSettingWrite(operation: .set(.int(-500))),
         ]
         let transport = FakeSettingsTransport()
         let flusher = PlayerSettingsFlusher(
@@ -250,7 +247,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
             debounce: .seconds(30),
             journal: journal
         )
-        XCTAssertEqual(flusher.mutationId(for: .playerAudioSyncMs), "stale",
+        XCTAssertEqual(flusher.unsettledValues(), [.playerAudioSyncMs: .int(-500)],
                        "precondition: the previous run's op was restored")
 
         flusher.enqueue(.playerAudioSyncMs, value: .int(250))
@@ -258,8 +255,6 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
         XCTAssertEqual(transport.writes().map(\.value), [.int(250)],
                        "the newer edit must replace the restored one, not queue behind it")
-        XCTAssertNotEqual(transport.writes().first?.mutationId, "stale",
-                          "different content must not reuse the restored id — that is the 409 case")
     }
 
     /// The journal is partitioned by (server, profile, device), and the app-wide
@@ -278,14 +273,12 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
         // The scope resolved, and the journal now answers with what it holds.
         journal.stored = [
-            .playerHdrEnabled: PendingSettingWrite(operation: .set(.bool(false)), mutationId: "owed"),
+            .playerHdrEnabled: PendingSettingWrite(operation: .set(.bool(false))),
         ]
         flusher.restorePendingWrites()
         await flusher.flushNow()
 
-        XCTAssertEqual(transport.writes().count, 1)
-        XCTAssertEqual(transport.writes().first?.mutationId, "owed",
-                       "a restored write keeps its id so a replay cannot double-apply")
+        XCTAssertEqual(transport.writes().map(\.value), [.bool(false)])
     }
 
     /// The queue is addressed to one (server, profile, device) triple. Replaying
@@ -301,7 +294,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
             scopeProvider: { scope.value }
         )
 
-        journal.save([.playerHdrEnabled: PendingSettingWrite(operation: .set(.bool(false)), mutationId: "id")])
+        journal.save([.playerHdrEnabled: PendingSettingWrite(operation: .set(.bool(false)))])
         XCTAssertFalse(journal.load().isEmpty, "precondition: it is readable in its own scope")
 
         scope.value = "server-a|profile-2|device"
@@ -371,7 +364,6 @@ final class PlayerSettingsFlushTests: XCTestCase {
             journal.save([
                 .playerHdrEnabled: PendingSettingWrite(
                     operation: .set(.bool(true)),
-                    mutationId: "profile-2-write",
                     scopeIdentifier: secondScope
                 ),
             ])
@@ -423,7 +415,6 @@ final class PlayerSettingsFlushTests: XCTestCase {
         journal.save([
             .playerHdrEnabled: PendingSettingWrite(
                 operation: .set(.bool(true)),
-                mutationId: "profile-2-write",
                 scopeIdentifier: secondScope,
                 profileId: "profile-2"
             ),
@@ -434,7 +425,8 @@ final class PlayerSettingsFlushTests: XCTestCase {
         await flush.value
 
         XCTAssertEqual(transport.deletes(), [.playerHdrEnabled])
-        XCTAssertEqual(transport.writes().map(\.mutationId), ["profile-2-write"])
+        XCTAssertEqual(transport.writes().map(\.value), [.bool(true)])
+        XCTAssertEqual(transport.writes().map(\.profileId), ["profile-2"])
 
         scope.value = firstScope
         profile.value = "profile-1"
@@ -524,53 +516,50 @@ final class PlayerSettingsFlushTests: XCTestCase {
         )
     }
 
-    // MARK: - Mutation ids
+    // MARK: - Desired-state writes
 
-    func testEachLogicalWriteGetsItsOwnMutationId() async throws {
-        let transport = FakeSettingsTransport()
-        let flusher = PlayerSettingsFlusher(transport: transport, debounce: .milliseconds(20))
-
-        flusher.enqueue(.playerAudioSyncMs, value: .int(100))
-        await flusher.flushNow()
-        flusher.enqueue(.playerAudioSyncMs, value: .int(200))
-        await flusher.flushNow()
-
-        let ids = transport.writes().map(\.mutationId)
-        XCTAssertEqual(ids.count, 2)
-        XCTAssertNotEqual(ids[0], ids[1], "two different writes must not share an idempotency key")
-    }
-
-    func testReplacingAPendingValueMintsAFreshId() async throws {
+    func testReEnqueueingTheIdenticalValueSendsOneWrite() async throws {
         let transport = FakeSettingsTransport()
         let flusher = PlayerSettingsFlusher(transport: transport, debounce: .seconds(30))
 
-        flusher.enqueue(.playerAudioSyncMs, value: .int(100))
-        let first = flusher.mutationId(for: .playerAudioSyncMs)
-        flusher.enqueue(.playerAudioSyncMs, value: .int(200))
-        let second = flusher.mutationId(for: .playerAudioSyncMs)
-
-        XCTAssertNotNil(first)
-        // Different content under a reused id is a 409 by design, so the queue
-        // has to re-mint when the value changes.
-        XCTAssertNotEqual(first, second, "new content must not reuse the previous write's id")
-    }
-
-    func testReEnqueueingTheIdenticalValueKeepsTheSameId() async throws {
-        let transport = FakeSettingsTransport()
-        let flusher = PlayerSettingsFlusher(transport: transport, debounce: .seconds(30))
-
-        flusher.enqueue(.playerAudioSyncMs, value: .int(100))
-        let first = flusher.mutationId(for: .playerAudioSyncMs)
         // A UI that re-emits its current value (a Binding round-trip, a
-        // re-render) is the same logical write, not a new one.
+        // re-render) asks for the same desired state, not a second write.
         flusher.enqueue(.playerAudioSyncMs, value: .int(100))
+        flusher.enqueue(.playerAudioSyncMs, value: .int(100))
+        await flusher.flushNow()
 
-        XCTAssertEqual(flusher.mutationId(for: .playerAudioSyncMs), first)
+        XCTAssertEqual(transport.writes().map(\.value), [.int(100)])
+    }
+
+    /// Journals written by builds that sent mutation ids must still restore
+    /// after the upgrade; the id is simply ignored.
+    func testAJournalEntryFromAnEarlierBuildStillRestores() async throws {
+        let suiteName = "settings-journal-legacy-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { UserDefaults().removePersistentDomain(forName: suiteName) }
+        let scope = "server-a|profile-1|device"
+        let journal = UserDefaultsSettingsWriteJournal(
+            defaults: defaults,
+            profileProvider: { "profile-1" },
+            scopeProvider: { scope }
+        )
+        defaults.set(Data("""
+        {"player.hdr_enabled":{"operation":{"set":{"_0":false}},"mutationId":"8C1F9A2E-0000-4000-8000-000000000001",
+         "scopeIdentifier":"\(scope)","profileId":"profile-1"}}
+        """.utf8), forKey: "player.pendingDeviceSettingWrites.\(scope)")
+
+        let transport = FakeSettingsTransport()
+        let flusher = PlayerSettingsFlusher(transport: transport, debounce: .seconds(30), journal: journal)
+        await flusher.flushNow()
+
+        XCTAssertEqual(transport.writes().map(\.value), [.bool(false)])
+        XCTAssertEqual(transport.writes().map(\.profileId), ["profile-1"])
+        XCTAssertTrue(journal.load().isEmpty)
     }
 
     // MARK: - Retry
 
-    func testATransientFailureStaysQueuedAndRetriesWithTheSameId() async throws {
+    func testATransientFailureStaysQueuedAndRetriesTheSameValue() async throws {
         let transport = FakeSettingsTransport()
         // One 500, then success.
         transport.failNextWrites(1, with: .server(status: 503, code: "unavailable", message: nil))
@@ -585,12 +574,9 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
         // The op survived its failure rather than being dropped.
         XCTAssertTrue(flusher.hasPendingWrites, "a 5xx must not discard the user's setting")
-        let attemptedId = try XCTUnwrap(transport.writes().first?.mutationId)
 
         try await waitUntil("the automatic retry lands") { transport.writes().count == 2 }
         let writes = transport.writes()
-        XCTAssertEqual(writes[1].mutationId, attemptedId,
-                       "a retry must replay the same id so the server can deduplicate it")
         XCTAssertEqual(writes[1].value, .bool(false))
         XCTAssertFalse(flusher.hasPendingWrites, "a successful retry clears the queue")
     }
@@ -634,30 +620,126 @@ final class PlayerSettingsFlushTests: XCTestCase {
                        "a precondition failure must not arm a backoff timer")
     }
 
-    func testExhaustingAutomaticRetriesKeepsTheWriteForTheNextTrigger() async throws {
+    func testExhaustingAutomaticRetriesHoldsTheKey() async throws {
         let transport = FakeSettingsTransport()
         transport.failNextWrites(100, with: .transport(description: "offline"))
+        let journal = InMemoryWriteJournal()
         let flusher = PlayerSettingsFlusher(
             transport: transport,
             debounce: .milliseconds(10),
-            retryPolicy: .init(maximumAutomaticRetries: 2, base: .milliseconds(20), maximum: .milliseconds(20))
+            retryPolicy: .init(maximumAutomaticRetries: 2, base: .milliseconds(20), maximum: .milliseconds(20)),
+            journal: journal
         )
 
         flusher.enqueue(.playerSubtitleSyncMs, value: .int(-250))
         await flusher.flushNow()
         try await waitUntil("both automatic retries run") { transport.writes().count == 3 }
+        try await waitUntil("the key is held") { flusher.heldKeys == [.playerSubtitleSyncMs] }
 
-        // Budget spent: the op is still queued, and no further attempts happen
-        // on their own.
+        // Budget spent: the change is kept, on disk too, and nothing sends it
+        // on its own — not even an explicit flush.
         try await Task.sleep(for: .milliseconds(120))
-        XCTAssertEqual(transport.writes().count, 3, "the automatic retry budget must be bounded")
-        XCTAssertTrue(flusher.hasPendingWrites, "an exhausted budget must not drop the write")
-
-        // A later trigger — app foreground, player exit — picks it up again.
-        transport.succeedFromNowOn()
         await flusher.flushNow()
+        XCTAssertEqual(transport.writes().count, 3, "a held change must not be replayed on its own")
+        XCTAssertTrue(flusher.hasPendingWrites, "an exhausted budget must not drop the write")
+        XCTAssertEqual(journal.load()[.playerSubtitleSyncMs]?.isHeld, true)
+        XCTAssertEqual(flusher.unsettledValues(), [.playerSubtitleSyncMs: .int(-250)])
+
+        // "Try Again" sends it with a fresh budget.
+        transport.succeedFromNowOn()
+        await flusher.retryHeldChanges()
+        XCTAssertEqual(transport.writes().map(\.value).last, .int(-250))
         XCTAssertEqual(transport.writes().count, 4)
         XCTAssertFalse(flusher.hasPendingWrites)
+        XCTAssertTrue(flusher.heldKeys.isEmpty)
+    }
+
+    func testDiscardingAHeldChangeForgetsItHereAndOnDisk() async throws {
+        let transport = FakeSettingsTransport()
+        transport.failNextWrites(100, with: .server(status: 503, code: nil, message: nil))
+        let journal = InMemoryWriteJournal()
+        let flusher = PlayerSettingsFlusher(
+            transport: transport,
+            debounce: .seconds(30),
+            retryPolicy: .init(maximumAutomaticRetries: 0),
+            journal: journal
+        )
+        let reported = LockedKeys()
+        flusher.observeHeldKeys { reported.set($0) }
+
+        flusher.enqueue(.playerHdrEnabled, value: .bool(false))
+        await flusher.flushNow()
+        XCTAssertEqual(flusher.heldKeys, [.playerHdrEnabled])
+        XCTAssertEqual(reported.value, [.playerHdrEnabled])
+
+        flusher.discardHeldChanges()
+
+        XCTAssertFalse(flusher.hasPendingWrites)
+        XCTAssertTrue(journal.load().isEmpty)
+        XCTAssertEqual(reported.value, [])
+        transport.succeedFromNowOn()
+        await flusher.flushNow()
+        XCTAssertEqual(transport.writes().count, 1, "a discarded change is never sent")
+    }
+
+    func testANewEditReplacesAHeldChangeAndOtherKeysKeepFlowing() async throws {
+        let transport = FakeSettingsTransport()
+        transport.failNextWrites(1, with: .transport(description: "offline"))
+        let flusher = PlayerSettingsFlusher(
+            transport: transport,
+            debounce: .seconds(30),
+            retryPolicy: .init(maximumAutomaticRetries: 0)
+        )
+
+        flusher.enqueue(.playerHdrEnabled, value: .bool(false))
+        await flusher.flushNow()
+        XCTAssertEqual(flusher.heldKeys, [.playerHdrEnabled])
+
+        // Another key is not held back by the held one.
+        flusher.enqueue(.playbackAutoSkipCredits, value: .bool(true))
+        await flusher.flushNow()
+        XCTAssertEqual(transport.writes().map(\.key), [.playerHdrEnabled, .playbackAutoSkipCredits])
+        XCTAssertEqual(flusher.heldKeys, [.playerHdrEnabled])
+
+        // Setting the held key again is the user asking for a new try.
+        flusher.enqueue(.playerHdrEnabled, value: .bool(false))
+        await flusher.flushNow()
+        XCTAssertEqual(transport.writes().map(\.key).last, .playerHdrEnabled)
+        XCTAssertTrue(flusher.heldKeys.isEmpty)
+        XCTAssertFalse(flusher.hasPendingWrites)
+    }
+
+    func testARefusedWriteIsReportedOnceAndDropped() async throws {
+        let transport = FakeSettingsTransport()
+        transport.failNextWrites(1, with: .server(status: 403, code: "forbidden", message: nil))
+        let flusher = PlayerSettingsFlusher(transport: transport, debounce: .seconds(30))
+        let rejected = LockedKeys()
+        flusher.observeRejections { rejected.append($0) }
+
+        flusher.enqueue(.playerHdrEnabled, value: .bool(false))
+        await flusher.flushNow()
+
+        XCTAssertFalse(flusher.hasPendingWrites)
+        XCTAssertEqual(rejected.value, [.playerHdrEnabled])
+        XCTAssertTrue(flusher.heldKeys.isEmpty)
+    }
+
+    func testAnOwnerChangeWaitsForTheNextTriggerWithoutATimer() async throws {
+        let transport = FakeSettingsTransport()
+        transport.failNextWrites(1, with: .ownerChanged)
+        let flusher = PlayerSettingsFlusher(
+            transport: transport,
+            debounce: .milliseconds(20),
+            retryPolicy: .init(maximumAutomaticRetries: 3, base: .milliseconds(20), maximum: .milliseconds(40))
+        )
+
+        flusher.enqueue(.playerHdrEnabled, value: .bool(false))
+        await flusher.flushNow()
+        try await Task.sleep(for: .milliseconds(120))
+
+        XCTAssertEqual(transport.writes().count, 1, "an owner change must not arm a backoff timer")
+        XCTAssertTrue(flusher.hasPendingWrites, "the change still belongs to this partition")
+        XCTAssertTrue(flusher.heldKeys.isEmpty)
     }
 
     func testANewerValueDuringADrainIsNotOverwrittenByTheFailedOne() async throws {
@@ -772,6 +854,56 @@ final class PlayerSettingsFlushTests: XCTestCase {
     }
 
     // MARK: - PlayerSettings integration
+
+    func testRefreshKeepsShowingAHeldChangeUntilItIsDiscarded() async throws {
+        let harness = try PlayerSettingsHarness(retryPolicy: .init(maximumAutomaticRetries: 0))
+        let settings = harness.settings
+        harness.transport.failNextWrites(100, with: .transport(description: "offline"))
+        harness.transport.effective = [
+            .init(key: SettingKey.playerHdrEnabled.rawValue, value: .bool(true), source: .contractDefault),
+        ]
+
+        settings.setHDREnabled(false)
+        await settings.flushPendingDeviceSettings()
+        try await waitUntil("the change is held") { settings.heldDeviceSettingKeys == [.playerHdrEnabled] }
+
+        await settings.refreshFromServer()
+        XCTAssertFalse(settings.hdrEnabled, "the server's older answer must not paint over a held change")
+
+        await settings.discardHeldDeviceSettingChanges()
+        XCTAssertTrue(settings.hdrEnabled, "discarding repaints the server's value")
+        try await waitUntil("the hold clears") { settings.heldDeviceSettingKeys.isEmpty }
+        XCTAssertEqual(harness.transport.writes().count, 1, "discarding sends nothing")
+    }
+
+    /// Offline, the only copy of a held value is the discarded one. The hold
+    /// stays until the server can say what to go back to.
+    func testDiscardingAHeldChangeOfflineKeepsItHeldUntilTheServerAnswers() async throws {
+        let harness = try PlayerSettingsHarness(retryPolicy: .init(maximumAutomaticRetries: 0))
+        let settings = harness.settings
+        harness.transport.failNextWrites(100, with: .transport(description: "offline"))
+        harness.transport.effective = [
+            .init(key: SettingKey.playerHdrEnabled.rawValue, value: .bool(true), source: .contractDefault),
+        ]
+
+        settings.setHDREnabled(false)
+        await settings.flushPendingDeviceSettings()
+        try await waitUntil("the change is held") { settings.heldDeviceSettingKeys == [.playerHdrEnabled] }
+
+        harness.transport.effectiveError = .transport(description: "offline")
+        let discardedOffline = await settings.discardHeldDeviceSettingChanges()
+        XCTAssertFalse(discardedOffline)
+        XCTAssertFalse(settings.hdrEnabled)
+        await settings.flushPendingDeviceSettings()
+        XCTAssertEqual(settings.heldDeviceSettingKeys, [.playerHdrEnabled], "the change is still held, not silently dropped")
+
+        harness.transport.effectiveError = nil
+        let discardedOnline = await settings.discardHeldDeviceSettingChanges()
+        XCTAssertTrue(discardedOnline)
+        XCTAssertTrue(settings.hdrEnabled, "discarding repaints the server's value")
+        try await waitUntil("the hold clears") { settings.heldDeviceSettingKeys.isEmpty }
+        XCTAssertEqual(harness.transport.writes().count, 1, "discarding sends nothing")
+    }
 
     func testLegacyCompoundQualityMigrationPreservesBothAxes() throws {
         let harness = try PlayerSettingsHarness()
@@ -1651,7 +1783,6 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
     struct Write: Equatable {
         let key: SettingKey
         let value: SettingJSONValue
-        let mutationId: String
         let profileId: String?
     }
 
@@ -1749,12 +1880,7 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
         return EffectiveSettingValuesResponse(settings: settings, revision: SettingKey.revision)
     }
 
-    func putValue(
-        key: SettingKey,
-        value: SettingJSONValue,
-        mutationId: String,
-        profileId: String?
-    ) async throws {
+    func putValue(key: SettingKey, value: SettingJSONValue, profileId: String?) async throws {
         try failIfCancelled()
         onAttemptStart?()
         await writeGate.waitIfBlocked()
@@ -1765,7 +1891,6 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
         let write = Write(
             key: key,
             value: value,
-            mutationId: mutationId,
             profileId: profileId ?? currentProfileId?()
         )
         lock.lock()
@@ -1890,10 +2015,33 @@ final class InMemoryWriteJournal: PlayerSettingsWriteJournal, @unchecked Sendabl
     func retire(_ key: SettingKey, matching write: PendingSettingWrite) {
         lock.lock()
         if let persisted = contents[key],
-           persisted.operation == write.operation,
-           persisted.mutationId == write.mutationId {
+           persisted.operation == write.operation {
             contents.removeValue(forKey: key)
         }
+        lock.unlock()
+    }
+}
+
+/// Lock-backed key list for @Sendable flusher observers.
+final class LockedKeys: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [SettingKey] = []
+
+    var value: [SettingKey] {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    func set(_ keys: [SettingKey]) {
+        lock.lock()
+        stored = keys
+        lock.unlock()
+    }
+
+    func append(_ key: SettingKey) {
+        lock.lock()
+        stored.append(key)
         lock.unlock()
     }
 }
@@ -1932,14 +2080,17 @@ final class PlayerSettingsHarness {
 
     private let suiteName: String
 
-    init(debounce: Duration = .milliseconds(10)) throws {
+    init(
+        debounce: Duration = .milliseconds(10),
+        retryPolicy: PlayerSettingsFlusher.RetryPolicy = .default
+    ) throws {
         let suiteName = "player-settings-flush-tests-\(UUID().uuidString)"
         self.suiteName = suiteName
         self.defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         self.transport = FakeSettingsTransport()
         self.settings = PlayerSettings(
             defaults: defaults,
-            flusher: PlayerSettingsFlusher(transport: transport, debounce: debounce)
+            flusher: PlayerSettingsFlusher(transport: transport, debounce: debounce, retryPolicy: retryPolicy)
         )
     }
 

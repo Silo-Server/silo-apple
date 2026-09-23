@@ -25,26 +25,6 @@ struct DeviceLoginStartResponse: Codable, Equatable {
     var temporary: Bool? = nil
 }
 
-struct DeviceLoginPollRequest: Codable {
-    let deviceCode: String
-}
-
-/// Token fields are only populated on the first `approved` response — the
-/// server marks the record consumed atomically, so the TV must capture
-/// them immediately on that single reply.
-struct DeviceLoginPollResponse: Codable {
-    let status: String
-    let pollAfter: Int?
-    let accessToken: String?
-    let refreshToken: String?
-    let expiresIn: Int64?
-    let user: AuthUser?
-    var profileId: String? = nil
-    var profileToken: String? = nil
-    var temporary: Bool? = nil
-    var sessionExpiresAt: String? = nil
-}
-
 enum DeviceLoginStatus: String {
     case pending
     case approved
@@ -58,24 +38,14 @@ enum DeviceLoginStatus: String {
     }
 }
 
-/// Body for POST /api/v1/auth/device/approve (sent by an authenticated client).
-struct DeviceApproveRequest: Codable {
-    let code: String
-}
-
-/// Response from GET /api/v1/auth/device?code=<userCode>. All optional: we
-/// only need the authoritative match code and a display name. Confirm field
-/// names against silo-server (see Step 1).
-struct DeviceLookupResponse: Codable {
+/// A pairing request as the approving client shows it: the authoritative
+/// match code and the requesting device. Pairing and the SiloRemote handoff
+/// both build it from the v2 lookup (`APIv2DeviceLookup.presentation`).
+struct DeviceLookupResponse {
     let matchCode: String?
     let deviceName: String?
     let devicePlatform: String?
     let status: String?
     var clientPurpose: String? = nil
     var temporary: Bool? = nil
-}
-
-struct DeviceLoginCapabilityResponse: Codable {
-    let remotePlaybackHandoff: Bool
-    let protocolVersions: [Int]
 }

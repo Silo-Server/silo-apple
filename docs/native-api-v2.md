@@ -3,8 +3,10 @@
 The stable native business API is `/api/v2`. Apple release callers use the
 accepted v2 operation contracts and refuse unavailable operations. A failed or
 unconfigured v2 playback request must not silently start a v1 session. The
-retained `/api/v1/health` probe is an operational exception, not a playback
-fallback. The server's [native API contract](https://github.com/Silo-Server/silo-server/blob/main/docs/architecture/api-contract.md)
+retained `/api/v1/health` probe is the only v1 request and an operational
+exception, not a fallback. Debug builds assert this in `HTTPClient`, and
+`scripts/ci/check-no-api-v1.sh` holds every v1 path mention in the sources to
+an exact allowlist. The server's [native API contract](https://github.com/Silo-Server/silo-server/blob/main/docs/architecture/api-contract.md)
 defines the release boundary.
 
 ## Displayed reads authorize card actions
@@ -46,9 +48,10 @@ transient dispatch checks serve different purposes: a process restart alone
 must not erase an unresolved durable target barrier, while a different login
 or profile cannot take ownership of an old command.
 
-Recovery is operation-specific. Canonical settings use typed single-dispatch
-contracts and hold uncertain writes; they do not invent an idempotency or
-revision-precondition contract. Playback can resolve an exact retained command
+Recovery is operation-specific. Canonical settings value writes are
+`natural_idempotent`: a 401 refreshes the session once and re-sends the same
+desired value under the same captured owner. They hold uncertain writes and do
+not invent an idempotency or revision-precondition contract. Playback can resolve an exact retained command
 where its accepted protocol explicitly supports that resolution. Neither path
 may convert old queued intent bytes, infer new authorization or rebase an
 unresolved operation onto a new owner.

@@ -13,6 +13,16 @@ struct TVPlaybackSettingsPane: View {
         VStack(alignment: .leading, spacing: 8) {
             streamingSection
             episodesSection
+            if viewModel.hasHeldPlaybackChanges {
+                TVHeldSettingChangesRows(
+                    retry: { await viewModel.retryHeldPlaybackChanges() },
+                    discard: { await viewModel.discardHeldPlaybackChanges() },
+                    message: viewModel.heldPlaybackChangesMessage
+                )
+            }
+            if viewModel.playbackChangeWasRejected {
+                rejectedChangeRows
+            }
             resetSection
         }
     }
@@ -134,6 +144,24 @@ struct TVPlaybackSettingsPane: View {
             viewModel.skipCredits = value
             Task { await viewModel.setSkipCredits(value) }
         }
+    }
+
+    @ViewBuilder
+    private var rejectedChangeRows: some View {
+        TVSettingsSectionHeader("NOT SAVED")
+
+        Button {
+            Task { await viewModel.acknowledgeRejectedPlaybackChange() }
+        } label: {
+            HStack(spacing: 16) {
+                Text("OK")
+                    .font(.system(size: 26))
+                Spacer(minLength: 0)
+            }
+        }
+        .buttonStyle(TVSettingsPaneRowStyle())
+
+        TVSettingsWarningFooter(SettingsViewModel.rejectedPlaybackChangeMessage)
     }
 
     @ViewBuilder

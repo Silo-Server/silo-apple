@@ -1,11 +1,16 @@
 import Foundation
 
-// MARK: - Capability (GET /api/v1/downloads/capability)
+// MARK: - Capability (GET /api/v2/capabilities/downloads)
 
-/// Server-advertised download feature gate. Fetched at login + profile
-/// switch; the UI is hidden when `enabled`/`downloadAllowed` is false.
-/// Mirrors §3 of the server downloads API guide.
+/// Server-advertised download feature gate, cached in the scope's store.
+/// Fetched at login + profile switch; the UI is hidden unless `isUsable`.
 struct DownloadCapability: Codable, Hashable, Sendable {
+    /// The capability's support state (`available`, `disabled`,
+    /// `not_configured` or `unsupported`).
+    let state: String
+    /// Whether this principal may use downloads right now (false for a
+    /// demo-restricted account even when `downloadAllowed` is true).
+    let allowed: Bool
     let enabled: Bool
     let downloadAllowed: Bool
     let qualityPresets: [String]
@@ -15,19 +20,16 @@ struct DownloadCapability: Codable, Hashable, Sendable {
     let seriesMonitoring: Bool
     let monitoringModes: [String]
 
-    /// Downloads are usable at all only when the feature is on AND this
-    /// user is allowed to download.
-    var isUsable: Bool { enabled && downloadAllowed }
-
-    /// Compatibility alias for stores written before the server renamed
-    /// public download choices from formats to quality presets.
-    var formats: [String] { qualityPresets }
+    /// Downloads are usable only when the capability is available and this
+    /// principal may use it.
+    var isUsable: Bool { state == "available" && allowed && enabled && downloadAllowed }
 
     private enum CodingKeys: String, CodingKey {
+        case state
+        case allowed
         case enabled
         case downloadAllowed
         case qualityPresets
-        case formats
         case transcodeEnabled
         case transcodeUserAllowed
         case seasonDownload
@@ -35,50 +37,33 @@ struct DownloadCapability: Codable, Hashable, Sendable {
         case monitoringModes
     }
 
-    init(
-        enabled: Bool,
-        downloadAllowed: Bool,
-        qualityPresets: [String],
-        transcodeEnabled: Bool,
-        transcodeUserAllowed: Bool,
-        seasonDownload: Bool,
-        seriesMonitoring: Bool,
-        monitoringModes: [String]
-    ) {
-        self.enabled = enabled
-        self.downloadAllowed = downloadAllowed
-        self.qualityPresets = qualityPresets
-        self.transcodeEnabled = transcodeEnabled
-        self.transcodeUserAllowed = transcodeUserAllowed
-        self.seasonDownload = seasonDownload
-        self.seriesMonitoring = seriesMonitoring
-        self.monitoringModes = monitoringModes
+    init(_ wire: APIv2DownloadCapability) {
+        state = wire.state
+        allowed = wire.allowed
+        enabled = wire.enabled
+        downloadAllowed = wire.downloadAllowed
+        qualityPresets = wire.qualityPresets
+        transcodeEnabled = wire.transcodeEnabled
+        transcodeUserAllowed = wire.transcodeUserAllowed
+        seasonDownload = wire.seasonDownload
+        seriesMonitoring = wire.seriesMonitoring
+        monitoringModes = wire.monitoringModes
     }
 
+    /// Reads the cached copy. A copy cached before `state` and `allowed`
+    /// were stored reads as unusable until the next refresh replaces it.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        state = try container.decodeIfPresent(String.self, forKey: .state) ?? ""
+        allowed = try container.decodeIfPresent(Bool.self, forKey: .allowed) ?? false
         enabled = try container.decode(Bool.self, forKey: .enabled)
         downloadAllowed = try container.decode(Bool.self, forKey: .downloadAllowed)
-        qualityPresets = try container.decodeIfPresent([String].self, forKey: .qualityPresets)
-            ?? container.decodeIfPresent([String].self, forKey: .formats)
-            ?? [DownloadFormat.original.rawValue]
-        transcodeEnabled = try container.decodeIfPresent(Bool.self, forKey: .transcodeEnabled) ?? false
-        transcodeUserAllowed = try container.decodeIfPresent(Bool.self, forKey: .transcodeUserAllowed) ?? false
-        seasonDownload = try container.decodeIfPresent(Bool.self, forKey: .seasonDownload) ?? false
-        seriesMonitoring = try container.decodeIfPresent(Bool.self, forKey: .seriesMonitoring) ?? false
-        monitoringModes = try container.decodeIfPresent([String].self, forKey: .monitoringModes) ?? []
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(enabled, forKey: .enabled)
-        try container.encode(downloadAllowed, forKey: .downloadAllowed)
-        try container.encode(qualityPresets, forKey: .qualityPresets)
-        try container.encode(transcodeEnabled, forKey: .transcodeEnabled)
-        try container.encode(transcodeUserAllowed, forKey: .transcodeUserAllowed)
-        try container.encode(seasonDownload, forKey: .seasonDownload)
-        try container.encode(seriesMonitoring, forKey: .seriesMonitoring)
-        try container.encode(monitoringModes, forKey: .monitoringModes)
+        qualityPresets = try container.decode([String].self, forKey: .qualityPresets)
+        transcodeEnabled = try container.decode(Bool.self, forKey: .transcodeEnabled)
+        transcodeUserAllowed = try container.decode(Bool.self, forKey: .transcodeUserAllowed)
+        seasonDownload = try container.decode(Bool.self, forKey: .seasonDownload)
+        seriesMonitoring = try container.decode(Bool.self, forKey: .seriesMonitoring)
+        monitoringModes = try container.decode([String].self, forKey: .monitoringModes)
     }
 }
 
@@ -104,95 +89,7 @@ enum DownloadFormat: String, Codable, CaseIterable, Sendable {
     }
 }
 
-// MARK: - Download row (POST/GET /api/v1/downloads)
-
-/// A managed device download row as returned by create/list. Field
-/// reference: §5 of the server downloads API guide.
-struct ServerDownloadRow: Decodable, Hashable, Sendable {
-    let id: String
-    let contentId: String
-    let episodeId: String?
-    let batchId: String?
-    let deviceId: String?
-    let mediaFileId: Int
-    let fileSize: Int64?
-    let bytesSent: Int64?
-    let kind: String?
-    let status: String
-    let quality: String
-    let effectiveQuality: String?
-    let deliveryFormat: String?
-    let targetBitrateKbps: Int?
-    let revision: Int?
-    let createdAt: Date?
-    let completedAt: Date?
-
-    /// Compatibility alias for local code that still names the stored
-    /// requested quality `format`.
-    var format: String { quality }
-
-    private enum CodingKeys: String, CodingKey {
-        case id
-        case contentId
-        case episodeId
-        case batchId
-        case deviceId
-        case mediaFileId
-        case fileSize
-        case bytesSent
-        case kind
-        case status
-        case quality
-        case format
-        case effectiveQuality
-        case deliveryFormat
-        case targetBitrateKbps
-        case revision
-        case createdAt
-        case completedAt
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decode(String.self, forKey: .id)
-        contentId = try container.decode(String.self, forKey: .contentId)
-        episodeId = try container.decodeIfPresent(String.self, forKey: .episodeId)
-        batchId = try container.decodeIfPresent(String.self, forKey: .batchId)
-        deviceId = try container.decodeIfPresent(String.self, forKey: .deviceId)
-        mediaFileId = try container.decodeIfPresent(Int.self, forKey: .mediaFileId) ?? 0
-        fileSize = try container.decodeIfPresent(Int64.self, forKey: .fileSize)
-        bytesSent = try container.decodeIfPresent(Int64.self, forKey: .bytesSent)
-        kind = try container.decodeIfPresent(String.self, forKey: .kind)
-        status = try container.decode(String.self, forKey: .status)
-        quality = try container.decodeIfPresent(String.self, forKey: .quality)
-            ?? container.decodeIfPresent(String.self, forKey: .format)
-            ?? DownloadFormat.original.rawValue
-        effectiveQuality = try container.decodeIfPresent(String.self, forKey: .effectiveQuality)
-        deliveryFormat = try container.decodeIfPresent(String.self, forKey: .deliveryFormat)
-        targetBitrateKbps = try container.decodeIfPresent(Int.self, forKey: .targetBitrateKbps)
-        revision = try container.decodeIfPresent(Int.self, forKey: .revision)
-        createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt)
-        completedAt = try container.decodeIfPresent(Date.self, forKey: .completedAt)
-    }
-}
-
-/// Single-item create returns a bare row; series/season create returns a
-/// `{ "downloads": [...] }` batch. We attempt the batch shape first and
-/// fall back to the single row.
-struct ServerDownloadsResponse: Decodable, Sendable {
-    let downloads: [ServerDownloadRow]
-}
-
-/// Body for `POST /api/v1/downloads`.
-struct CreateDownloadRequest: Encodable, Sendable {
-    let contentId: String
-    let episodeId: String?
-    let fileId: Int?
-    let quality: String
-    let series: Bool?
-    let seasonNumber: Int?
-    let caps: DownloadCaps?
-}
+// MARK: - Download creation (POST /api/v2/downloads)
 
 /// Device decode capability used to decide whether `original` can be served
 /// directly or should fall back to a compatibility artifact.
@@ -236,13 +133,17 @@ struct DownloadCaps: Encodable, Sendable {
     }
 }
 
-// MARK: - Offline manifest (GET /api/v1/downloads/{id}/manifest)
+// MARK: - Offline manifest (GET /api/v2/downloads/{id}/manifest)
 
 /// The offline playback bundle for one download. Stable and
 /// presigned-URL-free — persisted on disk and read offline indefinitely.
 /// Reuses `TimeRange` and `VersionChapter` from the online model layer so
-/// the player's chapters / skip-intro logic works unchanged. Mirrors
-/// §6 of the server downloads API guide.
+/// the player's chapters / skip-intro logic works unchanged.
+///
+/// One type serves the wire and the stored `manifest.json`: the API decoder
+/// converts the wire's snake_case keys to these coding keys, and the bare
+/// store coder writes and reads them unchanged. Renaming a key strands every
+/// stored manifest.
 struct OfflineManifest: Codable, Hashable, Sendable {
     let downloadId: String
     let contentId: String
@@ -253,7 +154,8 @@ struct OfflineManifest: Codable, Hashable, Sendable {
     let effectiveQuality: String?
     let deliveryFormat: String?
     let targetBitrateKbps: Int?
-    let mediaFileId: Int
+    /// Opaque; the v2 contract sends a string.
+    let mediaFileId: String
     let fileSize: Int64?
 
     let title: String
@@ -356,7 +258,7 @@ struct OfflineManifest: Codable, Hashable, Sendable {
         effectiveQuality = try keyed.decodeIfPresent(String.self, forKey: .effectiveQuality)
         deliveryFormat = try keyed.decodeIfPresent(String.self, forKey: .deliveryFormat)
         targetBitrateKbps = try keyed.decodeIfPresent(Int.self, forKey: .targetBitrateKbps)
-        mediaFileId = try keyed.decodeIfPresent(Int.self, forKey: .mediaFileId) ?? 0
+        mediaFileId = try keyed.decode(String.self, forKey: .mediaFileId)
         fileSize = try keyed.decodeIfPresent(Int64.self, forKey: .fileSize)
         title = try keyed.decode(String.self, forKey: .title)
         year = try keyed.decodeIfPresent(Int.self, forKey: .year)
@@ -509,18 +411,26 @@ struct OfflineIntegrity: Codable, Hashable, Sendable {
 
 // MARK: - Subscriptions (series monitoring)
 
-/// A series-monitoring subscription as returned by the server.
-struct ServerSubscription: Codable, Hashable, Sendable {
+/// `DownloadSubscription`: a series monitor as the v2 server returns it.
+/// Every field but `targetSeason` is required by the contract.
+struct ServerSubscription: Decodable, Hashable, Sendable {
     let id: String
     let seriesId: String
     let mode: String
     let targetSeason: Int?
-    let seasonNumbers: [Int]?
+    let seasonNumbers: [Int]
     let deleteWatched: Bool
     let maxStorageBytes: Int64
     let active: Bool
-    let createdAt: Date?
-    let updatedAt: Date?
+    let createdAt: Date
+    let updatedAt: Date
+    /// The monitor's current validator. PATCH and DELETE send it as
+    /// `If-Match`, and a sync names it in its body.
+    let etag: String
+
+    /// Whether the monitor can be stored and written: an id, a series and a
+    /// validator.
+    var isUsable: Bool { !id.isEmpty && !seriesId.isEmpty && !etag.isEmpty }
 }
 
 /// Subscription modes the client may request. Filtered against
@@ -541,7 +451,8 @@ enum SubscriptionMode: String, Codable, CaseIterable, Sendable {
     }
 }
 
-struct CreateSubscriptionRequest: Encodable, Sendable {
+/// `DownloadSubscriptionCreateBody`.
+struct CreateSubscriptionRequest: Encodable, Hashable, Sendable {
     let seriesId: String
     let mode: String
     let seasonNumbers: [Int]?
@@ -549,37 +460,14 @@ struct CreateSubscriptionRequest: Encodable, Sendable {
     let maxStorageBytes: Int64
 }
 
-struct UpdateSubscriptionRequest: Encodable, Sendable {
+/// `DownloadSubscriptionPatchBody`. A nil field is omitted, never sent as
+/// null: the server rejects null monitor fields.
+struct UpdateSubscriptionRequest: Encodable, Hashable, Sendable {
     let mode: String?
     let seasonNumbers: [Int]?
     let deleteWatched: Bool?
     let maxStorageBytes: Int64?
     let active: Bool?
-}
-
-struct CreateSubscriptionResponse: Codable, Sendable {
-    let subscription: ServerSubscription
-    let registered: Int
-}
-
-struct SubscriptionSyncResponse: Codable, Sendable {
-    let registered: Int
-}
-
-// MARK: - Progress reconciliation
-
-/// `GET /api/v1/progress?since={cursor}` delta response. §5.2.
-struct ProgressPullResponse: Codable, Sendable {
-    let progress: [ProgressPullItem]
-    let nextCursor: String?
-}
-
-struct ProgressPullItem: Codable, Sendable {
-    let mediaItemId: String
-    let positionSeconds: Double
-    let durationSeconds: Double
-    let completed: Bool
-    let updatedAt: Date?
 }
 
 // MARK: - Local persistence types
@@ -634,11 +522,12 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     var contentId: String                // mutable: may be re-resolved via stableIdentity
     let episodeId: String?
     let batchId: String?
-    var mediaFileId: Int
+    var mediaFileId: String
     var format: String
     var effectiveQuality: String? = nil
     var deliveryFormat: String? = nil
     var targetBitrateKbps: Int? = nil
+    /// Registry revision of the entry's bytes; status events name it.
     var revision: Int? = nil
     var serverStatus: String
     var localStatus: LocalDownloadStatus
@@ -681,6 +570,9 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     var retryCount: Int
     /// `URLSessionDownloadTask.taskIdentifier`, for reconnecting on relaunch.
     var taskIdentifier: Int?
+    /// The latest local status event the server has not answered yet. A
+    /// retry resends exactly this event.
+    var pendingStatusEvent: DownloadStatusEvent? = nil
 
     var isPlayableOffline: Bool {
         (localStatus == .completed || localStatus == .revoked) && mediaFilename != nil
@@ -708,6 +600,9 @@ struct DownloadSubscription: Codable, Identifiable, Hashable, Sendable {
     var deleteWatched: Bool
     var maxStorageBytes: Int64
     var active: Bool
+    /// The monitor's validator when it was last read. Nil for a monitor
+    /// stored before validators were kept; writes read it first.
+    var etag: String?
 
     init(from server: ServerSubscription, seriesTitle: String?) {
         self.id = server.id
@@ -719,24 +614,72 @@ struct DownloadSubscription: Codable, Identifiable, Hashable, Sendable {
         self.deleteWatched = server.deleteWatched
         self.maxStorageBytes = server.maxStorageBytes
         self.active = server.active
+        self.etag = server.etag
     }
 }
 
-/// A watch-progress event queued while offline, flushed via
-/// `POST /api/v1/sync/progress` on reconnect. `updatedAt` becomes the
-/// last-write-wins event time (§5.1).
+/// A watch-progress event queued while offline, uploaded through
+/// `POST /api/v2/sync/progress` on reconnect. `updatedAt` becomes the
+/// last-write-wins event time.
 struct QueuedProgress: Codable, Identifiable, Sendable {
+    enum State: String, Codable, Sendable {
+        /// Not sent yet; the next flush uploads it.
+        case pending
+        /// Handed to the transport. Once its flush has ended without an
+        /// answer (or the app stopped mid-flight), the outcome is unknown and
+        /// the entry is held: never sent again, only superseded by a newer
+        /// event for the same item or discarded.
+        case dispatched
+    }
+
     let id: UUID
     let mediaItemId: String
     let position: Double
     let duration: Double
     let updatedAt: Date
-    var attempts: Int
+    var state: State
+
+    init(id: UUID, mediaItemId: String, position: Double, duration: Double, updatedAt: Date, state: State = .pending) {
+        self.id = id
+        self.mediaItemId = mediaItemId
+        self.position = position
+        self.duration = duration
+        self.updatedAt = updatedAt
+        self.state = state
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, mediaItemId, position, duration, updatedAt, state
+    }
+
+    /// Entries written before `state` existed were never claimed for a v2
+    /// upload, so they decode as pending.
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        mediaItemId = try values.decode(String.self, forKey: .mediaItemId)
+        position = try values.decode(Double.self, forKey: .position)
+        duration = try values.decode(Double.self, forKey: .duration)
+        updatedAt = try values.decode(Date.self, forKey: .updatedAt)
+        state = try values.decodeIfPresent(State.self, forKey: .state) ?? .pending
+    }
+
+    /// The wire item, or nil when the entry cannot be sent.
+    var syncItem: SyncProgressItem? {
+        SyncProgressItem(
+            mediaItemId: mediaItemId,
+            position: position,
+            duration: duration,
+            forceOverwrite: false,
+            updatedAt: updatedAt
+        )
+    }
 }
 
 /// Last-known resume point for a downloaded item, updated by offline
-/// playback and by pulled server deltas. Drives offline resume.
-struct LocalProgressEntry: Codable, Sendable {
+/// playback and by each complete `GET /api/v2/progress` read. Drives offline
+/// resume, `isWatched` and `delete_watched`.
+struct LocalProgressEntry: Codable, Equatable, Sendable {
     var position: Double
     var duration: Double
     var completed: Bool
@@ -751,8 +694,26 @@ struct DownloadStoreFile: Codable, Sendable {
     var capability: DownloadCapability?
     var capabilityFetchedAt: Date?
     var progressQueue: [QueuedProgress]
-    var progressCursor: String?
     var localProgress: [String: LocalProgressEntry]
+    /// Registry entries this device deleted locally whose server DELETE has
+    /// not been confirmed. Reconcile never imports them and retries the
+    /// DELETE.
+    var pendingServerDeletes: Set<String>? = nil
+    /// Set when this store replaced one an earlier version wrote (see
+    /// `LegacyDownloadStorage`). The scope's first complete registry read
+    /// deletes every row the store doesn't know instead of importing it.
+    var legacyRowsPending: Bool? = nil
+    /// Monitors the user stopped whose server DELETE has not been confirmed,
+    /// with the validator each was last read with. The monitor list never
+    /// imports them, and a later sync sends the DELETE again.
+    var pendingSubscriptionDeletes: [String: String]? = nil
+    /// Set when this store replaced one an earlier version wrote (see
+    /// `LegacyDownloadStorage`). The scope's first complete monitor list
+    /// records every monitor the store doesn't know in `legacyMonitorIds`.
+    var legacyMonitorsPending: Bool? = nil
+    /// Monitors an earlier version created. They stay on the server but are
+    /// never shown or synced here.
+    var legacyMonitorIds: Set<String>? = nil
 
     static let currentVersion = 1
 
@@ -763,7 +724,6 @@ struct DownloadStoreFile: Codable, Sendable {
         capability: nil,
         capabilityFetchedAt: nil,
         progressQueue: [],
-        progressCursor: nil,
         localProgress: [:]
     )
 }

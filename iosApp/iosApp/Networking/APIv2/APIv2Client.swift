@@ -1,15 +1,23 @@
 import Foundation
 
+/// A v2 request was refused because its owner changed before the request
+/// reached the URL session. Nothing was sent.
+struct APIv2OwnerChangedBeforeDispatch: LocalizedError, Sendable {
+    var errorDescription: String? {
+        "The active server or profile changed before the request could start."
+    }
+}
+
 /// Errors raised by the v2 request layer.
 enum APIv2Error: LocalizedError, Sendable {
-    /// The connected server is v1-only (see `APIv2Probe`). Pilot operations
-    /// are refused rather than routed to a v1 path.
+    /// The connected server is v1-only: the recorded `APIv2Probe` verdict
+    /// refused the call before it left the device, or a v2 route answered with
+    /// the legacy listener's plain 404. Never routed to a v1 path instead.
     case serverUpdateRequired
     case invalidSubtitleResponse
     case invalidNotificationContinuation
     case incompleteAuthResponse
     case incompleteRequestList
-    case missingCollectionVersion
     /// A conditional resource read answered without a usable strong `ETag`.
     case missingEntityTag
     case incompleteCollection
@@ -17,15 +25,17 @@ enum APIv2Error: LocalizedError, Sendable {
     case invalidCatalogContinuation
     case invalidPersonalListQuery
     case invalidPersonalListContinuation
+    /// A favorites or watchlist read ran past its page budget.
+    case incompletePersonalList
     case incompleteCatalogRead
     case unsupportedCatalogReadValue
+    /// A settings write answered with a row other than the one it addressed.
+    /// The server did something, but not provably what was asked.
+    case unexpectedSettingReceipt
     /// The server answered with an `application/problem+json` document.
     case problem(APIv2Problem)
     /// A non-2xx status whose body was not a problem document.
     case httpStatus(Int)
-
-    static let serverUpdateRequiredMessage =
-        "This server needs to be updated before this version of Silo can use it."
 
     var errorDescription: String? {
         switch self {
@@ -36,25 +46,28 @@ enum APIv2Error: LocalizedError, Sendable {
             return "The personal list request is not valid."
         case .invalidPersonalListContinuation:
             return "The personal list could not be continued. Reload to start again."
+        case .incompletePersonalList:
+            return "The list could not be loaded completely. Reload to try again."
         case .unsupportedCatalogReadValue:
             return "This item uses a value this client cannot support. Please update the client."
         case .incompleteCatalogRead:
             return "The server returned an incomplete catalog list. Reload to try again."
+        case .unexpectedSettingReceipt:
+            return "The server's reply to a settings change did not match the change."
         case .invalidCatalogQuery:
             return "The catalog query is not valid."
         case .invalidCatalogContinuation:
             return "The catalog page could not be continued. Reload to start again."
         case .incompleteCollection:
             return "The collection could not be loaded completely. Reload to try again."
-        case .missingCollectionVersion:
-            return "The server did not provide a collection version. Reload before editing."
         case .missingEntityTag:
             return "The server did not provide a version tag. Reload before saving."
         case .incompleteRequestList:
             return "The request list could not be loaded completely. Please reload."
         case .serverUpdateRequired:
-            return Self.serverUpdateRequiredMessage
+            return UpdateRequirement.serverMessage
         case .problem(let problem):
+            if UpdateRequirement.isClientUpgradeRequired(problem) { return UpdateRequirement.appMessage }
             return problem.detail.isEmpty ? problem.title : problem.detail
         case .httpStatus(let status):
             return "The server returned HTTP \(status)."
@@ -76,8 +89,10 @@ enum APIv2Error: LocalizedError, Sendable {
 /// `HTTPClient` performs one more pre-dispatch check against `expectedAuth`
 /// immediately before the bytes leave the device.
 struct APIv2Client: Sendable {
-    private let http: HTTPClient
-    private let tokenStore: TokenStore
+    // Internal, not private, so the per-domain `APIv2Client+<Domain>.swift`
+    // extensions build on the same transport, fences and error mapping.
+    let http: HTTPClient
+    let tokenStore: TokenStore
     /// Whether the connected server was found to be v1-only. Read once per
     /// call so the update-server state set by the probe blocks pilot traffic.
     private let isUpdateRequired: @Sendable () async -> Bool
@@ -200,7 +215,7 @@ struct APIv2Client: Sendable {
         return profile
     }
 
-    // MARK: Requests
+    // MARK: Owner-bound calls
 
     /// A read bound to the owner current at capture: the response is
     /// discarded if the account, credential owner, or profile changed while
@@ -220,28 +235,6 @@ struct APIv2Client: Sendable {
         return try HTTPClient.makeJSONDecoder(artworkServerURL: response.url).decode(T.self, from: response.data)
     }
 
-    /// Create and cancel are never replayed after an ambiguous transport
-    /// failure, and, like every other v2 mutation, dispatch only under the
-    /// owner captured here.
-    func requestPost<T: Decodable, B: Encodable>(_ path: String, body: B, timeout: HTTPTimeout = .standard) async throws -> T {
-        try await gate()
-        guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
-        let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
-        encoder.dateEncodingStrategy = .iso8601
-        let data = try encoder.encode(body)
-        let identity = auth.profileId.map { Self.requestIdentity(auth, profile: $0) }
-        let response = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "POST", path: path, body: data,
-                    headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:], timeout: timeout,
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
-        guard (200..<300).contains(response.statusCode) else { throw APIv2Error.httpStatus(response.statusCode) }
-        return try HTTPClient.makeJSONDecoder(artworkServerURL: response.url).decode(T.self, from: response.data)
-    }
-
     func settingsRead(_ path: String, query: [URLQueryItem] = [], profileID: String? = nil,
                       expectedIdentity: HTTPRequestIdentity? = nil, profileRequired: Bool = false) async throws -> Data {
         try await gate()
@@ -249,7 +242,7 @@ struct APIv2Client: Sendable {
         if profileRequired && auth.profileId == nil { throw SettingsAPIError.profileRequired }
         if let profileID, profileID != auth.profileId { throw HTTPError.requestIdentityChanged }
         let identity = auth.profileId.map { Self.requestIdentity(auth, profile: $0) }
-        if let expectedIdentity, expectedIdentity != identity { throw HTTPError.requestIdentityChanged }
+        try Self.requireSettingsIdentity(expectedIdentity, matches: identity)
         let response = try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {
                 try await http.requestData(method: "GET", path: path, repeatedQuery: query,
@@ -261,48 +254,50 @@ struct APIv2Client: Sendable {
         return response.data
     }
 
-    func dispatchSettingCommand(_ command: SettingsMutationCommand, auth: CapturedOrdinaryRequestAuth) async throws {
+    /// The settings value writes (`APIv2Client+Settings.swift`), under the same
+    /// owner rules as `settingsRead`. `profileID` must be the profile the
+    /// captured session has selected: the household-parent `profile_id` query
+    /// override is never sent, so a write captured for one profile cannot land
+    /// on another. The status and receipt checks belong to each operation.
+    func settingsWrite(_ method: String, path: String, query: [String: String], body: Data?,
+                       profileID: String, expectedIdentity: HTTPRequestIdentity? = nil,
+                       quietStatuses: Set<Int> = []) async throws -> HTTPRawResponse {
         try await gate()
-        let shortcut = command.key == SettingKey.navShortcuts.rawValue
-            && command.path == "/api/v2/settings/values/nav.shortcuts/item" && command.method == "PUT"
-        guard ["PUT", "DELETE"].contains(command.method),
-              shortcut || command.path == "/api/v2/settings/values/\(command.key)",
-              auth.profileId == command.authority.profileID,
-              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
-            throw HTTPError.requestIdentityChanged
-        }
-        let identity = HTTPRequestIdentity(serverId: command.authority.serverID, serverURL: command.authority.origin,
-            profileId: command.authority.profileID, clientFamily: command.authority.clientFamily)
-        let response = try await tokenStore.withOwnerFence(auth) {
+        guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
+        guard let profile = auth.profileId else { throw SettingsAPIError.profileRequired }
+        guard profile == profileID else { throw HTTPError.requestIdentityChanged }
+        let identity = Self.requestIdentity(auth, profile: profile)
+        try Self.requireSettingsIdentity(expectedIdentity, matches: identity)
+        return try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {
-                try await http.requestData(method: command.method, path: command.path, query: command.query,
-                    body: command.body, headers: ["X-Silo-Device-Id": command.authority.deviceID],
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
-        if command.method == "DELETE" {
-            guard response.statusCode == 204 else { throw SettingsMutationHold.uncertain }
-        } else {
-            let receipt = try SettingsWireCoding.makeDecoder().decode(StoredSettingValue.self, from: response.data)
-            guard response.statusCode == 200, receipt.key == command.key,
-                  receipt.scope.rawValue == (shortcut ? "profile" : command.query["scope"]), receipt.revision > 0,
-                  receipt.profileId == command.authority.profileID,
-                  (receipt.scope != .profileDevice || receipt.deviceId == command.authority.deviceID),
-                  (receipt.scope != .profileClient || receipt.clientFamily == command.authority.clientFamily) else {
-                throw SettingsMutationHold.uncertain
+                try await http.requestData(method: method, path: path, query: query, body: body,
+                    quietStatuses: quietStatuses, requestIdentity: identity,
+                    expectedAccount: auth.account, expectedAuth: auth)
             }
         }
     }
 
-    func metadataAIStatus() async throws -> MetadataAIStatus {
-        let data = try await settingsRead("/api/v2/capabilities/metadata-ai", profileRequired: true)
-        let wire = try HTTPClient.makeJSONDecoder().decode(APIv2MetadataAICapability.self, from: data)
-        guard !wire.revision.isEmpty else { throw APIv2Error.incompleteCatalogRead }
-        return wire.playerValue
+    /// Refuses a settings request whose caller pinned an identity that is no
+    /// longer the captured one. The captured account URL is normalized; a
+    /// caller's identity may carry the registry spelling, which HTTPClient
+    /// normalizes the same way.
+    private static func requireSettingsIdentity(_ expected: HTTPRequestIdentity?,
+                                                matches identity: HTTPRequestIdentity?) throws {
+        guard let expected else { return }
+        let normalizedExpected = HTTPRequestIdentity(
+            serverId: expected.serverId,
+            serverURL: ServerRegistry.normalize(url: expected.serverURL),
+            profileId: expected.profileId,
+            clientFamily: expected.clientFamily
+        )
+        if normalizedExpected != identity { throw HTTPError.requestIdentityChanged }
     }
 
-    // The selection owner supplies authority captured before scheduling the write.
-    func writeTrackPreference<Body: Encodable>(kind: String, seriesId: String, body: Body,
+    /// `updateAudioPreference` / `updateSubtitlePreference`: replaces the
+    /// acting profile's remembered track for one series (or movie) id. The
+    /// operation is `natural_idempotent` and answers 204; the body schema is
+    /// closed, so `body` encodes snake_case with nil members omitted.
+    func writeTrackPreference<Body: Encodable>(kind: TrackPreferenceKind, seriesId: String, body: Body,
                                               auth: CapturedOrdinaryRequestAuth) async throws {
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
@@ -310,14 +305,17 @@ struct APIv2Client: Sendable {
                                         body: encoder.encode(body), auth: auth)
     }
 
-    func deleteTrackPreference(kind: String, seriesId: String, auth: CapturedOrdinaryRequestAuth) async throws {
+    /// `deleteAudioPreference` / `deleteSubtitlePreference`. The server
+    /// answers 204 whether or not a preference existed.
+    func deleteTrackPreference(kind: TrackPreferenceKind, seriesId: String,
+                               auth: CapturedOrdinaryRequestAuth) async throws {
         try await mutateTrackPreference(kind: kind, seriesId: seriesId, method: "DELETE", body: nil, auth: auth)
     }
 
-    private func mutateTrackPreference(kind: String, seriesId: String, method: String, body: Data?,
+    private func mutateTrackPreference(kind: TrackPreferenceKind, seriesId: String, method: String, body: Data?,
                                        auth: CapturedOrdinaryRequestAuth) async throws {
         try await gate()
-        guard ["audio", "subtitle"].contains(kind), !seriesId.isEmpty,
+        guard !seriesId.isEmpty,
               let profile = auth.profileId, !profile.isEmpty,
               await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
             throw HTTPError.requestIdentityChanged
@@ -326,8 +324,8 @@ struct APIv2Client: Sendable {
         let identity = Self.requestIdentity(auth, profile: profile)
         let response = try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {
-                try await http.requestData(method: method, path: "/api/v2/\(kind)-prefs/\(segment)", body: body,
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+                try await http.requestData(method: method, path: "/api/v2/\(kind.rawValue)-prefs/\(segment)",
+                    body: body, requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
             }
         }
         guard response.statusCode == 204 else { throw APIv2Error.httpStatus(response.statusCode) }
@@ -339,102 +337,11 @@ struct APIv2Client: Sendable {
         await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
     }
 
-    func translateDescription(contentID: String, language: String, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2MetadataTranslationJob {
-        try await gate()
-        guard let profile = auth.profileId, await matchesAIAuthority(auth), !contentID.isEmpty,
-              !language.isEmpty else {
-            throw HTTPError.requestIdentityChanged
-        }
-        let segment = try catalogPathSegment(contentID)
-        let identity = Self.requestIdentity(auth, profile: profile)
-        let encoder = JSONEncoder(); encoder.keyEncodingStrategy = .convertToSnakeCase
-        let body = try encoder.encode(TranslateDescriptionBody(targetLanguage: language))
-        let raw = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "POST", path: "/api/v2/catalog/items/\(segment)/translate-description",
-                    body: body, requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
-        guard raw.statusCode == 202 else { throw APIv2Error.incompleteCatalogRead }
-        let job = try HTTPClient.makeJSONDecoder().decode(APIv2MetadataTranslationJob.self, from: raw.data)
-        guard !job.id.isEmpty, job.contentId == contentID, ["item", "season", "episode"].contains(job.targetKind) else {
-            throw APIv2Error.incompleteCatalogRead
-        }
-        return job
-    }
-
-    func subtitleCreateAuthority() async throws -> CapturedOrdinaryRequestAuth {
+    /// The owner an AI action runs for, captured before its first await.
+    func captureAIAuthority() async throws -> CapturedOrdinaryRequestAuth {
         try await gate()
         guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
         return auth
-    }
-
-    func createSubtitle(_ body: APIv2SubtitleCreateBody, auth: CapturedOrdinaryRequestAuth) async throws -> SubtitleCreationResult {
-        try await gate()
-        guard await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
-            throw HTTPError.requestIdentityChanged
-        }
-        let identity = auth.profileId.map { Self.requestIdentity(auth, profile: $0) }
-        let encoder = JSONEncoder(); encoder.keyEncodingStrategy = .convertToSnakeCase
-        let data = try encoder.encode(body)
-        let raw = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "POST", path: "/api/v2/subtitles/ai/translate", body: data,
-                    headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:],
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
-        guard raw.statusCode == 202 else { throw APIv2Error.invalidSubtitleResponse }
-        let response = try HTTPClient.makeJSONDecoder().decode(APIv2SubtitleCreateResponse.self, from: raw.data)
-        guard !response.job.id.isEmpty,
-              response.job.mediaFileId == body.mediaFileId, response.job.kind == body.kind.rawValue,
-              response.job.sourceIndex == body.sourceIndex,
-              !response.liveDeliveryAttached || body.sessionId != nil else { throw APIv2Error.invalidSubtitleResponse }
-        return try SubtitleCreationResult(job: SubtitleJob(v2: response.job, expectedJobID: response.job.id),
-            liveDeliveryAttached: response.liveDeliveryAttached)
-    }
-
-    /// Acknowledges a cancellation request; completion may already have won.
-    func cancelSubtitleJob(id: String) async throws {
-        guard let segment = try? catalogPathSegment(id) else {
-            throw APIv2Error.invalidSubtitleResponse
-        }
-        try await gate()
-        guard let auth = await tokenStore.captureOrdinaryRequestAuth() else {
-            throw HTTPError.requestIdentityChanged
-        }
-        let identity = auth.profileId.map { Self.requestIdentity(auth, profile: $0) }
-        let response = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "POST", path: "/api/v2/subtitles/ai/jobs/\(segment)/cancel",
-                    headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:],
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
-        guard response.statusCode == 204, response.data.isEmpty else { throw APIv2Error.invalidSubtitleResponse }
-    }
-
-    /// Provider download has no durable replay receipt, including after a 401.
-    func downloadSubtitle(_ body: SubtitleDownloadBody, expectedAuth: CapturedOrdinaryRequestAuth? = nil) async throws -> DownloadedSubtitle {
-        try await gate()
-        guard body.mediaFileId > 0, let auth = await tokenStore.captureOrdinaryRequestAuth(),
-              let profile = auth.profileId else { throw HTTPError.requestIdentityChanged }
-        if let expectedAuth, !auth.sameCredentialIdentity(as: expectedAuth) {
-            throw HTTPError.requestIdentityChanged
-        }
-        let identity = Self.requestIdentity(auth, profile: profile)
-        let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
-        let data = try encoder.encode(APIv2SubtitleDownloadBody(body))
-        let response = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "POST", path: "/api/v2/subtitles/download", body: data,
-                    timeout: .extended, requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
-        guard response.statusCode == 200 else { throw APIv2Error.invalidSubtitleResponse }
-        let wire = try HTTPClient.makeJSONDecoder().decode(APIv2SubtitleDownloadResponse.self, from: response.data)
-        return try wire.subtitle.playerValue(mediaFileID: body.mediaFileId)
     }
 
     private func householdRequest<T: Decodable>(_ method: String, path: String, body: Data? = nil, status: Int) async throws -> T {
@@ -476,6 +383,9 @@ struct APIv2Client: Sendable {
         return try await householdRequest("POST", path: "/api/v2/profiles/\(segment)/verify-pin", body: data, status: 200)
     }
 
+    /// `getOnboardingState`, then `getOnboardingFlow` when `surface` is set,
+    /// both under one captured owner. The state's strong `ETag` is the only
+    /// validator a later `onboardingWrite` may send.
     func onboardingRead(surface: String? = nil) async throws -> APIv2OnboardingSession {
         try await gate()
         guard let auth = await tokenStore.captureOrdinaryRequestAuth(), let profile = auth.profileId else { throw HTTPError.requestIdentityChanged }
@@ -499,18 +409,21 @@ struct APIv2Client: Sendable {
             }
             guard response.statusCode == 200 else { throw APIv2Error.httpStatus(response.statusCode) }
             flow = try HTTPClient.makeJSONDecoder().decode(OnboardingFlow.self, from: response.data)
-            guard flow?.tourId == state.tourId else { throw APIv2Error.incompleteCollection }
+            guard flow?.tourId == state.tourId else { throw OnboardingProgressError.tourChanged }
         }
-        return APIv2OnboardingSession(id: UUID(), auth: auth, tag: tag, state: state, flow: flow)
+        return APIv2OnboardingSession(auth: auth, tag: tag, state: state, flow: flow)
     }
 
-    /// `writerID` is the id of the session that displayed the flow; a write
-    /// prepared for another session, tour, or owner is refused before dispatch.
-    func onboardingWrite(_ body: OnboardingProgressRequest, writerID: UUID,
+    /// `updateOnboardingProgress` under the session's owner and tag. The
+    /// operation is `non_retryable`: it is dispatched once, and a 412 (stale
+    /// tag), 428, 409 (tour no longer current) or lost response is never
+    /// re-sent here. The caller must read the state again before its next
+    /// write, and must replace its session with the one returned.
+    func onboardingWrite(_ body: OnboardingProgressRequest,
                          session: APIv2OnboardingSession) async throws -> APIv2OnboardingSession {
         try await gate()
         let auth = session.auth
-        guard writerID == session.id, body.tourId == session.state.tourId,
+        guard body.tourId == session.state.tourId,
               let profile = auth.profileId, !profile.isEmpty,
               await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
             throw HTTPError.requestIdentityChanged
@@ -527,89 +440,53 @@ struct APIv2Client: Sendable {
         }
         guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
         let state = try HTTPClient.makeJSONDecoder().decode(OnboardingState.self, from: raw.data)
-        guard state.tourId == body.tourId else { throw APIv2Error.incompleteCollection }
-        return APIv2OnboardingSession(id: session.id, auth: auth,
+        // A receipt for another tour, or a finished write that did not finish
+        // the tour, is not proof the requested change was applied.
+        guard state.tourId == body.tourId,
+              !(body.completed || body.skipped) || state.done else {
+            throw OnboardingProgressError.unexpectedReceipt
+        }
+        return APIv2OnboardingSession(auth: auth,
             tag: try Self.entityTag(raw.header("ETag")), state: state, flow: session.flow)
     }
 
-    func myRequests() async throws -> [MediaRequest] {
-        guard let auth = await tokenStore.captureOrdinaryRequestAuth(),
-              let profile = auth.profileId else { throw HTTPError.requestIdentityChanged }
-        let identity = Self.requestIdentity(auth, profile: profile)
-        var records: [MediaRequest] = []
-        var cursor: String?
-        var seen: Set<String> = []
-        for _ in 0..<100 {
-            try await gate()
-            var query = ["limit": "50"]
-            if let cursor { query["cursor"] = cursor }
-            let requestQuery = query
-            let raw = try await tokenStore.withOwnerFence(auth) {
+    // MARK: Personal collections
+
+    /// One personal-collection request for `auth`'s profile, used by
+    /// `APIv2Client+Collections.swift`. `ifMatch` is the strong tag of the
+    /// editor read the write is based on. The answer must carry exactly
+    /// `status`; anything else throws.
+    ///
+    /// An owner change is reported by when it was caught:
+    /// `APIv2OwnerChangedBeforeDispatch` when the request never reached the
+    /// URL session (this guard, the fence's entry check, or `HTTPClient`'s
+    /// dispatch gate), and `HTTPError.requestIdentityChanged` or
+    /// `.authorityChanged` when it was sent and its answer discarded.
+    func collectionRequest(_ method: String, path: String, body: Data? = nil, ifMatch: String? = nil,
+                           status: Int, auth: CapturedOrdinaryRequestAuth) async throws -> HTTPRawResponse {
+        try await gate()
+        let dispatch = HTTPDispatchRecord()
+        let raw: HTTPRawResponse
+        do {
+            guard let profile = auth.profileId, !profile.isEmpty,
+                  await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+                throw HTTPError.requestIdentityChanged
+            }
+            let identity = Self.requestIdentity(auth, profile: profile)
+            raw = try await tokenStore.withOwnerFence(auth) {
                 try await mapErrors {
-                    try await http.requestData(method: "GET", path: "/api/v2/requests/mine",
-                        query: requestQuery, requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+                    try await http.requestData(method: method, path: path, body: body,
+                        headers: ifMatch.map { ["If-Match": $0] } ?? [:], requestIdentity: identity,
+                        expectedAccount: auth.account, expectedAuth: auth, dispatchRecord: dispatch)
                 }
             }
-            guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
-            let response = try HTTPClient.makeJSONDecoder().decode(APIv2RequestsPage.self, from: raw.data)
-            records.append(contentsOf: response.items)
-            if !response.page.hasMore { return records }
-            guard let next = response.page.nextCursor, !next.isEmpty, seen.insert(next).inserted else {
-                throw APIv2Error.incompleteRequestList
-            }
-            cursor = next
+        } catch HTTPError.requestIdentityChanged where !dispatch.didDispatch {
+            throw APIv2OwnerChangedBeforeDispatch()
+        } catch HTTPError.authorityChanged where !dispatch.didDispatch {
+            throw APIv2OwnerChangedBeforeDispatch()
         }
-        throw APIv2Error.incompleteRequestList
-    }
-
-    // MARK: Collection editors
-
-    func collectionEditor<T: Decodable>(_ path: String) async throws -> CollectionEditor<T> {
-        try await gate()
-        guard let auth = await tokenStore.captureOrdinaryRequestAuth(), let profile = auth.profileId else {
-            throw HTTPError.requestIdentityChanged
-        }
-        let identity = Self.requestIdentity(auth, profile: profile)
-        let raw = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "GET", path: path, requestIdentity: identity,
-                    expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
-        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
-        guard let tag = raw.headers["etag"], !tag.isEmpty else { throw APIv2Error.missingCollectionVersion }
-        return CollectionEditor(value: try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(T.self, from: raw.data),
-            version: CollectionEditVersion(path: path, etag: tag, identity: identity, account: auth.account, auth: auth))
-    }
-
-    func mutateCollection<T: Decodable, B: Encodable>(method: String, version: CollectionEditVersion,
-                                                     body: B) async throws -> T {
-        let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
-        let raw = try await collectionMutation(method: method, version: version, body: encoder.encode(body))
-        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
-        return try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(T.self, from: raw.data)
-    }
-
-    func deleteCollection(version: CollectionEditVersion) async throws {
-        let raw = try await collectionMutation(method: "DELETE", version: version, body: nil)
-        guard raw.statusCode == 204 else { throw APIv2Error.httpStatus(raw.statusCode) }
-    }
-
-    private func collectionMutation(method: String, version: CollectionEditVersion, body: Data?) async throws -> HTTPRawResponse {
-        try await gate()
-        let auth = version.auth
-        guard auth.account == version.account, auth.profileId == version.identity.profileId,
-              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
-            throw HTTPError.requestIdentityChanged
-        }
-        return try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: method, path: version.path, body: body,
-                    headers: ["If-Match": version.etag], requestIdentity: version.identity,
-                    expectedAccount: version.account, expectedAuth: auth)
-            }
-        }
+        guard raw.statusCode == status else { throw APIv2Error.httpStatus(raw.statusCode) }
+        return raw
     }
 
     // MARK: Catalog contract
@@ -683,11 +560,30 @@ struct APIv2Client: Sendable {
         return APIv2CatalogResult(auth: auth, value: page, continuation: continuation)
     }
 
-    func catalogFilters(libraryId: String?, includeTechnical: Bool = true) async throws -> APIv2CatalogFilters {
+    /// Facets depend on the viewer's library access, so the read is bound to
+    /// the caller's captured owner like the other catalog reads.
+    func catalogFilters(libraryId: String?, includeTechnical: Bool = true,
+                        auth: CapturedOrdinaryRequestAuth) async throws -> APIv2CatalogFilters {
+        try await gate()
+        guard let profile = auth.profileId, !profile.isEmpty,
+              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try Task.checkCancellation()
         var query: [String: String] = [:]
         if let libraryId { query["library_id"] = libraryId }
         if !includeTechnical { query["skip_technical"] = "true" }
-        return try await requestGet("/api/v2/catalog/filters", query: query)
+        let requestQuery = query
+        let identity = Self.requestIdentity(auth, profile: profile)
+        let raw = try await tokenStore.withOwnerFence(auth) {
+            try await mapErrors {
+                try await http.requestData(method: "GET", path: "/api/v2/catalog/filters", query: requestQuery,
+                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+            }
+        }
+        try Task.checkCancellation()
+        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
+        return try HTTPClient.makeJSONDecoder().decode(APIv2CatalogFilters.self, from: raw.data)
     }
 
     func catalogSearchCapabilities(auth suppliedAuth: CapturedOrdinaryRequestAuth? = nil) async throws -> APIv2CatalogSearchCapabilities {
@@ -708,8 +604,28 @@ struct APIv2Client: Sendable {
         return try HTTPClient.makeJSONDecoder().decode(APIv2CatalogSearchCapabilities.self, from: raw.data)
     }
 
-    func libraryCollectionTab(libraryId: String) async throws -> APIv2LibraryCollectionTab {
-        try await requestGet("/api/v2/library/\(try catalogPathSegment(libraryId))/collections")
+    /// The Collections tab as the captured profile sees it: curated
+    /// collections, their groups, and the profile's opted-in personal ones.
+    func libraryCollectionTab(libraryId: String, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2LibraryCollectionTab {
+        try await gate()
+        guard let profile = auth.profileId, !profile.isEmpty,
+              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try Task.checkCancellation()
+        let identity = Self.requestIdentity(auth, profile: profile)
+        let path = "/api/v2/library/\(try catalogPathSegment(libraryId))/collections"
+        let raw = try await tokenStore.withOwnerFence(auth) {
+            try await mapErrors {
+                try await http.requestData(method: "GET", path: path,
+                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+            }
+        }
+        try Task.checkCancellation()
+        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
+        let tab = try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(APIv2LibraryCollectionTab.self, from: raw.data)
+        guard tab.libraryId == libraryId else { throw APIv2Error.incompleteCatalogRead }
+        return tab
     }
 
     // MARK: Membership and personal reads
@@ -1068,44 +984,42 @@ struct APIv2Client: Sendable {
         return try response.completeItems()
     }
 
-    func refreshPerson(id: Int, auth: CapturedOrdinaryRequestAuth) async throws -> PersonRefreshQueuedResponse {
+    /// `refreshPerson` is `non_retryable`: it is dispatched once and never
+    /// replayed after a token refresh. A 202 only means the refresh was queued;
+    /// callers observe the result by re-reading the person.
+    func refreshPerson(id: String, auth: CapturedOrdinaryRequestAuth) async throws {
         let response = try await personRequest(id: id, method: "POST", auth: auth)
         guard response.statusCode == 202 else { throw APIv2Error.httpStatus(response.statusCode) }
         struct Queued: Decodable { let status: String; let personId: String }
         let wire = try HTTPClient.makeJSONDecoder().decode(Queued.self, from: response.data)
-        guard wire.status == "queued", wire.personId == String(id) else { throw APIv2Error.incompleteCatalogRead }
-        return PersonRefreshQueuedResponse(status: wire.status, personId: id)
+        guard wire.status == "queued", wire.personId == id else { throw APIv2Error.incompleteCatalogRead }
     }
 
-    func catalogPerson(id: Int, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2CatalogRead.Person {
+    func catalogPerson(id: String, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2CatalogRead.Person {
         let response = try await personRequest(id: id, method: "GET", auth: auth)
         guard response.statusCode == 200 else { throw APIv2Error.httpStatus(response.statusCode) }
         let person = try HTTPClient.makeJSONDecoder(artworkServerURL: response.url).decode(APIv2CatalogRead.Person.self, from: response.data)
-        guard person.id == String(id) else { throw APIv2Error.incompleteCatalogRead }
+        guard person.id == id else { throw APIv2Error.incompleteCatalogRead }
         return person
     }
 
-    private func personRequest(id: Int, method: String, auth: CapturedOrdinaryRequestAuth) async throws -> HTTPRawResponse {
+    private func personRequest(id: String, method: String, auth: CapturedOrdinaryRequestAuth) async throws -> HTTPRawResponse {
         try await gate()
-        guard id > 0, let profile = auth.profileId, !profile.isEmpty,
+        let path = "/api/v2/catalog/people/\(try catalogPathSegment(id))" + (method == "POST" ? "/refresh" : "")
+        guard let profile = auth.profileId, !profile.isEmpty,
               await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
             throw HTTPError.requestIdentityChanged
         }
         try Task.checkCancellation()
         let identity = Self.requestIdentity(auth, profile: profile)
-        let suffix = method == "POST" ? "/refresh" : ""
         let response = try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {
-                try await http.requestData(method: method, path: "/api/v2/catalog/people/\(id)\(suffix)",
+                try await http.requestData(method: method, path: path,
                     requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
             }
         }
         try Task.checkCancellation()
         return response
-    }
-
-    func catalogPerson(id: String) async throws -> APIv2CatalogRead.Person {
-        try await catalogRead("/api/v2/catalog/people/\(try catalogPathSegment(id))")
     }
 
     private func catalogReadScope(libraryId: String?, imageSize: String?) -> [String: String] {
@@ -1118,7 +1032,7 @@ struct APIv2Client: Sendable {
     /// Every path-building site percent-encodes through here. `/`, `?`, `#`
     /// and `%` are never allowed through unencoded, and `.`/`..` never become
     /// a segment.
-    private func catalogPathSegment(_ value: String) throws -> String {
+    func catalogPathSegment(_ value: String) throws -> String {
         guard let escaped = CatalogPathSegment.encode(value) else {
             throw APIv2Error.invalidCatalogQuery
         }
@@ -1199,6 +1113,8 @@ struct APIv2Client: Sendable {
 
     // MARK: Active account/device authentication
 
+    /// `login` is `non_retryable` and public: one dispatch with no bearer, and
+    /// a 401 is the wrong-credentials answer, never a refresh trigger.
     func login(username: String, password: String, expectedAccount: RefreshAccountIdentity) async throws -> APIv2LoginTokens {
         try await gate()
         let body = try JSONEncoder().encode(LoginRequest(username: username, password: password))
@@ -1206,8 +1122,9 @@ struct APIv2Client: Sendable {
             try await http.requestData(method: "POST", path: "/api/v2/auth/login", body: body, expectedAccount: expectedAccount)
         }
         guard await tokenStore.refreshAccountIdentity() == expectedAccount else { throw HTTPError.requestIdentityChanged }
+        guard response.statusCode == 200 else { throw APIv2Error.incompleteAuthResponse }
         let value = try HTTPClient.makeJSONDecoder().decode(APIv2LoginTokens.self, from: response.data)
-        guard response.statusCode == 200, !value.accessToken.isEmpty, !value.refreshToken.isEmpty,
+        guard !value.accessToken.isEmpty, !value.refreshToken.isEmpty,
               !value.user.id.isEmpty else { throw APIv2Error.incompleteAuthResponse }
         return value
     }
@@ -1236,32 +1153,47 @@ struct APIv2Client: Sendable {
         return try HTTPClient.makeJSONDecoder().decode(APIv2DevicePoll.self, from: response.data).validated()
     }
 
-    func deviceLookup(code: String, identity: HTTPRequestIdentity, expectedAccount: RefreshAccountIdentity) async throws -> DeviceLookupResponse {
+    /// The approving side of a SiloRemote handoff reads and decides under
+    /// the caller's captured owner: `expectedAuth`, when given, refuses the
+    /// dispatch once the credential or profile behind it has changed.
+    func deviceLookup(code: String, identity: HTTPRequestIdentity, expectedAccount: RefreshAccountIdentity,
+                      expectedAuth: CapturedOrdinaryRequestAuth? = nil) async throws -> DeviceLookupResponse {
         try await gate()
         let response = try await mapErrors {
-            try await http.requestData(method: "GET", path: "/api/v2/auth/device", query: ["code": code], requestIdentity: identity, expectedAccount: expectedAccount)
+            try await http.requestData(method: "GET", path: "/api/v2/auth/device", query: ["code": code], requestIdentity: identity,
+                expectedAccount: expectedAccount, expectedAuth: expectedAuth)
         }
         guard await tokenStore.refreshAccountIdentity() == expectedAccount else { throw HTTPError.requestIdentityChanged }
         guard response.statusCode == 200 else { throw APIv2Error.incompleteAuthResponse }
         return try HTTPClient.makeJSONDecoder().decode(APIv2DeviceLookup.self, from: response.data).presentation
     }
 
-    func decideDeviceLogin(code: String, approveHandoff: Bool, identity: HTTPRequestIdentity, expectedAccount: RefreshAccountIdentity) async throws {
+    /// `approve-handoff` and `deny` are `domain_identity`: the code names the
+    /// request, so the usual refresh and resend is safe.
+    func decideDeviceLogin(code: String, approveHandoff: Bool, identity: HTTPRequestIdentity, expectedAccount: RefreshAccountIdentity,
+                           expectedAuth: CapturedOrdinaryRequestAuth? = nil) async throws {
         try await gate()
         let body = try JSONSerialization.data(withJSONObject: ["code": code])
         let path = approveHandoff ? "/api/v2/auth/device/approve-handoff" : "/api/v2/auth/device/deny"
         let response = try await mapErrors {
-            try await http.requestData(method: "POST", path: path, body: body, requestIdentity: identity, expectedAccount: expectedAccount)
+            try await http.requestData(method: "POST", path: path, body: body, requestIdentity: identity,
+                expectedAccount: expectedAccount, expectedAuth: expectedAuth)
         }
         guard await tokenStore.refreshAccountIdentity() == expectedAccount else { throw HTTPError.requestIdentityChanged }
+        guard response.statusCode == 200 else { throw APIv2Error.incompleteAuthResponse }
         let value = try HTTPClient.makeJSONDecoder().decode(APIv2DeviceDecision.self, from: response.data)
-        guard response.statusCode == 200, value.status == (approveHandoff ? "approved" : "denied") else { throw APIv2Error.incompleteAuthResponse }
+        guard value.status == (approveHandoff ? "approved" : "denied") else { throw APIv2Error.incompleteAuthResponse }
     }
 
+    /// Ends the login session that `expectedAccount` currently holds. The
+    /// request carries the bearer only: v2 logout does not accept
+    /// `X-Profile-Id`, so a temporary scope's profile proof is left off too.
+    /// `natural_idempotent`, so the usual 401 refresh and resend is safe.
     func logout(expectedAccount: RefreshAccountIdentity) async throws {
         try await gate()
         let response = try await mapErrors {
-            try await http.requestData(method: "POST", path: "/api/v2/auth/logout", expectedAccount: expectedAccount)
+            try await http.requestData(method: "POST", path: "/api/v2/auth/logout",
+                expectedAccount: expectedAccount, sendsProfile: false)
         }
         guard response.statusCode == 204 else { throw APIv2Error.incompleteAuthResponse }
     }
@@ -1271,38 +1203,17 @@ struct APIv2Client: Sendable {
     /// One playback request under a captured owner. Fenced before and after
     /// the await; callers check the status they expect.
     func playbackRequest(method: String, suffix: String, body: Data? = nil,
-                         auth: CapturedOrdinaryRequestAuth, query: [String: String] = [:]) async throws -> HTTPRawResponse {
+                         auth: CapturedOrdinaryRequestAuth, query: [String: String] = [:],
+                         timeout: HTTPTimeout = .standard) async throws -> HTTPRawResponse {
         try await gate()
         guard let profile = auth.profileId, !profile.isEmpty else { throw HTTPError.requestIdentityChanged }
         let identity = Self.requestIdentity(auth, profile: profile)
         return try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {
                 try await http.requestData(method: method, path: "/api/v2/playback" + suffix, query: query, body: body,
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+                    timeout: timeout, requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
             }
         }
-    }
-
-    func playbackControlRequest(sessionID: String, installationID: String,
-                                auth: CapturedOrdinaryRequestAuth) async throws -> URLRequest {
-        guard UUID(uuidString: sessionID) != nil else { throw PlaybackSequencedError.invalidSession }
-        let capabilityRaw = try await playbackRequest(method: "GET", suffix: "/sessions/control/capabilities", auth: auth)
-        let capability = try HTTPClient.makeJSONDecoder().decode(APIv2PlaybackControlCapabilities.self, from: capabilityRaw.data)
-        guard capabilityRaw.statusCode == 200, capability.available, capability.ownerLeaseAdmission,
-              capability.protocol == "silo.playback-control.v2" else { throw PlaybackSequencedError.invalidResponse }
-        struct Body: Encodable { let installationId: String }
-        let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
-        let raw = try await playbackRequest(method: "POST", suffix: "/sessions/\(sessionID)/control/ws-ticket",
-            body: encoder.encode(Body(installationId: installationID)), auth: auth)
-        // The ticket is a delegated credential; it is handed out only to the
-        // owner that is still current after both requests.
-        guard raw.statusCode == 200,
-              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
-            throw PlaybackSequencedError.authorityChanged
-        }
-        let ticket = try HTTPClient.makeJSONDecoder().decode(APIv2PlaybackControlTicket.self, from: raw.data)
-        return try ticket.request(serverURL: auth.account.serverURL, sessionID: sessionID)
     }
 
     func watchDetail(id: String, libraryId: String? = nil, imageSize: String?, auth: CapturedOrdinaryRequestAuth) async throws -> WatchDetail {
@@ -1363,21 +1274,23 @@ struct APIv2Client: Sendable {
         return page
     }
 
-    struct ApplePushCapability: Decodable {
-        let revision: String
-        let registrationAvailable: Bool
-    }
-
-    func applePushRegistrationCapability(auth: CapturedOrdinaryRequestAuth) async throws -> ApplePushCapability {
+    func applePushRegistrationCapability(auth: CapturedOrdinaryRequestAuth) async throws -> APIv2ApplePushCapability {
         let data = try await applePushRequest(method: "GET", path: "/api/v2/devices/push/apple/capabilities", auth: auth)
-        return try HTTPClient.makeJSONDecoder().decode(ApplePushCapability.self, from: data)
+        return try HTTPClient.makeJSONDecoder().decode(APIv2ApplePushCapability.self, from: data)
     }
 
-    /// `installationKey` and `generation` are the ordered-intent headers the
-    /// server uses to discard a stale registration; the caller's journal owns
-    /// their sequence.
-    func registerApplePush(_ body: ApplePushRegistrationRequest, installationKey: String, generation: Int64,
-                           auth: CapturedOrdinaryRequestAuth) async throws -> APIv2ApplePushRegistration {
+    /// Sends one ordered installation intent. `installationKey` and
+    /// `generation` come from `ApplePushInstallationJournal`, which owns their
+    /// sequence; an exact replay passes the same three values again. The body
+    /// is encoded with sorted keys so a replay sends the same bytes.
+    ///
+    /// Throws `ApplePushRegistrationError.invalidReceipt` when the server's
+    /// receipt does not describe this generation and payload.
+    func registerApplePush(_ body: APIv2ApplePushRegistrationBody, installationKey: String, generation: Int64,
+                           auth: CapturedOrdinaryRequestAuth) async throws -> APIv2ApplePushRegistrationReceipt {
+        guard ApplePushInstallationJournal.isInstallationKey(installationKey), generation > 0 else {
+            throw ApplePushRegistrationError.invalidInstallation
+        }
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
         encoder.outputFormatting = .sortedKeys
@@ -1385,7 +1298,12 @@ struct APIv2Client: Sendable {
             body: encoder.encode(body),
             headers: ["X-Push-Installation-Key": installationKey, "X-Push-Generation": String(generation)],
             auth: auth)
-        return try HTTPClient.makeJSONDecoder().decode(APIv2ApplePushRegistration.self, from: data)
+        let receipt = try HTTPClient.makeJSONDecoder().decode(APIv2ApplePushRegistrationReceipt.self, from: data)
+        guard receipt.generation == String(generation), !receipt.id.isEmpty, !receipt.serverDeviceId.isEmpty,
+              receipt.pushMode == body.pushMode else {
+            throw ApplePushRegistrationError.invalidReceipt
+        }
+        return receipt
     }
 
     private func applePushRequest(method: String, path: String, body: Data? = nil, headers: [String: String] = [:],
@@ -1407,34 +1325,89 @@ struct APIv2Client: Sendable {
     }
     #endif
 
+    // MARK: Owner-bound raw requests
+
+    /// Captures the owner a multi-request sequence is bound to. Each
+    /// `ownedRequest` in the sequence names it, so a server, account or
+    /// profile switch refuses the remaining requests instead of sending them
+    /// to the replacement.
+    func captureRequestOwner() async throws -> CapturedOrdinaryRequestAuth {
+        try await gate()
+        guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
+        return auth
+    }
+
+    /// Whether `auth` still describes the current owner.
+    func isCurrentOwner(_ auth: CapturedOrdinaryRequestAuth) async -> Bool {
+        await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+    }
+
+    /// Sends one request with a caller-built body under `auth` and returns the
+    /// undecoded 2xx response; the caller asserts the exact status. A non-2xx
+    /// answer throws `APIv2Error`. Never retried here.
+    ///
+    /// An owner change is reported by when it was caught:
+    /// `APIv2OwnerChangedBeforeDispatch` when the request never reached the
+    /// URL session (this guard, the fence's entry check, or `HTTPClient`'s
+    /// dispatch gate and owner checks), and `HTTPError.requestIdentityChanged`
+    /// or `.authorityChanged` when the request was sent and its outcome
+    /// discarded.
+    func ownedRequest(method: String, path: String, body: Data? = nil, contentType: String = "application/json",
+                      timeout: HTTPTimeout = .standard,
+                      auth: CapturedOrdinaryRequestAuth) async throws -> HTTPRawResponse {
+        try await gate()
+        let dispatch = HTTPDispatchRecord()
+        do {
+            guard await isCurrentOwner(auth) else { throw HTTPError.requestIdentityChanged }
+            let identity = auth.profileId.map { Self.requestIdentity(auth, profile: $0) }
+            return try await tokenStore.withOwnerFence(auth) {
+                try await mapErrors {
+                    try await http.requestData(method: method, path: path, body: body, contentType: contentType,
+                        headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:], timeout: timeout,
+                        requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth,
+                        dispatchRecord: dispatch)
+                }
+            }
+        } catch HTTPError.requestIdentityChanged where !dispatch.didDispatch {
+            throw APIv2OwnerChangedBeforeDispatch()
+        } catch HTTPError.authorityChanged where !dispatch.didDispatch {
+            throw APIv2OwnerChangedBeforeDispatch()
+        }
+    }
+
     // MARK: Internals
 
     /// Refuses relative-URL (active-session) operations while the active
     /// server is known to be v1-only. Explicit-URL candidate probes skip this.
-    private func gate() async throws {
+    func gate() async throws {
         if await isUpdateRequired() { throw APIv2Error.serverUpdateRequired }
     }
 
-    private static func requestIdentity(_ auth: CapturedOrdinaryRequestAuth, profile: String) -> HTTPRequestIdentity {
+    static func requestIdentity(_ auth: CapturedOrdinaryRequestAuth, profile: String) -> HTTPRequestIdentity {
         HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
             profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily)
     }
 
     /// A strong entity tag: quoted, non-empty, single line. Anything else is
     /// refused rather than echoed back as an `If-Match` precondition.
-    private static func entityTag(_ tag: String?) throws -> String {
+    static func entityTag(_ tag: String?) throws -> String {
         guard let tag, tag.count > 2, tag.first == "\"", tag.last == "\"",
               !tag.contains("\r"), !tag.contains("\n") else { throw APIv2Error.missingEntityTag }
         return tag
     }
 
-    private func mapErrors<T>(_ operation: () async throws -> T) async throws -> T {
+    func mapErrors<T>(_ operation: () async throws -> T) async throws -> T {
         do {
             return try await operation()
         } catch HTTPError.http(let statusCode, let body) {
             if let body, let data = body.data(using: .utf8),
                let problem = try? HTTPClient.makeJSONDecoder().decode(APIv2Problem.self, from: data) {
                 throw APIv2Error.problem(problem)
+            }
+            // Every path here is `/api/v2`, so Go's plain 404 can only come
+            // from a v1-only server's legacy listener.
+            if statusCode == 404, APIv2Probe.isLegacyNotFound(body: body) {
+                throw APIv2Error.serverUpdateRequired
             }
             throw APIv2Error.httpStatus(statusCode)
         }

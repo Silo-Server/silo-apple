@@ -29,61 +29,61 @@ final class HTTPClientDiagnosticsClassificationTests: XCTestCase {
     func testStaticRoutesStayLegible() {
         // Over-templating is a real cost, not a safe default: a report where
         // every route is `{id}` cannot be grouped by endpoint at all.
-        assertPath("/api/v1/health", equals: "/api/v1/health")
-        assertPath("/api/v1/auth/refresh", equals: "/api/v1/auth/refresh")
-        assertPath("/api/v1/catalog/filters", equals: "/api/v1/catalog/filters")
-        assertPath("/api/v1/collections/groups/order", equals: "/api/v1/collections/groups/order")
-        assertPath("/api/v1/home/sections", equals: "/api/v1/home/sections")
+        assertPath("/api/v2/system/setup", equals: "/api/v2/system/setup")
+        assertPath("/api/v2/auth/refresh", equals: "/api/v2/auth/refresh")
+        assertPath("/api/v2/catalog/filters", equals: "/api/v2/catalog/filters")
+        assertPath("/api/v2/collections/groups/order", equals: "/api/v2/collections/groups/order")
+        assertPath("/api/v2/home/sections", equals: "/api/v2/home/sections")
     }
 
     func testIdentifierSegmentsAreTemplated() {
-        assertPath("/api/v1/items/12345", equals: "/api/v1/items/{id}")
+        assertPath("/api/v2/favorites/12345", equals: "/api/v2/favorites/{id}")
         assertPath("/v1/reports/01H8XK3P2Q", equals: "/v1/reports/{id}")
         assertPath(
-            "/api/v1/catalog/items/550e8400-e29b-41d4-a716-446655440000",
-            equals: "/api/v1/catalog/items/{id}"
+            "/api/v2/catalog/items/550e8400-e29b-41d4-a716-446655440000",
+            equals: "/api/v2/catalog/items/{id}"
         )
-        assertPath("/api/v1/playback/sessions/abc123def/control/ws",
-                   equals: "/api/v1/playback/sessions/{id}/control/ws")
+        assertPath("/api/v2/playback/sessions/abc123def/control/ws",
+                   equals: "/api/v2/playback/sessions/{id}/control/ws")
     }
 
     func testDottedSettingKeysAreTemplatedEvenThoughTheyAreStatic() {
         // The motivating case for hardening on top of DiagnosticsPathTemplate.
-        // `/api/v1/settings/values/downloads.default_quality` is a static route
+        // `/api/v2/settings/values/downloads.default_quality` is a static route
         // with a compile-time key and no identifier anywhere in it, but the
         // collector reads the dotted segment as a hostname and rejects the
         // report. Its `SAFE_DOTTED_SETTING_KEYS` allowlist does not cover most
         // of our generated SettingKey table, so we cannot rely on it.
         assertPath(
-            "/api/v1/settings/values/downloads.default_quality",
-            equals: "/api/v1/settings/values/{id}"
+            "/api/v2/settings/values/downloads.default_quality",
+            equals: "/api/v2/settings/values/{id}"
         )
         assertPath(
-            "/api/v1/settings/values/nav.shortcuts",
-            equals: "/api/v1/settings/values/{id}"
+            "/api/v2/settings/values/nav.shortcuts",
+            equals: "/api/v2/settings/values/{id}"
         )
         assertPath(
-            "/api/v1/settings/values/catalog.metadata_language/item",
-            equals: "/api/v1/settings/values/{id}/item"
+            "/api/v2/settings/values/catalog.metadata_language/item",
+            equals: "/api/v2/settings/values/{id}/item"
         )
     }
 
     func testQueryStringsAndFragmentsCanNeverSurvive() {
         // A query string is both a leak (tokens, search terms) and an outright
         // scanner rejection on the `?` alone.
-        assertPath("/api/v1/items?token=secret&q=bourne", equals: "/api/v1/items")
-        assertPath("/api/v1/items#fragment", equals: "/api/v1/items")
-        assertPath("/api/v1/items/12345?fields=a,b#z", equals: "/api/v1/items/{id}")
+        assertPath("/api/v2/favorites?token=secret&q=bourne", equals: "/api/v2/favorites")
+        assertPath("/api/v2/favorites#fragment", equals: "/api/v2/favorites")
+        assertPath("/api/v2/favorites/12345?fields=a,b#z", equals: "/api/v2/favorites/{id}")
     }
 
     func testAbsoluteURLsContributeOnlyTheirPath() {
         // The host is the single most identifying thing in a Silo request, and
         // a self-hosted server's hostname is often the user's own domain.
         assertPath(
-            url: "https://media.example.com:8096/api/v1/items/12345?tag=abc#z",
-            equals: "/api/v1/items/{id}"
+            url: "https://media.example.com:8096/api/v2/catalog/items/12345?tag=abc#z",
+            equals: "/api/v2/catalog/items/{id}"
         )
-        assertPath(url: "http://127.0.0.1:8096/api/v1/health", equals: "/api/v1/health")
+        assertPath(url: "http://127.0.0.1:8096/api/v2/system/setup", equals: "/api/v2/system/setup")
     }
 
     func testFilesystemPathsAndOddSegmentsFailClosed() {
@@ -91,9 +91,9 @@ final class HTTPClientDiagnosticsClassificationTests: XCTestCase {
         // correlatable as a route and its tail carries the user's home
         // directory name, so nothing is preserved.
         assertPath("/Users/alice/Library/Caches/x", equals: "/{id}/{id}/{id}/{id}/{id}")
-        assertPath("/api/v1/a b/c", equals: "/api/v1/{id}/c")
-        assertPath("/api/v1/%2e%2e/admin", equals: "/api/v1/{id}/admin")
-        assertPath("//api//v1//health", equals: "/api/v1/health")
+        assertPath("/api/v2/a b/c", equals: "/api/v2/{id}/c")
+        assertPath("/api/v2/%2e%2e/admin", equals: "/api/v2/{id}/admin")
+        assertPath("//api//v2//system//setup", equals: "/api/v2/system/setup")
         assertPath("", equals: "/")
     }
 
@@ -110,12 +110,12 @@ final class HTTPClientDiagnosticsClassificationTests: XCTestCase {
             "a%2Fb", "..", "My Movie (2019)", "deadbeefdeadbeefdead",
         ]
         let routes = [
-            "/api/v1/items/%@/images/Primary",
-            "/api/v1/catalog/series/%@/seasons/%@/episodes",
-            "/api/v1/settings/values/%@",
-            "/api/v1/favorites/%@",
-            "/api/v1/library/%@/sections",
-            "/api/v1/playback/%@/replan",
+            "/api/v2/catalog/items/%@/versions",
+            "/api/v2/catalog/series/%@/seasons/%@/episodes",
+            "/api/v2/settings/values/%@",
+            "/api/v2/favorites/%@",
+            "/api/v2/library/%@/sections",
+            "/api/v2/playback/%@/replan",
         ]
         for route in routes {
             for identifier in identifiers {
@@ -143,10 +143,10 @@ final class HTTPClientDiagnosticsClassificationTests: XCTestCase {
             "https://host.example.com/silo",
         ] {
             let actual = HTTPDiagnosticsPath.attribute(
-                for: URL(string: origin + "/api/v1/auth/refresh")
+                for: URL(string: origin + "/api/v2/auth/refresh")
             )
             XCTAssertTrue(
-                actual.hasSuffix("/api/v1/auth/refresh"),
+                actual.hasSuffix("/api/v2/auth/refresh"),
                 "refresh route lost its shape: \(actual)"
             )
             XCTAssertFalse(actual.contains("example"), "host survived in \(actual)")

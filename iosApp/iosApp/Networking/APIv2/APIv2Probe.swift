@@ -8,7 +8,7 @@ enum APIv2ProbeResult: Sendable, Equatable {
     /// its plain 404. The client must be pointed at an updated server.
     case updateServer
     /// Any other outcome. None of these mean "old server", and none of them
-    /// enable a v1 path for a pilot operation.
+    /// enable a v1 path.
     case failure(APIv2ProbeFailure)
 }
 

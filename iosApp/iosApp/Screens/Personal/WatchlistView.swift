@@ -259,9 +259,7 @@ struct WatchlistView: View {
         }
         error = nil
         do {
-            let response: CatalogResponse = try await SiloAPI.shared.watchlist(
-                offset: 0, limit: 100
-            )
+            let response = try await SiloAPI.shared.watchlist()
             ResponseCache.shared.set(response, for: CacheKey.watchlist)
             items = response.items
         } catch let err {

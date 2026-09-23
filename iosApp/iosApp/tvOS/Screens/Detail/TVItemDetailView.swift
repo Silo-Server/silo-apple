@@ -77,6 +77,10 @@ struct TVItemDetailView: View {
         .siloBackground()
         .siloNavigationTitleDisplayMode(.inline)
         .siloNavigationBarBackgroundHidden()
+        .personalStateNoticeAlert(Binding(
+            get: { viewModel.personalStateNotice },
+            set: { viewModel.personalStateNotice = $0 }
+        ))
         .onAppear {
             Self.focusLogger.debug("itemDetail.appear contentId=\(contentId, privacy: .public) pathDepth=\(router.path.count, privacy: .public)")
             allowRemoteTrailers = TVTrailerLaunch.canDisplayRemoteCards()
@@ -421,8 +425,8 @@ struct TVItemDetailView: View {
                 onToggleWatchlist: { Task { await viewModel.toggleWatchlist() } },
                 onToggleWatched: { Task { await viewModel.toggleSelectedSeasonWatched() } },
                 onPersonTap: { personId in
-                    if let pid = Int(personId) {
-                        router.navigate(to: .personDetail(personId: pid))
+                    if !personId.isEmpty {
+                        router.navigate(to: .personDetail(personId: personId))
                     }
                 },
                 onNavigateToItem: { id in
@@ -541,8 +545,8 @@ struct TVItemDetailView: View {
                 onToggleWatchlist: { Task { await viewModel.toggleWatchlist() } },
                 onToggleWatched: { Task { await viewModel.toggleWatched() } },
                 onPersonTap: { personId in
-                    if let pid = Int(personId) {
-                        router.navigate(to: .personDetail(personId: pid))
+                    if !personId.isEmpty {
+                        router.navigate(to: .personDetail(personId: personId))
                     }
                 },
                 onNavigateToItem: { id in

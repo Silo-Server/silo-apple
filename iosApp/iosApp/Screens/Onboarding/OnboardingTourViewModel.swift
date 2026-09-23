@@ -1,15 +1,40 @@
 import Foundation
+import os
 
 #if !os(tvOS)
+/// The v2 onboarding operations the tour and its gate use. Progress writes
+/// are `non_retryable` and guarded by the state's `ETag`: every write names
+/// the session from the read or receipt it follows.
 protocol OnboardingTourAPI: Sendable {
-    func onboardingFlow(surface: String) async throws -> OnboardingFlow
-    func postOnboardingProgress(_ request: OnboardingProgressRequest) async throws
+    /// Reads the active profile's tour state, plus the flow for `surface`.
+    func onboardingRead(surface: String?) async throws -> APIv2OnboardingSession
+    /// Sends one progress write under `session`'s owner and tag and returns
+    /// the receipt, which is the only session the next write may use.
+    func onboardingWrite(
+        _ request: OnboardingProgressRequest,
+        session: APIv2OnboardingSession
+    ) async throws -> APIv2OnboardingSession
+    /// The signed-in account's id, as `GET /api/v2/account/me` reports it.
+    func currentAccountId() async throws -> String
     func updateProfile(profileId: String, body: UpdateProfileBody) async throws
-    func setSetting(key: String, value: String) async throws
-    func setDeviceSetting(key: String, value: String) async throws
 }
 
-extension SiloAPI: OnboardingTourAPI {}
+extension SiloAPI: OnboardingTourAPI {
+    nonisolated func onboardingRead(surface: String?) async throws -> APIv2OnboardingSession {
+        try await apiV2Client.onboardingRead(surface: surface)
+    }
+
+    nonisolated func onboardingWrite(
+        _ request: OnboardingProgressRequest,
+        session: APIv2OnboardingSession
+    ) async throws -> APIv2OnboardingSession {
+        try await apiV2Client.onboardingWrite(request, session: session)
+    }
+
+    nonisolated func currentAccountId() async throws -> String {
+        try await apiV2Client.currentUser().id
+    }
+}
 
 private enum OnboardingTourError: LocalizedError {
     case unsupportedSetting(String)
@@ -28,11 +53,24 @@ private enum OnboardingTourError: LocalizedError {
 /// Drives the server-driven first-run tour. setting_choice steps write
 /// through the existing profile-update path immediately, so by the last
 /// step the profile is genuinely configured.
+///
+/// Progress follows the v2 failure model for a `non_retryable` write. A
+/// write is sent once, under the tag of the state read or receipt it follows.
+/// A failed, refused (412/428/409) or unanswered write leaves no tag, so the
+/// next write the user starts reads the state again first. If that read
+/// shows the tour already finished elsewhere, the tour closes instead. A
+/// tour the server has replaced (409, or a re-read naming another tour)
+/// closes too, because none of its progress can be saved.
 @Observable
 @MainActor
 class OnboardingTourViewModel {
     /// Step kinds this client can render; anything else is dropped at load.
     private static let knownKinds: Set<String> = ["welcome", "feature_card", "setting_choice", "handoff"]
+    /// The only setting target this client can save. The server emits only
+    /// `profile_field`; a `setting_choice` step naming any other target is
+    /// dropped at load like an unknown kind, because it could not be saved.
+    private static let supportedSettingTarget = "profile_field"
+    private static let logger = Logger(subsystem: "org.siloserver.silo", category: "onboarding")
 
     var isLoading: Bool = true
     var steps: [OnboardingStep] = []
@@ -45,6 +83,15 @@ class OnboardingTourViewModel {
     var selectedValues: [String: String] = [:]
 
     private var tourId: String = ""
+    /// The owner that loaded the tour. Later reads, progress writes and
+    /// profile writes act only while it is still the active owner.
+    private var tourOwner: CapturedOrdinaryRequestAuth?
+    /// Whether the server already recorded the tour as done when it loaded,
+    /// as it does for a replay from Settings.
+    private var loadedDone = false
+    /// The latest state read or receipt, whose tag the next progress write
+    /// sends. Taken before every dispatch, so no tag is ever sent twice.
+    private var session: APIv2OnboardingSession?
     private let api: any OnboardingTourAPI
     private let runtimeSettingsRefresher: any OnboardingRuntimeSettingsRefreshing
     private let activeProfileId: @MainActor () -> String?
@@ -61,52 +108,66 @@ class OnboardingTourViewModel {
     }
 
     func load(resumeStepId: String? = nil) async {
+        let loaded: APIv2OnboardingSession
         do {
-            let flow = try await api.onboardingFlow(surface: "phone")
-            let renderable = flow.steps.filter { Self.knownKinds.contains($0.kind) }
-            if renderable.isEmpty {
-                // Nothing we can show: dismiss now and persist a retry marker
-                // before posting completion so a transient failure cannot
-                // reopen an empty modal on every launch.
-                let serverId = ServerRegistry.shared.activeServerId
-                let profileId = AuthService.shared.profileId
-                if let serverId, let profileId {
-                    UnrenderableOnboardingTourSuppression.set(
-                        serverId: serverId,
-                        profileId: profileId,
-                        tourId: flow.tourId
-                    )
-                }
-                do {
-                    try await api.postOnboardingProgress(OnboardingProgressRequest(
-                        tourId: flow.tourId,
-                        lastStep: nil,
-                        completed: true,
-                        skipped: false
-                    ))
-                    if let serverId, let profileId {
-                        UnrenderableOnboardingTourSuppression.clear(
-                            serverId: serverId,
-                            profileId: profileId,
-                            tourId: flow.tourId
-                        )
-                    }
-                } catch {
-                    // The durable marker makes the gate retry without showing
-                    // an empty tour, so dismissal is still safe here.
-                }
-                finished = true
-                return
-            }
-            tourId = flow.tourId
-            steps = renderable
-            if let resumeStepId,
-               let resumeIndex = renderable.firstIndex(where: { $0.id == resumeStepId }) {
-                currentIndex = resumeIndex
-            }
-            isLoading = false
+            loaded = try await api.onboardingRead(surface: "phone")
         } catch {
+            Self.logger.error("Onboarding tour load failed: \(String(describing: error), privacy: .public)")
             finished = true
+            return
+        }
+        guard let flow = loaded.flow else {
+            finished = true
+            return
+        }
+        let renderable = flow.steps.filter(Self.isRenderable)
+        if renderable.isEmpty {
+            await completeUnrenderableTour(flow.tourId, session: loaded)
+            finished = true
+            return
+        }
+        tourId = flow.tourId
+        tourOwner = loaded.auth
+        loadedDone = loaded.state.done
+        session = loaded
+        steps = renderable
+        if let resumeStepId,
+           let resumeIndex = renderable.firstIndex(where: { $0.id == resumeStepId }) {
+            currentIndex = resumeIndex
+        }
+        isLoading = false
+    }
+
+    /// Nothing can be shown: dismiss now and persist a retry marker before
+    /// sending completion, so a failed write cannot reopen an empty modal on
+    /// every launch. The gate retries after reading the state again.
+    private func completeUnrenderableTour(_ tourId: String, session: APIv2OnboardingSession) async {
+        // The marker belongs to the owner that read this tour.
+        let serverId = session.auth.account.serverId.isEmpty ? nil : session.auth.account.serverId
+        let profileId = session.auth.profileId
+        if let serverId, let profileId {
+            UnrenderableOnboardingTourSuppression.set(
+                serverId: serverId,
+                profileId: profileId,
+                tourId: tourId
+            )
+        }
+        do {
+            if !session.state.done {
+                _ = try await api.onboardingWrite(
+                    OnboardingProgressRequest(tourId: tourId, lastStep: nil, completed: true, skipped: false),
+                    session: session
+                )
+            }
+            if let serverId, let profileId {
+                UnrenderableOnboardingTourSuppression.clear(
+                    serverId: serverId,
+                    profileId: profileId,
+                    tourId: tourId
+                )
+            }
+        } catch {
+            Self.logger.error("Onboarding completion for an empty tour failed: \(String(describing: error), privacy: .public)")
         }
     }
 
@@ -125,32 +186,19 @@ class OnboardingTourViewModel {
 
         let next = currentIndex + 1
         guard next < steps.count else {
-            let lastStep = steps.indices.contains(currentIndex) ? steps[currentIndex].id : nil
-            do {
-                try await api.postOnboardingProgress(OnboardingProgressRequest(
-                    tourId: tourId,
-                    lastStep: lastStep,
-                    completed: true,
-                    skipped: false
-                ))
-                completionRoute = currentStepRoute
-                finished = true
-            } catch {
-                self.error = error.localizedDescription
-            }
+            await close(skipped: false, route: currentStepRoute)
             return
         }
         let stepId = steps[next].id
         do {
-            try await api.postOnboardingProgress(OnboardingProgressRequest(
-                tourId: tourId,
-                lastStep: stepId,
-                completed: false,
-                skipped: false
-            ))
-            currentIndex = next
+            switch try await sendProgress(lastStep: stepId, completed: false, skipped: false) {
+            case .saved: currentIndex = next
+            case .finishedElsewhere: finished = true
+            }
+        } catch where Self.isTourNoLongerCurrent(error) {
+            closeReplacedTour(error)
         } catch {
-            self.error = error.localizedDescription
+            report(error)
         }
     }
 
@@ -167,35 +215,104 @@ class OnboardingTourViewModel {
     private func end(
         skipped: Bool,
         route: String?,
-        persistCurrentDefault: Bool = true
+        persistCurrentDefault: Bool = true,
+        leaveOnFailure: Bool = false
     ) async {
         guard !isSaving else { return }
         isSaving = true
         error = nil
         defer { isSaving = false }
+        if !skipped, persistCurrentDefault {
+            do {
+                try await persistDefaultForCurrentStepIfNeeded()
+            } catch {
+                report(error)
+                return
+            }
+        }
+        await close(skipped: skipped, route: route, leaveOnFailure: leaveOnFailure)
+    }
+
+    /// Records the finish or skip and closes the tour. A finish opens its
+    /// route whether this write saved it or a re-read shows it already
+    /// landed; only the write is suppressed then, not the navigation.
+    /// `leaveOnFailure` closes without a route when progress cannot be saved.
+    private func close(skipped: Bool, route: String?, leaveOnFailure: Bool = false) async {
         let lastStep = steps.indices.contains(currentIndex) ? steps[currentIndex].id : nil
         do {
-            if !skipped, persistCurrentDefault {
-                try await persistDefaultForCurrentStepIfNeeded()
-            }
-            try await api.postOnboardingProgress(OnboardingProgressRequest(
-                tourId: tourId,
-                lastStep: lastStep,
-                completed: !skipped,
-                skipped: skipped
-            ))
+            _ = try await sendProgress(lastStep: lastStep, completed: !skipped, skipped: skipped)
             completionRoute = skipped ? nil : route
             finished = true
+        } catch where Self.isTourNoLongerCurrent(error) {
+            closeReplacedTour(error)
         } catch {
-            self.error = error.localizedDescription
+            report(error)
+            if leaveOnFailure { finished = true }
         }
     }
 
+    /// The server replaced the tour this view shows, so no progress for it
+    /// can be saved. Close it; the gate reads the new tour on its next check.
+    private func closeReplacedTour(_ error: Error) {
+        Self.logger.error("Onboarding tour is no longer current: \(String(describing: error), privacy: .public)")
+        finished = true
+    }
+
+    /// A re-read naming another tour, or the server's 409 for a write to a
+    /// tour that is no longer current.
+    private static func isTourNoLongerCurrent(_ error: Error) -> Bool {
+        switch error {
+        case OnboardingProgressError.tourChanged: return true
+        case APIv2Error.problem(let problem): return problem.status == 409
+        case APIv2Error.httpStatus(let status): return status == 409
+        default: return false
+        }
+    }
+
+    private enum ProgressOutcome {
+        case saved
+        /// A re-read found the tour finished on another device or by an
+        /// earlier write whose reply was lost; nothing was sent.
+        case finishedElsewhere
+    }
+
+    /// Sends one progress write. The held session is taken before dispatch;
+    /// without one, the state is read again first under the tour's owner.
+    private func sendProgress(lastStep: String?, completed: Bool, skipped: Bool) async throws -> ProgressOutcome {
+        let held = session
+        session = nil
+        let current: APIv2OnboardingSession
+        if let held {
+            current = held
+        } else {
+            let fresh = try await api.onboardingRead(surface: nil)
+            guard let tourOwner, fresh.auth.sameCredentialIdentity(as: tourOwner) else {
+                throw HTTPError.requestIdentityChanged
+            }
+            guard fresh.state.tourId == tourId else { throw OnboardingProgressError.tourChanged }
+            if fresh.state.done, !loadedDone { return .finishedElsewhere }
+            current = fresh
+        }
+        session = try await api.onboardingWrite(
+            OnboardingProgressRequest(tourId: tourId, lastStep: lastStep, completed: completed, skipped: skipped),
+            session: current
+        )
+        return .saved
+    }
+
+    private func report(_ error: Error) {
+        Self.logger.error("Onboarding tour save failed: \(String(describing: error), privacy: .public)")
+        self.error = error.localizedDescription
+    }
+
+    /// Leaves the tour even when its progress cannot be saved: the user
+    /// asked to go on, and the gate reads the state again on its next check.
     func continueWithoutSaving() async {
         await end(
             skipped: false,
             route: currentStepRoute,
-            persistCurrentDefault: false
+            persistCurrentDefault: false,
+            leaveOnFailure: true
         )
     }
 
@@ -238,8 +355,9 @@ class OnboardingTourViewModel {
 
     private func writeSetting(spec: OnboardingSettingSpec, value: String) async throws {
         switch spec.target {
-        case "profile_field":
-            guard let profileId = activeProfileId() else {
+        case Self.supportedSettingTarget:
+            // Only the profile that loaded the tour may be changed by it.
+            guard let profileId = activeProfileId(), profileId == tourOwner?.profileId else {
                 throw OnboardingTourError.missingProfile
             }
 
@@ -257,13 +375,15 @@ class OnboardingTourViewModel {
                 key: spec.key,
                 value: value
             )
-        case "setting":
-            try await api.setSetting(key: spec.key, value: value)
-        case "device_setting":
-            try await api.setDeviceSetting(key: spec.key, value: value)
         default:
             throw OnboardingTourError.unsupportedSetting(spec.key)
         }
+    }
+
+    private static func isRenderable(_ step: OnboardingStep) -> Bool {
+        guard knownKinds.contains(step.kind) else { return false }
+        guard step.kind == "setting_choice", let target = step.setting?.target else { return true }
+        return target == supportedSettingTarget
     }
 
     private func boolean(_ value: String, key: String) throws -> Bool {

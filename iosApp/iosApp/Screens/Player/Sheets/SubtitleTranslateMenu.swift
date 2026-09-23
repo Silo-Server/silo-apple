@@ -439,6 +439,14 @@ struct SubtitleTranslateMenu: View {
                       systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.secondary)
                 progressButton(title: "Dismiss") { onDismiss() }
+                if controller.hasHeldRequest {
+                    // The request may have started a job, so it is not sent
+                    // again until the user lets it go.
+                    progressButton(title: "Discard held request", focusID: "progress-discard",
+                                   seedsFocus: false) {
+                        controller.discardHeldRequest()
+                    }
+                }
             } else {
                 Text(progressTitle(for: job))
                     .font(.headline)
@@ -545,12 +553,13 @@ private extension SubtitleTranslateMenu {
     }
 
     @ViewBuilder
-    func progressButton(title: String, action: @escaping () -> Void) -> some View {
+    func progressButton(title: String, focusID: String = "progress-action", seedsFocus: Bool = true,
+                        action: @escaping () -> Void) -> some View {
         #if os(tvOS)
         Button(title, action: action)
             .buttonStyle(.bordered)
-            .focused($focusedLanguageID, equals: "progress-action")
-            .onAppear { focusedLanguageID = "progress-action" }
+            .focused($focusedLanguageID, equals: focusID)
+            .onAppear { if seedsFocus { focusedLanguageID = focusID } }
         #else
         Button(title, action: action)
             .buttonStyle(.bordered)

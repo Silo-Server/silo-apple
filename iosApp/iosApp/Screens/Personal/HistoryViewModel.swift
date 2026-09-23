@@ -1,8 +1,8 @@
 import Foundation
 
-/// Loads the user's watch history through the catalog `source=history`
-/// endpoint with offset/limit paging. A server-issued snapshot freezes the
-/// result set so paging stays consistent while the user scrolls.
+/// Loads the user's watch history through the v2 catalog `source=history`
+/// list. The server fences the cursor at the first page, so paging stays
+/// consistent while the user scrolls.
 @Observable
 @MainActor
 class HistoryViewModel {
@@ -11,14 +11,13 @@ class HistoryViewModel {
     var error: ErrorState?
     var hasMore = true
 
-    /// Exact catalog total when the server computed one (only the first page
-    /// asks for it); `nil` once we can only show a lower bound.
+    /// Exact catalog total when the server computed one; `nil` once we can
+    /// only show a lower bound.
     private(set) var totalItems: Int?
 
-    private var nextOffset = 0
-    /// Snapshot token issued by the first page that pins the history result
-    /// set. Held stable across subsequent pages so offset paging is consistent.
-    private var snapshot: String?
+    /// Where the next page starts; `nil` before the live first page arrives
+    /// and after the last page. A cached first page has no continuation.
+    private var continuation: APIv2CatalogContinuation?
     private let pageSize = 60
 
     /// "523 items" when the exact total is known, otherwise a lower bound such
@@ -35,8 +34,7 @@ class HistoryViewModel {
         guard !isLoading else { return }
 
         // Cold start: surface the cached first page instantly so the grid
-        // doesn't blank while the network call runs. Hydrating the cursor too
-        // means a load-more still resumes correctly if the refresh below fails.
+        // doesn't blank while the network call runs.
         if reset, items.isEmpty,
            let cached: CatalogResponse = ResponseCache.shared.get(CacheKey.history) {
             apply(firstPage: cached)
@@ -47,31 +45,31 @@ class HistoryViewModel {
         isLoading = true
         error = nil
 
-        // A reset restarts at offset 0 with a fresh snapshot. Compute the
-        // request from locals and leave the live cursor untouched until the
-        // call succeeds — if it fails we keep the current page and its cursor,
-        // so a later load-more resumes instead of re-fetching (and duplicating)
-        // page 1.
-        let requestOffset = reset ? 0 : nextOffset
-        let requestSnapshot = reset ? nil : snapshot
+        // Leave the live continuation untouched until the call succeeds: if a
+        // reset fails we keep the current page and its continuation. A
+        // load-more without a continuation (only a cached first page is on
+        // screen) starts over from the first page instead of appending.
+        let nextPage = reset ? nil : continuation
 
         do {
-            let response = try await SiloAPI.shared.historyCatalog(
-                offset: requestOffset,
-                limit: pageSize,
-                snapshot: requestSnapshot,
-                includeTotal: reset
-            )
-            if reset {
-                apply(firstPage: response)
-                ResponseCache.shared.set(response, for: CacheKey.history)
+            let page: CatalogListPage
+            if let nextPage {
+                page = try await SiloAPI.shared.nextCatalogPage(nextPage)
             } else {
-                items.append(contentsOf: response.items)
-                advanceCursor(with: response, from: requestOffset)
+                page = try await SiloAPI.shared.catalogPage(.history(limit: pageSize))
+            }
+            if nextPage != nil, !page.startsOver {
+                items.append(contentsOf: page.response.items)
+                advance(with: page)
+            } else {
+                apply(firstPage: page.response)
+                continuation = page.continuation
+                hasMore = page.continuation != nil
+                ResponseCache.shared.set(page.response, for: CacheKey.history)
             }
         } catch let err {
             // Only surface an error when there's nothing on screen; otherwise
-            // keep the current page (and cursor) so the user can retry.
+            // keep the current page (and continuation) so the user can retry.
             if items.isEmpty {
                 error = ErrorState(err)
             }
@@ -80,28 +78,23 @@ class HistoryViewModel {
         isLoading = false
     }
 
-    /// Replaces all paging state with a freshly-fetched (or cached) first page.
+    /// Replaces the items and totals with a freshly-fetched (or cached) first
+    /// page. The continuation is set by the caller: a cached page has none.
     private func apply(firstPage response: CatalogResponse) {
         items = response.items
         hasMore = response.hasMore ?? false
         // `total` is only authoritative when the server computed it; a
-        // `total_exact == false` response carries a placeholder we must ignore.
+        // `total_exact == false` response carries an estimate we must ignore.
         totalItems = response.totalExact == false ? nil : response.total
-        snapshot = response.snapshot
-        nextOffset = response.items.count
     }
 
-    /// Folds a subsequent page into the cursor without disturbing the pinned
-    /// snapshot or a previously known-exact total (load-more pages skip the
-    /// count, so their `total_exact == false` placeholder is ignored).
-    private func advanceCursor(with response: CatalogResponse, from requestOffset: Int) {
-        if response.totalExact != false {
-            totalItems = response.total
+    /// Folds a later page into the paging state without discarding a
+    /// previously known-exact total.
+    private func advance(with page: CatalogListPage) {
+        if page.response.totalExact != false {
+            totalItems = page.response.total
         }
-        hasMore = response.hasMore ?? false
-        nextOffset = requestOffset + response.items.count
-        if snapshot == nil {
-            snapshot = response.snapshot
-        }
+        continuation = page.continuation
+        hasMore = page.continuation != nil
     }
 }

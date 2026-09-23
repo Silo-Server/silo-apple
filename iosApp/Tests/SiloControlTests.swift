@@ -60,6 +60,22 @@ final class SiloControlTests: XCTestCase {
         XCTAssertEqual(try roundTrip(.handoffCancel(cancel)), .handoffCancel(cancel))
     }
 
+    /// The phone approves only the request the TV challenged with: same
+    /// match code, opened for remote playback, ending in a temporary session.
+    /// A full device sign-in with the same code is never approved here.
+    @MainActor func testHandoffApprovesOnlyATemporaryRemotePlaybackRequest() {
+        let challenge = SiloControlHandoffChallenge(requestId: "request-1", userCode: "ABCD-1234",
+            matchCode: "42", expiresAt: "2026-01-02T03:14:05Z")
+        func lookup(match: String = "42", purpose: String = "remote_playback", temporary: Bool = true) -> DeviceLookupResponse {
+            DeviceLookupResponse(matchCode: match, deviceName: "TV", devicePlatform: "tvos", status: "pending",
+                clientPurpose: purpose, temporary: temporary)
+        }
+        XCTAssertTrue(SiloControlClient.isRemotePlaybackHandoff(lookup(), answering: challenge))
+        XCTAssertFalse(SiloControlClient.isRemotePlaybackHandoff(lookup(match: "43"), answering: challenge))
+        XCTAssertFalse(SiloControlClient.isRemotePlaybackHandoff(lookup(purpose: "device_login"), answering: challenge))
+        XCTAssertFalse(SiloControlClient.isRemotePlaybackHandoff(lookup(temporary: false), answering: challenge))
+    }
+
     func testHandoffOfferDecodesWithoutDisplayMetadata() throws {
         let data = Data(
             #"{"type":"handoff_offer","v":2,"handoffOffer":{"requestId":"request-1","serverId":"server-1","serverURL":"https://silo.example","profileId":"profile-1"}}"#

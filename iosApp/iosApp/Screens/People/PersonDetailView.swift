@@ -28,7 +28,7 @@ enum PersonMediaFilter: String, CaseIterable, Identifiable {
 @Observable
 @MainActor
 final class PersonDetailViewModel {
-    let personId: Int
+    let personId: String
     var person: Person?
     var items: [BrowseItem] = []
     var isLoadingPerson = false
@@ -50,18 +50,19 @@ final class PersonDetailViewModel {
         category: "PersonDetail"
     )
     private let pageSize = 60
-    private var nextOffset = 0
-    private var snapshot: String?
+    /// Where the next credits page starts; `nil` before the first page and
+    /// after the last one.
+    private var continuation: APIv2CatalogContinuation?
     private var generation = 0
     private var metadataRefreshTask: Task<Void, Never>?
-    private var autoRefreshRequestedPersonId: Int?
-    private var metadataRefreshExhaustedPersonId: Int?
+    private var autoRefreshRequestedPersonId: String?
+    private var metadataRefreshExhaustedPersonId: String?
 
     #if os(tvOS)
     private var prefetchedPosterURLs: Set<URL> = []
     #endif
 
-    init(personId: Int) {
+    init(personId: String) {
         self.personId = personId
     }
 
@@ -164,7 +165,24 @@ final class PersonDetailViewModel {
         }
     }
 
-    private func runMetadataAutoRefresh(for personId: Int, shouldQueueRefresh: Bool) async {
+    /// Whether the read-only poll still runs after the server rejected the
+    /// refresh dispatch. A rate limit or a transient server error leaves the
+    /// refresh a plain person read queues when one is due, and a malformed
+    /// receipt may still mean the refresh was queued. A missing person, an
+    /// unconfigured refresh queue (503), a refused credential, request or
+    /// client, or a v1-only server means the read cannot queue one either.
+    nonisolated static func pollsAfterRejectedRefresh(_ error: APIv2Error) -> Bool {
+        let status: Int
+        switch error {
+        case .problem(let problem): status = problem.status
+        case .httpStatus(let code): status = code
+        case .incompleteCatalogRead: return true
+        default: return false
+        }
+        return (200..<300).contains(status) || status == 429 || ((500...599).contains(status) && status != 503)
+    }
+
+    private func runMetadataAutoRefresh(for personId: String, shouldQueueRefresh: Bool) async {
         defer {
             let wasCancelled = Task.isCancelled
             metadataRefreshTask = nil
@@ -175,10 +193,27 @@ final class PersonDetailViewModel {
             Self.logger.debug("finishMetadataRefresh personId=\(personId, privacy: .public) cancelled=\(wasCancelled, privacy: .public)")
         }
 
-        if shouldQueueRefresh,
-           let token = await SiloAPI.shared.currentAccessToken(),
-           !token.isEmpty {
-            _ = try? await SiloAPI.shared.refreshPerson(id: personId)
+        // The refresh is dispatched at most once per person. Viewing the
+        // person already queues a provider refresh when one is due, so a
+        // rejected dispatch ends the poll only when that read cannot queue one
+        // either; otherwise the poll keeps watching without dispatching again.
+        // A lost answer may still have queued the refresh, so it is observed
+        // the same way.
+        if shouldQueueRefresh {
+            do {
+                try await SiloAPI.shared.refreshPerson(id: personId)
+            } catch is CancellationError {
+                return
+            } catch let error as APIv2Error {
+                let keepsPolling = Self.pollsAfterRejectedRefresh(error)
+                Self.logger.error("refreshPerson rejected personId=\(personId, privacy: .public) keepsPolling=\(keepsPolling, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+                guard keepsPolling else { return }
+            } catch HTTPError.requestIdentityChanged {
+                Self.logger.debug("refreshPerson not sent personId=\(personId, privacy: .public): owner changed")
+                return
+            } catch {
+                Self.logger.info("refreshPerson outcome unknown personId=\(personId, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+            }
         }
 
         let deadline = Date.now.addingTimeInterval(Self.metadataRefreshWindowSeconds)
@@ -222,24 +257,26 @@ final class PersonDetailViewModel {
         defer { isLoadingItems = false }
 
         do {
-            let response = try await SiloAPI.shared.personCatalogItems(
-                personId: personId,
-                type: selectedFilter.catalogType,
-                offset: nextOffset,
-                limit: pageSize,
-                snapshot: snapshot
-            )
+            let nextPage = reset ? nil : continuation
+            let startsOver = nextPage == nil
+            let page: CatalogListPage
+            if let nextPage {
+                page = try await SiloAPI.shared.nextCatalogPage(nextPage)
+            } else {
+                page = try await SiloAPI.shared.catalogPage(.personCredits(
+                    personId: personId, type: selectedFilter.catalogType, limit: pageSize
+                ))
+            }
             guard currentGeneration == generation else { return }
 
-            if reset {
-                items = response.items
+            if startsOver || page.startsOver {
+                items = page.response.items
             } else {
-                items.append(contentsOf: response.items)
+                items.append(contentsOf: page.response.items)
             }
-            totalItems = response.total
-            hasMore = response.hasMore ?? false
-            nextOffset += response.items.count
-            if snapshot == nil { snapshot = response.snapshot }
+            totalItems = page.response.total
+            continuation = page.continuation
+            hasMore = page.continuation != nil
         } catch {
             guard currentGeneration == generation else { return }
             self.error = ErrorState(error)
@@ -262,12 +299,9 @@ final class PersonDetailViewModel {
     /// remains visible rather than hiding content based on a network error.
     private func catalogHasItems(type: String) async -> Bool? {
         do {
-            let response = try await SiloAPI.shared.personCatalogItems(
-                personId: personId,
-                type: type,
-                offset: 0,
-                limit: 1
-            )
+            let response = try await SiloAPI.shared.catalogPage(
+                .personCredits(personId: personId, type: type, limit: 1)
+            ).response
             return !response.items.isEmpty || (response.total ?? 0) > 0
         } catch {
             return nil
@@ -283,8 +317,7 @@ final class PersonDetailViewModel {
         #endif
         items = []
         totalItems = nil
-        nextOffset = 0
-        snapshot = nil
+        continuation = nil
         hasMore = true
     }
 }
@@ -296,7 +329,7 @@ struct PersonDetailView: View {
     @Environment(\.dismiss) private var dismiss
     #endif
 
-    init(personId: Int) {
+    init(personId: String) {
         _viewModel = State(initialValue: PersonDetailViewModel(personId: personId))
     }
 

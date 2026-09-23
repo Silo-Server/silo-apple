@@ -8,27 +8,31 @@ final class PlaybackMediaAuthorizationTests: XCTestCase {
             serverURL: "https://api.example/silo", sessionID: "session-one"
         )
         for resource in [
-            "https://api.example/silo/api/v1/stream/session-one/subtitles/2.ass",
-            "https://api.example:443/silo/api/v1/stream/session-one/subtitles/2/fonts?file_id=42&embedded_stream_index=3",
-            "https://api.example/silo/api/v1/stream/session-one/subtitles/2.srt?downloaded_subtitle_id=8",
-            "https://api.example/silo/api/v1/stream/session-one/subtitles/2.vtt?external_subtitle_key=" + String(repeating: "a1", count: 32),
+            "https://api.example/silo/api/v2/stream/session-one/subtitles/2.ass",
+            "https://api.example:443/silo/api/v2/stream/session-one/subtitles/2/fonts?file_id=42&embedded_stream_index=3",
+            "https://api.example/silo/api/v2/stream/session-one/subtitles/2.srt?downloaded_subtitle_id=8",
+            "https://api.example/silo/api/v2/stream/session-one/subtitles/2.vtt?external_subtitle_key=" + String(repeating: "a1", count: 32),
         ] {
             XCTAssertTrue(scope.allows(url(resource)), resource)
         }
         for resource in [
-            "https://api.example/silo/api/v1/stream/session-two/subtitles/2.ass",
-            "https://proxy.example/silo/api/v1/stream/session-one/subtitles/2.ass",
-            "http://api.example/silo/api/v1/stream/session-one/subtitles/2.ass",
-            "https://api.example/api/v1/stream/session-one/subtitles/2.ass",
-            "https://api.example/silo/api/v1/stream/session-one",
-            "https://api.example/silo/api/v1/auth/refresh",
-            "https://api.example/silo/api/v1/playback/transcode/session-one/master.m3u8",
-            "https://api.example/silo/api/v1/stream/session-one/subtitles/2/fonts/extra",
-            "https://api.example/silo/api/v1/stream/session-one/subtitles/%252e%252e",
-            "https://api.example/silo/api/v1/stream/session-one/subtitles/2.ass?token=secret",
-            "https://api.example/silo/api/v1/stream/session-one/subtitles/2.ass?file_id=1&file_id=2",
-            "https://api.example/silo/api/v1/stream/session-one/subtitles/2.ass?embedded_stream_index=1&downloaded_subtitle_id=2",
-            "https://api.example/silo/api/v1/stream/session-one/subtitles/2.ass#fragment",
+            "https://api.example/silo/api/v2/stream/session-two/subtitles/2.ass",
+            "https://proxy.example/silo/api/v2/stream/session-one/subtitles/2.ass",
+            "http://api.example/silo/api/v2/stream/session-one/subtitles/2.ass",
+            "https://api.example/api/v2/stream/session-one/subtitles/2.ass",
+            "https://api.example/silo/api/v2/stream/session-one",
+            "https://api.example/silo/api/v2/auth/refresh",
+            "https://api.example/silo/api/v2/playback/transcode/session-one/master.m3u8",
+            "https://api.example/silo/api/v2/stream/session-one/subtitles/2/fonts/extra",
+            "https://api.example/silo/api/v2/stream/session-one/subtitles/%252e%252e",
+            "https://api.example/silo/api/v2/stream/session-one/subtitles/2.ass?token=secret",
+            "https://api.example/silo/api/v2/stream/session-one/subtitles/2.ass?file_id=1&file_id=2",
+            "https://api.example/silo/api/v2/stream/session-one/subtitles/2.ass?embedded_stream_index=1&downloaded_subtitle_id=2",
+            "https://api.example/silo/api/v2/stream/session-one/subtitles/2.ass#fragment",
+            // Only the v2 media namespace the plan minted: no unrooted or
+            // other-version twin of the same route.
+            "https://api.example/silo/stream/session-one/subtitles/2.ass",
+            "https://api.example/silo/api/v3/stream/session-one/subtitles/2.ass",
         ] {
             XCTAssertFalse(scope.allows(url(resource)), resource)
         }
@@ -36,18 +40,19 @@ final class PlaybackMediaAuthorizationTests: XCTestCase {
 
     func testAPIMasterAuthorizesOnlyItsOwnSessionMedia() throws {
         let scope = try PlaybackMediaAuthorization.Scope(
-            sourceURL: url("https://api.example/silo/api/v1/playback/transcode/session-one/master.m3u8"),
+            sourceURL: url("https://api.example/silo/api/v2/playback/transcode/session-one/master.m3u8"),
             serverURL: "https://api.example/silo/",
             sessionID: "session-one"
         )
 
-        XCTAssertTrue(scope.allows(url("https://api.example/silo/api/v1/playback/transcode/session-one/master.m3u8")))
-        XCTAssertTrue(scope.allows(url("https://api.example:443/silo/api/v1/playback/transcode/session-one/segment/init.mp4")))
-        XCTAssertTrue(scope.allows(url("https://api.example/silo/api/v1/playback/transcode/session-one/segment/seg_00001.m4s")))
-        XCTAssertFalse(scope.allows(url("https://api.example/silo/api/v1/playback/transcode/session-two/segment/seg_00001.m4s")))
-        XCTAssertFalse(scope.allows(url("https://api.example/silo/api/v1/auth/refresh")))
-        XCTAssertFalse(scope.allows(url("https://api.example/silo/api/v1/stream/session-one")))
-        XCTAssertFalse(scope.allows(url("https://api.example/api/v1/playback/transcode/session-one/master.m3u8")))
+        XCTAssertTrue(scope.allows(url("https://api.example/silo/api/v2/playback/transcode/session-one/master.m3u8")))
+        XCTAssertTrue(scope.allows(url("https://api.example:443/silo/api/v2/playback/transcode/session-one/segment/init.mp4")))
+        XCTAssertTrue(scope.allows(url("https://api.example/silo/api/v2/playback/transcode/session-one/segment/seg_00001.m4s")))
+        XCTAssertFalse(scope.allows(url("https://api.example/silo/api/v2/playback/transcode/session-two/segment/seg_00001.m4s")))
+        XCTAssertFalse(scope.allows(url("https://api.example/silo/api/v2/auth/refresh")))
+        XCTAssertFalse(scope.allows(url("https://api.example/silo/api/v2/stream/session-one")))
+        XCTAssertFalse(scope.allows(url("https://api.example/api/v2/playback/transcode/session-one/master.m3u8")))
+        XCTAssertFalse(scope.allows(url("https://api.example/silo/playback/transcode/session-one/segment/seg_00001.m4s")))
     }
 
     func testProxyMasterNeverAuthorizesAnotherOriginOrRouteFamily() throws {
@@ -61,10 +66,10 @@ final class PlaybackMediaAuthorizationTests: XCTestCase {
             "https://proxy.example/stream/v3/session-one/segment/seg_00001.ts",
             "http://proxy.example:8443/stream/v3/session-one/segment/seg_00001.ts",
             "https://another-proxy.example:8443/stream/v3/session-one/segment/seg_00001.ts",
-            "https://api.example/silo/api/v1/playback/transcode/session-one/master.m3u8",
+            "https://api.example/silo/api/v2/playback/transcode/session-one/master.m3u8",
             "https://proxy.example:8443/stream/v3/session-two/master.m3u8",
             "https://proxy.example:8443/stream/v3/session-one",
-            "https://proxy.example:8443/api/v1/auth/refresh",
+            "https://proxy.example:8443/api/v2/auth/refresh",
         ] {
             XCTAssertFalse(scope.allows(url(value)), value)
         }
@@ -72,7 +77,7 @@ final class PlaybackMediaAuthorizationTests: XCTestCase {
 
     func testProgressiveRoutesAuthorizeOnlyTheirPinnedPathAndSeekQuery() throws {
         for source in [
-            "https://api.example/silo/api/v1/stream/session-one?seek=8",
+            "https://api.example/silo/api/v2/stream/session-one?seek=8",
             "https://proxy.example/stream/v3/session-one?seek=8",
         ] {
             let scope = try PlaybackMediaAuthorization.Scope(
@@ -89,17 +94,17 @@ final class PlaybackMediaAuthorizationTests: XCTestCase {
     }
 
     func testHTTPDeploymentKeepsItsExplicitOriginAndPort() throws {
-        let source = url("http://api.example:8080/base/api/v1/playback/transcode/session-one/master.m3u8")
+        let source = url("http://api.example:8080/base/api/v2/playback/transcode/session-one/master.m3u8")
         let scope = try PlaybackMediaAuthorization.Scope(
             sourceURL: source, serverURL: "http://api.example:8080/base", sessionID: "session-one"
         )
         XCTAssertTrue(scope.allows(source))
-        XCTAssertFalse(scope.allows(url("http://api.example/base/api/v1/playback/transcode/session-one/master.m3u8")))
-        XCTAssertFalse(scope.allows(url("https://api.example:8080/base/api/v1/playback/transcode/session-one/master.m3u8")))
+        XCTAssertFalse(scope.allows(url("http://api.example/base/api/v2/playback/transcode/session-one/master.m3u8")))
+        XCTAssertFalse(scope.allows(url("https://api.example:8080/base/api/v2/playback/transcode/session-one/master.m3u8")))
     }
 
     func testUnexpectedQueriesAndURLCredentialsAreDenied() throws {
-        let master = "https://api.example/api/v1/playback/transcode/session-one/master.m3u8"
+        let master = "https://api.example/api/v2/playback/transcode/session-one/master.m3u8"
         let scope = try PlaybackMediaAuthorization.Scope(
             sourceURL: url(master), serverURL: "https://api.example", sessionID: "session-one"
         )
@@ -114,7 +119,7 @@ final class PlaybackMediaAuthorizationTests: XCTestCase {
     }
 
     func testEncodedTraversalAndMalformedSegmentPathsAreDenied() throws {
-        let prefix = "https://api.example/api/v1/playback/transcode/session-one/"
+        let prefix = "https://api.example/api/v2/playback/transcode/session-one/"
         let scope = try PlaybackMediaAuthorization.Scope(
             sourceURL: url(prefix + "master.m3u8"), serverURL: "https://api.example", sessionID: "session-one"
         )
@@ -132,16 +137,18 @@ final class PlaybackMediaAuthorizationTests: XCTestCase {
 
     func testInvalidSourceCannotCreateAScope() {
         for source in [
-            "https://api.example/api/v1/playback/transcode/session-two/master.m3u8",
-            "https://api.example/api/v1/playback/transcode/session-one/segment/init.mp4",
-            "https://api.example/api/v1/stream/session-one/subtitles/0.vtt",
-            "https://api.example/api/v1/auth/refresh",
-            "https://foreign.example/api/v1/playback/transcode/session-one/master.m3u8",
+            "https://api.example/api/v2/playback/transcode/session-two/master.m3u8",
+            "https://api.example/api/v2/playback/transcode/session-one/segment/init.mp4",
+            "https://api.example/api/v2/stream/session-one/subtitles/0.vtt",
+            "https://api.example/api/v2/auth/refresh",
+            "https://api.example/playback/transcode/session-one/master.m3u8",
+            "https://api.example/api/v3/stream/session-one",
+            "https://foreign.example/api/v2/playback/transcode/session-one/master.m3u8",
             "https://proxy.example/stream/v3/session-two/master.m3u8",
             "http://proxy.example/stream/v3/session-one/master.m3u8",
-            "https://api.example/api/v1/playback/transcode/session-one/master.m3u8?token=secret",
-            "https://user@api.example/api/v1/playback/transcode/session-one/master.m3u8",
-            "https://api.example/api/v1/playback/transcode/session-one/master.m3u8#fragment",
+            "https://api.example/api/v2/playback/transcode/session-one/master.m3u8?token=secret",
+            "https://user@api.example/api/v2/playback/transcode/session-one/master.m3u8",
+            "https://api.example/api/v2/playback/transcode/session-one/master.m3u8#fragment",
         ] {
             XCTAssertThrowsError(try PlaybackMediaAuthorization.Scope(
                 sourceURL: url(source), serverURL: "https://api.example", sessionID: "session-one"

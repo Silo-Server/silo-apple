@@ -25,7 +25,7 @@ final class APIv2ContractTests: XCTestCase {
     /// type the model layer routes on, and the body decodes as that type.
     func testEveryVendoredFixtureRoutesByStatusAndMediaType() throws {
         let entries = try Support.index(bundleClass: Self.self)
-        XCTAssertEqual(entries.count, 14, "vendored index must list exactly the selected fixtures")
+        XCTAssertEqual(entries.count, 34, "vendored index must list exactly the selected fixtures")
         for entry in entries {
             let data = try fixture(entry.name)
             XCTAssertEqual(entry.responseHeaders["Content-Type"], entry.responseMediaType, entry.name)
@@ -287,5 +287,172 @@ final class APIv2ContractTests: XCTestCase {
         XCTAssertEqual(info.links.capabilities, "/api/v2/capabilities")
         XCTAssertFalse(info.contractDigest.isEmpty)
         XCTAssertEqual(try entry("get_system_info_ok").responseHeaders["Cache-Control"], "no-cache")
+    }
+
+    // MARK: getCatalogSearchCapabilities
+
+    func testCatalogSearchCapabilitiesFixture() throws {
+        XCTAssertEqual(try entry("get_catalog_search_capabilities_ok").operationId, "getCatalogSearchCapabilities")
+        let capabilities = try decoder.decode(APIv2CatalogSearchCapabilities.self,
+                                              from: fixture("get_catalog_search_capabilities_ok"))
+        XCTAssertTrue(capabilities.isAvailable)
+        XCTAssertEqual(capabilities.provider, "meilisearch")
+        XCTAssertEqual(capabilities.resultWindowLimit, 1000)
+        XCTAssertEqual(capabilities.peopleMediaScope, true)
+        XCTAssertEqual(capabilities.personPrefetch, true)
+
+        // Only revision, state and allowed are required: an unconfigured
+        // server omits the provider and its limits.
+        let unconfigured = try Support.mutatedBody(named: "get_catalog_search_capabilities_ok", bundleClass: Self.self) {
+            for key in ["provider", "result_window_limit", "session_ttl_seconds", "max_sessions_per_account",
+                        "people_media_scope", "person_prefetch"] { $0.removeValue(forKey: key) }
+            $0["state"] = "not_configured"
+        }
+        let minimal = try decoder.decode(APIv2CatalogSearchCapabilities.self, from: unconfigured)
+        XCTAssertNil(minimal.provider)
+        XCTAssertFalse(minimal.isAvailable)
+
+        let denied = try Support.mutatedBody(named: "get_catalog_search_capabilities_ok", bundleClass: Self.self) {
+            $0["allowed"] = false
+        }
+        XCTAssertFalse(try decoder.decode(APIv2CatalogSearchCapabilities.self, from: denied).isAvailable)
+        let missingAllowed = try Support.mutatedBody(named: "get_catalog_search_capabilities_ok", bundleClass: Self.self) {
+            $0.removeValue(forKey: "allowed")
+        }
+        XCTAssertThrowsError(try decoder.decode(APIv2CatalogSearchCapabilities.self, from: missingAllowed))
+    }
+
+    // MARK: getMetadataAICapability
+
+    func testMetadataAICapabilityFixture() throws {
+        XCTAssertEqual(try entry("get_metadata_ai_capability_ok").operationId, "getMetadataAICapability")
+        let status = try decoder.decode(APIv2MetadataAICapability.self, from: fixture("get_metadata_ai_capability_ok")).playerValue
+        XCTAssertTrue(status.enabled)
+        XCTAssertEqual(status.onView, .button)
+
+        // `on_view` is an open string: a new mode keeps the feature enabled
+        // with the affordance hidden instead of failing the read.
+        let future = try Support.mutatedBody(named: "get_metadata_ai_capability_ok", bundleClass: Self.self) {
+            $0["on_view"] = "summarize"
+        }
+        let tolerant = try decoder.decode(APIv2MetadataAICapability.self, from: future).playerValue
+        XCTAssertTrue(tolerant.enabled)
+        XCTAssertEqual(tolerant.onView, .off)
+
+        let denied = try Support.mutatedBody(named: "get_metadata_ai_capability_ok", bundleClass: Self.self) {
+            $0["allowed"] = false
+        }
+        let refused = try decoder.decode(APIv2MetadataAICapability.self, from: denied).playerValue
+        XCTAssertFalse(refused.enabled, "a principal the server does not allow cannot translate")
+        XCTAssertEqual(refused.onView, .off)
+    }
+
+    // MARK: getPlaybackControlSocketCapabilities
+
+    /// Client-authored: the server publishes no fixture for this operation.
+    /// Its test asserts the body never carries an owner-lease member.
+    func testPlaybackControlCapabilitiesFixture() throws {
+        let capability = try decoder.decode(APIv2PlaybackControlCapabilities.self,
+                                            from: fixture("playback_control_capabilities"))
+        XCTAssertTrue(capability.servesControlHandshake)
+        let mutations: [(String, (inout [String: Any]) -> Void)] = [
+            ("not allowed", { $0["allowed"] = false }),
+            ("disabled", { $0["state"] = "disabled" }),
+            ("not served", { $0["available"] = false; $0["protocol"] = "" }),
+            ("other protocol", { $0["protocol"] = "silo.playback-control.v3" }),
+        ]
+        for (name, mutate) in mutations {
+            let data = try Support.mutatedBody(named: "playback_control_capabilities", bundleClass: Self.self, mutate: mutate)
+            XCTAssertFalse(try decoder.decode(APIv2PlaybackControlCapabilities.self, from: data).servesControlHandshake, name)
+        }
+    }
+
+    /// The ticket is minted for the session's installation under the captured
+    /// profile, and the upgrade carries it only as the second subprotocol. A
+    /// plain-http LAN server gets a ws upgrade (D11).
+    func testPlaybackControlHandshakeMintsATicketForTheSessionInstallation() async throws {
+        let name = "APIv2ContractTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { UserDefaults().removePersistentDomain(forName: name) }
+        let tokens = TokenStore(keychain: SharedKeychain(service: name, accessGroup: nil),
+            defaults: SharedDefaults(suite: suite, standard: suite))
+        await tokens.switchActiveServer(serverId: "server")
+        await tokens.setServerUrl("http://192.168.1.20:8096/silo")
+        await tokens.setProfileId("profile-one")
+        let stub = APIv2TestStub()
+        let api = APIv2Client(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens),
+            tokenStore: tokens, isUpdateRequired: { false })
+        let authValue = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(authValue)
+        let session = UUID().uuidString.lowercased()
+        let installation = UUID().uuidString.lowercased()
+        let capabilities = String(decoding: try fixture("playback_control_capabilities"), as: UTF8.self)
+        stub.sequence([
+            .json(200, capabilities),
+            .json(200, #"{"ticket":"abc-123","expires_in":30,"max_connection_seconds":14400,"protocol":"silo.playback-control.v2"}"#),
+        ])
+        let handshake = try await api.playbackControlHandshake(sessionID: session, installationID: installation, auth: auth)
+        XCTAssertEqual(stub.methods, ["GET", "POST"])
+        XCTAssertEqual(stub.requestedPaths, ["/silo/api/v2/playback/sessions/control/capabilities",
+                                             "/silo/api/v2/playback/sessions/\(session)/control/ws-ticket"])
+        let mint = try XCTUnwrap(stub.requests.last)
+        XCTAssertEqual(mint.header("X-Profile-Id"), "profile-one")
+        let body = try XCTUnwrap(mint.body)
+        XCTAssertEqual(try JSONSerialization.jsonObject(with: body) as? [String: String], ["installation_id": installation])
+
+        XCTAssertEqual(handshake.maxConnectionSeconds, 14400)
+        XCTAssertEqual(handshake.request.url?.absoluteString,
+                       "ws://192.168.1.20:8096/silo/api/v2/playback/sessions/\(session)/control/ws")
+        XCTAssertEqual(handshake.request.value(forHTTPHeaderField: "Sec-WebSocket-Protocol"),
+                       "silo.playback-control.v2, silo.ticket.abc-123")
+        XCTAssertNil(handshake.request.value(forHTTPHeaderField: "Authorization"),
+                     "the upgrade proves itself with the ticket, never the bearer token")
+    }
+
+    func testPlaybackControlHandshakeMintsOnlyWhenTheServerServesIt() async throws {
+        let name = "APIv2ContractTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { UserDefaults().removePersistentDomain(forName: name) }
+        let tokens = TokenStore(keychain: SharedKeychain(service: name, accessGroup: nil),
+            defaults: SharedDefaults(suite: suite, standard: suite))
+        await tokens.switchActiveServer(serverId: "server")
+        await tokens.setServerUrl("https://control.example")
+        await tokens.setProfileId("profile-one")
+        let stub = APIv2TestStub()
+        let api = APIv2Client(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens),
+            tokenStore: tokens, isUpdateRequired: { false })
+        let authValue = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(authValue)
+        let session = UUID().uuidString.lowercased()
+
+        let denied = try Support.mutatedBody(named: "playback_control_capabilities", bundleClass: Self.self) {
+            $0["allowed"] = false
+        }
+        stub.reply(200, String(decoding: denied, as: UTF8.self))
+        do {
+            _ = try await api.playbackControlHandshake(sessionID: session, installationID: UUID().uuidString, auth: auth)
+            XCTFail("a capability that does not allow this owner cannot mint a ticket")
+        } catch PlaybackSequencedError.controlUnavailable { }
+        XCTAssertEqual(stub.requestedPaths, ["/api/v2/playback/sessions/control/capabilities"])
+
+        stub.reset()
+        let capabilities = String(decoding: try fixture("playback_control_capabilities"), as: UTF8.self)
+        stub.sequence([
+            .json(200, capabilities),
+            .json(409, #"{"type":"https://siloserver.org/problems/conflict","title":"Conflict","status":409,"detail":"The installation does not match the session; refresh capabilities."}"#),
+        ])
+        do {
+            _ = try await api.playbackControlHandshake(sessionID: session, installationID: UUID().uuidString, auth: auth)
+            XCTFail("a refused mint yields no handshake")
+        } catch APIv2Error.problem(let problem) {
+            XCTAssertEqual(problem.status, 409)
+        }
+
+        stub.reset()
+        do {
+            _ = try await api.playbackControlHandshake(sessionID: "Not-A-Session", installationID: UUID().uuidString, auth: auth)
+            XCTFail("a non-canonical session id is never spliced into the path")
+        } catch PlaybackSequencedError.invalidSession { }
+        XCTAssertTrue(stub.requestedPaths.isEmpty)
     }
 }

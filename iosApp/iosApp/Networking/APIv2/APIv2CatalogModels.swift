@@ -27,14 +27,23 @@ struct APIv2CatalogSearchDiagnostics: Decodable {
     let sessionExpiresAt: Date?
 }
 
+/// `GET /api/v2/catalog/search/capabilities`. Only `revision`, `state` and
+/// `allowed` are required; the provider and its limits are absent when search
+/// is not configured.
 struct APIv2CatalogSearchCapabilities: Decodable {
     let revision: String
     let state: String
-    let allowed: Bool?
-    let provider: String
+    let allowed: Bool
+    let provider: String?
     let resultWindowLimit: Int?
     let sessionTtlSeconds: Int?
     let maxSessionsPerAccount: Int?
+    /// People search accepts `media_scope` and filters credits by access.
+    let peopleMediaScope: Bool?
+    /// Person reads accept `prefetch=true` without queueing a refresh.
+    let personPrefetch: Bool?
+
+    var isAvailable: Bool { allowed && state == "available" }
 }
 
 enum APIv2CatalogRuleValue: Encodable, Hashable {
@@ -123,6 +132,92 @@ enum APIv2CatalogOperation: String {
     case query
 }
 
+extension APIv2CatalogQuery {
+    /// `GET /api/v2/catalog` caps the `groups` parameter at this many
+    /// characters; a larger filter set goes in a `POST /catalog/query` body.
+    static let maxGetGroupsLength = 32768
+
+    /// GET while the encoded groups fit the query-string limit, POST above it.
+    /// An invalid query stays on GET so the request itself reports the error.
+    var preferredOperation: APIv2CatalogOperation {
+        let groupsLength = (try? getParameters())?["groups"]?.utf8.count ?? 0
+        return groupsLength > Self.maxGetGroupsLength ? .query : .get
+    }
+
+    /// The watch history, most recent first.
+    static func history(limit: Int) -> APIv2CatalogQuery {
+        var query = APIv2CatalogQuery()
+        query.source = "history"
+        query.limit = limit
+        return query
+    }
+
+    /// A person's credits, newest first, optionally narrowed to one media type.
+    static func personCredits(personId: String, type: String?, limit: Int) -> APIv2CatalogQuery {
+        var query = APIv2CatalogQuery()
+        query.source = "person"
+        query.personId = personId
+        query.type = type
+        query.sort = "year"
+        query.order = "desc"
+        query.limit = limit
+        return query
+    }
+
+    /// The items of a curated library collection or a user collection.
+    static func collectionItems(kind: LibraryCollectionKind, collectionId: String, limit: Int) -> APIv2CatalogQuery {
+        var query = APIv2CatalogQuery()
+        query.source = kind.catalogSource
+        query.collectionId = collectionId
+        query.limit = limit
+        return query
+    }
+
+    /// Free-text search across the catalog, optionally narrowed to one media type.
+    static func search(_ text: String, type: String?, limit: Int) -> APIv2CatalogQuery {
+        var query = APIv2CatalogQuery()
+        query.q = text
+        query.type = type
+        query.limit = limit
+        return query
+    }
+}
+
+/// One page of a catalog list for a screen: the cards and totals it shows,
+/// plus the continuation for the next page (`nil` on the last one). The
+/// continuation keeps the original query and owner, so a screen pages by
+/// handing it back rather than rebuilding the request.
+struct CatalogListPage {
+    let response: CatalogResponse
+    let continuation: APIv2CatalogContinuation?
+    /// This is a fresh first page read in place of a rejected cursor, so the
+    /// caller replaces its list instead of appending.
+    let startsOver: Bool
+
+    init(_ result: APIv2CatalogResult, startsOver: Bool = false) {
+        response = CatalogResponse(catalogPage: result.value)
+        continuation = result.continuation
+        self.startsOver = startsOver
+    }
+}
+
+extension APIv2Error {
+    /// The cursor can never succeed again: the server rejected it because the
+    /// list changed since the first page (`invalid_cursor`: a collection edit,
+    /// a library scan, a changed access policy), or the server's cursor chain
+    /// repeated or dropped a cursor. The list has to start over from page 1.
+    static func isCatalogRestart(_ error: Error) -> Bool {
+        switch error {
+        case APIv2Error.invalidCatalogContinuation:
+            return true
+        case APIv2Error.problem(let problem):
+            return problem.identifier == "invalid_cursor"
+        default:
+            return false
+        }
+    }
+}
+
 struct APIv2CatalogContinuation {
     let query: APIv2CatalogQuery
     let operation: APIv2CatalogOperation
@@ -165,6 +260,20 @@ struct APIv2CatalogTechnicalFilters: Codable {
     let resolutions: [String]
     let audioLanguages: [String]
     let subtitleLanguages: [String]
+}
+
+/// Outcome of `POST /api/v2/catalog/items/{id}/trailers/refresh`.
+///
+/// `status` is `queued` (HTTP 202 — a refresh started), `cooldown` (200 — the
+/// item was checked recently, `nextAllowedAt` says when it can be retried),
+/// or `disabled` (200 — every library containing the item has remote videos
+/// turned off). Only `queued` is worth polling for; the other two are
+/// rendered states rather than errors.
+struct TrailerRefreshResponse: Codable, Hashable {
+    let status: String
+    /// RFC-3339 on the wire; parsed by the shared decoder's custom ISO-8601
+    /// strategy (fractional seconds tolerated).
+    let nextAllowedAt: Date?
 }
 
 /// Strict library-tab shape. IDs stay strings; unknown group kinds are retained

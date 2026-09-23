@@ -68,21 +68,21 @@ final class MediaRequestAuthorizationTests: XCTestCase {
     func testMediaChallengeAndProgressRequestShareOneRefreshFlight() async throws {
         let joined = expectation(description: "Progress joins media refresh")
         let h = try await harness(refreshJoined: { _ in joined.fulfill() })
-        h.stub.reply(path: "/api/v1/playback/session/progress", 401, "{}")
+        h.stub.reply(path: Self.progressPath, 401, "{}")
         h.stub.hold()
         async let media = h.http.mediaRequestHeaders(
             expectedAuth: h.owner, baseHeaders: [:], rejectedHeaders: ["Authorization": "Bearer old-access"]
         )
         await h.stub.waitUntilHeld()
-        async let progress: Void = h.http.postVoid("/api/v1/playback/session/progress", body: ["position": 1])
+        async let progress = Self.postProgress(h.http)
         // The normal request reaches the same refresh flight before it is released.
         await fulfillment(of: [joined], timeout: 5)
-        h.stub.reply(path: "/api/v1/playback/session/progress", 204, "")
+        h.stub.reply(path: Self.progressPath, 204, "")
         h.stub.release()
         let headers = try await media
-        try await progress
+        _ = try await progress
         XCTAssertEqual(headers["Authorization"], "Bearer new-access")
-        XCTAssertEqual(h.stub.requests.filter { $0.path == "/api/v1/auth/refresh" }.count, 1)
+        XCTAssertEqual(h.stub.requests.filter { $0.path == "/api/v2/auth/refresh" }.count, 1)
     }
 
     func testExpiredTokenRefreshesBeforeSendingAMediaRequest() async throws {
@@ -90,7 +90,7 @@ final class MediaRequestAuthorizationTests: XCTestCase {
         let h = try await harness(accessToken: Self.jwt(issuedAt: now.addingTimeInterval(-3500), expiresAt: now.addingTimeInterval(-1)))
         let headers = try await h.http.mediaRequestHeaders(expectedAuth: h.owner, baseHeaders: [:], now: now)
         XCTAssertEqual(headers["Authorization"], "Bearer new-access")
-        XCTAssertEqual(h.stub.requests.map(\.path), ["/api/v1/auth/refresh"])
+        XCTAssertEqual(h.stub.requests.map(\.path), ["/api/v2/auth/refresh"])
     }
 
     func testHealthyShortLivedTokenDoesNotRefreshOnEverySegment() async throws {
@@ -178,20 +178,27 @@ final class MediaRequestAuthorizationTests: XCTestCase {
         let joined = expectation(description: "Progress joins the background refresh")
         let h = try await harness(accessToken: token, refreshJoined: { _ in joined.fulfill() })
         h.stub.reply(503, "{}")
-        h.stub.reply(path: "/progress", 401, "{}")
+        h.stub.reply(path: Self.progressPath, 401, "{}")
         h.stub.hold()
         _ = try await h.http.mediaRequestHeaders(expectedAuth: h.owner, baseHeaders: [:], now: now)
         await h.stub.waitUntilHeld()
-        let progress = Task { try await h.http.postVoid("/progress", body: ["position": 1]) }
+        let progress = Task { try await Self.postProgress(h.http) }
         await fulfillment(of: [joined], timeout: 5)
         h.stub.release()
-        do { try await progress.value; XCTFail("Refresh outage must leave the API request failed") }
+        do { _ = try await progress.value; XCTFail("Refresh outage must leave the API request failed") }
         catch {}
         for _ in 0..<3 {
             let headers = try await h.http.mediaRequestHeaders(expectedAuth: h.owner, baseHeaders: [:], now: now)
             XCTAssertEqual(headers["Authorization"], "Bearer \(token)")
         }
-        XCTAssertEqual(h.stub.requests.filter { $0.path == "/api/v1/auth/refresh" }.count, 1)
+        XCTAssertEqual(h.stub.requests.filter { $0.path == "/api/v2/auth/refresh" }.count, 1)
+    }
+
+    /// An ordinary authenticated v2 request that shares the refresh flight.
+    private static let progressPath = "/api/v2/playback/session-1/progress"
+
+    private static func postProgress(_ http: HTTPClient) async throws -> HTTPRawResponse {
+        try await http.requestData(method: "POST", path: progressPath, body: Data(#"{"position":1}"#.utf8))
     }
 
     private static func jwt(issuedAt: Date, expiresAt: Date) -> String {

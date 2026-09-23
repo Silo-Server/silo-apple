@@ -205,11 +205,13 @@ final class SettingValuesAPITests: XCTestCase {
     func testEffectiveResponseDecodesSourceScopeAndRevision() throws {
         let response = try SettingsWireCoding.makeDecoder()
             .decode(EffectiveSettingValuesResponse.self, from: Data("""
-            {"settings":[
+            {"items":[
               {"key":"playback.subtitle_language","value":"ja","source":"profile_series",
                "scope":"profile_series","profile_id":"p1","series_id":"s-101",
-               "suggested_values":["en","ja","pt-BR"]},
-              {"key":"playback.auto_play_next","value":true,"source":"default"}
+               "suggested_values":["en","ja","pt-BR"],"definition_revision":3,
+               "updated_at":"2026-01-02T03:04:05.678Z",
+               "source_context":{"profile_id":"p1","series_id":"s-101"}},
+              {"key":"playback.auto_play_next","value":true,"source":"default","definition_revision":3}
             ],"revision":1}
             """.utf8))
 
@@ -226,6 +228,25 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertNil(fromDefault.storedAt, "a contract default has no row to reset")
         XCTAssertFalse(fromDefault.constrained)
         XCTAssertNil(fromDefault.storedValue)
+    }
+
+    func testEffectiveLibraryIdArrivesAsAStringAndStillAddressesTheRow() throws {
+        let decoder = SettingsWireCoding.makeDecoder()
+        let library = try decoder.decode(EffectiveSettingValue.self, from: Data("""
+            {"key":"playback.preferred_quality","value":"auto","source":"profile_library",
+             "scope":"profile_library","profile_id":"p1","library_id":"7","definition_revision":3}
+            """.utf8))
+        XCTAssertEqual(library.libraryId, 7)
+        XCTAssertEqual(library.storedAt, .profileLibrary(libraryId: 7))
+
+        // An opaque id this build cannot address degrades to "no reset
+        // target" for that row instead of failing the whole batch.
+        let opaque = try decoder.decode(EffectiveSettingValue.self, from: Data("""
+            {"key":"playback.preferred_quality","value":"auto","source":"profile_library",
+             "scope":"profile_library","profile_id":"p1","library_id":"lib-a","definition_revision":3}
+            """.utf8))
+        XCTAssertNil(opaque.libraryId)
+        XCTAssertNil(opaque.storedAt)
     }
 
     func testProfileClientEnvelopeKeepsTheResolvedFamily() throws {
@@ -281,12 +302,12 @@ final class SettingValuesAPITests: XCTestCase {
     }
 
     func testUnknownKeyFromANewerServerDoesNotFailTheBatch() throws {
-        // /api/v1 is additive: a newer server may resolve keys and scopes this
+        // The settings API is additive: a newer server may resolve keys and scopes this
         // build has never heard of, and one unfamiliar row must not take the
         // whole settings screen down with it.
         let response = try SettingsWireCoding.makeDecoder()
             .decode(EffectiveSettingValuesResponse.self, from: Data("""
-            {"settings":[
+            {"items":[
               {"key":"playback.auto_play_next","value":false,"source":"profile","scope":"profile"},
               {"key":"future.setting_from_a_newer_server","value":1,"source":"profile_household",
                "scope":"profile_household"}
@@ -318,145 +339,53 @@ final class SettingValuesAPITests: XCTestCase {
         )
     }
 
-    func testCapabilitiesDecodeAndCompareAgainstTheGeneratedRevision() throws {
-        let capabilities = try SettingsWireCoding.makeDecoder()
-            .decode(SettingsContractCapabilities.self, from: Data("""
-            {"api_version":1,"revision":1,"contract_etag":"\\"abc123\\"","definition_count":48,
-             "scopes":["account","profile","profile_device","profile_library","profile_series"],
-             "supports_batched_effective":true,"supports_idempotent_writes":true}
+    func testCapabilitiesKeepTheOpaqueRevisionApartFromTheManifestRevision() throws {
+        // The server's published get_settings_contract_capabilities_ok fixture
+        // at 84ed9e596.
+        let capabilities = try HTTPClient.makeJSONDecoder()
+            .decode(APIv2SettingsContractCapabilities.self, from: Data("""
+            {"revision":"36e767e32d6613323df470594b9c91068ed062132912c3af462965668b2d31a4",
+             "state":"available","allowed":true,"api_version":1,"manifest_revision":12,
+             "contract_etag":"\\"etag-12\\"","definition_count":40,"scopes":["account","profile"],
+             "client_families":["tv","web"],"supports_batched_effective":true,
+             "supports_idempotent_writes":true,"supports_atomic_shortcuts":true}
             """.utf8))
 
-        XCTAssertEqual(capabilities.apiVersion, 1)
-        XCTAssertEqual(capabilities.revision, 1)
-        XCTAssertEqual(capabilities.contractEtag, "\"abc123\"")
-        XCTAssertEqual(capabilities.definitionCount, 48)
-        XCTAssertTrue(capabilities.supportsBatchedEffective)
-        XCTAssertTrue(capabilities.supportsIdempotentWrites)
+        XCTAssertEqual(capabilities.revision, "36e767e32d6613323df470594b9c91068ed062132912c3af462965668b2d31a4")
+        XCTAssertEqual(capabilities.manifestRevision, 12)
+        XCTAssertTrue(capabilities.isAvailable)
+        XCTAssertFalse(capabilities.contractIsAheadOfServer, "manifest 12 is not behind revision \(SettingKey.revision)")
+        XCTAssertTrue(capabilities.supportsUICustomization(clientFamily: "tv"))
         XCTAssertFalse(
-            capabilities.supportsAtomicShortcuts,
-            "a missing revision-5 feature flag must decode fail-closed"
-        )
-        XCTAssertEqual(capabilities.contractIsAheadOfServer, SettingKey.revision > 1)
-    }
-
-    // MARK: - Error mapping
-
-    func testBare404MapsToServerUpgradeRequired() {
-        // The router's own 404: the route does not exist, so the server
-        // predates the canonical settings API entirely.
-        XCTAssertEqual(
-            SettingsAPIError.from(HTTPError.http(statusCode: 404, body: nil)),
-            .serverUpgradeRequired
-        )
-        XCTAssertEqual(
-            SettingsAPIError.from(HTTPError.http(statusCode: 404, body: "404 page not found")),
-            .serverUpgradeRequired
+            capabilities.supportsUICustomization(clientFamily: "mobile"),
+            "card presentation is stored at profile_client, which must accept this family"
         )
     }
 
-    func test404WithASiloEnvelopeIsNotAnUpgradePrompt() {
-        // A contract-aware 404 means the key or the row is missing, which is a
-        // normal answer — telling the user to upgrade their server for it
-        // would be wrong.
-        XCTAssertEqual(
-            SettingsAPIError.from(
-                HTTPError.http(
-                    statusCode: 404,
-                    body: #"{"error":"unknown_setting","message":"No setting named x exists"}"#
-                ),
-                key: "playback.nope"
-            ),
-            .unknownSetting(key: "playback.nope")
-        )
-        XCTAssertEqual(
-            SettingsAPIError.from(
-                HTTPError.http(
-                    statusCode: 404,
-                    body: #"{"error":"not_found","message":"No value is set at this scope"}"#
-                )
-            ),
-            .noValueAtScope
-        )
-    }
+    func testNotConfiguredCapabilitiesDecodeAsUnavailable() throws {
+        // What the server sends when it has no settings contract wired.
+        let capabilities = try HTTPClient.makeJSONDecoder()
+            .decode(APIv2SettingsContractCapabilities.self, from: Data("""
+            {"revision":"abc","state":"not_configured","allowed":false,"api_version":0,
+             "manifest_revision":0,"contract_etag":"","definition_count":0,"scopes":[],
+             "client_families":[],"supports_batched_effective":false,
+             "supports_idempotent_writes":false,"supports_atomic_shortcuts":false}
+            """.utf8))
 
-    func test404WithAnUnrecognizedSiloEnvelopeIsNotAnUpgradePromptEither() {
-        // The envelope is the signal, not the status: any Silo handler answered,
-        // so the route exists and the server is not too old — even when this
-        // build does not know the code yet. Telling the user to upgrade here
-        // would be actively misleading.
-        if case .server(let status, let code, _) = SettingsAPIError.from(
-            HTTPError.http(
-                statusCode: 404,
-                body: #"{"error":"profile_not_found","message":"No such profile"}"#
-            )
-        ) {
-            XCTAssertEqual(status, 404)
-            XCTAssertEqual(code, "profile_not_found")
-        } else {
-            XCTFail("an enveloped 404 must not map to .serverUpgradeRequired")
-        }
-    }
-
-    func testMutationIdConflictIsItsOwnCase() {
-        // Reusing an id for different content must not look like a generic
-        // 409 — a caller that retries with a fresh id would double-apply.
-        XCTAssertEqual(
-            SettingsAPIError.from(
-                HTTPError.http(
-                    statusCode: 409,
-                    body: #"{"error":"mutation_id_conflict","message":"This mutation id was used for a different write"}"#
-                )
-            ),
-            .mutationIdConflict
-        )
-    }
-
-    func testContractErrorsMapToNamedCases() {
-        XCTAssertEqual(
-            SettingsAPIError.from(
-                HTTPError.http(
-                    statusCode: 400,
-                    body: #"{"error":"scope_not_allowed","message":"x cannot be set at profile_series"}"#
-                ),
-                key: "playback.preferred_quality",
-                scope: .profileSeries
-            ),
-            .scopeNotAllowed(key: "playback.preferred_quality", scope: .profileSeries)
-        )
-        XCTAssertEqual(
-            SettingsAPIError.from(
-                HTTPError.http(
-                    statusCode: 400,
-                    body: #"{"error":"client_local_setting","message":"device-local"}"#
-                ),
-                key: "downloads.wifi_only"
-            ),
-            .clientLocalSetting(key: "downloads.wifi_only")
-        )
-        if case .invalidValue = SettingsAPIError.from(
-            HTTPError.http(statusCode: 400, body: #"{"error":"invalid_value","message":"not in enum"}"#)
-        ) {} else {
-            XCTFail("invalid_value must map to .invalidValue")
-        }
-        if case .server(let status, let code, _) = SettingsAPIError.from(
-            HTTPError.http(statusCode: 500, body: #"{"error":"internal_error","message":"boom"}"#)
-        ) {
-            XCTAssertEqual(status, 500)
-            XCTAssertEqual(code, "internal_error")
-        } else {
-            XCTFail("an unrecognized failure must stay a generic server error")
-        }
+        XCTAssertFalse(capabilities.isAvailable)
+        XCTAssertFalse(capabilities.supportsUICustomization(clientFamily: "tv"))
     }
 
     // MARK: - Requests over the wire
 
-    func testGetContractCapabilitiesReportsUpgradeRequiredOnABare404() async throws {
+    func testGetContractCapabilitiesReportsUpgradeRequiredOnAV1OnlyServer() async throws {
         SettingsStubProtocol.reset(mode: .serverTooOld)
         let api = await makeStubbedAPI()
 
         let result = await api.getContractCapabilities()
         XCTAssertEqual(result, .serverUpgradeRequired)
         XCTAssertNil(result.capabilities)
+        XCTAssertEqual(SettingsStubProtocol.state().lastRequest?.path, "/api/v2/settings/contract/capabilities")
     }
 
     func testGetContractCapabilitiesReturnsCapabilitiesOnACurrentServer() async throws {
@@ -466,12 +395,14 @@ final class SettingValuesAPITests: XCTestCase {
         guard case .available(let capabilities) = await api.getContractCapabilities() else {
             return XCTFail("a current server must report capabilities")
         }
-        XCTAssertEqual(capabilities.revision, SettingKey.revision)
-        XCTAssertTrue(capabilities.supportsIdempotentWrites)
+        XCTAssertEqual(capabilities.manifestRevision, SettingKey.revision)
         XCTAssertTrue(capabilities.supportsAtomicShortcuts)
+        let recorded = try XCTUnwrap(SettingsStubProtocol.state().lastRequest)
+        XCTAssertEqual(recorded.method, "GET")
+        XCTAssertEqual(recorded.path, "/api/v2/settings/contract/capabilities")
     }
 
-    func testGetContractCapabilitiesRequiresTheServersRevisionToBeCurrent() async throws {
+    func testGetContractCapabilitiesRequiresTheServersManifestRevisionToBeCurrent() async throws {
         SettingsStubProtocol.reset(mode: .olderContractRevision)
         let api = await makeStubbedAPI()
 
@@ -479,58 +410,58 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(result, .serverUpgradeRequired)
     }
 
-    func testPutValueSendsScopeIdentityMutationIdAndProfileHeader() async throws {
-        SettingsStubProtocol.reset(mode: .normal)
+    func testGetContractCapabilitiesGatesOnStateAndAllowed() async throws {
         let api = await makeStubbedAPI()
-        let mutationId = newSettingMutationId()
-
-        let receipt = try await api.putValue(
-            key: .playbackSubtitleAppearance,
-            scope: .profileDevice,
-            value: ["fontSize": "large", "backgroundOpacity": 75],
-            mutationId: mutationId
-        )
-
-        XCTAssertFalse(receipt.isIdempotentReplay)
-        XCTAssertEqual(receipt.value.settingKey, .playbackSubtitleAppearance)
-
-        let recorded = try XCTUnwrap(SettingsStubProtocol.state().lastRequest)
-        XCTAssertEqual(recorded.method, "PUT")
-        XCTAssertEqual(recorded.path, "/api/v1/settings/values/playback.subtitle_appearance")
-        XCTAssertEqual(recorded.query["scope"], "profile_device")
-        XCTAssertEqual(recorded.header("X-Silo-Mutation-Id"), mutationId)
-        // The trap this guards: scope=profile_device is rejected without the
-        // profile header, which the client previously never sent.
-        XCTAssertEqual(recorded.header("X-Profile-Id"), Self.stubProfileId)
-        XCTAssertEqual(recorded.header("X-Silo-Device-Id")?.isEmpty, false)
-        XCTAssertEqual(
-            recorded.header("X-Silo-Client-Family"),
-            AppleDeviceIdentity.current.clientFamily
-        )
-        // And the body must carry the value's keys verbatim.
-        let body = String(data: recorded.body ?? Data(), encoding: .utf8) ?? ""
-        XCTAssertTrue(body.contains("\"fontSize\""), "body must keep camelCase value keys: \(body)")
-        XCTAssertFalse(body.contains("font_size"))
+        let cases: [(state: String, allowed: Bool, expected: SettingsCapabilitiesResult)] = [
+            ("not_configured", false, .unavailable),
+            ("disabled", false, .unavailable),
+            ("available", false, .unavailable),
+            ("a_future_state", false, .unavailable),
+            ("unsupported", false, .serverUpgradeRequired),
+        ]
+        for (state, allowed, expected) in cases {
+            SettingsStubProtocol.reset(mode: .capabilityState(state, allowed: allowed))
+            let result = await api.getContractCapabilities()
+            XCTAssertEqual(result, expected, "state \(state), allowed \(allowed)")
+        }
     }
 
-    func testPutValueExplicitProfileOverridesTheCurrentSessionHeader() async throws {
+    func testGetContractCapabilitiesMapsAProblemToAFailure() async throws {
+        SettingsStubProtocol.reset(mode: .problem(status: 500))
+        let api = await makeStubbedAPI()
+
+        guard case .failed(.server(let status, let code, _)) = await api.getContractCapabilities() else {
+            return XCTFail("a server error must stay a retryable failure")
+        }
+        XCTAssertEqual(status, 500)
+        XCTAssertEqual(code, "internal_error")
+    }
+
+    func testGetContractCapabilitiesRefusesAnIdentityThatIsNoLongerCurrent() async throws {
         SettingsStubProtocol.reset(mode: .normal)
-        let api = await makeStubbedAPI(profileId: "new-session-profile")
-
-        _ = try await api.putValue(
-            key: .playerHdrEnabled,
-            scope: .profileDevice,
-            value: false,
-            mutationId: newSettingMutationId(),
-            profileId: "profile-captured-with-write"
+        let api = await makeStubbedAPI()
+        let stale = HTTPRequestIdentity(
+            serverId: "server-a",
+            serverURL: "http://settings-test.invalid/",
+            profileId: "a-profile-that-was-switched-away",
+            clientFamily: AppleDeviceIdentity.current.clientFamily
         )
 
-        let recorded = try XCTUnwrap(SettingsStubProtocol.state().lastRequest)
-        XCTAssertEqual(
-            recorded.header("X-Profile-Id"),
-            "profile-captured-with-write",
-            "the queued profile must override a newer session header"
+        guard case .failed = await api.getContractCapabilities(requestIdentity: stale) else {
+            return XCTFail("a probe for a replaced profile must not report an answer")
+        }
+        XCTAssertNil(SettingsStubProtocol.state().lastRequest, "the request must not be sent at all")
+
+        let current = HTTPRequestIdentity(
+            serverId: "server-a",
+            // The registry's spelling may carry a trailing slash.
+            serverURL: "http://settings-test.invalid/",
+            profileId: Self.stubProfileId,
+            clientFamily: AppleDeviceIdentity.current.clientFamily
         )
+        guard case .available = await api.getContractCapabilities(requestIdentity: current) else {
+            return XCTFail("the current identity must be accepted")
+        }
     }
 
     func testCapturedSettingsRequestRefusesToFollowANewActiveIdentity() async throws {
@@ -567,7 +498,7 @@ final class SettingValuesAPITests: XCTestCase {
         do {
             _ = try await http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities",
+                path: "/api/v2/settings/contract/capabilities",
                 requestIdentity: captured
             )
             XCTFail("a captured server/profile request must fail rather than follow the new session")
@@ -607,12 +538,12 @@ final class SettingValuesAPITests: XCTestCase {
         let http = HTTPClient(session: URLSession(configuration: config), tokenStore: tokenStore)
         async let first = http.requestData(
             method: "GET",
-            path: "/api/v1/settings/contract/capabilities",
+            path: "/api/v2/settings/contract/capabilities",
             requestIdentity: identity
         )
         async let second = http.requestData(
             method: "GET",
-            path: "/api/v1/settings/contract/capabilities",
+            path: "/api/v2/settings/contract/capabilities",
             requestIdentity: identity
         )
 
@@ -621,8 +552,8 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(firstResponse.statusCode, 200)
         XCTAssertEqual(secondResponse.statusCode, 200)
         let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"], 1)
-        XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 4)
+        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 4)
         let accessToken = await tokenStore.getAccessToken()
         let refreshToken = await tokenStore.getRefreshToken()
         XCTAssertEqual(accessToken, "placeholder")
@@ -669,13 +600,13 @@ final class SettingValuesAPITests: XCTestCase {
 
         async let scoped = http.requestData(
             method: "GET",
-            path: "/api/v1/settings/contract/capabilities",
+            path: "/api/v2/settings/contract/capabilities",
             headers: ["X-Test-Refresh-Flow": "scoped"],
             requestIdentity: identity
         )
         async let ordinary = http.requestData(
             method: "GET",
-            path: "/api/v1/settings/contract/capabilities",
+            path: "/api/v2/settings/contract/capabilities",
             headers: ["X-Test-Refresh-Flow": "ordinary"]
         )
 
@@ -684,8 +615,8 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(scopedResponse.statusCode, 200)
         XCTAssertEqual(ordinaryResponse.statusCode, 200)
         let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"], 1)
-        XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 4)
+        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 4)
         let accessToken = await tokenStore.getAccessToken()
         let refreshToken = await tokenStore.getRefreshToken()
         XCTAssertEqual(accessToken, "placeholder")
@@ -742,13 +673,13 @@ final class SettingValuesAPITests: XCTestCase {
 
         async let scoped: HTTPRawResponse = http.requestData(
             method: "GET",
-            path: "/api/v1/settings/contract/capabilities",
+            path: "/api/v2/settings/contract/capabilities",
             headers: ["X-Test-Refresh-Flow": "scoped"],
             requestIdentity: identity
         )
         async let ordinary: HTTPRawResponse = http.requestData(
             method: "GET",
-            path: "/api/v1/settings/contract/capabilities",
+            path: "/api/v2/settings/contract/capabilities",
             headers: ["X-Test-Refresh-Flow": "ordinary"]
         )
 
@@ -772,8 +703,8 @@ final class SettingValuesAPITests: XCTestCase {
         }
 
         let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"], 1)
-        XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 2)
+        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 2)
         let accessToken = await tokenStore.getAccessToken()
         let refreshToken = await tokenStore.getRefreshToken()
         XCTAssertNil(accessToken)
@@ -797,13 +728,13 @@ final class SettingValuesAPITests: XCTestCase {
             SettingsStubProtocol.reset(mode: .mixedRefreshScopedTransientFailure(status: status))
             async let scoped: HTTPRawResponse = harness.http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities",
+                path: "/api/v2/settings/contract/capabilities",
                 headers: ["X-Test-Refresh-Flow": "scoped"],
                 requestIdentity: harness.identity
             )
             async let ordinary: HTTPRawResponse = harness.http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities",
+                path: "/api/v2/settings/contract/capabilities",
                 headers: ["X-Test-Refresh-Flow": "ordinary"]
             )
 
@@ -821,8 +752,8 @@ final class SettingValuesAPITests: XCTestCase {
             }
 
             let state = SettingsStubProtocol.state()
-            XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"], 1)
-            XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 2)
+            XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
+            XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 2)
             let accessToken = await harness.tokenStore.getAccessToken()
             let refreshToken = await harness.tokenStore.getRefreshToken()
             XCTAssertEqual(accessToken, "fake", "HTTP \(status) must preserve the access token")
@@ -835,7 +766,7 @@ final class SettingValuesAPITests: XCTestCase {
         SettingsStubProtocol.reset(mode: .mixedRefreshScopedWins)
         let retried = try await harness.http.requestData(
             method: "GET",
-            path: "/api/v1/settings/contract/capabilities",
+            path: "/api/v2/settings/contract/capabilities",
             headers: ["X-Test-Refresh-Flow": "scoped"],
             requestIdentity: harness.identity
         )
@@ -865,13 +796,13 @@ final class SettingValuesAPITests: XCTestCase {
 
         async let scoped: HTTPRawResponse = harness.http.requestData(
             method: "GET",
-            path: "/api/v1/settings/contract/capabilities",
+            path: "/api/v2/settings/contract/capabilities",
             headers: ["X-Test-Refresh-Flow": "scoped"],
             requestIdentity: harness.identity
         )
         async let ordinary: HTTPRawResponse = harness.http.requestData(
             method: "GET",
-            path: "/api/v1/settings/contract/capabilities",
+            path: "/api/v2/settings/contract/capabilities",
             headers: ["X-Test-Refresh-Flow": "ordinary"]
         )
 
@@ -924,7 +855,7 @@ final class SettingValuesAPITests: XCTestCase {
         let requestTask = Task {
             try await harness.http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities"
+                path: "/api/v2/settings/contract/capabilities"
             )
         }
         guard await waitForPendingOrdinaryUnauthorized() else {
@@ -954,8 +885,8 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(accessToken, "example")
         XCTAssertEqual(refreshToken, "sample")
         let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"] ?? 0, 0)
-        XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"] ?? 0, 0)
+        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 1)
     }
 
     func testOrdinaryUnauthorizedResponseCannotRefreshSameServerSessionInstalledAfterLogout() async throws {
@@ -965,7 +896,7 @@ final class SettingValuesAPITests: XCTestCase {
         let requestTask = Task {
             try await harness.http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities"
+                path: "/api/v2/settings/contract/capabilities"
             )
         }
         guard await waitForPendingOrdinaryUnauthorized() else {
@@ -992,8 +923,8 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(accessToken, "placeholder")
         XCTAssertEqual(refreshToken, "redacted")
         let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"] ?? 0, 0)
-        XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"] ?? 0, 0)
+        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 1)
     }
 
     func testScopedUnauthorizedResponseCannotRefreshSameServerSessionInstalledAfterLogout() async throws {
@@ -1003,7 +934,7 @@ final class SettingValuesAPITests: XCTestCase {
         let requestTask = Task {
             try await harness.http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities",
+                path: "/api/v2/settings/contract/capabilities",
                 requestIdentity: harness.identity
             )
         }
@@ -1031,8 +962,8 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(accessToken, "placeholder")
         XCTAssertEqual(refreshToken, "redacted")
         let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"] ?? 0, 0)
-        XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"] ?? 0, 0)
+        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 1)
     }
 
     func testOrdinaryUnauthorizedResponseCannotRetryAfterProfileSwitch() async throws {
@@ -1043,7 +974,7 @@ final class SettingValuesAPITests: XCTestCase {
         let requestTask = Task {
             try await harness.http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities"
+                path: "/api/v2/settings/contract/capabilities"
             )
         }
         guard await waitForPendingOrdinaryUnauthorized() else {
@@ -1062,8 +993,8 @@ final class SettingValuesAPITests: XCTestCase {
             XCTAssertEqual((error as? HTTPError)?.statusCode, 401)
         }
         let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"] ?? 0, 0)
-        XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"] ?? 0, 0)
+        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 1)
         XCTAssertEqual(state.lastRequest?.header("X-Profile-Id"), "profile-a")
         XCTAssertEqual(state.lastRequest?.header("X-Profile-Token"), "decoy-token")
     }
@@ -1076,7 +1007,7 @@ final class SettingValuesAPITests: XCTestCase {
         let requestTask = Task {
             try await harness.http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities"
+                path: "/api/v2/settings/contract/capabilities"
             )
         }
         guard await waitForPendingOrdinaryUnauthorized() else {
@@ -1108,8 +1039,8 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(current?.accessToken, "example")
         XCTAssertEqual(current?.refreshToken, "sample")
         let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"] ?? 0, 0)
-        XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"] ?? 0, 0)
+        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 1)
     }
 
     func testOrdinaryUnauthorizedResponseCannotCrossFromTemporaryIntoPersistentCredentials() async throws {
@@ -1131,7 +1062,7 @@ final class SettingValuesAPITests: XCTestCase {
         let requestTask = Task {
             try await harness.http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities"
+                path: "/api/v2/settings/contract/capabilities"
             )
         }
         guard await waitForPendingOrdinaryUnauthorized() else {
@@ -1153,8 +1084,8 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(accessToken, "fake")
         XCTAssertEqual(refreshToken, "dummy")
         let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"] ?? 0, 0)
-        XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"] ?? 0, 0)
+        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 1)
     }
 
     func testRejectedTemporaryGenerationRefreshesAndExpiresOnlyOnce() async throws {
@@ -1189,7 +1120,7 @@ final class SettingValuesAPITests: XCTestCase {
             do {
                 _ = try await harness.http.requestData(
                     method: "GET",
-                    path: "/api/v1/settings/contract/capabilities"
+                    path: "/api/v2/settings/contract/capabilities"
                 )
                 XCTFail("temporary 401 wave \(wave) must remain unauthorized")
             } catch {
@@ -1198,8 +1129,8 @@ final class SettingValuesAPITests: XCTestCase {
         }
 
         let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"], 1)
-        XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 2)
+        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 2)
         XCTAssertEqual(expiryCount.value, 1)
         let current = await harness.tokenStore.getTemporaryScope()
         XCTAssertEqual(current?.credentialGenerationID, temporary.credentialGenerationID)
@@ -1257,7 +1188,7 @@ final class SettingValuesAPITests: XCTestCase {
         do {
             _ = try await harness.http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities",
+                path: "/api/v2/settings/contract/capabilities",
                 requestIdentity: harness.identity
             )
             XCTFail("the scoped temporary request must remain unauthorized")
@@ -1266,8 +1197,8 @@ final class SettingValuesAPITests: XCTestCase {
         }
 
         let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"], 1)
-        XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 1)
         XCTAssertEqual(temporaryExpiryCount.value, 1)
         XCTAssertEqual(persistentExpiryCount.value, 0)
         XCTAssertEqual(expiryEvents.values, [SessionExpiryEvent(
@@ -1297,7 +1228,7 @@ final class SettingValuesAPITests: XCTestCase {
 
         let response = try await harness.http.requestData(
             method: "GET",
-            path: "/api/v1/settings/contract/capabilities",
+            path: "/api/v2/settings/contract/capabilities",
             headers: ["X-Test-Refresh-Flow": "scoped"],
             requestIdentity: harness.identity
         )
@@ -1315,8 +1246,8 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(persistentAccess, "fake")
         XCTAssertEqual(persistentRefresh, "dummy")
         let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"], 1)
-        XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 2)
+        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 2)
     }
 
     func testPersistentExpiryEventIsRejectedAfterSameServerSessionReplacement() async throws {
@@ -1556,7 +1487,7 @@ final class SettingValuesAPITests: XCTestCase {
             await http.cancelInFlightRequests()
             return try await http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities"
+                path: "/api/v2/settings/contract/capabilities"
             )
         }
 
@@ -1568,7 +1499,7 @@ final class SettingValuesAPITests: XCTestCase {
             "replacement cancellation must queue instead of overlapping the old enumeration"
         )
         XCTAssertEqual(
-            SettingsStubProtocol.state().requestCounts["/api/v1/settings/contract/capabilities"] ?? 0,
+            SettingsStubProtocol.state().requestCounts["/api/v2/settings/contract/capabilities"] ?? 0,
             0,
             "replacement work must not start while an old cancellation can still enumerate it"
         )
@@ -1579,7 +1510,7 @@ final class SettingValuesAPITests: XCTestCase {
             return XCTFail("replacement cancellation pass did not start after the old pass")
         }
         XCTAssertEqual(
-            SettingsStubProtocol.state().requestCounts["/api/v1/settings/contract/capabilities"] ?? 0,
+            SettingsStubProtocol.state().requestCounts["/api/v2/settings/contract/capabilities"] ?? 0,
             0
         )
         await barrier.release(pass: 2)
@@ -1587,7 +1518,7 @@ final class SettingValuesAPITests: XCTestCase {
         let response = try await replacement.value
         XCTAssertEqual(response.statusCode, 200)
         XCTAssertEqual(
-            SettingsStubProtocol.state().requestCounts["/api/v1/settings/contract/capabilities"],
+            SettingsStubProtocol.state().requestCounts["/api/v2/settings/contract/capabilities"],
             1
         )
     }
@@ -1607,7 +1538,7 @@ final class SettingValuesAPITests: XCTestCase {
         let request = Task {
             try await http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities",
+                path: "/api/v2/settings/contract/capabilities",
                 headers: ["X-Test-Refresh-Flow": "scoped"],
                 requestIdentity: harness.identity
             )
@@ -1634,8 +1565,8 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(replacementAccess, "placeholder")
         XCTAssertEqual(replacementRefresh, "redacted")
         let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"], 1)
-        XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 1)
     }
 
     func testCancelledTemporaryReplacementRestoresPriorOwnerGeneration() async throws {
@@ -1713,7 +1644,7 @@ final class SettingValuesAPITests: XCTestCase {
         do {
             _ = try await http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities"
+                path: "/api/v2/settings/contract/capabilities"
             )
             XCTFail("dispatch must remain closed between cancellation snapshots")
         } catch HTTPError.requestIdentityChanged {
@@ -1722,7 +1653,7 @@ final class SettingValuesAPITests: XCTestCase {
             XCTFail("unexpected error: \(error)")
         }
         XCTAssertEqual(
-            SettingsStubProtocol.state().requestCounts["/api/v1/settings/contract/capabilities"] ?? 0,
+            SettingsStubProtocol.state().requestCounts["/api/v2/settings/contract/capabilities"] ?? 0,
             0
         )
         await barrier.release(pass: 1)
@@ -1829,7 +1760,7 @@ final class SettingValuesAPITests: XCTestCase {
         let request = Task {
             try await http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities"
+                path: "/api/v2/settings/contract/capabilities"
             )
         }
         guard await waitForCancellationPass(barrier, count: 1) else {
@@ -1872,7 +1803,7 @@ final class SettingValuesAPITests: XCTestCase {
         let request = Task {
             try await http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities"
+                path: "/api/v2/settings/contract/capabilities"
             )
         }
         guard await waitForCancellationPass(barrier, count: 1) else {
@@ -1894,7 +1825,7 @@ final class SettingValuesAPITests: XCTestCase {
             XCTFail("unexpected error: \(error)")
         }
         XCTAssertEqual(
-            SettingsStubProtocol.state().requestCounts["/api/v1/settings/contract/capabilities"],
+            SettingsStubProtocol.state().requestCounts["/api/v2/settings/contract/capabilities"],
             1
         )
     }
@@ -1906,7 +1837,7 @@ final class SettingValuesAPITests: XCTestCase {
 
         let health: HealthStatus = try await harness.http.getUnauthenticated(
             serverURL: harness.identity.serverURL,
-            path: "/api/v1/health"
+            path: ConnectionMonitor.healthPath
         )
         XCTAssertEqual(health.status, "ok")
         let activeStillUnreachable = await MainActor.run {
@@ -1975,11 +1906,9 @@ final class SettingValuesAPITests: XCTestCase {
             requestCaptureBarrier: { await barrier.enter() }
         )
 
+        let api = APIv2Client(http: http, tokenStore: harness.tokenStore, isUpdateRequired: { false })
         let logout = Task {
-            try await http.postVoid(
-                "/api/v1/auth/logout",
-                expectedAccount: account
-            )
+            try await api.logout(expectedAccount: account)
         }
         guard await waitForCancellationPass(barrier, count: 1) else {
             return XCTFail("logout did not pause before its bound account capture")
@@ -2003,7 +1932,7 @@ final class SettingValuesAPITests: XCTestCase {
         } catch {
             XCTFail("unexpected error: \(error)")
         }
-        XCTAssertEqual(SettingsStubProtocol.state().requestCounts["/api/v1/auth/logout"] ?? 0, 0)
+        XCTAssertEqual(SettingsStubProtocol.state().requestCounts["/api/v2/auth/logout"] ?? 0, 0)
         let currentAccess = await harness.tokenStore.getAccessToken()
         XCTAssertEqual(currentAccess, "example")
     }
@@ -2024,7 +1953,7 @@ final class SettingValuesAPITests: XCTestCase {
         let requestTask = Task {
             try await harness.http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities"
+                path: "/api/v2/settings/contract/capabilities"
             )
         }
         guard await waitForPendingOrdinaryRefresh() else {
@@ -2053,8 +1982,8 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(serverBRefresh, "sample")
         XCTAssertEqual(sessionExpiredCount.value, 0)
         let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"], 1)
-        XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 1)
     }
 
     func testOrdinaryRefreshLateSuccessCannotRestoreSignedOutSession() async throws {
@@ -2073,7 +2002,7 @@ final class SettingValuesAPITests: XCTestCase {
         let requestTask = Task {
             try await harness.http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities"
+                path: "/api/v2/settings/contract/capabilities"
             )
         }
         guard await waitForPendingOrdinaryRefresh() else {
@@ -2113,7 +2042,7 @@ final class SettingValuesAPITests: XCTestCase {
         let requestTask = Task {
             try await harness.http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities"
+                path: "/api/v2/settings/contract/capabilities"
             )
         }
         guard await waitForPendingOrdinaryRefresh() else {
@@ -2139,8 +2068,8 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(refreshToken, "redacted")
         XCTAssertEqual(sessionExpiredCount.value, 0)
         let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"], 1)
-        XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 1)
     }
 
     func testScopedRefreshPersistsServerAccountRotationAcrossProfileChange() async throws {
@@ -2333,106 +2262,7 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(serverBRefresh, "decoy-token")
     }
 
-    func testPutNavigationShortcutItemSendsAtomicBodyMutationAndProfileHeaders() async throws {
-        SettingsStubProtocol.reset(mode: .normal)
-        let api = await makeStubbedAPI()
-        let mutationId = newSettingMutationId()
-        let item = PrimaryMenuItem.section(
-            libraryId: 7,
-            sectionId: "recently-added",
-            label: "Recently Added"
-        )
-
-        let receipt = try await api.putNavigationShortcutItem(
-            item,
-            present: true,
-            mutationId: mutationId
-        )
-
-        XCTAssertEqual(receipt.value.settingKey, .navShortcuts)
-        XCTAssertEqual(
-            try receipt.value.value.decoded(as: NavigationShortcutsPreference.self),
-            NavigationShortcutsPreference(items: [item])
-        )
-
-        let recorded = try XCTUnwrap(SettingsStubProtocol.state().lastRequest)
-        XCTAssertEqual(recorded.method, "PUT")
-        XCTAssertEqual(recorded.path, "/api/v1/settings/values/nav.shortcuts/item")
-        XCTAssertTrue(recorded.query.isEmpty)
-        XCTAssertEqual(recorded.header("X-Silo-Mutation-Id"), mutationId)
-        XCTAssertEqual(recorded.header("X-Profile-Id"), Self.stubProfileId)
-
-        let body = try XCTUnwrap(recorded.body)
-        let object = try XCTUnwrap(
-            JSONSerialization.jsonObject(with: body) as? [String: Any]
-        )
-        XCTAssertEqual(object["present"] as? Bool, true)
-        let encodedItem = try XCTUnwrap(object["item"] as? [String: Any])
-        XCTAssertEqual(encodedItem["type"] as? String, "section")
-        XCTAssertEqual(encodedItem["library_id"] as? Int, 7)
-        XCTAssertEqual(encodedItem["section_id"] as? String, "recently-added")
-        XCTAssertEqual(encodedItem["label"] as? String, "Recently Added")
-    }
-
-    func testPutNavigationShortcutItemRejectsBuiltinsBeforeSending() async throws {
-        SettingsStubProtocol.reset(mode: .normal)
-        let api = await makeStubbedAPI()
-
-        do {
-            _ = try await api.putNavigationShortcutItem(
-                .builtin(.home),
-                present: true,
-                mutationId: newSettingMutationId()
-            )
-            XCTFail("built-in destinations are not valid nav.shortcuts items")
-        } catch let error as SettingsAPIError {
-            guard case .invalidValue = error else {
-                return XCTFail("expected a local invalid-value error, got \(error)")
-            }
-        }
-
-        XCTAssertNil(SettingsStubProtocol.state().lastRequest)
-    }
-
-    func testPutValueSurfacesAnIdempotentReplay() async throws {
-        SettingsStubProtocol.reset(mode: .idempotentReplay)
-        let api = await makeStubbedAPI()
-
-        let receipt = try await api.putValue(
-            key: .playbackPreferredQuality,
-            scope: .profile,
-            value: "2160p",
-            mutationId: "11111111-1111-1111-1111-111111111111"
-        )
-        XCTAssertTrue(receipt.isIdempotentReplay, "a replayed receipt must be distinguishable")
-        XCTAssertEqual(receipt.value.value, .string("2160p"))
-    }
-
-    func testPutValueRejectsABlankMutationIdBeforeSendingARequest() async throws {
-        SettingsStubProtocol.reset(mode: .normal)
-        let api = await makeStubbedAPI()
-
-        do {
-            _ = try await api.putValue(
-                key: .playbackPreferredQuality,
-                scope: .profile,
-                value: "1080p",
-                mutationId: "  \n\t"
-            )
-            XCTFail("a blank mutation id must not silently disable idempotency")
-        } catch let error as SettingsAPIError {
-            guard case .invalidValue = error else {
-                return XCTFail("expected a local invalid-value error, got \(error)")
-            }
-        }
-
-        XCTAssertNil(
-            SettingsStubProtocol.state().lastRequest,
-            "local mutation-id validation must run before any network activity"
-        )
-    }
-
-    func testGetEffectiveValuesSendsBatchedQueryParams() async throws {
+    func testGetEffectiveValuesSendsRepeatedQueryParams() async throws {
         SettingsStubProtocol.reset(mode: .normal)
         let api = await makeStubbedAPI()
 
@@ -2442,12 +2272,21 @@ final class SettingValuesAPITests: XCTestCase {
             seriesIds: ["s-101"]
         )
         XCTAssertEqual(response.revision, SettingKey.revision)
+        XCTAssertEqual(response.value(for: .playbackAutoPlayNext)?.value, .bool(true))
 
         let recorded = try XCTUnwrap(SettingsStubProtocol.state().lastRequest)
-        XCTAssertEqual(recorded.query["keys"], "playback.subtitle_language,playback.auto_play_next")
-        XCTAssertEqual(recorded.query["library_ids"], "7,9")
-        XCTAssertEqual(recorded.query["series_ids"], "s-101")
+        XCTAssertEqual(recorded.method, "GET")
+        XCTAssertEqual(recorded.path, "/api/v2/settings/values/effective")
+        XCTAssertEqual(recorded.queryItems, [
+            URLQueryItem(name: "keys", value: "playback.subtitle_language"),
+            URLQueryItem(name: "keys", value: "playback.auto_play_next"),
+            URLQueryItem(name: "library_ids", value: "7"),
+            URLQueryItem(name: "library_ids", value: "9"),
+            URLQueryItem(name: "series_ids", value: "s-101"),
+        ])
         XCTAssertEqual(recorded.header("X-Profile-Id"), Self.stubProfileId)
+        XCTAssertEqual(recorded.header("X-Silo-Client-Family"), AppleDeviceIdentity.current.clientFamily)
+        XCTAssertEqual(recorded.header("X-Silo-Device-Id")?.isEmpty, false)
     }
 
     func testGetEffectiveValuesRejectsAnOlderContractRevision() async throws {
@@ -2462,6 +2301,47 @@ final class SettingValuesAPITests: XCTestCase {
         }
     }
 
+    func testGetEffectiveValuesReportsUpgradeRequiredOnAV1OnlyServer() async throws {
+        SettingsStubProtocol.reset(mode: .serverTooOld)
+        let api = await makeStubbedAPI()
+
+        do {
+            _ = try await api.getEffectiveValues(keys: [.playbackSubtitleLanguage])
+            XCTFail("a v1-only server has no effective values to read")
+        } catch let error as SettingsAPIError {
+            XCTAssertEqual(error, .serverUpgradeRequired)
+        }
+    }
+
+    func testGetEffectiveValuesMapsAKeyTheServerLacksToUnknownSetting() async throws {
+        SettingsStubProtocol.reset(mode: .unknownKey)
+        let api = await makeStubbedAPI()
+
+        do {
+            _ = try await api.getEffectiveValues(keys: [.playbackSubtitleLanguage])
+            XCTFail("a key missing from the server's contract must fail")
+        } catch let error as SettingsAPIError {
+            guard case .unknownSetting = error else {
+                return XCTFail("expected unknownSetting, got \(error)")
+            }
+        }
+    }
+
+    func testGetEffectiveValuesRefusesRowsForAnotherProfileOrRepeatedKeys() async throws {
+        let api = await makeStubbedAPI()
+        for mode in [SettingsStubProtocol.Mode.foreignProfileRow, .duplicateKeys] {
+            SettingsStubProtocol.reset(mode: mode)
+            do {
+                _ = try await api.getEffectiveValues(keys: [.playbackAutoPlayNext])
+                XCTFail("\(mode) must not be applied")
+            } catch let error as SettingsAPIError {
+                guard case .transport = error else {
+                    return XCTFail("expected a refused response for \(mode), got \(error)")
+                }
+            }
+        }
+    }
+
     func testGetEffectiveValuesOmitsEmptyParams() async throws {
         SettingsStubProtocol.reset(mode: .normal)
         let api = await makeStubbedAPI()
@@ -2469,28 +2349,8 @@ final class SettingValuesAPITests: XCTestCase {
         _ = try await api.getEffectiveValues()
 
         let recorded = try XCTUnwrap(SettingsStubProtocol.state().lastRequest)
-        XCTAssertNil(recorded.query["keys"], "no keys means every remote definition, not keys=")
-        XCTAssertNil(recorded.query["library_ids"])
-        XCTAssertNil(recorded.query["series_ids"])
-    }
-
-    func testDeleteValueSendsTheScopeAndMapsAMissingRow() async throws {
-        SettingsStubProtocol.reset(mode: .normal)
-        let api = await makeStubbedAPI()
-
-        try await api.deleteValue(key: .playbackSubtitleLanguage, scope: .profileLibrary(libraryId: 7))
-        let recorded = try XCTUnwrap(SettingsStubProtocol.state().lastRequest)
-        XCTAssertEqual(recorded.method, "DELETE")
-        XCTAssertEqual(recorded.query["scope"], "profile_library")
-        XCTAssertEqual(recorded.query["library_id"], "7")
-
-        SettingsStubProtocol.reset(mode: .nothingStored)
-        do {
-            try await api.deleteValue(key: .playbackSubtitleLanguage, scope: .profile)
-            XCTFail("clearing an unset scope must surface as .noValueAtScope")
-        } catch let error as SettingsAPIError {
-            XCTAssertEqual(error, .noValueAtScope)
-        }
+        XCTAssertEqual(recorded.queryItems, [], "no keys means every remote definition, not keys=")
+        XCTAssertNil(recorded.query["profile_id"], "the household-parent override is never sent")
     }
 
     func testProfileScopedCallWithoutAProfileFailsLocally() async throws {
@@ -2522,6 +2382,7 @@ final class SettingValuesAPITests: XCTestCase {
             keychain: SharedKeychain(service: "SettingValuesAPITests.\(UUID().uuidString)", accessGroup: nil),
             defaults: SharedDefaults(suite: suite, standard: suite)
         )
+        await tokenStore.switchActiveServer(serverId: "server-a")
         await tokenStore.setServerUrl("http://settings-test.invalid")
         await tokenStore.setProfileId(profileId)
 
@@ -2646,10 +2507,6 @@ final class SettingsStubProtocol: URLProtocol {
         case serverTooOld
         /// A server with the canonical routes but an older manifest revision.
         case olderContractRevision
-        /// A write whose mutation id the server already applied.
-        case idempotentReplay
-        /// A delete addressing a scope with no stored value.
-        case nothingStored
         /// Two expired scoped requests race one rotating account refresh.
         case concurrentScopedRefresh
         /// A scoped request owns refresh while an ordinary 401 joins it.
@@ -2658,6 +2515,16 @@ final class SettingsStubProtocol: URLProtocol {
         case mixedRefreshScopedFailure
         /// A scoped-owned refresh receives a retryable 429 or 5xx response.
         case mixedRefreshScopedTransientFailure(status: Int)
+        /// The capability document answers with this state and `allowed`.
+        case capabilityState(String, allowed: Bool)
+        /// The capability read answers with a problem document of this status.
+        case problem(status: Int)
+        /// The effective read names a key the server's contract lacks.
+        case unknownKey
+        /// The effective read answers with a row for another profile.
+        case foreignProfileRow
+        /// The effective read answers with the same key twice.
+        case duplicateKeys
         /// A scoped-owned refresh receives HTTP 200 with an invalid token body.
         case mixedRefreshScopedMalformedSuccess
         /// An ordinary request's refresh waits for an explicit test release.
@@ -2672,6 +2539,8 @@ final class SettingsStubProtocol: URLProtocol {
         let method: String
         let path: String
         let query: [String: String]
+        /// Every query item in order, for names that repeat.
+        let queryItems: [URLQueryItem]
         /// Names are lowercased, because URLSession is free to normalize
         /// header casing and an assertion must not depend on it.
         let headers: [String: String]
@@ -2793,6 +2662,7 @@ final class SettingsStubProtocol: URLProtocol {
             method: request.httpMethod ?? "",
             path: components?.path ?? "",
             query: query,
+            queryItems: components?.queryItems ?? [],
             headers: Self.lowercasedHeaders(request.allHTTPHeaderFields ?? [:]),
             body: Self.requestBody(of: request)
         )
@@ -2812,9 +2682,9 @@ final class SettingsStubProtocol: URLProtocol {
         }
         if mode == .temporaryRefreshRejected {
             switch (recorded.method, recorded.path) {
-            case ("GET", "/api/v1/settings/contract/capabilities"):
+            case ("GET", "/api/v2/settings/contract/capabilities"):
                 respond(status: 401, body: #"{"error":"unauthorized"}"#)
-            case ("POST", "/api/v1/auth/refresh"):
+            case ("POST", "/api/v2/auth/refresh"):
                 respond(status: 401, body: #"{"error":"invalid_token"}"#)
             default:
                 respond(status: 404, body: #"{"error":"not_found"}"#)
@@ -2823,21 +2693,16 @@ final class SettingsStubProtocol: URLProtocol {
         }
         if mode == .concurrentScopedRefresh {
             switch (recorded.method, recorded.path) {
-            case ("POST", "/api/v1/auth/refresh"):
+            case ("POST", "/api/v2/auth/refresh"):
                 respond(
                     status: 200,
                     body: #"{"access_token":"placeholder","refresh_token":"redacted","expires_in":3600}"#
                 )
-            case ("GET", "/api/v1/settings/contract/capabilities"):
+            case ("GET", "/api/v2/settings/contract/capabilities"):
                 if recorded.header("Authorization") == "Bearer placeholder" {
                     respond(
                         status: 200,
-                        body: """
-                        {"api_version":1,"revision":\(SettingKey.revision),"contract_etag":"\\"etag\\"","definition_count":48,
-                         "scopes":["account","profile","profile_device","profile_library","profile_series"],
-                         "supports_batched_effective":true,"supports_idempotent_writes":true,
-                         "supports_atomic_shortcuts":true}
-                        """
+                        body: Self.capabilitiesBody()
                     )
                 } else {
                     holdConcurrentUnauthorizedUntilBothExpiredRequestsArrive()
@@ -2890,50 +2755,43 @@ final class SettingsStubProtocol: URLProtocol {
             : SettingKey.revision
 
         switch (recorded.method, recorded.path) {
-        case ("GET", "/api/v1/health"):
+        case ("GET", ConnectionMonitor.healthPath):
             respond(status: 200, body: #"{"status":"ok","server_name":"Candidate"}"#)
-        case ("GET", "/api/v1/settings/contract/capabilities"):
-            respond(status: 200, body: """
-            {"api_version":1,"revision":\(responseRevision),"contract_etag":"\\"etag\\"","definition_count":48,
-             "scopes":["account","profile","profile_device","profile_library","profile_series"],
-             "supports_batched_effective":true,"supports_idempotent_writes":true,
-             "supports_atomic_shortcuts":true}
-            """)
-        case ("GET", "/api/v1/settings/values/effective"):
-            respond(status: 200, body: """
-            {"settings":[{"key":"playback.auto_play_next","value":true,"source":"default"}],
-             "revision":\(responseRevision)}
-            """)
-        case ("PUT", "/api/v1/settings/values/nav.shortcuts/item"):
-            let value = Self.shortcutValueFromMutationBody(recorded.body) ?? #"{"items":[]}"#
-            let replay = mode == .idempotentReplay
-            respond(
-                status: 200,
-                body: """
-                {"key":"nav.shortcuts","scope":"profile",
-                 "value":\(value),"revision":\(replay ? 0 : 3)}
-                """,
-                contentType: "application/json",
-                headers: replay ? ["X-Silo-Idempotent-Replay": "true"] : [:]
-            )
-        case ("PUT", let path) where path.hasPrefix("/api/v1/settings/values/"):
-            let key = String(path.dropFirst("/api/v1/settings/values/".count))
-            let value = Self.valueFromWriteBody(recorded.body) ?? "null"
-            let replay = mode == .idempotentReplay
-            respond(
-                status: 200,
-                body: """
-                {"key":"\(key)","scope":"\(recorded.query["scope"] ?? "")",
-                 "value":\(value),"revision":\(replay ? 0 : 3)}
-                """,
-                contentType: "application/json",
-                headers: replay ? ["X-Silo-Idempotent-Replay": "true"] : [:]
-            )
-        case ("DELETE", let path) where path.hasPrefix("/api/v1/settings/values/"):
-            if mode == .nothingStored {
-                respond(status: 404, body: #"{"error":"not_found","message":"No value is set at this scope"}"#)
-            } else {
-                respond(status: 204, body: "")
+        case ("GET", "/api/v2/settings/contract/capabilities"):
+            switch mode {
+            case .capabilityState(let state, let allowed):
+                respond(status: 200, body: Self.capabilitiesBody(state: state, allowed: allowed))
+            case .problem(let status):
+                respond(status: status, body: Self.problemBody(status: status), contentType: "application/problem+json")
+            default:
+                respond(status: 200, body: Self.capabilitiesBody(manifestRevision: responseRevision))
+            }
+        case ("GET", "/api/v2/settings/values/effective"):
+            switch mode {
+            case .unknownKey:
+                respond(status: 422, body: """
+                {"type":"https://siloserver.org/docs/api/v2/problems/validation_failed","title":"Validation failed",
+                 "status":422,"detail":"The request did not pass validation; see errors.",
+                 "errors":[{"location":"query.keys","code":"invalid",
+                            "detail":"No setting named no.such exists in this server's contract"}]}
+                """, contentType: "application/problem+json")
+            case .foreignProfileRow:
+                respond(status: 200, body: """
+                {"items":[{"key":"playback.auto_play_next","value":false,"source":"profile","scope":"profile",
+                           "profile_id":"someone-else","definition_revision":3}],
+                 "revision":\(responseRevision)}
+                """)
+            case .duplicateKeys:
+                respond(status: 200, body: """
+                {"items":[{"key":"playback.auto_play_next","value":true,"source":"default","definition_revision":3},
+                          {"key":"playback.auto_play_next","value":false,"source":"default","definition_revision":3}],
+                 "revision":\(responseRevision)}
+                """)
+            default:
+                respond(status: 200, body: """
+                {"items":[{"key":"playback.auto_play_next","value":true,"source":"default","definition_revision":3}],
+                 "revision":\(responseRevision)}
+                """)
             }
         default:
             respond(status: 404, body: #"{"error":"not_found","message":"unstubbed route"}"#)
@@ -2970,16 +2828,11 @@ final class SettingsStubProtocol: URLProtocol {
         holdRefreshForExplicitRelease: Bool = false
     ) {
         switch (recorded.method, recorded.path) {
-        case ("GET", "/api/v1/settings/contract/capabilities"):
+        case ("GET", "/api/v2/settings/contract/capabilities"):
             if recorded.header("Authorization") == "Bearer placeholder" {
                 respond(
                     status: 200,
-                    body: """
-                    {"api_version":1,"revision":\(SettingKey.revision),"contract_etag":"\\"etag\\"","definition_count":48,
-                     "scopes":["account","profile","profile_device","profile_library","profile_series"],
-                     "supports_batched_effective":true,"supports_idempotent_writes":true,
-                     "supports_atomic_shortcuts":true}
-                    """
+                    body: Self.capabilitiesBody()
                 )
                 return
             }
@@ -2999,7 +2852,7 @@ final class SettingsStubProtocol: URLProtocol {
                 respond(status: 401, body: #"{"error":"unauthorized"}"#)
             }
 
-        case ("POST", "/api/v1/auth/refresh"):
+        case ("POST", "/api/v2/auth/refresh"):
             let pendingOrdinary: SettingsStubProtocol?
             Self.lock.lock()
             Self.mixedRefreshStarted = true
@@ -3027,24 +2880,19 @@ final class SettingsStubProtocol: URLProtocol {
 
     private func handleOrdinaryDelayedRefresh(_ recorded: RecordedRequest) {
         switch (recorded.method, recorded.path) {
-        case ("GET", "/api/v1/settings/contract/capabilities"):
+        case ("GET", "/api/v2/settings/contract/capabilities"):
             if ["Bearer placeholder", "Bearer newer-access"].contains(
                 recorded.header("Authorization")
             ) {
                 respond(
                     status: 200,
-                    body: """
-                    {"api_version":1,"revision":\(SettingKey.revision),"contract_etag":"\\"etag\\"","definition_count":48,
-                     "scopes":["account","profile","profile_device","profile_library","profile_series"],
-                     "supports_batched_effective":true,"supports_idempotent_writes":true,
-                     "supports_atomic_shortcuts":true}
-                    """
+                    body: Self.capabilitiesBody()
                 )
             } else {
                 respond(status: 401, body: #"{"error":"unauthorized"}"#)
             }
 
-        case ("POST", "/api/v1/auth/refresh"):
+        case ("POST", "/api/v2/auth/refresh"):
             Self.lock.lock()
             Self.pendingOrdinaryRefresh = self
             Self.lock.unlock()
@@ -3056,7 +2904,7 @@ final class SettingsStubProtocol: URLProtocol {
 
     private func handleOrdinaryUnauthorizedDelayed(_ recorded: RecordedRequest) {
         switch (recorded.method, recorded.path) {
-        case ("GET", "/api/v1/settings/contract/capabilities"):
+        case ("GET", "/api/v2/settings/contract/capabilities"):
             let unauthorizedWasReleased: Bool
             Self.lock.lock()
             unauthorizedWasReleased = Self.ordinaryUnauthorizedReleased
@@ -3064,12 +2912,7 @@ final class SettingsStubProtocol: URLProtocol {
             if unauthorizedWasReleased || recorded.header("Authorization") == "Bearer placeholder" {
                 respond(
                     status: 200,
-                    body: """
-                    {"api_version":1,"revision":\(SettingKey.revision),"contract_etag":"\\"etag\\"","definition_count":48,
-                     "scopes":["account","profile","profile_device","profile_library","profile_series"],
-                     "supports_batched_effective":true,"supports_idempotent_writes":true,
-                     "supports_atomic_shortcuts":true}
-                    """
+                    body: Self.capabilitiesBody()
                 )
             } else {
                 Self.lock.lock()
@@ -3077,7 +2920,7 @@ final class SettingsStubProtocol: URLProtocol {
                 Self.lock.unlock()
             }
 
-        case ("POST", "/api/v1/auth/refresh"):
+        case ("POST", "/api/v2/auth/refresh"):
             respond(
                 status: 200,
                 body: #"{"access_token":"placeholder","refresh_token":"redacted","expires_in":3600}"#
@@ -3088,33 +2931,28 @@ final class SettingsStubProtocol: URLProtocol {
         }
     }
 
-    /// Pull the raw `value` back out of a `{"value": …}` body without
-    /// re-encoding it, so a test can assert the stub echoed exactly what the
-    /// client sent.
-    private static func valueFromWriteBody(_ body: Data?) -> String? {
-        guard let body,
-              let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
-              let value = object["value"]
-        else { return nil }
-        guard let data = try? JSONSerialization.data(
-            withJSONObject: value,
-            options: [.fragmentsAllowed, .sortedKeys]
-        ) else { return nil }
-        return String(data: data, encoding: .utf8)
+    /// A v2 `SettingsContractCapabilities` document.
+    static func capabilitiesBody(
+        manifestRevision: Int = SettingKey.revision,
+        state: String = "available",
+        allowed: Bool = true
+    ) -> String {
+        """
+        {"revision":"36e767e32d6613323df470594b9c9106","state":"\(state)","allowed":\(allowed),
+         "api_version":1,"manifest_revision":\(manifestRevision),"contract_etag":"\\"etag\\"",
+         "definition_count":48,
+         "scopes":["account","profile","profile_client","profile_device","profile_library","profile_series"],
+         "client_families":["tv","mobile","tablet","desktop","web"],
+         "supports_batched_effective":true,"supports_idempotent_writes":true,
+         "supports_atomic_shortcuts":true}
+        """
     }
 
-    private static func shortcutValueFromMutationBody(_ body: Data?) -> String? {
-        guard let body,
-              let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
-              let item = object["item"] as? [String: Any],
-              let present = object["present"] as? Bool
-        else { return nil }
-        let value: [String: Any] = ["items": present ? [item] : []]
-        guard let data = try? JSONSerialization.data(
-            withJSONObject: value,
-            options: [.sortedKeys]
-        ) else { return nil }
-        return String(data: data, encoding: .utf8)
+    private static func problemBody(status: Int) -> String {
+        """
+        {"type":"https://siloserver.org/docs/api/v2/problems/internal_error","title":"Internal error",
+         "status":\(status),"detail":"An unexpected error occurred."}
+        """
     }
 
     private static func lowercasedHeaders(_ headers: [String: String]) -> [String: String] {

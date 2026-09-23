@@ -2,15 +2,12 @@ import Foundation
 
 // MARK: - Canonical settings API
 
-/// The typed settings endpoints (`/api/v1/settings/contract*`,
-/// `/api/v1/settings/values/*`).
+/// The typed settings endpoints: the v2 contract capabilities and effective
+/// reads, and the `/settings/values/*` writes. All of them go through the
+/// shared ``APIv2Client`` (`APIv2Client+Settings.swift`).
 ///
-/// The methods on ``SiloAPI`` itself — `effectiveSettings`,
-/// `setDeviceSetting`, `getUserSetting` — speak the legacy string-only
-/// registry: every value is a string, the scope is implied by which function
-/// you call, and an unknown key is accepted silently. These speak the contract
-/// instead: values are typed JSON, the scope is explicit and validated against
-/// the manifest, and a key that is not in the manifest cannot be named because
+/// Values are typed JSON, the scope is explicit and validated against the
+/// manifest, and a key that is not in the manifest cannot be named because
 /// ``SettingKey`` is generated from it.
 ///
 /// Everything here codes through ``SettingsWireCoding`` rather than the shared
@@ -24,34 +21,28 @@ extension SiloAPI {
     /// What the connected server's settings contract supports.
     ///
     /// Returns a typed result rather than throwing, because the interesting
-    /// failure is not an error: a server may predate the canonical settings
-    /// API entirely or serve an older manifest revision than this build. The
-    /// UI must say "this server needs an upgrade" rather than render an empty
-    /// or incomplete settings screen, so that case is
-    /// ``SettingsCapabilitiesResult/serverUpgradeRequired`` instead of
-    /// dissolving into the generic error path.
+    /// failure is not an error: a server may be v1-only or serve an older
+    /// manifest revision than this build. The UI must say "this server needs
+    /// an upgrade" rather than render an empty or incomplete settings screen,
+    /// so that case is ``SettingsCapabilitiesResult/serverUpgradeRequired``
+    /// instead of dissolving into the generic error path.
     ///
     /// Needs no profile: the contract is the same for every profile on the
-    /// server, so this route sits outside the server's `RequireProfile` group
-    /// and can be probed before profile selection.
+    /// server, so it can be probed before profile selection.
     func getContractCapabilities(
         requestIdentity: HTTPRequestIdentity? = nil
     ) async -> SettingsCapabilitiesResult {
         do {
-            let response = try await http.requestData(
-                method: "GET",
-                path: "/api/v1/settings/contract/capabilities",
-                // A 404 here is the documented "server is too old" signal, not
-                // a failure worth logging as one.
-                quietStatuses: [404],
-                requestIdentity: requestIdentity
+            let capabilities = try await apiV2Client.settingsContractCapabilities(
+                expectedIdentity: requestIdentity
             )
-            let capabilities = try SettingsWireCoding.makeDecoder()
-                .decode(SettingsContractCapabilities.self, from: response.data)
-            guard !capabilities.contractIsAheadOfServer else {
-                return .serverUpgradeRequired
+            if capabilities.isAvailable {
+                return capabilities.contractIsAheadOfServer ? .serverUpgradeRequired : .available(capabilities)
             }
-            return .available(capabilities)
+            // `unsupported` means this server build cannot provide the
+            // settings contract; any other state is an answer about this
+            // principal or configuration, not about the server's version.
+            return capabilities.state == "unsupported" ? .serverUpgradeRequired : .unavailable
         } catch {
             let mapped = SettingsAPIError.from(error)
             return mapped == .serverUpgradeRequired ? .serverUpgradeRequired : .failed(mapped)
@@ -60,8 +51,15 @@ extension SiloAPI {
 
     // MARK: Read
 
+    /// The server-wide card overlay config: the admin kill switch and the
+    /// optional baseline document for profiles that have not customized.
+    /// Needs no profile; the server caches it for 60s.
+    func overlayConfig() async throws -> APIv2OverlayConfig {
+        try await apiV2Client.overlayConfig()
+    }
+
     /// Resolve settings the way the server does, including the scope each
-    /// answer came from.
+    /// answer came from, for the session's selected profile.
     ///
     /// Batched on purpose: a settings screen wants every key at once and a
     /// season view wants several keys across many series, and the server
@@ -71,37 +69,32 @@ extension SiloAPI {
     /// `libraryIds` and `seriesIds` widen the resolution context to those
     /// content scopes — a key stored at `profile_library` only surfaces when
     /// its library is named here. The profile and device halves of the context
-    /// come from the session headers.
+    /// come from the session headers. `requestIdentity`, when given, pins the
+    /// read to that server and profile: it fails rather than follow a switch.
     func getEffectiveValues(
         keys: [SettingKey] = [],
         libraryIds: [Int] = [],
         seriesIds: [String] = [],
-        profileId: String? = nil,
         requestIdentity: HTTPRequestIdentity? = nil
     ) async throws -> EffectiveSettingValuesResponse {
-        let headers = try await profileHeaders(explicit: profileId)
-
-        var query: [String: String] = [:]
-        if !keys.isEmpty {
-            query["keys"] = keys.map(\.rawValue).joined(separator: ",")
+        // Resolved here so a call made before profile selection fails locally
+        // with a named error instead of the server's 400.
+        var profile = requestIdentity?.profileId
+        if profile?.isEmpty ?? true {
+            profile = await currentProfileId()
         }
-        if !libraryIds.isEmpty {
-            query["library_ids"] = libraryIds.map(String.init).joined(separator: ",")
-        }
-        if !seriesIds.isEmpty {
-            query["series_ids"] = seriesIds.joined(separator: ",")
+        guard let profile, !profile.isEmpty else {
+            throw SettingsAPIError.profileRequired
         }
 
         do {
-            let response = try await http.requestData(
-                method: "GET",
-                path: "/api/v1/settings/values/effective",
-                query: query,
-                headers: headers,
-                requestIdentity: requestIdentity
+            let decoded = try await apiV2Client.effectiveSettings(
+                keys: keys,
+                libraryIds: libraryIds,
+                seriesIds: seriesIds,
+                profileID: profile,
+                expectedIdentity: requestIdentity
             )
-            let decoded = try SettingsWireCoding.makeDecoder()
-                .decode(EffectiveSettingValuesResponse.self, from: response.data)
             guard !decoded.contractIsAheadOfServer else {
                 throw SettingsAPIError.serverUpgradeRequired
             }
@@ -113,52 +106,35 @@ extension SiloAPI {
 
     // MARK: Write
 
-    /// Write one typed value at one scope.
+    /// Write one typed value at one scope and return the stored row.
     ///
-    /// `mutationId` (sent as `X-Silo-Mutation-Id`) makes retries safe: create
-    /// it once per logical write with ``newSettingMutationId()`` and reuse it
-    /// for every retry of *that* write. A retry the server already applied
-    /// replays the recorded receipt rather than re-applying — the returned
-    /// receipt has `isIdempotentReplay == true` — while reusing an id for
-    /// different content fails with ``SettingsAPIError/mutationIdConflict``.
-    /// Generating a fresh id per retry defeats both.
+    /// The write names the desired state of the row, so repeating it is safe
+    /// (the contract marks it `natural_idempotent`) but not free: every
+    /// accepted attempt advances the row's revision. There is no mutation id
+    /// and no replayed receipt. `profileId`, when given, must be the session's
+    /// selected profile: a write captured for one profile is refused rather
+    /// than sent for another.
     ///
     /// A value that exceeds a policy restriction is stored, not rejected: the
     /// restriction filters what the preference does at resolution time, so a
     /// successful write does not mean playback will use this value. Call
-    /// ``getEffectiveValues(keys:libraryIds:seriesIds:profileId:requestIdentity:)``
+    /// ``getEffectiveValues(keys:libraryIds:seriesIds:requestIdentity:)``
     /// for that.
     @discardableResult
     func putValue(
         key: SettingKey,
         scope: SettingScopeIdentity,
         value: SettingJSONValue,
-        mutationId: String,
         profileId: String? = nil,
         requestIdentity: HTTPRequestIdentity? = nil
-    ) async throws -> SettingValueWriteReceipt {
-        let trimmedMutationId = mutationId.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedMutationId.isEmpty else {
-            throw SettingsAPIError.invalidValue(message: "Mutation ID must not be blank.")
-        }
-        var headers = try await profileHeaders(explicit: profileId)
-        headers["X-Silo-Mutation-Id"] = trimmedMutationId
-
+    ) async throws -> StoredSettingValue {
         do {
-            let body = try SettingsWireCoding.makeEncoder().encode(SettingValueWriteRequest(value: value))
-            let response = try await http.requestData(
-                method: "PUT",
-                path: "/api/v1/settings/values/\(key.rawValue)",
-                query: scope.queryItems,
-                body: body,
-                headers: headers,
-                requestIdentity: requestIdentity
-            )
-            let stored = try SettingsWireCoding.makeDecoder()
-                .decode(StoredSettingValue.self, from: response.data)
-            return SettingValueWriteReceipt(
-                value: stored,
-                isIdempotentReplay: response.header("X-Silo-Idempotent-Replay") == "true"
+            return try await apiV2Client.updateSettingValue(
+                key: key,
+                scope: scope,
+                value: value,
+                profileID: try await writeProfile(explicit: profileId ?? requestIdentity?.profileId),
+                expectedIdentity: requestIdentity
             )
         } catch {
             throw SettingsAPIError.from(error, key: key.rawValue, scope: scope.scope)
@@ -168,54 +144,29 @@ extension SiloAPI {
     /// Atomically add or remove one semantic shortcut from `nav.shortcuts`.
     ///
     /// Unlike a whole-value PUT, this operation is safe when multiple clients
-    /// edit different shortcuts from stale effective snapshots. The mutation
-    /// id still belongs to one exact `{item, present}` operation and must be
-    /// reused when its response is ambiguous.
+    /// edit different shortcuts from stale effective snapshots.
     @discardableResult
     func putNavigationShortcutItem(
         _ item: PrimaryMenuItem,
         present: Bool,
-        mutationId: String,
         profileId: String? = nil,
         requestIdentity: HTTPRequestIdentity? = nil
-    ) async throws -> SettingValueWriteReceipt {
+    ) async throws -> StoredSettingValue {
         guard item.isContractValid else {
             throw SettingsAPIError.invalidValue(message: "Shortcut item is invalid.")
         }
         if case .builtin = item {
             throw SettingsAPIError.invalidValue(message: "Built-in destinations cannot be shortcuts.")
         }
-        let trimmedMutationId = mutationId.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedMutationId.isEmpty else {
-            throw SettingsAPIError.invalidValue(message: "Mutation ID must not be blank.")
-        }
-
-        var headers = try await profileHeaders(explicit: profileId)
-        headers["X-Silo-Mutation-Id"] = trimmedMutationId
-
         do {
-            let body = try SettingsWireCoding.makeEncoder().encode(
-                NavigationShortcutItemWriteRequest(item: item, present: present)
-            )
-            let response = try await http.requestData(
-                method: "PUT",
-                path: "/api/v1/settings/values/\(SettingKey.navShortcuts.rawValue)/item",
-                body: body,
-                headers: headers,
-                requestIdentity: requestIdentity
-            )
-            let stored = try SettingsWireCoding.makeDecoder()
-                .decode(StoredSettingValue.self, from: response.data)
-            return SettingValueWriteReceipt(
-                value: stored,
-                isIdempotentReplay: response.header("X-Silo-Idempotent-Replay") == "true"
+            return try await apiV2Client.updateNavigationShortcut(
+                item,
+                present: present,
+                profileID: try await writeProfile(explicit: profileId ?? requestIdentity?.profileId),
+                expectedIdentity: requestIdentity
             )
         } catch {
-            throw SettingsAPIError.from(
-                error,
-                key: SettingKey.navShortcuts.rawValue,
-                scope: .profile
-            )
+            throw SettingsAPIError.from(error, key: SettingKey.navShortcuts.rawValue, scope: .profile)
         }
     }
 
@@ -230,37 +181,28 @@ extension SiloAPI {
         profileId: String? = nil,
         requestIdentity: HTTPRequestIdentity? = nil
     ) async throws {
-        let headers = try await profileHeaders(explicit: profileId)
         do {
-            _ = try await http.requestData(
-                method: "DELETE",
-                path: "/api/v1/settings/values/\(key.rawValue)",
-                query: scope.queryItems,
-                headers: headers,
-                quietStatuses: [404],
-                requestIdentity: requestIdentity
+            try await apiV2Client.deleteSettingValue(
+                key: key,
+                scope: scope,
+                profileID: try await writeProfile(explicit: profileId ?? requestIdentity?.profileId),
+                expectedIdentity: requestIdentity
             )
         } catch {
             throw SettingsAPIError.from(error, key: key.rawValue, scope: scope.scope)
         }
     }
 
-    // MARK: Headers
+    // MARK: Profile
 
-    /// The `X-Profile-Id` header every `/settings/values/*` route needs.
+    /// The profile a write acts for: the caller's captured profile, or the
+    /// session's when the caller did not capture one.
     ///
-    /// `HTTPClient` already attaches the session's profile to every request,
-    /// but only when one is selected. Each of these routes sits behind the
-    /// server's `RequireProfile` middleware, and `profile_device`,
-    /// `profile_library` and `profile_series` additionally take their profile
-    /// half from this header rather than the query — so a call made before
-    /// profile selection reaches the server without it and comes back as an
-    /// opaque 400. Resolving it here fails locally with a named error instead.
-    ///
-    /// Setting the header explicitly also lets a caller act for a profile
-    /// other than the session's, which is how a household parent edits a
-    /// child's settings.
-    private func profileHeaders(explicit profileId: String?) async throws -> [String: String] {
+    /// Every `/settings/values/*` route requires `X-Profile-Id`, so a call
+    /// made before profile selection fails locally with a named error instead
+    /// of the server's 422. The v2 client then refuses the write when the
+    /// session's profile is no longer this one.
+    private func writeProfile(explicit profileId: String?) async throws -> String {
         var resolved = profileId?.trimmingCharacters(in: .whitespacesAndNewlines)
         if resolved == nil || resolved?.isEmpty == true {
             resolved = await currentProfileId()
@@ -268,11 +210,6 @@ extension SiloAPI {
         guard let profile = resolved, !profile.isEmpty else {
             throw SettingsAPIError.profileRequired
         }
-        return ["X-Profile-Id": profile]
+        return profile
     }
-}
-
-private struct NavigationShortcutItemWriteRequest: Encodable {
-    let item: PrimaryMenuItem
-    let present: Bool
 }

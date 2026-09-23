@@ -483,8 +483,17 @@ final class PlayerSettings {
     private let defaults: UserDefaults
 
     /// Debounced writer for the canonical settings API. Owns the queue, the
-    /// mutation ids and the retry schedule; see PlayerSettingsFlusher.swift.
+    /// retry schedule and the held changes; see PlayerSettingsFlusher.swift.
     private let flusher: PlayerSettingsFlusher
+
+    /// Device settings whose latest change ran out of automatic retries. The
+    /// change stays on this device and is not sent again until the user
+    /// retries or discards it (owner decision D4).
+    private(set) var heldDeviceSettingKeys: [SettingKey] = []
+
+    /// Set when the server definitively refused a device setting change.
+    /// The change was dropped; the settings screen says so once.
+    private(set) var rejectedDeviceSettingChange = false
 
     /// Designated initializer, non-private so tests can build an instance with
     /// an isolated `UserDefaults` and a fake transport rather than reaching for
@@ -594,6 +603,13 @@ final class PlayerSettings {
         )
         syncLegacySubtitleFields(from: subtitleAppearance)
 
+        flusher.observeHeldKeys { [weak self] keys in
+            Task { @MainActor in self?.heldDeviceSettingKeys = keys }
+        }
+        flusher.observeRejections { [weak self] _ in
+            Task { @MainActor in self?.rejectedDeviceSettingChange = true }
+        }
+
         NotificationCenter.default.addObserver(
             forName: SystemCaptionAppearance.settingsChangedNotification,
             object: nil,
@@ -639,7 +655,7 @@ final class PlayerSettings {
         do {
             let response = try await flusher.effectiveValues(keys: SettingKey.playerDeviceSettings)
             let effectiveByKey = response.byKey
-            applyEffectiveSettings(effectiveByKey)
+            applyEffectiveSettings(overlayingUnsettledValues(on: effectiveByKey))
 
             if let scopeID, !isMigrationComplete(for: scopeID) {
                 let imported = await importLegacySettingsIfNeeded(
@@ -883,6 +899,62 @@ final class PlayerSettings {
         bufferAhead = .automatic
         deinterlaceMode = .automatic
         deinterlaceFieldRate = .fullMotion
+    }
+
+    /// Keep showing this device's own values for keys whose change has not
+    /// reached the server (queued, failed or held): the server's answer does
+    /// not have them yet, and painting it would silently undo the edit.
+    private func overlayingUnsettledValues(
+        on effectiveByKey: [SettingKey: EffectiveSettingValue]
+    ) -> [SettingKey: EffectiveSettingValue] {
+        var merged = effectiveByKey
+        for (key, value) in flusher.unsettledValues() {
+            merged[key] = EffectiveSettingValue(
+                key: key.rawValue,
+                value: value,
+                source: .scope(.profileDevice),
+                suggestedValues: effectiveByKey[key]?.suggestedValues,
+                scope: .profileDevice
+            )
+        }
+        return merged
+    }
+
+    /// "Discard held change": forget the held device setting changes and
+    /// repaint what the server holds.
+    ///
+    /// Reads the server before dropping anything. Offline, the only copy of
+    /// a held key on this device is the discarded value itself, so dropping
+    /// the hold would leave playback using that value with nothing saying it
+    /// is unsaved. The hold stays until the server can be reached. Returns
+    /// false when the discard did not happen for that reason.
+    @discardableResult
+    @MainActor
+    func discardHeldDeviceSettingChanges() async -> Bool {
+        do {
+            let response = try await flusher.effectiveValues(keys: SettingKey.playerDeviceSettings)
+            flusher.discardHeldChanges()
+            applyEffectiveSettings(overlayingUnsettledValues(on: response.byKey))
+            return true
+        } catch SettingsAPIError.serverUpgradeRequired {
+            // The server stores no settings for this device at all, so the
+            // local value is the only one there is.
+            flusher.discardHeldChanges()
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Send the held device setting changes again with a fresh retry budget.
+    @MainActor
+    func retryHeldDeviceSettingChanges() async {
+        await flusher.retryHeldChanges()
+    }
+
+    @MainActor
+    func dismissDeviceSettingRejection() {
+        rejectedDeviceSettingChange = false
     }
 
     /// Send everything queued and wait for it.
@@ -1167,9 +1239,12 @@ final class PlayerSettings {
         effectiveByKey: [SettingKey: EffectiveSettingValue]
     ) async -> Bool {
         var importedAny = false
-        var locallyEffective = effectiveByKey
+        var locallyEffective = overlayingUnsettledValues(on: effectiveByKey)
+        // A key with its own change still owed (a held one included) is the
+        // user's newer choice; the legacy value must not replace it.
+        let unsettled = flusher.unsettledKeys
 
-        for key in SettingKey.playerDeviceSettings {
+        for key in SettingKey.playerDeviceSettings where !unsettled.contains(key) {
             guard let legacyValue = legacySnapshot[key] else { continue }
             guard let entry = effectiveByKey[key], entry.scope != .profileDevice else { continue }
             // Nothing to migrate when the resolved value already equals what

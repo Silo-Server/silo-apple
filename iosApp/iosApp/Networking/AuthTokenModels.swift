@@ -1,6 +1,7 @@
 import Foundation
 
-/// Body for POST /api/v1/auth/login.
+/// Body for POST /api/v2/auth/login (`LoginInputBody`). A nil `provider`
+/// is omitted, which selects the server's default provider.
 struct LoginRequest: Codable {
     let username: String
     let password: String
@@ -13,35 +14,7 @@ struct LoginRequest: Codable {
     }
 }
 
-/// Response from POST /api/v1/auth/login.
-struct LoginResponse: Codable {
-    let accessToken: String
-    let refreshToken: String
-    let expiresIn: Int64
-    let user: AuthUser
-}
-
-/// Wire-format user object returned inside auth responses.
-///
-/// Distinct from ``UserInfo`` (used by the rest of the app) because the
-/// server wire shape has more fields than the reduced `UserInfo` the UI
-/// needs. `SiloAPI` maps between the two at the API boundary.
-struct AuthUser: Codable {
-    let id: Int
-    let username: String
-    let email: String
-    let role: String
-    let downloadAllowed: Bool?
-    let impersonation: ImpersonationInfo?
-}
-
-struct ImpersonationInfo: Codable {
-    let active: Bool
-    let impersonatorUserId: Int
-    let impersonatorUsername: String
-}
-
-/// Body for POST /api/v1/auth/refresh.
+/// Body for POST /api/v2/auth/refresh (`RefreshSessionInputBody`).
 struct RefreshRequest: Codable {
     let refreshToken: String
 
@@ -54,7 +27,7 @@ struct RefreshRequest: Codable {
     }
 }
 
-/// Response from POST /api/v1/auth/refresh.
+/// Response from POST /api/v2/auth/refresh (`RefreshedTokens`).
 struct RefreshResponse: Codable {
     let accessToken: String
     let refreshToken: String

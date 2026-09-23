@@ -11,33 +11,50 @@ actor PlaybackTestActorBox<Value: Sendable> {
 
 @MainActor
 final class PlaybackProtocolV3Tests: XCTestCase {
-    func testSequencedSampleRejectsInvalidItemPosition() throws {
-        _ = try PlaybackSequencedSample(sequence: 1, position: 10, isPaused: false, itemPosition: 0)
-        _ = try PlaybackSequencedSample(sequence: 1, position: 10, isPaused: false, itemPosition: nil)
-        for bad in [-1.0, .infinity, .nan] {
-            XCTAssertThrowsError(try PlaybackSequencedSample(sequence: 1, position: 10, isPaused: false, itemPosition: bad)) { error in
+    func testSequencedSampleRejectsAnUnorderedOrUnusableSample() throws {
+        _ = try PlaybackSequencedSample(sequence: 1, position: 0, isPaused: false)
+        for (sequence, position) in [(0, 10.0), (-1, 10.0), (1, -1.0), (1, .infinity), (1, .nan)] as [(Int64, Double)] {
+            XCTAssertThrowsError(try PlaybackSequencedSample(sequence: sequence, position: position, isPaused: false)) { error in
                 guard case PlaybackSequencedError.invalidSample = error else { return XCTFail("Unexpected \(error)") }
             }
         }
     }
 
-    /// The control ticket is a delegated credential carried in the WebSocket
-    /// handshake, so it is only ever sent over TLS (or to loopback).
-    func testControlTicketRequestRequiresTLSExceptLoopback() throws {
-        let ticket = try HTTPClient.makeJSONDecoder().decode(APIv2PlaybackControlTicket.self, from: Data(
+    /// The ticket travels only in the handshake subprotocols. Plain-http
+    /// servers upgrade over ws like https servers upgrade over wss (D11).
+    func testControlTicketHandshakeFollowsTheServerSchemeAndCarriesOnlyTheTicket() throws {
+        let decoder = HTTPClient.makeJSONDecoder()
+        let ticket = try decoder.decode(APIv2PlaybackControlTicket.self, from: Data(
             #"{"ticket":"abc-123","expires_in":30,"max_connection_seconds":600,"protocol":"silo.playback-control.v2"}"#.utf8))
-        let session = UUID().uuidString
+        let session = UUID().uuidString.lowercased()
 
-        let secure = try ticket.request(serverURL: "https://silo.example/base", sessionID: session)
-        XCTAssertEqual(secure.url?.scheme, "wss")
-        XCTAssertEqual(secure.url?.path, "/base/api/v2/playback/sessions/\(session)/control/ws")
-        XCTAssertEqual(secure.value(forHTTPHeaderField: "Sec-WebSocket-Protocol"), "silo.playback-control.v2, silo.ticket.abc-123")
+        let secure = try ticket.handshake(serverURL: "https://silo.example/base/", sessionID: session)
+        XCTAssertEqual(secure.request.url?.absoluteString, "wss://silo.example/base/api/v2/playback/sessions/\(session)/control/ws")
+        XCTAssertEqual(secure.request.value(forHTTPHeaderField: "Sec-WebSocket-Protocol"),
+                       "silo.playback-control.v2, silo.ticket.abc-123")
+        XCTAssertEqual(secure.maxConnectionSeconds, 600)
 
-        let local = try ticket.request(serverURL: "http://localhost:8096", sessionID: session)
-        XCTAssertEqual(local.url?.scheme, "ws")
+        let lan = try ticket.handshake(serverURL: "http://192.168.1.20:8096", sessionID: session)
+        XCTAssertEqual(lan.request.url?.absoluteString, "ws://192.168.1.20:8096/api/v2/playback/sessions/\(session)/control/ws")
+        XCTAssertNil(lan.request.url?.query)
+        XCTAssertNil(lan.request.value(forHTTPHeaderField: "Authorization"))
 
-        XCTAssertThrowsError(try ticket.request(serverURL: "http://silo.example", sessionID: session)) { error in
-            guard case PlaybackSequencedError.controlRequiresTLS = error else { return XCTFail("Unexpected \(error)") }
+        for server in ["ftp://silo.example", "https://user:pw@silo.example", "https://silo.example?token=x"] {
+            XCTAssertThrowsError(try ticket.handshake(serverURL: server, sessionID: session), server)
+        }
+        XCTAssertThrowsError(try ticket.handshake(serverURL: "https://silo.example", sessionID: "../other"))
+        let unusable = [
+            #"{"ticket":"abc","expires_in":30,"max_connection_seconds":600,"protocol":"silo.events.v2"}"#,
+            #"{"ticket":"abc","expires_in":0,"max_connection_seconds":600,"protocol":"silo.playback-control.v2"}"#,
+            #"{"ticket":"abc","expires_in":30,"max_connection_seconds":18446744074,"protocol":"silo.playback-control.v2"}"#,
+            #"{"ticket":"abc","expires_in":30,"max_connection_seconds":86401,"protocol":"silo.playback-control.v2"}"#,
+            #"{"ticket":"a b,c","expires_in":30,"max_connection_seconds":600,"protocol":"silo.playback-control.v2"}"#,
+        ]
+        for body in unusable {
+            let refused = try decoder.decode(APIv2PlaybackControlTicket.self, from: Data(body.utf8))
+            XCTAssertThrowsError(try refused.handshake(serverURL: "https://silo.example", sessionID: session), body) { error in
+                guard case PlaybackSequencedError.invalidResponse = error else { return XCTFail("Unexpected \(error)") }
+            }
         }
     }
 
@@ -494,11 +511,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
     }
 
     func testServerGoldenDecisionDecodesAndPublishesCompleteSubtitleInventory() throws {
-        let response = try PlaybackV3FixtureTestSupport.decode(
-            PlaybackV3DecisionResponse.self,
-            named: "decision_response",
-            bundleClass: Self.self
-        )
+        let response = try PlaybackV3FixtureTestSupport.v2Decision(bundleClass: Self.self)
 
         guard case .playable(let plan, let sessionId) = response.validatedForApple() else {
             return XCTFail("Expected the recovered server fixture to be playable")
@@ -536,7 +549,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(authoredASS.hearingImpaired, false)
         XCTAssertEqual(
             authoredASS.fontBundleUrl,
-            "/stream/11111111-1111-4111-8111-111111111111/subtitles/1/fonts?file_id=42&embedded_stream_index=0"
+            "/api/v2/stream/11111111-1111-4111-8111-111111111111/subtitles/1/fonts?file_id=42&embedded_stream_index=0"
         )
     }
 
@@ -567,34 +580,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         )
     }
 
-    func testRecoveredServerRequestAndCapabilityFixturesDecode() throws {
-        let capability = try PlaybackV3FixtureTestSupport.decode(
-            PlaybackV3CapabilityResponse.self,
-            named: "capability_response",
-            bundleClass: Self.self
-        )
-        XCTAssertEqual(capability.protocolVersions, [3])
-        XCTAssertTrue(capability.features.contains(PlaybackProtocolV3.neutralContractFeature))
-        XCTAssertTrue(capability.features.contains(PlaybackProtocolV3.headerAuthenticatedMediaFeature))
-        XCTAssertEqual(
-            Set(capability.deliveries),
-            [
-                "original_http",
-                "server_remux_progressive",
-                "server_remux_hls",
-                "server_transcode_hls"
-            ]
-        )
-        XCTAssertEqual(
-            capability.transformations.first { $0.name == "hdr_to_sdr_tonemap" },
-            PlaybackV3Transformation(
-                name: "hdr_to_sdr_tonemap",
-                executor: "server",
-                recipeVersion: "1",
-                validatedClaims: ["hdr_metadata_removed", "sdr_bt709_output"]
-            )
-        )
-
+    func testRecoveredServerRequestFixturesDecode() throws {
         let start = try PlaybackV3FixtureTestSupport.decode(
             PlaybackV3StartRequest.self,
             named: "start_request",
@@ -608,11 +594,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(Set(start.clientPlaybackContext.deliveries.keys), ["original_http"])
 
         let replan = try fixtureObject(named: "replan_request")
-        let decision = try PlaybackV3FixtureTestSupport.decode(
-            PlaybackV3DecisionResponse.self,
-            named: "decision_response",
-            bundleClass: Self.self
-        )
+        let decision = try PlaybackV3FixtureTestSupport.v2Decision(bundleClass: Self.self)
         let plan = try XCTUnwrap(decision.playbackPlan)
         XCTAssertTrue(decision.serverFeatures.contains(PlaybackProtocolV3.neutralContractFeature))
         XCTAssertTrue(decision.serverFeatures.contains(PlaybackProtocolV3.headerAuthenticatedMediaFeature))
@@ -1289,7 +1271,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             default: false,
             hearingImpaired: false,
             delivery: "sidecar",
-            url: "/api/v1/playback/session-v3/subtitles/2.sup",
+            url: "/api/v2/stream/session-v3/subtitles/2.sup",
             fontBundleUrl: nil
         )
         let original = PlayerViewModel.LoadRequest(
@@ -1662,54 +1644,6 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(object["start_position"] as? Double, 0)
     }
 
-    func testAetherCapabilityGateRequiresNeutralAndHeaderAuthenticatedMedia() {
-        let capability = PlaybackV3CapabilityResponse(
-            enabled: true,
-            protocolVersions: [3],
-            features: [
-                PlaybackProtocolV3.planFeature,
-                PlaybackProtocolV3.neutralContractFeature,
-                PlaybackProtocolV3.headerAuthenticatedMediaFeature
-            ],
-            deliveries: ["original_http"],
-            transformations: [],
-            reason: nil
-        )
-        XCTAssertTrue(PlaybackSessionBridge.supportsNeutralProtocolV3(capability))
-        XCTAssertFalse(PlaybackSessionBridge.supportsNeutralProtocolV3(
-            PlaybackV3CapabilityResponse(
-                enabled: true,
-                protocolVersions: [3],
-                features: [
-                    PlaybackProtocolV3.planFeature,
-                    PlaybackProtocolV3.neutralContractFeature,
-                ],
-                deliveries: ["original_http"],
-                transformations: [],
-                reason: nil
-            )
-        ))
-        XCTAssertFalse(PlaybackSessionBridge.supportsNeutralProtocolV3(
-            PlaybackV3CapabilityResponse(
-                enabled: true,
-                protocolVersions: [3],
-                features: [PlaybackProtocolV3.planFeature],
-                deliveries: ["original_http"],
-                transformations: [],
-                reason: nil
-            )
-        ))
-        XCTAssertTrue(PlaybackSessionBridge.isMissingProtocolV3Capability(
-            HTTPError.http(statusCode: 404, body: nil)
-        ))
-        XCTAssertTrue(PlaybackSessionBridge.isMissingProtocolV3Capability(
-            HTTPError.http(statusCode: 405, body: nil)
-        ))
-        XCTAssertFalse(PlaybackSessionBridge.isMissingProtocolV3Capability(
-            HTTPError.http(statusCode: 500, body: nil)
-        ))
-    }
-
     func testTerminalStartRouteEventIsSessionlessAndAttemptScoped() {
         let snapshot = ApplePlaybackV3Capabilities.audiobookSnapshot()
         let event = PlaybackSessionBridge.terminalStartRouteEvent(
@@ -1735,25 +1669,18 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(event.diagnostics["error_cause"], "No executable route is available.")
     }
 
-    func testMissingPlaybackSessionDetectionRequiresTheSpecific404() {
-        XCTAssertTrue(PlaybackSessionBridge.isPlaybackSessionMissing(
-            HTTPError.http(
-                statusCode: 404,
-                body: #"{"error":"playback_session_not_found","message":"Playback session not found"}"#
-            )
-        ))
-        XCTAssertTrue(PlaybackSessionBridge.isPlaybackSessionMissing(
-            HTTPError.http(statusCode: 404, body: "Playback session not found")
-        ))
-        XCTAssertFalse(PlaybackSessionBridge.isPlaybackSessionMissing(
-            HTTPError.http(statusCode: 404, body: "Not found")
-        ))
-        XCTAssertFalse(PlaybackSessionBridge.isPlaybackSessionMissing(
-            HTTPError.http(
-                statusCode: 500,
-                body: #"{"error":"playback_session_not_found"}"#
-            )
-        ))
+    func testMissingPlaybackSessionIsAV2NotFoundOrAChangedInstallation() throws {
+        func problem(_ status: Int, _ type: String) throws -> Error {
+            APIv2Error.problem(try HTTPClient.makeJSONDecoder().decode(APIv2Problem.self, from: Data(
+                #"{"type":"https://siloserver.org/docs/api/v2/problems/\#(type)","title":"t","status":\#(status),"detail":"d"}"#.utf8)))
+        }
+        XCTAssertTrue(PlaybackSessionBridge.isPlaybackSessionMissing(try problem(404, "not_found")))
+        XCTAssertTrue(PlaybackSessionBridge.isPlaybackSessionMissing(try problem(409, "installation_changed")))
+        XCTAssertFalse(PlaybackSessionBridge.isPlaybackSessionMissing(try problem(409, "progress_conflict")))
+        XCTAssertFalse(PlaybackSessionBridge.isPlaybackSessionMissing(try problem(503, "dependency_unavailable")))
+        // A v1-only server's plain 404 is update-required, not a lost session.
+        XCTAssertFalse(PlaybackSessionBridge.isPlaybackSessionMissing(APIv2Error.serverUpdateRequired))
+        XCTAssertFalse(PlaybackSessionBridge.isPlaybackSessionMissing(HTTPError.http(statusCode: 404, body: "Not found")))
     }
 
     func testHDRAttestationDoesNotInventHDR10PlusOrMacDolbyVision() {
@@ -1769,7 +1696,29 @@ final class PlaybackProtocolV3Tests: XCTestCase {
     }
 
     func testEmptySubtitleInventoryStartsDownloadedIdentityAtZero() {
-        XCTAssertEqual(PlayerViewModel.protocolV3DownloadedSubtitleBaseTrackCount([]), 0)
+        XCTAssertEqual(PlayerViewModel.protocolV3DownloadedSubtitleOrdinals([]),
+                       DownloadedSubtitleOrdinals(published: [:], next: 0))
+    }
+
+    /// Published downloaded rows keep the inventory's ordinal, read from the
+    /// URL pin; burn-in-only tracks still count toward the next ordinal.
+    func testSubtitleInventoryPublishesDownloadedOrdinalsByRowID() {
+        func downloaded(_ index: Int, row: Int) -> PlaybackV3SubtitleInventoryItem {
+            PlaybackV3SubtitleInventoryItem(
+                trackId: "file:42:subtitle:\(index)", combinedIndex: index, source: "downloaded",
+                codec: "srt", language: "en", label: nil, forced: false, default: false,
+                hearingImpaired: false, delivery: "sidecar",
+                url: "/api/v2/stream/s/subtitles/\(index).vtt?file_id=42&downloaded_subtitle_id=\(row)",
+                fontBundleUrl: nil
+            )
+        }
+        let ordinals = PlayerViewModel.protocolV3DownloadedSubtitleOrdinals([
+            makeInventoryItem(combinedIndex: 0, source: "external"),
+            makeInventoryItem(combinedIndex: 1, source: "embedded", delivery: "burn_in_only"),
+            downloaded(2, row: 11),
+            downloaded(3, row: 12),
+        ])
+        XCTAssertEqual(ordinals, DownloadedSubtitleOrdinals(published: ["11": 2, "12": 3], next: 4))
     }
 
     func testBurnInSelectionSurvivesInventoryBeforeAndAfterLoadEstablishes() async {
@@ -2445,7 +2394,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             delivery: delivery,
             planAttemptKey: planAttemptKey,
             stream: PlaybackV3Stream(
-                url: "/stream/session-v3",
+                url: "/api/v2/stream/session-v3",
                 protocol: streamProtocol,
                 container: container,
                 mimeType: streamProtocol == "hls"
@@ -2641,7 +2590,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             default: false,
             hearingImpaired: false,
             delivery: delivery,
-            url: delivery == "sidecar" ? "/stream/subtitles/\(combinedIndex)" : nil,
+            url: delivery == "sidecar" ? "/api/v2/stream/session-v3/subtitles/\(combinedIndex)" : nil,
             fontBundleUrl: nil
         )
     }

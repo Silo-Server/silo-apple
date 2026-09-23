@@ -37,6 +37,10 @@ final class RequestDetailViewModel {
     /// Inline banner near the CTA for a failed create (already requested,
     /// quota, …) — informational, never a blocking alert.
     private(set) var actionErrorMessage: String?
+    /// A create was sent but its outcome is unknown. Create is
+    /// `non_retryable`, so the CTA stays held until a fresh detail read
+    /// shows whether the request exists.
+    private(set) var isSubmissionUnconfirmed = false
 
     private let api: SiloAPI
     /// In-flight bus-triggered reload; cancelled and replaced on the next
@@ -55,6 +59,7 @@ final class RequestDetailViewModel {
             return .openInLibrary(contentId: contentId)
         }
         if isSubmitting { return .submitting }
+        if isSubmissionUnconfirmed { return .status(.unavailable(reason: RequestErrorCopy.unconfirmedToken)) }
         if let state = RequestDisplayState(availability: detail.availability, request: detail.request) {
             if case .inLibrary = state, let contentId = detail.libraryContentId {
                 return .openInLibrary(contentId: contentId)
@@ -74,6 +79,11 @@ final class RequestDetailViewModel {
         error = nil
         do {
             detail = try await api.requestsDetail(mediaType: mediaType, tmdbId: tmdbId)
+            // The server's answer now decides the CTA; release the hold.
+            if isSubmissionUnconfirmed {
+                isSubmissionUnconfirmed = false
+                actionErrorMessage = nil
+            }
         } catch {
             if detail == nil {
                 self.error = ErrorState(error)
@@ -103,6 +113,18 @@ final class RequestDetailViewModel {
             // Re-fetch so `request` reflects authoritative server state
             // (id, status, quota effects) rather than a local guess.
             await load()
+        } catch where RequestMutationFailure.isUncertain(error) {
+            // Never resend: hold the CTA and let a fresh read show whether
+            // the server created the request.
+            isSubmissionUnconfirmed = true
+            isSubmitting = false
+            // A read under a replaced owner says nothing about this create.
+            if !RequestMutationFailure.isOwnerChanged(error) {
+                await load()
+            }
+            if isSubmissionUnconfirmed {
+                actionErrorMessage = RequestErrorCopy.unconfirmedSubmitMessage
+            }
         } catch {
             actionErrorMessage = RequestErrorCopy.message(for: error)
         }

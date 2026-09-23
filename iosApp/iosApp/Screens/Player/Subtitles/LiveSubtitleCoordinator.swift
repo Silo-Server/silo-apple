@@ -247,10 +247,21 @@ final class LiveSubtitleCoordinator {
     @ObservationIgnored
     private let selectionSnapshotProvider: (@MainActor () -> Int64?)?
 
+    /// Called after the safety timeout fails the live presentation out. The
+    /// owning controller sets this so it can settle its own state when the
+    /// websocket was the only driver left. A settable hook because the
+    /// controller is built after the coordinator.
+    @ObservationIgnored
+    var onSafetyTimeout: (@MainActor () -> Void)?
+
     // MARK: - Driver entry point
 
     /// Whether a live job is currently in flight (preparing or streaming).
     var isActive: Bool { phase == .preparing || phase == .streaming }
+
+    /// Whether the websocket has attached a live track (`started` arrived) to
+    /// the in-flight job. A poll-only job is active without one.
+    var hasLiveTrack: Bool { isActive && activeTrackKey != nil }
 
     /// Start the user-visible AI subtitle wait as soon as the user submits the
     /// job, before the websocket's `started` event exists. This keeps the
@@ -417,6 +428,7 @@ final class LiveSubtitleCoordinator {
             guard self.phase == .preparing else { return }
             Self.logger.warning("[AI-LIVE] safety timeout — no cues within \(Self.safetyResumeSeconds, privacy: .public)s, resuming")
             self.failOut(message: "Couldn't start live subtitles. Try again.")
+            self.onSafetyTimeout?()
         }
     }
 

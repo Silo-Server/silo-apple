@@ -123,9 +123,9 @@ struct TVMediaCard: View {
         let previous = playedOverride
         actionFeedback.perform {
             playedOverride = played
-            let succeeded = await MediaCardWatchedSync.setWatched(contentId: contentId, played: played)
-            if !succeeded { playedOverride = previous }
-            return succeeded
+            let outcome = await MediaCardWatchedSync.setWatched(contentId: contentId, played: played)
+            if outcome != .applied { playedOverride = previous }
+            return outcome
         }
     }
 
@@ -136,13 +136,11 @@ struct TVMediaCard: View {
         let previous = favoriteOverride
         actionFeedback.perform {
             favoriteOverride = newValue
-            if await PersonalListSync.setFavorite(
+            let outcome = await PersonalListSync.setFavorite(
                 contentId: contentId, isFavorite: newValue, inWatchlist: watchlist
-            ) == false {
-                favoriteOverride = previous
-                return false
-            }
-            return true
+            )
+            if outcome != .applied { favoriteOverride = previous }
+            return outcome
         }
     }
 
@@ -153,13 +151,11 @@ struct TVMediaCard: View {
         let previous = watchlistOverride
         actionFeedback.perform {
             watchlistOverride = newValue
-            if await PersonalListSync.setWatchlist(
+            let outcome = await PersonalListSync.setWatchlist(
                 contentId: contentId, isFavorite: favorite, inWatchlist: newValue
-            ) == false {
-                watchlistOverride = previous
-                return false
-            }
-            return true
+            )
+            if outcome != .applied { watchlistOverride = previous }
+            return outcome
         }
     }
 

@@ -71,6 +71,9 @@ enum PairingFailureCode: String, Codable, Equatable, Sendable {
     case unreachable
     /// An address answered with a different deployment identity.
     case identityMismatch = "identity_mismatch"
+    /// The server is v1-only, or no longer accepts this app version, so one
+    /// of them must be updated first. Older phones read it as `auth_failed`.
+    case updateRequired = "update_required"
 
     init(wire: String?) {
         self = wire.flatMap(PairingFailureCode.init(rawValue:)) ?? .authFailed

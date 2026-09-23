@@ -1,0 +1,16 @@
+name: Discord Commit Feed
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  notify:
+    permissions:
+      contents: read
+    uses: Silo-Server/silo-server/.github/workflows/reusable-discord-commits.yml@main
+    with:
+      thread_id: ${{ vars.DISCORD_COMMITS_THREAD_ID }}
+    secrets:
+      webhook_url: ${{ secrets.DISCORD_COMMITS_WEBHOOK_URL }}

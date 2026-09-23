@@ -1912,17 +1912,16 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                     uploadDecision,
                     .uploaded(DiagnosticsUploadResponse(
                         reportId: fixture.reports[0].id.uuidString.lowercased(),
-                        shortId: "SILO-SELFHOSTED",
-                        state: .ready
+                        shortId: "SILO-SELFHOSTED"
                     ))
                 )
                 XCTAssertFalse(FileManager.default.fileExists(
                     atPath: fixture.reports[0].directoryURL.path
                 ))
                 XCTAssertEqual(selfHostedStub.requestedPaths(), [
-                    "/api/v1/diagnostics/status",
-                    "/api/v1/auth/me",
-                    "/api/v1/diagnostics/reports",
+                    "/api/v2/diagnostics/capabilities",
+                    "/api/v2/account/me",
+                    "/api/v2/diagnostics/reports",
                 ])
 
                 let deleted = await coordinator.delete(report: fixture.reports[1])
@@ -1941,6 +1940,58 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                 XCTAssertEqual(try Data(contentsOf: ledgerURL), corruptBytes)
                 XCTAssertTrue(hostedStub.requests().isEmpty)
             }
+        }
+    }
+
+    func testUnansweredSelfHostedUploadHoldsTheReport() async throws {
+        try await withTemporaryActiveSelfHostedServer { serverRegistryID in
+            let fixture = try makePendingSelfHostedReports(label: "self-hosted-uncertain", count: 1)
+            let coordinator = try await makeSelfHostedCoordinator(
+                pendingStore: fixture.store,
+                serverRegistryID: serverRegistryID
+            )
+            selfHostedStub.configure(
+                serverInstanceID: fixture.binding.serverInstanceID,
+                reportID: fixture.reports[0].id,
+                upload: .failure(URLError(.networkConnectionLost))
+            )
+
+            let first = await coordinator.upload(report: fixture.reports[0])
+
+            XCTAssertEqual(first, .keptDeliveryUncertain)
+            let held = try XCTUnwrap(fixture.store.report(id: fixture.reports[0].id))
+            XCTAssertTrue(held.state.deliveryUncertain)
+            XCTAssertTrue(held.state.isPermanentFailure, "a held report is never auto-uploaded or prompted")
+
+            // A later attempt made with the report as it was before the first
+            // one still sends nothing: the claim recorded before dispatch wins.
+            let second = await coordinator.upload(report: fixture.reports[0])
+
+            XCTAssertEqual(second, .keptDeliveryUncertain)
+            XCTAssertEqual(selfHostedStub.requestedPaths().filter { $0 == "/api/v2/diagnostics/reports" }.count, 1)
+        }
+    }
+
+    func testFoldedBadRequestKeepsTheSelfHostedReportWithoutRetry() async throws {
+        try await withTemporaryActiveSelfHostedServer { serverRegistryID in
+            let fixture = try makePendingSelfHostedReports(label: "self-hosted-rejected", count: 1)
+            let coordinator = try await makeSelfHostedCoordinator(
+                pendingStore: fixture.store,
+                serverRegistryID: serverRegistryID
+            )
+            selfHostedStub.configure(
+                serverInstanceID: fixture.binding.serverInstanceID,
+                reportID: fixture.reports[0].id,
+                upload: .problem(status: 400, type: "malformed_request")
+            )
+
+            let decision = await coordinator.upload(report: fixture.reports[0])
+
+            XCTAssertEqual(decision, .keptServerRejected)
+            let kept = try XCTUnwrap(fixture.store.report(id: fixture.reports[0].id))
+            XCTAssertTrue(kept.state.serverRejected)
+            XCTAssertFalse(kept.state.deliveryUncertain, "a definite answer releases the delivery claim")
+            XCTAssertTrue(kept.state.isPermanentFailure)
         }
     }
 
@@ -2752,10 +2803,11 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         )
         let destinationStore = DiagnosticsDestinationStore(defaults: defaults)
         destinationStore.select(.selfHosted)
+        let siloAPI = SiloAPI(http: http, tokenStore: tokenStore)
         return DiagnosticsCoordinator(
-            api: DiagnosticsAPI(http: http),
+            api: DiagnosticsAPI(client: siloAPI.apiV2Client),
             hostedAPI: try makeHostedUploadAPI(),
-            siloAPI: SiloAPI(http: http, tokenStore: tokenStore),
+            siloAPI: siloAPI,
             consentStore: DiagnosticsConsentStore(defaults: defaults),
             destinationStore: destinationStore,
             pendingStore: pendingStore
@@ -3284,19 +3336,27 @@ private final class HostedDiagnosticsStub: @unchecked Sendable {
 
 /// A self-hosted Silo's diagnostics routes on the shared stub.
 private final class SelfHostedDiagnosticsStub: @unchecked Sendable {
+    enum UploadReply {
+        case created
+        case problem(status: Int, type: String)
+        case failure(URLError)
+    }
+
     let handler = StubURLProtocol.Handler()
     private let lock = NSLock()
     private var serverInstanceID = "self-hosted-diagnostics-instance"
     private var reportID = UUID()
+    private var upload = UploadReply.created
 
     init() {
         installRoutes()
     }
 
-    func configure(serverInstanceID: String, reportID: UUID) {
+    func configure(serverInstanceID: String, reportID: UUID, upload: UploadReply = .created) {
         lock.withLock {
             self.serverInstanceID = serverInstanceID
             self.reportID = reportID
+            self.upload = upload
         }
         handler.reset()
         installRoutes()
@@ -3307,16 +3367,24 @@ private final class SelfHostedDiagnosticsStub: @unchecked Sendable {
     }
 
     private func installRoutes() {
-        handler.route(StubURLProtocol.method("GET", path: "/api/v1/diagnostics/status")) { [self] _ in
+        handler.route(StubURLProtocol.method("GET", path: "/api/v2/diagnostics/capabilities")) { [self] _ in
             let serverInstanceID = lock.withLock { self.serverInstanceID }
-            return .json(#"{"status":"available","server_instance_id":"\#(serverInstanceID)","accepted_schema_versions":[1],"max_bundle_bytes":10485760,"max_manifest_bytes":65536,"retention_days":30,"consent_notice_version":1}"#)
+            return .json(#"{"revision":"r1","state":"available","allowed":true,"status":"available","server_instance_id":"\#(serverInstanceID)","accepted_schema_versions":[1],"max_bundle_bytes":10485760,"max_manifest_bytes":65536,"retention_days":30,"consent_notice_version":1,"upload_chunk_bytes":0}"#)
         }
-        handler.route(StubURLProtocol.method("GET", path: "/api/v1/auth/me")) { _ in
-            .json(#"{"id":42,"username":"diagnostics-test","email":"diagnostics@example.invalid","role":"user","download_allowed":true,"impersonation":null}"#)
+        handler.route(StubURLProtocol.method("GET", path: "/api/v2/account/me")) { _ in
+            .json(#"{"id":"42","username":"diagnostics-test","email":"diagnostics@example.invalid","role":"user","permissions":[],"download_allowed":true}"#)
         }
-        handler.route(StubURLProtocol.method("POST", path: "/api/v1/diagnostics/reports")) { [self] _ in
-            let reportID = lock.withLock { self.reportID }
-            return .json(#"{"report_id":"\#(reportID.uuidString.lowercased())","short_id":"SILO-SELFHOSTED","state":"ready"}"#, status: 201)
+        handler.route(StubURLProtocol.method("POST", path: "/api/v2/diagnostics/reports")) { [self] _ in
+            let (reportID, upload) = lock.withLock { (self.reportID, self.upload) }
+            switch upload {
+            case .created:
+                return .json(#"{"report_id":"\#(reportID.uuidString.lowercased())","short_id":"SILO-SELFHOSTED"}"#, status: 201)
+            case .problem(let status, let type):
+                return .json(#"{"type":"https://siloserver.org/docs/api/v2/problems/\#(type)","title":"t","status":\#(status),"detail":"d"}"#,
+                             status: status, headers: ["Content-Type": "application/problem+json"])
+            case .failure(let error):
+                throw error
+            }
         }
         handler.route(StubURLProtocol.any) { _ in
             .json(#"{"error":"not_found"}"#, status: 404)

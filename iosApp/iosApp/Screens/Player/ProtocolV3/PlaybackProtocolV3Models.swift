@@ -589,15 +589,6 @@ struct PlaybackV3DecisionResponse: Codable, Equatable {
     let terminal: PlaybackV3Terminal?
 }
 
-struct PlaybackV3CapabilityResponse: Codable, Equatable {
-    let enabled: Bool
-    let protocolVersions: [Int]
-    let features: [String]
-    let deliveries: [String]
-    let transformations: [PlaybackV3Transformation]
-    let reason: String?
-}
-
 enum PlaybackV3DecisionValidation: Equatable {
     case playable(plan: PlaybackV3Plan, sessionId: String)
     case terminal(PlaybackV3Terminal)

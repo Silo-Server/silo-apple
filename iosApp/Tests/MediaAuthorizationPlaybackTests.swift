@@ -20,8 +20,13 @@ final class MediaAuthorizationPlaybackTests: XCTestCase {
         let serverURL: String
     }
 
-    private static let progressPath = "/api/v1/playback/\(RotatingMediaOrigin.sessionID)/progress"
-    private static let refreshPath = "/api/v1/auth/refresh"
+    private static let progressPath = "/api/v2/playback/\(RotatingMediaOrigin.sessionID)/progress"
+    private static let refreshPath = "/api/v2/auth/refresh"
+
+    private static func postProgress(_ http: HTTPClient, position: Double) async throws -> HTTPRawResponse {
+        let body = try JSONSerialization.data(withJSONObject: ["position": position])
+        return try await http.requestData(method: "POST", path: progressPath, body: body)
+    }
     private static let refreshedTokens = #"{"access_token":"synthetic-rotated","refresh_token":"synthetic-refresh-rotated","expires_in":3600}"#
 
     func testSyntheticHLSContinuesWhenLaterSegmentsAreReleased() async throws {
@@ -125,7 +130,7 @@ final class MediaAuthorizationPlaybackTests: XCTestCase {
                 .json(200, Self.refreshedTokens),
                 .json(204, ""),
             ])
-            try await auth.http.postVoid(Self.progressPath, body: ["position": timeBeforeRotation])
+            _ = try await Self.postProgress(auth.http, position: timeBeforeRotation)
             XCTAssertEqual(auth.stub.requestedPaths, [Self.progressPath, Self.refreshPath, Self.progressPath])
             let progressRequests = auth.stub.requests.filter { $0.path == Self.progressPath }
             XCTAssertEqual(progressRequests.first?.header("Authorization"), RotatingMediaOrigin.initialAuthorization)
@@ -166,7 +171,7 @@ final class MediaAuthorizationPlaybackTests: XCTestCase {
             XCTAssertEqual(accessToken, RotatingMediaOrigin.rotatedAccessToken)
             if rotation == .mediaChallenge {
                 XCTAssertGreaterThan(after.rejectedRequests, 0, "The held old request must exercise reactive refresh")
-                try await auth.http.postVoid(Self.progressPath, body: ["position": player.currentTime().seconds])
+                _ = try await Self.postProgress(auth.http, position: player.currentTime().seconds)
             } else {
                 XCTAssertEqual(after.rejectedRequests, 0, "API rotation must authorize future media before its first attempt")
             }
@@ -223,8 +228,7 @@ final class MediaAuthorizationPlaybackTests: XCTestCase {
         sourceURL: URL, auth: AuthorizationHarness, options: LoadOptions,
         subtitleAuthorization: HTTPRequestAuthorization
     ) throws -> AetherLoadSpec {
-        let fixture = try PlaybackV3FixtureTestSupport.fixtureURL(named: "decision_response", bundleClass: Self.self)
-        let response = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: fixture)) as? [String: Any])
+        let response = try PlaybackV3FixtureTestSupport.v2DecisionObject(bundleClass: Self.self)
         var plan = try XCTUnwrap(response["playback_plan"] as? [String: Any])
         plan["session_id"] = RotatingMediaOrigin.sessionID
         plan["delivery"] = PlaybackProtocolV3.PlanDelivery.remuxHLS
@@ -235,8 +239,8 @@ final class MediaAuthorizationPlaybackTests: XCTestCase {
         timeline["player_start_seconds"] = 0
         plan["timeline"] = timeline
         plan["selected_tracks"] = ["subtitle": ["id": "file:42:subtitle:1", "index": 1]]
-        let subtitlePath = "/stream/\(RotatingMediaOrigin.sessionID)/subtitles/1.ass"
-        let fontPath = "/stream/\(RotatingMediaOrigin.sessionID)/subtitles/1/fonts"
+        let subtitlePath = RotatingMediaOrigin.subtitlePath
+        let fontPath = RotatingMediaOrigin.fontPath
         plan["subtitle"] = [
             "mode": "render", "track_id": "file:42:subtitle:1",
             "artifact": ["url": subtitlePath, "mime_type": "text/x-ass", "format": "ass", "timing_origin_seconds": 0],
@@ -245,13 +249,12 @@ final class MediaAuthorizationPlaybackTests: XCTestCase {
                            "hearing_impaired": false, "delivery": "sidecar", "url": subtitlePath,
                            "font_bundle_url": fontPath]],
         ] as [String: Any]
-        let decoded = try PlaybackV3FixtureTestSupport.decoder.decode(
-            PlaybackV3Plan.self, from: JSONSerialization.data(withJSONObject: plan))
+        let decoded = try PlaybackV3FixtureTestSupport.v2Plan(plan)
         return try AetherLoadSpec(
             validating: decoded, sessionID: RotatingMediaOrigin.sessionID, matchContentEnabled: false,
             sourceURLOverride: sourceURL, requestHeaders: options.httpHeaders,
             requestAuthorization: options.httpRequestAuthorization, subtitleRequestAuthorization: subtitleAuthorization,
-            resolveURL: { URL(string: auth.serverURL + "/api/v1" + $0) },
+            resolveURL: { URL(string: auth.serverURL + $0) },
             apiOriginURL: URL(string: auth.serverURL), panelIsInHDRMode: false
         )
     }

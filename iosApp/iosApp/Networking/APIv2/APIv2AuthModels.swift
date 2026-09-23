@@ -39,10 +39,15 @@ struct APIv2DeviceCapability: Decodable {
     let state: String
     let remotePlaybackHandoff: Bool
     let protocolVersions: [Int]
+    /// Absent for an unauthenticated read.
+    let allowed: Bool?
 
-    var presentation: DeviceLoginCapabilityResponse {
-        DeviceLoginCapabilityResponse(remotePlaybackHandoff: state == "available" && remotePlaybackHandoff,
-            protocolVersions: protocolVersions)
+    /// Whether this server accepts a remote-playback handoff speaking
+    /// `protocolVersion`. Only an `available` document counts; a principal the
+    /// server explicitly refuses does not.
+    func offersRemotePlaybackHandoff(protocolVersion: Int) -> Bool {
+        state == "available" && allowed != false && remotePlaybackHandoff
+            && protocolVersions.contains(protocolVersion)
     }
 }
 

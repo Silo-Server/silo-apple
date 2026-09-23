@@ -4,12 +4,24 @@ on:
   pull_request:
     paths:
       - 'scripts/ci/**'
+      - 'scripts/sync-apiv2-fixtures*.sh'
       - '.github/workflows/ci-scripts.yml'
+      - 'iosApp/iosApp/**'
+      - 'iosApp/TopShelf/**'
+      - 'iosApp/NotificationService/**'
+      - 'iosApp/DownloadsActivity/**'
+      - 'iosApp/Tests/**'
   push:
     branches: [main]
     paths:
       - 'scripts/ci/**'
+      - 'scripts/sync-apiv2-fixtures*.sh'
       - '.github/workflows/ci-scripts.yml'
+      - 'iosApp/iosApp/**'
+      - 'iosApp/TopShelf/**'
+      - 'iosApp/NotificationService/**'
+      - 'iosApp/DownloadsActivity/**'
+      - 'iosApp/Tests/**'
   workflow_dispatch:
 
 permissions:
@@ -33,3 +45,9 @@ jobs:
         run: python3 scripts/ci/package-release-source.test.py
       - name: Test subtitle packaging validation
         run: python3 scripts/ci/validate-subtitle-packaging.test.py
+      - name: Test API v2 fixture sync
+        run: bash scripts/sync-apiv2-fixtures.test.sh
+      - name: Test the /api/v1 path guard
+        run: bash scripts/ci/check-no-api-v1.test.sh
+      - name: Block new /api/v1 paths in app sources
+        run: bash scripts/ci/check-no-api-v1.sh

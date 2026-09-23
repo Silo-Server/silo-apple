@@ -50,11 +50,11 @@ final class AIJobPollerTests: XCTestCase {
         let counter = Counter()
         let snapshots = await collect { _ in
             let i = await counter.next()
-            return aiTestJob(id: "job", status: statuses[min(i, statuses.count - 1)], 0, i == 2 ? 7 : nil)
+            return aiTestJob(id: "job", status: statuses[min(i, statuses.count - 1)], 0, i == 2 ? "7" : nil)
         }
         XCTAssertTrue(snapshots.count == 3, "expected 3 snapshots, got \(snapshots.count)")
         XCTAssertTrue(snapshots.last?.status == .completed)
-        XCTAssertTrue(snapshots.last?.resultSubtitleId == 7)
+        XCTAssertTrue(snapshots.last?.resultSubtitleId == "7")
     }
 
     func testStopsOnFailed() async {
@@ -78,10 +78,10 @@ final class AIJobPollerTests: XCTestCase {
 
     func testImmediateTerminalEmitsOnce() async {
         let snapshots = await collect { _ in
-            aiTestJob(id: "job", status: "completed", 1.0, 11)
+            aiTestJob(id: "job", status: "completed", 1.0, "11")
         }
         XCTAssertTrue(snapshots.count == 1)
-        XCTAssertTrue(snapshots.first?.resultSubtitleId == 11)
+        XCTAssertTrue(snapshots.first?.resultSubtitleId == "11")
     }
 
     // MARK: - Progress passthrough
@@ -93,7 +93,7 @@ final class AIJobPollerTests: XCTestCase {
         let snapshots = await collect { _ in
             let i = await counter.next()
             let idx = min(i, progresses.count - 1)
-            return aiTestJob(id: "job", status: statuses[idx], progresses[idx], idx == 3 ? 1 : nil)
+            return aiTestJob(id: "job", status: statuses[idx], progresses[idx], idx == 3 ? "1" : nil)
         }
         XCTAssertTrue(snapshots.count == 4)
         XCTAssertTrue(snapshots.map { $0.progress } == progresses,
@@ -180,31 +180,19 @@ final class AIJobPollerTests: XCTestCase {
     }
 }
 
-/// Build a `SubtitleJob` from scripted fields by decoding JSON — `SubtitleJob`
-/// has only a custom `init(from:)`, no memberwise initializer. Free function
-/// (not a method) so it can be called from the `@Sendable` `fetch` closures
-/// without capturing `self`. Returns a `Sendable` value.
+/// Build a `SubtitleJob` from scripted fields. Free function (not a method)
+/// so it can be called from the `@Sendable` `fetch` closures without
+/// capturing `self`.
 private func aiTestJob(
     id: String,
     status: String,
     _ progress: Double,
-    _ resultSubtitleId: Int?
+    _ resultSubtitleId: String?
 ) -> SubtitleJob {
-    let resultField = resultSubtitleId.map { "\"result_subtitle_id\": \($0)," } ?? ""
-    let json = """
-    {
-      "id": "\(id)",
-      "media_file_id": 1,
-      "kind": "translate",
-      "source_index": 0,
-      \(resultField)
-      "status": "\(status)",
-      "progress": \(progress)
-    }
-    """
-    let d = JSONDecoder()
-    d.keyDecodingStrategy = .convertFromSnakeCase
-    return try! d.decode(SubtitleJob.self, from: Data(json.utf8))
+    SubtitleJob(id: id, mediaFileId: 1, kind: .translate, sourceIndex: 0, sourceLanguage: nil,
+                targetLanguage: nil, engine: nil, model: nil, status: AIJobStatus(rawValue: status) ?? .pending,
+                progress: progress, progressMessage: nil, resultSubtitleId: resultSubtitleId,
+                errorMessage: nil, createdAt: nil, updatedAt: nil)
 }
 
 /// Simple async call counter so a scripted `fetch` can advance through a

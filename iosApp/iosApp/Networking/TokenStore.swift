@@ -941,11 +941,6 @@ actor TokenStore {
             try installAccountSession(accessToken: accessToken, refreshToken: refreshToken, accountID: nil, clearProfile: false)
             return true
         } catch {
-            recordSessionEvent(
-                phase: "sessionInstall",
-                outcome: "failed",
-                reason: Self.persistenceFailureReason(error)
-            )
             return false
         }
     }
@@ -993,14 +988,27 @@ actor TokenStore {
 
     func installAccountSession(accessToken: String, refreshToken: String, accountID: String?, clearProfile: Bool = true, expectedAccount: RefreshAccountIdentity? = nil) throws {
         if let expectedAccount, refreshAccountIdentity() != expectedAccount { throw HTTPError.requestIdentityChanged }
-        guard temporaryScope == nil, !activeServerId.isEmpty, !accessToken.isEmpty, !refreshToken.isEmpty,
-              accountID == nil || accountID?.isEmpty == false else { throw AccountSessionPersistenceError.invalidIdentity }
-        let origin = ServerRegistry.normalize(url: defaults.string(forKey: serverUrlDefaultsKey) ?? "")
-        guard !origin.isEmpty else { throw AccountSessionPersistenceError.invalidIdentity }
-        let value = CanonicalAccountSession(version: 1, signedOut: false, origin: origin, accountID: accountID,
-            epoch: UUID(), accessToken: accessToken, refreshToken: refreshToken)
-        do { try sessions.save(value, serverID: activeServerId) }
-        catch { blockRuntimeSession(); throw error }
+        let value: CanonicalAccountSession
+        do {
+            guard temporaryScope == nil, !activeServerId.isEmpty, !accessToken.isEmpty, !refreshToken.isEmpty,
+                  accountID == nil || accountID?.isEmpty == false else { throw AccountSessionPersistenceError.invalidIdentity }
+            let origin = ServerRegistry.normalize(url: defaults.string(forKey: serverUrlDefaultsKey) ?? "")
+            guard !origin.isEmpty else { throw AccountSessionPersistenceError.invalidIdentity }
+            value = CanonicalAccountSession(version: 1, signedOut: false, origin: origin, accountID: accountID,
+                epoch: UUID(), accessToken: accessToken, refreshToken: refreshToken)
+            do { try sessions.save(value, serverID: activeServerId) }
+            catch { blockRuntimeSession(); throw error }
+        } catch {
+            // Recorded here rather than by each caller so login, pairing and
+            // `saveTokens` all leave the same durable breadcrumb when the
+            // session cannot be written.
+            recordSessionEvent(
+                phase: "sessionInstall",
+                outcome: "failed",
+                reason: Self.persistenceFailureReason(error)
+            )
+            throw error
+        }
         runtimeBlockedServers.remove(activeServerId)
         if clearProfile {
             defaults.removeObject(forKey: profileIdDefaultsKey)

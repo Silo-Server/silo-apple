@@ -27,7 +27,7 @@ final class OfflinePlaybackMappingTests: XCTestCase {
             "\"type\": \"episode\"",
             "\"title\": \"Test Episode\"",
             "\"quality\": \"original\"",
-            "\"media_file_id\": 42",
+            "\"media_file_id\": \"42\"",
             "\"container\": \"mkv\"",
             "\"codec_video\": \"hevc\"",
             "\"codec_audio\": \"eac3\""

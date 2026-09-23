@@ -49,6 +49,8 @@ struct SectionRow: View {
     #if !os(tvOS)
     @State private var detailBrowseOriginID = UUID().uuidString
     #endif
+    /// Reports watched changes for rows without an owning model's handler.
+    @State private var watchedFeedback = MediaActionFeedback()
 
     #if os(tvOS)
     @Environment(\.browseLibraryId) private var playbackLibraryId
@@ -130,6 +132,7 @@ struct SectionRow: View {
             onMoveDown: onMoveDown,
             focusRestorationOwner: focusRestorationOwner
         )
+        .mediaActionFeedback(watchedFeedback)
         #if !os(tvOS)
         .environment(
             \.itemDetailBrowseSource,
@@ -167,24 +170,21 @@ struct SectionRow: View {
     }
 
     /// Home injects a model-owned mutation so its membership-driven rows and
-    /// cache update immediately. Shared SectionRow callers retain the original
-    /// direct API behavior when no owning model provides an action.
+    /// cache update immediately. Shared SectionRow callers use the card
+    /// dispatcher and report its outcome here, because the card leaves
+    /// reporting to whoever supplies its watched action.
     private func setWatched(_ item: SectionItem, played: Bool) async -> Bool {
         if let onSetWatched {
             return await onSetWatched(item, played)
         }
 
-        do {
-            try await SiloAPI.shared.setWatched(
-                contentId: item.contentId,
-                played: played
-            )
-            NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil)
-            return true
-        } catch {
-            print("[SectionRow] Failed to update watched state for \(item.contentId): \(error)")
-            return false
-        }
+        let outcome = await MediaCardWatchedSync.setWatched(
+            contentId: item.contentId, played: played, seriesId: item.seriesId
+        )
+        watchedFeedback.report(outcome)
+        guard outcome == .applied else { return false }
+        NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil)
+        return true
     }
 
 }

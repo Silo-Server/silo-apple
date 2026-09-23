@@ -62,6 +62,11 @@ struct SubtitleSearchMenu: View {
     @State private var warnings: [String] = []
     /// The result currently downloading; non-nil disables every row.
     @State private var downloadingId: String?
+    /// Results whose download stored, or may have stored, the subtitle,
+    /// keyed by ``SubtitleSearchResult/uniqueKey`` with the copy to show.
+    /// The download is `non_retryable`: picking one again shows the copy
+    /// instead of sending it twice.
+    @State private var settledDownloads: [String: String] = [:]
     @State private var searchTask: Task<Void, Never>?
 
     #if os(tvOS)
@@ -226,8 +231,7 @@ struct SubtitleSearchMenu: View {
                 phase = .results
             } catch {
                 guard !Task.isCancelled else { return }
-                // Verbatim server error — "no providers configured" arrives
-                // here as plain error text (no capability probe exists).
+                // Verbatim server error.
                 phase = .failed(error.localizedDescription)
             }
         }
@@ -235,17 +239,23 @@ struct SubtitleSearchMenu: View {
 
     private func download(_ result: SubtitleSearchResult) {
         guard downloadingId == nil else { return }
-        downloadingId = result.uniqueKey
+        let key = result.uniqueKey
+        if let message = settledDownloads[key] {
+            phase = .failed(message)
+            return
+        }
+        downloadingId = key
         Task {
-            let ok = await viewModel.downloadSearchedSubtitle(result)
-            if ok {
+            let outcome = await viewModel.downloadSearchedSubtitle(result)
+            guard let message = outcome.message else {
                 // Track registered + auto-selected on the live player;
                 // collapse the whole subtitle UI down to the video.
                 onDownloaded()
-            } else {
-                downloadingId = nil
-                phase = .failed("Couldn't add that subtitle. Try another result.")
+                return
             }
+            if outcome.holdsResult { settledDownloads[key] = message }
+            downloadingId = nil
+            phase = .failed(message)
         }
     }
 

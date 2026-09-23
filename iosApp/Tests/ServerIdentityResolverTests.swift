@@ -9,66 +9,42 @@ final class ServerIdentityResolverTests: XCTestCase {
         stub = ServerIdentityStub()
     }
 
-    func testPrefersNativeBrandingName() async {
+    private static let brandingPath = "/api/v2/theme/branding"
+
+    private static func branding(name: String) -> String {
+        #"{"server_name":"\#(name)","login_subtitle":"","storage_available":false}"#
+    }
+
+    func testReadsTrimmedNameFromV2Branding() async {
         stub.configure([
-            "/api/v1/theme/branding": (200, #"{"server_name":"  Home Silo  "}"#),
-            "/api/v1/health": (200, #"{"status":"ok","server_name":"StreamApp"}"#),
+            Self.brandingPath: (200, Self.branding(name: "  Home Silo  ")),
         ])
 
         let name = await resolver().fetchServerName(serverURL: "https://silo.example")
 
         XCTAssertEqual(name, "Home Silo")
-        XCTAssertEqual(stub.requestedPaths(), ["/api/v1/theme/branding"])
+        XCTAssertEqual(stub.requestedPaths(), [Self.brandingPath])
     }
 
-    func testFallsBackToHealthForOlderServer() async {
-        stub.configure([
-            "/api/v1/theme/branding": (404, #"{"error":"not_found"}"#),
-            "/api/v1/health": (200, #"{"status":"ok","server_name":"Legacy Home"}"#),
-        ])
+    /// Blank names, failures, malformed bodies and a v1-only server's legacy
+    /// 404 all leave the stored name alone, and none of them falls back to
+    /// another endpoint.
+    func testUnusableBrandingReturnsNilWithoutFallback() async {
+        let cases: [(String, StubURLProtocol.Response)] = [
+            ("blank name", .json(Self.branding(name: "  "))),
+            ("server error", .json(#"{"type":"about:blank","title":"x","status":500,"detail":""}"#, status: 500)),
+            ("malformed", .json(#"{"server_name":42}"#)),
+            ("v1-only server", .text("404 page not found\n", status: 404, contentType: "text/plain")),
+        ]
+        for (name, response) in cases {
+            stub.handler.reset()
+            stub.handler.route(StubURLProtocol.path(Self.brandingPath)) { _ in response }
 
-        let name = await resolver().fetchServerName(serverURL: "https://silo.example")
+            let fetched = await resolver().fetchServerName(serverURL: "https://silo.example")
 
-        XCTAssertEqual(name, "Legacy Home")
-        XCTAssertEqual(
-            stub.requestedPaths(),
-            ["/api/v1/theme/branding", "/api/v1/health"]
-        )
-    }
-
-    func testBlankBrandingNameFallsBackToHealth() async {
-        stub.configure([
-            "/api/v1/theme/branding": (200, #"{"server_name":"  "}"#),
-            "/api/v1/health": (200, #"{"status":"ok","server_name":"Fallback"}"#),
-        ])
-
-        let name = await resolver().fetchServerName(serverURL: "https://silo.example")
-
-        XCTAssertEqual(name, "Fallback")
-    }
-
-    func testBrandingFailureDoesNotFallBackToHealth() async {
-        stub.configure([
-            "/api/v1/theme/branding": (500, #"{"error":"unavailable"}"#),
-            "/api/v1/health": (200, #"{"status":"ok","server_name":"Compat Name"}"#),
-        ])
-
-        let name = await resolver().fetchServerName(serverURL: "https://silo.example")
-
-        XCTAssertNil(name)
-        XCTAssertEqual(stub.requestedPaths(), ["/api/v1/theme/branding"])
-    }
-
-    func testBrandingDecodeFailureDoesNotFallBackToHealth() async {
-        stub.configure([
-            "/api/v1/theme/branding": (200, #"{"server_name":42}"#),
-            "/api/v1/health": (200, #"{"status":"ok","server_name":"Compat Name"}"#),
-        ])
-
-        let name = await resolver().fetchServerName(serverURL: "https://silo.example")
-
-        XCTAssertNil(name)
-        XCTAssertEqual(stub.requestedPaths(), ["/api/v1/theme/branding"])
+            XCTAssertNil(fetched, name)
+            XCTAssertEqual(stub.requestedPaths(), [Self.brandingPath], name)
+        }
     }
 
     func testStaleActiveServerResponseDoesNotRenameRegistryEntries() async {
@@ -103,19 +79,19 @@ final class ServerIdentityResolverTests: XCTestCase {
         await registry.switchTo(serverId: serverA.id)
 
         stub.configure([
-            "/api/v1/theme/branding": (200, #"{"server_name":"Updated A"}"#),
-        ], blockedPaths: ["/api/v1/theme/branding"])
-        defer { stub.release(path: "/api/v1/theme/branding") }
+            Self.brandingPath: (200, Self.branding(name: "Updated A")),
+        ], blockedPaths: [Self.brandingPath])
+        defer { stub.release(path: Self.brandingPath) }
 
         let service = AuthService(
             serverIdentityResolver: resolver(),
             serverRegistry: registry
         )
         let refresh = Task { await service.refreshActiveServerName() }
-        await waitForRequest(path: "/api/v1/theme/branding")
+        await waitForRequest(path: Self.brandingPath)
 
         await registry.switchTo(serverId: serverB.id)
-        stub.release(path: "/api/v1/theme/branding")
+        stub.release(path: Self.brandingPath)
         await refresh.value
 
         XCTAssertEqual(registry.activeServerId, serverB.id)

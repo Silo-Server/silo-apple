@@ -507,9 +507,7 @@ struct FavoritesView: View {
         }
         error = nil
         do {
-            let response: CatalogResponse = try await SiloAPI.shared.favorites(
-                offset: 0, limit: 100
-            )
+            let response = try await SiloAPI.shared.favorites()
             ResponseCache.shared.set(response, for: CacheKey.favorites)
             items = response.items
         } catch let err {

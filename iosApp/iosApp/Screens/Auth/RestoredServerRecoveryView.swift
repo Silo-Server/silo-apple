@@ -264,19 +264,33 @@ struct RestoredServerRecoveryView: View {
     }
 
     private var eyebrow: String {
-        reason == .needsSetup ? "SERVER SETUP" : "CONNECTION RECOVERY"
+        switch reason {
+        case .needsSetup: return "SERVER SETUP"
+        case .serverNotRecognized: return "CONNECTION RECOVERY"
+        case .serverUpdateRequired, .appUpdateRequired: return "UPDATE REQUIRED"
+        }
     }
 
     private var title: String {
-        reason == .needsSetup ? "This server isn't ready" : "We can't verify this server"
+        switch reason {
+        case .needsSetup: return "This server isn't ready"
+        case .serverNotRecognized: return "We can't verify this server"
+        case .serverUpdateRequired: return "Server update required"
+        case .appUpdateRequired: return "Update Silo"
+        }
     }
 
     private var message: String {
+        let keptSignIn = "Your saved sign-in information has not been removed."
         switch reason {
         case .needsSetup:
-            return "Ask the server administrator to finish setup, then try again. Your saved sign-in information has not been removed."
+            return "Ask the server administrator to finish setup, then try again. \(keptSignIn)"
         case .serverNotRecognized:
-            return "The server may have moved, been reset, or this address may no longer point to Silo. Your saved sign-in information has not been removed."
+            return "The server may have moved, been reset, or this address may no longer point to Silo. \(keptSignIn)"
+        case .serverUpdateRequired:
+            return "\(UpdateRequirement.serverMessage) \(keptSignIn)"
+        case .appUpdateRequired:
+            return "\(UpdateRequirement.appMessage) \(keptSignIn)"
         }
     }
 
@@ -333,6 +347,10 @@ struct RestoredServerRecoveryView: View {
             return "This server still needs administrator setup."
         case .serverRecovery(.serverNotRecognized):
             return "This address still doesn't look like a Silo server."
+        case .serverRecovery(.serverUpdateRequired):
+            return "This server still needs to be updated."
+        case .serverRecovery(.appUpdateRequired):
+            return "This server still requires a newer version of Silo."
         case .indeterminate:
             return "We still can't reach this server. Your saved sign-in information is unchanged."
         case .valid, .needsLogin, .identityChanged:

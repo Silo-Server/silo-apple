@@ -399,6 +399,10 @@ private struct ItemDetailPhoneContent: View {
         } message: { _ in
             Text("Play the copy saved on this device, or stream from the server.")
         }
+        .personalStateNoticeAlert(Binding(
+            get: { viewModel.personalStateNotice },
+            set: { viewModel.personalStateNotice = $0 }
+        ))
         .alert(
             "Can't Reach Server",
             isPresented: Binding(
@@ -685,8 +689,8 @@ private struct ItemDetailPhoneContent: View {
                     await viewModel.setEpisodeWatchlist(contentId: id, inWatchlist: inWatchlist)
                 },
                 onPersonTap: { personId in
-                    if let pid = Int(personId) {
-                        router.navigate(to: .personDetail(personId: pid))
+                    if !personId.isEmpty {
+                        router.navigate(to: .personDetail(personId: personId))
                     }
                 },
                 onNavigateToItem: { id in
@@ -779,8 +783,8 @@ private struct ItemDetailPhoneContent: View {
                 onToggleWatchlist: { Task { await viewModel.toggleWatchlist() } },
                 onToggleWatched: { Task { await viewModel.toggleWatched() } },
                 onPersonTap: { personId in
-                    if let pid = Int(personId) {
-                        router.navigate(to: .personDetail(personId: pid))
+                    if !personId.isEmpty {
+                        router.navigate(to: .personDetail(personId: personId))
                     }
                 },
                 onNavigateToItem: { id in
