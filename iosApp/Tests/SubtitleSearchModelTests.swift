@@ -88,8 +88,8 @@ final class SubtitleSearchModelTests: XCTestCase {
             download: { ("owner", self.stored("8")) },
             relist: { owner in XCTAssertEqual(owner, "owner"); return try listing.get() },
             isStillCurrent: { _ in stillCurrent },
-            register: { subtitle, position in
-                registered.append((subtitle.id, position))
+            register: { listing, position in
+                registered.append((listing[position].id, position))
                 return registers
             }
         )

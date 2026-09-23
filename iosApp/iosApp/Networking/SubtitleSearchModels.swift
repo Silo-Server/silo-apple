@@ -192,14 +192,15 @@ enum SubtitleDownloadOutcome: Equatable {
     ///   - relist: lists the file's stored subtitles for that owner.
     ///   - isStillCurrent: whether the owner and media file still match the
     ///     player after the awaits.
-    ///   - register: registers the stored row found at `position` in the
-    ///     listing; returns `false` when the player cannot take it.
+    ///   - register: registers the stored row at `position` in the listing
+    ///     (the whole listing places it in the plan's ordinals); returns
+    ///     `false` when the player cannot take it.
     @MainActor
     static func resolve<Owner>(
         download: () async throws -> (Owner, DownloadedSubtitle),
         relist: (Owner) async throws -> [DownloadedSubtitle],
         isStillCurrent: (Owner) async -> Bool,
-        register: (_ subtitle: DownloadedSubtitle, _ position: Int) -> Bool
+        register: (_ listing: [DownloadedSubtitle], _ position: Int) -> Bool
     ) async -> SubtitleDownloadOutcome {
         let owner: Owner
         let subtitle: DownloadedSubtitle
@@ -239,7 +240,7 @@ enum SubtitleDownloadOutcome: Equatable {
             )
             return .stored
         }
-        guard register(listing[position], position) else {
+        guard register(listing, position) else {
             logger.warning(
                 "[SUB-SEARCH] no handoff context / unresolvable URL for subtitle id=\(subtitle.id, privacy: .public)"
             )

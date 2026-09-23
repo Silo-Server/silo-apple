@@ -5734,9 +5734,9 @@ class PlayerViewModel {
     ///
     /// Mirrors `SubtitleAIController.completePersistedHandoff` minus the
     /// job/latch/websocket machinery: the download response carries the stored
-    /// `id` but no stream URL, so we re-list to find the track's display
-    /// position and synthesize a URL pinned to that `id` (see
-    /// ``DownloadedSubtitle``).
+    /// `id` but no stream URL, so we re-list to place the row in the plan's
+    /// subtitle ordinals and synthesize a URL pinned to that `id` (see
+    /// ``DownloadedSubtitleOrdinals``).
     ///
     /// The download is `non_retryable` and is sent once, for the owner
     /// captured before the first await. The outcome tells the menu whether
@@ -5762,12 +5762,11 @@ class PlayerViewModel {
                 guard await SiloAI.shared.matchesAuthority(auth) else { return false }
                 return self.currentSelectedVersion?.fileId == fileId
             },
-            register: { subtitle, position in
+            register: { listing, position in
                 guard let context = self.makeSubtitleHandoffContext(),
-                      let descriptor = subtitle.synthesizedDescriptor(
+                      let descriptor = listing[position].synthesizedDescriptor(
                           sessionId: context.sessionId,
-                          baseTrackCount: context.baseTrackCount,
-                          position: position,
+                          ordinal: context.ordinals.ordinal(at: position, in: listing),
                           resolveURL: context.resolveURL
                       )
                 else { return false }
@@ -5783,14 +5782,13 @@ class PlayerViewModel {
     /// the controller treats `nil` as a soft failure so the user isn't left on
     /// a dismissed menu with no track.
     ///
-    /// `baseTrackCount` is the combined ordinal the **first** downloaded track
-    /// occupies. The V3 plan's subtitle inventory is the authoritative track
-    /// list — it publishes every track, including burn-in-only bitmap streams
-    /// that carry no fetchable URL, over one dense ordinal space ordered
-    /// externals → embedded → downloaded. So the first downloaded ordinal is
-    /// exactly the number of non-downloaded inventory entries. Never derive
-    /// this by counting or max-ing the delivered sidecar URLs: those omit
-    /// burn-in-only tracks and would address the wrong track.
+    /// `ordinals` comes from the V3 plan's subtitle inventory, the
+    /// authoritative track list: it publishes every track, including
+    /// burn-in-only bitmap streams that carry no fetchable URL, over one dense
+    /// ordinal space ordered externals → embedded → downloaded. Never derive
+    /// ordinals by counting the delivered sidecar URLs or the v2 stored
+    /// listing: the first omits burn-in-only tracks and the second omits rows
+    /// whose language the server cannot canonicalize.
     @MainActor
     private func makeSubtitleHandoffContext() -> SubtitleAIController.HandoffContext? {
         guard let sessionId = activePlaybackSessionId, !sessionId.isEmpty else {
@@ -5802,20 +5800,28 @@ class PlayerViewModel {
             Self.logger.warning("[AI-SUB] no V3 subtitle inventory for subtitle handoff")
             return nil
         }
-        let baseTrackCount = Self.protocolV3DownloadedSubtitleBaseTrackCount(inventory)
         return SubtitleAIController.HandoffContext(
             sessionId: sessionId,
-            baseTrackCount: baseTrackCount,
+            ordinals: Self.protocolV3DownloadedSubtitleOrdinals(inventory),
             resolveURL: { [weak self] path in self?.resolveServerUrl(path, serverUrl: serverUrl) }
         )
     }
 
-    static func protocolV3DownloadedSubtitleBaseTrackCount(
+    /// Reads each published downloaded row's ordinal from the
+    /// `downloaded_subtitle_id` pin on its inventory URL.
+    static func protocolV3DownloadedSubtitleOrdinals(
         _ inventory: [PlaybackV3SubtitleInventoryItem]
-    ) -> Int {
-        inventory.filter {
-            $0.source.caseInsensitiveCompare("downloaded") != .orderedSame
-        }.count
+    ) -> DownloadedSubtitleOrdinals {
+        var published: [String: Int] = [:]
+        for item in inventory where item.source.caseInsensitiveCompare("downloaded") == .orderedSame {
+            guard let url = item.url,
+                  let rowID = URLComponents(string: url)?.queryItems?
+                      .first(where: { $0.name == "downloaded_subtitle_id" })?.value,
+                  !rowID.isEmpty else { continue }
+            published[rowID] = item.combinedIndex
+        }
+        let next = (inventory.map(\.combinedIndex).max() ?? -1) + 1
+        return DownloadedSubtitleOrdinals(published: published, next: next)
     }
 
     enum ProtocolV3SidecarRestoreIntent: Equatable {

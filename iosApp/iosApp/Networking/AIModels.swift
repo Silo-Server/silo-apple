@@ -205,8 +205,8 @@ struct SubtitleJobEnvelope: Codable {
 /// `result_subtitle_id` references) but **no combined `index` and no `url`**:
 /// the server never includes a stream URL here. The player synthesizes both
 /// at handoff time (see
-/// ``synthesizedDescriptor(sessionId:baseTrackCount:position:resolveURL:)``),
-/// and the URL names the row by `id` rather than by listing position.
+/// ``synthesizedDescriptor(sessionId:ordinal:resolveURL:)``), and the URL
+/// names the row by `id` rather than by listing position.
 struct DownloadedSubtitle: Identifiable, Equatable {
     /// Opaque stored-subtitle ID — what a job's `result_subtitle_id` points at.
     let id: String
@@ -278,11 +278,9 @@ extension DownloadedSubtitle {
     /// - Parameters:
     ///   - sessionId: the active playback session id (the stream mount is
     ///     session-scoped).
-    ///   - baseTrackCount: the combined index the **first** downloaded track
-    ///     occupies (the number of non-downloaded inventory entries).
-    ///   - position: this subtitle's position within the downloaded listing
-    ///     (0-based). The ordinal `baseTrackCount + position` is used only for
-    ///     display and de-duplication on the player; the pin selects the row.
+    ///   - ordinal: the combined ordinal the player files this track under
+    ///     (see ``DownloadedSubtitleOrdinals``). The pin, not the ordinal,
+    ///     selects the row.
     ///   - resolveURL: turns the synthesized API-relative stream path into an
     ///     absolute `URL` against the active server base (the player's
     ///     existing `resolveServerUrl`). Returns `nil` if it can't resolve.
@@ -291,12 +289,10 @@ extension DownloadedSubtitle {
     ///   can't be resolved.
     func synthesizedDescriptor(
         sessionId: String,
-        baseTrackCount: Int,
-        position: Int,
+        ordinal combinedIndex: Int,
         resolveURL: (String) -> URL?
     ) -> SidecarSubtitleDescriptor? {
         guard mediaFileId > 0, let rowID = Int(id), rowID > 0, String(rowID) == id else { return nil }
-        let combinedIndex = baseTrackCount + position
         let path = "/api/v2/stream/\(sessionId)/subtitles/\(combinedIndex)\(streamURLExtension)"
             + "?file_id=\(mediaFileId)&downloaded_subtitle_id=\(rowID)"
         guard let url = resolveURL(path) else { return nil }
@@ -312,5 +308,30 @@ extension DownloadedSubtitle {
             forced: false,
             url: url
         )
+    }
+}
+
+/// Where the plan's combined subtitle ordinals place stored subtitles.
+///
+/// The player files a sidecar under its ordinal, and a later plan's inventory
+/// replaces a locally registered row with the same ordinal. The inventory
+/// counts every stored row, but the v2 listing omits rows whose language the
+/// server cannot canonicalize, so a listing position is not an ordinal: after
+/// an omitted row it would name an earlier stored subtitle's slot.
+struct DownloadedSubtitleOrdinals: Equatable {
+    /// Ordinals the current plan published, keyed by stored row ID.
+    let published: [String: Int]
+    /// The first ordinal past every track the plan published.
+    let next: Int
+
+    /// The ordinal for `listing[position]`: the published one when the plan
+    /// names the row; otherwise `next`, advanced past earlier listing rows the
+    /// plan does not name. The server orders stored rows by creation time, so
+    /// rows stored after the plan follow every published one. A row stored
+    /// after the plan and left out of the listing still shifts the server's
+    /// later ordinals; the URL pin keeps the content right in that case.
+    func ordinal(at position: Int, in listing: [DownloadedSubtitle]) -> Int {
+        if let ordinal = published[listing[position].id] { return ordinal }
+        return next + listing[..<position].filter { published[$0.id] == nil }.count
     }
 }
