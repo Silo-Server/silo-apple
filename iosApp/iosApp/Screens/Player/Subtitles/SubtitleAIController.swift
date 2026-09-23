@@ -590,10 +590,10 @@ final class SubtitleAIController {
     /// The listing (`GET /subtitles/{media_file_id}`) returns the server's
     /// `DownloadedSubtitle` shape: a DB `id` plus metadata, **no** stream
     /// `url` and **no** combined player index. We synthesize the descriptor
-    /// exactly like Android's `SubtitleTrackMerge` (combined index past the
-    /// existing external+embedded+downloaded tracks; stream URL on the
-    /// session-scoped `/stream/{session}/subtitles/{combined-index}<ext>`
-    /// mount, which keys on the combined index — verified server-side).
+    /// with a display ordinal past the existing external+embedded tracks and a
+    /// stream URL on the session-scoped `/stream/{session}/subtitles/...`
+    /// mount that pins the row with `downloaded_subtitle_id` (see
+    /// ``DownloadedSubtitle/synthesizedDescriptor(sessionId:baseTrackCount:position:resolveURL:)``).
     ///
     /// `generation` is the value captured at submit time; a reset mid-fetch
     /// invalidates the handoff so a stale completion can't land on the next
@@ -656,8 +656,9 @@ final class SubtitleAIController {
                 if autoSelect { self?.failHandoff(message) }
             }
 
-            // Match by stored id (Android: `it.id == resultSubtitleId`); the
-            // matched entry's position in the listing fixes its combined index.
+            // Match by stored id (Android: `it.id == resultSubtitleId`). The
+            // position gives the track's display ordinal; the synthesized URL
+            // pins the row by id because the v2 listing can omit rows.
             // Listing ids are opaque strings; the job's is still an integer.
             guard let position = downloaded.firstIndex(where: { $0.id == String(resultId) }) else {
                 Self.logger.warning(

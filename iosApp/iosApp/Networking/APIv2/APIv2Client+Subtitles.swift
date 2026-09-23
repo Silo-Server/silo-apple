@@ -22,9 +22,9 @@ extension APIv2Client {
 
     // MARK: listStoredSubtitles
 
-    /// The file's stored subtitles in server order. The order fixes each
-    /// track's combined player index, so a row that names another file fails
-    /// the listing instead of being dropped.
+    /// The file's stored subtitles in server order. The server leaves out
+    /// rows it cannot canonicalize, so callers address a row by its `id`, not
+    /// its position. A row that names another file fails the listing.
     func storedSubtitles(mediaFileID: Int, auth: CapturedOrdinaryRequestAuth? = nil) async throws -> [DownloadedSubtitle] {
         guard mediaFileID > 0 else { throw APIv2SubtitleRequestError.invalidMediaFile }
         let owner: CapturedOrdinaryRequestAuth

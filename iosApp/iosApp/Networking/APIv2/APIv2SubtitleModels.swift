@@ -38,9 +38,10 @@ enum APIv2SubtitleRequestError: LocalizedError, Equatable {
 struct APIv2StoredSubtitles: Decodable {
     let subtitles: [APIv2StoredSubtitle]
 
-    /// Every row, in server order: a row's position fixes its combined player
-    /// index, so none may be dropped. A row that names another file makes the
-    /// listing unusable.
+    /// Every row, in server order. The server omits rows whose language it
+    /// cannot canonicalize, so a position here is not the stream handler's
+    /// ordinal; the synthesized stream URL pins each row by `id` instead. A
+    /// row that names another file makes the listing unusable.
     func playerValues(mediaFileID: Int) throws -> [DownloadedSubtitle] {
         try subtitles.map { try $0.playerValue(mediaFileID: mediaFileID) }
     }

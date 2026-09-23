@@ -204,9 +204,9 @@ struct SubtitleJobEnvelope: Codable {
 /// It carries the subtitle's stored **`id`** (which the job's
 /// `result_subtitle_id` references) but **no combined `index` and no `url`**:
 /// the server never includes a stream URL here. The player synthesizes both
-/// at handoff time the way the Android client does (see
-/// ``synthesizedDescriptor(sessionId:baseTrackCount:position:resolveURL:)``
-/// and `SubtitleTrackMerge.kt`).
+/// at handoff time (see
+/// ``synthesizedDescriptor(sessionId:baseTrackCount:position:resolveURL:)``),
+/// and the URL names the row by `id` rather than by listing position.
 struct DownloadedSubtitle: Identifiable, Equatable {
     /// Opaque stored-subtitle ID — what a job's `result_subtitle_id` points at.
     let id: String
@@ -266,36 +266,39 @@ extension DownloadedSubtitle {
     /// Synthesize the player-track descriptor for this downloaded subtitle.
     ///
     /// The server's `GET /api/v2/subtitles/{media_file_id}` listing carries no
-    /// stream URL and no combined player index, so the client builds both —
-    /// **identically to Android's `SubtitleTrackMerge.mergeDownloadedSubtitles`**
-    /// — because the `/stream/{session_id}/subtitles/{track}` route keys on the
-    /// **combined** subtitle index (external → embedded → downloaded), not the
-    /// subtitle DB id (verified in server `StreamHandler.HandleSubtitle` +
-    /// `ParseSubtitleTrackParam`).
+    /// stream URL and no combined player index, so the client builds both.
+    /// The URL matches the server's `DownloadedSubtitleStreamURLV3`:
+    /// `/api/v2/stream/{session}/subtitles/{ordinal}{ext}?file_id={file}&downloaded_subtitle_id={id}`.
+    /// The `downloaded_subtitle_id` pin makes the stream handler serve this
+    /// row by identity. Without it the handler resolves the ordinal against
+    /// its unfiltered stored-subtitle list, while the v2 listing omits rows
+    /// whose language the server cannot canonicalize, so a listing position
+    /// can name a different row.
     ///
     /// - Parameters:
     ///   - sessionId: the active playback session id (the stream mount is
     ///     session-scoped).
     ///   - baseTrackCount: the combined index the **first** downloaded track
-    ///     occupies — Android's `(max(existing non-downloaded .index) + 1)`,
-    ///     computed `+1` over the max rather than the list size so server-side
-    ///     burn-in skipping (which can leave index gaps) is honored.
+    ///     occupies (the number of non-downloaded inventory entries).
     ///   - position: this subtitle's position within the downloaded listing
-    ///     (0-based). The combined index is `baseTrackCount + position`,
-    ///     matching Android's `baseIndex + i`.
+    ///     (0-based). The ordinal `baseTrackCount + position` is used only for
+    ///     display and de-duplication on the player; the pin selects the row.
     ///   - resolveURL: turns the synthesized API-relative stream path into an
     ///     absolute `URL` against the active server base (the player's
     ///     existing `resolveServerUrl`). Returns `nil` if it can't resolve.
-    /// - Returns: a ready-to-register descriptor, or `nil` if the URL can't be
-    ///   resolved.
+    /// - Returns: a ready-to-register descriptor, or `nil` if the row has no
+    ///   positive integer ID or file (the server's pin needs both) or the URL
+    ///   can't be resolved.
     func synthesizedDescriptor(
         sessionId: String,
         baseTrackCount: Int,
         position: Int,
         resolveURL: (String) -> URL?
     ) -> SidecarSubtitleDescriptor? {
+        guard mediaFileId > 0, let rowID = Int(id), rowID > 0, String(rowID) == id else { return nil }
         let combinedIndex = baseTrackCount + position
         let path = "/api/v2/stream/\(sessionId)/subtitles/\(combinedIndex)\(streamURLExtension)"
+            + "?file_id=\(mediaFileId)&downloaded_subtitle_id=\(rowID)"
         guard let url = resolveURL(path) else { return nil }
         let label = releaseName.isEmpty
             ? (provider.isEmpty ? language : provider)

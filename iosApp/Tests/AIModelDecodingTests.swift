@@ -213,7 +213,8 @@ final class AIModelDecodingTests: XCTestCase {
         )
         XCTAssertNotNil(descriptor)
         XCTAssertTrue(descriptor?.index == 3)
-        XCTAssertTrue(descriptor?.url.absoluteString == "https://host/api/v2/stream/sess-1/subtitles/3.vtt")
+        XCTAssertTrue(descriptor?.url.absoluteString
+            == "https://host/api/v2/stream/sess-1/subtitles/3.vtt?file_id=42&downloaded_subtitle_id=77")
         XCTAssertTrue(descriptor?.source == "downloaded")
         XCTAssertTrue(descriptor?.codec == "subrip")
         XCTAssertTrue(descriptor?.language == "es")
@@ -224,7 +225,7 @@ final class AIModelDecodingTests: XCTestCase {
     /// and ASS/SSA keep the raw `.ass` extension.
     func testSynthesizedDescriptorPositionAndAssExt() {
         let sub = DownloadedSubtitle(
-            id: "88", provider: "subdl", language: "de", format: "ass", releaseName: "Show.S01E01"
+            id: "88", mediaFileId: 7, provider: "subdl", language: "de", format: "ass", releaseName: "Show.S01E01"
         )
         let descriptor = sub.synthesizedDescriptor(
             sessionId: "sess-9",
@@ -233,7 +234,47 @@ final class AIModelDecodingTests: XCTestCase {
             resolveURL: { path in URL(string: "https://host\(path)") }
         )
         XCTAssertTrue(descriptor?.index == 3)
-        XCTAssertTrue(descriptor?.url.absoluteString == "https://host/api/v2/stream/sess-9/subtitles/3.ass")
+        XCTAssertTrue(descriptor?.url.absoluteString
+            == "https://host/api/v2/stream/sess-9/subtitles/3.ass?file_id=7&downloaded_subtitle_id=88")
+    }
+
+    /// The v2 listing omits rows the server cannot canonicalize, while the
+    /// stream handler's unpinned ordinal counts them. A row after an omitted
+    /// one must still be fetched as itself, so the URL pins it by ID.
+    func testSynthesizedURLNamesTheRowWhenTheListingOmitsAnEarlierOne() throws {
+        // Server rows 11, 12, 13; the listing leaves out 11.
+        let listing = [
+            DownloadedSubtitle(id: "12", mediaFileId: 42, format: "srt"),
+            DownloadedSubtitle(id: "13", mediaFileId: 42, format: "srt"),
+        ]
+        let position = try XCTUnwrap(listing.firstIndex { $0.id == "13" })
+        let descriptor = try XCTUnwrap(listing[position].synthesizedDescriptor(
+            sessionId: "s", baseTrackCount: 2, position: position,
+            resolveURL: { URL(string: "https://host\($0)") }
+        ))
+        let query = try XCTUnwrap(URLComponents(url: descriptor.url, resolvingAgainstBaseURL: false)?.queryItems)
+        XCTAssertEqual(query, [
+            URLQueryItem(name: "file_id", value: "42"),
+            URLQueryItem(name: "downloaded_subtitle_id", value: "13"),
+        ])
+        XCTAssertTrue(StreamRequest.hasAllowedHeaderAuthenticatedMediaQuery(
+            path: descriptor.url.path, items: query
+        ))
+    }
+
+    /// The server's pin accepts only a positive integer row and file; any
+    /// other ID yields no track rather than an unpinned ordinal.
+    func testSynthesizedDescriptorNeedsAPinnableRow() {
+        for sub in [
+            DownloadedSubtitle(id: "abc", mediaFileId: 42),
+            DownloadedSubtitle(id: "0", mediaFileId: 42),
+            DownloadedSubtitle(id: "007", mediaFileId: 42),
+            DownloadedSubtitle(id: "7", mediaFileId: 0),
+        ] {
+            XCTAssertNil(sub.synthesizedDescriptor(
+                sessionId: "s", baseTrackCount: 0, position: 0, resolveURL: { URL(string: "https://host\($0)") }
+            ), sub.id)
+        }
     }
 
     /// PGS maps to `.sup`; an unresolvable URL yields `nil` (no track).
