@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://silo-server.dev/schemas/client-diagnostics/v1/manifest.schema.json",
   "title": "Silo Client Diagnostics Manifest v1",
+  "description": "Canonical manifest contract for a client diagnostics bundle. STRING LENGTHS: every `maxLength` in this schema is a character-count sanity bound. The server enforces the matching limit as a UTF-8 *byte* length (Go `len(string)`), so a value near a cap that contains multi-byte characters (CJK, emoji, accented text) can satisfy `maxLength` here yet be rejected at ingest. Treat each numeric cap as a byte budget for non-ASCII text. JSON Schema cannot express byte length, so this divergence is intentional and documented rather than encoded.",
   "type": "object",
   "required": [
     "schema_version",
@@ -133,14 +134,17 @@
         "summary": {
           "type": "string",
           "minLength": 1,
+          "description": "Free-text crash summary; may contain non-ASCII. maxLength counts characters — the server enforces 8192 UTF-8 bytes (see the schema-level string-length note).",
           "maxLength": 8192
         },
         "stack_excerpt": {
           "type": "string",
+          "description": "Free-text stack excerpt; may contain non-ASCII. maxLength counts characters — the server enforces 8192 UTF-8 bytes (see the schema-level string-length note).",
           "maxLength": 8192
         },
         "thread": {
           "type": "string",
+          "description": "Thread name; may contain non-ASCII. maxLength counts characters — the server enforces 128 UTF-8 bytes (see the schema-level string-length note).",
           "maxLength": 128
         },
         "foreground": {
@@ -185,21 +189,25 @@
         "manufacturer": {
           "type": "string",
           "minLength": 1,
+          "description": "Device manufacturer; may contain non-ASCII. maxLength counts characters — the server enforces 128 UTF-8 bytes (see the schema-level string-length note).",
           "maxLength": 128
         },
         "model": {
           "type": "string",
           "minLength": 1,
+          "description": "Device model; may contain non-ASCII (e.g. CJK). maxLength counts characters — the server enforces 128 UTF-8 bytes, so a 128-character multi-byte value can pass this schema yet be rejected at ingest (see the schema-level string-length note).",
           "maxLength": 128
         },
         "os": {
           "type": "string",
           "minLength": 1,
+          "description": "OS name/version; may contain non-ASCII. maxLength counts characters — the server enforces 128 UTF-8 bytes (see the schema-level string-length note).",
           "maxLength": 128
         },
         "form_factor": {
           "type": "string",
           "minLength": 1,
+          "description": "Device form factor; may contain non-ASCII. maxLength counts characters — the server enforces 64 UTF-8 bytes (see the schema-level string-length note).",
           "maxLength": 64
         }
       },
@@ -276,9 +284,15 @@
       "properties": {
         "entries": {
           "type": "array",
+          "description": "Tar member names in bundle order. The first entry MUST be `manifest.json`: the server reads and validates the leading member before any other and compares this order against the actual bundle. `prefixItems` pins index 0, while `contains` keeps `manifest.json` required for validators that do not implement `prefixItems`.",
           "uniqueItems": true,
           "minItems": 1,
           "maxItems": 8,
+          "prefixItems": [
+            {
+              "const": "manifest.json"
+            }
+          ],
           "contains": {
             "const": "manifest.json"
           },
@@ -314,5 +328,65 @@
       "additionalProperties": true
     }
   },
-  "additionalProperties": true
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "$comment": "Event reports (crash/anr/native_crash/hang/abnormal_exit) must carry the crash object; mirrors ValidateManifest in internal/diagnostics/contract/contract.go.",
+      "if": {
+        "properties": {
+          "report": {
+            "properties": {
+              "type": {
+                "enum": [
+                  "crash",
+                  "anr",
+                  "native_crash",
+                  "hang",
+                  "abnormal_exit"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
+          }
+        },
+        "required": [
+          "report"
+        ]
+      },
+      "then": {
+        "required": [
+          "crash"
+        ]
+      }
+    },
+    {
+      "$comment": "Manual captures must not carry a crash object.",
+      "if": {
+        "properties": {
+          "report": {
+            "properties": {
+              "type": {
+                "const": "manual"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          }
+        },
+        "required": [
+          "report"
+        ]
+      },
+      "then": {
+        "not": {
+          "required": [
+            "crash"
+          ]
+        }
+      }
+    }
+  ]
 }
