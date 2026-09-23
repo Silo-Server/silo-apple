@@ -188,6 +188,15 @@ final class AuthService: @unchecked Sendable {
         serverRegistry.updateFetchedName(for: serverId, fetchedName: name)
     }
 
+    /// Re-runs the contract probe for the active server and records the
+    /// verdict under the usual generation and active-server rules. The
+    /// restored-session validator calls this when a v2 read succeeds while
+    /// the verdict still says v1-only, so an in-place upgrade clears it.
+    func recheckActiveServerContract() async {
+        guard let server = serverRegistry.activeServer else { return }
+        await recordContractVerdict(serverId: server.id, serverURL: server.url)
+    }
+
     /// Learns (or re-learns) the deployment identity behind a saved server so
     /// SiloRemote and companion pairing can recognise it at other addresses.
     /// Servers added before the identity contract pick it up here on their

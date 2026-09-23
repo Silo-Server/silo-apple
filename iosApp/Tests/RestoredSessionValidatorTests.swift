@@ -51,6 +51,38 @@ final class RestoredSessionValidatorTests: XCTestCase {
 
         XCTAssertEqual(result, .valid)
         XCTAssertEqual(accountProbeCount, 1)
+        let recheckCount = await harness.contractRecheckCount()
+        XCTAssertEqual(recheckCount, 0, "a v2 verdict needs no re-probe")
+    }
+
+    /// The server was updated in place while the recovery screen showed the
+    /// update copy: the setup read now succeeds, the re-probe answers v2, and
+    /// the account read goes ahead instead of repeating "still needs to be
+    /// updated".
+    func testUpdateRequiredVerdictIsRecheckedBeforeAccountRead() async {
+        let harness = ValidationHarness(identity: expected, updateRequired: true, recheckAnswersV2: true)
+
+        let result = await makeValidator(harness).validate(expected: expected)
+        let recheckCount = await harness.contractRecheckCount()
+        let accountProbeCount = await harness.accountProbeCount()
+
+        XCTAssertEqual(result, .valid)
+        XCTAssertEqual(recheckCount, 1)
+        XCTAssertEqual(accountProbeCount, 1)
+    }
+
+    func testUpdateRequiredVerdictThatSurvivesRecheckSkipsAccountRead() async {
+        let harness = ValidationHarness(identity: expected, updateRequired: true, recheckAnswersV2: false)
+
+        let result = await makeValidator(harness).validate(expected: expected)
+        let recheckCount = await harness.contractRecheckCount()
+        let accountProbeCount = await harness.accountProbeCount()
+        let hasAccessToken = await harness.hasAccessToken(serverID: expected.serverId)
+
+        XCTAssertEqual(result, .serverRecovery(.serverUpdateRequired))
+        XCTAssertEqual(recheckCount, 1)
+        XCTAssertEqual(accountProbeCount, 0)
+        XCTAssertTrue(hasAccessToken)
     }
 
     func testServerThatNeedsSetupEntersRecoveryWithoutAccountProbe() async {
@@ -253,7 +285,8 @@ final class RestoredSessionValidatorTests: XCTestCase {
             let tokens = try await makeTokenStore()
             let validator = RestoredSessionValidator.live(client: APIv2Client(
                 http: HTTPClient(session: stub.makeSession(), tokenStore: tokens),
-                tokenStore: tokens, isUpdateRequired: { false }), tokenStore: tokens)
+                tokenStore: tokens, isUpdateRequired: { false }), tokenStore: tokens,
+                isServerUpdateRequired: { false }, contractRecheck: {})
             let identity = await tokens.refreshAccountIdentity()
             let restored = try XCTUnwrap(identity, c.name)
 
@@ -266,26 +299,42 @@ final class RestoredSessionValidatorTests: XCTestCase {
         }
     }
 
-    /// A recorded v1-only verdict refuses the account read before it leaves
-    /// the device and reads as update-required, never as a sign-out.
-    func testUpdateRequiredVerdictRefusesAccountReadAndKeepsSession() async throws {
-        let stub = StubURLProtocol.Handler()
-        stub.route(StubURLProtocol.method("GET", path: "/api/v2/system/setup")) { _ in
-            .json(#"{"needs_setup":false,"wizard_completed":true}"#)
+    /// A v1-only verdict that a re-probe confirms refuses the account read
+    /// before it leaves the device and reads as update-required, never as a
+    /// sign-out. One the re-probe clears lets the gated account read through
+    /// the same client.
+    func testUpdateRequiredVerdictGatesAccountReadUntilRecheckClearsIt() async throws {
+        for recheckAnswersV2 in [false, true] {
+            let stub = StubURLProtocol.Handler()
+            stub.route(StubURLProtocol.method("GET", path: "/api/v2/system/setup")) { _ in
+                .json(#"{"needs_setup":false,"wizard_completed":true}"#)
+            }
+            stub.route(StubURLProtocol.method("GET", path: "/api/v2/account/me")) { _ in
+                .json(#"{"id":"42","username":"alice","email":"","role":"user","permissions":[],"download_allowed":true}"#)
+            }
+            let tokens = try await makeTokenStore()
+            let verdict = VerdictBox(updateRequired: true)
+            let validator = RestoredSessionValidator.live(
+                client: APIv2Client(
+                    http: HTTPClient(session: stub.makeSession(), tokenStore: tokens),
+                    tokenStore: tokens, isUpdateRequired: { await verdict.updateRequired }),
+                tokenStore: tokens,
+                isServerUpdateRequired: { await verdict.updateRequired },
+                contractRecheck: { if recheckAnswersV2 { await verdict.set(updateRequired: false) } })
+            let identity = await tokens.refreshAccountIdentity()
+            let restored = try XCTUnwrap(identity)
+
+            let result = await validator.validate(expected: restored)
+            let hasAccessToken = await tokens.hasAccessTokenForActiveServer(serverId: restored.serverId)
+
+            let name = recheckAnswersV2 ? "re-probe answers v2" : "re-probe still v1-only"
+            XCTAssertEqual(result, recheckAnswersV2 ? .valid : .serverRecovery(.serverUpdateRequired), name)
+            XCTAssertTrue(hasAccessToken, name)
+            XCTAssertEqual(
+                stub.requests.map(\.path),
+                recheckAnswersV2 ? ["/api/v2/system/setup", "/api/v2/account/me"] : ["/api/v2/system/setup"],
+                name)
         }
-        let tokens = try await makeTokenStore()
-        let validator = RestoredSessionValidator.live(client: APIv2Client(
-            http: HTTPClient(session: stub.makeSession(), tokenStore: tokens),
-            tokenStore: tokens, isUpdateRequired: { true }), tokenStore: tokens)
-        let identity = await tokens.refreshAccountIdentity()
-        let restored = try XCTUnwrap(identity)
-
-        let result = await validator.validate(expected: restored)
-        let hasAccessToken = await tokens.hasAccessTokenForActiveServer(serverId: restored.serverId)
-
-        XCTAssertEqual(result, .serverRecovery(.serverUpdateRequired))
-        XCTAssertTrue(hasAccessToken)
-        XCTAssertEqual(stub.requests.map(\.path), ["/api/v2/system/setup"])
     }
 
     private static func problem(status: Int, type: String) -> StubURLProtocol.Response {
@@ -342,9 +391,19 @@ final class RestoredSessionValidatorTests: XCTestCase {
             setupProbe: { serverURL in try await harness.probeSetup(serverURL: serverURL) },
             accountProbe: { try await harness.probeAccount() },
             identityReader: { await harness.currentIdentity() },
-            accessTokenReader: { serverID in await harness.hasAccessToken(serverID: serverID) }
+            accessTokenReader: { serverID in await harness.hasAccessToken(serverID: serverID) },
+            isServerUpdateRequired: { await harness.isServerUpdateRequired() },
+            contractRecheck: { await harness.recheckContract() }
         )
     }
+}
+
+private actor VerdictBox {
+    private(set) var updateRequired: Bool
+
+    init(updateRequired: Bool) { self.updateRequired = updateRequired }
+
+    func set(updateRequired: Bool) { self.updateRequired = updateRequired }
 }
 
 private actor ServerRemovalGate {
@@ -380,6 +439,9 @@ private actor ValidationHarness {
     private let hasAccessTokenAfterAccountFailure: Bool
     private var accessTokenPresent = true
     private var accountProbes = 0
+    private var updateRequired: Bool
+    private let recheckAnswersV2: Bool
+    private var contractRechecks = 0
 
     init(
         identity: RefreshAccountIdentity,
@@ -389,7 +451,9 @@ private actor ValidationHarness {
         accountFailure: Error? = nil,
         identityAfterSetup: RefreshAccountIdentity? = nil,
         identityAfterAccountFailure: RefreshAccountIdentity? = nil,
-        hasAccessTokenAfterAccountFailure: Bool = true
+        hasAccessTokenAfterAccountFailure: Bool = true,
+        updateRequired: Bool = false,
+        recheckAnswersV2: Bool = false
     ) {
         self.identity = identity
         self.setupStatus = setupStatus
@@ -399,7 +463,18 @@ private actor ValidationHarness {
         self.identityAfterSetup = identityAfterSetup
         self.identityAfterAccountFailure = identityAfterAccountFailure
         self.hasAccessTokenAfterAccountFailure = hasAccessTokenAfterAccountFailure
+        self.updateRequired = updateRequired
+        self.recheckAnswersV2 = recheckAnswersV2
     }
+
+    func isServerUpdateRequired() -> Bool { updateRequired }
+
+    func recheckContract() {
+        contractRechecks += 1
+        if recheckAnswersV2 { updateRequired = false }
+    }
+
+    func contractRecheckCount() -> Int { contractRechecks }
 
     func probeSetup(serverURL: String) throws -> APIv2SetupStatus {
         if setupCancellation { throw CancellationError() }

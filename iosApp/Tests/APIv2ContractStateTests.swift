@@ -233,6 +233,12 @@ final class APIv2ContractStateTests: XCTestCase {
         await service.refreshActiveServerName()
         XCTAssertFalse(monitor.isServerUpdateRequired, "an upgraded server reopens the gate on the next refresh")
         XCTAssertEqual(monitor.contractStatus, .v2)
+
+        // The restored-session validator's re-probe records through the same
+        // path, so it can close the gate again as well as open it.
+        stub.reply(path: APIv2Probe.path, 404, "404 page not found\n")
+        await service.recheckActiveServerContract()
+        XCTAssertTrue(monitor.isServerUpdateRequired, "the validator's re-probe records a v1-only answer")
     }
 }
 

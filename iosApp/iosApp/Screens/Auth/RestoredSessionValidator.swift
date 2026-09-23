@@ -40,6 +40,8 @@ struct RestoredSessionValidator: Sendable {
     typealias AccountProbe = @Sendable () async throws -> Void
     typealias IdentityReader = @Sendable () async -> RefreshAccountIdentity?
     typealias AccessTokenReader = @Sendable (String) async -> Bool
+    typealias UpdateRequiredReader = @Sendable () async -> Bool
+    typealias ContractRecheck = @Sendable () async -> Void
 
     private enum Stage: Equatable {
         case setup
@@ -50,17 +52,23 @@ struct RestoredSessionValidator: Sendable {
     private let accountProbe: AccountProbe
     private let identityReader: IdentityReader
     private let accessTokenReader: AccessTokenReader
+    private let isServerUpdateRequired: UpdateRequiredReader
+    private let contractRecheck: ContractRecheck
 
     init(
         setupProbe: @escaping SetupProbe,
         accountProbe: @escaping AccountProbe,
         identityReader: @escaping IdentityReader,
-        accessTokenReader: @escaping AccessTokenReader
+        accessTokenReader: @escaping AccessTokenReader,
+        isServerUpdateRequired: @escaping UpdateRequiredReader = { false },
+        contractRecheck: @escaping ContractRecheck = {}
     ) {
         self.setupProbe = setupProbe
         self.accountProbe = accountProbe
         self.identityReader = identityReader
         self.accessTokenReader = accessTokenReader
+        self.isServerUpdateRequired = isServerUpdateRequired
+        self.contractRecheck = contractRecheck
     }
 
     static var live: RestoredSessionValidator {
@@ -70,8 +78,18 @@ struct RestoredSessionValidator: Sendable {
     /// `GET /api/v2/system/setup` by the remembered URL, then
     /// `GET /api/v2/account/me` for the restored credentials. The account
     /// read also binds the verified account ID to a session installed
-    /// without one.
-    static func live(client: APIv2Client, tokenStore: TokenStore) -> RestoredSessionValidator {
+    /// without one. When the active server's recorded verdict is v1-only,
+    /// the contract probe runs again before the gated account read.
+    static func live(
+        client: APIv2Client,
+        tokenStore: TokenStore,
+        isServerUpdateRequired: @escaping UpdateRequiredReader = {
+            await MainActor.run { ConnectionMonitor.shared.isServerUpdateRequired }
+        },
+        contractRecheck: @escaping ContractRecheck = {
+            await AuthService.shared.recheckActiveServerContract()
+        }
+    ) -> RestoredSessionValidator {
         RestoredSessionValidator(
             setupProbe: { serverURL in
                 try await client.setupStatus(serverURL: serverURL)
@@ -84,7 +102,9 @@ struct RestoredSessionValidator: Sendable {
             },
             accessTokenReader: { serverID in
                 await tokenStore.hasAccessTokenForActiveServer(serverId: serverID)
-            }
+            },
+            isServerUpdateRequired: isServerUpdateRequired,
+            contractRecheck: contractRecheck
         )
     }
 
@@ -101,6 +121,19 @@ struct RestoredSessionValidator: Sendable {
         }
         guard !setup.needsSetup else {
             return .serverRecovery(.needsSetup)
+        }
+
+        // The account read is gated on the v1-only verdict, which stays put
+        // until a new probe. A v2 setup read that just succeeded means the
+        // server may have been updated in place (nothing else probes while
+        // the recovery screen is up), so probe again before trusting it.
+        // A failed probe leaves the verdict, and the gate would refuse the
+        // read anyway, so answer update-required without sending it.
+        if await isServerUpdateRequired() {
+            await contractRecheck()
+            if await isServerUpdateRequired() {
+                return await result(for: APIv2Error.serverUpdateRequired, stage: .account, expected: expected)
+            }
         }
 
         do {
