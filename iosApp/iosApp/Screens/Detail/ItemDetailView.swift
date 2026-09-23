@@ -399,6 +399,10 @@ private struct ItemDetailPhoneContent: View {
         } message: { _ in
             Text("Play the copy saved on this device, or stream from the server.")
         }
+        .personalStateNoticeAlert(Binding(
+            get: { viewModel.personalStateNotice },
+            set: { viewModel.personalStateNotice = $0 }
+        ))
         .alert(
             "Can't Reach Server",
             isPresented: Binding(

@@ -14,8 +14,8 @@ struct PhoneEpisodeCarousel: View {
     var isUpdatingWatched = false
     var favoriteStates: [String: Bool] = [:]
     var watchlistStates: [String: Bool] = [:]
-    var onSetFavorite: ((String, Bool) async -> Bool)? = nil
-    var onSetWatchlist: ((String, Bool) async -> Bool)? = nil
+    var onSetFavorite: ((String, Bool) async -> PersonalStateOutcome)? = nil
+    var onSetWatchlist: ((String, Bool) async -> PersonalStateOutcome)? = nil
 
     /// The last real page height is retained while a new season is loading.
     /// Without this, replacing the carousel with a small spinner collapses the

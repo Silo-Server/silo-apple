@@ -14,8 +14,8 @@ struct PhoneEpisodeRail: View {
     var isUpdatingWatched = false
     var favoriteStates: [String: Bool] = [:]
     var watchlistStates: [String: Bool] = [:]
-    var onSetFavorite: ((String, Bool) async -> Bool)? = nil
-    var onSetWatchlist: ((String, Bool) async -> Bool)? = nil
+    var onSetFavorite: ((String, Bool) async -> PersonalStateOutcome)? = nil
+    var onSetWatchlist: ((String, Bool) async -> PersonalStateOutcome)? = nil
 
     @State private var uiCustomization = UICustomizationPreferences.shared
     @State private var visibleEpisodeId: String?
@@ -111,8 +111,8 @@ private struct PhoneEpisodeCard: View {
     let isUpdatingWatched: Bool
     let isFavorite: Bool
     let inWatchlist: Bool
-    let onSetFavorite: ((String, Bool) async -> Bool)?
-    let onSetWatchlist: ((String, Bool) async -> Bool)?
+    let onSetFavorite: ((String, Bool) async -> PersonalStateOutcome)?
+    let onSetWatchlist: ((String, Bool) async -> PersonalStateOutcome)?
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var actionFeedback = MediaActionFeedback()

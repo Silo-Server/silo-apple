@@ -72,6 +72,9 @@ extension ItemDetail {
         self.pendingTranslationLanguage = value.pendingTranslationLanguage
         self.videos = try value.videos.map { try $0.map { try ItemVideo(catalog: $0) } }
         self.extras = try value.extras.map { try $0.map { try ItemExtra(catalog: $0) } }
+        self.userState = value.userState.map {
+            MediaItemUserState(played: $0.played, isFavorite: $0.isFavorite, inWatchlist: $0.inWatchlist)
+        }
         self.posterUrl = value.posterUrl
         self.backdropUrl = value.backdropUrl
         self.logoUrl = value.logoUrl

@@ -892,27 +892,6 @@ actor HTTPClient {
         }
     }
 
-    /// GET an endpoint that signals existence via HTTP status only (e.g.
-    /// `/favorites/{id}` — 204 = yes, 404 = no). Returns `true` for any 2xx,
-    /// `false` for 404, and rethrows for anything else. Bypasses body
-    /// decoding, which would otherwise throw on an empty 204 response.
-    func exists(_ path: String, query: [String: String] = [:]) async throws -> Bool {
-        do {
-            // A 404 here is the documented "not found" signal, not a failure,
-            // so mark it quiet to keep it out of the error log.
-            _ = try await sendRaw(
-                method: "GET",
-                path: path,
-                query: query,
-                body: Optional<String>.none,
-                quietStatuses: [404]
-            )
-            return true
-        } catch HTTPError.http(let code, _) where code == 404 {
-            return false
-        }
-    }
-
     // MARK: - Core send
 
     private func send<T: Decodable>(

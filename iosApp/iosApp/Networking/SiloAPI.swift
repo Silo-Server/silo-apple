@@ -337,43 +337,6 @@ actor SiloAPI {
         )
     }
 
-    /// Server returns 204 when the item is a favorite and 404 otherwise.
-    /// ``HTTPClient/exists(_:query:)`` translates that into a boolean
-    /// without trying to decode the empty response body.
-    func isFavorite(contentId: String) async throws -> Bool {
-        try await http.exists("/api/v1/favorites/\(contentId)")
-    }
-
-    func isInWatchlist(contentId: String) async throws -> Bool {
-        try await http.exists("/api/v1/watchlist/\(contentId)")
-    }
-
-    func toggleFavorite(contentId: String, isFavorite: Bool) async throws {
-        if isFavorite {
-            try await http.putVoid("/api/v1/favorites/\(contentId)")
-        } else {
-            try await http.delete("/api/v1/favorites/\(contentId)")
-        }
-    }
-
-    func toggleWatchlist(contentId: String, isInWatchlist: Bool) async throws {
-        if isInWatchlist {
-            try await http.putVoid("/api/v1/watchlist/\(contentId)")
-        } else {
-            try await http.delete("/api/v1/watchlist/\(contentId)")
-        }
-    }
-
-    /// Mark a content item (movie / series / season / episode) as watched
-    /// or unwatched. Server resolves the leaf targets.
-    func setWatched(contentId: String, played: Bool) async throws {
-        if played {
-            try await http.postVoid("/api/v1/watched/\(contentId)")
-        } else {
-            try await http.delete("/api/v1/watched/\(contentId)")
-        }
-    }
-
     // --- Collections (personal) ---
 
     /// The acting profile's collections and the account's groups. A list read

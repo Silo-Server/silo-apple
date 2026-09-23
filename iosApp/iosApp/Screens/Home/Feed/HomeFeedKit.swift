@@ -242,16 +242,16 @@ private struct HomeCardMenu: ViewModifier {
         let previous = playedOverride
         actionFeedback.perform(reportsFailure: onSetWatched == nil) {
             playedOverride = played
-            let succeeded: Bool
+            let outcome: PersonalStateOutcome
             if let onSetWatched {
-                succeeded = await onSetWatched(played)
+                outcome = await onSetWatched(played) ? .applied : .failed
             } else {
-                succeeded = await MediaCardWatchedSync.setWatched(
+                outcome = await MediaCardWatchedSync.setWatched(
                     contentId: item.contentId, played: played, seriesId: item.seriesId
                 )
             }
-            if !succeeded { playedOverride = previous }
-            return succeeded
+            if outcome != .applied { playedOverride = previous }
+            return outcome
         }
     }
 
@@ -261,13 +261,11 @@ private struct HomeCardMenu: ViewModifier {
         let previous = favoriteOverride
         actionFeedback.perform {
             favoriteOverride = newValue
-            if await PersonalListSync.setFavorite(
+            let outcome = await PersonalListSync.setFavorite(
                 contentId: item.contentId, isFavorite: newValue, inWatchlist: watchlist
-            ) == false {
-                favoriteOverride = previous
-                return false
-            }
-            return true
+            )
+            if outcome != .applied { favoriteOverride = previous }
+            return outcome
         }
     }
 
@@ -277,13 +275,11 @@ private struct HomeCardMenu: ViewModifier {
         let previous = watchlistOverride
         actionFeedback.perform {
             watchlistOverride = newValue
-            if await PersonalListSync.setWatchlist(
+            let outcome = await PersonalListSync.setWatchlist(
                 contentId: item.contentId, isFavorite: favorite, inWatchlist: newValue
-            ) == false {
-                watchlistOverride = previous
-                return false
-            }
-            return true
+            )
+            if outcome != .applied { watchlistOverride = previous }
+            return outcome
         }
     }
 }
