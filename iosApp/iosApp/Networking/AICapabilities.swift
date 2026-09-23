@@ -19,7 +19,7 @@ import Foundation
 final class AICapabilities {
     static let shared = AICapabilities()
 
-    /// `GET /metadata/ai/status`. Nil until fetched or after `reset()`.
+    /// `GET /api/v2/capabilities/metadata-ai`. Nil until fetched or after `reset()`.
     private(set) var metadataStatus: MetadataAIStatus?
     /// `GET /subtitles/ai/status`. Nil until fetched or after `reset()`.
     private(set) var subtitleStatus: SubtitleAIStatus?

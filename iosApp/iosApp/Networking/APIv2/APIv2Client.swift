@@ -315,13 +315,6 @@ struct APIv2Client: Sendable {
         if normalizedExpected != identity { throw HTTPError.requestIdentityChanged }
     }
 
-    func metadataAIStatus() async throws -> MetadataAIStatus {
-        let data = try await settingsRead("/api/v2/capabilities/metadata-ai", profileRequired: true)
-        let wire = try HTTPClient.makeJSONDecoder().decode(APIv2MetadataAICapability.self, from: data)
-        guard !wire.revision.isEmpty else { throw APIv2Error.incompleteCatalogRead }
-        return wire.playerValue
-    }
-
     /// `updateAudioPreference` / `updateSubtitlePreference`: replaces the
     /// acting profile's remembered track for one series (or movie) id. The
     /// operation is `natural_idempotent` and answers 204; the body schema is
@@ -366,31 +359,8 @@ struct APIv2Client: Sendable {
         await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
     }
 
-    func translateDescription(contentID: String, language: String, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2MetadataTranslationJob {
-        try await gate()
-        guard let profile = auth.profileId, await matchesAIAuthority(auth), !contentID.isEmpty,
-              !language.isEmpty else {
-            throw HTTPError.requestIdentityChanged
-        }
-        let segment = try catalogPathSegment(contentID)
-        let identity = Self.requestIdentity(auth, profile: profile)
-        let encoder = JSONEncoder(); encoder.keyEncodingStrategy = .convertToSnakeCase
-        let body = try encoder.encode(TranslateDescriptionBody(targetLanguage: language))
-        let raw = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "POST", path: "/api/v2/catalog/items/\(segment)/translate-description",
-                    body: body, requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
-        guard raw.statusCode == 202 else { throw APIv2Error.incompleteCatalogRead }
-        let job = try HTTPClient.makeJSONDecoder().decode(APIv2MetadataTranslationJob.self, from: raw.data)
-        guard !job.id.isEmpty, job.contentId == contentID, ["item", "season", "episode"].contains(job.targetKind) else {
-            throw APIv2Error.incompleteCatalogRead
-        }
-        return job
-    }
-
-    func subtitleCreateAuthority() async throws -> CapturedOrdinaryRequestAuth {
+    /// The owner an AI action runs for, captured before its first await.
+    func captureAIAuthority() async throws -> CapturedOrdinaryRequestAuth {
         try await gate()
         guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
         return auth

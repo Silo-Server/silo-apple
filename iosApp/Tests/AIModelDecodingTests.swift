@@ -194,26 +194,6 @@ final class AIModelDecodingTests: XCTestCase {
         XCTAssertFalse(status.transcribeEnabled)
     }
 
-    func testMetadataAIStatusTolerantOnView() {
-        // Known mode.
-        let auto = decode(MetadataAIStatus.self, """
-        { "enabled": true, "on_view": "auto" }
-        """)
-        XCTAssertTrue(auto.enabled)
-        XCTAssertTrue(auto.onView == .auto)
-
-        // Unknown mode → `.off`.
-        let unknown = decode(MetadataAIStatus.self, """
-        { "enabled": true, "on_view": "sometimes" }
-        """)
-        XCTAssertTrue(unknown.onView == .off)
-
-        // Omitted → `.off`, enabled defaults false.
-        let empty = decode(MetadataAIStatus.self, "{}")
-        XCTAssertFalse(empty.enabled)
-        XCTAssertTrue(empty.onView == .off)
-    }
-
     // MARK: - Subtitle provider status (fail-OPEN, unlike every other status)
 
     /// The full server shape, feature on.
@@ -238,7 +218,7 @@ final class AIModelDecodingTests: XCTestCase {
         XCTAssertTrue(status.providers.isEmpty)
     }
 
-    /// **The load-bearing case.** Unlike `SubtitleAIStatus` / `MetadataAIStatus`
+    /// **The load-bearing case.** Unlike `SubtitleAIStatus`
     /// — where an omitted `enabled` means "off" — this model must default to
     /// `true`. Subtitle provider search shipped long before its status
     /// endpoint, so a server answering without the key (or an older one whose

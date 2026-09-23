@@ -4,39 +4,6 @@ import Foundation
 // that have no v1 counterpart on this branch. Each is a plain value; the
 // consumers that project them into screens arrive with the gate 3 surfaces.
 
-// MARK: Metadata AI
-
-/// `GET /api/v2/capabilities/metadata-ai`.
-/// `on_view` is an open string on the wire; unknown values decode to `.off`.
-struct APIv2MetadataAICapability: Decodable {
-    let state: String
-    let revision: String
-    let allowed: Bool
-    let onView: MetadataAIStatus.OnViewMode
-
-    var playerValue: MetadataAIStatus {
-        let enabled = allowed && state == "available"
-        return MetadataAIStatus(enabled: enabled, onView: enabled ? onView : .off)
-    }
-}
-
-extension MetadataAIStatus {
-    init(enabled: Bool, onView: OnViewMode) {
-        self.enabled = enabled
-        self.onView = onView
-    }
-}
-
-/// `POST /api/v2/catalog/items/{id}/translate-description` (202).
-struct APIv2MetadataTranslationJob: Decodable {
-    let id: String
-    let targetKind: String
-    let contentId: String
-    let targetLanguage: String
-    let status: String
-    var failed: Bool { status == "failed" || status == "canceled" || status == "cancelled" }
-}
-
 // MARK: Onboarding
 
 /// One onboarding state read: the owner that read it, the state's strong
