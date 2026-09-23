@@ -201,7 +201,7 @@ final class SubtitleAIControllerTests: XCTestCase {
     /// A persisted downloaded subtitle whose `id` matches a job's
     /// `result_subtitle_id` so the handoff can synthesize a descriptor.
     private func persisted(id: Int) -> DownloadedSubtitle {
-        DownloadedSubtitle(id: id, mediaFileId: 1, provider: "p", language: "es", format: "subrip", releaseName: "r")
+        DownloadedSubtitle(id: String(id), mediaFileId: 1, provider: "p", language: "es", format: "subrip", releaseName: "r")
     }
 
     private func runningJob(id: String, resultSubtitleId: Int? = nil) -> SubtitleJob {

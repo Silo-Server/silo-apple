@@ -2,20 +2,19 @@
 //  SubtitleSearchModels.swift
 //  Silo (iOS + tvOS)
 //
-//  Wire types for silo-server's external subtitle-provider search
+//  Player-side values for silo-server's external subtitle-provider search
 //  (OpenSubtitles / SubDL / Subsource). Both calls are synchronous —
 //  no job, no polling, no websocket (contrast the AI flow in AIModels):
-//    POST /api/v1/subtitles/search    → ranked results + provider warnings
-//    POST /api/v1/subtitles/download  → the persisted ``DownloadedSubtitle``
+//    POST /api/v2/subtitles/search    → ranked results + provider warnings
+//    POST /api/v2/subtitles/download  → the persisted ``DownloadedSubtitle``
 //
-//  Like AIModels, these ride ``HTTPClient/shared`` whose coders are
-//  `.convertFromSnakeCase` / `.convertToSnakeCase`, so properties stay
-//  camelCase with no `CodingKeys`.
+//  The wire shapes, which send `media_file_id` as a string, live in
+//  `APIv2/APIv2SubtitleModels.swift`.
 //
 
 import Foundation
 
-/// Body for `POST /api/v1/subtitles/search`. The server derives
+/// A provider search for one media file. The server derives
 /// title/year/episode/hash from the media file itself; the client only
 /// scopes by language.
 struct SubtitleSearchBody: Encodable {
@@ -82,18 +81,12 @@ struct SubtitleSearchResult: Codable, Equatable {
     var uniqueKey: String { "\(provider):\(id)" }
 }
 
-/// `POST /api/v1/subtitles/search` response. `warnings` carries per-provider
-/// soft failures ("opensubtitles: …") — partial success, not fatal; results
-/// from the other providers may still be present.
-struct SubtitleSearchResponse: Codable {
+/// A provider search result set. `warnings` carries per-provider soft
+/// failures — partial success, not fatal; results from the other providers
+/// may still be present.
+struct SubtitleSearchResponse {
     let results: [SubtitleSearchResult]
     let warnings: [String]
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        results = try c.decodeIfPresent([SubtitleSearchResult].self, forKey: .results) ?? []
-        warnings = try c.decodeIfPresent([String].self, forKey: .warnings) ?? []
-    }
 
     init(results: [SubtitleSearchResult], warnings: [String] = []) {
         self.results = results
@@ -101,16 +94,15 @@ struct SubtitleSearchResponse: Codable {
     }
 }
 
-/// Body for `POST /api/v1/subtitles/download` — echoes the chosen result
-/// (the server re-fetches the bytes from `provider` by `subtitleId` and
-/// persists them; the rest is stored metadata).
-struct SubtitleDownloadBody: Encodable {
+/// A provider download — echoes the chosen result (the server re-fetches the
+/// bytes from `provider` by `subtitleId` and persists them; the rest is
+/// stored metadata).
+struct SubtitleDownloadBody {
     let mediaFileId: Int
     let provider: String
     let subtitleId: String
     let language: String
     let releaseName: String
-    let format: String
     let score: Double
     let hearingImpaired: Bool
 
@@ -120,17 +112,41 @@ struct SubtitleDownloadBody: Encodable {
         self.subtitleId = result.id
         self.language = result.language
         self.releaseName = result.releaseName
-        self.format = result.format
         self.score = result.score
         self.hearingImpaired = result.hearingImpaired
     }
 }
 
-/// Envelope for the download endpoint: `{"subtitle": DownloadedSubtitle}`.
-/// The subtitle is persisted before the response returns; it carries the DB
-/// `id` but no combined index / stream URL (see ``DownloadedSubtitle``).
-struct SubtitleDownloadResponse: Codable {
-    let subtitle: DownloadedSubtitle
+/// What a provider download did, as the search menu must tell it apart.
+/// The download is `non_retryable`, so only a definite failure invites
+/// another try of the same result.
+enum SubtitleDownloadOutcome: Equatable {
+    /// Stored, registered on the live player and selected.
+    case added
+    /// Stored on the server, but not added to this playback. It is available
+    /// the next time the file plays.
+    case stored
+    /// Definitely not stored; the message is shown as is.
+    case failed(String)
+    /// The download may have been stored; no usable answer came back.
+    case unconfirmed
+
+    static let genericFailure = "Couldn't add that subtitle. Try another result."
+
+    static func isUnconfirmed(_ error: Error) -> Bool {
+        (error as? APIv2SubtitleRequestError) == .outcomeUnknownOwnerChanged
+            || APIv2DispatchFailure.isUncertain(error)
+    }
+
+    /// The server's own words for a refusal, when it sent any.
+    static func failureMessage(for error: Error) -> String {
+        switch error {
+        case APIv2Error.problem, APIv2Error.serverUpdateRequired:
+            return error.localizedDescription
+        default:
+            return genericFailure
+        }
+    }
 }
 
 /// Quality bucket for a search result's 0–100 score. Thresholds mirror the

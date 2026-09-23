@@ -411,29 +411,6 @@ struct APIv2Client: Sendable {
         guard response.statusCode == 204, response.data.isEmpty else { throw APIv2Error.invalidSubtitleResponse }
     }
 
-    /// Provider download has no durable replay receipt, including after a 401.
-    func downloadSubtitle(_ body: SubtitleDownloadBody, expectedAuth: CapturedOrdinaryRequestAuth? = nil) async throws -> DownloadedSubtitle {
-        try await gate()
-        guard body.mediaFileId > 0, let auth = await tokenStore.captureOrdinaryRequestAuth(),
-              let profile = auth.profileId else { throw HTTPError.requestIdentityChanged }
-        if let expectedAuth, !auth.sameCredentialIdentity(as: expectedAuth) {
-            throw HTTPError.requestIdentityChanged
-        }
-        let identity = Self.requestIdentity(auth, profile: profile)
-        let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
-        let data = try encoder.encode(APIv2SubtitleDownloadBody(body))
-        let response = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "POST", path: "/api/v2/subtitles/download", body: data,
-                    timeout: .extended, requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
-        guard response.statusCode == 200 else { throw APIv2Error.invalidSubtitleResponse }
-        let wire = try HTTPClient.makeJSONDecoder().decode(APIv2SubtitleDownloadResponse.self, from: response.data)
-        return try wire.subtitle.playerValue(mediaFileID: body.mediaFileId)
-    }
-
     private func householdRequest<T: Decodable>(_ method: String, path: String, body: Data? = nil, status: Int) async throws -> T {
         try await gate()
         guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }

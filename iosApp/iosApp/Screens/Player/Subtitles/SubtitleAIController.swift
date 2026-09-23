@@ -237,7 +237,7 @@ final class SubtitleAIController {
         // Falls back to the selecting closure when omitted.
         registerDescriptorWithoutSelecting: (@MainActor (SidecarSubtitleDescriptor) -> Void)? = nil,
         // Test seam for the handoff listing fetch. Nil in production → the call
-        // site uses `api.downloadedSubtitles`. Injected by unit tests so the
+        // site uses `api.downloadedSubtitles` (v2 stored subtitles). Injected by unit tests so the
         // poller-vs-websocket handoff race can be exercised without the network.
         downloadedSubtitlesFetch: (@Sendable (Int) async throws -> [DownloadedSubtitle])? = nil
     ) {
@@ -656,9 +656,10 @@ final class SubtitleAIController {
                 if autoSelect { self?.failHandoff(message) }
             }
 
-            // Match by DB id (Android: `it.id == resultSubtitleId`); the
+            // Match by stored id (Android: `it.id == resultSubtitleId`); the
             // matched entry's position in the listing fixes its combined index.
-            guard let position = downloaded.firstIndex(where: { $0.id == resultId }) else {
+            // Listing ids are opaque strings; the job's is still an integer.
+            guard let position = downloaded.firstIndex(where: { $0.id == String(resultId) }) else {
                 Self.logger.warning(
                     "[AI-SUB] result subtitle id=\(resultId, privacy: .public) not found among \(downloaded.count, privacy: .public) downloaded subtitles"
                 )

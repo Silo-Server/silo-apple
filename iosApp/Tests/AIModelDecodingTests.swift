@@ -194,111 +194,6 @@ final class AIModelDecodingTests: XCTestCase {
         XCTAssertFalse(status.transcribeEnabled)
     }
 
-    // MARK: - Subtitle provider status (fail-OPEN, unlike every other status)
-
-    /// The full server shape, feature on.
-    func testSubtitleProvidersStatusEnabled() {
-        let status = decode(SubtitleProvidersStatus.self, """
-        {
-          "schema_version": 1,
-          "enabled": true,
-          "providers": ["opensubtitles", "subdl"]
-        }
-        """)
-        XCTAssertTrue(status.enabled)
-        XCTAssertTrue(status.providers == ["opensubtitles", "subdl"])
-    }
-
-    /// Only an affirmative `false` may disable the entry point.
-    func testSubtitleProvidersStatusExplicitlyDisabled() {
-        let status = decode(SubtitleProvidersStatus.self, """
-        { "schema_version": 1, "enabled": false, "providers": [] }
-        """)
-        XCTAssertFalse(status.enabled)
-        XCTAssertTrue(status.providers.isEmpty)
-    }
-
-    /// **The load-bearing case.** Unlike `SubtitleAIStatus`
-    /// — where an omitted `enabled` means "off" — this model must default to
-    /// `true`. Subtitle provider search shipped long before its status
-    /// endpoint, so a server answering without the key (or an older one whose
-    /// 404 the store also reads as "assume enabled") still has working search.
-    /// Flipping this default to `false` would disable the feature on every
-    /// server that hasn't updated yet, which is precisely the regression this
-    /// probe exists to avoid.
-    func testSubtitleProvidersStatusOmittedDefaultsEnabled() {
-        let status = decode(SubtitleProvidersStatus.self, "{}")
-        XCTAssertTrue(status.enabled)
-        XCTAssertTrue(status.providers.isEmpty)
-    }
-
-    /// A partial body (providers listed, `enabled` absent) also fails open,
-    /// and an absent `providers` list is not an error.
-    func testSubtitleProvidersStatusPartialBodyFailsOpen() {
-        let providersOnly = decode(SubtitleProvidersStatus.self, """
-        { "providers": ["opensubtitles"] }
-        """)
-        XCTAssertTrue(providersOnly.enabled)
-
-        let enabledOnly = decode(SubtitleProvidersStatus.self, """
-        { "enabled": true }
-        """)
-        XCTAssertTrue(enabledOnly.providers.isEmpty)
-    }
-
-    // MARK: - Downloaded subtitles (handoff source)
-
-    /// Decodes the REAL server shape (`internal/subtitles.DownloadedSubtitle`):
-    /// a DB `id` plus metadata, **no** combined `index` and **no** stream
-    /// `url`. The earlier model decoded this as `subtitle_urls[]` (which
-    /// requires `index`+`url`), so the decode threw and `try?` silently
-    /// dropped every completed AI track.
-    func testDownloadedSubtitlesResponse() {
-        let response = decode(DownloadedSubtitlesResponse.self, """
-        {
-          "subtitles": [
-            {
-              "id": 77,
-              "media_file_id": 42,
-              "provider": "opensubtitles",
-              "language": "es",
-              "format": "subrip",
-              "release_name": "Movie.2020.1080p",
-              "score": 9.5,
-              "hearing_impaired": false,
-              "created_at": "2026-06-29T00:00:00Z"
-            }
-          ]
-        }
-        """)
-        XCTAssertTrue(response.subtitles.count == 1)
-        let sub = response.subtitles[0]
-        XCTAssertTrue(sub.id == 77)
-        XCTAssertTrue(sub.mediaFileId == 42)
-        XCTAssertTrue(sub.provider == "opensubtitles")
-        XCTAssertTrue(sub.language == "es")
-        XCTAssertTrue(sub.format == "subrip")
-        XCTAssertTrue(sub.releaseName == "Movie.2020.1080p")
-        XCTAssertTrue(sub.hearingImpaired == false)
-    }
-
-    /// Tolerant: only `id` is required; missing optional fields default.
-    func testDownloadedSubtitleTolerantOmittedFields() {
-        let sub = decode(DownloadedSubtitle.self, """
-        { "id": 5, "language": "fr", "format": "webvtt", "release_name": "x", "provider": "subdl" }
-        """)
-        XCTAssertTrue(sub.id == 5)
-        XCTAssertTrue(sub.mediaFileId == 0)
-        XCTAssertNil(sub.score)
-        XCTAssertNil(sub.createdAt)
-        XCTAssertNil(sub.hearingImpaired)
-    }
-
-    func testDownloadedSubtitlesResponseMissingArray() {
-        let response = decode(DownloadedSubtitlesResponse.self, "{}")
-        XCTAssertTrue(response.subtitles.isEmpty)
-    }
-
     // MARK: - Handoff descriptor synthesis (URL + combined index + ext)
 
     /// Synthesizing the player descriptor mirrors Android's `SubtitleTrackMerge`:
@@ -306,7 +201,7 @@ final class AIModelDecodingTests: XCTestCase {
     /// the session-scoped combined-index mount `/api/v2/stream/{session}/subtitles/{idx}<ext>`.
     func testSynthesizedDescriptorURLIndexAndExtSrt() {
         let sub = DownloadedSubtitle(
-            id: 77, mediaFileId: 42, provider: "opensubtitles",
+            id: "77", mediaFileId: 42, provider: "opensubtitles",
             language: "es", format: "subrip", releaseName: "Movie.2020.1080p"
         )
         // 3 existing non-downloaded tracks (max combined index 2) → base 3.
@@ -329,7 +224,7 @@ final class AIModelDecodingTests: XCTestCase {
     /// and ASS/SSA keep the raw `.ass` extension.
     func testSynthesizedDescriptorPositionAndAssExt() {
         let sub = DownloadedSubtitle(
-            id: 88, provider: "subdl", language: "de", format: "ass", releaseName: "Show.S01E01"
+            id: "88", provider: "subdl", language: "de", format: "ass", releaseName: "Show.S01E01"
         )
         let descriptor = sub.synthesizedDescriptor(
             sessionId: "sess-9",
@@ -343,7 +238,7 @@ final class AIModelDecodingTests: XCTestCase {
 
     /// PGS maps to `.sup`; an unresolvable URL yields `nil` (no track).
     func testSynthesizedDescriptorPgsExtAndUnresolvable() {
-        let pgs = DownloadedSubtitle(id: 1, provider: "p", format: "pgs", releaseName: "r")
+        let pgs = DownloadedSubtitle(id: "1", provider: "p", format: "pgs", releaseName: "r")
         XCTAssertTrue(pgs.streamURLExtension == ".sup")
         let nilDescriptor = pgs.synthesizedDescriptor(
             sessionId: "s", baseTrackCount: 0, position: 0, resolveURL: { (_: String) -> URL? in nil }
