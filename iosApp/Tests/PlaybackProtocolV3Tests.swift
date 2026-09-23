@@ -46,6 +46,8 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         let unusable = [
             #"{"ticket":"abc","expires_in":30,"max_connection_seconds":600,"protocol":"silo.events.v2"}"#,
             #"{"ticket":"abc","expires_in":0,"max_connection_seconds":600,"protocol":"silo.playback-control.v2"}"#,
+            #"{"ticket":"abc","expires_in":30,"max_connection_seconds":18446744074,"protocol":"silo.playback-control.v2"}"#,
+            #"{"ticket":"abc","expires_in":30,"max_connection_seconds":86401,"protocol":"silo.playback-control.v2"}"#,
             #"{"ticket":"a b,c","expires_in":30,"max_connection_seconds":600,"protocol":"silo.playback-control.v2"}"#,
         ]
         for body in unusable {

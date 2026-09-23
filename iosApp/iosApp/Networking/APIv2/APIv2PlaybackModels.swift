@@ -224,6 +224,10 @@ struct APIv2PlaybackControlTicket: Decodable {
     let maxConnectionSeconds: Int
     let `protocol`: String
 
+    /// The longest connection lifetime accepted from a ticket. The server
+    /// sends four hours; anything past a day is a misbehaving server or proxy.
+    static let maxAcceptedConnectionSeconds = 86_400
+
     /// The upgrade request for this ticket. The ticket travels only in the
     /// `Sec-WebSocket-Protocol` header, never as a bearer token or in the URL.
     /// A plain-`http` server gets a `ws` upgrade: the ticket works for one
@@ -231,7 +235,8 @@ struct APIv2PlaybackControlTicket: Decodable {
     /// server already carries the full bearer token in cleartext.
     func handshake(serverURL: String, sessionID: String) throws -> APIv2PlaybackControlHandshake {
         let safeTicket = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
-        guard `protocol` == "silo.playback-control.v2", expiresIn > 0, maxConnectionSeconds > 0,
+        guard `protocol` == "silo.playback-control.v2", expiresIn > 0,
+              (1...Self.maxAcceptedConnectionSeconds).contains(maxConnectionSeconds),
               !ticket.isEmpty, ticket.unicodeScalars.allSatisfy(safeTicket.contains),
               UUID(uuidString: sessionID) != nil,
               var url = URLComponents(string: serverURL),
