@@ -28,7 +28,9 @@ final class PlaybackCapabilityGateTests: XCTestCase {
         String(decoding: try Support.data(named: name, bundleClass: Self.self), as: UTF8.self)
     }
 
-    private func makeGate() async throws -> (PlaybackV3CapabilityGate, APIv2TestStub) {
+    private func makeGate(
+        fetch: (@Sendable (CapturedOrdinaryRequestAuth) async throws -> APIv2PlaybackCapabilities)? = nil
+    ) async throws -> (PlaybackV3CapabilityGate, APIv2TestStub) {
         let name = "PlaybackCapabilityGateTests.\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: name))
         addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
@@ -40,7 +42,7 @@ final class PlaybackCapabilityGateTests: XCTestCase {
         let stub = APIv2TestStub()
         let api = APIv2Client(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens),
             tokenStore: tokens, isUpdateRequired: { false })
-        let gate = PlaybackV3CapabilityGate(tokenStore: tokens) { try await api.playbackCapabilities(auth: $0) }
+        let gate = PlaybackV3CapabilityGate(tokenStore: tokens, fetch: fetch ?? { try await api.playbackCapabilities(auth: $0) })
         return (gate, stub)
     }
 
@@ -161,6 +163,47 @@ final class PlaybackCapabilityGateTests: XCTestCase {
         XCTAssertEqual(stub.requestedPaths, [path], "the cached capability serves both starts")
     }
 
+    /// The re-probe runs in an unstructured task, so a caller cancelled while
+    /// it is in flight (player dismissed, autoplay start timeout) must not run
+    /// the start again and allocate a session nobody owns.
+    func testCancellationDuringTheRefreshSkipsTheSecondStart() async throws {
+        let first = try Support.decoder.decode(APIv2PlaybackCapabilities.self,
+            from: Data(try available(installation: installationA).utf8))
+        let refreshed = try Support.decoder.decode(APIv2PlaybackCapabilities.self,
+            from: Data(try available(installation: installationB).utf8))
+        let changed = try Support.decode(APIv2Problem.self, named: "playback_installation_changed", bundleClass: Self.self)
+        let counts = RefreshCounts()
+        let (reprobeStarted, reprobeStartedSignal) = AsyncStream<Void>.makeStream()
+        let (release, releaseSignal) = AsyncStream<Void>.makeStream()
+        let (gate, _) = try await makeGate { _ in
+            guard await counts.nextFetch() > 1 else { return first }
+            reprobeStartedSignal.yield()
+            for await _ in release { break }
+            return refreshed
+        }
+
+        let start = Task {
+            try await gate.withInstallationRefresh { capability -> String in
+                if await counts.nextStart() == 1 { throw APIv2Error.problem(changed) }
+                return capability.installationID
+            }
+        }
+        var started = reprobeStarted.makeAsyncIterator()
+        _ = await started.next()
+        start.cancel()
+        releaseSignal.yield()
+        releaseSignal.finish()
+
+        do {
+            let installation = try await start.value
+            XCTFail("a cancelled caller must not start again, got \(installation)")
+        } catch is CancellationError {}
+        let starts = await counts.starts
+        let fetches = await counts.fetches
+        XCTAssertEqual(starts, 1)
+        XCTAssertEqual(fetches, 2)
+    }
+
     /// A second refusal after the refresh surfaces instead of looping.
     func testInstallationChangedTwiceSurfacesTheSecondRefusal() async throws {
         let (gate, stub) = try await makeGate()
@@ -177,5 +220,20 @@ final class PlaybackCapabilityGateTests: XCTestCase {
         } catch let error where PlaybackV3CapabilityGate.isInstallationChanged(error) {}
         XCTAssertEqual(calls, 2)
         XCTAssertEqual(stub.requestedPaths, [path, path])
+    }
+}
+
+private actor RefreshCounts {
+    private(set) var fetches = 0
+    private(set) var starts = 0
+
+    func nextFetch() -> Int {
+        fetches += 1
+        return fetches
+    }
+
+    func nextStart() -> Int {
+        starts += 1
+        return starts
     }
 }

@@ -266,15 +266,23 @@ actor PlaybackV3CapabilityGate {
     /// again and runs `start` once more with the fresh one. `start` must mint
     /// a new `playback_attempt_id` on every call: the refused attempt belongs
     /// to the old installation and is never reused.
+    ///
+    /// The probe is an unstructured task, so awaiting it does not observe the
+    /// caller's cancellation. Each start therefore checks cancellation first:
+    /// a start run for a player that is already gone would allocate a server
+    /// session nobody owns.
     nonisolated func withInstallationRefresh<T>(
         _ start: (NeutralProtocolV3Capability) async throws -> T
     ) async throws -> T {
         let capability = try await requireNeutralProtocolV3()
+        try Task.checkCancellation()
         do {
             return try await start(capability)
         } catch where Self.isInstallationChanged(error) {
             await invalidate(capability)
-            return try await start(try await requireNeutralProtocolV3())
+            let refreshed = try await requireNeutralProtocolV3()
+            try Task.checkCancellation()
+            return try await start(refreshed)
         }
     }
 
