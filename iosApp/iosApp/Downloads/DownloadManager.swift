@@ -45,7 +45,7 @@ final class DownloadManager {
     )
 
     private static let maxConcurrentTransfers = 3
-    private static let maxRetries = 4
+    nonisolated private static let maxRetries = 4
     /// Bounds one flush at 10,000 queued items (100 per batch).
     private static let maxProgressBatchesPerFlush = 100
 
@@ -948,7 +948,8 @@ final class DownloadManager {
 
     /// Start one queued record, preferring its captured resume data (a
     /// paused transfer) so completed byte ranges aren't refetched; missing
-    /// or unreadable data falls back to the full pipeline restart.
+    /// or unreadable data, or data for a retired file URL, falls back to the
+    /// full pipeline restart.
     private func startQueuedRecord(_ record: DownloadRecord) {
         var record = record
         if let filename = record.resumeDataFilename,
@@ -956,8 +957,8 @@ final class DownloadManager {
             let resumeData = try? Data(contentsOf: url)
             try? FileManager.default.removeItem(at: url)
             record.resumeDataFilename = nil
-            if let resumeData {
-                record.taskIdentifier = sessionDelegate.resume(data: resumeData)
+            if let resumeData, let taskId = sessionDelegate.resume(data: resumeData) {
+                record.taskIdentifier = taskId
                 record.localStatus = .downloading
                 file.records[record.id] = record
                 persist()
@@ -970,28 +971,50 @@ final class DownloadManager {
         Task { await self.startMediaPipeline(recordId: record.id) }
     }
 
+    /// Fetches the manifest and its assets, then starts the file transfer,
+    /// all under the scope owner captured here. Once that scope is gone,
+    /// nothing a request returns is applied: the record belongs to a store
+    /// that is no longer loaded.
     private func startMediaPipeline(recordId: String) async {
         guard file.records[recordId] != nil else { return }
+        guard let owner = await captureScopeOwner() else {
+            // No usable session for this scope right now. Park the record;
+            // the next queue pass or reconcile starts it again.
+            if file.records[recordId]?.localStatus == .fetchingAssets { setLocalStatus(.queued, id: recordId) }
+            return
+        }
         do {
-            let manifest = try await SiloAPI.shared.fetchManifest(downloadId: recordId)
+            let manifest = try await SiloAPI.shared.apiV2Client.downloadManifest(id: recordId, auth: owner.auth)
+            guard isCurrent(owner) else { return }
             await persistManifest(manifest, recordId: recordId)
+            guard isCurrent(owner) else { return }
             applyManifestDisplay(manifest, recordId: recordId)
-            await fetchArtwork(manifest, recordId: recordId)
-            await fetchSubtitles(manifest, recordId: recordId)
-            await startMediaTransfer(recordId: recordId)
+            await fetchArtwork(manifest, recordId: recordId, owner: owner)
+            await fetchSubtitles(manifest, recordId: recordId, owner: owner)
+            guard isCurrent(owner) else { return }
+            await startMediaTransfer(recordId: recordId, owner: owner)
         } catch {
+            guard isCurrent(owner) else { return }
             handlePipelineError(error, recordId: recordId)
         }
     }
 
-    private func startMediaTransfer(recordId: String) async {
-        guard var record = file.records[recordId] else { return }
-        guard let fileURL = await SiloAPI.shared.downloadFileURL(downloadId: recordId) else {
+    private func startMediaTransfer(recordId: String, owner: ScopeOwner) async {
+        // The owner's current credentials: a token rotated since the capture
+        // is used, a different owner is not.
+        let auth = await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: owner.auth)
+        guard isCurrent(owner), var record = file.records[recordId] else { return }
+        guard let auth else {
+            handlePipelineError(HTTPError.requestIdentityChanged, recordId: recordId)
+            return
+        }
+        guard let fileURL = APIv2Client.downloadFileURL(id: recordId, serverURL: auth.account.serverURL) else {
             handlePipelineError(DownloadError.fileURLUnavailable, recordId: recordId)
             return
         }
-        let request = await DownloadAuthHeaders.authorizedRequest(
+        let request = DownloadAuthHeaders.authorizedRequest(
             url: fileURL,
+            auth: auth,
             allowsCellular: !DownloadSettings.shared.wifiOnly
         )
         let taskId = sessionDelegate.start(request: request)
@@ -1042,7 +1065,7 @@ final class DownloadManager {
         persist()
     }
 
-    private func fetchArtwork(_ manifest: OfflineManifest, recordId: String) async {
+    private func fetchArtwork(_ manifest: OfflineManifest, recordId: String, owner: ScopeOwner) async {
         let kinds: [(kind: String, path: String?, filename: String)] = [
             ("poster", manifest.artworkUrls?.poster, "poster.jpg"),
             ("backdrop", manifest.artworkUrls?.backdrop, "backdrop.jpg"),
@@ -1053,8 +1076,16 @@ final class DownloadManager {
             // omits artwork_urls.* (omitempty) when a title has no poster/
             // backdrop/logo, so synthesizing a path here would guarantee a 404.
             guard let path = entry.path else { continue }
-            guard let data = try? await SiloAPI.shared.fetchDownloadAssetData(path: path),
-                  !data.isEmpty,
+            let data: Data
+            do {
+                data = try await SiloAPI.shared.apiV2Client.downloadAsset(path: path, downloadId: recordId,
+                    auth: owner.auth)
+            } catch {
+                Self.logger.warning("download artwork fetch failed: \(String(describing: error), privacy: .public)")
+                continue
+            }
+            guard isCurrent(owner) else { return }
+            guard !data.isEmpty,
                   let url = absoluteFileURLForNewAsset(recordId: recordId, filename: entry.filename) else {
                 continue
             }
@@ -1071,13 +1102,21 @@ final class DownloadManager {
         persist()
     }
 
-    private func fetchSubtitles(_ manifest: OfflineManifest, recordId: String) async {
+    private func fetchSubtitles(_ manifest: OfflineManifest, recordId: String, owner: ScopeOwner) async {
         guard let subtitles = manifest.subtitles, !subtitles.isEmpty else { return }
         for (index, subtitle) in subtitles.enumerated() {
             let ext = (subtitle.format ?? "srt").lowercased()
             let filename = "sub_\(index).\(ext)"
-            guard let data = try? await SiloAPI.shared.fetchDownloadAssetData(path: subtitle.fetchUrl),
-                  !data.isEmpty,
+            let data: Data
+            do {
+                data = try await SiloAPI.shared.apiV2Client.downloadAsset(path: subtitle.fetchUrl, downloadId: recordId,
+                    auth: owner.auth)
+            } catch {
+                Self.logger.warning("download subtitle fetch failed: \(String(describing: error), privacy: .public)")
+                continue
+            }
+            guard isCurrent(owner) else { return }
+            guard !data.isEmpty,
                   let url = absoluteFileURLForNewAsset(recordId: recordId, filename: filename) else {
                 continue
             }
@@ -1092,7 +1131,15 @@ final class DownloadManager {
     private func handlePipelineError(_ error: Error, recordId: String) {
         guard var record = file.records[recordId] else { return }
         record.taskIdentifier = nil
-        if case let HTTPError.http(statusCode, _) = error {
+        if case HTTPError.requestIdentityChanged = error {
+            // The session changed under the request; nothing was applied.
+            // Park the record for the next queue pass.
+            record.localStatus = .queued
+            file.records[recordId] = record
+            persist()
+            return
+        }
+        if let statusCode = Self.pipelineStatus(error) {
             switch statusCode {
             case 409:
                 record.localStatus = .revoked
@@ -1133,6 +1180,17 @@ final class DownloadManager {
             notifyTerminalFailure(record)
         }
         processQueue()
+    }
+
+    /// The HTTP status of a failed manifest request, or nil when it never got
+    /// an answer. A 410 from this v2 route is the server asking for a newer
+    /// app, which a retry cannot fix, so it fails the record.
+    nonisolated private static func pipelineStatus(_ error: Error) -> Int? {
+        switch error {
+        case APIv2Error.problem(let problem): return problem.status
+        case APIv2Error.httpStatus(let status): return status
+        default: return nil
+        }
     }
 
     /// Mirror the active queue into the lock-screen Live Activity. Hooked
@@ -1279,56 +1337,59 @@ final class DownloadManager {
         record.taskIdentifier = nil
         clearTransferRate(recordId: record.id)
 
-        if let statusCode {
-            switch statusCode {
-            case 409:
-                record.localStatus = .revoked
-                record.serverStatus = "revoked"
-                file.records[record.id] = record
-                persist()
-                processQueue()
-                return
-            case 404, 403:
-                record.localStatus = .failed
-                record.lastError = statusCode == 404 ? "not_found" : "forbidden"
-                file.records[record.id] = record
-                persist()
-                notifyTerminalFailure(record)
-                processQueue()
-                return
-            case 401:
-                // Bounded like every other retry path — a persistently
-                // expired credential would otherwise refresh-and-retry
-                // forever with the record stuck in `.downloading`.
-                if record.retryCount < Self.maxRetries {
-                    record.retryCount += 1
-                    file.records[record.id] = record
-                    scheduleRetry(recordId: record.id, resumeData: nil, refreshToken: true)
-                } else {
-                    record.localStatus = .failed
-                    record.lastError = "unauthorized"
-                    file.records[record.id] = record
-                    persist()
-                    notifyTerminalFailure(record)
-                    processQueue()
-                }
-                return
-            default:
-                break
-            }
-        }
-
-        if record.retryCount < Self.maxRetries {
-            record.retryCount += 1
+        switch Self.mediaFailureAction(statusCode: statusCode, retryCount: record.retryCount, message: message) {
+        case .revoke:
+            record.localStatus = .revoked
+            record.serverStatus = "revoked"
             file.records[record.id] = record
-            scheduleRetry(recordId: record.id, resumeData: resumeData, refreshToken: false)
-        } else {
+            persist()
+            processQueue()
+        case let .fail(reason):
             record.localStatus = .failed
-            record.lastError = message
+            record.lastError = reason
             file.records[record.id] = record
             persist()
             notifyTerminalFailure(record)
             processQueue()
+        case let .retry(keepResumeData, refreshToken):
+            record.retryCount += 1
+            if !keepResumeData { record.bytesDownloaded = 0 }
+            file.records[record.id] = record
+            scheduleRetry(recordId: record.id, resumeData: keepResumeData ? resumeData : nil,
+                refreshToken: refreshToken)
+        }
+    }
+
+    /// What a failed file transfer does next.
+    enum MediaFailureAction: Equatable {
+        case revoke
+        case fail(String)
+        /// Send the transfer again after a back-off. Without resume data the
+        /// download restarts from its manifest and a fresh file URL.
+        case retry(keepResumeData: Bool, refreshToken: Bool)
+    }
+
+    /// Every retry is bounded by `maxRetries`, after which the record fails.
+    nonisolated static func mediaFailureAction(statusCode: Int?, retryCount: Int, message: String) -> MediaFailureAction {
+        let canRetry = retryCount < maxRetries
+        switch statusCode {
+        case 409:
+            return .revoke
+        case 404:
+            return .fail("not_found")
+        case 403:
+            return .fail("forbidden")
+        case 401:
+            // Refresh the token first; a persistently expired credential
+            // would otherwise retry forever with the record stuck downloading.
+            return canRetry ? .retry(keepResumeData: false, refreshToken: true) : .fail("unauthorized")
+        case 410, 412, 416:
+            // The URL is gone (a retired route, or resume data that outlived
+            // it) or the resume point no longer matches the file. Restart the
+            // download instead of resuming the same request.
+            return canRetry ? .retry(keepResumeData: false, refreshToken: false) : .fail("http_\(statusCode ?? 0)")
+        default:
+            return canRetry ? .retry(keepResumeData: true, refreshToken: false) : .fail(message)
         }
     }
 
@@ -1353,8 +1414,7 @@ final class DownloadManager {
                 // fresh token.
                 await self.refreshCapability()
             }
-            if let resumeData {
-                let taskId = self.sessionDelegate.resume(data: resumeData)
+            if let resumeData, let taskId = self.sessionDelegate.resume(data: resumeData) {
                 guard var rec = self.file.records[recordId] else { return }
                 rec.taskIdentifier = taskId
                 rec.localStatus = .downloading
@@ -1673,9 +1733,15 @@ final class DownloadManager {
 
     /// After a relaunch the background session may have lost in-flight
     /// tasks (or finished them while we were dead). Re-queue records whose
-    /// task is no longer live.
+    /// task is no longer live. A live task on a retired file URL is
+    /// cancelled and its download re-queued, so it restarts from a fresh
+    /// manifest instead of ending in a 410.
     private func reconnectActiveTasks() async {
-        let active = await sessionDelegate.activeTaskIdentifiers()
+        let (active, retired) = await sessionDelegate.liveTasks()
+        for taskId in retired {
+            intentionalCancels.insert(taskId)
+            sessionDelegate.cancel(taskId: taskId)
+        }
         for (id, record) in file.records {
             var record = record
             // Task identifiers are only unique within one URLSession
