@@ -756,8 +756,28 @@ struct APIv2Client: Sendable {
         return try HTTPClient.makeJSONDecoder().decode(APIv2CatalogSearchCapabilities.self, from: raw.data)
     }
 
-    func libraryCollectionTab(libraryId: String) async throws -> APIv2LibraryCollectionTab {
-        try await requestGet("/api/v2/library/\(try catalogPathSegment(libraryId))/collections")
+    /// The Collections tab as the captured profile sees it: curated
+    /// collections, their groups, and the profile's opted-in personal ones.
+    func libraryCollectionTab(libraryId: String, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2LibraryCollectionTab {
+        try await gate()
+        guard let profile = auth.profileId, !profile.isEmpty,
+              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try Task.checkCancellation()
+        let identity = Self.requestIdentity(auth, profile: profile)
+        let path = "/api/v2/library/\(try catalogPathSegment(libraryId))/collections"
+        let raw = try await tokenStore.withOwnerFence(auth) {
+            try await mapErrors {
+                try await http.requestData(method: "GET", path: path,
+                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+            }
+        }
+        try Task.checkCancellation()
+        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
+        let tab = try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(APIv2LibraryCollectionTab.self, from: raw.data)
+        guard tab.libraryId == libraryId else { throw APIv2Error.incompleteCatalogRead }
+        return tab
     }
 
     // MARK: Membership and personal reads

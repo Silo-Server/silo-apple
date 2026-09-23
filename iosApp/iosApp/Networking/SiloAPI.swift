@@ -117,8 +117,14 @@ actor SiloAPI {
         )
     }
 
-    func librarySections(libraryId: Int) async throws -> SectionsResponse {
-        try await http.get("/api/v1/library/\(libraryId)/sections", query: await imageSizeQuery)
+    /// The library's sections as the acting profile sees them. Like Home,
+    /// the read carries the owner it was fetched for so a caller can refuse
+    /// to cache or show it after a switch.
+    func librarySections(libraryId: Int) async throws -> APIv2LibrarySectionsRead {
+        let auth = try await detailReadAuth()
+        return try await apiV2Client.librarySections(
+            id: libraryId, imageSize: await imageSizeQuery["image_size"], auth: auth
+        )
     }
 
     /// Cards the recommendation engine considers similar to `contentId`,
@@ -297,11 +303,14 @@ actor SiloAPI {
         return LibrariesResponse(libraries: libs)
     }
 
+    /// The library's Collections tab. Personal collections in it belong to
+    /// the acting profile, so a tab read for one profile is never returned
+    /// once the session acts as another.
     func libraryCollections(libraryId: Int) async throws -> LibraryCollectionsResponse {
-        let wire: LibraryCollectionsWireResponse = try await http.get(
-            "/api/v1/library/\(libraryId)/collections"
-        )
-        return LibraryCollectionsResponse(collections: wire.collections, sections: wire.sections)
+        let auth = try await detailReadAuth()
+        let tab = try await apiV2Client.libraryCollectionTab(libraryId: String(libraryId), auth: auth)
+        guard await isCurrentOwner(auth) else { throw HTTPError.requestIdentityChanged }
+        return LibraryCollectionsResponse(tab)
     }
 
     // --- Personal data ---
