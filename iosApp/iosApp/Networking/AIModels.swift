@@ -2,22 +2,24 @@
 //  AIModels.swift
 //  Silo (iOS + tvOS)
 //
-//  Wire types for silo-server's two AI features: metadata translation
+//  Types for silo-server's two AI features: metadata translation
 //  (overviews/taglines localized into the viewer's preferred language,
 //  plus an on-demand "translate this description" path) and subtitle
 //  translation/transcription (translate an existing track, transcribe
 //  audio via Whisper, or transcribe-and-translate).
 //
-//  All of these ride the native API (`/api/v1/...`) and go through
-//  ``HTTPClient/shared``, whose coders are `.convertFromSnakeCase` /
+//  The metadata AI wire shapes live in
+//  `APIv2/APIv2MetadataAIModels.swift` and go through ``APIv2Client``;
+//  ``MetadataAIStatus`` here is a plain domain value built from them.
+//
+//  The subtitle AI models still ride the native API (`/api/v1/...`) and
+//  go through ``HTTPClient/shared``, whose coders are `.convertFromSnakeCase` /
 //  `.convertToSnakeCase`. Properties therefore stay camelCase with no
 //  `CodingKeys` boilerplate; the only exception is
 //  ``SubtitleAIKind/transcribeTranslate`` whose wire value
 //  (`transcribe_translate`) isn't a clean snake_case of the case name.
 //
 //  Endpoints in play (see ``SiloAI``):
-//    GET  /api/v1/metadata/ai/status
-//    POST /api/v1/items/{id}/translate-description
 //    GET  /api/v1/subtitles/ai/status
 //    GET  /api/v1/subtitles/ai/quota
 //    POST /api/v1/subtitles/ai/translate
