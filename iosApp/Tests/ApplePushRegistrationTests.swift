@@ -99,7 +99,7 @@ final class ApplePushRegistrationTests: XCTestCase {
             deliveryID: "delivery-1"
         ))
 
-        XCTAssertEqual(url.absoluteString, "https://silo.example.test/api/v1/notifications/push/apple/display/delivery-1")
+        XCTAssertEqual(url.absoluteString, "https://silo.example.test/api/v2/notifications/push/apple/display/delivery-1")
     }
 
     func testNotificationDisplayResponseDecodesAndMutatesNotificationContent() throws {
@@ -127,6 +127,83 @@ final class ApplePushRegistrationTests: XCTestCase {
         XCTAssertEqual(content.categoryIdentifier, "episode_available")
         XCTAssertEqual(content.userInfo["silo_delivery_id"] as? String, "delivery-1")
         XCTAssertEqual(content.userInfo["silo_url"] as? String, "/item/episode-1")
+    }
+
+    func testDisplayFetchReadsV2AndRetriesARejectedDisplayTokenWithTheAccessToken() async throws {
+        let displayPath = "/api/v2/notifications/push/apple/display/01JZ8T7QK3VX2W4M5N6P7R8S9T"
+        let stub = StubURLProtocol.Handler()
+        stub.route({ $0.path == displayPath && $0.headers["authorization"] == "Bearer display-token" }) { _ in
+            .json(
+                #"{"type":"https://siloserver.org/docs/api/v2/problems/invalid_token","title":"Invalid token","status":401}"#,
+                status: 401,
+                headers: ["Content-Type": "application/problem+json"]
+            )
+        }
+        // Body of the server fixture contracts/api/v2/fixtures/notification_apple_push_display.json.
+        stub.route({ $0.path == displayPath && $0.headers["authorization"] == "Bearer access" }) { _ in
+            .json("""
+            {
+              "delivery_id": "01JZ8T7QK3VX2W4M5N6P7R8S9T",
+              "title": "Your request was approved",
+              "body": "Your media request was approved.",
+              "thread_id": "request:request-1",
+              "category": "request_approved",
+              "url": "/notifications"
+            }
+            """)
+        }
+        let state = ApplePushDisplayAuthState(
+            serverURL: "https://silo.example.test",
+            profileID: "profile-1",
+            accessToken: "access",
+            profileToken: "pvt-1",
+            displayToken: "display-token"
+        )
+
+        let response = try await ApplePushDisplayClient(session: stub.makeSession())
+            .fetchDisplay(deliveryID: "01JZ8T7QK3VX2W4M5N6P7R8S9T", state: state)
+
+        XCTAssertEqual(response.title, "Your request was approved")
+        XCTAssertEqual(response.category, "request_approved")
+        XCTAssertEqual(response.url, "/notifications")
+        let requests = stub.requests
+        XCTAssertEqual(requests.map(\.method), ["GET", "GET"])
+        XCTAssertEqual(requests.map(\.path), [displayPath, displayPath])
+        XCTAssertEqual(requests.map { $0.headers["authorization"] }, ["Bearer display-token", "Bearer access"])
+        for request in requests {
+            XCTAssertEqual(request.headers["x-profile-id"], "profile-1")
+            XCTAssertEqual(request.headers["x-profile-token"], "pvt-1")
+            XCTAssertEqual(request.headers["accept"], "application/json")
+        }
+        XCTAssertTrue(stub.unmatched.isEmpty)
+    }
+
+    func testDisplayFetchSurfacesANotFoundProblemWithoutRetrying() async {
+        let stub = StubURLProtocol.Handler()
+        stub.route(StubURLProtocol.method("GET", path: "/api/v2/notifications/push/apple/display/delivery-1")) { _ in
+            .json(
+                #"{"type":"https://siloserver.org/docs/api/v2/problems/not_found","title":"Not found","status":404}"#,
+                status: 404,
+                headers: ["Content-Type": "application/problem+json"]
+            )
+        }
+        let state = ApplePushDisplayAuthState(
+            serverURL: "https://silo.example.test",
+            profileID: "profile-1",
+            accessToken: "access",
+            profileToken: "",
+            displayToken: "display-token"
+        )
+
+        do {
+            _ = try await ApplePushDisplayClient(session: stub.makeSession())
+                .fetchDisplay(deliveryID: "delivery-1", state: state)
+            XCTFail("A 404 must not produce display content")
+        } catch {
+            XCTAssertEqual(error as? ApplePushDisplayClientError, .badStatus(404))
+        }
+        XCTAssertEqual(stub.requests.count, 1)
+        XCTAssertNil(stub.requests.first?.headers["x-profile-token"])
     }
 
     func testDisplayAuthStatePrefersDisplayTokenOverAccessToken() {
