@@ -78,6 +78,28 @@ enum OfflineProgressQueue {
         }
     }
 
+    /// Returns claimed entries to pending when their batch provably never
+    /// reached the server, for a flush that can no longer resolve them in
+    /// place. Only entries still `dispatched` change. Returns whether any did.
+    @discardableResult
+    static func releaseClaims(_ queue: inout [QueuedProgress], ids: Set<UUID>) -> Bool {
+        var changed = false
+        for index in queue.indices where ids.contains(queue[index].id) && queue[index].state == .dispatched {
+            queue[index].state = .pending
+            changed = true
+        }
+        return changed
+    }
+
+    /// Whether an outcome proves the server applied nothing, so a claimed
+    /// batch may go back to pending even when its flush was cut short.
+    static func releasesClaims(_ outcome: ProgressSyncOutcome) -> Bool {
+        switch outcome {
+        case .notSent, .deferred: return true
+        case .answered, .rejected, .uncertain: return false
+        }
+    }
+
     /// Whether a flush sends its next batch. Only after an answer: a batch
     /// that was not sent, deferred or left unanswered meets the same
     /// condition again, and stopping after a whole-batch rejection bounds

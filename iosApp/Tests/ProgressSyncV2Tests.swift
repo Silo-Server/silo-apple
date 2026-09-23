@@ -12,7 +12,18 @@ final class ProgressSyncV2Tests: XCTestCase {
         stub = APIv2TestStub()
     }
 
-    private func client() async throws -> (APIv2Client, TokenStore) {
+    private func client(
+        beforeCapture: (@Sendable (TokenStore) async -> Void)? = nil
+    ) async throws -> (APIv2Client, TokenStore) {
+        let (api, tokens, _) = try await harness(beforeCapture: beforeCapture)
+        return (api, tokens)
+    }
+
+    /// `beforeCapture` runs inside `HTTPClient` after the owner checks in
+    /// `syncProgress` and before the request is sent.
+    private func harness(
+        beforeCapture: (@Sendable (TokenStore) async -> Void)? = nil
+    ) async throws -> (APIv2Client, TokenStore, HTTPClient) {
         let name = "ProgressSyncV2Tests.\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: name))
         addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
@@ -21,8 +32,9 @@ final class ProgressSyncV2Tests: XCTestCase {
         await tokens.switchActiveServer(serverId: "test-server")
         await tokens.setServerUrl("https://progress.example")
         await tokens.setProfileId("profile-one")
-        let http = HTTPClient(session: stub.makeSession(), tokenStore: tokens)
-        return (APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false }), tokens)
+        let barrier: (@Sendable () async -> Void)? = beforeCapture.map { capture in { @Sendable in await capture(tokens) } }
+        let http = HTTPClient(session: stub.makeSession(), tokenStore: tokens, requestCaptureBarrier: barrier)
+        return (APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false }), tokens, http)
     }
 
     private func item(_ id: String, position: Double = 12.3456, updatedAt: Date? = nil) throws -> SyncProgressItem {
@@ -201,7 +213,80 @@ final class ProgressSyncV2Tests: XCTestCase {
         XCTAssertTrue(stub.requests.isEmpty)
     }
 
+    func testOwnerChangeInsideTheClientBeforeSendingIsNotSent() async throws {
+        // The switch lands after syncProgress's own owner check, and
+        // HTTPClient refuses the request before it leaves the device.
+        let (api, _) = try await client(beforeCapture: { tokens in await tokens.setProfileId("profile-two") })
+        let outcome = await api.syncProgress([try item("movie-1")])
+        guard case .notSent = outcome else { return XCTFail("expected notSent, got \(outcome)") }
+        XCTAssertTrue(stub.requests.isEmpty)
+    }
+
+    func testDispatchGateRefusalIsNotSent() async throws {
+        // During an identity transition every owner check can still pass;
+        // only HTTPClient's dispatch gate refuses the request.
+        let (api, _, http) = try await harness()
+        let transition = await http.beginIdentityTransition()
+        let lease = try XCTUnwrap(transition)
+        let outcome = await api.syncProgress([try item("movie-1")])
+        await http.endIdentityTransition(lease)
+        guard case .notSent = outcome else { return XCTFail("expected notSent, got \(outcome)") }
+        XCTAssertTrue(stub.requests.isEmpty)
+    }
+
+    func testOwnerChangeAfterSendingStaysUncertain() async throws {
+        let (api, tokens) = try await client()
+        stub.reply(200, batch([success(0, "movie-1")], succeeded: 1, failed: 0))
+        let items = [try item("movie-1")]
+        stub.hold()
+        let sync = Task { await api.syncProgress(items) }
+        await stub.waitUntilHeld()
+        await tokens.setProfileId("profile-two")
+        stub.release()
+        guard case .uncertain = await sync.value else { return XCTFail("a discarded answer must stay uncertain") }
+        XCTAssertEqual(stub.requests.count, 1)
+    }
+
+    func testOwnerChangeErrorsAreUncertainOnceDispatched() {
+        for error in [HTTPError.requestIdentityChanged, HTTPError.authorityChanged] {
+            guard case .uncertain = APIv2Client.progressSyncFailure(error) else { return XCTFail("\(error)") }
+            guard case .notSent = APIv2Client.progressSyncFailure(error, dispatched: false) else {
+                return XCTFail("\(error) before dispatch")
+            }
+        }
+    }
+
     // MARK: Offline queue
+
+    func testClaimsOfABatchThatNeverLeftAreReleasedInTheOldScopesStore() async throws {
+        // A flush claimed and persisted a batch, then the scope changed before
+        // the request left the device. The entries must go back to pending in
+        // that scope's file instead of staying held for good.
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ProgressSyncV2Tests-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let store = DownloadStore(rootDirectory: { root })
+        var file = DownloadStoreFile.empty
+        file.progressQueue = queued(["a", "b", "c"])
+        let batch = Array(OfflineProgressQueue.nextBatch(file.progressQueue).prefix(2))
+        OfflineProgressQueue.claim(&file.progressQueue, ids: Set(batch.map(\.id)))
+        // "c" was claimed and sent by an earlier flush; its outcome is unknown.
+        OfflineProgressQueue.claim(&file.progressQueue, ids: [file.progressQueue[2].id])
+        await store.save(file, serverId: "server", profileId: "old-profile")
+
+        let refused = ProgressSyncOutcome.notSent(HTTPError.requestIdentityChanged)
+        XCTAssertTrue(OfflineProgressQueue.releasesClaims(refused))
+        XCTAssertFalse(OfflineProgressQueue.releasesClaims(.uncertain(HTTPError.requestIdentityChanged)))
+        await store.releaseProgressClaims(Set(batch.map(\.id)), serverId: "server", profileId: "old-profile")
+
+        let reloaded = await store.load(serverId: "server", profileId: "old-profile")
+        XCTAssertEqual(OfflineProgressQueue.nextBatch(reloaded.progressQueue).map(\.mediaItemId), ["a", "b"])
+        XCTAssertEqual(OfflineProgressQueue.held(reloaded.progressQueue, inFlight: []).map(\.mediaItemId), ["c"])
+
+        // A scope without a store is left alone.
+        await store.releaseProgressClaims(Set(batch.map(\.id)), serverId: "server", profileId: "never-used")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("server/never-used/store.json").path))
+    }
 
     private func queued(_ ids: [String]) -> [QueuedProgress] {
         var queue: [QueuedProgress] = []

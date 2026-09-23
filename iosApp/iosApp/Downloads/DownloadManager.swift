@@ -95,6 +95,12 @@ final class DownloadManager {
     /// Offline progress entries a running flush has sent and is still
     /// waiting on. Dispatched entries outside this set are held.
     private var progressUploadsInFlight: Set<UUID> = []
+    /// Claimed offline progress whose batch provably never reached the
+    /// server, keyed by the scope that claimed it, when the flush lost its
+    /// scope before it could resolve them. The store file is updated too;
+    /// this set covers a load of that scope already in flight, and is applied
+    /// and cleared when the scope's store is next installed.
+    private var releasedProgressClaims: [String: Set<UUID>] = [:]
     /// Cached scope storage usage; refreshed off the MainActor (a filesystem
     /// walk) so SwiftUI bodies reading `totalBytesUsed` don't block.
     private(set) var storageBytesUsed: Int64 = 0
@@ -453,6 +459,10 @@ final class DownloadManager {
             // Exactly one waiter installs this snapshot. Later waiters observe
             // the already-hydrated `file` instead of assigning it a second time.
             file = loadedFile
+            if let released = releasedProgressClaims.removeValue(forKey: Self.progressClaimKey(serverId, profileId)),
+               OfflineProgressQueue.releaseClaims(&file.progressQueue, ids: released) {
+                persist()
+            }
             scopeLoadTask = nil
             scopeLoadToken = nil
             scopeLoadServerId = ""
@@ -1617,9 +1627,16 @@ final class DownloadManager {
 
             let outcome = await SiloAPI.shared.apiV2Client.syncProgress(batch.compactMap(\.syncItem), auth: auth)
             progressUploadsInFlight.subtract(ids)
-            // Under another scope the claimed entries stay dispatched in the
-            // old scope's file, which is the held state they belong in.
-            guard scopeUnchanged() else { return }
+            guard scopeUnchanged() else {
+                // A batch that was sent stays dispatched in the old scope's
+                // file, which is the held state it belongs in. One that never
+                // reached the server (refused before dispatch, or deferred)
+                // goes back to pending there.
+                if OfflineProgressQueue.releasesClaims(outcome) {
+                    releaseProgressClaims(ids, serverId: serverId, profileId: profileId)
+                }
+                return
+            }
             queue = file.progressQueue
             OfflineProgressQueue.resolve(&queue, batch: batch, outcome: outcome)
             file.progressQueue = queue
@@ -1629,6 +1646,27 @@ final class DownloadManager {
             }
             guard OfflineProgressQueue.flushContinues(after: outcome) else { return }
         }
+    }
+
+    /// Returns claimed entries of an inactive (or not yet reinstalled) scope
+    /// to pending: in memory when that scope is installed again, and in its
+    /// store file, ordered after every save already queued.
+    private func releaseProgressClaims(_ ids: Set<UUID>, serverId: String, profileId: String) {
+        if serverId == scopeServerId, profileId == scopeProfileId, scopeLoadTask == nil {
+            // Switched away and back: the scope's store is installed again.
+            if OfflineProgressQueue.releaseClaims(&file.progressQueue, ids: ids) { persist() }
+            return
+        }
+        releasedProgressClaims[Self.progressClaimKey(serverId, profileId), default: []].formUnion(ids)
+        let previous = saveChain
+        saveChain = Task { @MainActor in
+            await previous?.value
+            await DownloadStore.shared.releaseProgressClaims(ids, serverId: serverId, profileId: profileId)
+        }
+    }
+
+    private static func progressClaimKey(_ serverId: String, _ profileId: String) -> String {
+        serverId + "\n" + profileId
     }
 
     func pullProgressDeltas() async {

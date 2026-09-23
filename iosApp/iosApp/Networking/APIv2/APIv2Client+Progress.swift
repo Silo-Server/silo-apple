@@ -38,15 +38,17 @@ extension APIv2Client {
         }
 
         let response: HTTPRawResponse
+        let dispatch = HTTPDispatchRecord()
         do {
             response = try await tokenStore.withOwnerFence(auth) {
                 try await mapErrors {
                     try await http.requestData(method: "POST", path: "/api/v2/sync/progress", body: body,
-                        requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+                        requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth,
+                        dispatchRecord: dispatch)
                 }
             }
         } catch {
-            return Self.progressSyncFailure(error)
+            return Self.progressSyncFailure(error, dispatched: dispatch.didDispatch)
         }
         guard response.statusCode == 200 else {
             // The contract has no other success status. A 2xx the client does
@@ -81,12 +83,16 @@ extension APIv2Client {
 
     /// Classifies a thrown dispatch error. A problem document or HTTP status
     /// is a definite answer: `deferred` when the server applied nothing and
-    /// the batch may be sent later, `rejected` otherwise. A transport error is
-    /// `notSent` only when the connection was never established; every other
-    /// failure after dispatch, including an owner change noticed on the way
-    /// back, is uncertain.
-    static func progressSyncFailure(_ error: Error) -> ProgressSyncOutcome {
+    /// the batch may be sent later, `rejected` otherwise. An owner change is
+    /// `notSent` when it refused the request before it reached the URL
+    /// session (the fence's entry check or HTTPClient's dispatch gate;
+    /// `dispatched` is false). A transport error is `notSent` only when the
+    /// connection was never established; every other failure after dispatch,
+    /// including an owner change noticed on the way back, is uncertain.
+    static func progressSyncFailure(_ error: Error, dispatched: Bool = true) -> ProgressSyncOutcome {
         switch error {
+        case HTTPError.requestIdentityChanged where !dispatched, HTTPError.authorityChanged where !dispatched:
+            return .notSent(error)
         case APIv2Error.serverUpdateRequired:
             return .deferred(error)
         case APIv2Error.problem(let problem):

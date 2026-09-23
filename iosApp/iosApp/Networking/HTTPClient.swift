@@ -526,6 +526,9 @@ actor HTTPClient {
     /// `X-Profile-Id`/`X-Profile-Token`, for operations whose contract forbids
     /// the profile header (v2 logout). It applies only without
     /// `requestIdentity`, whose scoped requests always name a profile.
+    /// `dispatchRecord` is marked when the request is handed to the URL
+    /// session, so the caller can tell a pre-dispatch refusal from a failure
+    /// after sending.
     func requestData(
         method: String,
         path: String,
@@ -540,7 +543,8 @@ actor HTTPClient {
         acceptedStatuses: Set<Int> = [],
         expectedAccount: RefreshAccountIdentity? = nil,
         expectedAuth: CapturedOrdinaryRequestAuth? = nil,
-        sendsProfile: Bool = true
+        sendsProfile: Bool = true,
+        dispatchRecord: HTTPDispatchRecord? = nil
     ) async throws -> HTTPRawResponse {
         if let requestIdentity {
             let dispatchRevision = try captureRequestDispatchRevision()
@@ -567,7 +571,8 @@ actor HTTPClient {
             var (data, response) = try await perform(
                 request: request,
                 timeout: timeout,
-                dispatchRevision: dispatchRevision
+                dispatchRevision: dispatchRevision,
+                dispatchRecord: dispatchRecord
             )
 
             if response.statusCode == 401,
@@ -615,7 +620,8 @@ actor HTTPClient {
                     (data, response) = try await perform(
                         request: request,
                         timeout: timeout,
-                        dispatchRevision: dispatchRevision
+                        dispatchRevision: dispatchRevision,
+                        dispatchRecord: dispatchRecord
                     )
                 } else {
                     #if os(iOS) || os(tvOS)
@@ -664,7 +670,8 @@ actor HTTPClient {
             timeout: timeout,
             expectedAccount: expectedAccount,
             expectedAuth: expectedAuth,
-            sendsProfile: sendsProfile
+            sendsProfile: sendsProfile,
+            dispatchRecord: dispatchRecord
         ) { serverUrl in
             var request = try self.buildRequest(
                 serverUrl: serverUrl,
@@ -1096,6 +1103,7 @@ actor HTTPClient {
         expectedAccount: RefreshAccountIdentity? = nil,
         expectedAuth: CapturedOrdinaryRequestAuth? = nil,
         sendsProfile: Bool = true,
+        dispatchRecord: HTTPDispatchRecord? = nil,
         makeRequest: (String) throws -> URLRequest
     ) async throws -> (Data, HTTPURLResponse) {
         let dispatchRevision = try captureRequestDispatchRevision()
@@ -1133,7 +1141,8 @@ actor HTTPClient {
         let (data, response) = try await perform(
             request: request,
             timeout: timeout,
-            dispatchRevision: dispatchRevision
+            dispatchRevision: dispatchRevision,
+            dispatchRecord: dispatchRecord
         )
 
         if response.statusCode == 401, shouldAttemptRefresh(path: path, method: method) {
@@ -1167,7 +1176,8 @@ actor HTTPClient {
                 let (retryData, retryResponse) = try await perform(
                     request: retry,
                     timeout: timeout,
-                    dispatchRevision: dispatchRevision
+                    dispatchRevision: dispatchRevision,
+                    dispatchRecord: dispatchRecord
                 )
                 try ensureSuccess(retryData, retryResponse, method: method, quietStatuses: quietStatuses)
                 return (retryData, retryResponse)
@@ -1427,6 +1437,7 @@ actor HTTPClient {
         request: URLRequest,
         timeout: HTTPTimeout = .standard,
         dispatchRevision: UInt64,
+        dispatchRecord: HTTPDispatchRecord? = nil,
         reportReachability: Bool = true
     ) async throws -> (Data, HTTPURLResponse) {
         #if os(iOS) || os(tvOS)
@@ -1467,6 +1478,9 @@ actor HTTPClient {
             #endif
             throw error
         }
+        // Nothing suspends between the dispatch check and the send, so a
+        // record left unset means this request never left the device.
+        dispatchRecord?.markDispatched()
         let data: Data
         let response: URLResponse
         do {
@@ -2391,6 +2405,27 @@ struct HTTPMultipartPart {
     let filename: String
     let contentType: String
     let data: Data
+}
+
+// MARK: - Dispatch record
+
+/// Records whether a request reached the URL session. A caller passes one to
+/// ``HTTPClient/requestData`` when it must tell a refusal that happened
+/// before anything left the device from a failure after the request was
+/// sent: both surface as `HTTPError.requestIdentityChanged` or
+/// `.authorityChanged`. Once set it stays set, so a 401 refresh retry that is
+/// refused still counts as dispatched.
+final class HTTPDispatchRecord: @unchecked Sendable {
+    private let lock = NSLock()
+    private var dispatched = false
+
+    var didDispatch: Bool {
+        lock.withLock { dispatched }
+    }
+
+    fileprivate func markDispatched() {
+        lock.withLock { dispatched = true }
+    }
 }
 
 // MARK: - Undecoded response

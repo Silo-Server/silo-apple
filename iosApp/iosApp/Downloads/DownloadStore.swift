@@ -85,6 +85,18 @@ actor DownloadStore {
         }
     }
 
+    /// Returns claimed offline progress entries to pending in a scope's
+    /// stored file, for a flush whose scope changed before it could resolve
+    /// them. No-op when the scope has no store or nothing changes.
+    func releaseProgressClaims(_ ids: Set<UUID>, serverId: String, profileId: String) {
+        guard !serverId.isEmpty, !profileId.isEmpty,
+              FileManager.default.fileExists(atPath: storeFileURL(serverId: serverId, profileId: profileId).path)
+        else { return }
+        var file = load(serverId: serverId, profileId: profileId)
+        guard OfflineProgressQueue.releaseClaims(&file.progressQueue, ids: ids) else { return }
+        save(file, serverId: serverId, profileId: profileId)
+    }
+
     // MARK: - Downloads saved by earlier versions
 
     func legacyStorageState() -> LegacyDownloadStorage.State {
