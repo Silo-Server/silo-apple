@@ -21,7 +21,7 @@ final class MediaAuthorizationPlaybackTests: XCTestCase {
     }
 
     private static let progressPath = "/api/v1/playback/\(RotatingMediaOrigin.sessionID)/progress"
-    private static let refreshPath = "/api/v1/auth/refresh"
+    private static let refreshPath = "/api/v2/auth/refresh"
     private static let refreshedTokens = #"{"access_token":"synthetic-rotated","refresh_token":"synthetic-refresh-rotated","expires_in":3600}"#
 
     func testSyntheticHLSContinuesWhenLaterSegmentsAreReleased() async throws {

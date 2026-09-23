@@ -41,7 +41,7 @@ struct ImpersonationInfo: Codable {
     let impersonatorUsername: String
 }
 
-/// Body for POST /api/v1/auth/refresh.
+/// Body for POST /api/v2/auth/refresh (`RefreshSessionInputBody`).
 struct RefreshRequest: Codable {
     let refreshToken: String
 
@@ -54,7 +54,7 @@ struct RefreshRequest: Codable {
     }
 }
 
-/// Response from POST /api/v1/auth/refresh.
+/// Response from POST /api/v2/auth/refresh (`RefreshedTokens`).
 struct RefreshResponse: Codable {
     let accessToken: String
     let refreshToken: String

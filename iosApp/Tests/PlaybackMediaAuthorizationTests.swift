@@ -21,7 +21,7 @@ final class PlaybackMediaAuthorizationTests: XCTestCase {
             "http://api.example/silo/api/v1/stream/session-one/subtitles/2.ass",
             "https://api.example/api/v1/stream/session-one/subtitles/2.ass",
             "https://api.example/silo/api/v1/stream/session-one",
-            "https://api.example/silo/api/v1/auth/refresh",
+            "https://api.example/silo/api/v2/auth/refresh",
             "https://api.example/silo/api/v1/playback/transcode/session-one/master.m3u8",
             "https://api.example/silo/api/v1/stream/session-one/subtitles/2/fonts/extra",
             "https://api.example/silo/api/v1/stream/session-one/subtitles/%252e%252e",
@@ -45,7 +45,7 @@ final class PlaybackMediaAuthorizationTests: XCTestCase {
         XCTAssertTrue(scope.allows(url("https://api.example:443/silo/api/v1/playback/transcode/session-one/segment/init.mp4")))
         XCTAssertTrue(scope.allows(url("https://api.example/silo/api/v1/playback/transcode/session-one/segment/seg_00001.m4s")))
         XCTAssertFalse(scope.allows(url("https://api.example/silo/api/v1/playback/transcode/session-two/segment/seg_00001.m4s")))
-        XCTAssertFalse(scope.allows(url("https://api.example/silo/api/v1/auth/refresh")))
+        XCTAssertFalse(scope.allows(url("https://api.example/silo/api/v2/auth/refresh")))
         XCTAssertFalse(scope.allows(url("https://api.example/silo/api/v1/stream/session-one")))
         XCTAssertFalse(scope.allows(url("https://api.example/api/v1/playback/transcode/session-one/master.m3u8")))
     }
@@ -64,7 +64,7 @@ final class PlaybackMediaAuthorizationTests: XCTestCase {
             "https://api.example/silo/api/v1/playback/transcode/session-one/master.m3u8",
             "https://proxy.example:8443/stream/v3/session-two/master.m3u8",
             "https://proxy.example:8443/stream/v3/session-one",
-            "https://proxy.example:8443/api/v1/auth/refresh",
+            "https://proxy.example:8443/api/v2/auth/refresh",
         ] {
             XCTAssertFalse(scope.allows(url(value)), value)
         }
@@ -135,7 +135,7 @@ final class PlaybackMediaAuthorizationTests: XCTestCase {
             "https://api.example/api/v1/playback/transcode/session-two/master.m3u8",
             "https://api.example/api/v1/playback/transcode/session-one/segment/init.mp4",
             "https://api.example/api/v1/stream/session-one/subtitles/0.vtt",
-            "https://api.example/api/v1/auth/refresh",
+            "https://api.example/api/v2/auth/refresh",
             "https://foreign.example/api/v1/playback/transcode/session-one/master.m3u8",
             "https://proxy.example/stream/v3/session-two/master.m3u8",
             "http://proxy.example/stream/v3/session-one/master.m3u8",

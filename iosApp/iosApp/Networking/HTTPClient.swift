@@ -127,9 +127,12 @@ actor HTTPClient {
     private var mediaRefreshBackoff: (auth: CapturedOrdinaryRequestAuth, until: ContinuousClock.Instant)?
     private var proactiveMediaRefreshes: [RefreshAccountIdentity: (id: UUID, task: Task<Void, Never>)] = [:]
 
+    /// A flight's value is the update requirement its refresh answer proved,
+    /// if any. Success and every other failure are read back from
+    /// `TokenStore`; only a version mismatch travels to the waiting requests.
     private struct RefreshFlight {
         let id: UUID
-        let task: Task<Bool, Never>
+        let task: Task<UpdateRequirement?, Never>
     }
 
     /// Global URLSession enumeration is asynchronous. Queue cancellation
@@ -534,7 +537,7 @@ actor HTTPClient {
 
             if response.statusCode == 401,
                shouldAttemptRefresh(path: path, method: method),
-               await refreshScopedTokens(
+               try await refreshScopedTokens(
                    auth: auth,
                    expected: requestIdentity,
                    dispatchRevision: dispatchRevision
@@ -1097,7 +1100,7 @@ actor HTTPClient {
 
         if response.statusCode == 401, shouldAttemptRefresh(path: path, method: method) {
             if let capturedAuth,
-               let refreshedAuth = await refreshTokens(
+               let refreshedAuth = try await refreshTokens(
                    expected: capturedAuth,
                    dispatchRevision: dispatchRevision
                ),
@@ -1888,11 +1891,13 @@ actor HTTPClient {
         }
     }
 
+    /// Throws the flight's `UpdateRequirement` when the refresh endpoint
+    /// answered update-required; the credentials are kept in that case.
     private func refreshScopedTokens(
         auth: CapturedHTTPRequestAuth,
         expected: HTTPRequestIdentity,
         dispatchRevision: UInt64
-    ) async -> Bool {
+    ) async throws -> Bool {
         guard !isRequestDispatchBlocked,
               requestDispatchRevision == dispatchRevision else { return false }
         let ownerMatchesExpectedServer = switch auth.credentialOwner {
@@ -1905,7 +1910,7 @@ actor HTTPClient {
               auth.account.serverId == expected.serverId,
               auth.account.serverURL == ServerRegistry.normalize(url: expected.serverURL),
               let refreshValue = auth.refreshToken, !refreshValue.isEmpty,
-              URL(string: auth.serverURL + "/api/v1/auth/refresh") != nil else {
+              URL(string: auth.serverURL + Self.refreshPath) != nil else {
             return false
         }
         if await scopedCredentialsChanged(since: auth, expected: expected) {
@@ -1917,11 +1922,11 @@ actor HTTPClient {
         let key = auth.account
         if let existing = inFlightRefreshes[key] {
             refreshFlightJoinObserver?(.scoped)
-            _ = await existing.task.value
+            if let requirement = await existing.task.value { throw requirement }
             return await scopedCredentialsChanged(since: auth, expected: expected)
         }
 
-        let task = Task<Bool, Never> { [tokenStore, session, decoder, encoder] in
+        let task = Task<UpdateRequirement?, Never> { [tokenStore, session, decoder, encoder] in
             await Self.performScopedRefresh(
                 auth: auth,
                 tokenStore: tokenStore,
@@ -1932,10 +1937,11 @@ actor HTTPClient {
         }
         let flightId = UUID()
         inFlightRefreshes[key] = .init(id: flightId, task: task)
-        _ = await task.value
+        let requirement = await task.value
         if inFlightRefreshes[key]?.id == flightId {
             inFlightRefreshes.removeValue(forKey: key)
         }
+        if let requirement { throw requirement }
         return await scopedCredentialsChanged(since: auth, expected: expected)
     }
 
@@ -1957,10 +1963,10 @@ actor HTTPClient {
         session: URLSession,
         decoder: JSONDecoder,
         encoder: JSONEncoder
-    ) async -> Bool {
+    ) async -> UpdateRequirement? {
         guard let refreshValue = auth.refreshToken,
-              let url = URL(string: auth.serverURL + "/api/v1/auth/refresh") else {
-            return false
+              let url = URL(string: auth.serverURL + Self.refreshPath) else {
+            return nil
         }
         let captured = CapturedRefreshCredential(
             account: auth.account,
@@ -1968,7 +1974,7 @@ actor HTTPClient {
             owner: auth.credentialOwner
         )
         guard await tokenStore.captureRefreshCredential(expected: auth.account) == captured else {
-            return false
+            return nil
         }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -1980,29 +1986,34 @@ actor HTTPClient {
                 request: request,
                 session: session
             )
-            guard !Task.isCancelled else { return false }
+            guard !Task.isCancelled else { return nil }
             guard let http = response as? HTTPURLResponse else {
                 Self.logger.error("Scoped refresh: non-HTTP response")
-                return false
+                return nil
             }
             await MainActor.run {
                 ConnectionMonitor.shared.noteServerResponded()
             }
             if (200..<300).contains(http.statusCode) {
                 let tokens = try decoder.decode(RefreshResponse.self, from: data)
-                return await tokenStore.saveRefreshedTokens(
+                _ = await tokenStore.saveRefreshedTokens(
                     tokens.accessToken,
                     tokens.refreshToken,
                     replacing: captured
                 )
+                return nil
             }
 
             let body = String(data: data, encoding: .utf8) ?? ""
             Self.logger.error(
                 "Scoped refresh failed: status=\(http.statusCode, privacy: .public) body=\(body, privacy: .private)"
             )
+            if let requirement = UpdateRequirement(v2StatusCode: http.statusCode, body: body) {
+                await noteRefreshUpdateRequirement(requirement, serverId: auth.account.serverId)
+                return requirement
+            }
             guard shouldInvalidateSessionAfterRefreshFailure(http.statusCode) else {
-                return false
+                return nil
             }
             let disposition = await tokenStore.invalidateRejectedRefresh(captured)
             if let disposition,
@@ -2025,11 +2036,11 @@ actor HTTPClient {
                     )
                 }
             }
-            return false
+            return nil
         } catch {
             await noteServerUnreachable(for: error)
             Self.logger.error("Scoped refresh threw: \(String(describing: error), privacy: .public)")
-            return false
+            return nil
         }
     }
 
@@ -2058,7 +2069,7 @@ actor HTTPClient {
             && MediaAccessTokenExpiry.shouldRefresh(token, now: now)
             && !backingOff
         if challengedCurrentToken || expired {
-            if let refreshed = await refreshTokens(expected: current, dispatchRevision: revision) {
+            if let refreshed = try await refreshTokens(expected: current, dispatchRevision: revision) {
                 current = refreshed
                 mediaRefreshBackoff = nil
             } else if let latest = await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: current),
@@ -2094,7 +2105,7 @@ actor HTTPClient {
               !isRequestDispatchBlocked, requestDispatchRevision == revision else { return }
         let id = UUID()
         let task = Task { [self] in
-            let refreshed = await refreshTokens(expected: expected, dispatchRevision: revision)
+            let refreshed = try? await refreshTokens(expected: expected, dispatchRevision: revision)
             guard proactiveMediaRefreshes[expected.account]?.id == id else { return }
             proactiveMediaRefreshes.removeValue(forKey: expected.account)
             if refreshed == nil, !Task.isCancelled, requestDispatchRevision == revision {
@@ -2124,10 +2135,13 @@ actor HTTPClient {
     /// temporary generation, access token, and profile together. A caller can
     /// use a token rotated by another flight only when the rest of that exact
     /// request identity is still current.
+    ///
+    /// Throws the flight's `UpdateRequirement` when the refresh endpoint
+    /// answered update-required; the credentials are kept in that case.
     private func refreshTokens(
         expected: CapturedOrdinaryRequestAuth,
         dispatchRevision: UInt64
-    ) async -> CapturedOrdinaryRequestAuth? {
+    ) async throws -> CapturedOrdinaryRequestAuth? {
         guard !isRequestDispatchBlocked,
               requestDispatchRevision == dispatchRevision else { return nil }
         guard let current = await tokenStore.currentOrdinaryRequestAuth(
@@ -2145,7 +2159,7 @@ actor HTTPClient {
         let key = expected.account
         if let existing = inFlightRefreshes[key] {
             refreshFlightJoinObserver?(.ordinary)
-            _ = await existing.task.value
+            if let requirement = await existing.task.value { throw requirement }
             if let current = await tokenStore.currentOrdinaryRequestAuth(
                 matchingIdentityOf: expected
             ), current.accessToken != expected.accessToken,
@@ -2155,7 +2169,7 @@ actor HTTPClient {
             return nil
         }
 
-        let task = Task<Bool, Never> { [tokenStore, session, decoder, encoder] in
+        let task = Task<UpdateRequirement?, Never> { [tokenStore, session, decoder, encoder] in
             await Self.performRefresh(
                 expected: key,
                 tokenStore: tokenStore,
@@ -2166,10 +2180,11 @@ actor HTTPClient {
         }
         let flightId = UUID()
         inFlightRefreshes[key] = .init(id: flightId, task: task)
-        _ = await task.value
+        let requirement = await task.value
         if inFlightRefreshes[key]?.id == flightId {
             inFlightRefreshes.removeValue(forKey: key)
         }
+        if let requirement { throw requirement }
         if let current = await tokenStore.currentOrdinaryRequestAuth(
             matchingIdentityOf: expected
         ), current.accessToken != expected.accessToken,
@@ -2185,15 +2200,15 @@ actor HTTPClient {
         session: URLSession,
         decoder: JSONDecoder,
         encoder: JSONEncoder
-    ) async -> Bool {
+    ) async -> UpdateRequirement? {
         guard let captured = await tokenStore.captureRefreshCredential(expected: expected) else {
             Self.logger.error("Refresh skipped: no refresh token stored")
-            return false
+            return nil
         }
 
-        guard let url = URL(string: expected.serverURL + "/api/v1/auth/refresh") else {
+        guard let url = URL(string: expected.serverURL + Self.refreshPath) else {
             Self.logger.error("Refresh skipped: invalid server URL")
-            return false
+            return nil
         }
 
         var request = URLRequest(url: url)
@@ -2204,7 +2219,7 @@ actor HTTPClient {
             request.httpBody = try encoder.encode(RefreshRequest(refreshToken: captured.refreshToken))
         } catch {
             Self.logger.error("Refresh encode failed: \(String(describing: error), privacy: .public)")
-            return false
+            return nil
         }
 
         do {
@@ -2218,11 +2233,11 @@ actor HTTPClient {
             // server's Keychain slot.
             if Task.isCancelled {
                 Self.logger.info("Refresh cancelled post-response; skipping token save")
-                return false
+                return nil
             }
             guard let http = response as? HTTPURLResponse else {
                 Self.logger.error("Refresh: non-HTTP response")
-                return false
+                return nil
             }
             // Refresh bypasses perform(), so feed reachability from here too.
             await MainActor.run {
@@ -2230,16 +2245,21 @@ actor HTTPClient {
             }
             if (200..<300).contains(http.statusCode) {
                 let tokens = try decoder.decode(RefreshResponse.self, from: data)
-                return await tokenStore.saveRefreshedTokens(
+                _ = await tokenStore.saveRefreshedTokens(
                     tokens.accessToken,
                     tokens.refreshToken,
                     replacing: captured
                 )
+                return nil
             } else {
                 let body = String(data: data, encoding: .utf8) ?? ""
                 Self.logger.error("Refresh failed: status=\(http.statusCode, privacy: .public) body=\(body, privacy: .private)")
+                if let requirement = UpdateRequirement(v2StatusCode: http.statusCode, body: body) {
+                    await noteRefreshUpdateRequirement(requirement, serverId: expected.serverId)
+                    return requirement
+                }
                 guard shouldInvalidateSessionAfterRefreshFailure(http.statusCode) else {
-                    return false
+                    return nil
                 }
                 let disposition = await tokenStore.invalidateRejectedRefresh(captured)
                 let event = disposition.map {
@@ -2249,7 +2269,7 @@ actor HTTPClient {
                       let event,
                       !Task.isCancelled,
                       await tokenStore.shouldConsumeSessionExpiryEvent(event),
-                      !Task.isCancelled else { return false }
+                      !Task.isCancelled else { return nil }
                 // Tell the UI to route back to login for the current
                 // server. The registry entry (URL + display name) is
                 // preserved so the user doesn't have to re-add it.
@@ -2262,18 +2282,48 @@ actor HTTPClient {
                         object: event
                     )
                 }
-                return false
+                return nil
             }
         } catch {
             await noteServerUnreachable(for: error)
             Self.logger.error("Refresh threw: \(String(describing: error), privacy: .public)")
-            return false
+            return nil
         }
     }
 
-    /// Match Android's refresh-failure classifier. Client/auth rejection is
-    /// terminal; rate limits, gateway failures, and server faults are
-    /// retryable and must preserve the current credential snapshot.
+    /// `refreshSession`. Public: it carries no bearer, and `isPublicAuthPath`
+    /// matches its `/auth/refresh` suffix, so it never recurses into refresh.
+    static let refreshPath = "/api/v2/auth/refresh"
+
+    /// A refresh answered update-required never costs the user the session.
+    /// A v1-only server's legacy 404 on the v2 refresh route is the same
+    /// evidence the contract probe looks for, so it records that verdict for
+    /// the server, which makes `APIv2Client` refuse further calls with the
+    /// server-update message. An app-update answer has no stored state; it
+    /// reaches the user through the error the waiting requests throw.
+    private static func noteRefreshUpdateRequirement(
+        _ requirement: UpdateRequirement,
+        serverId: String
+    ) async {
+        guard requirement == .server, !Task.isCancelled else { return }
+        await MainActor.run {
+            ConnectionMonitor.shared.noteContractProbe(.updateServer, serverId: serverId)
+        }
+    }
+
+    /// Match Android's refresh-failure classifier (AuthInterceptorImpl.kt).
+    /// Client/auth rejection is terminal: v2 answers a malformed body with
+    /// 400, a revoked session with 401 `session_expired` and any other
+    /// rejected token with 401 `invalid_token`. Rate limits, gateway failures
+    /// and server faults are retryable and must preserve the current
+    /// credential snapshot.
+    ///
+    /// 422 is deliberately not terminal. v2 answers 422 only when the body
+    /// fails validation (a blank or over-long `refresh_token`); both refresh
+    /// paths refuse to send a blank token, so a 422 means the client and the
+    /// contract disagree, not that the credential was rejected. Update-required
+    /// answers (410 `client_upgrade_required`, the legacy 404) are classified
+    /// before this and are never terminal either.
     static func shouldInvalidateSessionAfterRefreshFailure(_ statusCode: Int) -> Bool {
         statusCode == 400 || statusCode == 401 || statusCode == 403
     }
