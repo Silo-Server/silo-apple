@@ -246,12 +246,11 @@ final class AuthService: @unchecked Sendable {
     ///
     /// `accountID` is the account the server said the tokens authenticate
     /// (v2 `TokenPair.user.id`); it binds the session so durable account work
-    /// can capture it. Callers whose sign-in answer carries no verified
-    /// account pass `nil` and get an unverified binding.
+    /// can capture it.
     func installSession(
         accessToken: String,
         refreshToken: String,
-        accountID: String?,
+        accountID: String,
         expectedAccount: RefreshAccountIdentity
     ) async throws {
         guard let transitionLease = await httpClient.beginIdentityTransition() else {
@@ -687,24 +686,29 @@ final class AuthService: @unchecked Sendable {
 
     // MARK: - Device Login (QR sign-in)
 
-    func startDeviceLogin(deviceName: String, devicePlatform: String) async throws -> DeviceLoginStartResponse {
-        try await HTTPClient.shared.post(
-            "/api/v1/auth/device/start",
-            body: DeviceLoginStartRequest(
-                deviceName: deviceName,
-                devicePlatform: devicePlatform
-            )
+    /// Opens a pairing request through `POST /api/v2/auth/device/start`
+    /// (`non_retryable`: one dispatch, no bearer). A v1-only server is refused
+    /// with `APIv2Error.serverUpdateRequired`.
+    func startDeviceLogin(
+        deviceName: String,
+        devicePlatform: String,
+        expectedAccount: RefreshAccountIdentity
+    ) async throws -> DeviceLoginStartResponse {
+        try await apiV2Client.startDeviceLogin(
+            DeviceLoginStartRequest(deviceName: deviceName, devicePlatform: devicePlatform),
+            expectedAccount: expectedAccount
         )
     }
 
-    /// Poll the pairing row for status. Terminal statuses (approved /
-    /// denied / expired / consumed) return HTTP 200 with a status field;
-    /// a 404 means the row no longer exists (cleaned up post-expiry).
-    func pollDeviceLogin(deviceCode: String) async throws -> DeviceLoginPollResponse {
-        try await HTTPClient.shared.post(
-            "/api/v1/auth/device/poll",
-            body: DeviceLoginPollRequest(deviceCode: deviceCode)
-        )
+    /// Polls the pairing request through `POST /api/v2/auth/device/poll`.
+    /// Terminal statuses answer 200 with a status field; a 404 problem means
+    /// the request no longer exists. Tokens arrive once, on the first
+    /// `approved` answer, so the caller must install them from this value.
+    func pollDeviceLogin(
+        deviceCode: String,
+        expectedAccount: RefreshAccountIdentity
+    ) async throws -> APIv2DevicePoll {
+        try await apiV2Client.pollDeviceLogin(deviceCode: deviceCode, expectedAccount: expectedAccount)
     }
 
     // MARK: - Sign Out
