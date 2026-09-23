@@ -144,27 +144,57 @@ final class WatchStateV2Tests: XCTestCase {
 
     // MARK: delete_watched
 
+    /// Captures one read the way `refreshWatchState()` does.
+    private func read(_ api: APIv2Client, _ auth: CapturedOrdinaryRequestAuth) async -> Result<[APIv2ProgressEntry], Error> {
+        do { return .success(try await api.listAllProgress(auth: auth)) } catch { return .failure(error) }
+    }
+
     func testInterruptedReadDeletesNothing() async throws {
         let (api, auth, _) = try await client()
+        // Already marked watched locally, so a missing gate would delete it.
         var file = try retentionFile()
-        XCTAssertTrue(DownloadManager.watchedDownloadIds(in: file).isEmpty)
+        let watched = LocalProgressEntry(position: 1800, duration: 1800, completed: true,
+                                         updatedAt: try date("2026-09-20T10:00:00Z"))
+        file.localProgress["episode-1"] = watched
+        XCTAssertEqual(DownloadManager.watchedDownloadIds(in: file), ["download-1"])
 
         // The first page says the episode was watched, then the read breaks.
         stub.sequence([page([entry("episode-1", completed: true)], next: "c1"),
                        .failure(URLError(.networkConnectionLost))])
-        do {
-            _ = try await api.listAllProgress(auth: auth)
-            XCTFail("an interrupted read must not return its first page")
-        } catch {}
-        XCTAssertTrue(DownloadManager.watchedDownloadIds(in: file).isEmpty)
+        let interrupted = await read(api, auth)
+        XCTAssertNil(DownloadManager.applyWatchStateRead(interrupted, ownerStillCurrent: true,
+                                                         to: file, readStartedAt: Date()))
+        XCTAssertEqual(DownloadManager.retentionDeletions(readApplied: false, ownerStillCurrent: true, in: file), [])
+        XCTAssertEqual(file.localProgress, ["episode-1": watched])
+    }
 
-        // The same answer read in full makes the episode eligible.
-        stub.reset()
+    func testReadWhoseOwnerChangedDeletesNothing() async throws {
+        let (api, auth, _) = try await client()
+        var file = try retentionFile()
+        file.localProgress["episode-1"] = LocalProgressEntry(position: 1800, duration: 1800, completed: true,
+                                                             updatedAt: try date("2026-09-20T10:00:00Z"))
+        stub.sequence([page([entry("episode-1", completed: true)])])
+        let complete = await read(api, auth)
+
+        // The read finished, but the scope changed before it was applied.
+        XCTAssertNil(DownloadManager.applyWatchStateRead(complete, ownerStillCurrent: false,
+                                                         to: file, readStartedAt: Date()))
+        // Or after it was applied, while the run's reconcile was in flight.
+        XCTAssertEqual(DownloadManager.retentionDeletions(readApplied: true, ownerStillCurrent: false, in: file), [])
+    }
+
+    func testCompleteReadThatSaysWatchedDeletesTheDownload() async throws {
+        let (api, auth, _) = try await client()
+        var file = try retentionFile()
         stub.sequence([page([entry("episode-1", completed: true)], next: "c1"), page([])])
-        let read = try await api.listAllProgress(auth: auth)
-        file.localProgress = DownloadManager.mergeProgress(file.localProgress, read: read,
-                                                           readStartedAt: Date(), queuedItemIds: [])
-        XCTAssertEqual(DownloadManager.watchedDownloadIds(in: file), ["download-1"])
+        let complete = await read(api, auth)
+
+        let merged = try XCTUnwrap(DownloadManager.applyWatchStateRead(complete, ownerStillCurrent: true,
+                                                                       to: file, readStartedAt: Date()))
+        file.localProgress = merged
+        XCTAssertEqual(merged["episode-1"]?.completed, true)
+        XCTAssertEqual(DownloadManager.retentionDeletions(readApplied: true, ownerStillCurrent: true, in: file),
+                       ["download-1"])
     }
 
     func testCompleteReadWithoutTheItemKeepsTheDownload() throws {
@@ -174,9 +204,9 @@ final class WatchStateV2Tests: XCTestCase {
         XCTAssertEqual(DownloadManager.watchedDownloadIds(in: file), ["download-1"])
 
         // Marked unwatched elsewhere: the server no longer lists the item.
-        file.localProgress = DownloadManager.mergeProgress(file.localProgress, read: [],
-                                                           readStartedAt: Date(), queuedItemIds: [])
-        XCTAssertTrue(DownloadManager.watchedDownloadIds(in: file).isEmpty)
+        file.localProgress = try XCTUnwrap(DownloadManager.applyWatchStateRead(.success([]), ownerStillCurrent: true,
+                                                                               to: file, readStartedAt: Date()))
+        XCTAssertEqual(DownloadManager.retentionDeletions(readApplied: true, ownerStillCurrent: true, in: file), [])
     }
 
     /// A completed episode download under a monitor with `delete_watched`.
