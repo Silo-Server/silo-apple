@@ -64,10 +64,26 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
     }
 
     /// Resume a previously-interrupted download from its `resumeData`.
-    func resume(data: Data) -> Int {
+    /// Returns nil, without sending anything, when the data resumes a
+    /// request other than a v2 download file route (for example one saved
+    /// before the file route moved); the caller restarts from the manifest.
+    func resume(data: Data) -> Int? {
         let task = session.downloadTask(withResumeData: data)
+        guard !Self.isRetired(task) else {
+            Self.logger.notice("Discarding resume data for a retired download URL")
+            task.cancel()
+            return nil
+        }
         task.resume()
         return task.taskIdentifier
+    }
+
+    /// Whether a task requests a URL that is not a v2 download file route.
+    /// A task whose request is unknown is kept; a stale one still ends in a
+    /// 410, which restarts its download.
+    private static func isRetired(_ task: URLSessionTask) -> Bool {
+        guard let url = task.originalRequest?.url ?? task.currentRequest?.url else { return false }
+        return !APIv2Client.isDownloadFileURL(url)
     }
 
     func cancel(taskId: Int) {
@@ -107,10 +123,22 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
     }
 
     /// Identifiers of tasks still live in the (possibly relaunched) session.
-    func activeTaskIdentifiers() async -> Set<Int> {
+    /// `retired` holds the live tasks that request anything other than a v2
+    /// download file route; the caller cancels them and restarts their
+    /// downloads.
+    func liveTasks() async -> (current: Set<Int>, retired: Set<Int>) {
         await withCheckedContinuation { cont in
             session.getAllTasks { tasks in
-                cont.resume(returning: Set(tasks.map { $0.taskIdentifier }))
+                var current: Set<Int> = []
+                var retired: Set<Int> = []
+                for task in tasks {
+                    if Self.isRetired(task) {
+                        retired.insert(task.taskIdentifier)
+                    } else {
+                        current.insert(task.taskIdentifier)
+                    }
+                }
+                cont.resume(returning: (current, retired))
             }
         }
     }
@@ -196,21 +224,23 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
 }
 
 /// Builds an authenticated `URLRequest` for the background download
-/// session, replicating the header set `HTTPClient.attachAuthHeaders`
-/// applies (the background session can't share that actor's `URLSession`).
+/// session, replicating the header set `HTTPClient` applies (the background
+/// session can't share that actor's `URLSession`). The headers come from one
+/// captured owner, so a request never mixes one owner's token with another's
+/// profile.
 enum DownloadAuthHeaders {
-    static func authorizedRequest(url: URL, allowsCellular: Bool) async -> URLRequest {
+    static func authorizedRequest(url: URL, auth: CapturedOrdinaryRequestAuth, allowsCellular: Bool) -> URLRequest {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.allowsCellularAccess = allowsCellular
 
-        if let token = await TokenStore.shared.getAccessToken() {
+        if let token = auth.accessToken {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        if let profileId = await TokenStore.shared.getProfileId() {
+        if let profileId = auth.profileId {
             request.setValue(profileId, forHTTPHeaderField: "X-Profile-Id")
         }
-        if let profileToken = await TokenStore.shared.getProfileToken() {
+        if let profileToken = auth.profileToken {
             request.setValue(profileToken, forHTTPHeaderField: "X-Profile-Token")
         }
         AppleDeviceIdentity.current.applyHeaders(to: &request)

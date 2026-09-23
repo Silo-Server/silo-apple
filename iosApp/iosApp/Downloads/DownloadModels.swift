@@ -133,13 +133,17 @@ struct DownloadCaps: Encodable, Sendable {
     }
 }
 
-// MARK: - Offline manifest (GET /api/v1/downloads/{id}/manifest)
+// MARK: - Offline manifest (GET /api/v2/downloads/{id}/manifest)
 
 /// The offline playback bundle for one download. Stable and
 /// presigned-URL-free — persisted on disk and read offline indefinitely.
 /// Reuses `TimeRange` and `VersionChapter` from the online model layer so
-/// the player's chapters / skip-intro logic works unchanged. Mirrors
-/// §6 of the server downloads API guide.
+/// the player's chapters / skip-intro logic works unchanged.
+///
+/// One type serves the wire and the stored `manifest.json`: the API decoder
+/// converts the wire's snake_case keys to these coding keys, and the bare
+/// store coder writes and reads them unchanged. Renaming a key strands every
+/// stored manifest.
 struct OfflineManifest: Codable, Hashable, Sendable {
     let downloadId: String
     let contentId: String
@@ -150,7 +154,8 @@ struct OfflineManifest: Codable, Hashable, Sendable {
     let effectiveQuality: String?
     let deliveryFormat: String?
     let targetBitrateKbps: Int?
-    let mediaFileId: Int
+    /// Opaque; the v2 contract sends a string.
+    let mediaFileId: String
     let fileSize: Int64?
 
     let title: String
@@ -253,7 +258,7 @@ struct OfflineManifest: Codable, Hashable, Sendable {
         effectiveQuality = try keyed.decodeIfPresent(String.self, forKey: .effectiveQuality)
         deliveryFormat = try keyed.decodeIfPresent(String.self, forKey: .deliveryFormat)
         targetBitrateKbps = try keyed.decodeIfPresent(Int.self, forKey: .targetBitrateKbps)
-        mediaFileId = try keyed.decodeIfPresent(Int.self, forKey: .mediaFileId) ?? 0
+        mediaFileId = try keyed.decode(String.self, forKey: .mediaFileId)
         fileSize = try keyed.decodeIfPresent(Int64.self, forKey: .fileSize)
         title = try keyed.decode(String.self, forKey: .title)
         year = try keyed.decodeIfPresent(Int.self, forKey: .year)

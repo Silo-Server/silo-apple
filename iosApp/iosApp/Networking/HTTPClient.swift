@@ -490,14 +490,6 @@ actor HTTPClient {
         _ = try await sendRaw(method: "PATCH", path: path, query: query, body: body)
     }
 
-    /// GET an endpoint that returns raw bytes (not JSON) — e.g. the
-    /// download artwork/subtitle proxies. Goes through the same auth +
-    /// 401-refresh path as the decoding `get`, but hands the caller the
-    /// undecoded body.
-    func getData(_ path: String, query: [String: String] = [:]) async throws -> Data {
-        try await sendRaw(method: "GET", path: path, query: query, body: Optional<String>.none)
-    }
-
     /// Send a request with a caller-supplied body and extra headers, doing no
     /// JSON coding, and hand back the status and response headers alongside
     /// the bytes.

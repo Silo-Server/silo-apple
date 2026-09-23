@@ -203,8 +203,12 @@ enum OfflinePlaybackBuilder {
         subtitleURLs: [SubtitleUrl],
         resumePosition: Double?
     ) -> PreparedPlayback {
+        // The player's models still key files by integer id. A download plays
+        // from its local file, so a non-numeric id only turns off what asks
+        // the server about the file: v2 subtitle calls refuse id 0.
+        let fileId = Int(manifest.mediaFileId)
         let version = FileVersion(
-            fileId: manifest.mediaFileId,
+            fileId: fileId ?? 0,
             fileName: nil,
             resolution: manifest.resolution,
             codecVideo: manifest.codecVideo,
@@ -234,7 +238,7 @@ enum OfflinePlaybackBuilder {
             sessionId: "offline-\(manifest.downloadId)",
             userId: nil,
             profileId: nil,
-            mediaFileId: manifest.mediaFileId,
+            mediaFileId: fileId,
             playMethod: "direct",
             position: resumePosition ?? 0,
             isPaused: false,

@@ -2,6 +2,7 @@ import Foundation
 
 // Wire models for the v2 download registry: getDownloadCapability,
 // createDownloads, listDownloads, reportDownloadStatus and deleteDownload.
+// getDownloadManifest decodes into the stored `OfflineManifest`.
 
 /// `DownloadCapability`. Only the fields the app reads are decoded; each of
 /// them is required by the contract, so a missing one fails the read instead
@@ -194,12 +195,16 @@ enum DownloadRegistryError: LocalizedError, Equatable, Sendable {
     case incompleteRegistry
     /// A create or status answer that does not describe the request.
     case unexpectedReceipt
+    /// A manifest for another entry, or without the file and revision it
+    /// describes.
+    case unusableManifest
 
     var errorDescription: String? {
         switch self {
         case .invalidRequest: return "The download request is not valid."
         case .incompleteRegistry: return "The server returned an incomplete download list. Try again."
         case .unexpectedReceipt: return "The server returned an unexpected download answer. Refresh downloads before trying again."
+        case .unusableManifest: return "The server returned download details this app can't use."
         }
     }
 }

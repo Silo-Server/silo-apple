@@ -1,6 +1,6 @@
 import Foundation
 
-// MARK: Download registry (profile_scoped)
+// MARK: Download registry and offline delivery (profile_scoped)
 //
 // Every call names the calling device: `HTTPClient` attaches this
 // installation's `X-Silo-Device-Id` to each request, and the server scopes
@@ -157,6 +157,80 @@ extension APIv2Client {
         }
         let response = try await downloadRegistryRequest(method: "DELETE", path: "/api/v2/downloads/\(segment)", auth: auth)
         guard response.statusCode == 204 else { throw APIv2Error.httpStatus(response.statusCode) }
+    }
+
+    // MARK: getDownloadManifest
+
+    /// Reads the offline manifest of one registry entry. A manifest for a
+    /// different entry, or one without the file and revision it describes,
+    /// throws `unusableManifest`; nothing from it is stored.
+    func downloadManifest(id: String, auth: CapturedOrdinaryRequestAuth) async throws -> OfflineManifest {
+        guard let segment = CatalogPathSegment.encode(id) else { throw DownloadRegistryError.invalidRequest }
+        let response = try await downloadRegistryRequest(method: "GET", path: "/api/v2/downloads/\(segment)/manifest",
+            auth: auth)
+        guard response.statusCode == 200 else { throw APIv2Error.httpStatus(response.statusCode) }
+        guard let manifest = try? HTTPClient.makeJSONDecoder().decode(OfflineManifest.self, from: response.data),
+              manifest.downloadId == id, !manifest.contentId.isEmpty, !manifest.mediaFileId.isEmpty,
+              let revision = manifest.revision, revision >= 1 else {
+            throw DownloadRegistryError.unusableManifest
+        }
+        return manifest
+    }
+
+    // MARK: getDownloadArtwork, getDownloadSubtitle
+
+    /// Fetches one artwork or subtitle file the entry's manifest names.
+    /// `path` must be one of that entry's asset routes; any other path is
+    /// refused before dispatch, so a manifest can never point the app's
+    /// credentials at another resource.
+    func downloadAsset(path: String, downloadId: String, auth: CapturedOrdinaryRequestAuth) async throws -> Data {
+        guard let assetPath = Self.downloadAssetPath(path, downloadId: downloadId) else {
+            throw DownloadRegistryError.invalidRequest
+        }
+        let response = try await downloadRegistryRequest(method: "GET", path: assetPath, auth: auth)
+        guard response.statusCode == 200 else { throw APIv2Error.httpStatus(response.statusCode) }
+        return response.data
+    }
+
+    /// The percent-encoded path of `path` when it is exactly
+    /// `/api/v2/downloads/{downloadId}/artwork/{kind}` or
+    /// `.../subtitles/{ref}`, the only references the server mints.
+    static func downloadAssetPath(_ path: String, downloadId: String) -> String? {
+        guard let components = URLComponents(string: path), components.scheme == nil, components.host == nil,
+              components.query == nil, components.fragment == nil else { return nil }
+        let encoded = components.percentEncodedPath
+        let segments = encoded.split(separator: "/", omittingEmptySubsequences: false)
+            .map { $0.removingPercentEncoding }
+        guard segments.count == 7, segments[0] == "", segments[1] == "api", segments[2] == "v2",
+              segments[3] == "downloads", segments[4] == downloadId,
+              segments[5] == "artwork" || segments[5] == "subtitles",
+              let reference = segments[6], !reference.isEmpty, reference != ".", reference != ".." else {
+            return nil
+        }
+        return encoded
+    }
+
+    // MARK: downloadFile
+
+    /// The file route of one entry on the owner's server. The background
+    /// session sends the request itself, so this only builds the URL.
+    static func downloadFileURL(id: String, serverURL: String) -> URL? {
+        guard let segment = CatalogPathSegment.encode(id),
+              var components = URLComponents(string: serverURL), components.host != nil else { return nil }
+        let base = components.percentEncodedPath.hasSuffix("/")
+            ? String(components.percentEncodedPath.dropLast()) : components.percentEncodedPath
+        components.percentEncodedPath = base + "/api/v2/downloads/\(segment)/file"
+        return components.url
+    }
+
+    /// Whether a background transfer requests an entry's v2 file route. Any
+    /// other transfer (resume data or a task an earlier version started) is
+    /// discarded and the download restarts from its manifest.
+    static func isDownloadFileURL(_ url: URL?) -> Bool {
+        guard let path = url?.path, path.hasSuffix("/file"),
+              let range = path.range(of: "/api/v2/downloads/") else { return false }
+        let id = path[range.upperBound...].dropLast("/file".count)
+        return !id.isEmpty && !id.contains("/")
     }
 
     // MARK: Failure classification
