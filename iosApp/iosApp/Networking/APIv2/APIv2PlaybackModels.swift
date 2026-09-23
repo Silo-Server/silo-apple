@@ -177,6 +177,9 @@ private enum APIv2PlaybackID {
     }
 }
 
+/// `GET /api/v2/playback/capabilities`. `installation_id` is optional in the
+/// schema, but every playback mutation requires it, so an available document
+/// without one cannot start playback.
 struct APIv2PlaybackCapabilities: Decodable {
     let installationId: String?
     let revision: String
@@ -186,23 +189,31 @@ struct APIv2PlaybackCapabilities: Decodable {
     let features: [String]
     let deliveries: [String]
 
+    static let notConfigured = PlaybackV3TerminalFailure(reason: "playback_not_configured",
+        message: "API v2 playback is not configured on this server. Ask the server administrator to finish playback setup.",
+        retryable: false)
+
+    /// The installation id every mutation must echo, once the server offers
+    /// the whole contract this client plays through: protocol 3, the neutral
+    /// plan, header-authenticated media and sequenced progress.
     func requireAvailable() throws -> String {
-        if state == "not_configured" {
-            throw PlaybackV3TerminalFailure(reason: "playback_not_configured",
-                message: "API v2 playback is not configured on this server. Ask the server administrator to finish playback setup.",
-                retryable: false)
-        }
+        if state == "not_configured" { throw Self.notConfigured }
         if state == "unsupported" {
             throw PlaybackV3TerminalFailure(reason: "playback_unsupported",
                 message: "This server does not support API v2 playback. Update the server to start watching.",
                 retryable: false)
         }
-        guard state == "available", allowed, protocolVersions.contains(3),
-              features.contains(PlaybackSequencedContract.feature),
-              let installationId, !installationId.isEmpty else {
+        guard state == "available", allowed else {
             throw PlaybackV3TerminalFailure(reason: "playback_unavailable",
                 message: "Playback is not available for this profile.", retryable: false)
         }
+        let required = [PlaybackProtocolV3.planFeature, PlaybackProtocolV3.neutralContractFeature,
+                        PlaybackProtocolV3.headerAuthenticatedMediaFeature, PlaybackSequencedContract.feature]
+        guard protocolVersions.contains(PlaybackProtocolV3.version), required.allSatisfy(features.contains) else {
+            throw PlaybackV3TerminalFailure(reason: "server_upgrade_required",
+                message: UpdateRequirement.serverMessage, retryable: false)
+        }
+        guard let installationId, !installationId.isEmpty else { throw Self.notConfigured }
         return installationId
     }
 }

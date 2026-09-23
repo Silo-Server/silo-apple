@@ -421,7 +421,6 @@ final class AudioPlayerViewModel {
         for track: AudioPlaybackTrack,
         localTime: Double
     ) async throws -> StartedAudioSession {
-        try await PlaybackV3CapabilityGate.shared.requireNeutralProtocolV3()
         guard let profileId = await TokenStore.shared.getProfileId(),
               !profileId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw PlaybackV3TerminalFailure(
@@ -432,38 +431,43 @@ final class AudioPlayerViewModel {
         }
 
         let snapshot = ApplePlaybackV3Capabilities.audiobookSnapshot()
-        let playbackAttemptId = "apple-audio:\(UUID().uuidString.lowercased())"
-        // Audiobook resume is a whole-item timeline stitched across files.
-        // The server keeps session-local progress for liveness, while the
-        // client owns durable resume/history through /sync/progress.
-        let request = PlaybackV3StartRequest(
-            protocolVersion: PlaybackProtocolV3.version,
-            clientFeatures: ApplePlaybackV3Capabilities.audiobookFeatures,
-            fileId: track.fileId,
-            profileId: profileId,
-            playbackAttemptId: playbackAttemptId,
-            qualityPreference: ApplePlaybackQuality.autoId,
-            subtitleFidelityPreference: "preserve",
-            progressPersistence: "client",
-            startPosition: localTime.isFinite ? max(0, localTime) : 0,
-            audioTrackId: nil,
-            audioTrackIndex: nil,
-            subtitleTrackId: nil,
-            subtitleTrackIndex: nil,
-            metered: false,
-            bandwidthEstimateKbps: nil,
-            bandwidthCapKbps: nil,
-            clientCapabilities: snapshot.capabilities,
-            clientPlaybackContext: snapshot.context
-        )
-        let response: PlaybackV3DecisionResponse
-        do {
-            response = try await SiloAPI.shared.startPlaybackV3(request: request)
-        } catch let error as HTTPError {
-            guard case .network = error else { throw error }
-            // Preserve the logical attempt identity across an ambiguous
-            // transport retry so the server replays instead of double-starting.
-            response = try await SiloAPI.shared.startPlaybackV3(request: request)
+        // A start refused because the server's playback installation changed
+        // runs once more with the refreshed capability and a new attempt id.
+        let (playbackAttemptId, response) = try await PlaybackV3CapabilityGate.shared.withInstallationRefresh { _ in
+            let playbackAttemptId = "apple-audio:\(UUID().uuidString.lowercased())"
+            // Audiobook resume is a whole-item timeline stitched across files.
+            // The server keeps session-local progress for liveness, while the
+            // client owns durable resume/history through /sync/progress.
+            let request = PlaybackV3StartRequest(
+                protocolVersion: PlaybackProtocolV3.version,
+                clientFeatures: ApplePlaybackV3Capabilities.audiobookFeatures,
+                fileId: track.fileId,
+                profileId: profileId,
+                playbackAttemptId: playbackAttemptId,
+                qualityPreference: ApplePlaybackQuality.autoId,
+                subtitleFidelityPreference: "preserve",
+                progressPersistence: "client",
+                startPosition: localTime.isFinite ? max(0, localTime) : 0,
+                audioTrackId: nil,
+                audioTrackIndex: nil,
+                subtitleTrackId: nil,
+                subtitleTrackIndex: nil,
+                metered: false,
+                bandwidthEstimateKbps: nil,
+                bandwidthCapKbps: nil,
+                clientCapabilities: snapshot.capabilities,
+                clientPlaybackContext: snapshot.context
+            )
+            let response: PlaybackV3DecisionResponse
+            do {
+                response = try await SiloAPI.shared.startPlaybackV3(request: request)
+            } catch let error as HTTPError {
+                guard case .network = error else { throw error }
+                // Preserve the logical attempt identity across an ambiguous
+                // transport retry so the server replays instead of double-starting.
+                response = try await SiloAPI.shared.startPlaybackV3(request: request)
+            }
+            return (playbackAttemptId, response)
         }
 
         switch response.validatedForApple() {
