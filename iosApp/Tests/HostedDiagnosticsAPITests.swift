@@ -1920,7 +1920,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                     atPath: fixture.reports[0].directoryURL.path
                 ))
                 XCTAssertEqual(selfHostedStub.requestedPaths(), [
-                    "/api/v1/diagnostics/status",
+                    "/api/v2/diagnostics/capabilities",
                     "/api/v2/account/me",
                     "/api/v1/diagnostics/reports",
                 ])
@@ -3307,9 +3307,9 @@ private final class SelfHostedDiagnosticsStub: @unchecked Sendable {
     }
 
     private func installRoutes() {
-        handler.route(StubURLProtocol.method("GET", path: "/api/v1/diagnostics/status")) { [self] _ in
+        handler.route(StubURLProtocol.method("GET", path: "/api/v2/diagnostics/capabilities")) { [self] _ in
             let serverInstanceID = lock.withLock { self.serverInstanceID }
-            return .json(#"{"status":"available","server_instance_id":"\#(serverInstanceID)","accepted_schema_versions":[1],"max_bundle_bytes":10485760,"max_manifest_bytes":65536,"retention_days":30,"consent_notice_version":1}"#)
+            return .json(#"{"revision":"r1","state":"available","allowed":true,"status":"available","server_instance_id":"\#(serverInstanceID)","accepted_schema_versions":[1],"max_bundle_bytes":10485760,"max_manifest_bytes":65536,"retention_days":30,"consent_notice_version":1,"upload_chunk_bytes":0}"#)
         }
         handler.route(StubURLProtocol.method("GET", path: "/api/v2/account/me")) { _ in
             .json(#"{"id":"42","username":"diagnostics-test","email":"diagnostics@example.invalid","role":"user","permissions":[],"download_allowed":true}"#)
