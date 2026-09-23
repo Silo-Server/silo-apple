@@ -492,6 +492,9 @@ struct APIv2Client: Sendable {
         return try await householdRequest("POST", path: "/api/v2/profiles/\(segment)/verify-pin", body: data, status: 200)
     }
 
+    /// `getOnboardingState`, then `getOnboardingFlow` when `surface` is set,
+    /// both under one captured owner. The state's strong `ETag` is the only
+    /// validator a later `onboardingWrite` may send.
     func onboardingRead(surface: String? = nil) async throws -> APIv2OnboardingSession {
         try await gate()
         guard let auth = await tokenStore.captureOrdinaryRequestAuth(), let profile = auth.profileId else { throw HTTPError.requestIdentityChanged }
@@ -515,18 +518,21 @@ struct APIv2Client: Sendable {
             }
             guard response.statusCode == 200 else { throw APIv2Error.httpStatus(response.statusCode) }
             flow = try HTTPClient.makeJSONDecoder().decode(OnboardingFlow.self, from: response.data)
-            guard flow?.tourId == state.tourId else { throw APIv2Error.incompleteCollection }
+            guard flow?.tourId == state.tourId else { throw OnboardingProgressError.tourChanged }
         }
-        return APIv2OnboardingSession(id: UUID(), auth: auth, tag: tag, state: state, flow: flow)
+        return APIv2OnboardingSession(auth: auth, tag: tag, state: state, flow: flow)
     }
 
-    /// `writerID` is the id of the session that displayed the flow; a write
-    /// prepared for another session, tour, or owner is refused before dispatch.
-    func onboardingWrite(_ body: OnboardingProgressRequest, writerID: UUID,
+    /// `updateOnboardingProgress` under the session's owner and tag. The
+    /// operation is `non_retryable`: it is dispatched once, and a 412 (stale
+    /// tag), 428, 409 (tour no longer current) or lost response is never
+    /// re-sent here. The caller must read the state again before its next
+    /// write, and must replace its session with the one returned.
+    func onboardingWrite(_ body: OnboardingProgressRequest,
                          session: APIv2OnboardingSession) async throws -> APIv2OnboardingSession {
         try await gate()
         let auth = session.auth
-        guard writerID == session.id, body.tourId == session.state.tourId,
+        guard body.tourId == session.state.tourId,
               let profile = auth.profileId, !profile.isEmpty,
               await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
             throw HTTPError.requestIdentityChanged
@@ -543,8 +549,13 @@ struct APIv2Client: Sendable {
         }
         guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
         let state = try HTTPClient.makeJSONDecoder().decode(OnboardingState.self, from: raw.data)
-        guard state.tourId == body.tourId else { throw APIv2Error.incompleteCollection }
-        return APIv2OnboardingSession(id: session.id, auth: auth,
+        // A receipt for another tour, or a finished write that did not finish
+        // the tour, is not proof the requested change was applied.
+        guard state.tourId == body.tourId,
+              !(body.completed || body.skipped) || state.done else {
+            throw OnboardingProgressError.unexpectedReceipt
+        }
+        return APIv2OnboardingSession(auth: auth,
             tag: try Self.entityTag(raw.header("ETag")), state: state, flow: session.flow)
     }
 

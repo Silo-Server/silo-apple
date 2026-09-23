@@ -85,23 +85,6 @@ actor SiloAPI {
         )
     }
 
-    // --- Onboarding tour (profile-scoped) ---
-
-    func onboardingFlow(surface: String) async throws -> OnboardingFlow {
-        try await http.get(
-            "/api/v1/onboarding/flow",
-            query: ["surface": surface]
-        )
-    }
-
-    func onboardingState() async throws -> OnboardingState {
-        try await http.get("/api/v1/onboarding/state")
-    }
-
-    func postOnboardingProgress(_ request: OnboardingProgressRequest) async throws {
-        try await http.postVoid("/api/v1/onboarding/progress", body: request)
-    }
-
     // --- Home / sections ---
 
     func homeSections() async throws -> SectionsResponse {

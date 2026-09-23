@@ -1,6 +1,6 @@
 import Foundation
 
-/// Server-driven onboarding tour manifest (server: /api/v1/onboarding/*).
+/// Server-driven onboarding tour manifest (`GET /api/v2/onboarding/flow`).
 /// The server has already filtered steps for disabled features and the
 /// requested surface. Unknown step kinds must be skipped, never fail decode —
 /// that skip is the forward-compatibility contract that lets the server add
@@ -48,11 +48,30 @@ struct OnboardingState: Codable {
     let done: Bool
 }
 
+/// The `PUT /api/v2/onboarding/progress` body. A nil `lastStep` is omitted.
 struct OnboardingProgressRequest: Codable {
     let tourId: String
     let lastStep: String?
     let completed: Bool
     let skipped: Bool
+}
+
+/// Onboarding reads and writes that the server answered, but not in a way the
+/// client can act on.
+enum OnboardingProgressError: LocalizedError, Equatable {
+    /// The state, flow, or receipt names a different tour than the one shown.
+    case tourChanged
+    /// A progress receipt that does not show the requested change.
+    case unexpectedReceipt
+
+    var errorDescription: String? {
+        switch self {
+        case .tourChanged:
+            return "The server replaced this tour with a newer one."
+        case .unexpectedReceipt:
+            return "The server's reply did not confirm your tour progress. Try again."
+        }
+    }
 }
 
 /// Read-only compatibility for a tour preference stored by older builds after
