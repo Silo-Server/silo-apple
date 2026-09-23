@@ -76,7 +76,7 @@ struct TVPlayerControls: View {
     @FocusState private var focusedTransportButton: TVPlayerTransportCluster.FocusTarget?
     @FocusState private var focusedHUDTab: TVPlayerInfoHUD.Tab?
     @FocusState private var focusedIntroAction: IntroAction?
-    @FocusState private var isCreditsSkipFocused: Bool
+    @FocusState private var isSecondaryMarkerSkipFocused: Bool
 
     private var isHUDPresented: Bool { viewModel.isHUDPresented }
 
@@ -98,8 +98,8 @@ struct TVPlayerControls: View {
                 introSkipLayer
                     .transition(.opacity)
             }
-            if viewModel.showCreditsSkip {
-                creditsSkipLayer
+            if viewModel.showSecondaryMarkerSkip {
+                secondaryMarkerSkipLayer
                     .transition(.opacity)
             }
             if isHUDPresented {
@@ -164,19 +164,19 @@ struct TVPlayerControls: View {
                 // Hand focus back to the transport when the Skip button
                 // disappears while controls are still up, instead of leaving
                 // nothing focused.
-                if viewModel.showControls && !isHUDPresented {
+                if viewModel.showControls && !isHUDPresented && !viewModel.showSecondaryMarkerSkip {
                     isScrubberFocused = true
                 }
             }
         }
-        .onChange(of: viewModel.showCreditsSkip) { _, visible in
+        .onChange(of: viewModel.showSecondaryMarkerSkip) { _, visible in
             if visible {
                 if !isHUDPresented {
-                    isCreditsSkipFocused = true
+                    isSecondaryMarkerSkipFocused = true
                 }
             } else {
-                isCreditsSkipFocused = false
-                if viewModel.showControls && !isHUDPresented {
+                isSecondaryMarkerSkipFocused = false
+                if viewModel.showControls && !isHUDPresented && !viewModel.showIntroSkip {
                     isScrubberFocused = true
                 }
             }
@@ -231,8 +231,8 @@ struct TVPlayerControls: View {
         } else if viewModel.showControls {
             if viewModel.showIntroSkip && focusedIntroAction == nil {
                 focusedIntroAction = .skip
-            } else if viewModel.showCreditsSkip && !isCreditsSkipFocused {
-                isCreditsSkipFocused = true
+            } else if viewModel.showSecondaryMarkerSkip && !isSecondaryMarkerSkipFocused {
+                isSecondaryMarkerSkipFocused = true
             } else if focusedTransportButton == nil && !isScrubberFocused {
                 isScrubberFocused = true
             }
@@ -332,9 +332,9 @@ struct TVPlayerControls: View {
             if viewModel.showIntroSkip {
                 isScrubberFocused = false
                 focusedIntroAction = .skip
-            } else if viewModel.showCreditsSkip {
+            } else if viewModel.showSecondaryMarkerSkip {
                 isScrubberFocused = false
-                isCreditsSkipFocused = true
+                isSecondaryMarkerSkipFocused = true
             } else {
                 isScrubberFocused = true
             }
@@ -419,19 +419,19 @@ struct TVPlayerControls: View {
             .focusSection()
     }
 
-    private var creditsSkipLayer: some View {
+    private var secondaryMarkerSkipLayer: some View {
         Button {
-            viewModel.skipCredits()
+            viewModel.skipSecondaryMarker()
         } label: {
-            Label("Skip Credits", systemImage: "forward.end.fill")
+            Label(viewModel.secondaryMarkerSkipTitle, systemImage: "forward.end.fill")
                 .font(.system(size: 26, weight: .semibold))
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
                 .frame(width: 220)
         }
         .buttonStyle(TVPillButtonStyle(kind: .primary, focusTreatment: .compact))
-        .focused($isCreditsSkipFocused)
-        .accessibilityLabel("Skip Credits")
+        .focused($isSecondaryMarkerSkipFocused)
+        .accessibilityLabel(viewModel.secondaryMarkerSkipTitle)
         .padding(.horizontal, 80)
         .padding(.bottom, viewModel.showControls && !isHUDPresented ? 156 : 96)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)

@@ -13,6 +13,10 @@ actor SiloAPI {
     let http: HTTPClient
     private let tokenStore: TokenStore
 
+    var apiV2Client: APIv2Client {
+        APIv2Client(http: http, tokenStore: tokenStore)
+    }
+
     init(http: HTTPClient = .shared, tokenStore: TokenStore = .shared) {
         self.http = http
         self.tokenStore = tokenStore
@@ -288,10 +292,10 @@ actor SiloAPI {
         return EpisodesResponse(episodes: try episodes.map { try EpisodeListItem(catalog: $0) })
     }
 
-    func watchDetail(contentId: String, libraryId: Int? = nil) async throws -> WatchDetail {
+    func watchDetail(contentId: String, libraryId: Int? = nil, fileId: Int? = nil) async throws -> WatchDetail {
         let auth = try await detailReadAuth()
         return try await APIv2Client(http: http, tokenStore: tokenStore).watchDetail(
-            id: contentId, libraryId: libraryId.map(String.init),
+            id: contentId, libraryId: libraryId.map(String.init), fileId: fileId.map(String.init),
             imageSize: await imageSizeQuery["image_size"], auth: auth
         )
     }

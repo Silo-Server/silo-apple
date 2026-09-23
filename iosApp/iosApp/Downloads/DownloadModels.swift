@@ -236,7 +236,7 @@ struct DownloadCaps: Encodable, Sendable {
     }
 }
 
-// MARK: - Offline manifest (GET /api/v1/downloads/{id}/manifest)
+// MARK: - Offline manifest (GET /api/v2/downloads/{id}/manifest)
 
 /// The offline playback bundle for one download. Stable and
 /// presigned-URL-free — persisted on disk and read offline indefinitely.
@@ -285,6 +285,7 @@ struct OfflineManifest: Codable, Hashable, Sendable {
     let credits: TimeRange?
     let recap: TimeRange?
     let preview: TimeRange?
+    let markerSegments: [PlaybackMarkerSegment]?
 
     let subtitles: [OfflineSubtitle]?
     let stableIdentity: StableIdentity?
@@ -336,6 +337,7 @@ struct OfflineManifest: Codable, Hashable, Sendable {
         case credits
         case recap
         case preview
+        case markerSegments
         case subtitles
         case stableIdentity
         case integrity
@@ -356,7 +358,18 @@ struct OfflineManifest: Codable, Hashable, Sendable {
         effectiveQuality = try keyed.decodeIfPresent(String.self, forKey: .effectiveQuality)
         deliveryFormat = try keyed.decodeIfPresent(String.self, forKey: .deliveryFormat)
         targetBitrateKbps = try keyed.decodeIfPresent(Int.self, forKey: .targetBitrateKbps)
-        mediaFileId = try keyed.decodeIfPresent(Int.self, forKey: .mediaFileId) ?? 0
+        if let rawID = try? keyed.decode(String.self, forKey: .mediaFileId) {
+            guard let id = Int(rawID), id > 0, String(id) == rawID else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .mediaFileId, in: keyed,
+                    debugDescription: "The media file ID cannot be represented by this client."
+                )
+            }
+            mediaFileId = id
+        } else {
+            // Saved manifests use integer IDs; older ones may omit the field.
+            mediaFileId = try keyed.decodeIfPresent(Int.self, forKey: .mediaFileId) ?? 0
+        }
         fileSize = try keyed.decodeIfPresent(Int64.self, forKey: .fileSize)
         title = try keyed.decode(String.self, forKey: .title)
         year = try keyed.decodeIfPresent(Int.self, forKey: .year)
@@ -384,6 +397,7 @@ struct OfflineManifest: Codable, Hashable, Sendable {
         credits = try keyed.decodeIfPresent(TimeRange.self, forKey: .credits)
         recap = try keyed.decodeIfPresent(TimeRange.self, forKey: .recap)
         preview = try keyed.decodeIfPresent(TimeRange.self, forKey: .preview)
+        markerSegments = try keyed.decodeIfPresent([PlaybackMarkerSegment].self, forKey: .markerSegments)
         subtitles = try keyed.decodeIfPresent([OfflineSubtitle].self, forKey: .subtitles)
         stableIdentity = try keyed.decodeIfPresent(StableIdentity.self, forKey: .stableIdentity)
         integrity = try keyed.decodeIfPresent(OfflineIntegrity.self, forKey: .integrity)
@@ -430,6 +444,7 @@ struct OfflineManifest: Codable, Hashable, Sendable {
         try keyed.encodeIfPresent(credits, forKey: .credits)
         try keyed.encodeIfPresent(recap, forKey: .recap)
         try keyed.encodeIfPresent(preview, forKey: .preview)
+        try keyed.encodeIfPresent(markerSegments, forKey: .markerSegments)
         try keyed.encodeIfPresent(subtitles, forKey: .subtitles)
         try keyed.encodeIfPresent(stableIdentity, forKey: .stableIdentity)
         try keyed.encodeIfPresent(integrity, forKey: .integrity)

@@ -233,6 +233,27 @@ extension Dictionary where Key == String, Value == PlaybackRealtimeValue {
         }
         return .set(range)
     }
+
+    func markerSegments(forKey key: String) -> [PlaybackMarkerSegment]? {
+        guard case .array(let values)? = self[key] else {
+            return nil
+        }
+        var segments: [PlaybackMarkerSegment] = []
+        for value in values {
+            guard case .object(let object) = value,
+                  let kind = object.string(forKeys: "kind"),
+                  let start = object.number(forKeys: "start_seconds", "startSeconds"),
+                  let end = object.number(forKeys: "end_seconds", "endSeconds") else {
+                return nil
+            }
+            let segment = PlaybackMarkerSegment(kind: kind, startSeconds: start, endSeconds: end)
+            guard segment.range != nil else {
+                return nil
+            }
+            segments.append(segment)
+        }
+        return segments
+    }
 }
 
 struct PlaybackRealtimeCommandEnvelope: Decodable, Equatable {
@@ -300,19 +321,34 @@ struct PlaybackRealtimeMarkersUpdatedPayload: Equatable {
     let fileId: Int
     let intro: TimeRange?
     let credits: TimeRange?
+    let recap: TimeRange?
+    let preview: TimeRange?
+    let markerSegments: [PlaybackMarkerSegment]?
     let introUpdate: PlaybackRealtimeMarkerRangeUpdate
     let creditsUpdate: PlaybackRealtimeMarkerRangeUpdate
+    let recapUpdate: PlaybackRealtimeMarkerRangeUpdate
+    let previewUpdate: PlaybackRealtimeMarkerRangeUpdate
 
     init?(payload: PlaybackRealtimePayload) {
         guard let fileId = payload.int(forKeys: "file_id", "fileId") else {
+            return nil
+        }
+        let markerSegments = payload.markerSegments(forKey: "marker_segments")
+        if let value = payload["marker_segments"], value != .null, markerSegments == nil {
+            // A malformed snapshot must not fall back to singular ranges.
             return nil
         }
         self.sessionId = payload.string(forKeys: "session_id", "sessionId")
         self.fileId = fileId
         introUpdate = payload.markerRangeUpdate(forKey: "intro")
         creditsUpdate = payload.markerRangeUpdate(forKey: "credits")
+        recapUpdate = payload.markerRangeUpdate(forKey: "recap")
+        previewUpdate = payload.markerRangeUpdate(forKey: "preview")
         self.intro = introUpdate.range
         self.credits = creditsUpdate.range
+        self.recap = recapUpdate.range
+        self.preview = previewUpdate.range
+        self.markerSegments = markerSegments
     }
 }
 

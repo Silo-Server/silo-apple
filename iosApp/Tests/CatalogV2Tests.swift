@@ -423,6 +423,43 @@ final class CatalogV2Tests: XCTestCase {
         XCTAssertEqual(variant.parts.first?.defaultFileId, "part-file")
     }
 
+    func testWatchMarkerSegmentsPreserveMultipleRangesAndUnknownKinds() throws {
+        let decoder = HTTPClient.makeJSONDecoder()
+        let file = """
+        {
+          "file_id": "42", "resolution": "1080p", "codec_video": "h264", "codec_audio": "aac",
+          "hdr": false, "container": "mkv", "file_size": 123, "duration_seconds": 1800,
+          "bitrate": 12, "added_at": "2026-09-05T12:00:00Z",
+          "recap": { "start_seconds": 0, "end_seconds": 12 },
+          "preview": { "start_seconds": 1700, "end_seconds": 1720 }
+        }
+        """
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(file.utf8)) as? [String: Any])
+        func project() throws -> FileVersion {
+            let data = try JSONSerialization.data(withJSONObject: object)
+            return try FileVersion(watch: decoder.decode(APIv2CatalogRead.WatchFileVersion.self, from: data))
+        }
+
+        let legacy = try project()
+        XCTAssertNil(legacy.markerSegments)
+        XCTAssertEqual(legacy.recap, TimeRange(start: 0, end: 12))
+        XCTAssertEqual(legacy.preview, TimeRange(start: 1700, end: 1720))
+
+        object["marker_segments"] = [] as [[String: Any]]
+        XCTAssertEqual(try project().markerSegments, [])
+
+        object["marker_segments"] = [
+            ["kind": "intro", "start_seconds": 12, "end_seconds": 45],
+            ["kind": "intro", "start_seconds": 65, "end_seconds": 80],
+            ["kind": "future_kind", "start_seconds": 100, "end_seconds": 120]
+        ]
+        let segments = try XCTUnwrap(project().markerSegments)
+        XCTAssertEqual(segments.map(\.kind), ["intro", "intro", "future_kind"])
+        XCTAssertEqual(segments.map(\.range), [
+            TimeRange(start: 12, end: 45), TimeRange(start: 65, end: 80), TimeRange(start: 100, end: 120)
+        ])
+    }
+
     func testFiniteCatalogReadsAcceptMissingPageButRejectPartialHierarchy() throws {
         let decoder = HTTPClient.makeJSONDecoder()
         typealias People = APIv2CatalogReadCollection<APIv2CatalogRead.Person>

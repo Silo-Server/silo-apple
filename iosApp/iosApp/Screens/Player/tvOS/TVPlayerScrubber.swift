@@ -228,14 +228,16 @@ struct TVPlayerScrubber: View {
 
     @ViewBuilder
     private func introRegion(barWidth: CGFloat) -> some View {
-        if let introRange = viewModel.introRange, viewModel.duration > 0 {
-            let start = min(max(introRange.start / viewModel.duration, 0), 1)
-            let end = min(max(introRange.end / viewModel.duration, 0), 1)
-            if end > start {
-                Capsule(style: .continuous)
-                    .fill(Color.cyan.opacity(isTimelineScrubbing || isFocused ? 0.45 : 0.34))
-                    .frame(width: barWidth * (end - start), height: trackHeight)
-                    .offset(x: barWidth * start)
+        if viewModel.duration > 0 {
+            ForEach(viewModel.introRanges, id: \.self) { introRange in
+                let start = min(max(introRange.start / viewModel.duration, 0), 1)
+                let end = min(max(introRange.end / viewModel.duration, 0), 1)
+                if end > start {
+                    Capsule(style: .continuous)
+                        .fill(Color.cyan.opacity(isTimelineScrubbing || isFocused ? 0.45 : 0.34))
+                        .frame(width: barWidth * (end - start), height: trackHeight)
+                        .offset(x: barWidth * start)
+                }
             }
         }
     }

@@ -211,6 +211,9 @@ extension FileVersion {
         self.chapters = try value.chapters.map { try $0.map { try VersionChapter(catalog: $0) } }
         self.intro = try value.intro.map { try TimeRange(catalog: $0) }
         self.credits = try value.credits.map { try TimeRange(catalog: $0) }
+        self.recap = try value.recap.map { try TimeRange(catalog: $0) }
+        self.preview = try value.preview.map { try TimeRange(catalog: $0) }
+        self.markerSegments = nil
         self.presentationKind = value.presentationKind
         self.presentationGroupKey = value.presentationGroupKey
         self.presentationPartIndex = try value.presentationPartIndex.map { try catalogLegacyInt($0) }
@@ -241,6 +244,9 @@ extension FileVersion {
         self.chapters = try value.chapters.map { try $0.map { try VersionChapter(catalog: $0) } }
         self.intro = value.intro.map { TimeRange(watch: $0) }
         self.credits = value.credits.map { TimeRange(watch: $0) }
+        self.recap = value.recap.map { TimeRange(watch: $0) }
+        self.preview = value.preview.map { TimeRange(watch: $0) }
+        self.markerSegments = value.markerSegments
         self.presentationKind = value.presentationKind
         self.presentationGroupKey = value.presentationGroupKey
         self.presentationPartIndex = try value.presentationPartIndex.map { try catalogLegacyInt($0) }

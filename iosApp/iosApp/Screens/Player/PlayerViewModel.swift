@@ -282,8 +282,10 @@ class PlayerViewModel {
     /// language group to the top of the displayed track lists.
     private var subtitleOrderingLanguage: String?
     var chapters: [PlayerChapterInfo] = []
-    var introRange: TimeRange?
-    var creditsRange: TimeRange?
+    private var markerTimeline = PlayerMarkerTimeline()
+    var introRanges: [TimeRange] { markerTimeline.ranges(kind: "intro") }
+    var introRange: TimeRange? { markerTimeline.activeSegment(kind: "intro", at: currentTime)?.range }
+    var creditsRange: TimeRange? { markerTimeline.activeSegment(kind: "credits", at: currentTime)?.range }
     var introAutoSkipCountdownSeconds: Int?
     var selectedAudioId: Int64?
     var selectedSubtitleId: Int64?
@@ -344,14 +346,21 @@ class PlayerViewModel {
     /// on an indirection flag. Driven by `openHUD()` / `closeHUD()`.
     var isHUDPresented = false
 
-    var showIntroSkip: Bool {
-        guard let introRange else { return false }
-        return currentTime >= introRange.start && currentTime < introRange.end
+    var showIntroSkip: Bool { introRange != nil }
+
+    private var activeSecondaryMarker: PlaybackMarkerSegment? {
+        guard !showIntroSkip else { return nil }
+        return markerTimeline.activeSegment(at: currentTime)
     }
 
-    var showCreditsSkip: Bool {
-        guard let creditsRange else { return false }
-        return currentTime >= creditsRange.start && currentTime < creditsRange.end
+    var showSecondaryMarkerSkip: Bool { activeSecondaryMarker != nil }
+
+    var secondaryMarkerSkipTitle: String {
+        switch activeSecondaryMarker?.kind {
+        case "recap": return "Skip Recap"
+        case "preview": return "Skip Preview"
+        default: return "Skip Credits"
+        }
     }
 
     /// Signed rate of an in-flight seek session. Zero when the user isn't
@@ -566,11 +575,9 @@ class PlayerViewModel {
     /// covers normal connecting/reconnecting gaps.
     private var realtimeUnavailableSnapshot = false
 
-    /// A marker update can finish after the playback session starts but before
-    /// the realtime websocket has connected. Reconcile once after the socket
-    /// is live so that event-delivery race cannot hide intro/credits prompts
-    /// for the current Aether load.
-    private var markerReconciledSessionId: String?
+    /// Refresh on every connection to recover marker changes missed before
+    /// the first connection or while the socket was disconnected.
+    private var markerReconcileID: UUID?
     private var markerReconcileTask: Task<Void, Never>?
 
     /// Whether the realtime websocket can currently receive live AI-subtitle
@@ -775,9 +782,9 @@ class PlayerViewModel {
     private var currentSelectedVersion: FileVersion?
     private var activePreparedProtocolV3: PreparedPlaybackV3?
     private var activePlaybackSessionId: String?
-    private var autoSkippedIntroKey: String?
-    private var autoSkippedCreditsKey: String?
-    private var autoSkipIntroCancelledKey: String?
+    private var autoSkippedIntroKeys: Set<String> = []
+    private var autoSkippedCreditsKeys: Set<String> = []
+    private var autoSkipIntroCancelledKeys: Set<String> = []
     private var pendingAutoSkipIntroKey: String?
     private var autoSkipIntroCountdownTask: Task<Void, Never>?
     private var staleSessionRecoverySessionId: String?
@@ -3771,11 +3778,10 @@ class PlayerViewModel {
         livePrimarySubtitleCues = []
         liveSecondarySubtitleCues = []
         chapters = []
-        introRange = nil
-        creditsRange = nil
+        markerTimeline = PlayerMarkerTimeline()
         markerReconcileTask?.cancel()
         markerReconcileTask = nil
-        markerReconciledSessionId = nil
+        markerReconcileID = nil
         cancelPendingIntroAutoSkip()
         qualityOptions = [ApplePlaybackQuality.auto]
         activeQualityId = ApplePlaybackQuality.autoId
@@ -3785,9 +3791,9 @@ class PlayerViewModel {
         currentWatchDetail = nil
         currentSelectedVersion = nil
         activePreparedProtocolV3 = nil
-        autoSkippedIntroKey = nil
-        autoSkippedCreditsKey = nil
-        autoSkipIntroCancelledKey = nil
+        autoSkippedIntroKeys.removeAll()
+        autoSkippedCreditsKeys.removeAll()
+        autoSkipIntroCancelledKeys.removeAll()
         selectedAudioId = nil
         selectedSubtitleId = nil
         selectedSecondarySubtitleId = nil
@@ -4133,9 +4139,9 @@ class PlayerViewModel {
 
                 let session = prepared.session
                 self.activePlaybackSessionId = session.sessionId
-                self.autoSkippedIntroKey = nil
-                self.autoSkippedCreditsKey = nil
-                self.autoSkipIntroCancelledKey = nil
+                self.autoSkippedIntroKeys.removeAll()
+                self.autoSkippedCreditsKeys.removeAll()
+                self.autoSkipIntroCancelledKeys.removeAll()
                 self.cancelPendingIntroAutoSkip()
                 self.staleSessionRecoverySessionId = nil
                 // Snapshot the preferred language for track-list ordering
@@ -4187,10 +4193,13 @@ class PlayerViewModel {
                 self.serverProvidedChapters = self.chapterInfoList(from: prepared.selectedVersion)
                 self.duration = session.durationSeconds ?? prepared.selectedVersion.duration ?? 0
                 self.currentTime = self.movieTime(for: session)
-                self.applyMarkerRanges(
+                self.applyMarkerTimeline(PlayerMarkerTimeline(
+                    segments: prepared.selectedVersion.markerSegments,
                     intro: prepared.selectedVersion.intro ?? prepared.watchDetail.intro,
-                    credits: prepared.selectedVersion.credits ?? prepared.watchDetail.credits
-                )
+                    credits: prepared.selectedVersion.credits ?? prepared.watchDetail.credits,
+                    recap: prepared.selectedVersion.recap,
+                    preview: prepared.selectedVersion.preview
+                ))
 
                 guard let streamRequest = await self.makeStreamRequest(
                     session: session,
@@ -4823,24 +4832,33 @@ class PlayerViewModel {
     func skipIntro() {
         guard let introRange else { return }
         if let key = currentIntroSkipKey(for: introRange) {
-            autoSkippedIntroKey = key
+            autoSkippedIntroKeys.insert(key)
         }
         cancelPendingIntroAutoSkip()
-        seekTo(seconds: introRange.end)
+        performMarkerSkip(to: introRange.end)
+    }
+
+    func skipSecondaryMarker() {
+        guard let marker = activeSecondaryMarker else { return }
+        if marker.kind == "credits" {
+            skipCredits()
+        } else {
+            performMarkerSkip(to: marker.endSeconds)
+        }
     }
 
     func skipCredits() {
         guard let creditsRange else { return }
         if let key = currentCreditsSkipKey(for: creditsRange) {
-            autoSkippedCreditsKey = key
+            autoSkippedCreditsKeys.insert(key)
         }
-        performCreditsSkip(to: creditsRange.end)
+        performMarkerSkip(to: creditsRange.end)
     }
 
     func cancelIntroAutoSkip() {
         if let introRange,
            let key = currentIntroSkipKey(for: introRange) {
-            autoSkipIntroCancelledKey = key
+            autoSkipIntroCancelledKeys.insert(key)
             Self.logger.info("[CMP-MARKERS] cancelled auto-skip intro key=\(key, privacy: .public)")
         }
         cancelPendingIntroAutoSkip()
@@ -5106,60 +5124,49 @@ class PlayerViewModel {
         scheduleHideControls()
     }
 
-    private func applyMarkerRanges(intro: TimeRange?, credits: TimeRange?) {
-        introRange = validTimeRange(intro)
-        creditsRange = validTimeRange(credits)
-        if let introRange {
-            Self.logger.info(
-                "[CMP-MARKERS] intro range active start=\(introRange.start, privacy: .public) end=\(introRange.end, privacy: .public)"
-            )
-        }
-        if let creditsRange {
-            Self.logger.info(
-                "[CMP-MARKERS] credits range active start=\(creditsRange.start, privacy: .public) end=\(creditsRange.end, privacy: .public)"
-            )
-        }
+    private func applyMarkerTimeline(_ timeline: PlayerMarkerTimeline) {
+        markerTimeline = timeline
         autoSkipIntroIfNeeded(at: currentTime)
         autoSkipCreditsIfNeeded(at: currentTime)
     }
 
     private func reconcileMarkersAfterRealtimeConnect() {
         guard offlinePlaybackContext == nil,
-              introRange == nil || creditsRange == nil,
               let sessionId = activePlaybackSessionId,
-              markerReconciledSessionId != sessionId,
               let contentId = currentWatchDetail?.contentId,
               let fileId = currentSelectedVersion?.fileId else {
             return
         }
 
-        markerReconciledSessionId = sessionId
+        let requestID = UUID()
+        markerReconcileID = requestID
         markerReconcileTask?.cancel()
         markerReconcileTask = Task { @MainActor [weak self] in
             guard let self else { return }
             defer {
-                if self.markerReconciledSessionId == sessionId {
+                if self.markerReconcileID == requestID {
                     self.markerReconcileTask = nil
+                    self.markerReconcileID = nil
                 }
             }
             do {
-                let detail = try await SiloAPI.shared.watchDetail(contentId: contentId, libraryId: libraryId)
+                let detail = try await SiloAPI.shared.watchDetail(contentId: contentId, libraryId: libraryId, fileId: fileId)
                 guard !Task.isCancelled,
+                      self.markerReconcileID == requestID,
                       self.activePlaybackSessionId == sessionId,
                       self.currentSelectedVersion?.fileId == fileId,
                       let version = detail.versions.first(where: { $0.fileId == fileId }) else {
                     return
                 }
-                let refreshedIntro = version.intro ?? detail.intro
-                let refreshedCredits = version.credits ?? detail.credits
-                self.applyMarkerRanges(
-                    intro: self.introRange ?? refreshedIntro,
-                    credits: self.creditsRange ?? refreshedCredits
-                )
+                self.applyMarkerTimeline(PlayerMarkerTimeline(
+                    segments: version.markerSegments,
+                    intro: version.intro ?? detail.intro,
+                    credits: version.credits ?? detail.credits,
+                    recap: version.recap,
+                    preview: version.preview
+                ))
             } catch {
-                if self.activePlaybackSessionId == sessionId {
-                    self.markerReconciledSessionId = nil
-                }
+                guard !Task.isCancelled else { return }
                 Self.logger.warning(
                     "[CMP-MARKERS] realtime marker reconciliation failed: \(String(describing: error), privacy: .public)"
                 )
@@ -5167,22 +5174,11 @@ class PlayerViewModel {
         }
     }
 
-    private func validTimeRange(_ range: TimeRange?) -> TimeRange? {
-        guard let range,
-              range.start.isFinite,
-              range.end.isFinite,
-              range.start >= 0,
-              range.end > range.start else {
-            return nil
-        }
-        return range
-    }
-
     private func autoSkipIntroIfNeeded(at time: Double) {
         guard settings.autoSkipIntro,
               !isLoading,
               !hasReachedEndOfFile,
-              let introRange,
+              let introRange = markerTimeline.activeSegment(kind: "intro", at: time)?.range,
               let key = currentIntroSkipKey(for: introRange) else {
             cancelPendingIntroAutoSkip()
             return
@@ -5192,15 +5188,8 @@ class PlayerViewModel {
             cancelPendingIntroAutoSkip()
         }
 
-        guard time >= introRange.start, time < introRange.end else {
-            if pendingAutoSkipIntroKey == key {
-                cancelPendingIntroAutoSkip()
-            }
-            return
-        }
-
-        guard autoSkippedIntroKey != key,
-              autoSkipIntroCancelledKey != key,
+        guard !autoSkippedIntroKeys.contains(key),
+              !autoSkipIntroCancelledKeys.contains(key),
               pendingAutoSkipIntroKey != key else {
             return
         }
@@ -5225,7 +5214,11 @@ class PlayerViewModel {
                     return
                 }
                 self.introAutoSkipCountdownSeconds = remaining
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                do {
+                    try await Task.sleep(for: .seconds(1))
+                } catch {
+                    return
+                }
                 remaining -= 1
             }
 
@@ -5235,22 +5228,24 @@ class PlayerViewModel {
                   !self.isLoading,
                   !self.hasReachedEndOfFile,
                   self.pendingAutoSkipIntroKey == key,
-                  self.autoSkipIntroCancelledKey != key,
-                  self.autoSkippedIntroKey != key,
+                  !self.autoSkipIntroCancelledKeys.contains(key),
+                  !self.autoSkippedIntroKeys.contains(key),
                   self.currentTime >= range.start,
                   self.currentTime < range.end else {
-                self?.cancelPendingIntroAutoSkip()
+                if self?.pendingAutoSkipIntroKey == key {
+                    self?.cancelPendingIntroAutoSkip()
+                }
                 return
             }
 
-            self.autoSkippedIntroKey = key
+            self.autoSkippedIntroKeys.insert(key)
             self.pendingAutoSkipIntroKey = nil
             self.autoSkipIntroCountdownTask = nil
             self.introAutoSkipCountdownSeconds = nil
             Self.logger.info(
                 "[CMP-MARKERS] auto-skip intro target=\(range.end, privacy: .public) current=\(self.currentTime, privacy: .public)"
             )
-            self.seekTo(seconds: range.end)
+            self.performMarkerSkip(to: range.end)
         }
     }
 
@@ -5262,31 +5257,34 @@ class PlayerViewModel {
     }
 
     private func autoSkipCreditsIfNeeded(at time: Double) {
-        let key = creditsRange.flatMap(currentCreditsSkipKey(for:))
+        guard let creditsRange = markerTimeline.activeSegment(kind: "credits", at: time)?.range,
+              let key = currentCreditsSkipKey(for: creditsRange) else {
+            return
+        }
         guard let target = CreditsAutoSkipPolicy.target(
             enabled: settings.autoSkipCredits,
             playbackEligible: !isLoading && !hasReachedEndOfFile,
             time: time,
             range: creditsRange,
             markerKey: key,
-            lastSkippedKey: autoSkippedCreditsKey
-        ), let key else {
+            lastSkippedKey: autoSkippedCreditsKeys.contains(key) ? key : nil
+        ) else {
             return
         }
 
         // Set the latch before seeking: a synchronous backend time callback
         // caused by the seek must see this marker as already handled.
-        autoSkippedCreditsKey = key
+        autoSkippedCreditsKeys.insert(key)
         Self.logger.info(
             "[CMP-MARKERS] auto-skip credits target=\(target, privacy: .public) current=\(time, privacy: .public)"
         )
-        performCreditsSkip(to: target)
+        performMarkerSkip(to: target)
     }
 
-    private func performCreditsSkip(to target: Double) {
+    private func performMarkerSkip(to target: Double) {
         // Aether deliberately parks a programmatic seek at the exact duration
-        // in a paused state. TheIntroDB uses that exact bound when credits run
-        // to EOF, so complete the item through Silo's normal end/Next Up path
+        // in a paused state. Markers can end at that exact bound, so complete
+        // the item through Silo's normal end/Next Up path
         // instead of leaving a frozen final frame.
         if duration.isFinite,
            duration > 0,
@@ -6283,15 +6281,14 @@ class PlayerViewModel {
         currentWatchDetail = nil
         currentSelectedVersion = nil
         playbackStats = .empty
-        introRange = nil
-        creditsRange = nil
+        markerTimeline = PlayerMarkerTimeline()
         markerReconcileTask?.cancel()
         markerReconcileTask = nil
-        markerReconciledSessionId = nil
+        markerReconcileID = nil
         cancelPendingIntroAutoSkip()
-        autoSkippedIntroKey = nil
-        autoSkippedCreditsKey = nil
-        autoSkipIntroCancelledKey = nil
+        autoSkippedIntroKeys.removeAll()
+        autoSkippedCreditsKeys.removeAll()
+        autoSkipIntroCancelledKeys.removeAll()
         knownExternalSubtitles = []
         locallyRegisteredSidecarSubtitleTracks = []
         localProtocolV3SubtitleSelection = nil
@@ -6473,10 +6470,11 @@ class PlayerViewModel {
             guard payload.fileId == currentSelectedVersion?.fileId else {
                 return
             }
-            applyMarkerRanges(
-                intro: payload.introUpdate.resolving(current: introRange),
-                credits: payload.creditsUpdate.resolving(current: creditsRange)
-            )
+            // A response started before this event must not overwrite its newer snapshot.
+            markerReconcileTask?.cancel()
+            markerReconcileTask = nil
+            markerReconcileID = nil
+            applyMarkerTimeline(markerTimeline.applying(payload))
         case .chapterThumbnailReady:
             break
         case .subtitleTranslationStarted,

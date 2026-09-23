@@ -61,8 +61,8 @@ phone launches new content, it must negotiate v2 and complete the handoff:
    abandoned after 60 seconds, and the server caps the session at 24 hours.
 
 When the player opens, the TV shows a non-focusable six-second notice naming the
-phone profile and device (for example, **Playing as Alex — From Nathan's
-iPhone**). Cross-server launches also include the temporary server name. The
+phone profile and device (for example, **Playing as Guest — From iPhone**).
+Cross-server launches also include the temporary server name. The
 profile name is display metadata only; authorization remains bound to the
 server-approved profile ID.
 

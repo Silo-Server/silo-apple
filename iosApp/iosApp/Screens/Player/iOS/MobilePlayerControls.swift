@@ -75,8 +75,8 @@ struct MobilePlayerControls: View {
             if viewModel.showIntroSkip {
                 introSkipPill
             }
-            if viewModel.showCreditsSkip {
-                creditsSkipPill
+            if viewModel.showSecondaryMarkerSkip {
+                secondaryMarkerSkipPill
             }
             if showsStats {
                 MobilePlaybackStatsOverlay(stats: viewModel.playbackStats)
@@ -507,14 +507,16 @@ struct MobilePlayerControls: View {
 
     @ViewBuilder
     private func introMarker(width: CGFloat, height: CGFloat) -> some View {
-        if let introRange = viewModel.introRange, viewModel.duration > 0 {
-            let start = min(max(introRange.start / viewModel.duration, 0), 1)
-            let end = min(max(introRange.end / viewModel.duration, 0), 1)
-            if end > start {
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(Color.cyan.opacity(0.4))
-                    .frame(width: width * (end - start), height: height)
-                    .offset(x: width * start)
+        if viewModel.duration > 0 {
+            ForEach(viewModel.introRanges, id: \.self) { introRange in
+                let start = min(max(introRange.start / viewModel.duration, 0), 1)
+                let end = min(max(introRange.end / viewModel.duration, 0), 1)
+                if end > start {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color.cyan.opacity(0.4))
+                        .frame(width: width * (end - start), height: height)
+                        .offset(x: width * start)
+                }
             }
         }
     }
@@ -802,22 +804,22 @@ struct MobilePlayerControls: View {
         .transition(.opacity)
     }
 
-    private var creditsSkipPill: some View {
+    private var secondaryMarkerSkipPill: some View {
         VStack {
             Spacer()
             HStack {
                 Spacer()
                 Button {
-                    viewModel.skipCredits()
+                    viewModel.skipSecondaryMarker()
                 } label: {
-                    Label("Skip Credits", systemImage: "forward.end.fill")
+                    Label(viewModel.secondaryMarkerSkipTitle, systemImage: "forward.end.fill")
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(.black.opacity(0.85))
                         .padding(.horizontal, 16)
                         .frame(height: SiloTheme.topBarIconHitSize)
                 }
                 .buttonStyle(MobilePlayerGlassButtonStyle(tint: .white.opacity(0.9)))
-                .accessibilityLabel("Skip Credits")
+                .accessibilityLabel(viewModel.secondaryMarkerSkipTitle)
             }
             .padding(.horizontal, 24)
             .padding(.bottom, viewModel.showControls ? 88 : 24)
