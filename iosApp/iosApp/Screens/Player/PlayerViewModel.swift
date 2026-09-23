@@ -284,7 +284,9 @@ class PlayerViewModel {
     var chapters: [PlayerChapterInfo] = []
     var introRange: TimeRange?
     var creditsRange: TimeRange?
-    var introAutoSkipCountdownSeconds: Int?
+    /// The intro-skip pill — `ask`'s "Skip Intro" offer or `always`'s undo.
+    /// See IntroSkipPrompt.swift and the server's intro-skip-mode spec.
+    let introSkipPrompt = IntroSkipPrompt()
     var selectedAudioId: Int64?
     var selectedSubtitleId: Int64?
     var selectedSecondarySubtitleId: Int64?
@@ -344,9 +346,11 @@ class PlayerViewModel {
     /// on an indirection flag. Driven by `openHUD()` / `closeHUD()`.
     var isHUDPresented = false
 
+    /// True while the intro-skip pill is on screen. Its timer, not the intro's
+    /// range, decides this: the pill is up for a few seconds, not the whole
+    /// intro.
     var showIntroSkip: Bool {
-        guard let introRange else { return false }
-        return currentTime >= introRange.start && currentTime < introRange.end
+        introSkipPrompt.isVisible
     }
 
     var showCreditsSkip: Bool {
@@ -775,11 +779,7 @@ class PlayerViewModel {
     private var currentSelectedVersion: FileVersion?
     private var activePreparedProtocolV3: PreparedPlaybackV3?
     private var activePlaybackSessionId: String?
-    private var autoSkippedIntroKey: String?
     private var autoSkippedCreditsKey: String?
-    private var autoSkipIntroCancelledKey: String?
-    private var pendingAutoSkipIntroKey: String?
-    private var autoSkipIntroCountdownTask: Task<Void, Never>?
     private var staleSessionRecoverySessionId: String?
     struct LoadRequest {
         var libraryId: Int? = nil
@@ -931,7 +931,6 @@ class PlayerViewModel {
     private var lastLoadRequest: LoadRequest?
     private static let nextUpCountdownDefaultSeconds = 10
     private static let nextUpHUDCountdownThresholdSeconds: Double = 100
-    private static let introAutoSkipCountdownDefaultSeconds = 5
     private static let nearEndPlaybackErrorThresholdSeconds: Double = 8
     private var nextUpAutoplayCancelled = false
     /// Set when the user taps Keep Watching; suppresses re-presenting the
@@ -1163,6 +1162,7 @@ class PlayerViewModel {
             case .loading, .seeking:
                 break
             }
+            syncIntroSkipPrompt()
         case .phase(let phase):
             switch phase {
             case .loading, .rebuffering, .stalled:
@@ -1171,6 +1171,7 @@ class PlayerViewModel {
                 isLoading = false
             }
             refreshPlaybackStats(force: true)
+            syncIntroSkipPrompt()
         case .playerTime(let playerSeconds):
             guard !hasReachedEndOfFile,
                   playerSeconds.isFinite,
@@ -1196,7 +1197,7 @@ class PlayerViewModel {
             }
             currentTime = movieTime
             updateNextUpPresentation(for: movieTime)
-            autoSkipIntroIfNeeded(at: movieTime)
+            syncIntroSkipPrompt()
             autoSkipCreditsIfNeeded(at: movieTime)
             pushNowPlayingIfDue()
             refreshPlaybackStats()
@@ -1216,6 +1217,7 @@ class PlayerViewModel {
         case .buffering(let buffering):
             isBuffering = buffering
             refreshPlaybackStats(force: true)
+            syncIntroSkipPrompt()
         case .subtitleLoading(let loading):
             isLoadingSubtitles = loading
         case .firstFrame:
@@ -3776,7 +3778,6 @@ class PlayerViewModel {
         markerReconcileTask?.cancel()
         markerReconcileTask = nil
         markerReconciledSessionId = nil
-        cancelPendingIntroAutoSkip()
         qualityOptions = [ApplePlaybackQuality.auto]
         activeQualityId = ApplePlaybackQuality.autoId
         isQualitySwitching = false
@@ -3785,9 +3786,7 @@ class PlayerViewModel {
         currentWatchDetail = nil
         currentSelectedVersion = nil
         activePreparedProtocolV3 = nil
-        autoSkippedIntroKey = nil
         autoSkippedCreditsKey = nil
-        autoSkipIntroCancelledKey = nil
         selectedAudioId = nil
         selectedSubtitleId = nil
         selectedSecondarySubtitleId = nil
@@ -3986,6 +3985,14 @@ class PlayerViewModel {
         recordCurrentPlaybackMutation(markedCompleted: currentItemCompleted)
         let pendingNaturalEndProgressTask = naturalEndProgressTask
         naturalEndProgressTask = nil
+        // Intro decisions belong to the content, not to one stream of it. A
+        // retry or a reload that lands a seek keeps them, so a viewer who
+        // skipped or dismissed an intro is not asked again — and `always`
+        // cannot skip the same intro twice when the reload lands just short of
+        // its end.
+        if lastLoadRequest?.contentId != request.contentId {
+            introSkipPrompt.reset()
+        }
         lastLoadRequest = request
         offlinePlaybackContext = nil
         contentIdsNeedingDetailRefresh.insert(request.contentId)
@@ -4133,10 +4140,7 @@ class PlayerViewModel {
 
                 let session = prepared.session
                 self.activePlaybackSessionId = session.sessionId
-                self.autoSkippedIntroKey = nil
                 self.autoSkippedCreditsKey = nil
-                self.autoSkipIntroCancelledKey = nil
-                self.cancelPendingIntroAutoSkip()
                 self.staleSessionRecoverySessionId = nil
                 // Snapshot the preferred language for track-list ordering
                 // unconditionally (even with an explicit choice) so the
@@ -4820,13 +4824,31 @@ class PlayerViewModel {
         }
     }
 
-    func skipIntro() {
-        guard let introRange else { return }
-        if let key = currentIntroSkipKey(for: introRange) {
-            autoSkippedIntroKey = key
-        }
-        cancelPendingIntroAutoSkip()
-        seekTo(seconds: introRange.end)
+    /// The intro pill's action: past the intro for `ask`, back to its start
+    /// for `always`'s undo. Either way the intro is decided and the pill goes.
+    func selectIntroSkipPrompt() {
+        guard let target = withoutAnimation({ introSkipPrompt.select() }) else { return }
+        Self.logger.info(
+            "[CMP-MARKERS] intro prompt selected target=\(target, privacy: .public) current=\(self.currentTime, privacy: .public)"
+        )
+        seekTo(seconds: target)
+    }
+
+    /// Back / Menu / Escape while the intro pill is up. Returns true when it
+    /// took the pill down, so the caller consumes the press only then.
+    @discardableResult
+    func dismissIntroSkipPrompt() -> Bool {
+        guard withoutAnimation({ introSkipPrompt.dismiss() }) else { return false }
+        Self.logger.info("[CMP-MARKERS] intro prompt dismissed")
+        return true
+    }
+
+    /// The pill fades when its timer runs out but goes at once when the viewer
+    /// acts on it, so these two paths opt out of the views' fade.
+    private func withoutAnimation<Result>(_ body: () -> Result) -> Result {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        return withTransaction(transaction, body)
     }
 
     func skipCredits() {
@@ -4835,15 +4857,6 @@ class PlayerViewModel {
             autoSkippedCreditsKey = key
         }
         performCreditsSkip(to: creditsRange.end)
-    }
-
-    func cancelIntroAutoSkip() {
-        if let introRange,
-           let key = currentIntroSkipKey(for: introRange) {
-            autoSkipIntroCancelledKey = key
-            Self.logger.info("[CMP-MARKERS] cancelled auto-skip intro key=\(key, privacy: .public)")
-        }
-        cancelPendingIntroAutoSkip()
     }
 
     /// Enter continuous seek mode. The rate starts at ±1× (sign from
@@ -5078,6 +5091,12 @@ class PlayerViewModel {
             self.seekTargetTime = nil
             self.seekFilterTimeoutTask = nil
         }
+        // Playback ticks stop while paused, so a seek out of (or back into)
+        // the intro has to reach the pill here rather than on the next tick.
+        // Last, after this seek is fully issued: a seek into an unresolved
+        // intro under `always` commits its own skip from in here, and that
+        // later seek must replace this one rather than be cancelled by it.
+        syncIntroSkipPrompt()
         return requiresReplan
     }
 
@@ -5119,7 +5138,7 @@ class PlayerViewModel {
                 "[CMP-MARKERS] credits range active start=\(creditsRange.start, privacy: .public) end=\(creditsRange.end, privacy: .public)"
             )
         }
-        autoSkipIntroIfNeeded(at: currentTime)
+        syncIntroSkipPrompt()
         autoSkipCreditsIfNeeded(at: currentTime)
     }
 
@@ -5178,87 +5197,40 @@ class PlayerViewModel {
         return range
     }
 
-    private func autoSkipIntroIfNeeded(at time: Double) {
-        guard settings.autoSkipIntro,
-              !isLoading,
-              !hasReachedEndOfFile,
-              let introRange,
-              let key = currentIntroSkipKey(for: introRange) else {
-            cancelPendingIntroAutoSkip()
-            return
-        }
-
-        if let pendingAutoSkipIntroKey, pendingAutoSkipIntroKey != key {
-            cancelPendingIntroAutoSkip()
-        }
-
-        guard time >= introRange.start, time < introRange.end else {
-            if pendingAutoSkipIntroKey == key {
-                cancelPendingIntroAutoSkip()
-            }
-            return
-        }
-
-        guard autoSkippedIntroKey != key,
-              autoSkipIntroCancelledKey != key,
-              pendingAutoSkipIntroKey != key else {
-            return
-        }
-
-        beginIntroAutoSkipCountdown(key: key, range: introRange)
-    }
-
-    private func beginIntroAutoSkipCountdown(key: String, range: TimeRange) {
-        pendingAutoSkipIntroKey = key
-        autoSkipIntroCountdownTask?.cancel()
-        introAutoSkipCountdownSeconds = Self.introAutoSkipCountdownDefaultSeconds
-        Self.logger.info(
-            "[CMP-MARKERS] auto-skip intro countdown started target=\(range.end, privacy: .public)"
-        )
-
-        autoSkipIntroCountdownTask = Task { @MainActor [weak self] in
-            var remaining = Self.introAutoSkipCountdownDefaultSeconds
-            while remaining > 0 {
-                guard let self,
-                      !Task.isCancelled,
-                      self.pendingAutoSkipIntroKey == key else {
-                    return
-                }
-                self.introAutoSkipCountdownSeconds = remaining
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                remaining -= 1
-            }
-
-            guard let self,
-                  !Task.isCancelled,
-                  self.settings.autoSkipIntro,
-                  !self.isLoading,
-                  !self.hasReachedEndOfFile,
-                  self.pendingAutoSkipIntroKey == key,
-                  self.autoSkipIntroCancelledKey != key,
-                  self.autoSkippedIntroKey != key,
-                  self.currentTime >= range.start,
-                  self.currentTime < range.end else {
-                self?.cancelPendingIntroAutoSkip()
-                return
-            }
-
-            self.autoSkippedIntroKey = key
-            self.pendingAutoSkipIntroKey = nil
-            self.autoSkipIntroCountdownTask = nil
-            self.introAutoSkipCountdownSeconds = nil
-            Self.logger.info(
-                "[CMP-MARKERS] auto-skip intro target=\(range.end, privacy: .public) current=\(self.currentTime, privacy: .public)"
+    /// Feeds the intro pill the latest playback state.
+    ///
+    /// Called wherever one of its inputs moves: the playhead, the markers, and
+    /// the play/pause, loading and buffering state. The pill's own timer runs
+    /// in between. The one seek it can ask for is `always`'s immediate skip.
+    private func syncIntroSkipPrompt() {
+        let range = introRange
+        let target = introSkipPrompt.update(
+            IntroSkipPrompt.Inputs(
+                position: currentTime,
+                range: range,
+                key: range.flatMap(currentIntroSkipKey(for:)),
+                mode: settings.introSkipMode,
+                activity: introSkipActivity
             )
-            self.seekTo(seconds: range.end)
-        }
+        )
+        guard let target, !hasReachedEndOfFile else { return }
+        Self.logger.info(
+            "[CMP-MARKERS] auto-skip intro target=\(target, privacy: .public) current=\(self.currentTime, privacy: .public)"
+        )
+        // Not `seekTo`: that reveals the transport, and nobody touched the
+        // remote. The undo pill is the feedback for this seek.
+        skipDebounceTask?.cancel()
+        skipDebounceTask = nil
+        commitSeek(to: target, source: "introAutoSkip")
     }
 
-    private func cancelPendingIntroAutoSkip() {
-        autoSkipIntroCountdownTask?.cancel()
-        autoSkipIntroCountdownTask = nil
-        pendingAutoSkipIntroKey = nil
-        introAutoSkipCountdownSeconds = nil
+    /// Playback as the intro pill's timer sees it. Loading and buffering are a
+    /// stall, which the pill only treats as a pause once it outlasts the grace
+    /// window; a paused player freezes the timer at once.
+    private var introSkipActivity: IntroSkipPrompt.Activity {
+        if hasReachedEndOfFile { return .paused }
+        if isLoading || isBuffering { return .stalled }
+        return isPlaying ? .playing : .paused
     }
 
     private func autoSkipCreditsIfNeeded(at time: Double) {
@@ -5298,12 +5270,16 @@ class PlayerViewModel {
         seekTo(seconds: target)
     }
 
+    /// Identifies an intro across seeks and stream reloads of the same file.
+    /// Deliberately not keyed on the playback session: a protocol-v3 replan
+    /// can replace the session id mid-playback, and the intro must stay
+    /// decided across it.
     private func currentIntroSkipKey(for range: TimeRange) -> String? {
-        guard let sessionId = activePlaybackSessionId,
+        guard let contentId = currentWatchDetail?.contentId,
               let fileId = currentSelectedVersion?.fileId else {
             return nil
         }
-        return "\(sessionId):\(fileId):\(range.start):\(range.end)"
+        return "\(contentId):\(fileId):\(range.start):\(range.end)"
     }
 
     private func currentCreditsSkipKey(for range: TimeRange) -> String? {
@@ -6288,10 +6264,8 @@ class PlayerViewModel {
         markerReconcileTask?.cancel()
         markerReconcileTask = nil
         markerReconciledSessionId = nil
-        cancelPendingIntroAutoSkip()
-        autoSkippedIntroKey = nil
+        introSkipPrompt.reset()
         autoSkippedCreditsKey = nil
-        autoSkipIntroCancelledKey = nil
         knownExternalSubtitles = []
         locallyRegisteredSidecarSubtitleTracks = []
         localProtocolV3SubtitleSelection = nil
@@ -6334,8 +6308,6 @@ class PlayerViewModel {
         nextUpLookupTask?.cancel()
         nextUpOnDeckTask?.cancel()
         nextUpCountdownTask?.cancel()
-        autoSkipIntroCountdownTask?.cancel()
-        autoSkipIntroCountdownTask = nil
         skipDebounceTask?.cancel()
         seekFilterTimeoutTask?.cancel()
         holdSeekTask?.cancel()
@@ -6445,7 +6417,6 @@ class PlayerViewModel {
             protocolV3ReplanTask?.cancel()
             seekReplanTask?.cancel()
             staleSessionRecoveryTask?.cancel()
-            autoSkipIntroCountdownTask?.cancel()
             #if DEBUG
             debugLiveSubtitleTimer?.invalidate()
             debugLiveSubtitleTimer = nil

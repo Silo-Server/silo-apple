@@ -120,14 +120,11 @@ struct TVPlaybackSettingsPane: View {
         ) { showPicker(.nextUpPrompt) }
         .focused(detailFocus, equals: .playbackNextUpPrompt)
 
-        TVSettingsToggleRow(
+        TVSettingsPickerRow(
             title: "Skip Intros",
-            isOn: viewModel.skipIntros
-        ) {
-            let value = !viewModel.skipIntros
-            viewModel.skipIntros = value
-            Task { await viewModel.setSkipIntros(value) }
-        }
+            value: viewModel.introSkipMode.label
+        ) { showPicker(.introSkipMode) }
+        .focused(detailFocus, equals: .playbackIntroSkipMode)
 
         TVSettingsToggleRow(
             title: "Skip Credits",
@@ -264,6 +261,21 @@ struct TVPlaybackSettingsPane: View {
                 ),
                 returnFocus: .playbackNextUpPrompt
             )
+        case .introSkipMode:
+            TVSettingsPickerRequest(
+                id: kind.id,
+                title: "Skip Intros",
+                options: TVSettingsOptions.introSkipMode,
+                selection: Binding(
+                    get: { viewModel.introSkipMode.wireValue },
+                    set: { value in
+                        guard let mode = IntroSkipMode(wireValue: value) else { return }
+                        viewModel.introSkipMode = mode
+                        Task { await viewModel.setIntroSkipMode(mode) }
+                    }
+                ),
+                returnFocus: .playbackIntroSkipMode
+            )
         }
     }
 
@@ -274,6 +286,7 @@ struct TVPlaybackSettingsPane: View {
         case deinterlaceMode
         case deinterlaceFieldRate
         case nextUpPrompt
+        case introSkipMode
 
         var id: String { rawValue }
     }

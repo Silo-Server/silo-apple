@@ -148,12 +148,16 @@ struct PlayerView: View {
                         //     the signed ladder, Tap Select = commit + exit,
                         //     Menu = cancel + exit (handled in onExitCommand).
                         //     Taps against Up/Down are ignored; holds are no-ops.
+                        // While the intro-skip pill is up the sink stays mounted
+                        // and Select acts on the pill (the spec's root-level
+                        // Select), so every other press keeps its playback
+                        // meaning and the pill's timer runs on regardless.
                         // Never while the HUD is presented: the sink and the HUD's
                         // focus graph would be two owners for the same presses
                         // (docs/tvos-focus.md), and the sink's Down handler
                         // force-switches the HUD tab underneath the user.
                         if !viewModel.isLoading && !viewModel.isHUDPresented &&
-                            (!(viewModel.showIntroSkip || viewModel.showCreditsSkip) || viewModel.isHoldSeeking) &&
+                            (!viewModel.showCreditsSkip || viewModel.isHoldSeeking) &&
                             (!viewModel.showControls || viewModel.isHoldSeeking) {
                             TVPressCaptureView(
                                 onArrowTap: { direction in
@@ -197,6 +201,8 @@ struct PlayerView: View {
                                 onSelect: {
                                     if viewModel.isHoldSeeking {
                                         viewModel.commitHoldSeek()
+                                    } else if viewModel.showIntroSkip {
+                                        viewModel.selectIntroSkipPrompt()
                                     } else if viewModel.isPlaying {
                                         timelinePreviewContactCanToggle = false
                                         hideTimelinePreview(immediately: true)
@@ -315,7 +321,8 @@ struct PlayerView: View {
                 viewModel.togglePlayPause()
             }
         }
-        // Menu button: step seek-session → HUD → overlay → dismiss.
+        // Menu button: step seek-session → HUD → (loading: dismiss) → intro pill →
+        // overlay → dismiss.
         // Matches the Infuse / Apple TV pattern. Runs at the shell level
         // so it fires even if focus has drifted — the HUD's own
         // `onExitCommand` handles the common case where focus is inside
@@ -336,6 +343,12 @@ struct PlayerView: View {
                 viewModel.closeHUD()
             } else if viewModel.isLoading {
                 dismissPlayer()
+            } else if viewModel.dismissIntroSkipPrompt() {
+                // The intro pill is the most transient thing on screen: Menu
+                // takes it down and the press ends there, so it can neither
+                // hide the controls nor exit. The next Menu behaves normally.
+                // Below the loading escape because the controls, pill
+                // included, are not drawn while a load is in flight.
             } else if !viewModel.isPlaying {
                 // While paused, Menu exits the player instead of hiding the
                 // controls over a frozen frame.

@@ -43,7 +43,7 @@ final class SettingsViewModel {
     var preferredAudioLanguage: String = PlayerSettings.shared.audioLanguage
     var autoPlayNext: Bool = PlayerSettings.shared.autoPlayNextEpisode
     var nextUpPromptSeconds: Int = PlayerSettings.shared.nextUpPromptSeconds
-    var skipIntros: Bool = PlayerSettings.shared.autoSkipIntro
+    var introSkipMode: IntroSkipMode = PlayerSettings.shared.introSkipMode
     var skipCredits: Bool = PlayerSettings.shared.autoSkipCredits
     var dolbyVisionEnabled: Bool = PlayerSettings.shared.dolbyVisionEnabled
     var seekCacheEnabled: Bool = PlayerSettings.shared.seekCacheEnabled
@@ -139,7 +139,7 @@ final class SettingsViewModel {
         preferredAudioLanguage = PlayerSettings.shared.audioLanguage
         autoPlayNext = PlayerSettings.shared.autoPlayNextEpisode
         nextUpPromptSeconds = PlayerSettings.shared.nextUpPromptSeconds
-        skipIntros = PlayerSettings.shared.autoSkipIntro
+        introSkipMode = PlayerSettings.shared.introSkipMode
         skipCredits = PlayerSettings.shared.autoSkipCredits
         dolbyVisionEnabled = PlayerSettings.shared.dolbyVisionEnabled
         seekCacheEnabled = PlayerSettings.shared.seekCacheEnabled
@@ -207,9 +207,9 @@ final class SettingsViewModel {
     }
 
     @MainActor
-    func setSkipIntros(_ enabled: Bool) async {
-        PlayerSettings.shared.setAutoSkipIntro(enabled)
-        skipIntros = PlayerSettings.shared.autoSkipIntro
+    func setIntroSkipMode(_ mode: IntroSkipMode) async {
+        PlayerSettings.shared.setIntroSkipMode(mode)
+        introSkipMode = PlayerSettings.shared.introSkipMode
     }
 
     @MainActor
@@ -269,7 +269,7 @@ final class SettingsViewModel {
         preferredAudioLanguage = PlayerSettings.shared.audioLanguage
         autoPlayNext = PlayerSettings.shared.autoPlayNextEpisode
         nextUpPromptSeconds = PlayerSettings.shared.nextUpPromptSeconds
-        skipIntros = PlayerSettings.shared.autoSkipIntro
+        introSkipMode = PlayerSettings.shared.introSkipMode
         skipCredits = PlayerSettings.shared.autoSkipCredits
         dolbyVisionEnabled = PlayerSettings.shared.dolbyVisionEnabled
         seekCacheEnabled = PlayerSettings.shared.seekCacheEnabled

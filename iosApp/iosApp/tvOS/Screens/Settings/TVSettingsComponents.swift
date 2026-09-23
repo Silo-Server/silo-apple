@@ -62,6 +62,10 @@ enum TVSettingsOptions {
         .init(id: "120", label: "2 minutes before end"),
     ]
 
+    static let introSkipMode: [TVSettingsOption] = IntroSkipMode.allCases.map {
+        TVSettingsOption(id: $0.wireValue, label: $0.label)
+    }
+
     static func subtitleLanguage(_ languages: [PlaybackLanguageOption]) -> [TVSettingsOption] {
         languageOptions(
             languages,

@@ -141,7 +141,7 @@ let playerDeviceSettingKeys: [SettingKey] = [
     .playbackPreferredQuality,
     .playbackMaxBitrateKbps,
     .playbackAudioLanguage,
-    .playbackAutoSkipIntro,
+    .playbackIntroSkipMode,
     .playbackAutoSkipCredits,
     .playbackAutoPlayNext,
     .playbackNextUpPromptSeconds,
@@ -171,7 +171,7 @@ private extension SettingKey {
     static var preferredQuality: SettingKey { .playbackPreferredQuality }
     static var maxBitrateKbps: SettingKey { .playbackMaxBitrateKbps }
     static var audioLanguage: SettingKey { .playbackAudioLanguage }
-    static var autoSkipIntro: SettingKey { .playbackAutoSkipIntro }
+    static var introSkipMode: SettingKey { .playbackIntroSkipMode }
     static var autoSkipCredits: SettingKey { .playbackAutoSkipCredits }
     static var autoPlayNext: SettingKey { .playbackAutoPlayNext }
     static var nextUpPromptSeconds: SettingKey { .playbackNextUpPromptSeconds }
@@ -269,9 +269,16 @@ final class PlayerSettings {
     /// The UI unions these with the generated contract floor and current value.
     private(set) var audioLanguageSuggestions: [String] = []
 
-    var autoSkipIntro: Bool {
-        didSet { defaults.set(autoSkipIntro, forKey: Self.cacheKey(Keys.autoSkipIntro)) }
+    /// What the player does when an intro starts — `playback.intro_skip_mode`.
+    var introSkipMode: IntroSkipMode {
+        didSet {
+            defaults.set(introSkipMode.wireValue, forKey: Self.cacheKey(Keys.introSkipMode))
+        }
     }
+
+    /// The deprecated `playback.auto_skip_intro`, projected from
+    /// ``introSkipMode`` so the two can never disagree locally.
+    var autoSkipIntro: Bool { introSkipMode.legacyAutoSkip }
 
     var autoSkipCredits: Bool {
         didSet { defaults.set(autoSkipCredits, forKey: Self.cacheKey(Keys.autoSkipCredits)) }
@@ -527,7 +534,7 @@ final class PlayerSettings {
         preferredQualityResolution = Self.cachedQualityResolution(defaults)
         maxBitrateKbps = Self.cachedMaxBitrateKbps(defaults)
         audioLanguage = defaults.string(forKey: Self.cacheKey(Keys.audioLanguage)) ?? ""
-        autoSkipIntro = Self.cachedBool(defaults, key: Keys.autoSkipIntro, defaultValue: false)
+        introSkipMode = Self.cachedIntroSkipMode(defaults)
         autoSkipCredits = Self.cachedBool(defaults, key: Keys.autoSkipCredits, defaultValue: false)
         hdrEnabled = Self.cachedBool(defaults, key: Keys.hdrEnabled, defaultValue: true)
         dolbyVisionEnabled = Self.cachedBool(defaults, key: Keys.dolbyVisionEnabled, defaultValue: true)
@@ -699,9 +706,14 @@ final class PlayerSettings {
         flusher.enqueue(.audioLanguage, value: value.isEmpty ? .null : .string(value))
     }
 
-    func setAutoSkipIntro(_ enabled: Bool) {
-        autoSkipIntro = enabled
-        flusher.enqueue(.autoSkipIntro, value: .bool(enabled))
+    /// Writes only the enum, never the deprecated boolean beside it.
+    ///
+    /// The server mirrors the pair at write time, and its boolean -> enum
+    /// direction is lossy (`false` means `ask`): sending both would let the
+    /// boolean's mirror land second and rewrite a `never` the viewer just chose.
+    func setIntroSkipMode(_ mode: IntroSkipMode) {
+        introSkipMode = mode
+        flusher.enqueue(.introSkipMode, value: .string(mode.wireValue))
     }
 
     func setAutoSkipCredits(_ enabled: Bool) {
@@ -924,7 +936,9 @@ final class PlayerSettings {
         // client spells as the empty string.
         audioLanguage = effectiveByKey[.audioLanguage]?.value.stringValue ?? ""
         audioLanguageSuggestions = effectiveByKey[.audioLanguage]?.suggestedValues ?? []
-        autoSkipIntro = effectiveBool(.autoSkipIntro, in: effectiveByKey, default: false)
+        introSkipMode = IntroSkipMode(
+            wireValue: effectiveByKey[.introSkipMode]?.value.stringValue
+        ) ?? .default
         autoSkipCredits = effectiveBool(.autoSkipCredits, in: effectiveByKey, default: false)
         autoPlayNextEpisode = effectiveBool(.autoPlayNext, in: effectiveByKey, default: true)
         nextUpPromptSeconds = Self.clampNextUpPromptSeconds(
@@ -1022,6 +1036,7 @@ final class PlayerSettings {
         let legacyAudioLanguage = defaults.string(forKey: Self.cacheKey(Keys.audioLanguage))
             ?? defaults.string(forKey: Keys.audioLanguage)
             ?? ""
+        let legacyIntroSkipMode = Self.cachedIntroSkipMode(defaults)
         let legacyAppearance = SubtitleAppearance.decode(
             from: defaults.string(forKey: Self.cacheKey(Keys.subtitleAppearance))
                 ?? defaults.string(forKey: Keys.subtitleAppearance)
@@ -1031,9 +1046,7 @@ final class PlayerSettings {
             .preferredQuality: .string(legacyQualityAxes.resolution),
             .maxBitrateKbps: legacyBitrateKbps.map { .int($0) } ?? .null,
             .audioLanguage: legacyAudioLanguage.isEmpty ? .null : .string(legacyAudioLanguage),
-            .autoSkipIntro: .bool(
-                Self.cachedBool(defaults, key: Keys.autoSkipIntro, defaultValue: false)
-            ),
+            .introSkipMode: .string(legacyIntroSkipMode.wireValue),
             .autoSkipCredits: .bool(
                 Self.cachedBool(defaults, key: Keys.autoSkipCredits, defaultValue: false)
             ),
@@ -1083,7 +1096,7 @@ final class PlayerSettings {
         preferredQualityResolution = Self.cachedQualityResolution(defaults)
         maxBitrateKbps = Self.cachedMaxBitrateKbps(defaults)
         audioLanguage = defaults.string(forKey: Self.cacheKey(Keys.audioLanguage)) ?? ""
-        autoSkipIntro = Self.cachedBool(defaults, key: Keys.autoSkipIntro, defaultValue: false)
+        introSkipMode = Self.cachedIntroSkipMode(defaults)
         autoSkipCredits = Self.cachedBool(defaults, key: Keys.autoSkipCredits, defaultValue: false)
         autoPlayNextEpisode = Self.cachedBool(
             defaults,
@@ -1244,6 +1257,7 @@ final class PlayerSettings {
         defaults.removeObject(forKey: key(Keys.maxBitrateKbps))
         defaults.set("", forKey: key(Keys.audioLanguage))
         defaults.set(false, forKey: key(Keys.autoSkipIntro))
+        defaults.set(IntroSkipMode.default.wireValue, forKey: key(Keys.introSkipMode))
         defaults.set(false, forKey: key(Keys.autoSkipCredits))
         defaults.set(true, forKey: key(Keys.autoPlayNextEpisode))
         defaults.set(30, forKey: key(Keys.nextUpPromptSeconds))
@@ -1319,6 +1333,17 @@ final class PlayerSettings {
         return stored > 0 ? stored : nil
     }
 
+    /// The cached mode, or — on a device that has only ever cached the
+    /// deprecated boolean — the mode that boolean meant.
+    private static func cachedIntroSkipMode(_ defaults: UserDefaults) -> IntroSkipMode {
+        if let mode = IntroSkipMode(wireValue: defaults.string(forKey: cacheKey(Keys.introSkipMode))) {
+            return mode
+        }
+        return IntroSkipMode(
+            legacyAutoSkip: cachedBool(defaults, key: Keys.autoSkipIntro, defaultValue: false)
+        )
+    }
+
     private static func cachedBufferAhead(_ defaults: UserDefaults) -> BufferAheadMode {
         BufferAheadMode(
             rawValue: defaults.string(forKey: cacheKey(Keys.bufferAhead))
@@ -1384,6 +1409,7 @@ final class PlayerSettings {
         static let maxBitrateKbps = "playback.maxBitrateKbps"
         static let audioLanguage = "preferredAudioLanguage"
         static let autoSkipIntro = "skipIntros"
+        static let introSkipMode = "player.introSkipMode"
         static let autoSkipCredits = "skipCredits"
         static let hdrEnabled = "player.hdrEnabled"
         static let dolbyVisionEnabled = "player.dolbyVisionEnabled"

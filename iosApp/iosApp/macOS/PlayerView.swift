@@ -76,6 +76,18 @@ struct PlayerView: View {
                     .transition(.opacity.combined(with: .scale(scale: 0.98)))
                 }
 
+                if let pill = viewModel.introSkipPrompt.pill {
+                    MacIntroSkipPill(pill: pill) {
+                        viewModel.selectIntroSkipPrompt()
+                    }
+                    .padding(.trailing, 24)
+                    // Above the control bar while it shows; toward the corner
+                    // once it hides.
+                    .padding(.bottom, shouldShowControls ? 136 : 24)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    .transition(.opacity)
+                }
+
                 if viewModel.isLoading || viewModel.isBuffering {
                     PlayerBufferingCapsule()
                 }
@@ -123,6 +135,7 @@ struct PlayerView: View {
         .preferredColorScheme(.dark)
         .animation(.easeOut(duration: 0.16), value: shouldShowControls)
         .animation(.easeOut(duration: 0.16), value: isOptionsPresented)
+        .animation(.easeOut(duration: 0.2), value: viewModel.showIntroSkip)
     }
 
     private var shouldShowControls: Bool {
@@ -181,9 +194,15 @@ struct PlayerView: View {
         case .escape:
             if isOptionsPresented {
                 isOptionsPresented = false
+            } else if viewModel.dismissIntroSkipPrompt() {
+                // The intro pill takes Escape before the window does; the next
+                // Escape closes the player as usual.
             } else {
                 dismiss()
             }
+        case .confirm:
+            // Return acts on the intro pill; with none showing it does nothing.
+            viewModel.selectIntroSkipPrompt()
         case .speedDown:
             viewModel.setPlaybackSpeed(nextSpeed(offset: -1))
         case .speedUp:

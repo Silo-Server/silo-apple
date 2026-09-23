@@ -53,6 +53,8 @@ public enum SettingKey: String, CaseIterable, Sendable {
     case playbackAutoSkipIntro = "playback.auto_skip_intro"
     /// Auto-skip recaps
     case playbackAutoSkipRecap = "playback.auto_skip_recap"
+    /// Skip intros
+    case playbackIntroSkipMode = "playback.intro_skip_mode"
     /// Maximum bitrate
     case playbackMaxBitrateKbps = "playback.max_bitrate_kbps"
     /// Next up prompt
@@ -101,8 +103,14 @@ public enum SettingKey: String, CaseIterable, Sendable {
     case subtitleMatchesDevice = "subtitle.matches_device"
     /// Poster badges
     case uiCardOverlays = "ui.card_overlays"
+    /// Card overlays enabled
+    case uiCardOverlaysEnabled = "ui.card_overlays_enabled"
     /// Media cards
     case uiCardPresentation = "ui.card_presentation"
+    /// Card quick actions
+    case uiCardQuickActions = "ui.card_quick_actions"
+    /// Card quick actions enabled
+    case uiCardQuickActionsEnabled = "ui.card_quick_actions_enabled"
     /// Custom CSS
     case uiCustomCss = "ui.custom_css"
     /// Custom theme variables
@@ -134,7 +142,7 @@ public enum SettingKey: String, CaseIterable, Sendable {
 }
 
 public extension SettingKey {
-    static let revision = 5
+    static let revision = 8
 
     /// Keys the server stores. The rest never leave the device.
     static let remote: [SettingKey] = [
@@ -148,6 +156,7 @@ public extension SettingKey {
         .playbackAutoSkipCredits,
         .playbackAutoSkipIntro,
         .playbackAutoSkipRecap,
+        .playbackIntroSkipMode,
         .playbackMaxBitrateKbps,
         .playbackNextUpPromptSeconds,
         .playbackPreferredQuality,
@@ -168,7 +177,10 @@ public extension SettingKey {
         .playerVideoGravity,
         .searchMediaScope,
         .uiCardOverlays,
+        .uiCardOverlaysEnabled,
         .uiCardPresentation,
+        .uiCardQuickActions,
+        .uiCardQuickActionsEnabled,
         .uiCustomCss,
         .uiCustomThemeVars,
         .uiDateFormat,
@@ -194,6 +206,13 @@ public extension SettingKey {
         .playerPictureInPictureEnabled,
         .playerResumeRewindSeconds,
         .subtitleMatchesDevice,
+    ]
+
+    /// Keys another definition supersedes. Still readable, never offered as
+    /// a second control beside their replacement: the server mirrors the pair
+    /// at write time, so editing either would rewrite the other.
+    static let deprecated: Set<SettingKey> = [
+        .playbackAutoSkipIntro,
     ]
 }
 

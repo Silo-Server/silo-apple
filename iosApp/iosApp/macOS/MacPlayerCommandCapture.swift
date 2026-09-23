@@ -35,6 +35,7 @@ enum MacPlayerCommand {
     case toggleSubtitle
     case options
     case escape
+    case confirm
     case speedDown
     case speedUp
     case normalSpeed
@@ -68,6 +69,8 @@ final class CommandCaptureView: NSView {
             return .playPause
         case 53:
             return .escape
+        case 36, 76:
+            return .confirm
         case 123:
             return modifiers.contains(.command) ? .previousChapter : .skipBackward
         case 124:
