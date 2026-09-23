@@ -50,6 +50,8 @@ final class CompanionPairingCoordinator {
                 return "\(name): the sign-in was declined."
             case .expired:
                 return "\(name): the code expired before it was approved."
+            case .updateRequired:
+                return "\(name): the server or Silo needs to be updated first."
             case .authFailed:
                 return "\(name): the TV couldn't finish signing in."
             }
@@ -230,7 +232,7 @@ final class CompanionPairingCoordinator {
                 state = .confirmMatch(tvName: tvName, serverName: server.displayName, matchCode: serverCode)
             }
         } catch {
-            await failCurrentAndAdvance(server)
+            await failCurrentAndAdvance(server, code: UpdateRequirement(error) == nil ? .authFailed : .updateRequired)
         }
     }
 
@@ -323,10 +325,27 @@ final class CompanionPairingCoordinator {
             // The TV is still polling this server; without the approval it can
             // only wait out its device code. Ending the session keeps both
             // screens honest instead of leaving the TV stuck on a dead code.
+            // The approval is never re-sent, even when its answer was lost.
             await conclude(
-                .error("Couldn’t reach \(server.displayName) to approve the sign-in. Check this \(deviceModel)’s connection and try again."),
+                .error(approveFailureMessage(for: error, server: server)),
                 goodbye: .cancel(reason: "approve_failed")
             )
+        }
+    }
+
+    /// What to tell the user when the approval failed. A 409 means the
+    /// request was already approved or declined, and a 410 means it expired.
+    private func approveFailureMessage(for error: Error, server: ServerEntry) -> String {
+        if let requirement = UpdateRequirement(error) { return requirement.message }
+        switch error {
+        case APIv2Error.problem(let problem) where problem.status == 409:
+            return "This sign-in request was already approved or declined. Start again on \(tvName)."
+        case APIv2Error.problem(let problem) where problem.status == 410 || problem.status == 404:
+            return "The code expired before it was approved. Start again on \(tvName)."
+        case is URLError:
+            return "Couldn’t reach \(server.displayName) to approve the sign-in. Check this \(deviceModel)’s connection and try again."
+        default:
+            return "\(server.displayName) couldn’t approve the sign-in. Try again."
         }
     }
 
@@ -343,8 +362,8 @@ final class CompanionPairingCoordinator {
     /// A server failed before approval (token missing, lookup failed, or the
     /// codes couldn't be bound). Move on; the TV abandons its in-flight
     /// attempt as soon as the next `pushServer` arrives.
-    private func failCurrentAndAdvance(_ server: ServerEntry) async {
-        failed.append(FailedServer(name: server.displayName, code: .authFailed))
+    private func failCurrentAndAdvance(_ server: ServerEntry, code: PairingFailureCode = .authFailed) async {
+        failed.append(FailedServer(name: server.displayName, code: code))
         if !queue.isEmpty { queue.removeFirst() }
         await pushNext()
     }

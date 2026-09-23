@@ -56,8 +56,8 @@ private final class FakePairingAPI: PairingDeviceAuthorizing, @unchecked Sendabl
     var lookupError: Error?
     var approveError: Error?
     var startError: Error?
-    var pollResponse: DeviceLoginPollResponse?
-    var pollResults: [Result<DeviceLoginPollResponse, Error>] = []
+    var pollResponse: APIv2DevicePoll?
+    var pollResults: [Result<APIv2DevicePoll, Error>] = []
 
     private(set) var startedServers: [String] = []
     private(set) var approvedCodes: [String] = []
@@ -80,13 +80,13 @@ private final class FakePairingAPI: PairingDeviceAuthorizing, @unchecked Sendabl
         )
     }
 
-    func poll(serverURL: String, deviceCode: String) async throws -> DeviceLoginPollResponse {
+    func poll(serverURL: String, deviceCode: String) async throws -> APIv2DevicePoll {
         pollCount += 1
         if !pollResults.isEmpty {
             return try pollResults.removeFirst().get()
         }
         if let pollResponse { return pollResponse }
-        throw PairingDeviceAPI.APIError.http(500)
+        throw APIv2Error.httpStatus(500)
     }
 
     func lookup(serverURL: String, bearer: String, userCode: String) async throws -> DeviceLookupResponse {
@@ -94,7 +94,10 @@ private final class FakePairingAPI: PairingDeviceAuthorizing, @unchecked Sendabl
         return DeviceLookupResponse(matchCode: lookupMatchCode, deviceName: nil, devicePlatform: nil, status: nil)
     }
 
+    private(set) var approveAttempts = 0
+
     func approve(serverURL: String, bearer: String, userCode: String) async throws {
+        approveAttempts += 1
         if let approveError { throw approveError }
         approvedCodes.append(userCode)
     }
@@ -122,13 +125,25 @@ private func entry(_ id: String, name: String) -> ServerEntry {
     ServerEntry(id: id, url: "https://\(id).example", fetchedName: name, profileId: nil, lastUsedAt: Date())
 }
 
-private let approvedPoll = DeviceLoginPollResponse(
-    status: "approved", pollAfter: nil, accessToken: "ACCESS", refreshToken: "REFRESH", expiresIn: 3600, user: nil
-)
+private func devicePoll(_ status: String, tokens: APIv2LoginTokens? = nil) -> APIv2DevicePoll {
+    APIv2DevicePoll(status: status, pollAfter: 1, tokens: tokens, profileId: "", profileToken: "",
+        temporary: false, sessionExpiresAt: nil)
+}
 
-private let pendingPoll = DeviceLoginPollResponse(
-    status: "pending", pollAfter: 1, accessToken: nil, refreshToken: nil, expiresIn: nil, user: nil
-)
+private let approvedPoll = devicePoll("approved", tokens: APIv2LoginTokens(
+    accessToken: "ACCESS", refreshToken: "REFRESH", expiresIn: 3600,
+    user: APIv2Account(id: "account-1", username: "laura", email: "laura@example.test",
+        role: .user, permissions: [], downloadAllowed: true, impersonation: nil)
+))
+
+private let pendingPoll = devicePoll("pending")
+
+private func problem(_ status: Int, _ type: String) -> APIv2Problem {
+    APIv2Problem(type: "https://siloserver.org/problems/\(type)", title: type, status: status,
+        detail: "", instance: nil, errors: nil)
+}
+
+private let expiredProblem = problem(404, "not_found")
 
 // MARK: - Server session persistence
 
@@ -429,6 +444,61 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
         }
         XCTAssertTrue(api.approvedCodes.isEmpty)
     }
+
+    /// A v1-only server fails its lookup with the typed update code, so the
+    /// summary says what to update instead of a generic TV failure.
+    func testLookupOnV1OnlyServerSummarisesUpdateRequired() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        api.lookupError = APIv2Error.serverUpdateRequired
+        let coordinator = makeCoordinator(channel: channel, api: api, servers: [entry("a", name: "Home")])
+        channel.deliver(hello())
+        await expectEventually("picker") {
+            if case .pickServers = coordinator.state { return true }
+            return false
+        }
+        guard case let .pickServers(_, servers) = coordinator.state else {
+            return XCTFail("expected pickServers, got \(coordinator.state)")
+        }
+        await coordinator.pushSelected(servers)
+        channel.deliver(.deviceStarted(serverURL: servers[0].url, userCode: "USER-1", matchCode: "ABCD"))
+        await expectEventually("update summary") {
+            if case .finished(let ok, let bad) = coordinator.state { return ok.isEmpty && bad.map(\.code) == [.updateRequired] }
+            return false
+        }
+        XCTAssertTrue(api.approvedCodes.isEmpty)
+    }
+
+    /// A 409 means the request was already decided elsewhere. The approval
+    /// is not sent again, and the error says what happened instead of
+    /// blaming the phone's connection.
+    func testAlreadyDecidedApprovalEndsWithoutRetrying() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        api.approveError = APIv2Error.problem(problem(409, "conflict"))
+        let coordinator = makeCoordinator(channel: channel, api: api, servers: [entry("a", name: "Home")])
+        channel.deliver(hello())
+        await expectEventually("picker") {
+            if case .pickServers = coordinator.state { return true }
+            return false
+        }
+        guard case let .pickServers(_, servers) = coordinator.state else {
+            return XCTFail("expected pickServers, got \(coordinator.state)")
+        }
+        await coordinator.pushSelected(servers)
+        channel.deliver(.deviceStarted(serverURL: servers[0].url, userCode: "USER-1", matchCode: "ABCD"))
+        await expectEventually("confirm prompt") {
+            if case .confirmMatch = coordinator.state { return true }
+            return false
+        }
+        await coordinator.confirmMatch()
+        await expectEventually("approve error") {
+            if case .error(let message) = coordinator.state { return message.contains("already approved or declined") }
+            return false
+        }
+        XCTAssertEqual(api.approveAttempts, 1)
+        XCTAssertEqual(channel.lastSent, .cancel(reason: "approve_failed"))
+    }
 }
 
 // MARK: - Receiver
@@ -443,6 +513,7 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
     private final class PersistRecorder: @unchecked Sendable {
         var persisted: [Persisted] = []
         var verifiedIds: [String?] = []
+        var accountIDs: [String] = []
     }
 
     @MainActor
@@ -483,8 +554,81 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
         ) { pairing in
             recorder.persisted.append(Persisted(url: pairing.url, access: pairing.accessToken))
             recorder.verifiedIds.append(pairing.verifiedServerId)
+            recorder.accountIDs.append(pairing.accountID)
             return true
         }
+    }
+
+    private func allowPush(_ channel: FakePairingChannel, _ coordinator: ReceiverPairingCoordinator) async {
+        channel.deliver(.pushServer(serverURL: "https://home.example", serverName: "Home"))
+        await expectEventually("consent prompt") {
+            if case .consentRequested = coordinator.state { return true }
+            return false
+        }
+        coordinator.allowPendingServer()
+    }
+
+    /// A v1-only server answers the v2 start with Go's plain 404. The TV
+    /// explains the update instead of a generic sign-in failure, and tells
+    /// the phone with the typed code.
+    func testUpdateRequiredOnStartShowsTheUpdateMessage() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        api.startError = APIv2Error.serverUpdateRequired
+        let coordinator = makeCoordinator(api: api, recorder: PersistRecorder())
+        let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
+
+        await allowPush(channel, coordinator)
+        await expectEventually("update-required failure") {
+            coordinator.state == .failed(serverName: "Home", code: .updateRequired, help: UpdateRequirement.serverMessage)
+        }
+        XCTAssertTrue(channel.sent.contains {
+            if case .serverResult("https://home.example", .failed, "update_required") = $0 { return true }
+            return false
+        })
+        channel.deliver(.done)
+        await runTask.value
+    }
+
+    /// A 410 `client_upgrade_required` on a poll ends the attempt with the
+    /// app-update message instead of polling until the code expires.
+    func testClientUpgradeRequiredOnPollStopsPolling() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        api.pollResults = [.failure(APIv2Error.problem(problem(410, "client_upgrade_required")))]
+        let recorder = PersistRecorder()
+        let coordinator = makeCoordinator(api: api, recorder: recorder)
+        let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
+
+        await allowPush(channel, coordinator)
+        await expectEventually("update-required failure") {
+            coordinator.state == .failed(serverName: "Home", code: .updateRequired, help: UpdateRequirement.appMessage)
+        }
+        XCTAssertEqual(api.pollCount, 1)
+        XCTAssertTrue(recorder.persisted.isEmpty)
+        channel.deliver(.done)
+        await runTask.value
+    }
+
+    /// The approved poll's `TokenPair.user.id` is what the session binds as
+    /// its verified account.
+    func testApprovedPollPersistsTheVerifiedAccount() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        api.pollResponse = approvedPoll
+        let recorder = PersistRecorder()
+        let coordinator = makeCoordinator(api: api, recorder: recorder)
+        let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
+
+        await allowPush(channel, coordinator)
+        await expectEventually("signed in") {
+            if case .signedIn = coordinator.state { return true }
+            return false
+        }
+        XCTAssertEqual(recorder.persisted, [Persisted(url: "https://home.example", access: "ACCESS")])
+        XCTAssertEqual(recorder.accountIDs, ["account-1"])
+        channel.deliver(.done)
+        await runTask.value
     }
 
     private final class ProbeLog: @unchecked Sendable {
@@ -673,9 +817,7 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
     func testLegacyPushSkipsProbingAndReportsTypedFailure() async {
         let channel = FakePairingChannel()
         let api = FakePairingAPI()
-        api.pollResponse = DeviceLoginPollResponse(
-            status: "denied", pollAfter: nil, accessToken: nil, refreshToken: nil, expiresIn: nil, user: nil
-        )
+        api.pollResponse = devicePoll("denied")
         let recorder = PersistRecorder()
         let probes = ProbeLog()
         let coordinator = makeCoordinator(api: api, recorder: recorder, probeLog: probes)
@@ -762,7 +904,7 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
         let channel = FakePairingChannel()
         let api = FakePairingAPI()
         api.pollResults = [
-            .failure(PairingDeviceAPI.APIError.http(502)),
+            .failure(APIv2Error.httpStatus(502)),
             .success(approvedPoll),
         ]
         let recorder = PersistRecorder()
@@ -794,7 +936,7 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
     func testMissingPollRequestFailsWithoutRetrying() async {
         let channel = FakePairingChannel()
         let api = FakePairingAPI()
-        api.pollResults = [.failure(PairingDeviceAPI.APIError.http(404))]
+        api.pollResults = [.failure(APIv2Error.problem(expiredProblem))]
         let recorder = PersistRecorder()
         let coordinator = makeCoordinator(api: api, recorder: recorder)
         let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
@@ -819,7 +961,7 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
     func testCancellationDuringTransientPollBackoffDoesNotPublishFailure() async {
         let channel = FakePairingChannel()
         let api = FakePairingAPI()
-        api.pollResults = [.failure(PairingDeviceAPI.APIError.http(502))]
+        api.pollResults = [.failure(APIv2Error.httpStatus(502))]
         let recorder = PersistRecorder()
         let coordinator = makeCoordinator(api: api, recorder: recorder)
         let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
@@ -926,7 +1068,7 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
     func testDoneWithZeroSignInsKeepsFailureOnScreen() async {
         let channel = FakePairingChannel()
         let api = FakePairingAPI()
-        api.startError = PairingDeviceAPI.APIError.http(500)
+        api.startError = APIv2Error.httpStatus(500)
         let coordinator = makeCoordinator(api: api, recorder: PersistRecorder())
         let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
 
@@ -954,7 +1096,7 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
     func testSecondAttemptAfterFailureIsNotAutomatic() async {
         let channel = FakePairingChannel()
         let api = FakePairingAPI()
-        api.startError = PairingDeviceAPI.APIError.http(500)
+        api.startError = APIv2Error.httpStatus(500)
         let coordinator = makeCoordinator(api: api, recorder: PersistRecorder())
         let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
 

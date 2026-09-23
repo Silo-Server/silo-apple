@@ -309,6 +309,8 @@ struct TVPairingReceiverView: View {
             return "The sign-in to \(name) was declined. Try again from your iPhone."
         case .expired:
             return "The code for \(name) expired before it was approved. Try again from your iPhone."
+        case .updateRequired:
+            return help ?? UpdateRequirement.serverMessage
         case .authFailed:
             return "Something went wrong signing in to \(name). Try again from your iPhone, or add your server manually."
         }
