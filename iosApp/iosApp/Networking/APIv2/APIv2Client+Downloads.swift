@@ -2,10 +2,11 @@ import Foundation
 
 // MARK: Download registry and offline delivery (profile_scoped)
 //
-// Every call names the calling device: `HTTPClient` attaches this
-// installation's `X-Silo-Device-Id` to each request, and the server scopes
-// the registry to (account, profile, device). Adding the header here as well
-// would send it twice.
+// Every call, including the series-monitor calls in
+// APIv2Client+DownloadSubscriptions.swift, names the calling device:
+// `HTTPClient` attaches this installation's `X-Silo-Device-Id` to each
+// request, and the server scopes the registry and the monitors to (account,
+// profile, device). Adding the header here as well would send it twice.
 
 extension APIv2Client {
     /// Entries per registry page, and pages per read. One read covers at most
@@ -244,7 +245,7 @@ extension APIv2Client {
             return downloadRegistryFailure(status: problem.status)
         case APIv2Error.httpStatus(let status):
             return downloadRegistryFailure(status: status)
-        case DownloadRegistryError.invalidRequest:
+        case DownloadRegistryError.invalidRequest, DownloadSubscriptionError.invalidRequest:
             return .rejected
         case HTTPError.requestIdentityChanged, HTTPError.serverUrlNotConfigured,
              HTTPError.invalidURL, HTTPError.encodingFailed, is EncodingError:
@@ -277,14 +278,15 @@ extension APIv2Client {
 
     // MARK: Transport
 
-    /// One registry request under the captured owner: refused before
-    /// dispatch when that owner is no longer current, and its answer
+    /// One registry or monitor request under the captured owner: refused
+    /// before dispatch when that owner is no longer current, and its answer
     /// discarded when the owner changed while it was in flight.
-    private func downloadRegistryRequest(
+    func downloadRegistryRequest(
         method: String,
         path: String,
         query: [String: String] = [:],
         body: Data? = nil,
+        headers: [String: String] = [:],
         auth: CapturedOrdinaryRequestAuth
     ) async throws -> HTTPRawResponse {
         try await gate()
@@ -297,7 +299,7 @@ extension APIv2Client {
         return try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {
                 try await http.requestData(method: method, path: path, query: query, body: body,
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+                    headers: headers, requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
             }
         }
     }

@@ -1910,7 +1910,7 @@ actor HTTPClient {
             && !(["PUT", "DELETE"].contains(method) && path.hasPrefix("/api/v2/watchlist/"))
             && !(["PUT", "DELETE"].contains(method) && path.hasPrefix("/api/v2/favorites/"))
             && !(["POST", "DELETE"].contains(method) && path.hasPrefix("/api/v2/watched/"))
-            && path != "/api/v2/downloads/subscriptions"
+            && !(path == "/api/v2/downloads/subscriptions" && method == "POST")
             && path != "/api/v2/onboarding/progress"
             && path != "/api/v2/subtitles/ai/translate"
             && !(path.hasPrefix("/api/v2/catalog/items/") && path.hasSuffix("/translate-description"))

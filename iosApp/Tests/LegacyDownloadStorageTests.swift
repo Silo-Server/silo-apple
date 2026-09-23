@@ -49,6 +49,7 @@ final class LegacyDownloadStorageTests: XCTestCase {
         let carried = await store.load(serverId: "server", profileId: "profile")
         XCTAssertTrue(carried.records.isEmpty)
         XCTAssertEqual(carried.legacyRowsPending, true, "the scope's first registry read deletes the old rows")
+        XCTAssertEqual(carried.legacyMonitorsPending, true, "the scope's first monitor list sets the old monitors aside")
         let stateAfterRemoval = await store.legacyStorageState()
         XCTAssertEqual(stateAfterRemoval, .removed(noticePending: true))
 
