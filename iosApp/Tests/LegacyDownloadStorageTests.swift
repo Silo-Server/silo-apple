@@ -124,7 +124,7 @@ final class LegacyDownloadStorageTests: XCTestCase {
         XCTAssertEqual(queue.map(\.position), [900, 42])
         XCTAssertEqual(queue.first?.id.uuidString, "6F1C0E1A-2B0F-4C38-9D4E-2C0B7B9A0002")
         XCTAssertEqual(queue.first?.updatedAt, Date(timeIntervalSinceReferenceDate: 780_000_600))
-        XCTAssertEqual(queue.map(\.attempts), [0, 0])
+        XCTAssertEqual(queue.map(\.state), [.pending, .pending], "a main-era entry was never claimed for a v2 upload")
     }
 
     func testQueuedProgressWithoutDownloadsSurvivesWithoutANotice() async throws {
