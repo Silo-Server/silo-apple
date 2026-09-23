@@ -632,6 +632,7 @@ final class AuthService: @unchecked Sendable {
         for prefix in CacheKey.perProfilePrefixes {
             ResponseCache.shared.removeAll(withPrefix: prefix)
         }
+        PersonalStateHolds.shared.reset()
         // Profiles are account-scoped and are the offline source for Who's
         // Watching. Keep that list across profile transitions; server/account
         // boundaries still clear it through `clearAllCaches()`.
@@ -774,6 +775,7 @@ final class AuthService: @unchecked Sendable {
     private func clearAllCaches() {
         StartupContentPrefetcher.resetAllPrefetches()
         ResponseCache.shared.clearAll()
+        PersonalStateHolds.shared.reset()
         OverlayPrefsStore.shared.clear()
         ProfilePrefsStore.shared.clear()
         AICapabilities.shared.reset()

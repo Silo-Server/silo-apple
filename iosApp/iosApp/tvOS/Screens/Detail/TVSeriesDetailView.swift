@@ -207,13 +207,13 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     let isFetchingTrailers: Bool
     let onTrailerStatusShown: () -> Void
     let onSelectSeason: (Season) async -> String?
-    let onSetSeasonWatched: (Season, Bool) async -> Bool
+    let onSetSeasonWatched: (Season, Bool) async -> PersonalStateOutcome
     /// `nil` restores the show overview and its suggested next episode.
     let onActivateEpisode: (_ contentId: String?) -> Void
     let onPlayEpisode: (_ contentId: String, _ fileId: Int?, _ startFromBeginning: Bool) -> Void
-    let onSetEpisodeWatched: (_ contentId: String, _ played: Bool) async -> Bool
-    let onSetEpisodeFavorite: (_ contentId: String, _ isFavorite: Bool) async -> Bool
-    let onSetEpisodeWatchlist: (_ contentId: String, _ inWatchlist: Bool) async -> Bool
+    let onSetEpisodeWatched: (_ contentId: String, _ played: Bool) async -> PersonalStateOutcome
+    let onSetEpisodeFavorite: (_ contentId: String, _ isFavorite: Bool) async -> PersonalStateOutcome
+    let onSetEpisodeWatchlist: (_ contentId: String, _ inWatchlist: Bool) async -> PersonalStateOutcome
     let onSelectNextUpVersion: (Int?) -> Void
     let onSelectNextUpAudioTrack: (Int?) -> Void
     let onSelectNextUpSubtitleTrack: (Int?) -> Void
@@ -234,6 +234,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     @State private var hierarchyRetryTask: Task<Void, Never>?
     @State private var isUpdatingSeasonWatched = false
     @State private var seasonWatchedUpdateFailed = false
+    @State private var seasonWatchedNotice: PersonalStateNotice?
     @State private var primaryFocusRegion: PrimaryFocusRegion = .outside
     @State private var episodeRailFocusRequest = 0
     @State private var episodeRailFocusTarget: String?
@@ -341,6 +342,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         } message: {
             Text("Please check your connection and try again.")
         }
+        .personalStateNoticeAlert($seasonWatchedNotice)
     }
 
     // MARK: - Fixed series hero
@@ -701,7 +703,14 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         isUpdatingSeasonWatched = true
         Task {
             defer { isUpdatingSeasonWatched = false }
-            seasonWatchedUpdateFailed = !(await onSetSeasonWatched(season, played))
+            let outcome = await onSetSeasonWatched(season, played)
+            // An update requirement uses the shared notice, which names the
+            // update instead of asking the viewer to check the connection.
+            if outcome == .failed(nil) {
+                seasonWatchedUpdateFailed = true
+            } else {
+                seasonWatchedNotice = PersonalStateNotice(outcome)
+            }
         }
     }
 

@@ -234,6 +234,7 @@ struct HomeView: View {
         } message: {
             Text(viewModel.actionError?.message ?? "The item could not be updated. Try again.")
         }
+        .personalStateNoticeAlert($viewModel.personalStateNotice)
     }
 
     // MARK: - Content

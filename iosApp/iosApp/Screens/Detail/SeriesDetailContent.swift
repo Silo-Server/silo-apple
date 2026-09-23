@@ -37,10 +37,10 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     let onToggleFavorite: () -> Void
     let onToggleWatchlist: () -> Void
     let onToggleWatched: () -> Void
-    let onSetSeasonWatched: (Season, Bool) async -> Bool
-    let onSetEpisodeWatched: (EpisodeListItem, Bool) async -> Bool
-    let onSetEpisodeFavorite: (String, Bool) async -> Bool
-    let onSetEpisodeWatchlist: (String, Bool) async -> Bool
+    let onSetSeasonWatched: (Season, Bool) async -> PersonalStateOutcome
+    let onSetEpisodeWatched: (EpisodeListItem, Bool) async -> PersonalStateOutcome
+    let onSetEpisodeFavorite: (String, Bool) async -> PersonalStateOutcome
+    let onSetEpisodeWatchlist: (String, Bool) async -> PersonalStateOutcome
     let onPersonTap: (String) -> Void
     let onNavigateToItem: (String) -> Void
     /// Play a local extra from the trailers rail. Routed separately from
@@ -69,6 +69,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     @State private var pendingResumeEpisode: EpisodeListItem?
     @State private var isUpdatingWatched = false
     @State private var watchedUpdateFailed = false
+    @State private var watchedNotice: PersonalStateNotice?
     private struct PendingEpisodePlayRequest: Equatable {
         let seasonNumber: Int?
     }
@@ -142,6 +143,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
         } message: {
             Text("Please check your connection and try again.")
         }
+        .personalStateNoticeAlert($watchedNotice)
     }
 
     private var heroToContentSpacing: CGFloat {
@@ -336,7 +338,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
         isUpdatingWatched = true
         Task {
             defer { isUpdatingWatched = false }
-            watchedUpdateFailed = !(await onSetSeasonWatched(season, played))
+            reportWatchedOutcome(await onSetSeasonWatched(season, played))
         }
     }
 
@@ -345,7 +347,17 @@ struct SeriesDetailContent<BelowOverview: View>: View {
         isUpdatingWatched = true
         Task {
             defer { isUpdatingWatched = false }
-            watchedUpdateFailed = !(await onSetEpisodeWatched(episode, played))
+            reportWatchedOutcome(await onSetEpisodeWatched(episode, played))
+        }
+    }
+
+    private func reportWatchedOutcome(_ outcome: PersonalStateOutcome) {
+        switch outcome {
+        case .applied, .skipped: break
+        // An update requirement uses the shared notice, which names the update
+        // instead of asking the viewer to check the connection.
+        case .failed(nil): watchedUpdateFailed = true
+        case .failed, .held: watchedNotice = PersonalStateNotice(outcome)
         }
     }
 

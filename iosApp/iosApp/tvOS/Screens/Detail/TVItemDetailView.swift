@@ -77,6 +77,10 @@ struct TVItemDetailView: View {
         .siloBackground()
         .siloNavigationTitleDisplayMode(.inline)
         .siloNavigationBarBackgroundHidden()
+        .personalStateNoticeAlert(Binding(
+            get: { viewModel.personalStateNotice },
+            set: { viewModel.personalStateNotice = $0 }
+        ))
         .onAppear {
             Self.focusLogger.debug("itemDetail.appear contentId=\(contentId, privacy: .public) pathDepth=\(router.path.count, privacy: .public)")
             allowRemoteTrailers = TVTrailerLaunch.canDisplayRemoteCards()

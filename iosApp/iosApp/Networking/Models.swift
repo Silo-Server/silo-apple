@@ -464,6 +464,10 @@ struct ItemDetail: Codable {
     /// Local extras discovered by the scanner. Each carries its own
     /// `contentId`, playable through the normal `/watch` flow.
     var extras: [ItemExtra]? = nil
+    /// The viewer's favorite, watchlist and played flags from the v2 detail
+    /// read (`user_state`); absent without a profile. `var` with a default
+    /// for the same memberwise-initializer reason as `videos`.
+    var userState: MediaItemUserState? = nil
 }
 
 extension ItemDetail {

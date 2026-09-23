@@ -26,9 +26,9 @@ struct TVEpisodeRail: View {
     /// the context menu explicit and useful alongside watched-state actions.
     var onPlay: ((String) -> Void)? = nil
     var onFocusedEpisodeChange: ((String?) -> Void)? = nil
-    var onSetWatched: ((_ contentId: String, _ played: Bool) async -> Bool)? = nil
-    var onSetFavorite: ((_ contentId: String, _ isFavorite: Bool) async -> Bool)? = nil
-    var onSetWatchlist: ((_ contentId: String, _ inWatchlist: Bool) async -> Bool)? = nil
+    var onSetWatched: ((_ contentId: String, _ played: Bool) async -> PersonalStateOutcome)? = nil
+    var onSetFavorite: ((_ contentId: String, _ isFavorite: Bool) async -> PersonalStateOutcome)? = nil
+    var onSetWatchlist: ((_ contentId: String, _ inWatchlist: Bool) async -> PersonalStateOutcome)? = nil
     /// When non-nil, the matching card is visually highlighted and anchored
     /// at first appearance.
     var currentContentId: String? = nil
@@ -595,9 +595,9 @@ struct TVEpisodeRail: View {
                         let previous = anchoredPlayedOverrides[episode.contentId]
                         actionFeedback.perform {
                             anchoredPlayedOverrides[episode.contentId] = value
-                            let succeeded = await update(episode.contentId, value)
-                            if !succeeded { anchoredPlayedOverrides[episode.contentId] = previous }
-                            return succeeded
+                            let outcome = await update(episode.contentId, value)
+                            if outcome != .applied { anchoredPlayedOverrides[episode.contentId] = previous }
+                            return outcome
                         }
                     }
                 },
@@ -607,9 +607,9 @@ struct TVEpisodeRail: View {
                         let previous = anchoredFavoriteOverrides[episode.contentId]
                         actionFeedback.perform {
                             anchoredFavoriteOverrides[episode.contentId] = value
-                            let succeeded = await update(episode.contentId, value)
-                            if !succeeded { anchoredFavoriteOverrides[episode.contentId] = previous }
-                            return succeeded
+                            let outcome = await update(episode.contentId, value)
+                            if outcome != .applied { anchoredFavoriteOverrides[episode.contentId] = previous }
+                            return outcome
                         }
                     }
                 },
@@ -619,9 +619,9 @@ struct TVEpisodeRail: View {
                         let previous = anchoredWatchlistOverrides[episode.contentId]
                         actionFeedback.perform {
                             anchoredWatchlistOverrides[episode.contentId] = value
-                            let succeeded = await update(episode.contentId, value)
-                            if !succeeded { anchoredWatchlistOverrides[episode.contentId] = previous }
-                            return succeeded
+                            let outcome = await update(episode.contentId, value)
+                            if outcome != .applied { anchoredWatchlistOverrides[episode.contentId] = previous }
+                            return outcome
                         }
                     }
                 }
@@ -722,10 +722,10 @@ struct TVEpisodeCard: View {
     var captionStyle: CardCaptionStyle = .titleMetadata
     let onSelect: () -> Void
     var onPlay: ((String) -> Void)? = nil
-    var onSetWatched: ((_ contentId: String, _ played: Bool) async -> Bool)? = nil
+    var onSetWatched: ((_ contentId: String, _ played: Bool) async -> PersonalStateOutcome)? = nil
     var initialIsFavorite = false
-    var onSetFavorite: ((_ contentId: String, _ isFavorite: Bool) async -> Bool)? = nil
-    var onSetWatchlist: ((_ contentId: String, _ inWatchlist: Bool) async -> Bool)? = nil
+    var onSetFavorite: ((_ contentId: String, _ isFavorite: Bool) async -> PersonalStateOutcome)? = nil
+    var onSetWatchlist: ((_ contentId: String, _ inWatchlist: Bool) async -> PersonalStateOutcome)? = nil
 
     var initialInWatchlist = false
 
@@ -836,9 +836,9 @@ struct TVEpisodeCard: View {
                     let previous = playedOverride
                     actionFeedback.perform {
                         playedOverride = value
-                        let succeeded = await update(episode.contentId, value)
-                        if !succeeded { playedOverride = previous }
-                        return succeeded
+                        let outcome = await update(episode.contentId, value)
+                        if outcome != .applied { playedOverride = previous }
+                        return outcome
                     }
                 }
             },
@@ -848,9 +848,9 @@ struct TVEpisodeCard: View {
                     let previous = favoriteOverride
                     actionFeedback.perform {
                         favoriteOverride = value
-                        let succeeded = await update(episode.contentId, value)
-                        if !succeeded { favoriteOverride = previous }
-                        return succeeded
+                        let outcome = await update(episode.contentId, value)
+                        if outcome != .applied { favoriteOverride = previous }
+                        return outcome
                     }
                 }
             },
@@ -860,9 +860,9 @@ struct TVEpisodeCard: View {
                     let previous = watchlistOverride
                     actionFeedback.perform {
                         watchlistOverride = value
-                        let succeeded = await update(episode.contentId, value)
-                        if !succeeded { watchlistOverride = previous }
-                        return succeeded
+                        let outcome = await update(episode.contentId, value)
+                        if outcome != .applied { watchlistOverride = previous }
+                        return outcome
                     }
                 }
             }

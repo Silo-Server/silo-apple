@@ -277,22 +277,22 @@ struct MediaCard: View {
         // Home's injected handler owns its page-level failure alert.
         actionFeedback.perform(reportsFailure: onSetWatched == nil) {
             playedOverride = played
-            let succeeded: Bool
+            let outcome: PersonalStateOutcome
             if let onSetWatched {
-                succeeded = await onSetWatched(played)
+                outcome = await onSetWatched(played) ? .applied : .failed(nil)
             } else if let contentId {
-                succeeded = await MediaCardWatchedSync.setWatched(contentId: contentId, played: played)
+                outcome = await MediaCardWatchedSync.setWatched(contentId: contentId, played: played)
             } else {
-                succeeded = false
+                outcome = .failed(nil)
             }
-            if succeeded {
+            if outcome == .applied {
                 onUserStateChanged?(MediaItemUserState(
                     played: played, isFavorite: isFavorite, inWatchlist: isInWatchlist
                 ))
             } else {
                 playedOverride = previous
             }
-            return succeeded
+            return outcome
         }
     }
 
@@ -303,17 +303,17 @@ struct MediaCard: View {
         let previous = favoriteOverride
         actionFeedback.perform {
             favoriteOverride = newValue
-            if await PersonalListSync.setFavorite(
+            let outcome = await PersonalListSync.setFavorite(
                 contentId: contentId, isFavorite: newValue, inWatchlist: watchlist
-            ) {
+            )
+            if outcome == .applied {
                 onUserStateChanged?(
                     MediaItemUserState(played: isPlayed, isFavorite: newValue, inWatchlist: watchlist)
                 )
-                return true
             } else {
                 favoriteOverride = previous
-                return false
             }
+            return outcome
         }
     }
 
@@ -324,17 +324,17 @@ struct MediaCard: View {
         let previous = watchlistOverride
         actionFeedback.perform {
             watchlistOverride = newValue
-            if await PersonalListSync.setWatchlist(
+            let outcome = await PersonalListSync.setWatchlist(
                 contentId: contentId, isFavorite: favorite, inWatchlist: newValue
-            ) {
+            )
+            if outcome == .applied {
                 onUserStateChanged?(
                     MediaItemUserState(played: isPlayed, isFavorite: favorite, inWatchlist: newValue)
                 )
-                return true
             } else {
                 watchlistOverride = previous
-                return false
             }
+            return outcome
         }
     }
 
