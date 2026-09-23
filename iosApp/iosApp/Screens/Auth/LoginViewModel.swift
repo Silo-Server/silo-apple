@@ -33,16 +33,20 @@ class LoginViewModel {
         }
     }
 
-    /// The sign-in failure as the login form shows it. v2 answers with
-    /// problem documents, so the status says what went wrong; an update
-    /// requirement (v1-only server, or 410 `client_upgrade_required`) keeps
-    /// its own copy. Anything else falls back to the error's description.
+    /// The sign-in failure as the login form shows it. Silo's v2 login
+    /// rejects with problem documents, so only a problem's status says what
+    /// went wrong; a bare 401 or 403 comes from something in front of the
+    /// server (an authenticating proxy or WAF) and must not blame the
+    /// credentials. A bare 429 still reads as rate limiting, since limiters
+    /// may answer without a problem body. An update requirement (v1-only
+    /// server, or 410 `client_upgrade_required`) keeps its own copy.
+    /// Anything else falls back to the error's description.
     static func message(for error: Error) -> String {
         if let requirement = UpdateRequirement(error) { return requirement.message }
         let status: Int
         switch error {
         case APIv2Error.problem(let problem): status = problem.status
-        case APIv2Error.httpStatus(let code): status = code
+        case APIv2Error.httpStatus(429): return rateLimitedMessage
         default: return error.localizedDescription
         }
         switch status {
@@ -53,9 +57,11 @@ class LoginViewModel {
         case 400, 422:
             return "Check your username and password, then try again."
         case 429:
-            return "Too many sign-in attempts. Wait a moment, then try again."
+            return rateLimitedMessage
         default:
             return error.localizedDescription
         }
     }
+
+    private static let rateLimitedMessage = "Too many sign-in attempts. Wait a moment, then try again."
 }

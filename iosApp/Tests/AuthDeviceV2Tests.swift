@@ -266,7 +266,14 @@ final class AuthDeviceV2Tests: XCTestCase {
         let limited = LoginViewModel.message(for: try problem(429, "rate_limited"))
         XCTAssertEqual(Set([wrongPassword, disabled, invalid, limited]).count, 4, "each rejection reads differently")
         XCTAssertFalse([wrongPassword, disabled, invalid, limited].contains("server detail"))
-        XCTAssertEqual(LoginViewModel.message(for: APIv2Error.httpStatus(401)), wrongPassword)
+        // A bare 401/403 is not Silo's login answer (a proxy or WAF sent it),
+        // so it must not blame the credentials or the account.
+        for code in [401, 403] {
+            let bare = LoginViewModel.message(for: APIv2Error.httpStatus(code))
+            XCTAssertFalse([wrongPassword, disabled].contains(bare), "bare \(code)")
+            XCTAssertEqual(bare, APIv2Error.httpStatus(code).localizedDescription)
+        }
+        XCTAssertEqual(LoginViewModel.message(for: APIv2Error.httpStatus(429)), limited)
         XCTAssertEqual(LoginViewModel.message(for: try problem(503, "service_unavailable")), "server detail")
     }
 
