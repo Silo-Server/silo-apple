@@ -160,6 +160,13 @@ final class SubtitleAIController {
     /// for this owner, so a job is never read or cancelled for another one.
     private var activeJobAuth: CapturedOrdinaryRequestAuth?
 
+    /// Set when the poller gave up while the websocket was still streaming the
+    /// active job. The websocket's `completed` or `failed` frame then settles
+    /// the job; if the socket or the live track is lost first, the job fails
+    /// with ``lostTrackMessage``. Cleared on a new submission, cancel and
+    /// `reset()`.
+    private var pollerLostTrack = false
+
     /// Context the controller needs to synthesize a completed subtitle's
     /// player descriptor (the server's listing carries no URL/index). Fetched
     /// lazily at handoff time so it always reflects the live session +
@@ -273,6 +280,7 @@ final class SubtitleAIController {
         self.registerAndSelectDescriptor = registerAndSelectDescriptor
         self.registerDescriptorWithoutSelecting = registerDescriptorWithoutSelecting ?? registerAndSelectDescriptor
         self.downloadedSubtitlesFetch = downloadedSubtitlesFetch
+        liveCoordinator?.onSafetyTimeout = { [weak self] in self?.liveSafetyTimedOut() }
     }
 
     /// See the `downloadedSubtitlesFetch` init parameter.
@@ -351,6 +359,7 @@ final class SubtitleAIController {
         livePresentationActive = false
         handoffJobId = nil
         ownedHandoffSubtitleId = nil
+        pollerLostTrack = false
         clearEarlyFrameBuffer()
         Task { [api, poller] in
             await poller.cancel()
@@ -392,6 +401,7 @@ final class SubtitleAIController {
         livePresentationActive = false
         handoffJobId = nil
         ownedHandoffSubtitleId = nil
+        pollerLostTrack = false
         clearEarlyFrameBuffer()
         activeJob = nil
         activeJobAuth = nil
@@ -479,6 +489,7 @@ final class SubtitleAIController {
         livePresentationActive = false
         handoffJobId = nil
         ownedHandoffSubtitleId = nil
+        pollerLostTrack = false
         // Discard any frames left buffered from a previous submit window before
         // opening this one (so a superseded job's racing cues can't replay into
         // the new job).
@@ -556,6 +567,10 @@ final class SubtitleAIController {
     /// (test-only assertion hook for the early-frame buffer).
     var bufferedEarlyFrameCountForTesting: Int { earlyFrameBuffer.count }
 
+    /// Whether the poller gave up and left the job to the websocket
+    /// (test-only assertion hook).
+    var pollerLostTrackForTesting: Bool { pollerLostTrack }
+
     /// Drive a poller-terminal snapshot through the real terminal handler,
     /// exactly as `drainPoll` would on a terminal poll. Test-only.
     func deliverPollerTerminalForTesting(_ job: SubtitleJob) {
@@ -581,10 +596,18 @@ final class SubtitleAIController {
             }
             phase = .running
         }
-        // The poller gave up after repeated read failures. The job may still
-        // finish on the server; say so instead of showing progress forever.
+        // The poller gave up after repeated read failures.
         guard !Task.isCancelled, gen == self.generation, phase == .running else { return }
-        failHandoff("Silo lost track of this subtitle job. If it finishes, the subtitles will appear in the subtitle list.")
+        if liveCoordinator?.hasLiveTrack == true {
+            // The websocket is still delivering this job. Keep the live track;
+            // its `completed` or `failed` frame settles the job instead.
+            Self.logger.warning("[AI-SUB] poller gave up on job \(jobId, privacy: .public); waiting for the websocket")
+            pollerLostTrack = true
+            return
+        }
+        // Nothing else will report on the job. It may still finish on the
+        // server; say so instead of showing progress forever.
+        failHandoff(Self.lostTrackMessage)
     }
 
     private func handleTerminal(_ job: SubtitleJob, isASR: Bool, generation gen: Int) {
@@ -763,6 +786,12 @@ final class SubtitleAIController {
                 // aren't this viewer's owned job.
                 self.ownedHandoffSubtitleId = resultId
                 self.registerAndSelectDescriptor(descriptor)
+                // The poller normally moves the menu to `.completed`. When it
+                // gave up, this handoff is the job's only completion.
+                if self.pollerLostTrack, self.phase == .running {
+                    self.phase = .completed
+                    self.errorMessage = nil
+                }
             } else {
                 self.registerDescriptorWithoutSelecting(descriptor)
             }
@@ -831,6 +860,24 @@ final class SubtitleAIController {
 
         liveCoordinator?.handle(event)
         refreshLivePresentationState()
+        if pollerLostTrack { settleWithoutPoller(after: event) }
+    }
+
+    /// With the poller gone, the websocket's terminal frames also settle the
+    /// menu. A `completed` frame with a subtitle id settles it through the
+    /// handoff; one without an id leaves the coordinator waiting for a poller
+    /// that is no longer running.
+    private func settleWithoutPoller(after event: PlaybackRealtimeSubtitleEvent) {
+        guard phase == .running else { return }
+        switch event {
+        case .failed(let failed):
+            // The coordinator already failed the live presentation out.
+            fail(with: failed.message ?? "Subtitle translation failed.")
+        case .completed where liveCoordinator?.isActive == true:
+            failHandoff(Self.lostTrackMessage)
+        case .started, .cues, .completed, .ready:
+            break
+        }
     }
 
     /// Handle a file-scoped `subtitle_ready` broadcast (M5).
@@ -898,10 +945,23 @@ final class SubtitleAIController {
     /// Called by the VM when the realtime socket's availability flips to
     /// unavailable mid-job. If a live job is in flight, the coordinator gives
     /// up the live presentation and the poller (still running) completes the
-    /// handoff.
+    /// handoff. If the poller already gave up, nothing is left to settle the
+    /// job, so it fails.
     func realtimeDidBecomeUnavailable() {
+        if pollerLostTrack, phase == .running, liveCoordinator?.isActive == true {
+            failHandoff(Self.lostTrackMessage)
+            return
+        }
         liveCoordinator?.liveDriverDidGiveUp()
         refreshLivePresentationState()
+    }
+
+    /// The coordinator's safety timeout failed the live presentation out
+    /// before any cue arrived. The poller normally still settles the job; if
+    /// it already gave up, fail it here.
+    private func liveSafetyTimedOut() {
+        guard pollerLostTrack, phase == .running else { return }
+        fail(with: Self.lostTrackMessage)
     }
 
     // MARK: - Helpers
@@ -949,4 +1009,7 @@ final class SubtitleAIController {
     }
 
     private static let genericSubmitFailure = "Couldn't start subtitle translation."
+
+    private static let lostTrackMessage =
+        "Silo lost track of this subtitle job. If it finishes, the subtitles will appear in the subtitle list."
 }

@@ -425,17 +425,21 @@ final class APIv2SubtitleTests: XCTestCase {
         XCTAssertNil(controller.errorMessage)
     }
 
-    /// When the poller gives up, the job may still finish on the server; the
-    /// menu says so instead of showing progress forever.
+    /// When the poller gives up on a poll-only job, the job may still finish
+    /// on the server; the menu says so instead of showing progress forever,
+    /// and the preparing presentation ends.
     @MainActor
     func testControllerReportsAJobThePollerLostTrackOf() async throws {
         let (api, _) = try await client()
         stub.sequence([.json(202, Self.receipt(Self.aiJob(kind: "transcribe", sourceIndex: -1)))])
         stub.fail(.networkConnectionLost)
+        let sink = LiveSink()
+        let coordinator = LiveSubtitleCoordinator(controls: LiveControls(), sink: sink, clock: ManualSafetyClock())
         let controller = SubtitleAIController(
             api: SiloAI(v2: api),
             mediaFileId: { 42 },
             currentTime: { 0 },
+            liveCoordinator: coordinator,
             handoffContext: { nil },
             registerAndSelectDescriptor: { _ in }
         )
@@ -445,6 +449,146 @@ final class APIv2SubtitleTests: XCTestCase {
         XCTAssertFalse(controller.hasHeldRequest, "the job was accepted; nothing is held")
         XCTAssertEqual(stub.requests.filter { $0.method == "GET" }.count, AIJobPoller.maxConsecutiveFailures)
         XCTAssertEqual(postCount(), 1)
+        XCTAssertEqual(coordinator.phase, .failed, "a poll-only presentation has nothing else to settle it")
+        XCTAssertEqual(sink.restoreCount, 1)
+    }
+
+    /// A poller give-up leaves a streaming live track alone: the websocket's
+    /// `completed` frame still hands off, selects the stored track and
+    /// completes the job.
+    @MainActor
+    func testWebsocketCompletesAJobThePollerLostTrackOf() async throws {
+        let live = try await liveJobThePollerGaveUpOn()
+        XCTAssertEqual(live.controller.phase, .running)
+        XCTAssertEqual(live.coordinator.phase, .streaming)
+        XCTAssertEqual(live.sink.closedEarly, [])
+        XCTAssertEqual(live.sink.restoreCount, 0)
+        XCTAssertEqual(live.sink.failureNotices, [])
+
+        live.controller.handle(.completed(.init(trackKey: "ai-77", subtitleId: 555, language: "es", label: "Spanish")))
+        for _ in 0..<500 where live.selected.count == 0 { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(live.selected.count, 1, "the stored track was registered and selected")
+        XCTAssertEqual(live.controller.phase, .completed)
+        XCTAssertNil(live.controller.errorMessage)
+        XCTAssertEqual(live.coordinator.phase, .completed)
+        XCTAssertEqual(live.sink.closedAfterHandoff, ["ai-77"])
+        XCTAssertEqual(live.sink.closedEarly, [])
+        XCTAssertEqual(live.sink.restoreCount, 0)
+        XCTAssertEqual(live.sink.failureNotices, [])
+    }
+
+    /// Once the poller gave up, losing the socket leaves nothing to settle
+    /// the job, so it fails and the live track is closed.
+    @MainActor
+    func testSocketLossFailsAJobThePollerLostTrackOf() async throws {
+        let live = try await liveJobThePollerGaveUpOn()
+        live.controller.realtimeDidBecomeUnavailable()
+        XCTAssertEqual(live.controller.phase, .failed)
+        XCTAssertEqual(live.controller.errorMessage?.hasPrefix("Silo lost track of this subtitle job."), true)
+        XCTAssertEqual(live.coordinator.phase, .failed)
+        XCTAssertEqual(live.sink.closedEarly, ["ai-77"])
+        XCTAssertEqual(live.sink.restoreCount, 1)
+        XCTAssertEqual(live.selected.count, 0)
+    }
+
+    private struct LiveJob {
+        let controller: SubtitleAIController
+        let coordinator: LiveSubtitleCoordinator
+        let sink: LiveSink
+        let selected: SelectedDescriptors
+    }
+
+    /// Starts a live transcription whose websocket streams cues, then lets
+    /// every job read fail until the poller gives up.
+    @MainActor
+    private func liveJobThePollerGaveUpOn() async throws -> LiveJob {
+        let (api, _) = try await client()
+        stub.sequence([.json(202, Self.receipt(Self.aiJob(kind: "transcribe", sourceIndex: -1), attached: true))])
+        stub.fail(.networkConnectionLost)
+        let sink = LiveSink()
+        let selected = SelectedDescriptors()
+        let coordinator = LiveSubtitleCoordinator(controls: LiveControls(), sink: sink, clock: ManualSafetyClock())
+        let controller = SubtitleAIController(
+            api: SiloAI(v2: api),
+            mediaFileId: { 42 },
+            currentTime: { 0 },
+            sessionId: { "sess-1" },
+            realtimeUnavailable: { false },
+            liveCoordinator: coordinator,
+            handoffContext: {
+                SubtitleAIController.HandoffContext(
+                    sessionId: "sess-1",
+                    ordinals: DownloadedSubtitleOrdinals(published: [:], next: 3),
+                    resolveURL: { URL(string: "https://subtitles.example\($0)") }
+                )
+            },
+            registerAndSelectDescriptor: { _ in selected.count += 1 },
+            downloadedSubtitlesFetch: { _ in
+                [DownloadedSubtitle(id: "555", mediaFileId: 42, provider: "p", language: "es",
+                                    format: "subrip", releaseName: "r")]
+            }
+        )
+        sink.controller = controller
+
+        controller.transcribe(audioIndex: -1, translateTo: nil)
+        for _ in 0..<500 where controller.phase != .running { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(controller.phase, .running)
+        controller.handle(.started(.init(fileId: 42, jobId: nil, trackKey: "ai-77", language: "es",
+                                         label: "Spanish", totalCues: 10)))
+        controller.handle(.cues(.init(trackKey: "ai-77",
+                                      cues: [PlaybackRealtimeSubtitleCue(start: 10, end: 12, text: "hi")],
+                                      done: 1, total: 10)))
+        XCTAssertEqual(coordinator.phase, .streaming)
+
+        for _ in 0..<1500 where !controller.pollerLostTrackForTesting { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertTrue(controller.pollerLostTrackForTesting)
+        XCTAssertEqual(stub.requests.filter { $0.method == "GET" }.count, AIJobPoller.maxConsecutiveFailures)
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(stub.requests.first?.body)) as? [String: Any])
+        XCTAssertEqual(body["session_id"] as? String, "sess-1")
+        return LiveJob(controller: controller, coordinator: coordinator, sink: sink, selected: selected)
+    }
+
+    @MainActor
+    private final class SelectedDescriptors {
+        var count = 0
+    }
+
+    @MainActor
+    private final class LiveControls: LivePlaybackControls {
+        var isPlaying = true
+        func pause() { isPlaying = false }
+        func play() { isPlaying = true }
+    }
+
+    /// Records what the coordinator did to the live track and routes the
+    /// persisted handoff back to the controller, as the player's adapter does.
+    @MainActor
+    private final class LiveSink: LiveSubtitleSink {
+        weak var controller: SubtitleAIController?
+        var closedEarly: [String] = []
+        var closedAfterHandoff: [String] = []
+        var restoreCount = 0
+        var failureNotices: [String] = []
+
+        func installLiveTrack(trackKey: String, label: String?, language: String?) {}
+        func feedCue(_ cue: PlaybackRealtimeSubtitleCue) {}
+        func selectLive(trackKey: String) {}
+        func closeLiveTrack(trackKey: String) { closedEarly.append(trackKey) }
+        func closeLiveTrackAfterPersistedSelected(trackKey: String) { closedAfterHandoff.append(trackKey) }
+        func restorePriorSelection(_ selection: Int64?) { restoreCount += 1 }
+        func registerPersisted(subtitleId: Int) { controller?.completeLivePersistedHandoff(subtitleId: subtitleId) }
+        func showPreparingNotice() {}
+        func showFailureNotice(_ message: String) { failureNotices.append(message) }
+    }
+
+    /// Never fires the safety timeout, so the tests control the live phase.
+    @MainActor
+    private final class ManualSafetyClock: LiveSubtitleClock {
+        private final class Handle: LiveSubtitleCancellable { func cancel() {} }
+        func scheduleSafetyResume(after seconds: TimeInterval,
+                                  _ action: @escaping @MainActor () -> Void) -> LiveSubtitleCancellable {
+            Handle()
+        }
     }
 
     // MARK: Stored subtitles
