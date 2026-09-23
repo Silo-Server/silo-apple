@@ -311,8 +311,9 @@ final class RemotePlaybackIdentityManager {
                   expectedGenerationID: expectedGenerationID
               ) else { return false }
         if let scope, notifyServer {
-            try? await HTTPClient.shared.postVoid(
-                "/api/v1/auth/logout",
+            // Best effort: the temporary session expires server-side when the
+            // revoke is refused, fails, or is skipped for a v1-only server.
+            try? await SiloAPI.shared.apiV2Client.logout(
                 expectedAccount: RefreshAccountIdentity(
                     serverId: scope.serverId,
                     serverURL: scope.serverURL,

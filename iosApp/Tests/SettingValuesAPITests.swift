@@ -1975,11 +1975,9 @@ final class SettingValuesAPITests: XCTestCase {
             requestCaptureBarrier: { await barrier.enter() }
         )
 
+        let api = APIv2Client(http: http, tokenStore: harness.tokenStore, isUpdateRequired: { false })
         let logout = Task {
-            try await http.postVoid(
-                "/api/v1/auth/logout",
-                expectedAccount: account
-            )
+            try await api.logout(expectedAccount: account)
         }
         guard await waitForCancellationPass(barrier, count: 1) else {
             return XCTFail("logout did not pause before its bound account capture")
@@ -2003,7 +2001,7 @@ final class SettingValuesAPITests: XCTestCase {
         } catch {
             XCTFail("unexpected error: \(error)")
         }
-        XCTAssertEqual(SettingsStubProtocol.state().requestCounts["/api/v1/auth/logout"] ?? 0, 0)
+        XCTAssertEqual(SettingsStubProtocol.state().requestCounts["/api/v2/auth/logout"] ?? 0, 0)
         let currentAccess = await harness.tokenStore.getAccessToken()
         XCTAssertEqual(currentAccess, "example")
     }

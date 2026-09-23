@@ -220,26 +220,38 @@ final class AuthService: @unchecked Sendable {
 
     // MARK: - Authentication
 
+    /// Password sign-in through `POST /api/v2/auth/login`. The token pair
+    /// names the account it authenticates, so the session is installed with
+    /// that verified account id. A v1-only server is refused before the
+    /// request leaves the device (`APIv2Error.serverUpdateRequired`).
     func login(username: String, password: String) async throws {
         guard let expectedAccount = await tokenStore.refreshAccountIdentity() else {
             throw HTTPError.serverUrlNotConfigured
         }
-        let response: LoginResponse = try await httpClient.post(
-            "/api/v1/auth/login",
-            body: LoginRequest(username: username, password: password)
+        let tokens = try await apiV2Client.login(
+            username: username,
+            password: password,
+            expectedAccount: expectedAccount
         )
         try await installSession(
-            accessToken: response.accessToken,
-            refreshToken: response.refreshToken,
+            accessToken: tokens.accessToken,
+            refreshToken: tokens.refreshToken,
+            accountID: tokens.user.id,
             expectedAccount: expectedAccount
         )
     }
 
     /// A new login clears the prior profile. Failed installation restores the
     /// previous session before releasing the identity transition.
+    ///
+    /// `accountID` is the account the server said the tokens authenticate
+    /// (v2 `TokenPair.user.id`); it binds the session so durable account work
+    /// can capture it. Callers whose sign-in answer carries no verified
+    /// account pass `nil` and get an unverified binding.
     func installSession(
         accessToken: String,
         refreshToken: String,
+        accountID: String?,
         expectedAccount: RefreshAccountIdentity
     ) async throws {
         guard let transitionLease = await httpClient.beginIdentityTransition() else {
@@ -260,11 +272,10 @@ final class AuthService: @unchecked Sendable {
             let previousProfileID = await tokenStore.getProfileId()
             await tokenStore.clearTokens()
             do {
-                // This v1 entry point installs an unverified account binding.
                 try await tokenStore.installAccountSession(
                     accessToken: accessToken,
                     refreshToken: refreshToken,
-                    accountID: nil
+                    accountID: accountID
                 )
             } catch {
                 // TokenStore blocks the session if restoration also fails.

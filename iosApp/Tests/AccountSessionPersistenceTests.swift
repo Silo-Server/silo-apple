@@ -83,8 +83,12 @@ final class AccountSessionPersistenceTests: XCTestCase {
         let restored = await restarted(h.keys, h.defaults, h.memory).getAccessToken()
         XCTAssertNil(restored)
         await h.stub.waitUntilHeld()
-        XCTAssertEqual(h.stub.requestedPaths, ["/api/v1/auth/logout"])
+        XCTAssertEqual(h.stub.requestedPaths, ["/api/v2/auth/logout"])
         XCTAssertEqual(h.stub.requests.first?.header("Authorization"), "Bearer original")
+        // v2 logout refuses the profile header; the outgoing profile and its
+        // proof stay off the revocation.
+        XCTAssertNil(h.stub.requests.first?.header("X-Profile-Id"))
+        XCTAssertNil(h.stub.requests.first?.header("X-Profile-Token"))
     }
 
     @MainActor
@@ -100,13 +104,13 @@ final class AccountSessionPersistenceTests: XCTestCase {
         _ = await h.store.clearTokens()
         let expected = await h.store.refreshAccountIdentity()
         try await h.auth.installSession(accessToken: "replacement", refreshToken: "replacement-refresh",
-            expectedAccount: XCTUnwrap(expected))
+            accountID: nil, expectedAccount: XCTUnwrap(expected))
         h.stub.release()
         await revoke.value
         let access = await h.store.getAccessToken()
         XCTAssertEqual(access, "replacement")
         XCTAssertTrue(h.auth.isLoggedIn)
-        XCTAssertEqual(h.stub.requestedPaths, ["/api/v1/auth/logout"])
+        XCTAssertEqual(h.stub.requestedPaths, ["/api/v2/auth/logout"])
     }
 
     @MainActor
@@ -131,7 +135,7 @@ final class AccountSessionPersistenceTests: XCTestCase {
         XCTAssertNil(access)
         let account = await h.store.refreshAccountIdentity()
         try await h.auth.installSession(accessToken: "new-login", refreshToken: "new-refresh",
-            expectedAccount: XCTUnwrap(account))
+            accountID: nil, expectedAccount: XCTUnwrap(account))
         let relaunched = await restarted(h.keys, h.defaults, h.memory).getAccessToken()
         XCTAssertEqual(relaunched, "new-login")
     }
@@ -415,15 +419,17 @@ final class AccountSessionPersistenceTests: XCTestCase {
         preferences.remember(profileID: "profile", requiresPIN: true, accountEpoch: try XCTUnwrap(epoch), for: "server")
         let before = preferences.state
         let stub = APIv2TestStub()
-        stub.reply(200, #"{"access_token":"replacement","refresh_token":"new-refresh","expires_in":3600,"user":{"id":34,"username":"new","email":"new@example.test","role":"user"}}"#)
+        stub.reply(200, Self.tokenPair)
         let http = HTTPClient(session: stub.makeSession(), tokenStore: store)
-        let auth = AuthService(launchPreferences: preferences, httpClient: http, tokenStore: store)
+        let auth = AuthService(launchPreferences: preferences,
+            apiV2Client: APIv2Client(http: http, tokenStore: store, isUpdateRequired: { false }),
+            httpClient: http, tokenStore: store)
         memory.failAccessToken = "replacement"
         do {
             try await auth.login(username: "new", password: "password")
             XCTFail("Failed persistence reported login success")
         } catch AccountSessionPersistenceError.unavailable { }
-        XCTAssertEqual(stub.requestedPaths, ["/api/v1/auth/login"])
+        XCTAssertEqual(stub.requestedPaths, ["/api/v2/auth/login"])
         XCTAssertEqual(stub.requests.first?.url?.host, "session.example")
         let restored = await store.getAccessToken()
         let profile = await store.getProfileId()
@@ -447,11 +453,13 @@ final class AccountSessionPersistenceTests: XCTestCase {
         await store.setProfileId("old-profile")
         _ = await store.setProfileToken("old-proof")
         let stub = APIv2TestStub()
-        stub.reply(200, #"{"access_token":"replacement","refresh_token":"new-refresh","expires_in":3600,"user":{"id":34,"username":"new","email":"new@example.test","role":"user"}}"#)
+        stub.reply(200, Self.tokenPair)
+        let http = HTTPClient(session: stub.makeSession(), tokenStore: store)
         let auth = AuthService(launchPreferences: ProfileLaunchPreferences(defaults: defaults),
-            httpClient: HTTPClient(session: stub.makeSession(), tokenStore: store), tokenStore: store)
+            apiV2Client: APIv2Client(http: http, tokenStore: store, isUpdateRequired: { false }),
+            httpClient: http, tokenStore: store)
         try await auth.login(username: "new", password: "password")
-        XCTAssertEqual(stub.requestedPaths, ["/api/v1/auth/login"])
+        XCTAssertEqual(stub.requestedPaths, ["/api/v2/auth/login"])
         XCTAssertEqual(stub.requests.first?.url?.host, "session.example")
         let access = await store.getAccessToken()
         let proof = await store.getProfileToken()
@@ -459,7 +467,41 @@ final class AccountSessionPersistenceTests: XCTestCase {
         XCTAssertEqual(access, "replacement")
         XCTAssertNil(proof)
         XCTAssertNil(profile)
+        // The session is bound to the account the token pair names, so
+        // durable account work can capture it right after sign-in.
+        let durable = await store.captureDurableAccountAuth()
+        XCTAssertEqual(durable?.accountID, "34")
     }
+
+    /// Wrong credentials are the answer, not a session failure: the previous
+    /// session and profile stay, and the 401 never starts a refresh.
+    @MainActor
+    func testRejectedLoginKeepsPreviousSessionWithoutRefresh() async throws {
+        let (store, _, defaults, _) = try await harness()
+        try await store.installAccountSession(accessToken: "original", refreshToken: "refresh", accountID: "12")
+        await store.setProfileId("profile")
+        let stub = APIv2TestStub()
+        stub.reply(401, #"{"type":"https://siloserver.org/docs/api/v2/problems/invalid_token","title":"Invalid token","status":401,"detail":"Invalid username or password."}"#)
+        let http = HTTPClient(session: stub.makeSession(), tokenStore: store)
+        let auth = AuthService(launchPreferences: ProfileLaunchPreferences(defaults: defaults),
+            apiV2Client: APIv2Client(http: http, tokenStore: store, isUpdateRequired: { false }),
+            httpClient: http, tokenStore: store)
+        do {
+            try await auth.login(username: "new", password: "wrong")
+            XCTFail("A rejected login installed a session")
+        } catch APIv2Error.problem(let problem) {
+            XCTAssertEqual(problem.status, 401)
+        }
+        XCTAssertEqual(stub.requestedPaths, ["/api/v2/auth/login"])
+        let access = await store.getAccessToken()
+        let profile = await store.getProfileId()
+        XCTAssertEqual(access, "original")
+        XCTAssertEqual(profile, "profile")
+        let durable = await store.captureDurableAccountAuth()
+        XCTAssertEqual(durable?.accountID, "12")
+    }
+
+    private static let tokenPair = #"{"access_token":"replacement","refresh_token":"new-refresh","expires_in":3600,"user":{"id":"34","username":"new","email":"new@example.test","role":"user","permissions":[],"download_allowed":true}}"#
 
     func testFailedProfileRestoreInvalidatesPartialSessionAcrossRelaunch() async throws {
         for proof in [String?.none, "original-proof"] {

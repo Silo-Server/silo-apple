@@ -1,6 +1,7 @@
 import Foundation
 
-/// Body for POST /api/v1/auth/login.
+/// Body for POST /api/v2/auth/login (`LoginInputBody`). A nil `provider`
+/// is omitted, which selects the server's default provider.
 struct LoginRequest: Codable {
     let username: String
     let password: String
@@ -11,14 +12,6 @@ struct LoginRequest: Codable {
         self.password = password
         self.provider = provider
     }
-}
-
-/// Response from POST /api/v1/auth/login.
-struct LoginResponse: Codable {
-    let accessToken: String
-    let refreshToken: String
-    let expiresIn: Int64
-    let user: AuthUser
 }
 
 /// Wire-format user object returned inside auth responses.
