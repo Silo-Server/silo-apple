@@ -82,7 +82,7 @@ final class MediaRequestAuthorizationTests: XCTestCase {
         let headers = try await media
         try await progress
         XCTAssertEqual(headers["Authorization"], "Bearer new-access")
-        XCTAssertEqual(h.stub.requests.filter { $0.path == "/api/v1/auth/refresh" }.count, 1)
+        XCTAssertEqual(h.stub.requests.filter { $0.path == "/api/v2/auth/refresh" }.count, 1)
     }
 
     func testExpiredTokenRefreshesBeforeSendingAMediaRequest() async throws {
@@ -90,7 +90,7 @@ final class MediaRequestAuthorizationTests: XCTestCase {
         let h = try await harness(accessToken: Self.jwt(issuedAt: now.addingTimeInterval(-3500), expiresAt: now.addingTimeInterval(-1)))
         let headers = try await h.http.mediaRequestHeaders(expectedAuth: h.owner, baseHeaders: [:], now: now)
         XCTAssertEqual(headers["Authorization"], "Bearer new-access")
-        XCTAssertEqual(h.stub.requests.map(\.path), ["/api/v1/auth/refresh"])
+        XCTAssertEqual(h.stub.requests.map(\.path), ["/api/v2/auth/refresh"])
     }
 
     func testHealthyShortLivedTokenDoesNotRefreshOnEverySegment() async throws {
@@ -191,7 +191,7 @@ final class MediaRequestAuthorizationTests: XCTestCase {
             let headers = try await h.http.mediaRequestHeaders(expectedAuth: h.owner, baseHeaders: [:], now: now)
             XCTAssertEqual(headers["Authorization"], "Bearer \(token)")
         }
-        XCTAssertEqual(h.stub.requests.filter { $0.path == "/api/v1/auth/refresh" }.count, 1)
+        XCTAssertEqual(h.stub.requests.filter { $0.path == "/api/v2/auth/refresh" }.count, 1)
     }
 
     private static func jwt(issuedAt: Date, expiresAt: Date) -> String {

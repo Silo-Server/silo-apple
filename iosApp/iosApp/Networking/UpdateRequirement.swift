@@ -38,6 +38,8 @@ enum UpdateRequirement: Equatable, Sendable {
     /// `.serverUpdateRequired`.
     init?(_ error: Error) {
         switch error {
+        case let requirement as UpdateRequirement:
+            self = requirement
         case APIv2Error.serverUpdateRequired:
             self = .server
         case APIv2Error.problem(let problem) where Self.isClientUpgradeRequired(problem):
@@ -45,6 +47,19 @@ enum UpdateRequirement: Equatable, Sendable {
         case HTTPError.http(let statusCode, let body) where Self.isClientUpgradeRequired(statusCode: statusCode, body: body):
             self = .app
         default:
+            return nil
+        }
+    }
+
+    /// Classifies a non-2xx answer from a route known to be `/api/v2`, such
+    /// as token refresh. Unlike ``init(_:)``, the path is known here, so Go's
+    /// plain 404 does prove that a v1-only server's legacy listener answered.
+    init?(v2StatusCode statusCode: Int, body: String?) {
+        if statusCode == 404, APIv2Probe.isLegacyNotFound(body: body) {
+            self = .server
+        } else if Self.isClientUpgradeRequired(statusCode: statusCode, body: body) {
+            self = .app
+        } else {
             return nil
         }
     }
@@ -64,4 +79,11 @@ enum UpdateRequirement: Equatable, Sendable {
         }
         return HTTPError.http(statusCode: statusCode, body: body).serverErrorCode == clientUpgradeRequiredProblem
     }
+}
+
+/// Thrown by `HTTPClient` when the token refresh a 401 started was answered
+/// with an update-required reply: the request surfaces the update instead of
+/// its 401, and the saved credentials stay in place.
+extension UpdateRequirement: LocalizedError {
+    var errorDescription: String? { message }
 }

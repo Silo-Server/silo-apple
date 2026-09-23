@@ -30,7 +30,7 @@ final class HTTPClientDiagnosticsClassificationTests: XCTestCase {
         // Over-templating is a real cost, not a safe default: a report where
         // every route is `{id}` cannot be grouped by endpoint at all.
         assertPath("/api/v1/health", equals: "/api/v1/health")
-        assertPath("/api/v1/auth/refresh", equals: "/api/v1/auth/refresh")
+        assertPath("/api/v2/auth/refresh", equals: "/api/v2/auth/refresh")
         assertPath("/api/v1/catalog/filters", equals: "/api/v1/catalog/filters")
         assertPath("/api/v1/collections/groups/order", equals: "/api/v1/collections/groups/order")
         assertPath("/api/v1/home/sections", equals: "/api/v1/home/sections")
@@ -143,10 +143,10 @@ final class HTTPClientDiagnosticsClassificationTests: XCTestCase {
             "https://host.example.com/silo",
         ] {
             let actual = HTTPDiagnosticsPath.attribute(
-                for: URL(string: origin + "/api/v1/auth/refresh")
+                for: URL(string: origin + "/api/v2/auth/refresh")
             )
             XCTAssertTrue(
-                actual.hasSuffix("/api/v1/auth/refresh"),
+                actual.hasSuffix("/api/v2/auth/refresh"),
                 "refresh route lost its shape: \(actual)"
             )
             XCTAssertFalse(actual.contains("example"), "host survived in \(actual)")
