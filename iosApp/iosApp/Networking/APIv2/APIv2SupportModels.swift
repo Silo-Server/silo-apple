@@ -7,13 +7,16 @@ import Foundation
 // MARK: Metadata AI
 
 /// `GET /api/v2/capabilities/metadata-ai`.
+/// `on_view` is an open string on the wire; unknown values decode to `.off`.
 struct APIv2MetadataAICapability: Decodable {
     let state: String
     let revision: String
+    let allowed: Bool
     let onView: MetadataAIStatus.OnViewMode
 
     var playerValue: MetadataAIStatus {
-        MetadataAIStatus(enabled: state == "available", onView: state == "available" ? onView : .off)
+        let enabled = allowed && state == "available"
+        return MetadataAIStatus(enabled: enabled, onView: enabled ? onView : .off)
     }
 }
 

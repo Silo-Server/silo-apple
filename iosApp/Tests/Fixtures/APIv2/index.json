@@ -104,6 +104,48 @@
       "body_file": "downloads_empty.json"
     },
     {
+      "name": "get_catalog_filters_ok",
+      "operation_id": "getCatalogFilters",
+      "scenario": "The facet values of one library including the file-derived technical facets.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/catalog/filters?library_id=1",
+        "headers": {
+          "Authorization": "Bearer tok-member",
+          "X-Profile-Id": "p-owner"
+        }
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/CatalogFilters",
+      "body_file": "get_catalog_filters_ok.json"
+    },
+    {
+      "name": "get_catalog_search_capabilities_ok",
+      "operation_id": "getCatalogSearchCapabilities",
+      "scenario": "Search exposes its ranked result window and fixed session lifetime.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/catalog/search/capabilities",
+        "headers": {
+          "Authorization": "Bearer tok-member",
+          "X-Profile-Id": "p-owner"
+        }
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "private, no-cache",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/CatalogSearchCapabilities",
+      "body_file": "get_catalog_search_capabilities_ok.json"
+    },
+    {
       "name": "get_current_user_ok",
       "operation_id": "getCurrentUser",
       "scenario": "The signed-in account with no profile selected; impersonation is absent outside an admin impersonation session.",
@@ -122,6 +164,27 @@
       "response_media_type": "application/json",
       "schema": "#/components/schemas/Account",
       "body_file": "get_current_user_ok.json"
+    },
+    {
+      "name": "get_metadata_ai_capability_ok",
+      "operation_id": "getMetadataAICapability",
+      "scenario": "The metadata AI capability document on a server with on-view translation offered as a button.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/capabilities/metadata-ai",
+        "headers": {
+          "Authorization": "Bearer tok-member",
+          "X-Profile-Id": "p-owner"
+        }
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "private, no-cache",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/MetadataAICapability",
+      "body_file": "get_metadata_ai_capability_ok.json"
     },
     {
       "name": "get_setup_status_ok",

@@ -100,7 +100,7 @@ final class CatalogV2Tests: XCTestCase {
         }
         let profile = try XCTUnwrap(String(data: profileData, encoding: .utf8))
         let cases: [(String, (APIv2Client) async throws -> Void, String)] = [
-            ("requestGet", { _ = try await $0.catalogFilters(libraryId: nil) as APIv2CatalogFilters }, filters),
+            ("requestGet", { _ = try await $0.requestGet("/api/v2/catalog/filters") as APIv2CatalogFilters }, filters),
             ("updateProfile", { _ = try await $0.updateProfile(id: "profile-one", patch: APIv2ProfilePatch()) }, profile),
             ("householdProfiles", { _ = try await $0.householdProfiles() }, #"{"items":[\#(profile)],"page":{"has_more":false}}"#),
             ("requestPost", { _ = try await $0.requestPost("/api/v2/requests", body: ["item_id": "one"]) as APIv2Profile }, profile),
@@ -168,6 +168,46 @@ final class CatalogV2Tests: XCTestCase {
             XCTFail("Expected changed viewer")
         } catch HTTPError.authorityChanged { }
         XCTAssertEqual(stub.requests.count, 1)
+    }
+
+    func testCatalogFiltersAreBoundToTheCallersOwner() async throws {
+        let body = String(decoding: try APIv2FixtureTestSupport.data(named: "get_catalog_filters_ok", bundleClass: Self.self),
+                          as: UTF8.self)
+        let (api, tokens) = try await client()
+        let authValue = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(authValue)
+        stub.reply(200, body)
+        let filters = try await api.catalogFilters(libraryId: "1", includeTechnical: false, auth: auth)
+        XCTAssertEqual(filters.genres, ["Crime"])
+        XCTAssertEqual(filters.authors, ["Frank Herbert"])
+        XCTAssertEqual(filters.technical?.resolutions, ["2160p"])
+        XCTAssertEqual(filters.technical?.subtitleLanguages, ["en"])
+        let request = try XCTUnwrap(stub.requests.last)
+        XCTAssertEqual(request.path, "/api/v2/catalog/filters")
+        XCTAssertEqual(request.query, ["library_id": "1", "skip_technical": "true"])
+        XCTAssertEqual(request.header("x-profile-id"), "profile-one")
+
+        // A replaced owner cannot issue the read.
+        await tokens.setProfileToken("replacement")
+        do {
+            _ = try await api.catalogFilters(libraryId: nil, auth: auth)
+            XCTFail("a replaced owner cannot read facets")
+        } catch HTTPError.requestIdentityChanged { }
+        XCTAssertEqual(stub.requests.count, 1)
+
+        // An owner change while the read is in flight discards the response.
+        let currentValue = await tokens.captureOrdinaryRequestAuth()
+        let current = try XCTUnwrap(currentValue)
+        stub.hold()
+        let pending = Task { try await api.catalogFilters(libraryId: nil, auth: current) }
+        await stub.waitUntilHeld()
+        await tokens.setProfileId("profile-two")
+        stub.release()
+        do {
+            _ = try await pending.value
+            XCTFail("facets read for a replaced owner cannot publish")
+        } catch HTTPError.authorityChanged { }
+        XCTAssertEqual(stub.requests.count, 2)
     }
 
     func testOwnedHierarchyReadsRefuseAReplacedOwnerBeforeDispatch() async throws {
@@ -491,9 +531,9 @@ final class CatalogV2Tests: XCTestCase {
 
     func testSearchCapabilitiesAreFencedOnTheCapturedOwner() async throws {
         let (api, tokens) = try await client()
-        stub.reply(200, #"{"revision":"one","state":"ready","provider":"search","allowed":true}"#)
+        stub.reply(200, #"{"revision":"one","state":"available","allowed":true}"#)
         let capabilities = try await api.catalogSearchCapabilities()
-        XCTAssertEqual(capabilities.allowed, true)
+        XCTAssertTrue(capabilities.isAvailable)
         let authValue = await tokens.captureOrdinaryRequestAuth()
         let auth = try XCTUnwrap(authValue)
         await tokens.setProfileToken("replacement")
