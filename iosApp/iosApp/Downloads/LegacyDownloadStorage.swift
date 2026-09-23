@@ -13,7 +13,9 @@ import OSLog
 /// Each carried store is also flagged `legacyRowsPending`: the server still
 /// lists the rows the earlier version registered for this device, and the
 /// scope's first complete registry read deletes them instead of importing
-/// them. Only scopes the earlier version actually wrote are flagged, so a
+/// them; its first complete monitor list likewise sets aside the monitors
+/// that version created. Only scopes the earlier version actually wrote are
+/// flagged, so a
 /// reinstall (which starts with no downloads root) never treats rows this
 /// version registered as legacy.
 ///
@@ -219,6 +221,7 @@ struct LegacyDownloadStorage: Sendable {
             var file = DownloadStoreFile.empty
             file.progressQueue = queue
             file.legacyRowsPending = true
+            file.legacyMonitorsPending = true
             try encoder.encode(file).write(
                 to: directory.appendingPathComponent(DownloadFilePaths.storeFileName, isDirectory: false),
                 options: .atomic

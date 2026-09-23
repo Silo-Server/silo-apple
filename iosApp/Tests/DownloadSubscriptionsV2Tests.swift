@@ -376,8 +376,6 @@ final class DownloadSubscriptionsV2Tests: XCTestCase {
         }
         let known = DownloadSubscription(from: try server("known", created: "2026-01-01T00:00:00.000Z"), seriesTitle: "Known Show")
         let gone = DownloadSubscription(from: try server("gone", created: "2026-09-01T00:00:00.000Z"), seriesTitle: "Gone")
-        let removal = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-09-10T00:00:00Z"))
-
         let merged = DownloadManager.mergeSubscriptions(
             local: [known, gone],
             listed: [
@@ -387,13 +385,35 @@ final class DownloadSubscriptionsV2Tests: XCTestCase {
                 try server("new", created: "2026-09-20T00:00:00.000Z"),
             ],
             stopped: ["stopped"],
-            legacyRemovalDate: removal
+            legacy: ["earlier"]
         )
 
         XCTAssertEqual(merged.map(\.id), ["known", "new"])
         XCTAssertEqual(merged[0].seriesTitle, "Known Show")
         XCTAssertEqual(merged[0].etag, #""known-2""#)
         XCTAssertNil(merged[1].seriesTitle)
+    }
+
+    func testEarlierVersionsMonitorsAreTheUnknownOnesOfTheFirstListNotTheOldOnes() throws {
+        // The first complete list of a scope the removal carried: whatever
+        // the store doesn't know is the earlier version's, however its
+        // createdAt compares with the device clock.
+        let decoder = HTTPClient.makeJSONDecoder()
+        func server(_ id: String, created: String) throws -> ServerSubscription {
+            try decoder.decode(ServerSubscription.self, from: Data(monitor(id, series: "s-\(id)", created: created).utf8))
+        }
+        let mine = DownloadSubscription(from: try server("mine", created: "2020-01-01T00:00:00.000Z"), seriesTitle: "Mine")
+        let listed = [
+            try server("mine", created: "2020-01-01T00:00:00.000Z"),
+            try server("earlier", created: "2099-01-01T00:00:00.000Z"),
+            try server("stopped", created: "2020-01-01T00:00:00.000Z"),
+        ]
+        XCTAssertEqual(DownloadManager.unknownMonitorIds(local: [mine], listed: listed, stopped: ["stopped"]), ["earlier"])
+
+        // A reinstall flags no scope: this device's own monitors, however old,
+        // are kept and synced.
+        let reinstalled = DownloadManager.mergeSubscriptions(local: [], listed: listed, stopped: [], legacy: [])
+        XCTAssertEqual(reinstalled.map(\.id), ["mine", "earlier", "stopped"])
     }
 
     func testListReadBeforeADeleteLandedDoesNotBringTheMonitorBack() throws {
@@ -412,7 +432,7 @@ final class DownloadSubscriptionsV2Tests: XCTestCase {
         let landed = writes.landed(since: started)
         let merged = DownloadManager.mergeSubscriptions(
             local: [kept], listed: [try server("kept"), try server("stopped")],
-            stopped: landed.deleted, createdDuringRead: landed.created, legacyRemovalDate: nil)
+            stopped: landed.deleted, createdDuringRead: landed.created, legacy: [])
         writes.listCompleted(startedAt: started)
         XCTAssertEqual(merged.map(\.id), ["kept"])
 
@@ -433,7 +453,7 @@ final class DownloadSubscriptionsV2Tests: XCTestCase {
         let landed = writes.landed(since: started)
         let merged = DownloadManager.mergeSubscriptions(
             local: [created], listed: [], stopped: landed.deleted, createdDuringRead: landed.created,
-            legacyRemovalDate: nil)
+            legacy: [])
         XCTAssertEqual(merged.map(\.id), ["new"])
 
         // A read that started after the create is authoritative again.
@@ -441,7 +461,7 @@ final class DownloadSubscriptionsV2Tests: XCTestCase {
         let later = writes.landed(since: writes.generation)
         XCTAssertTrue(DownloadManager.mergeSubscriptions(
             local: [created], listed: [], stopped: later.deleted, createdDuringRead: later.created,
-            legacyRemovalDate: nil).isEmpty)
+            legacy: []).isEmpty)
     }
 
     func testCreateAnsweredDuringItsMonitorsDeleteDependsOnThatDelete() {

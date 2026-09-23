@@ -2035,34 +2035,65 @@ final class DownloadManager {
         // landed during it may still be listed, and a create answered during
         // it may be missing.
         let landed = subscriptionWrites.landed(since: started)
+        let stopped = Set((file.pendingSubscriptionDeletes ?? [:]).keys).union(landed.deleted)
+        let unknown = Self.unknownMonitorIds(local: file.subscriptions, listed: listed, stopped: stopped)
+        // Only ids the server still lists are worth keeping.
+        var storedLegacy = (file.legacyMonitorIds ?? []).intersection(listed.map(\.id))
+        var legacyPending = file.legacyMonitorsPending
+        var legacy = storedLegacy
+        if legacyRemovalIncomplete {
+            // A removal that did not finish can't tell them apart: hide the
+            // unknown ones for this launch without recording anything.
+            legacy.formUnion(unknown)
+        } else if legacyPending == true {
+            // The first complete list after the removal. A monitor this
+            // version creates is stored when its create answers, so every
+            // unknown one is the earlier version's.
+            storedLegacy.formUnion(unknown)
+            legacy = storedLegacy
+            legacyPending = nil
+        }
         let merged = Self.mergeSubscriptions(
             local: file.subscriptions,
             listed: listed,
-            stopped: Set((file.pendingSubscriptionDeletes ?? [:]).keys).union(landed.deleted),
+            stopped: stopped,
             createdDuringRead: landed.created,
-            legacyRemovalDate: legacyRemovalDate
+            legacy: legacy
         )
         subscriptionWrites.listCompleted(startedAt: started)
-        if merged != file.subscriptions {
+        let legacyIds = storedLegacy.isEmpty ? nil : storedLegacy
+        if merged != file.subscriptions || legacyIds != file.legacyMonitorIds
+            || legacyPending != file.legacyMonitorsPending {
             file.subscriptions = merged
+            file.legacyMonitorIds = legacyIds
+            file.legacyMonitorsPending = legacyPending
             persist()
         }
         return true
+    }
+
+    /// Listed monitors the local list doesn't hold and the user didn't stop.
+    nonisolated static func unknownMonitorIds(
+        local: [DownloadSubscription],
+        listed: [ServerSubscription],
+        stopped: Set<String>
+    ) -> Set<String> {
+        Set(listed.map(\.id)).subtracting(local.map(\.id)).subtracting(stopped)
     }
 
     /// The local monitor list after a complete read of the server's. Local
     /// titles stay. A monitor the server no longer lists is dropped, unless a
     /// create answered with it during the read (`createdDuringRead`). One the
     /// user stopped (`stopped`: its DELETE is pending or landed during the
-    /// read) is not brought back. An unknown monitor created before this
-    /// version removed earlier versions' downloads belongs to them, so it is
-    /// left out and never synced.
+    /// read) is not brought back. An unknown monitor in `legacy` belongs to
+    /// the downloads an earlier version saved, so it is left out and never
+    /// synced.
     nonisolated static func mergeSubscriptions(
         local: [DownloadSubscription],
         listed: [ServerSubscription],
         stopped: Set<String>,
         createdDuringRead: Set<String> = [],
-        legacyRemovalDate: Date?
+        legacy: Set<String>
     ) -> [DownloadSubscription] {
         let titles = Dictionary(local.map { ($0.id, $0.seriesTitle) }, uniquingKeysWith: { first, _ in first })
         let merged: [DownloadSubscription] = listed.compactMap { monitor in
@@ -2070,7 +2101,7 @@ final class DownloadManager {
             if let title = titles[monitor.id] {
                 return DownloadSubscription(from: monitor, seriesTitle: title)
             }
-            if let legacyRemovalDate, monitor.createdAt < legacyRemovalDate { return nil }
+            if legacy.contains(monitor.id) { return nil }
             return DownloadSubscription(from: monitor, seriesTitle: nil)
         }
         let listedIds = Set(listed.map(\.id))
@@ -2104,6 +2135,10 @@ final class DownloadManager {
     @discardableResult
     private func syncSubscription(id: String, owner: ScopeOwner) async -> (registered: Int, stopRun: Bool, removed: Bool) {
         guard let monitor = file.subscriptions.first(where: { $0.id == id }), monitor.active else { return (0, false, false) }
+        // Rows a sync registers are unknown to the store. Until the scope's
+        // first complete registry read has set aside the earlier version's
+        // rows, that read would take them for legacy rows and delete them.
+        guard file.legacyRowsPending != true, !legacyRemovalIncomplete else { return (0, true, false) }
         let outcome: DownloadSubscriptionSyncOutcome
         do {
             outcome = try await SiloAPI.shared.apiV2Client.syncDownloadSubscription(

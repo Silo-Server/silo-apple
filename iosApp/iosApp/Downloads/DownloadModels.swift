@@ -723,6 +723,13 @@ struct DownloadStoreFile: Codable, Sendable {
     /// with the validator each was last read with. The monitor list never
     /// imports them, and a later sync sends the DELETE again.
     var pendingSubscriptionDeletes: [String: String]? = nil
+    /// Set when this store replaced one an earlier version wrote (see
+    /// `LegacyDownloadStorage`). The scope's first complete monitor list
+    /// records every monitor the store doesn't know in `legacyMonitorIds`.
+    var legacyMonitorsPending: Bool? = nil
+    /// Monitors an earlier version created. They stay on the server but are
+    /// never shown or synced here.
+    var legacyMonitorIds: Set<String>? = nil
 
     static let currentVersion = 1
 
