@@ -76,6 +76,18 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
         }
     }
 
+    /// Cancel every task in the session, including ones an earlier app
+    /// version started that the system reattached on launch. Returns once
+    /// the cancels are issued; their final events still arrive later.
+    func cancelAllTasks() async {
+        await withCheckedContinuation { cont in
+            session.getAllTasks { tasks in
+                for task in tasks { task.cancel() }
+                cont.resume()
+            }
+        }
+    }
+
     /// Suspend a transfer by cancelling it with resume data. Returns `nil`
     /// when the server/transfer doesn't support ranged resume or the task is
     /// no longer live — callers must treat that as "restart from zero".

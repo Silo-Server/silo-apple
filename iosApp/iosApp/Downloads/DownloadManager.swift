@@ -105,6 +105,13 @@ final class DownloadManager {
     /// second; UI counters should tick at a readable cadence instead.
     private var lastProgressPublish: [String: Date] = [:]
     private static let progressPublishInterval: TimeInterval = 1.0
+    /// The one-shot removal of downloads saved by earlier versions. Every
+    /// scope activation waits for it, so nothing reads or writes the store
+    /// before it has run.
+    private var legacyStorageTask: Task<Void, Never>?
+    /// True until the user dismisses the notice that this version removed
+    /// downloads saved by an earlier one.
+    private(set) var legacyDownloadsNoticePending = false
 
     private init() {
         // Drain background-session events for the lifetime of the app.
@@ -388,6 +395,7 @@ final class DownloadManager {
     /// signed-in scope.
     @discardableResult
     func activateScopeIfNeeded() async -> Bool {
+        await removeLegacyDownloadsIfNeeded()
         let serverId = ServerRegistry.shared.activeServerId ?? ""
         let profileId = await TokenStore.shared.getProfileId() ?? ""
         guard !serverId.isEmpty, !profileId.isEmpty else {
@@ -442,6 +450,31 @@ final class DownloadManager {
         refreshStorageUsage()
         await backfillEpisodeMetadataIfNeeded()
         return true
+    }
+
+    private func removeLegacyDownloadsIfNeeded() async {
+        let task = legacyStorageTask ?? Task { await self.runLegacyStorageRemoval() }
+        legacyStorageTask = task
+        await task.value
+    }
+
+    private func runLegacyStorageRemoval() async {
+        let store = DownloadStore.shared
+        switch await store.legacyStorageState() {
+        case let .removed(noticePending):
+            legacyDownloadsNoticePending = noticePending
+        case .removalNeeded:
+            // Transfers an earlier version started would land their media in
+            // the storage removed below; stop them first.
+            await sessionDelegate.cancelAllTasks()
+            legacyDownloadsNoticePending = await store.removeLegacyStorage()
+        }
+    }
+
+    func acknowledgeLegacyDownloadsNotice() {
+        guard legacyDownloadsNoticePending else { return }
+        legacyDownloadsNoticePending = false
+        Task { await DownloadStore.shared.acknowledgeLegacyRemovalNotice() }
     }
 
     /// Called on app launch / foreground and on the first authenticated

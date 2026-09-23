@@ -8,6 +8,8 @@ import OSLog
 /// different directory tree with no migration.
 ///
 /// ```
+/// <AppSupport>/SiloDownloads/
+///   .legacy-downloads-removed    (see `LegacyDownloadStorage`)
 /// <AppSupport>/SiloDownloads/<serverId>/<profileId>/
 ///   store.json
 ///   <downloadId>/
@@ -38,16 +40,16 @@ enum DownloadFilePaths {
         return root
     }
 
-    static func scopeDirectory(serverId: String, profileId: String) -> URL {
-        let dir = rootDirectory()
+    static func scopeDirectory(serverId: String, profileId: String, root: URL = rootDirectory()) -> URL {
+        let dir = root
             .appendingPathComponent(sanitize(serverId), isDirectory: true)
             .appendingPathComponent(sanitize(profileId), isDirectory: true)
         ensureDirectory(dir)
         return dir
     }
 
-    static func storeFileURL(serverId: String, profileId: String) -> URL {
-        scopeDirectory(serverId: serverId, profileId: profileId)
+    static func storeFileURL(serverId: String, profileId: String, root: URL = rootDirectory()) -> URL {
+        scopeDirectory(serverId: serverId, profileId: profileId, root: root)
             .appendingPathComponent(storeFileName, isDirectory: false)
     }
 

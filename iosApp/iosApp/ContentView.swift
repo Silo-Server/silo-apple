@@ -80,6 +80,17 @@ struct ContentView: View {
         } message: {
             Text(router.accountActionError ?? "")
         }
+        #if !os(tvOS)
+        .alert(LegacyDownloadStorage.noticeMessage, isPresented: Binding(
+            get: {
+                didFinishStartupSplash && router.authState != .loading
+                    && DownloadManager.shared.legacyDownloadsNoticePending
+            },
+            set: { if !$0 { DownloadManager.shared.acknowledgeLegacyDownloadsNotice() } }
+        )) {
+            Button("OK", role: .cancel) { DownloadManager.shared.acknowledgeLegacyDownloadsNotice() }
+        }
+        #endif
         #if os(tvOS) && DEBUG
         .modifier(TVFocusDebugActivationModifier())
         #endif
