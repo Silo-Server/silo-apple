@@ -331,9 +331,61 @@ final class AuthDeviceV2Tests: XCTestCase {
         XCTAssertEqual(stub.requestedPaths, ["/api/v2/auth/device/start"])
     }
 
-    /// The approved poll's token pair names the account; sign-in binds it.
+    /// The view model runs start, a pending poll and the approved poll, waits
+    /// for the pending answer's `poll_after` rather than the start interval,
+    /// and binds the token pair's account.
     @MainActor
-    func testApprovedPollBindsTheTokenPairAccount() async throws {
+    func testQRSignInFollowsPollAfterAndBindsTheTokenPairAccount() async throws {
+        let (model, tokens) = try await qrViewModel()
+        stub.sequence([
+            .json(201, Self.start_device_login_ok.replacingOccurrences(of: #""interval": 5"#, with: #""interval": 30"#)),
+            .json(200, #"{"status":"pending","poll_after":1,"profile_id":"","profile_token":"","temporary":false}"#),
+            .json(200, Self.poll_device_login_ok),
+        ])
+        await model.begin(deviceName: "TV", devicePlatform: "tvos")
+        // Settling within 10 s shows the loop waited `poll_after` (1 s), not
+        // the start `interval` (30 s).
+        let state = try await settle(model)
+        model.cancel()
+        XCTAssertEqual(state, .approved)
+        let durable = await tokens.captureDurableAccountAuth()
+        XCTAssertEqual(durable?.accountID, "1")
+        let access = await tokens.getAccessToken()
+        XCTAssertEqual(access, "acc")
+        XCTAssertEqual(stub.requestedPaths,
+            ["/api/v2/auth/device/start", "/api/v2/auth/device/poll", "/api/v2/auth/device/poll"])
+        let poll = try XCTUnwrap(stub.requests.last)
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(poll.body)) as? [String: String])
+        XCTAssertEqual(body, ["device_code": "dev-1"])
+    }
+
+    /// A temporary session belongs to a SiloRemote handoff. Sign-in refuses
+    /// it and installs nothing.
+    @MainActor
+    func testQRSignInRefusesATemporaryApproval() async throws {
+        let (model, tokens) = try await qrViewModel()
+        let temporary = Self.poll_device_login_ok
+            .replacingOccurrences(of: #""profile_id": """#, with: #""profile_id": "remote-profile""#)
+            .replacingOccurrences(of: #""profile_token": """#, with: #""profile_token": "remote-proof""#)
+            .replacingOccurrences(of: #""temporary": false"#,
+                with: #""temporary": true, "session_expires_at": "2026-01-02T03:14:05.678Z""#)
+        // The answer passes wire validation, so the refusal is the sign-in's own.
+        let decoded = try HTTPClient.makeJSONDecoder().decode(APIv2DevicePoll.self, from: Data(temporary.utf8)).validated()
+        XCTAssertTrue(decoded.temporary)
+        stub.sequence([.json(201, Self.start_device_login_ok), .json(200, temporary)])
+        await model.begin(deviceName: "TV", devicePlatform: "tvos")
+        let state = try await settle(model)
+        model.cancel()
+        XCTAssertEqual(state, .error(message: APIv2Error.incompleteAuthResponse.localizedDescription))
+        let access = await tokens.getAccessToken()
+        XCTAssertNil(access)
+        let durable = await tokens.captureDurableAccountAuth()
+        XCTAssertNil(durable)
+        XCTAssertEqual(stub.requestedPaths, ["/api/v2/auth/device/start", "/api/v2/auth/device/poll"])
+    }
+
+    @MainActor
+    private func qrViewModel() async throws -> (QRLoginViewModel, TokenStore) {
         let (api, tokens) = try await harness()
         let http = HTTPClient(session: stub.makeSession(), tokenStore: tokens)
         let name = "AuthDeviceV2Tests.auth.\(UUID().uuidString)"
@@ -341,20 +393,21 @@ final class AuthDeviceV2Tests: XCTestCase {
         addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
         let auth = AuthService(launchPreferences: ProfileLaunchPreferences(defaults: SharedDefaults(suite: suite, standard: suite)),
             apiV2Client: api, httpClient: http, tokenStore: tokens)
-        let identityValue = await tokens.refreshAccountIdentity()
-        let identity = try XCTUnwrap(identityValue)
-        stub.reply(200, Self.poll_device_login_ok)
-        let poll = try await auth.pollDeviceLogin(deviceCode: "secret", expectedAccount: identity)
-        let pair = try XCTUnwrap(poll.tokens)
-        try await auth.installSession(accessToken: pair.accessToken, refreshToken: pair.refreshToken,
-            accountID: pair.user.id, expectedAccount: identity)
-        let durable = await tokens.captureDurableAccountAuth()
-        XCTAssertEqual(durable?.accountID, "1")
-        let access = await tokens.getAccessToken()
-        XCTAssertEqual(access, "acc")
-        let request = try XCTUnwrap(stub.requests.first)
-        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.body)) as? [String: String])
-        XCTAssertEqual(body, ["device_code": "secret"])
+        return (QRLoginViewModel(auth: auth, tokenStore: tokens), tokens)
+    }
+
+    /// Waits for the QR flow to reach `.approved` or `.error`.
+    @MainActor
+    private func settle(_ model: QRLoginViewModel, timeout: TimeInterval = 10) async throws -> QRLoginViewModel.State {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            switch model.state {
+            case .approved, .error: return model.state
+            case .idle, .starting, .awaiting: try await Task.sleep(nanoseconds: 20_000_000)
+            }
+        }
+        XCTFail("QR sign-in did not settle: \(model.state)")
+        return model.state
     }
 
     private static let login_ok = #"""

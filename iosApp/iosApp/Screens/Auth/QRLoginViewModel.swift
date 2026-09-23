@@ -29,7 +29,13 @@ class QRLoginViewModel {
     private var devicePlatform: String = ""
     private var expectedAccount: RefreshAccountIdentity?
 
-    private let auth = AuthService.shared
+    private let auth: AuthService
+    private let tokenStore: TokenStore
+
+    init(auth: AuthService = .shared, tokenStore: TokenStore = .shared) {
+        self.auth = auth
+        self.tokenStore = tokenStore
+    }
 
     func begin(deviceName: String, devicePlatform: String) async {
         self.deviceName = deviceName
@@ -52,7 +58,7 @@ class QRLoginViewModel {
     private func startSession() async {
         state = .starting
         do {
-            guard let account = await TokenStore.shared.refreshAccountIdentity() else {
+            guard let account = await tokenStore.refreshAccountIdentity() else {
                 throw HTTPError.serverUrlNotConfigured
             }
             // APIv2Client refuses the answer if the account changed in flight.
