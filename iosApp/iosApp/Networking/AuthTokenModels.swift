@@ -14,26 +14,6 @@ struct LoginRequest: Codable {
     }
 }
 
-/// Wire-format user object returned inside auth responses.
-///
-/// Distinct from ``UserInfo`` (used by the rest of the app) because the
-/// server wire shape has more fields than the reduced `UserInfo` the UI
-/// needs. `SiloAPI` maps between the two at the API boundary.
-struct AuthUser: Codable {
-    let id: Int
-    let username: String
-    let email: String
-    let role: String
-    let downloadAllowed: Bool?
-    let impersonation: ImpersonationInfo?
-}
-
-struct ImpersonationInfo: Codable {
-    let active: Bool
-    let impersonatorUserId: Int
-    let impersonatorUsername: String
-}
-
 /// Body for POST /api/v2/auth/refresh (`RefreshSessionInputBody`).
 struct RefreshRequest: Codable {
     let refreshToken: String

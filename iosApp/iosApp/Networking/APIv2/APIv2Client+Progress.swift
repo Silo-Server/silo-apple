@@ -161,7 +161,7 @@ extension APIv2Client {
             return deferredStatuses.contains(status) ? .deferred(error) : .rejected(error)
         case HTTPError.network(let underlying as URLError) where Self.neverConnected.contains(underlying.code):
             return .notSent(error)
-        case HTTPError.serverUrlNotConfigured, HTTPError.invalidURL, HTTPError.encodingFailed:
+        case HTTPError.serverUrlNotConfigured, HTTPError.invalidURL:
             return .notSent(error)
         default:
             return .uncertain(error)

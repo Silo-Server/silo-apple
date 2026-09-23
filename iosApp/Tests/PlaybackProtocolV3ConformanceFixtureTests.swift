@@ -3,21 +3,6 @@ import XCTest
 @testable import Silo
 
 final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
-    func testHTTPErrorDecodesServerErrorEnvelope() throws {
-        let url = try PlaybackV3FixtureTestSupport.fixtureURL(
-            named: "error_response",
-            bundleClass: Self.self
-        )
-        let body = try String(contentsOf: url, encoding: .utf8)
-        let error = HTTPError.http(statusCode: 426, body: body)
-
-        XCTAssertEqual(error.serverErrorCode, "client_upgrade_required")
-        XCTAssertEqual(
-            error.errorDescription,
-            "This server requires playback protocol v3. Update the app to continue."
-        )
-    }
-
     func testMatrixCoversEveryNeutralContractCategory() throws {
         let matrix = try PlaybackV3FixtureTestSupport.decode(
             PlaybackV3ConformanceMatrix.self,

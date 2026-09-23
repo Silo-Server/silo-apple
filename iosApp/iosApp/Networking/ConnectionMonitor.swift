@@ -232,7 +232,7 @@ final class ConnectionMonitor {
 
     /// The retained unversioned health probe. It is public and stays outside
     /// the v2 contract and the v1 tombstone.
-    static let healthPath = "/api/v1/health"
+    nonisolated static let healthPath = "/api/v1/health"
 
     /// One-shot health check of the active server. It goes out without
     /// credentials, so an expired or revoked session can neither fail the

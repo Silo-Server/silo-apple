@@ -2413,7 +2413,7 @@ actor DiagnosticsCoordinator {
             case .http(let statusCode, _):
                 return (500...599).contains(statusCode)
             case .serverUrlNotConfigured, .invalidURL, .invalidResponse,
-                 .requestIdentityChanged, .authorityChanged, .encodingFailed,
+                 .requestIdentityChanged, .authorityChanged,
                  .decodingFailed:
                 return false
             }

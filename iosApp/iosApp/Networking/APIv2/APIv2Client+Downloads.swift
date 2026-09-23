@@ -248,7 +248,7 @@ extension APIv2Client {
         case DownloadRegistryError.invalidRequest, DownloadSubscriptionError.invalidRequest:
             return .rejected
         case HTTPError.requestIdentityChanged, HTTPError.serverUrlNotConfigured,
-             HTTPError.invalidURL, HTTPError.encodingFailed, is EncodingError:
+             HTTPError.invalidURL, is EncodingError:
             return .notApplied
         case HTTPError.network(let underlying as URLError) where neverConnected.contains(underlying.code):
             return .notApplied

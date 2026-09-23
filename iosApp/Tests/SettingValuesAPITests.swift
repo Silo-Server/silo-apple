@@ -1837,7 +1837,7 @@ final class SettingValuesAPITests: XCTestCase {
 
         let health: HealthStatus = try await harness.http.getUnauthenticated(
             serverURL: harness.identity.serverURL,
-            path: "/api/v1/health"
+            path: ConnectionMonitor.healthPath
         )
         XCTAssertEqual(health.status, "ok")
         let activeStillUnreachable = await MainActor.run {
@@ -2755,7 +2755,7 @@ final class SettingsStubProtocol: URLProtocol {
             : SettingKey.revision
 
         switch (recorded.method, recorded.path) {
-        case ("GET", "/api/v1/health"):
+        case ("GET", ConnectionMonitor.healthPath):
             respond(status: 200, body: #"{"status":"ok","server_name":"Candidate"}"#)
         case ("GET", "/api/v2/settings/contract/capabilities"):
             switch mode {

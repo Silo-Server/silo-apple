@@ -648,15 +648,20 @@ final class ProfileLaunchIdentityTests: XCTestCase {
 
 @MainActor
 final class InvalidProfileRecoveryTests: XCTestCase {
-    func testOnlyExplicitProfileErrorsTriggerRecovery() {
+    func testOnlyExplicitProfileErrorsTriggerRecovery() throws {
+        func problem(_ identifier: String, status: Int) throws -> APIv2Error {
+            let json = #"{"type":"https://siloserver.org/docs/api/v2/problems/\#(identifier)","title":"t","status":\#(status),"detail":"d"}"#
+            return .problem(try HTTPClient.makeJSONDecoder().decode(APIv2Problem.self, from: Data(json.utf8)))
+        }
         XCTAssertTrue(StartupContentPrefetcher.indicatesInvalidProfile(
-            HTTPError.http(statusCode: 403, body: #"{"error":"profile_unverified"}"#)
-        ))
-        XCTAssertTrue(StartupContentPrefetcher.indicatesInvalidProfile(
-            HTTPError.http(statusCode: 404, body: #"{"error":"profile_not_found"}"#)
+            try problem("profile_verification_required", status: 403)
         ))
         XCTAssertFalse(StartupContentPrefetcher.indicatesInvalidProfile(
-            HTTPError.http(statusCode: 404, body: #"{"error":"content_not_found"}"#)
+            try problem("not_found", status: 404)
+        ))
+        // A plain HTTP failure carries no profile verdict, whatever its body.
+        XCTAssertFalse(StartupContentPrefetcher.indicatesInvalidProfile(
+            HTTPError.http(statusCode: 403, body: #"{"error":"profile_unverified"}"#)
         ))
         XCTAssertFalse(StartupContentPrefetcher.indicatesInvalidProfile(
             HTTPError.http(statusCode: 404, body: nil)

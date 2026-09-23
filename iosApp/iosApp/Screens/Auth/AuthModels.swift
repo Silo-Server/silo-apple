@@ -1,7 +1,7 @@
 import Foundation
 
-/// Reachability reply from the retained, unauthenticated
-/// `GET /api/v1/health` (`ConnectionMonitor.probeServer`).
+/// Reachability reply from the retained, unauthenticated health probe
+/// (`ConnectionMonitor.healthPath`, sent by `ConnectionMonitor.probeServer`).
 struct HealthStatus: Codable {
     let status: String
 }
