@@ -26,11 +26,18 @@ class ServerSetupViewModel {
     var isLoading: Bool = false
     var error: String?
 
-    private let auth = AuthService.shared
+    /// Probes one candidate URL and commits it on success.
+    typealias ServerCheck = @Sendable (String) async throws -> SetupStatus
+
+    private let checkServer: ServerCheck
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "ServerSetup"
     )
+
+    init(checkServer: @escaping ServerCheck = { try await AuthService.shared.checkServer(url: $0) }) {
+        self.checkServer = checkServer
+    }
 
     /// Validate the server URL and determine whether setup or login is needed.
     func connect(router: AppRouter) async {
@@ -56,10 +63,11 @@ class ServerSetupViewModel {
 
         var attempted: [String] = []
         var lastError: Error?
+        var updateRequirement: UpdateRequirement?
         for candidate in candidates {
             attempted.append(candidate)
             do {
-                let status = try await auth.checkServer(url: candidate)
+                let status = try await checkServer(candidate)
                 // This view is also pushed onto the login stack (Change
                 // Server, then Add Server) while `authState` is already
                 // `needsLogin`. Setting the same state is a no-op there, so
@@ -73,13 +81,16 @@ class ServerSetupViewModel {
                 return
             } catch let connectError {
                 lastError = connectError
+                // One candidate proving a version mismatch explains the whole
+                // attempt, even when a later scheme or port is unreachable.
+                updateRequirement = updateRequirement ?? UpdateRequirement(connectError)
             }
         }
 
         Self.logger.error(
             "Server autodiscovery failed candidates=\(attempted.joined(separator: ", "), privacy: .public) lastError=\(String(describing: lastError), privacy: .public)"
         )
-        self.error = "Could not reach a Silo server at that address."
+        self.error = updateRequirement?.message ?? "Could not reach a Silo server at that address."
     }
 
     func buildCandidateURLs() throws -> [String] {

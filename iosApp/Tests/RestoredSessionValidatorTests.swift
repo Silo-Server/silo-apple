@@ -198,6 +198,64 @@ final class RestoredSessionValidatorTests: XCTestCase {
         XCTAssertEqual(accountProbeCount, 0)
     }
 
+    /// A version mismatch on cold launch shows the update copy, not "We can't
+    /// verify this server", and keeps the session. The setup check runs
+    /// through the real request layers against the stub: v2 setup for the
+    /// legacy 404 (a v1-only server's answer to a v2 route), both layers for
+    /// the 410 problem.
+    func testVersionMismatchEntersUpdateRecoveryAndKeepsSession() async {
+        let legacyNotFound = StubURLProtocol.Response.text(
+            UpdateRequirementTests.legacyNotFound, status: 404, contentType: "text/plain; charset=utf-8")
+        let upgradeProblem = StubURLProtocol.Response.json(
+            UpdateRequirementTests.upgradeProblem, status: 410, headers: ["Content-Type": "application/problem+json"])
+        let cases: [(String, Bool, StubURLProtocol.Response, RestoredSessionValidationResult)] = [
+            ("v2 setup, legacy 404", true, legacyNotFound, .serverRecovery(.serverUpdateRequired)),
+            ("v2 setup, 410 upgrade", true, upgradeProblem, .serverRecovery(.appUpdateRequired)),
+            ("v1 setup, 410 upgrade", false, upgradeProblem, .serverRecovery(.appUpdateRequired)),
+            ("v1 setup, legacy 404", false, legacyNotFound, .serverRecovery(.serverNotRecognized)),
+        ]
+        for (name, v2Setup, response, expectedResult) in cases {
+            let handler = StubURLProtocol.Handler()
+            handler.route(StubURLProtocol.any) { _ in response }
+            let http = HTTPClient(session: handler.makeSession())
+            let harness = ValidationHarness(identity: expected)
+            let validator = RestoredSessionValidator(
+                setupProbe: { url in
+                    if v2Setup {
+                        let status = try await APIv2Client(http: http, isUpdateRequired: { false })
+                            .setupStatus(serverURL: url)
+                        return SetupStatus(needsSetup: status.needsSetup)
+                    }
+                    return try await http.getUnauthenticated(serverURL: url, path: "/api/v1/auth/setup")
+                },
+                accountProbe: { try await harness.probeAccount() },
+                identityReader: { await harness.currentIdentity() },
+                accessTokenReader: { serverID in await harness.hasAccessToken(serverID: serverID) }
+            )
+
+            let result = await validator.validate(expected: expected)
+            let hasAccessToken = await harness.hasAccessToken(serverID: expected.serverId)
+            let accountProbeCount = await harness.accountProbeCount()
+
+            XCTAssertEqual(result, expectedResult, name)
+            XCTAssertTrue(hasAccessToken, name)
+            XCTAssertEqual(accountProbeCount, 0, name)
+        }
+    }
+
+    func testAccountUpgradeProblemEntersUpdateRecoveryAndKeepsSession() async {
+        let harness = ValidationHarness(
+            identity: expected,
+            accountFailure: .http(statusCode: 410, body: UpdateRequirementTests.upgradeProblem)
+        )
+
+        let result = await makeValidator(harness).validate(expected: expected)
+        let hasAccessToken = await harness.hasAccessToken(serverID: expected.serverId)
+
+        XCTAssertEqual(result, .serverRecovery(.appUpdateRequired))
+        XCTAssertTrue(hasAccessToken)
+    }
+
     func testConfirmedForgetCompletesAndRoutesOutsideTheRecoveryViewLifetime() async throws {
         let gate = ServerRemovalGate()
         let router = AppRouter()
