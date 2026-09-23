@@ -560,15 +560,29 @@ final class CatalogV2Tests: XCTestCase {
         } catch APIv2Error.incompleteCatalogRead { }
     }
 
+    func testPersonRefreshRejectedWith401IsNotReplayedUnderARefreshedBearer() async throws {
+        let (api, tokens) = try await client()
+        _ = await tokens.saveTokens(accessToken: "old-access", refreshToken: "old-refresh")
+        let authValue = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(authValue)
+        // The POST gets the 401; anything after it (a token refresh, a replay)
+        // gets a valid refresh answer, so only the path exclusion stops both.
+        stub.sequence([.json(401, "{}")])
+        stub.reply(200, #"{"access_token":"new-access","refresh_token":"new-refresh","expires_in":900}"#)
+        do {
+            try await api.refreshPerson(id: "7", auth: auth)
+            XCTFail("the 401 is the answer")
+        } catch APIv2Error.httpStatus(401) { }
+        XCTAssertEqual(stub.requestedPaths, ["/api/v2/catalog/people/7/refresh"],
+            "a non_retryable refresh gets no token refresh and no second dispatch")
+        let accessToken = await tokens.getAccessToken()
+        XCTAssertEqual(accessToken, "old-access")
+    }
+
     func testPersonRefreshIsSentOnceAndAcceptsOnlyTheQueuedReceipt() async throws {
         let (api, tokens) = try await client()
         let authValue = await tokens.captureOrdinaryRequestAuth()
         let auth = try XCTUnwrap(authValue)
-        stub.reply(401, "{}")
-        do {
-            try await api.refreshPerson(id: "7", auth: auth)
-            XCTFail("a 401 is not replayed under a refreshed bearer")
-        } catch APIv2Error.httpStatus(401) { }
         stub.reply(429, #"{"type":"about:blank","title":"Slow down","status":429,"detail":"Try later","code":"rate_limited"}"#)
         do {
             try await api.refreshPerson(id: "7", auth: auth)
@@ -591,7 +605,7 @@ final class CatalogV2Tests: XCTestCase {
         } catch is APIv2Error {
             XCTFail("a lost answer is not a server answer")
         } catch { }
-        XCTAssertEqual(stub.methods, ["POST", "POST", "POST", "POST", "POST"], "each outcome is exactly one dispatch")
+        XCTAssertEqual(stub.methods, ["POST", "POST", "POST", "POST"], "each outcome is exactly one dispatch")
     }
 
     func testPersonCallsRefuseAReplacedOwnerAndALateReceipt() async throws {
