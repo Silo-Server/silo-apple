@@ -170,7 +170,11 @@ final class WatchPartySession {
     private func enter(invitationServer: String? = nil, expectedRoomID: String? = nil,
                        expectedAuth: CapturedOrdinaryRequestAuth? = nil,
                        _ operation: (CapturedOrdinaryRequestAuth) async throws -> WatchPartyRoomResponse) async -> Bool {
-        guard !isBusy, !isEngaged else { return false }
+        guard !isBusy else { return false }
+        guard !isEngaged else {
+            errorMessage = "You're already in a party. Leave it to join a different one."
+            return false
+        }
         let owner = engagement
         isBusy = true
         errorMessage = nil
