@@ -80,13 +80,22 @@ extension APIv2Client {
     }
 
     /// Classifies a thrown dispatch error. A problem document or HTTP status
-    /// is a definite answer. A transport error is `notSent` only when the
-    /// connection was never established; every other failure after dispatch,
-    /// including an owner change noticed on the way back, is uncertain.
+    /// is a definite answer: `deferred` when the server applied nothing and
+    /// the batch may be sent later, `rejected` otherwise. A transport error is
+    /// `notSent` only when the connection was never established; every other
+    /// failure after dispatch, including an owner change noticed on the way
+    /// back, is uncertain.
     static func progressSyncFailure(_ error: Error) -> ProgressSyncOutcome {
         switch error {
-        case APIv2Error.problem, APIv2Error.httpStatus, APIv2Error.serverUpdateRequired:
+        case APIv2Error.serverUpdateRequired:
+            return .deferred(error)
+        case APIv2Error.problem(let problem):
+            if UpdateRequirement.isClientUpgradeRequired(problem) || deferredStatuses.contains(problem.status) {
+                return .deferred(error)
+            }
             return .rejected(error)
+        case APIv2Error.httpStatus(let status):
+            return deferredStatuses.contains(status) ? .deferred(error) : .rejected(error)
         case HTTPError.network(let underlying as URLError) where Self.neverConnected.contains(underlying.code):
             return .notSent(error)
         case HTTPError.serverUrlNotConfigured, HTTPError.invalidURL, HTTPError.encodingFailed:
@@ -95,6 +104,11 @@ extension APIv2Client {
             return .uncertain(error)
         }
     }
+
+    /// Whole-batch statuses the server returns before writing anything, for
+    /// a condition that passes: timeout, rate limit, unavailable. A 500 is
+    /// not one: the server can raise it after the writes.
+    private static let deferredStatuses: Set<Int> = [408, 429, 503]
 
     /// URL loading errors raised before any request bytes could reach the
     /// server: no route, no name, no connection, or no trusted TLS session.

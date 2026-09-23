@@ -8,8 +8,10 @@ import Foundation
 /// - definite success, or a per-item failure the server reported: the entry
 ///   leaves the queue;
 /// - definite failure of the whole batch (a non-success status): the entries
-///   leave the queue; a batch that never left the device goes back to
-///   pending, because nothing reached the server;
+///   leave the queue, unless the answer says the server applied nothing and
+///   the batch may be sent later (`deferred`: 408, 429, 503, update
+///   required). Those entries, and a batch that never left the device, go
+///   back to pending;
 /// - uncertain (sent, no usable answer): the entries stay `dispatched` and
 ///   are held. They are never sent again. A newer event for the same item
 ///   replaces the held entry: it is a new write whose later `updated_at` wins
@@ -67,13 +69,22 @@ enum OfflineProgressQueue {
         switch outcome {
         case .answered, .rejected:
             queue.removeAll { ids.contains($0.id) }
-        case .notSent:
+        case .notSent, .deferred:
             for index in queue.indices where ids.contains(queue[index].id) {
                 queue[index].state = .pending
             }
         case .uncertain:
             break
         }
+    }
+
+    /// Whether a flush sends its next batch. Only after an answer: a batch
+    /// that was not sent, deferred or left unanswered meets the same
+    /// condition again, and stopping after a whole-batch rejection bounds
+    /// what one server fault can discard to a single batch.
+    static func flushContinues(after outcome: ProgressSyncOutcome) -> Bool {
+        if case .answered = outcome { return true }
+        return false
     }
 
     /// Entries whose upload outcome is unknown: dispatched and not part of a

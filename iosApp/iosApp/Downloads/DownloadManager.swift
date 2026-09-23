@@ -1627,7 +1627,7 @@ final class DownloadManager {
             if let failure = outcome.failureSummary {
                 Self.logger.warning("offline progress upload: \(failure, privacy: .public)")
             }
-            if case .notSent = outcome { return }
+            guard OfflineProgressQueue.flushContinues(after: outcome) else { return }
         }
     }
 

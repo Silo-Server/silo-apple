@@ -118,13 +118,19 @@ struct APIv2BulkSummary: Decodable, Equatable, Sendable {
 
 /// What one syncProgress dispatch established. The operation is
 /// `non_retryable`, so the caller decides from this whether an item may be
-/// sent again: only `notSent` items may, because nothing reached the server.
+/// sent again: only `notSent` and `deferred` items may, because the server
+/// applied none of them.
 enum ProgressSyncOutcome: Sendable {
     /// HTTP 200 with exactly one result per request item, ordered by index.
     case answered([APIv2ProgressSyncItemResult])
     /// Refused before the request left the device; nothing was applied.
     case notSent(any Error)
-    /// The server answered with a non-success status; nothing was applied.
+    /// The server answered that it applied nothing for now: 408, 429, 503,
+    /// or an update-required answer (the legacy 404, or 410
+    /// `client_upgrade_required`). The same batch may be sent again later.
+    case deferred(any Error)
+    /// The server refused the batch with any other non-success status. The
+    /// batch as sent will not be accepted, so it is not sent again.
     case rejected(any Error)
     /// The request was sent and no usable answer arrived. The server may have
     /// applied any of the items; none may be sent again automatically.
@@ -163,6 +169,8 @@ extension ProgressSyncOutcome {
             return "\(failures.count) of \(results.count) items failed (\(kinds))"
         case .notSent(let error):
             return "not sent: \(MediaLogRedactor.sanitize(error))"
+        case .deferred(let error):
+            return "deferred: \(MediaLogRedactor.sanitize(error))"
         case .rejected(let error):
             return "rejected: \(MediaLogRedactor.sanitize(error))"
         case .uncertain(let error):

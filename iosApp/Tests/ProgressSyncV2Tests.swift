@@ -96,11 +96,41 @@ final class ProgressSyncV2Tests: XCTestCase {
 
     // MARK: Outcomes
 
-    func testNonSuccessStatusIsADefiniteRejection() async throws {
+    private func problem(_ status: Int, _ type: String) -> String {
+        #"{"type":"https://silo.example/problems/\#(type)","title":"Problem","status":\#(status),"detail":"Problem."}"#
+    }
+
+    func testPermanentRejectionsAreRejected() async throws {
         let (api, _) = try await client()
-        stub.reply(422, #"{"type":"https://silo.example/problems/validation_failed","title":"Unprocessable","status":422,"detail":"items must be unique"}"#)
-        guard case .rejected = await api.syncProgress([try item("movie-1")]) else { return XCTFail("expected rejected") }
-        XCTAssertEqual(stub.requests.count, 1)
+        for (status, body) in [
+            (422, problem(422, "validation_failed")),
+            (400, problem(400, "invalid_request")),
+            (403, problem(403, "forbidden")),
+            (404, problem(404, "not_found")),
+            (500, problem(500, "internal_error")),
+        ] {
+            stub.reset()
+            stub.reply(status, body)
+            guard case .rejected = await api.syncProgress([try item("movie-1")]) else { return XCTFail("\(status) not rejected") }
+            XCTAssertEqual(stub.requests.count, 1)
+        }
+    }
+
+    /// The server applied nothing and says so: the batch may go out again.
+    func testTransientAndUpdateRequiredAnswersAreDeferred() async throws {
+        let (api, _) = try await client()
+        for (status, body) in [
+            (503, problem(503, "service_unavailable")),
+            (429, problem(429, "rate_limited")),
+            (408, "timeout"),
+            (410, problem(410, "client_upgrade_required")),
+            (404, "404 page not found\n"),
+        ] {
+            stub.reset()
+            stub.reply(status, body)
+            guard case .deferred = await api.syncProgress([try item("movie-1")]) else { return XCTFail("\(status) not deferred") }
+            XCTAssertEqual(stub.requests.count, 1, "\(status) was re-sent")
+        }
     }
 
     func testLostConnectionAfterSendIsUncertainAndNotResent() async throws {
@@ -175,8 +205,10 @@ final class ProgressSyncV2Tests: XCTestCase {
         XCTAssertEqual(queue.map(\.mediaItemId), ["a"])
     }
 
-    func testDefiniteOutcomesReleaseAndNotSentReturnsToPending() {
-        for outcome: ProgressSyncOutcome in [.answered([]), .rejected(APIv2Error.httpStatus(503))] {
+    func testDefiniteOutcomesReleaseAndUnappliedBatchesReturnToPending() {
+        let rejected422 = APIv2Error.problem(APIv2Problem(type: "https://silo.example/problems/validation_failed",
+            title: "Unprocessable", status: 422, detail: "", instance: nil, errors: nil))
+        for outcome: ProgressSyncOutcome in [.answered([]), .rejected(rejected422)] {
             var queue = queued(["a"])
             let batch = OfflineProgressQueue.nextBatch(queue)
             OfflineProgressQueue.claim(&queue, ids: Set(batch.map(\.id)))
@@ -184,11 +216,32 @@ final class ProgressSyncV2Tests: XCTestCase {
             XCTAssertTrue(queue.isEmpty, "\(outcome) kept the entry")
         }
 
-        var queue = queued(["a"])
-        let batch = OfflineProgressQueue.nextBatch(queue)
-        OfflineProgressQueue.claim(&queue, ids: Set(batch.map(\.id)))
-        OfflineProgressQueue.resolve(&queue, batch: batch, outcome: .notSent(URLError(.notConnectedToInternet)))
-        XCTAssertEqual(OfflineProgressQueue.nextBatch(queue).map(\.id), batch.map(\.id))
+        for outcome: ProgressSyncOutcome in [
+            .notSent(URLError(.notConnectedToInternet)),
+            APIv2Client.progressSyncFailure(APIv2Error.httpStatus(503)),
+            APIv2Client.progressSyncFailure(APIv2Error.httpStatus(429)),
+            APIv2Client.progressSyncFailure(APIv2Error.serverUpdateRequired),
+        ] {
+            var queue = queued(["a"])
+            let batch = OfflineProgressQueue.nextBatch(queue)
+            OfflineProgressQueue.claim(&queue, ids: Set(batch.map(\.id)))
+            OfflineProgressQueue.resolve(&queue, batch: batch, outcome: outcome)
+            XCTAssertEqual(OfflineProgressQueue.nextBatch(queue).map(\.id), batch.map(\.id), "\(outcome) dropped the entry")
+            XCTAssertTrue(OfflineProgressQueue.held(queue, inFlight: []).isEmpty)
+        }
+    }
+
+    /// One outage or rejection costs at most the batch that met it.
+    func testFlushSendsTheNextBatchOnlyAfterAnAnswer() {
+        XCTAssertTrue(OfflineProgressQueue.flushContinues(after: .answered([])))
+        for outcome: ProgressSyncOutcome in [
+            .rejected(APIv2Error.httpStatus(422)),
+            .deferred(APIv2Error.httpStatus(503)),
+            .notSent(URLError(.cannotConnectToHost)),
+            .uncertain(URLError(.timedOut)),
+        ] {
+            XCTAssertFalse(OfflineProgressQueue.flushContinues(after: outcome), "\(outcome) kept flushing")
+        }
     }
 
     func testEntryReplacedInFlightSurvivesItsBatch() {
