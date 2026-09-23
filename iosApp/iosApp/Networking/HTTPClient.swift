@@ -550,6 +550,18 @@ actor HTTPClient {
             if let expectedAuth, !auth.ordinaryIdentity.sameCredentialIdentity(as: expectedAuth) {
                 throw HTTPError.requestIdentityChanged
             }
+            if !Self.isPublicAuthPath(path), let accessToken = auth.accessToken,
+               MediaAccessTokenExpiry.shouldRefresh(accessToken, now: Date()) {
+                auth = try await scopedAuthRefreshedBeforeDispatch(
+                    auth,
+                    expected: requestIdentity,
+                    expectedAccount: expectedAccount,
+                    expectedAuth: expectedAuth,
+                    dispatchRevision: dispatchRevision,
+                    method: method,
+                    path: path
+                )
+            }
             var request = try scopedRequest(
                 method: method,
                 path: path,
@@ -680,6 +692,47 @@ actor HTTPClient {
             return request
         }
         return HTTPRawResponse(data: data, statusCode: response.statusCode, headers: response.allHeaderFields, url: response.url)
+    }
+
+    /// Refreshes a bearer that has expired or is about to, before a request
+    /// is sent with it. Nothing has left the device yet, so this is safe for
+    /// single-dispatch operations too, which never refresh on a 401: without
+    /// it their first request after the token expired would fail every time.
+    /// The fresh credentials must belong to the same owner the request was
+    /// captured for. When no fresh bearer comes back and the old one has
+    /// already expired, the request is not sent and fails the way the 401
+    /// path does.
+    private func scopedAuthRefreshedBeforeDispatch(
+        _ auth: CapturedHTTPRequestAuth,
+        expected requestIdentity: HTTPRequestIdentity,
+        expectedAccount: RefreshAccountIdentity?,
+        expectedAuth: CapturedOrdinaryRequestAuth?,
+        dispatchRevision: UInt64,
+        method: String,
+        path: String
+    ) async throws -> CapturedHTTPRequestAuth {
+        if try await refreshScopedTokens(auth: auth, expected: requestIdentity, dispatchRevision: dispatchRevision) {
+            guard let refreshed = try? await tokenStore.captureRequestAuth(expected: requestIdentity),
+                  expectedAccount.map({ refreshed.account == $0 }) ?? true,
+                  expectedAuth.map({ refreshed.ordinaryIdentity.sameCredentialIdentity(as: $0) }) ?? true,
+                  refreshed.account == auth.account,
+                  refreshed.credentialOwner == auth.credentialOwner,
+                  refreshed.accessToken != nil else {
+                throw HTTPError.requestIdentityChanged
+            }
+            return refreshed
+        }
+        return try Self.keepingUnexpiredBearer(auth, token: auth.accessToken, method: method, path: path)
+    }
+
+    /// The captured credentials when their bearer is still usable, or the
+    /// 401 the server would answer with an expired one.
+    private static func keepingUnexpiredBearer<Auth>(
+        _ auth: Auth, token: String?, method: String, path: String
+    ) throws -> Auth {
+        guard let token, MediaAccessTokenExpiry.isExpired(token, now: Date()) else { return auth }
+        logger.error("Not sending \(method, privacy: .public) with an expired bearer: the refresh did not renew it")
+        throw HTTPError.http(statusCode: 401, body: nil)
     }
 
     private func scopedRequest(
@@ -1081,7 +1134,7 @@ actor HTTPClient {
         if let requestCaptureBarrier {
             await requestCaptureBarrier()
         }
-        let capturedAuth = await tokenStore.captureOrdinaryRequestAuth()
+        var capturedAuth = await tokenStore.captureOrdinaryRequestAuth()
         if let expectedAccount,
            capturedAuth?.account != expectedAccount {
             throw HTTPError.requestIdentityChanged
@@ -1089,6 +1142,21 @@ actor HTTPClient {
         if let expectedAuth {
             guard let capturedAuth, capturedAuth.sameCredentialIdentity(as: expectedAuth) else {
                 throw HTTPError.requestIdentityChanged
+            }
+        }
+        // As on the scoped path: renew a bearer that has expired or is about
+        // to before anything is sent (see `scopedAuthRefreshedBeforeDispatch`).
+        if let current = capturedAuth, !Self.isPublicAuthPath(path), let accessToken = current.accessToken,
+           MediaAccessTokenExpiry.shouldRefresh(accessToken, now: Date()) {
+            if let refreshed = try await refreshTokens(expected: current, dispatchRevision: dispatchRevision) {
+                guard expectedAuth.map({ refreshed.sameCredentialIdentity(as: $0) }) ?? true,
+                      refreshed.accessToken != nil,
+                      await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: refreshed) == refreshed else {
+                    throw HTTPError.requestIdentityChanged
+                }
+                capturedAuth = refreshed
+            } else {
+                capturedAuth = try Self.keepingUnexpiredBearer(current, token: accessToken, method: method, path: path)
             }
         }
         let serverUrl = if let capturedAuth {
@@ -1875,7 +1943,9 @@ actor HTTPClient {
     /// The v2 exclusions are single-dispatch mutations (`docs/native-api-v2.md`):
     /// a 401 on one of them surfaces as the failure it is instead of being
     /// re-sent under a refreshed bearer, because the server may already have
-    /// consumed the first attempt. Settings value writes are
+    /// consumed the first attempt. A bearer known to be expired is renewed
+    /// before any request is sent, so these operations do not meet that 401
+    /// just because the token timed out. Settings value writes are
     /// `natural_idempotent` and are not excluded: a 401 refreshes once and
     /// re-sends the same desired value under the same captured owner.
     private func shouldAttemptRefresh(path: String, method: String) -> Bool {

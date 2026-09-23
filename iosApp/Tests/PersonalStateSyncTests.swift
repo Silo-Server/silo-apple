@@ -37,6 +37,55 @@ final class PersonalStateSyncTests: XCTestCase {
         }
     }
 
+    /// A JWT-shaped bearer whose `exp` is `offset` seconds from now.
+    private func jwt(expiresIn offset: TimeInterval) -> String {
+        func encode(_ json: String) -> String {
+            Data(json.utf8).base64EncodedString()
+                .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
+                .replacingOccurrences(of: "=", with: "")
+        }
+        let now = Date().timeIntervalSince1970
+        return encode(#"{"alg":"HS256"}"#) + "."
+            + encode(#"{"exp":\#(Int(now + offset)),"iat":\#(Int(now + offset - 28800))}"#) + ".sig"
+    }
+
+    /// A single-dispatch write never refreshes on a 401, so an expired bearer
+    /// is renewed before the write goes out: one refresh, then one PUT with
+    /// the new bearer.
+    @MainActor
+    func testExpiredBearerIsRefreshedBeforeTheSingleDispatchWrite() async throws {
+        let (api, tokens) = try await client()
+        let holds = PersonalStateHolds()
+        await tokens.saveTokens(accessToken: jwt(expiresIn: -30), refreshToken: "refresh-a")
+        let fresh = jwt(expiresIn: 28800)
+        stub.sequence([
+            .json(200, #"{"access_token":"\#(fresh)","refresh_token":"refresh-b","expires_in":28800}"#),
+            .json(204, ""),
+        ])
+
+        let favorite = await set(.favorite, api: api, tokens: tokens, holds: holds)
+
+        XCTAssertEqual(favorite, .applied)
+        XCTAssertEqual(stub.requests.map { "\($0.method) \($0.path)" },
+                       ["POST /api/v2/auth/refresh", "PUT /api/v2/favorites/movie:one"])
+        XCTAssertEqual(stub.requests.last?.header("Authorization"), "Bearer \(fresh)")
+    }
+
+    @MainActor
+    func testExpiredBearerWhoseRefreshIsRejectedSendsNoWrite() async throws {
+        let (api, tokens) = try await client()
+        let holds = PersonalStateHolds()
+        await tokens.saveTokens(accessToken: jwt(expiresIn: -30), refreshToken: "revoked")
+        stub.sequence([
+            .json(401, #"{"type":"https://siloserver.org/docs/api/v2/problems/unauthorized","title":"Unauthorized","status":401,"detail":"Refresh token revoked"}"#),
+        ])
+
+        let favorite = await set(.favorite, api: api, tokens: tokens, holds: holds)
+
+        XCTAssertEqual(favorite, .failed(nil), "nothing was sent, so nothing is held")
+        XCTAssertEqual(stub.requestedPaths, ["/api/v2/auth/refresh"])
+    }
+
     private let notFound = #"{"type":"https://siloserver.org/docs/api/v2/problems/not_found","title":"Not found","status":404,"detail":"No item"}"#
 
     @MainActor
