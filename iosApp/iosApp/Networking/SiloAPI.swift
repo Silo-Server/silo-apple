@@ -102,15 +102,6 @@ actor SiloAPI {
         try await http.postVoid("/api/v1/onboarding/progress", body: request)
     }
 
-    // --- Settings ---
-
-    /// Read the server-wide overlay configuration: the admin kill
-    /// switch and the optional baseline `card_overlays` defaults for
-    /// users who haven't customized yet. Cached server-side for 60s.
-    func overlayConfig() async throws -> OverlayConfigResponse {
-        try await http.get("/api/v1/settings/overlay-config")
-    }
-
     // --- Home / sections ---
 
     func homeSections() async throws -> SectionsResponse {

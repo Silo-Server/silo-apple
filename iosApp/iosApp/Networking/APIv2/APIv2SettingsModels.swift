@@ -47,3 +47,23 @@ struct APIv2SettingsContractCapabilities: Decodable, Hashable, Sendable {
             && clientFamilies.contains(clientFamily)
     }
 }
+
+// MARK: Overlay config
+
+/// `GET /api/v2/settings/overlay-config`: the server-wide card overlay
+/// baseline. `defaults` is a JSON-stringified `CardOverlayPrefs` document the
+/// admin chose for profiles that have not customized, absent when none is set.
+///
+/// The quick-action members are required by the contract, so a reply without
+/// them is not an overlay config. Nothing on Apple renders card quick actions
+/// yet; they are decoded so the reply is checked against the whole contract.
+struct APIv2OverlayConfig: Decodable, Hashable, Sendable {
+    /// The admin kill switch for card overlays.
+    let enabled: Bool
+    let defaults: String?
+    /// Default for profiles that have not chosen whether cards show quick
+    /// actions.
+    let quickActionsEnabled: Bool
+    /// Default quick-action mode, one of the `ui.card_quick_actions` values.
+    let quickActionsDefault: String
+}

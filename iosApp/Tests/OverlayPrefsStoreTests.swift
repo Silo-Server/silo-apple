@@ -7,7 +7,7 @@ import XCTest
 /// answer.
 @MainActor
 final class OverlayPrefsStoreTests: XCTestCase {
-    private static let configPath = "/settings/overlay-config"
+    private static let configPath = "/api/v2/settings/overlay-config"
     private static let effectivePath = "/settings/values/effective"
     /// A saved document that differs from the registry defaults.
     private static let savedDocument = #"{"version":2,"preset":"minimal","order":[],"items":{}}"#
@@ -15,7 +15,7 @@ final class OverlayPrefsStoreTests: XCTestCase {
     func testServerWithoutCanonicalSettingsReportsUpdateRequired() async throws {
         let stub = StubURLProtocol.Handler()
         stub.route(StubURLProtocol.pathSuffix(Self.configPath)) { _ in
-            .json(#"{"enabled":true}"#)
+            .json(#"{"enabled":true,"quick_actions_enabled":false,"quick_actions_default":"both"}"#)
         }
         // The router's own 404: the canonical routes are not mounted.
         stub.route(StubURLProtocol.pathSuffix(Self.effectivePath)) { _ in
@@ -50,7 +50,7 @@ final class OverlayPrefsStoreTests: XCTestCase {
         for answer in effectiveAnswers {
             let stub = StubURLProtocol.Handler()
             stub.route(StubURLProtocol.pathSuffix(Self.configPath)) { _ in
-                .json(#"{"enabled":true,"defaults":"{\"version\":2,\"preset\":\"pill\",\"order\":[],\"items\":{}}"}"#)
+                .json(#"{"enabled":true,"defaults":"{\"version\":2,\"preset\":\"pill\",\"order\":[],\"items\":{}}","quick_actions_enabled":false,"quick_actions_default":"both"}"#)
             }
             stub.route(StubURLProtocol.pathSuffix(Self.effectivePath)) { _ in answer }
             let (api, _) = try await makeAPI(stub: stub, profileId: "profile-a")
@@ -70,7 +70,7 @@ final class OverlayPrefsStoreTests: XCTestCase {
         let stub = StubURLProtocol.Handler()
         let gate = StubURLProtocol.Gate()
         stub.route(StubURLProtocol.pathSuffix(Self.configPath)) { _ in
-            .json(#"{"enabled":true}"#)
+            .json(#"{"enabled":true,"quick_actions_enabled":false,"quick_actions_default":"both"}"#)
         }
         stub.route(StubURLProtocol.pathSuffix(Self.effectivePath)) { request in
             guard request.header("X-Profile-Id") == "profile-a" else {
@@ -107,7 +107,7 @@ final class OverlayPrefsStoreTests: XCTestCase {
     func testSavedProfileDocumentWinsOverAdminDefaults() async throws {
         let stub = StubURLProtocol.Handler()
         stub.route(StubURLProtocol.pathSuffix(Self.configPath)) { _ in
-            .json(#"{"enabled":false,"defaults":"{\"version\":2,\"preset\":\"pill\",\"order\":[],\"items\":{}}"}"#)
+            .json(#"{"enabled":false,"defaults":"{\"version\":2,\"preset\":\"pill\",\"order\":[],\"items\":{}}","quick_actions_enabled":false,"quick_actions_default":"both"}"#)
         }
         stub.route(StubURLProtocol.pathSuffix(Self.effectivePath)) { _ in
             .json(#"""
@@ -125,6 +125,34 @@ final class OverlayPrefsStoreTests: XCTestCase {
         XCTAssertEqual(store.prefs.preset, .minimal)
         let effective = try XCTUnwrap(stub.requests.first { $0.path.hasSuffix(Self.effectivePath) })
         XCTAssertEqual(effective.query["keys"], "ui.card_overlays")
+    }
+
+    func testConfigReplyWithoutRequiredMembersKeepsTheCachedKillSwitch() async throws {
+        // The first reply disables overlays; the second omits the required
+        // quick-action members, so it is not an overlay config and must not
+        // read as "enabled".
+        let stub = StubURLProtocol.Handler()
+        stub.expect(StubURLProtocol.path(Self.configPath)) { _ in
+            .json(#"{"enabled":false,"quick_actions_enabled":true,"quick_actions_default":"both"}"#)
+        }
+        stub.expect(StubURLProtocol.path(Self.configPath)) { _ in .json(#"{"enabled":true}"#) }
+        stub.route(StubURLProtocol.pathSuffix(Self.effectivePath)) { _ in
+            .json(#"{"items":[{"key":"ui.card_overlays","value":null,"source":"default"}],"revision":99}"#)
+        }
+        let (api, _) = try await makeAPI(stub: stub, profileId: "profile-a")
+        let store = OverlayPrefsStore(api: api)
+
+        await store.refresh()
+        XCTAssertNil(store.lastError)
+        XCTAssertFalse(store.enabled)
+
+        await store.refresh()
+        XCTAssertNotNil(store.lastError)
+        XCTAssertFalse(store.enabled, "an unreadable config must not re-enable overlays")
+        let configRequests = stub.requests.filter { $0.path == Self.configPath }
+        XCTAssertEqual(configRequests.count, 2)
+        XCTAssertEqual(configRequests.map(\.method), ["GET", "GET"])
+        XCTAssertTrue(stub.unmatched.isEmpty)
     }
 
     // MARK: - Harness
