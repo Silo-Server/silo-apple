@@ -629,9 +629,10 @@ struct CreateProfileView: View {
 /// `POST /api/v2/profiles` is `non_retryable`, so nothing here re-sends it:
 /// - a server answer or a request that never left the device is a definite
 ///   failure; the form stays open with the server's reason;
-/// - a request that was sent without an answer may have created the
-///   profile, so the form closes and the refreshed profile list shows the
-///   result instead of inviting a duplicate.
+/// - a request that was sent without an answer, or whose answer was
+///   discarded because the server, account or profile changed, may have
+///   created the profile, so the form closes and the refreshed profile list
+///   shows the result instead of inviting a duplicate.
 struct CreateProfileFailure: Equatable {
     let title: String
     let message: String
@@ -645,19 +646,33 @@ struct CreateProfileFailure: Equatable {
     }
 
     init(_ error: Error) {
-        if MutationDelivery(error) == .unconfirmed {
+        switch MutationDelivery(error) {
+        case .unconfirmed:
             self.init(
                 title: "Profile May Have Been Created",
                 message: "Silo didn't get an answer from the server. Check the profile list before trying again.",
                 closesForm: true
             )
             return
+        case .ownerChanged:
+            // The fence can fire after the server already answered 201, so
+            // the profile may exist. Closing is safe either way.
+            self.init(
+                title: "Profile May Have Been Created",
+                message: "The server or account changed while creating the profile. Check the profile list before trying again.",
+                closesForm: true
+            )
+            return
+        case .definite:
+            break
         }
-        // v2 reports a taken name and a full household as 409 `conflict`, and
-        // a rejected member as 422 `validation_failed`; the detail names which.
+        // v2 reports a taken name and a full household as 409 `conflict`, a
+        // rejected member as 422 `validation_failed`, and a refusal (such as
+        // a demo-mode server) as 403 `permission_denied`; the detail names
+        // which, and none of them is worth an immediate retry.
         if case APIv2Error.problem(let problem) = error,
            UpdateRequirement(error) == nil,
-           problem.status == 409 || problem.status == 422 {
+           [403, 409, 422].contains(problem.status) {
             let reason = problem.errors?.first(where: { !$0.detail.isEmpty })?.detail ?? problem.detail
             self.init(title: "Can't Create Profile",
                       message: reason.isEmpty ? ErrorState(error).message : reason)

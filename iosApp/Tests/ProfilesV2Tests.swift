@@ -15,6 +15,10 @@ final class ProfilesV2Tests: XCTestCase {
     }
 
     private func api(profileId: String? = nil) async throws -> SiloAPI {
+        try await client(profileId: profileId).api
+    }
+
+    private func client(profileId: String? = nil) async throws -> (api: SiloAPI, tokens: TokenStore) {
         let name = "ProfilesV2Tests.\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: name))
         addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
@@ -23,7 +27,7 @@ final class ProfilesV2Tests: XCTestCase {
         await tokens.switchActiveServer(serverId: "test-server")
         await tokens.setServerUrl("https://profiles.example")
         if let profileId { await tokens.setProfileId(profileId) }
-        return SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        return (SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens), tokens)
     }
 
     private func profileJSON(id: String = "p-owner") throws -> String {
@@ -226,6 +230,37 @@ final class ProfilesV2Tests: XCTestCase {
         let failure = await createFailure(api)
         XCTAssertEqual(failure.title, "Profile May Have Been Created")
         XCTAssertTrue(failure.closesForm)
+        XCTAssertEqual(stub.requests.count, 1)
+    }
+
+    /// The owner fence discards a 201 that arrives after the profile changed.
+    /// The server has already created the profile, so the form must close
+    /// rather than invite a retry, and nothing is re-sent.
+    func testCreateAnsweredAfterAnOwnerChangeIsNotResentAndClosesTheForm() async throws {
+        let (api, tokens) = try await client(profileId: "p-owner")
+        stub.reply(201, try profileJSON(id: "p-new"), headers: ["Location": "/api/v2/profiles/p-new"])
+        stub.hold()
+        let create = Task { await createFailure(api) }
+        await stub.waitUntilHeld()
+        await tokens.setProfileId("p-other")
+        stub.release()
+
+        let failure = await create.value
+        XCTAssertEqual(failure.title, "Profile May Have Been Created")
+        XCTAssertTrue(failure.closesForm)
+        XCTAssertEqual(stub.requests.count, 1)
+    }
+
+    /// v2 refuses profile writes from non-admins on a demo-mode server with a
+    /// 403 `permission_denied` whose detail says so; the form shows it rather
+    /// than a generic or session-expired message.
+    func testCreateRefusedOnADemoServerShowsTheServerReason() async throws {
+        let api = try await api(profileId: "p-owner")
+        stub.reply(403, Self.problem("permission_denied", status: 403,
+            detail: "This action is not available in demo mode."))
+        let failure = await createFailure(api)
+        XCTAssertEqual(failure, CreateProfileFailure(
+            title: "Can't Create Profile", message: "This action is not available in demo mode."))
         XCTAssertEqual(stub.requests.count, 1)
     }
 
