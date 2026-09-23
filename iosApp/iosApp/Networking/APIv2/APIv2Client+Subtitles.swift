@@ -73,29 +73,38 @@ extension APIv2Client {
 
     // MARK: Transport
 
-    private func captureSubtitleAuthority() async throws -> CapturedOrdinaryRequestAuth {
+    /// Shared with `APIv2Client+SubtitleAI.swift`.
+    func captureSubtitleAuthority() async throws -> CapturedOrdinaryRequestAuth {
         guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
         return auth
     }
 
-    private func subtitlesCall<T: Decodable>(_ method: String, path: String, body: Data? = nil,
-                                             timeout: HTTPTimeout = .standard, status: Int,
-                                             auth: CapturedOrdinaryRequestAuth) async throws -> T {
+    func subtitlesCall<T: Decodable>(_ method: String, path: String, body: Data? = nil,
+                                     timeout: HTTPTimeout = .standard, status: Int,
+                                     auth: CapturedOrdinaryRequestAuth) async throws -> T {
+        let raw = try await subtitlesRequest(method, path: path, body: body, timeout: timeout, auth: auth)
+        guard raw.statusCode == status else { throw APIv2Error.httpStatus(raw.statusCode) }
+        return try HTTPClient.makeJSONDecoder().decode(T.self, from: raw.data)
+    }
+
+    /// Sends one request for the owner in `auth`, with the selected profile
+    /// or an explicit empty `X-Profile-Id` when there is none.
+    func subtitlesRequest(_ method: String, path: String, body: Data? = nil,
+                          timeout: HTTPTimeout = .standard,
+                          auth: CapturedOrdinaryRequestAuth) async throws -> HTTPRawResponse {
         try await gate()
         guard await matchesAIAuthority(auth) else { throw HTTPError.requestIdentityChanged }
         let identity = auth.profileId.map { Self.requestIdentity(auth, profile: $0) }
-        let raw = try await tokenStore.withOwnerFence(auth) {
+        return try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {
                 try await http.requestData(method: method, path: path, body: body,
                     headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:], timeout: timeout,
                     requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
             }
         }
-        guard raw.statusCode == status else { throw APIv2Error.httpStatus(raw.statusCode) }
-        return try HTTPClient.makeJSONDecoder().decode(T.self, from: raw.data)
     }
 
-    private static func encodeSubtitleBody<Body: Encodable>(_ body: Body) throws -> Data {
+    static func encodeSubtitleBody<Body: Encodable>(_ body: Body) throws -> Data {
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
         encoder.outputFormatting = [.sortedKeys]

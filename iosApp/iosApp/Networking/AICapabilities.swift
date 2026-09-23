@@ -7,10 +7,9 @@ import Foundation
 /// Follows the `PlayerSettings.shared` precedent: a `@MainActor`
 /// `@Observable` singleton, fetched once per session and reset on
 /// profile/server switch so a later profile never inherits the previous
-/// one's capabilities or ASR quota. Every probe is failure-tolerant — a
-/// `404`/network error on any endpoint leaves that slot `nil`, which the
-/// gating booleans read as "feature unavailable", so older servers
-/// degrade silently.
+/// one's capabilities or ASR quota. Every probe is failure-tolerant: the
+/// gating booleans read a `nil` slot as "feature unavailable", and a later
+/// refresh asks again.
 ///
 /// Reset + refresh hooks live in `AuthService` next to the existing
 /// `ResponseCache` clears.
@@ -21,9 +20,10 @@ final class AICapabilities {
 
     /// `GET /api/v2/capabilities/metadata-ai`. Nil until fetched or after `reset()`.
     private(set) var metadataStatus: MetadataAIStatus?
-    /// `GET /subtitles/ai/status`. Nil until fetched or after `reset()`.
+    /// `GET /api/v2/subtitles/ai/status`. Nil until fetched or after `reset()`;
+    /// a failed probe keeps the previous value.
     private(set) var subtitleStatus: SubtitleAIStatus?
-    /// `GET /subtitles/ai/quota`. Fetched on demand (when the subtitle
+    /// `GET /api/v2/subtitles/ai/quota`. Fetched on demand (when the subtitle
     /// menu opens), not as part of `refresh()`.
     private(set) var subtitleQuota: SubtitleAIQuota?
 
@@ -65,9 +65,9 @@ final class AICapabilities {
     // MARK: - Lifecycle
 
     /// Fetch the two status probes concurrently. Each is independently
-    /// failure-tolerant: a thrown error leaves that slot `nil` rather than
-    /// failing the whole refresh, so one disabled feature never hides the
-    /// other.
+    /// failure-tolerant, so one disabled feature never hides the other. A
+    /// failed subtitle probe is not an answer: it keeps the previous value,
+    /// and the next foreground or session refresh asks again.
     func refresh() async {
         let gen = generation
         async let metadata = fetchMetadataStatus()
@@ -78,7 +78,7 @@ final class AICapabilities {
         // account's capabilities with the previous one's results.
         guard gen == generation else { return }
         metadataStatus = meta
-        subtitleStatus = subs
+        if let subs { subtitleStatus = subs }
     }
 
     /// Fetch the ASR quota on demand. Leaves the previous value in place

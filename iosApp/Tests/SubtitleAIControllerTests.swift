@@ -205,10 +205,10 @@ final class SubtitleAIControllerTests: XCTestCase {
     }
 
     private func runningJob(id: String, resultSubtitleId: Int? = nil) -> SubtitleJob {
-        aiJob(id: id, status: "running", resultSubtitleId: resultSubtitleId)
+        aiJob(id: id, status: .running, resultSubtitleId: resultSubtitleId)
     }
     private func completedJob(id: String, resultSubtitleId: Int) -> SubtitleJob {
-        aiJob(id: id, status: "completed", resultSubtitleId: resultSubtitleId)
+        aiJob(id: id, status: .completed, resultSubtitleId: resultSubtitleId)
     }
 
     private func started(_ trackKey: String) -> PlaybackRealtimeSubtitleEvent {
@@ -438,22 +438,12 @@ final class SubtitleAIControllerTests: XCTestCase {
 
 // MARK: - Local job builder (no network)
 
-/// Build a `SubtitleJob` from the REAL integer wire shape (`id` is a JSON
-/// number), decoded exactly as `HTTPClient` would.
-private func aiJob(id: String, status: String, resultSubtitleId: Int?) -> SubtitleJob {
-    let resultField = resultSubtitleId.map { "\"result_subtitle_id\": \($0)," } ?? ""
-    let json = """
-    {
-      "id": \(id),
-      "media_file_id": 1,
-      "kind": "translate",
-      "source_index": 0,
-      \(resultField)
-      "status": "\(status)",
-      "progress": \(status == "completed" ? 1 : 0)
-    }
-    """
-    let d = JSONDecoder()
-    d.keyDecodingStrategy = .convertFromSnakeCase
-    return try! d.decode(SubtitleJob.self, from: Data(json.utf8))
+/// Build a `SubtitleJob` the way the v2 projection does: opaque string IDs.
+private func aiJob(id: String, status: AIJobStatus, resultSubtitleId: Int?) -> SubtitleJob {
+    SubtitleJob(id: id, mediaFileId: 1, kind: .translate, sourceIndex: 0, sourceLanguage: nil,
+                targetLanguage: nil, engine: nil, model: nil, status: status,
+                progress: status == .completed ? 1 : 0, progressMessage: nil,
+                resultSubtitleId: resultSubtitleId.map(String.init), errorMessage: nil,
+                createdAt: nil, updatedAt: nil)
 }
+
