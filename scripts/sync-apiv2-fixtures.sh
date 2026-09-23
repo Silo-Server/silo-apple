@@ -17,7 +17,7 @@
 # Usage: scripts/sync-apiv2-fixtures.sh <server-ref>
 #   <server-ref>      any commit-ish the server repository resolves (a full or
 #                     abbreviated commit is preferred over a moving branch)
-#   SILO_SERVER_REPO  server repository (default: /Volumes/NVMe/dev/github/SiloServer/silo-server)
+#   SILO_SERVER_REPO  path to a silo-server checkout (required)
 #
 # Afterwards regenerate the project: cd iosApp && xcodegen generate.
 set -euo pipefail
@@ -27,7 +27,8 @@ if [ "$#" -ne 1 ] || [ -z "$1" ]; then
   exit 2
 fi
 REF="$1"
-SERVER="${SILO_SERVER_REPO:-/Volumes/NVMe/dev/github/SiloServer/silo-server}"
+SERVER="${SILO_SERVER_REPO:-}"
+[ -n "$SERVER" ] || { echo "set SILO_SERVER_REPO to a silo-server checkout" >&2; exit 2; }
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 APIV2_DEST="$ROOT/iosApp/Tests/Fixtures/APIv2"
@@ -37,8 +38,8 @@ DIAG_DEST="$ROOT/iosApp/Tests/Fixtures/DiagnosticsContract"
 DIAG_SRC="docs/design/schemas/client-diagnostics/v1"
 
 # Server fixtures the Apple tests read. listAdminUsers is web-only and
-# deliberately absent. A client-authored fixture that the server starts
-# publishing must move here (the script refuses to run until it does).
+# deliberately absent. An AUTHORED fixture that the server starts publishing
+# must move here (the script refuses to run until it does).
 SELECTED=(
   # System, account, progress, profile and the generic problem shapes.
   get_setup_status_ok
@@ -77,6 +78,13 @@ SELECTED=(
   user_libraries
 )
 
+# Fixtures written by hand from the server OpenAPI document, for cases the
+# server fixture set does not publish. The script never overwrites them. Any
+# other *.json in the APIv2 directory is stale and the script deletes it.
+AUTHORED=(
+  playback_stop_draining
+)
+
 command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
 git -C "$SERVER" rev-parse --git-dir >/dev/null 2>&1 \
   || { echo "not a git repository: $SERVER (set SILO_SERVER_REPO)" >&2; exit 1; }
@@ -95,25 +103,38 @@ done
 # --- API v2 fixtures ---------------------------------------------------------
 
 published="$(list_tree "$APIV2_SRC" | sed "s|^$APIV2_SRC/||")"
-is_published() { printf '%s\n' "$published" | grep -qxF "$1"; }
-is_selected() { local n; for n in "${SELECTED[@]}"; do [ "$n.json" = "$1" ] && return 0; done; return 1; }
+# A here-string, not a pipe: grep -q exits on the first match, and under
+# pipefail a writer still filling the pipe would fail the lookup.
+is_published() { grep -qxF -- "$1" <<< "$published"; }
+in_list() { local needle="$1" n; shift; for n in "$@"; do [ "$n" = "$needle" ] && return 0; done; return 1; }
 
 for name in "${SELECTED[@]}"; do
   is_published "$name.json" || { echo "$APIV2_SRC/$name.json does not exist at $SHA" >&2; exit 1; }
 done
-
-# Client-authored fixtures are every other *.json here. One the server now
-# publishes must be replaced by the published copy, not kept beside it.
-authored=()
-for file in "$APIV2_DEST"/*.json; do
-  base="$(basename "$file")"
-  case "$base" in index.json|fixtures.schema.json) continue ;; esac
-  is_selected "$base" && continue
-  if is_published "$base"; then
-    echo "$base is client-authored here but the server publishes it at $SHA; add it to SELECTED" >&2
+for name in ${AUTHORED[@]+"${AUTHORED[@]}"}; do
+  if in_list "$name" "${SELECTED[@]}"; then
+    echo "$name is in both SELECTED and AUTHORED" >&2
     exit 1
   fi
-  authored+=("$base")
+  if is_published "$name.json"; then
+    echo "$name.json is client-authored but the server publishes it at $SHA; move it from AUTHORED to SELECTED" >&2
+    exit 1
+  fi
+  [ -f "$APIV2_DEST/$name.json" ] || { echo "client-authored $APIV2_DEST/$name.json is missing" >&2; exit 1; }
+done
+
+# Drop fixtures that are in neither list, such as one removed from SELECTED
+# after the server deleted or renamed it, so they are never kept as if they
+# were client-authored.
+removed=0
+for file in "$APIV2_DEST"/*.json; do
+  [ -e "$file" ] || continue
+  name="$(basename "$file" .json)"
+  case "$name" in index|fixtures.schema) continue ;; esac
+  in_list "$name" "${SELECTED[@]}" ${AUTHORED[@]+"${AUTHORED[@]}"} && continue
+  rm "$file"
+  echo "removed stale $name.json (in neither SELECTED nor AUTHORED)"
+  removed=$((removed + 1))
 done
 
 mkdir -p "$APIV2_DEST"
@@ -139,11 +160,12 @@ show "$APIV2_SCHEMA" > "$APIV2_DEST/fixtures.schema.json"
   printf '  fixtures.schema.json\n'
   printf '  index.json\n'
   printf '%s\n' "${SELECTED[@]}" | sort | sed 's/^/  /; s/$/.json/'
-  printf '\nClient-authored, %d file(s): written by hand from the server OpenAPI document\n' "${#authored[@]}"
-  printf 'for cases the server fixture set does not publish. They are absent from\n'
-  printf 'index.json and the script never overwrites them; it refuses to run once the\n'
-  printf 'server publishes one of them, so it can move to SELECTED.\n'
-  if [ "${#authored[@]}" -gt 0 ]; then printf '  %s\n' "${authored[@]}"; fi
+  printf '\nClient-authored, %d file(s): the AUTHORED list in the script, written by\n' "${#AUTHORED[@]}"
+  printf 'hand from the server OpenAPI document for cases the server fixture set does\n'
+  printf 'not publish. They are absent from index.json and the script never\n'
+  printf 'overwrites them; it refuses to run once the server publishes one of them,\n'
+  printf 'so it can move to SELECTED. The script deletes any other *.json here.\n'
+  if [ "${#AUTHORED[@]}" -gt 0 ]; then printf '%s\n' "${AUTHORED[@]}" | sort | sed 's/^/  /; s/$/.json/'; fi
 } > "$APIV2_DEST/SOURCE"
 
 # --- Diagnostics contract ----------------------------------------------------
@@ -171,4 +193,4 @@ done <<< "$diag_files"
 } > "$DIAG_DEST/SOURCE"
 
 echo "vendored ${#SELECTED[@]} API v2 fixtures and the diagnostics contract from $SHA ($REF)"
-echo "left ${#authored[@]} client-authored API v2 fixtures untouched"
+echo "left ${#AUTHORED[@]} client-authored API v2 fixtures untouched, removed $removed stale"

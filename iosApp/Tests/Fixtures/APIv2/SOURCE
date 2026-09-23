@@ -43,8 +43,9 @@ index.json filtered to those entries, and fixtures.schema.json.
   user_libraries.json
   validation_failed_body.json
 
-Client-authored, 1 file(s): written by hand from the server OpenAPI document
-for cases the server fixture set does not publish. They are absent from
-index.json and the script never overwrites them; it refuses to run once the
-server publishes one of them, so it can move to SELECTED.
+Client-authored, 1 file(s): the AUTHORED list in the script, written by
+hand from the server OpenAPI document for cases the server fixture set does
+not publish. They are absent from index.json and the script never
+overwrites them; it refuses to run once the server publishes one of them,
+so it can move to SELECTED. The script deletes any other *.json here.
   playback_stop_draining.json

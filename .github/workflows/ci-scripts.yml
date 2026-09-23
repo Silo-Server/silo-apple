@@ -4,11 +4,13 @@ on:
   pull_request:
     paths:
       - 'scripts/ci/**'
+      - 'scripts/sync-apiv2-fixtures*.sh'
       - '.github/workflows/ci-scripts.yml'
   push:
     branches: [main]
     paths:
       - 'scripts/ci/**'
+      - 'scripts/sync-apiv2-fixtures*.sh'
       - '.github/workflows/ci-scripts.yml'
   workflow_dispatch:
 
@@ -33,3 +35,5 @@ jobs:
         run: python3 scripts/ci/package-release-source.test.py
       - name: Test subtitle packaging validation
         run: python3 scripts/ci/validate-subtitle-packaging.test.py
+      - name: Test API v2 fixture sync
+        run: bash scripts/sync-apiv2-fixtures.test.sh
