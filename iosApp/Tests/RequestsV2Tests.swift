@@ -29,9 +29,11 @@ final class RequestsV2Tests: XCTestCase {
         return tokens
     }
 
-    private func client(profile: String? = "profile-one") async throws -> (APIv2Client, TokenStore) {
+    private func client(profile: String? = "profile-one",
+                        captureBarrier: (@Sendable (TokenStore) async -> Void)? = nil) async throws -> (APIv2Client, TokenStore) {
         let tokens = try await tokens(profile: profile)
-        let http = HTTPClient(session: stub.makeSession(), tokenStore: tokens)
+        let http = HTTPClient(session: stub.makeSession(), tokenStore: tokens,
+            requestCaptureBarrier: { await captureBarrier?(tokens) })
         return (APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false }), tokens)
     }
 
@@ -218,6 +220,57 @@ final class RequestsV2Tests: XCTestCase {
         }
     }
 
+    /// Once create or cancel has captured its owner, an owner change cannot
+    /// prove the server never acted: the transport raises the same error just
+    /// before sending and after the response. Both mutations report it as an
+    /// uncertain outcome instead of a definite failure.
+    func testOwnerChangeAfterCaptureMakesAMutationUncertain() async throws {
+        let calls: [(String, (APIv2Client) async throws -> Void, Int)] = [
+            ("create", { _ = try await $0.createRequest(self.heatInput()) }, 201),
+            ("cancel", { _ = try await $0.cancelRequest(id: "request-one", reason: nil) }, 200),
+        ]
+        for (name, call, status) in calls {
+            stub.reset()
+            let (blocked, _) = try await client(captureBarrier: { await $0.setProfileId("profile-two") })
+            do {
+                try await call(blocked)
+                XCTFail("\(name): must not dispatch for a replaced owner")
+            } catch APIv2RequestsError.outcomeUnknownOwnerChanged { }
+            XCTAssertTrue(stub.requests.isEmpty, name)
+
+            stub.reset()
+            let (api, tokens) = try await client()
+            stub.reply(status, Self.record)
+            stub.hold()
+            let task = Task { try await call(api) }
+            await stub.waitUntilHeld()
+            await tokens.setProfileToken("replacement")
+            stub.release()
+            do {
+                try await task.value
+                XCTFail("\(name): a response for a replaced owner cannot publish")
+            } catch {
+                XCTAssertEqual(error as? APIv2RequestsError, .outcomeUnknownOwnerChanged, name)
+                XCTAssertTrue(RequestMutationFailure.isUncertain(error), name)
+            }
+            XCTAssertEqual(stub.requests.count, 1, name)
+        }
+
+        // Reads keep the ordinary fence error: nothing to hold.
+        stub.reset()
+        let (api, tokens) = try await client()
+        stub.reply(200, Self.detail)
+        stub.hold()
+        let read = Task { _ = try await api.requestMediaDetail(mediaType: .movie, tmdbId: 949) }
+        await stub.waitUntilHeld()
+        await tokens.setProfileToken("replacement")
+        stub.release()
+        do {
+            try await read.value
+            XCTFail("A read for a replaced owner cannot publish")
+        } catch HTTPError.authorityChanged { }
+    }
+
     // MARK: Error copy
 
     func testProblemCopyUsesTheServerDetailForCollapsedConflicts() {
@@ -263,5 +316,29 @@ final class RequestsV2Tests: XCTestCase {
         await model.load()
         XCTAssertEqual(model.primaryAction, .status(.pending))
         XCTAssertNil(model.actionErrorMessage)
+    }
+
+    @MainActor
+    func testCreateInterruptedByAnOwnerChangeHoldsWithoutReReading() async throws {
+        let tokens = try await tokens()
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        let model = RequestDetailViewModel(mediaType: .movie, tmdbId: 949, api: api)
+        stub.reply(200, Self.detail)
+        await model.load()
+        XCTAssertEqual(model.primaryAction, .request)
+
+        stub.reply(201, Self.record)
+        stub.hold()
+        let submit = Task { await model.submitRequest() }
+        await stub.waitUntilHeld()
+        await tokens.setProfileToken("replacement")
+        stub.release()
+        await submit.value
+
+        XCTAssertEqual(model.primaryAction, .status(.unavailable(reason: RequestErrorCopy.unconfirmedToken)))
+        XCTAssertEqual(model.actionErrorMessage, RequestErrorCopy.unconfirmedSubmitMessage)
+        XCTAssertEqual(stub.requests.map(\.method), ["GET", "POST"], "no re-read under the replaced owner")
+        await model.submitRequest()
+        XCTAssertEqual(stub.requests.filter { $0.method == "POST" }.count, 1, "held create is never resent")
     }
 }

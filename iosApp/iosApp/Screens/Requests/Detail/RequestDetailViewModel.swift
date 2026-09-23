@@ -118,7 +118,10 @@ final class RequestDetailViewModel {
             // the server created the request.
             isSubmissionUnconfirmed = true
             isSubmitting = false
-            await load()
+            // A read under a replaced owner says nothing about this create.
+            if !RequestMutationFailure.isOwnerChanged(error) {
+                await load()
+            }
             if isSubmissionUnconfirmed {
                 actionErrorMessage = RequestErrorCopy.unconfirmedSubmitMessage
             }

@@ -10,6 +10,12 @@ import Foundation
 ///   answer came back. Never resend; hold the action until a fresh read
 ///   shows what the server did.
 enum RequestMutationFailure {
+    /// An uncertain outcome that a fresh read cannot settle, because the
+    /// read would run under a different owner than the mutation did.
+    static func isOwnerChanged(_ error: Error) -> Bool {
+        (error as? APIv2RequestsError) == .outcomeUnknownOwnerChanged
+    }
+
     static func isUncertain(_ error: Error) -> Bool {
         switch error {
         case HTTPError.network(let underlying):
@@ -17,6 +23,10 @@ enum RequestMutationFailure {
         case let urlError as URLError:
             return isUncertainTransport(urlError)
         case is CancellationError:
+            return true
+        // The owner changed after dispatch could have begun; the response
+        // was discarded, not refused.
+        case APIv2RequestsError.outcomeUnknownOwnerChanged:
             return true
         // A 2xx with an unexpected status or an unreadable body: the server
         // acted, but the result cannot be applied.

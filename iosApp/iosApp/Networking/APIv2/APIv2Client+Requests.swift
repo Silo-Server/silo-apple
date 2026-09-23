@@ -5,7 +5,9 @@ import Foundation
 /// when one is held), and runs under the owner captured at the start.
 ///
 /// Create and cancel are `non_retryable` in the contract. Neither is replayed
-/// after an uncertain outcome; the callers re-read server state instead.
+/// after an uncertain outcome; the callers re-read server state instead. An
+/// owner change once a mutation has captured its owner is uncertain too: the
+/// response is discarded, but the server may already have acted.
 extension APIv2Client {
     // MARK: getRequestStatus
 
@@ -101,11 +103,20 @@ extension APIv2Client {
             throw HTTPError.requestIdentityChanged
         }
         let identity = Self.requestIdentity(auth, profile: profile)
-        let response = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: method, path: path, query: query, body: body,
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+        let response: HTTPRawResponse
+        do {
+            response = try await tokenStore.withOwnerFence(auth) {
+                try await mapErrors {
+                    try await http.requestData(method: method, path: path, query: query, body: body,
+                        requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+                }
             }
+        } catch HTTPError.authorityChanged where method != "GET" {
+            throw APIv2RequestsError.outcomeUnknownOwnerChanged
+        } catch HTTPError.requestIdentityChanged where method != "GET" {
+            // Raised both just before the bytes leave and after the response
+            // arrives, so it cannot prove the mutation was never sent.
+            throw APIv2RequestsError.outcomeUnknownOwnerChanged
         }
         guard response.statusCode == status else { throw APIv2Error.httpStatus(response.statusCode) }
         return try HTTPClient.makeJSONDecoder(artworkServerURL: response.url).decode(T.self, from: response.data)

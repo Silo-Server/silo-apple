@@ -64,7 +64,10 @@ final class MyRequestsViewModel {
         } catch where RequestMutationFailure.isUncertain(error) {
             unconfirmedCancelIds.insert(request.id)
             cancellingId = nil
-            await load()
+            // A read under a replaced owner says nothing about this cancel.
+            if !RequestMutationFailure.isOwnerChanged(error) {
+                await load()
+            }
             if !unconfirmedCancelIds.isEmpty {
                 actionErrorMessage = RequestErrorCopy.unconfirmedCancelMessage
             }

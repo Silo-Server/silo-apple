@@ -26,8 +26,11 @@ Every read requires status 200.
 | Outcome | Examples | Behavior |
 |---|---|---|
 | Definite success | 201 create, 200 cancel with a readable record | Publish the record, then re-read the detail or list. |
-| Definite failure | Never sent (no connection, DNS or TLS failure), or any problem response | Show the error once. The user may try again. |
+| Definite failure | Never sent (no connection, DNS or TLS failure), no selected profile, or any problem response | Show the error once. The user may try again. |
 | Uncertain | Connection lost or timed out after sending, an unexpected 2xx, an unreadable 2xx body | Never resend. Hold the action (the detail CTA shows "Not confirmed yet"; a held cancel hides its menu item) and re-read. A successful re-read releases the hold. |
+| Uncertain, owner changed | The account, credential owner or profile changed after the call captured its owner (`APIv2RequestsError.outcomeUnknownOwnerChanged`) | Never resend and hold as above, but skip the re-read: it would run under the new owner. The banner tells the user to check My Requests. |
+
+The transport raises the same identity error just before sending and after a response arrives, so the client cannot tell whether a mutation interrupted by an owner change reached the server. It treats every such case as uncertain. Reads keep the ordinary `HTTPError.authorityChanged`.
 
 ## Error copy
 
