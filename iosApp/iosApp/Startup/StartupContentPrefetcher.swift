@@ -261,6 +261,10 @@ enum StartupContentPrefetcher {
                 return "decode_failed"
             }
         }
+        // v2 reads decode their 2xx bodies outside `mapErrors`, so a
+        // malformed body arrives as a bare `DecodingError`, not as
+        // `HTTPError.decodingFailed`.
+        if error is DecodingError { return "decode_failed" }
         guard let httpError = error as? HTTPError else {
             // URLSession surfaces transport failures as NSError before
             // HTTPClient wraps them; the cancelled case was already claimed

@@ -63,6 +63,19 @@ final class HomeSectionsAPITests: XCTestCase {
         }
     }
 
+    func testMalformedSectionsBodyIsReportedAsADecodeFailure() async throws {
+        let stub = APIv2TestStub()
+        let (api, _) = try await client(stub: stub)
+        stub.reply(path: "/api/v2/home/sections", 200, #"{"sections":{}}"#)
+
+        do {
+            _ = try await api.homeSections()
+            XCTFail("A malformed body must not become an empty Home")
+        } catch {
+            XCTAssertEqual(StartupContentPrefetcher.prefetchFailureReason(error), "decode_failed")
+        }
+    }
+
     func testContinueWatchingDismissalSendsOnlyTheProgressAnchor() async throws {
         let stub = APIv2TestStub()
         let (api, _) = try await client(stub: stub)
