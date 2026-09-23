@@ -9,9 +9,9 @@ import Foundation
 ///   leaves the queue;
 /// - definite failure of the whole batch (a non-success status): the entries
 ///   leave the queue, unless the answer says the server applied nothing and
-///   the batch may be sent later (`deferred`: 408, 429, 503, update
-///   required). Those entries, and a batch that never left the device, go
-///   back to pending;
+///   the batch may be sent later (`deferred`: 401 and 403 auth refusals,
+///   408, 429, 503, update required). Those entries, and a batch that never
+///   left the device, go back to pending;
 /// - uncertain (sent, no usable answer): the entries stay `dispatched` and
 ///   are held. They are never sent again. A newer event for the same item
 ///   replaces the held entry: it is a new write whose later `updated_at` wins

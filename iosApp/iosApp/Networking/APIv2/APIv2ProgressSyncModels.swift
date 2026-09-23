@@ -125,9 +125,10 @@ enum ProgressSyncOutcome: Sendable {
     case answered([APIv2ProgressSyncItemResult])
     /// Refused before the request left the device; nothing was applied.
     case notSent(any Error)
-    /// The server answered that it applied nothing for now: 408, 429, 503,
-    /// or an update-required answer (the legacy 404, or 410
-    /// `client_upgrade_required`). The same batch may be sent again later.
+    /// The server answered that it applied nothing for now: a 401 or 403
+    /// auth refusal, 408, 429, 503, or an update-required answer (the legacy
+    /// 404, or 410 `client_upgrade_required`). The same batch may be sent
+    /// again later.
     case deferred(any Error)
     /// The server refused the batch with any other non-success status. The
     /// batch as sent will not be accepted, so it is not sent again.

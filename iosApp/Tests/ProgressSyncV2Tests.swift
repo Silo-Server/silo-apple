@@ -105,7 +105,6 @@ final class ProgressSyncV2Tests: XCTestCase {
         for (status, body) in [
             (422, problem(422, "validation_failed")),
             (400, problem(400, "invalid_request")),
-            (403, problem(403, "forbidden")),
             (404, problem(404, "not_found")),
             (500, problem(500, "internal_error")),
         ] {
@@ -123,6 +122,10 @@ final class ProgressSyncV2Tests: XCTestCase {
             (503, problem(503, "service_unavailable")),
             (429, problem(429, "rate_limited")),
             (408, "timeout"),
+            // Auth refusals come before any write and clear after re-auth.
+            (401, problem(401, "unauthorized")),
+            (403, problem(403, "profile_verification_required")),
+            (403, problem(403, "forbidden")),
             (410, problem(410, "client_upgrade_required")),
             (404, "404 page not found\n"),
         ] {
@@ -141,6 +144,30 @@ final class ProgressSyncV2Tests: XCTestCase {
             guard case .uncertain = await api.syncProgress([try item("movie-1")]) else { return XCTFail("\(code) not uncertain") }
             XCTAssertEqual(stub.requests.count, 1, "\(code) was re-sent")
         }
+    }
+
+    /// An expired session whose refresh fails surfaces the original 401. The
+    /// server wrote nothing, so the batch goes back to pending for the flush
+    /// after re-authentication instead of being dropped.
+    func testExpiredSessionWithFailedRefreshLeavesTheBatchPending() async throws {
+        let (api, tokens) = try await client()
+        await tokens.saveTokens(accessToken: "expired-access", refreshToken: "revoked-refresh")
+        stub.sequence([
+            .json(401, problem(401, "unauthorized")),
+            .json(401, problem(401, "invalid_refresh_token")),
+        ])
+        var queue = queued(["movie-1", "episode-2"])
+        let batch = OfflineProgressQueue.nextBatch(queue)
+        OfflineProgressQueue.claim(&queue, ids: Set(batch.map(\.id)))
+
+        let outcome = await api.syncProgress(batch.compactMap(\.syncItem))
+        OfflineProgressQueue.resolve(&queue, batch: batch, outcome: outcome)
+
+        guard case .deferred = outcome else { return XCTFail("expected deferred, got \(outcome)") }
+        XCTAssertEqual(stub.requests.map(\.path), ["/api/v2/sync/progress", "/api/v2/auth/refresh"],
+            "the batch is sent once and never replayed")
+        XCTAssertEqual(OfflineProgressQueue.nextBatch(queue).map(\.id), batch.map(\.id))
+        XCTAssertTrue(OfflineProgressQueue.held(queue, inFlight: []).isEmpty)
     }
 
     func testConnectionNeverEstablishedIsNotSent() async throws {
