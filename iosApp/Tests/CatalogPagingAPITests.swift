@@ -59,7 +59,7 @@ final class CatalogPagingAPITests: XCTestCase {
         let (api, _) = try await client(stub: stub)
         stub.reply(200, lastPage)
 
-        _ = try await api.catalogPage(.personCredits(personId: 42, type: "movie", limit: 60))
+        _ = try await api.catalogPage(.personCredits(personId: "42", type: "movie", limit: 60))
         _ = try await api.catalogPage(.collectionItems(kind: .userCollections, collectionId: "c/1", limit: 60))
         _ = try await api.catalogPage(.collectionItems(kind: .regular, collectionId: "lc1", limit: 60))
         _ = try await api.catalogPage(.search("heat", type: "video", limit: 60))

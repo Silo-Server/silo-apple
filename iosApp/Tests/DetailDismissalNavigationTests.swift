@@ -464,7 +464,7 @@ final class DetailDismissalNavigationTests: XCTestCase {
     func testPlayerFromDetailHasOneOwnerAndReturnsToTheSameNestedPage() throws {
         let router = AppRouter()
         router.presentItemDetail(contentId: "series")
-        router.navigate(to: .personDetail(personId: 42))
+        router.navigate(to: .personDetail(personId: "42"))
         router.presentItemDetail(contentId: "movie")
         let detail = try XCTUnwrap(router.presentedItemDetail)
         router.presentPlayer(contentId: "movie")
@@ -533,7 +533,7 @@ final class DetailDismissalNavigationTests: XCTestCase {
         router.presentItemDetail(contentId: "series")
         let detail = try XCTUnwrap(router.presentedItemDetail)
         router.presentItemDetail(contentId: "episode")
-        router.navigate(to: .personDetail(personId: 42))
+        router.navigate(to: .personDetail(personId: "42"))
         router.goBackInItemDetail()
         XCTAssertEqual(router.itemDetailPath.count, 1)
         XCTAssertEqual(router.presentedItemDetail?.id, detail.id)
@@ -546,7 +546,7 @@ final class DetailDismissalNavigationTests: XCTestCase {
     func testLateSheetDismissCallbackCannotClearAnOpenDetailOrItsPlayer() throws {
         let router = AppRouter()
         router.presentItemDetail(contentId: "series")
-        router.navigate(to: .personDetail(personId: 42))
+        router.navigate(to: .personDetail(personId: "42"))
         router.presentPlayer(contentId: "episode")
         let detail = router.presentedItemDetail
         let player = router.presentedPlayer
@@ -559,7 +559,7 @@ final class DetailDismissalNavigationTests: XCTestCase {
     func testDismissedSheetClearsOnlyItsNestedPath() {
         let router = AppRouter()
         router.presentItemDetail(contentId: "series")
-        router.navigate(to: .personDetail(personId: 42))
+        router.navigate(to: .personDetail(personId: "42"))
         router.presentedItemDetail = nil // SwiftUI's sheet binding clears first.
         router.itemDetailPresentationDidDismiss()
         XCTAssertTrue(router.itemDetailPath.isEmpty)

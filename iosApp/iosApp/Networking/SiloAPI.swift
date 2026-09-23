@@ -270,12 +270,15 @@ actor SiloAPI {
         )
     }
 
-    func person(id: Int) async throws -> Person {
-        try await http.get("/api/v1/people/\(id)")
+    func person(id: String) async throws -> Person {
+        let auth = try await detailReadAuth()
+        return try Person(catalog: try await apiV2Client.catalogPerson(id: id, auth: auth))
     }
 
-    func refreshPerson(id: Int) async throws -> PersonRefreshQueuedResponse {
-        try await http.post("/api/v1/people/\(id)/refresh")
+    /// Queue a provider refresh of the person. `non_retryable`: one dispatch,
+    /// never replayed; see ``APIv2Client/refreshPerson(id:auth:)``.
+    func refreshPerson(id: String) async throws {
+        try await apiV2Client.refreshPerson(id: id, auth: try await detailReadAuth())
     }
 
     /// Ask the server to look for trailers for a movie or series.

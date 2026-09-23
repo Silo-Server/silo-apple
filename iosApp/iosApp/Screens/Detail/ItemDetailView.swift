@@ -685,8 +685,8 @@ private struct ItemDetailPhoneContent: View {
                     await viewModel.setEpisodeWatchlist(contentId: id, inWatchlist: inWatchlist)
                 },
                 onPersonTap: { personId in
-                    if let pid = Int(personId) {
-                        router.navigate(to: .personDetail(personId: pid))
+                    if !personId.isEmpty {
+                        router.navigate(to: .personDetail(personId: personId))
                     }
                 },
                 onNavigateToItem: { id in
@@ -779,8 +779,8 @@ private struct ItemDetailPhoneContent: View {
                 onToggleWatchlist: { Task { await viewModel.toggleWatchlist() } },
                 onToggleWatched: { Task { await viewModel.toggleWatched() } },
                 onPersonTap: { personId in
-                    if let pid = Int(personId) {
-                        router.navigate(to: .personDetail(personId: pid))
+                    if !personId.isEmpty {
+                        router.navigate(to: .personDetail(personId: personId))
                     }
                 },
                 onNavigateToItem: { id in

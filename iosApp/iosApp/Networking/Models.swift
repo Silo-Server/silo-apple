@@ -641,7 +641,7 @@ struct CrewMember: Codable, Identifiable, Hashable {
 }
 
 struct Person: Codable, Identifiable, Hashable {
-    let id: Int
+    let id: String
     let name: String
     let bio: String?
     let birthDate: String?
@@ -654,11 +654,6 @@ struct Person: Codable, Identifiable, Hashable {
     let imdbId: String?
     let tvdbId: String?
     let plexGuid: String?
-}
-
-struct PersonRefreshQueuedResponse: Codable, Hashable {
-    let status: String
-    let personId: Int
 }
 
 struct Season: Codable, Identifiable, Hashable {

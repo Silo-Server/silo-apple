@@ -398,8 +398,8 @@ final class CatalogV2Tests: XCTestCase {
                 guard case APIv2Error.unsupportedCatalogReadValue = error else { return XCTFail("Unexpected \(error)") }
             }
         }
-        let person = try decoder.decode(APIv2CatalogRead.Person.self, from: Data(#"{"id":"23","name":"Person"}"#.utf8))
-        XCTAssertEqual(try Person(catalog: person).id, 23)
+        let person = try decoder.decode(APIv2CatalogRead.Person.self, from: Data(#"{"id":"person:23","name":"Person"}"#.utf8))
+        XCTAssertEqual(try Person(catalog: person).id, "person:23", "person IDs stay opaque strings")
     }
 
     func testReadProjectionPreservesEpisodeFilesAndSeasonOrdering() throws {
@@ -489,20 +489,18 @@ final class CatalogV2Tests: XCTestCase {
         stub.reply(200, #"{"items":[]}"#)
         _ = try await api.catalogSeasons(seriesId: "series", libraryId: "library", imageSize: "small")
         _ = try await api.catalogEpisodes(seriesId: "series", seasonNumber: 0, libraryId: "library", imageSize: "small")
-        stub.reply(200, #"{"id":"opaque-person","name":"Person"}"#)
-        _ = try await api.catalogPerson(id: "opaque-person")
         let calls = stub.requests
-        XCTAssertEqual(calls.count, 4)
+        XCTAssertEqual(calls.count, 3)
         XCTAssertTrue(try XCTUnwrap(calls[0].url).absoluteString.contains("movie:one%2Ftwo"))
         XCTAssertEqual(calls[1].path, "/api/v2/catalog/series/series/seasons")
         XCTAssertEqual(calls[2].path, "/api/v2/catalog/series/series/seasons/0/episodes")
-        XCTAssertEqual(calls[3].path, "/api/v2/catalog/people/opaque-person")
         for (index, call) in calls.enumerated() {
             XCTAssertEqual(call.method, "GET")
             XCTAssertEqual(call.header("x-profile-id"), "profile-one")
             XCTAssertNil(call.query["cursor"])
             XCTAssertNil(call.query["offset"])
-            if index < 3 { XCTAssertEqual(call.query["library_id"], "library"); XCTAssertEqual(call.query["image_size"], "small") }
+            XCTAssertEqual(call.query["library_id"], "library")
+            XCTAssertEqual(call.query["image_size"], "small")
             if index == 0 { XCTAssertEqual(call.query["file_id"], "file") }
         }
     }
@@ -513,12 +511,116 @@ final class CatalogV2Tests: XCTestCase {
         catch APIv2Error.invalidCatalogQuery { }
         do { _ = try await api.catalogItem(id: ".."); XCTFail("Expected invalid segment") }
         catch APIv2Error.invalidCatalogQuery { }
-        do { _ = try await api.catalogPerson(id: ""); XCTFail("Expected invalid segment") }
-        catch APIv2Error.invalidCatalogQuery { }
         XCTAssertTrue(stub.requests.isEmpty)
         stub.reply(404, #"{"type":"about:blank","title":"Missing","status":404,"detail":"No item","code":"not_found"}"#)
         do { _ = try await api.catalogItem(id: "missing"); XCTFail("Expected problem") }
         catch APIv2Error.problem(let problem) { XCTAssertEqual(problem.status, 404) }
+        XCTAssertEqual(stub.requests.count, 1)
+    }
+
+    // MARK: People
+
+    func testPersonReadAndRefreshAddressOpaqueIDsUnderTheCapturedOwner() async throws {
+        let (api, tokens) = try await client()
+        let authValue = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(authValue)
+        stub.reply(200, #"{"id":"tmdb/7","name":"Al Pacino","birth_date":"1940-04-25"}"#)
+        let person = try await api.catalogPerson(id: "tmdb/7", auth: auth)
+        XCTAssertEqual(person.id, "tmdb/7")
+        XCTAssertEqual(person.birthDate, "1940-04-25")
+        stub.reply(202, #"{"status":"queued","person_id":"tmdb/7"}"#)
+        try await api.refreshPerson(id: "tmdb/7", auth: auth)
+
+        XCTAssertEqual(stub.methods, ["GET", "POST"])
+        let urls = stub.requests.compactMap { $0.url?.absoluteString }
+        XCTAssertEqual(urls, ["https://catalog.example/api/v2/catalog/people/tmdb%2F7",
+                              "https://catalog.example/api/v2/catalog/people/tmdb%2F7/refresh"])
+        for request in stub.requests {
+            XCTAssertEqual(request.header("x-profile-id"), "profile-one")
+            XCTAssertNil(request.query["prefetch"])
+        }
+
+        for invalid in ["", ".."] {
+            do { _ = try await api.catalogPerson(id: invalid, auth: auth); XCTFail("Expected invalid segment") }
+            catch APIv2Error.invalidCatalogQuery { }
+            do { try await api.refreshPerson(id: invalid, auth: auth); XCTFail("Expected invalid segment") }
+            catch APIv2Error.invalidCatalogQuery { }
+        }
+        XCTAssertEqual(stub.requests.count, 2, "invalid IDs never leave the device")
+    }
+
+    func testPersonReadRejectsADifferentPerson() async throws {
+        let (api, tokens) = try await client()
+        let authValue = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(authValue)
+        stub.reply(200, #"{"id":"8","name":"Someone Else"}"#)
+        do {
+            _ = try await api.catalogPerson(id: "7", auth: auth)
+            XCTFail("a body for another person is not this person")
+        } catch APIv2Error.incompleteCatalogRead { }
+    }
+
+    func testPersonRefreshIsSentOnceAndAcceptsOnlyTheQueuedReceipt() async throws {
+        let (api, tokens) = try await client()
+        let authValue = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(authValue)
+        stub.reply(401, "{}")
+        do {
+            try await api.refreshPerson(id: "7", auth: auth)
+            XCTFail("a 401 is not replayed under a refreshed bearer")
+        } catch APIv2Error.httpStatus(401) { }
+        stub.reply(429, #"{"type":"about:blank","title":"Slow down","status":429,"detail":"Try later","code":"rate_limited"}"#)
+        do {
+            try await api.refreshPerson(id: "7", auth: auth)
+            XCTFail("a problem is a definite failure")
+        } catch APIv2Error.problem(let problem) { XCTAssertEqual(problem.status, 429) }
+        stub.reply(200, #"{"status":"queued","person_id":"7"}"#)
+        do {
+            try await api.refreshPerson(id: "7", auth: auth)
+            XCTFail("refresh requires exactly 202")
+        } catch APIv2Error.httpStatus(200) { }
+        stub.reply(202, #"{"status":"queued","person_id":"8"}"#)
+        do {
+            try await api.refreshPerson(id: "7", auth: auth)
+            XCTFail("a receipt for another person does not acknowledge this one")
+        } catch APIv2Error.incompleteCatalogRead { }
+        stub.fail(.timedOut)
+        do {
+            try await api.refreshPerson(id: "7", auth: auth)
+            XCTFail("a lost answer throws")
+        } catch is APIv2Error {
+            XCTFail("a lost answer is not a server answer")
+        } catch { }
+        XCTAssertEqual(stub.methods, ["POST", "POST", "POST", "POST", "POST"], "each outcome is exactly one dispatch")
+    }
+
+    func testPersonCallsRefuseAReplacedOwnerAndALateReceipt() async throws {
+        let (api, tokens) = try await client()
+        let authValue = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(authValue)
+        await tokens.setProfileToken("replacement")
+        do {
+            _ = try await api.catalogPerson(id: "7", auth: auth)
+            XCTFail("a replaced owner cannot issue the read")
+        } catch HTTPError.requestIdentityChanged { }
+        do {
+            try await api.refreshPerson(id: "7", auth: auth)
+            XCTFail("a replaced owner cannot queue a refresh")
+        } catch HTTPError.requestIdentityChanged { }
+        XCTAssertTrue(stub.requests.isEmpty)
+
+        let currentValue = await tokens.captureOrdinaryRequestAuth()
+        let current = try XCTUnwrap(currentValue)
+        stub.reply(200, #"{"id":"7","name":"Al Pacino"}"#)
+        stub.hold()
+        let pending = Task { try await api.catalogPerson(id: "7", auth: current) }
+        await stub.waitUntilHeld()
+        await tokens.setProfileToken("another")
+        stub.release()
+        do {
+            _ = try await pending.value
+            XCTFail("a person read for one owner is not published to another")
+        } catch HTTPError.authorityChanged { }
         XCTAssertEqual(stub.requests.count, 1)
     }
 

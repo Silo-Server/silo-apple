@@ -28,7 +28,7 @@ enum PersonMediaFilter: String, CaseIterable, Identifiable {
 @Observable
 @MainActor
 final class PersonDetailViewModel {
-    let personId: Int
+    let personId: String
     var person: Person?
     var items: [BrowseItem] = []
     var isLoadingPerson = false
@@ -55,14 +55,14 @@ final class PersonDetailViewModel {
     private var continuation: APIv2CatalogContinuation?
     private var generation = 0
     private var metadataRefreshTask: Task<Void, Never>?
-    private var autoRefreshRequestedPersonId: Int?
-    private var metadataRefreshExhaustedPersonId: Int?
+    private var autoRefreshRequestedPersonId: String?
+    private var metadataRefreshExhaustedPersonId: String?
 
     #if os(tvOS)
     private var prefetchedPosterURLs: Set<URL> = []
     #endif
 
-    init(personId: Int) {
+    init(personId: String) {
         self.personId = personId
     }
 
@@ -165,7 +165,7 @@ final class PersonDetailViewModel {
         }
     }
 
-    private func runMetadataAutoRefresh(for personId: Int, shouldQueueRefresh: Bool) async {
+    private func runMetadataAutoRefresh(for personId: String, shouldQueueRefresh: Bool) async {
         defer {
             let wasCancelled = Task.isCancelled
             metadataRefreshTask = nil
@@ -176,10 +176,24 @@ final class PersonDetailViewModel {
             Self.logger.debug("finishMetadataRefresh personId=\(personId, privacy: .public) cancelled=\(wasCancelled, privacy: .public)")
         }
 
-        if shouldQueueRefresh,
-           let token = await SiloAPI.shared.currentAccessToken(),
-           !token.isEmpty {
-            _ = try? await SiloAPI.shared.refreshPerson(id: personId)
+        // The refresh is dispatched at most once per person. A definite
+        // failure ends the poll: re-reading would only return the same
+        // incomplete person. A lost answer may still have queued the refresh,
+        // so the poll observes it without dispatching again.
+        if shouldQueueRefresh {
+            do {
+                try await SiloAPI.shared.refreshPerson(id: personId)
+            } catch is CancellationError {
+                return
+            } catch let error as APIv2Error {
+                Self.logger.error("refreshPerson rejected personId=\(personId, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+                return
+            } catch HTTPError.requestIdentityChanged {
+                Self.logger.debug("refreshPerson not sent personId=\(personId, privacy: .public): owner changed")
+                return
+            } catch {
+                Self.logger.info("refreshPerson outcome unknown personId=\(personId, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+            }
         }
 
         let deadline = Date.now.addingTimeInterval(Self.metadataRefreshWindowSeconds)
@@ -295,7 +309,7 @@ struct PersonDetailView: View {
     @Environment(\.dismiss) private var dismiss
     #endif
 
-    init(personId: Int) {
+    init(personId: String) {
         _viewModel = State(initialValue: PersonDetailViewModel(personId: personId))
     }
 

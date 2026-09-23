@@ -153,10 +153,10 @@ extension APIv2CatalogQuery {
     }
 
     /// A person's credits, newest first, optionally narrowed to one media type.
-    static func personCredits(personId: Int, type: String?, limit: Int) -> APIv2CatalogQuery {
+    static func personCredits(personId: String, type: String?, limit: Int) -> APIv2CatalogQuery {
         var query = APIv2CatalogQuery()
         query.source = "person"
-        query.personId = String(personId)
+        query.personId = personId
         query.type = type
         query.sort = "year"
         query.order = "desc"
