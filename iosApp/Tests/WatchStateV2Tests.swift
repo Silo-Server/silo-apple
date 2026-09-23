@@ -133,13 +133,54 @@ final class WatchStateV2Tests: XCTestCase {
                                completed: false, updatedAt: older),
         ]
 
-        let merged = DownloadManager.mergeProgress(local, read: read, readStartedAt: readStart, queuedItemIds: ["queued"])
+        let merged = DownloadManager.mergeProgress(local, read: read, readStartedAt: readStart, queuedItemIds: ["queued"],
+            keptItemIds: Set(local.keys).union(["new"]))
 
         XCTAssertEqual(Set(merged.keys), ["stale", "local-newer", "queued", "during-read", "new"])
         XCTAssertEqual(merged["stale"], LocalProgressEntry(position: 0, duration: 1800, completed: false, updatedAt: newer))
         XCTAssertEqual(merged["local-newer"], local["local-newer"])
         XCTAssertEqual(merged["queued"], local["queued"])
         XCTAssertEqual(merged["new"]?.position, 42)
+    }
+
+    func testOnlyEntriesOfDownloadsAndQueuedUploadsAreStored() throws {
+        // A long watch history: the read returns far more than this device
+        // keeps. Only the download's item and the queued item are stored, and
+        // a stale entry for an item that is no longer downloaded goes.
+        var file = try retentionFile()
+        file.progressQueue = [QueuedProgress(id: UUID(), mediaItemId: "queued-movie", position: 10, duration: 100,
+                                             updatedAt: try date("2026-09-20T10:00:00Z"))]
+        file.localProgress["deleted-download"] = LocalProgressEntry(
+            position: 5, duration: 100, completed: false, updatedAt: try date("2026-09-20T10:00:00Z"))
+        let updated = try date("2026-09-21T10:00:00Z")
+        let read = ["episode-1", "queued-movie", "unrelated-1", "unrelated-2", "deleted-download"].map {
+            APIv2ProgressEntry(mediaItemId: $0, positionSeconds: 60, durationSeconds: 1800, completed: false,
+                               updatedAt: updated)
+        }
+
+        let merged = try XCTUnwrap(DownloadManager.applyWatchStateRead(.success(read), ownerStillCurrent: true,
+                                                                       to: file, readStartedAt: Date()))
+
+        XCTAssertEqual(DownloadManager.watchStateItemIds(in: file), ["episode-1", "queued-movie"])
+        XCTAssertEqual(Set(merged.keys), ["episode-1", "queued-movie"])
+    }
+
+    func testNoProgressReadWithoutDownloadsOrQueuedUploads() throws {
+        XCTAssertTrue(DownloadManager.watchStateItemIds(in: .empty).isEmpty)
+        XCTAssertFalse(DownloadManager.watchStateReadNeeded(itemIds: [], lastReadAt: nil, lastItemIds: nil))
+        XCTAssertTrue(DownloadManager.watchStateReadNeeded(itemIds: ["episode-1"], lastReadAt: nil, lastItemIds: nil))
+    }
+
+    func testRecentReadIsReusedUntilANewItemNeedsIt() {
+        let read = Date(timeIntervalSince1970: 1_790_000_000)
+        let soon = read.addingTimeInterval(60)
+        XCTAssertFalse(DownloadManager.watchStateReadNeeded(
+            itemIds: ["episode-1"], lastReadAt: read, lastItemIds: ["episode-1", "episode-2"], now: soon))
+        XCTAssertTrue(DownloadManager.watchStateReadNeeded(
+            itemIds: ["episode-1", "episode-3"], lastReadAt: read, lastItemIds: ["episode-1"], now: soon),
+            "a new download needs its watch state now")
+        XCTAssertTrue(DownloadManager.watchStateReadNeeded(
+            itemIds: ["episode-1"], lastReadAt: read, lastItemIds: ["episode-1"], now: read.addingTimeInterval(11 * 60)))
     }
 
     // MARK: delete_watched
