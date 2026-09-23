@@ -365,61 +365,70 @@ actor SiloAPI {
         }
     }
 
-    // --- Collections ---
+    // --- Collections (personal) ---
 
+    /// The acting profile's collections and the account's groups. A list read
+    /// for one profile is never returned once the session acts as another.
     func collections() async throws -> CollectionsResponse {
-        try await http.get("/api/v1/collections")
+        let auth = try await detailReadAuth()
+        let list = try await apiV2Client.personalCollections(auth: auth)
+        guard await isCurrentOwner(auth) else { throw HTTPError.requestIdentityChanged }
+        return CollectionsResponse(collections: list.items, groups: list.groups)
     }
 
-    func collectionItems(
-        collectionId: String,
-        offset: Int,
-        limit: Int
-    ) async throws -> CatalogResponse {
-        try await http.get("/api/v1/collections/\(collectionId)/items", query: [
-            "offset": String(offset),
-            "limit": String(limit),
-        ])
+    /// Whether the acting account's store supports collection groups.
+    func collectionCapabilities() async throws -> APIv2CollectionCapabilities {
+        try await apiV2Client.collectionCapabilities(auth: try await detailReadAuth())
     }
 
-    func createCollection(name: String, collectionType: String) async throws -> UserCollection {
-        try await http.post(
-            "/api/v1/collections",
-            body: CreateCollectionRequest(name: name, collectionType: collectionType)
+    /// Every display card in a personal collection, read as catalog pages.
+    func collectionItems(collectionId: String) async throws -> CatalogResponse {
+        let auth = try await detailReadAuth()
+        let cards = try await apiV2Client.personalCollectionCards(
+            id: collectionId, imageSize: await imageSizeQuery["image_size"], auth: auth
         )
+        guard await isCurrentOwner(auth) else { throw HTTPError.requestIdentityChanged }
+        return cards
     }
 
-    func deleteCollection(id: String) async throws {
-        try await http.delete("/api/v1/collections/\(id)")
+    /// `non_retryable`: dispatched once. A lost answer may still have created
+    /// the collection, so the caller re-reads the list instead of resending.
+    func createCollection(name: String) async throws -> UserCollection {
+        try await apiV2Client.createCollection(name: name, auth: try await detailReadAuth())
+    }
+
+    /// The canonical collection and the version an edit of it must send.
+    func collectionEditor(id: String) async throws -> CollectionEditor<UserCollection> {
+        try await apiV2Client.collectionEditor(id: id, auth: try await detailReadAuth())
+    }
+
+    func deleteCollection(_ version: CollectionEditVersion) async throws {
+        try await apiV2Client.deleteCollection(version)
     }
 
     /// Move a personal collection between groups (pass `nil` for
     /// Ungrouped). Returns the updated collection.
-    func moveCollectionToGroup(id: String, groupId: String?) async throws -> UserCollection {
-        try await http.put(
-            "/api/v1/collections/\(id)",
-            body: UpdateUserCollectionGroupBody(groupId: groupId)
-        )
+    func moveCollection(_ version: CollectionEditVersion, toGroupId groupId: String?) async throws -> UserCollection {
+        try await apiV2Client.moveCollection(version, toGroupId: groupId)
     }
 
     // --- Collection groups (personal) ---
 
+    /// `non_retryable`, like ``createCollection(name:)``.
     func createCollectionGroup(name: String) async throws -> CollectionGroup {
-        try await http.post(
-            "/api/v1/collections/groups",
-            body: CreateCollectionGroupRequest(name: name, slug: nil)
-        )
+        try await apiV2Client.createCollectionGroup(name: name, auth: try await detailReadAuth())
     }
 
-    func renameCollectionGroup(id: String, name: String) async throws -> CollectionGroup {
-        try await http.put(
-            "/api/v1/collections/groups/\(id)",
-            body: UpdateCollectionGroupRequest(name: name)
-        )
+    func collectionGroupEditor(id: String) async throws -> CollectionEditor<CollectionGroup> {
+        try await apiV2Client.collectionGroupEditor(id: id, auth: try await detailReadAuth())
     }
 
-    func deleteCollectionGroup(id: String) async throws {
-        try await http.delete("/api/v1/collections/groups/\(id)")
+    func renameCollectionGroup(_ version: CollectionEditVersion, name: String) async throws -> CollectionGroup {
+        try await apiV2Client.renameCollectionGroup(version, name: name)
+    }
+
+    func deleteCollectionGroup(_ version: CollectionEditVersion) async throws {
+        try await apiV2Client.deleteCollectionGroup(version)
     }
 
     // --- Profiles ---

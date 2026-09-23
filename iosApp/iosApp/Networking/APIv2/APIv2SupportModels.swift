@@ -49,24 +49,6 @@ struct APIv2OnboardingSession: Sendable {
     let flow: OnboardingFlow?
 }
 
-// MARK: Collections
-
-/// The validator belongs to the canonical read and its captured viewer, never
-/// a list row. `auth` is the full owner the read was fenced on; a later
-/// mutation is fenced on the same owner.
-struct CollectionEditVersion: Sendable {
-    let path: String
-    let etag: String
-    let identity: HTTPRequestIdentity
-    let account: RefreshAccountIdentity
-    let auth: CapturedOrdinaryRequestAuth
-}
-
-struct CollectionEditor<Value> {
-    let value: Value
-    let version: CollectionEditVersion
-}
-
 // MARK: Requests
 
 /// `GET /api/v2/requests/mine` page.

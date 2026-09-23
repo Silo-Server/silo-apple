@@ -131,9 +131,7 @@ struct CollectionDetailView: View {
         }
         error = nil
         do {
-            let response: CatalogResponse = try await SiloAPI.shared.collectionItems(
-                collectionId: collectionId, offset: 0, limit: 200
-            )
+            let response = try await SiloAPI.shared.collectionItems(collectionId: collectionId)
             ResponseCache.shared.set(response, for: cacheKey)
             items = response.items
         } catch let err {
