@@ -40,6 +40,13 @@ out="$(run 2>&1)" && fail "new file fails"
 [[ "$out" == *"--print-counts"* ]] || fail "explains how to update: $out"
 ok "unlisted file fails"
 
+: > "$tmp/empty.txt"
+out="$("$script" --root "$tmp" --allowlist "$tmp/empty.txt" 2>&1)" && fail "empty allowlist fails"
+[[ "$out" == *"allowlist is empty or missing its header"* ]] || fail "empty allowlist message: $out"
+grep -v '^#' "$tmp/allow.txt" > "$tmp/headerless.txt"
+"$script" --root "$tmp" --allowlist "$tmp/headerless.txt" > /dev/null 2>&1 && fail "headerless allowlist fails"
+ok "empty or headerless allowlist fails"
+
 printf 'let a = "/api/v2/health"\n' > "$tmp/iosApp/iosApp/Networking/Client.swift"
 printf 'let e = "/api/v2/items"\n' > "$tmp/iosApp/Tests/ClientTests.swift"
 run > /dev/null || fail "lowered count passes the ceiling check"

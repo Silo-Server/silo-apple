@@ -60,10 +60,17 @@ if [[ ! -f "$allowlist" ]]; then
   echo "check-no-api-v1: allowlist not found: $allowlist" >&2
   exit 2
 fi
+# A truncated allowlist (for example from a mistyped regeneration command)
+# must not read as "no ceilings recorded".
+if ! grep -q '^# Ceiling' "$allowlist"; then
+  echo "check-no-api-v1: allowlist is empty or missing its header: $allowlist" >&2
+  echo "Restore it from git, or regenerate it with --print-counts." >&2
+  exit 2
+fi
 
 report="$(
   printf '%s\n' "$counts" | awk -F'\t' -v exact="$exact" '
-    FNR == NR {
+    FILENAME == ARGV[1] {
       if ($0 ~ /^#/ || NF < 2) next
       allowed[$1] = $2 + 0
       next
