@@ -38,6 +38,34 @@ final class OverlayPrefsStoreTests: XCTestCase {
         XCTAssertTrue(retried, "an update-required answer must not mark the store hydrated")
     }
 
+    func testUpdateRequiredServerRendersTheAdminBaseline() async throws {
+        // The router 404 and a settings revision behind this app's contract
+        // both mean the user value can't be read; neither may drop the admin
+        // baseline that overlay-config just returned.
+        let effectiveAnswers: [StubURLProtocol.Response] = [
+            .text("404 page not found", status: 404),
+            .json(#"{"settings":[{"key":"ui.card_overlays","value":null,"source":"default"}],"revision":1}"#),
+        ]
+        let baseline = #"{"version":2,"preset":"pill","order":[],"items":{}}"#
+        for answer in effectiveAnswers {
+            let stub = StubURLProtocol.Handler()
+            stub.route(StubURLProtocol.pathSuffix(Self.configPath)) { _ in
+                .json(#"{"enabled":true,"defaults":"{\"version\":2,\"preset\":\"pill\",\"order\":[],\"items\":{}}"}"#)
+            }
+            stub.route(StubURLProtocol.pathSuffix(Self.effectivePath)) { _ in answer }
+            let (api, _) = try await makeAPI(stub: stub, profileId: "profile-a")
+            let store = OverlayPrefsStore(api: api)
+
+            await store.refresh()
+
+            XCTAssertEqual(store.lastError, UpdateRequirement.serverMessage)
+            XCTAssertEqual(store.prefs, OverlaySchema.parse(baseline))
+            XCTAssertNotEqual(store.prefs, OverlaySchema.buildDefaults())
+            let retried = await store.hydrateIfNeeded()
+            XCTAssertTrue(retried, "an update-required answer must not mark the store hydrated")
+        }
+    }
+
     func testProfileSwitchDuringRefreshDropsTheOldProfilesAnswer() async throws {
         let stub = StubURLProtocol.Handler()
         let gate = StubURLProtocol.Gate()

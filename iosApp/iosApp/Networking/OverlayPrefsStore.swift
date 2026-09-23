@@ -18,7 +18,7 @@
 //  `OverlaySchema`'s string codec here. A server that predates the
 //  canonical settings API has no other place to read the document
 //  from: the store reports that the server needs an update and
-//  renders the defaults.
+//  renders the admin baseline (or registry defaults without one).
 //
 //  This is winner-take-all, not layered merging, matching the web's
 //  `useOverlayPrefs.ts` hook. This app only reads the document.
@@ -94,8 +94,11 @@ final class OverlayPrefsStore: ObservableObject {
     /// - We still update `prefs` and `enabled` with what we know so
     ///   cards render *something* (registry defaults at worst) rather
     ///   than blocking the UI on the retry.
-    /// - A server without the canonical settings API is a failure that
-    ///   reports the server-update message. There is no legacy fallback.
+    /// - A server without the canonical settings API, or one whose settings
+    ///   revision is behind this app's contract, is a failure that reports
+    ///   the server-update message and leaves `hasHydrated` false. The
+    ///   user value is unreadable, so cards render from the admin baseline
+    ///   (or registry defaults). There is no legacy fallback.
     func refresh() async {
         refreshGeneration &+= 1
         let generation = refreshGeneration
@@ -123,6 +126,7 @@ final class OverlayPrefsStore: ObservableObject {
 
         var userRaw: String?
         var userFetchFailed = false
+        var userUpgradeRequired = false
         do {
             let response = try await api.getEffectiveValues(keys: [.uiCardOverlays])
             if let entry = response.value(for: .uiCardOverlays),
@@ -133,6 +137,7 @@ final class OverlayPrefsStore: ObservableObject {
         } catch SettingsAPIError.serverUpgradeRequired {
             resolvedError = UpdateRequirement.serverMessage
             userFetchFailed = true
+            userUpgradeRequired = true
         } catch {
             resolvedError = (error as? LocalizedError)?.errorDescription
                 ?? String(describing: error)
@@ -152,7 +157,11 @@ final class OverlayPrefsStore: ObservableObject {
             self.enabled = resolvedEnabled
             self.adminDefaultsRaw = resolvedAdminDefaults
         }
-        if !userFetchFailed {
+        // A transient user-read failure keeps the prior prefs. An
+        // update-required answer is not transient and the user value can't
+        // be read at all, so render the admin baseline instead (`userRaw`
+        // is nil on that path).
+        if !userFetchFailed || userUpgradeRequired {
             // Use the freshly-resolved admin defaults when we have them;
             // fall back to the cached value when the config fetch failed
             // this round but a prior refresh had captured it.
