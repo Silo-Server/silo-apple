@@ -227,6 +227,32 @@ final class SettingValueWritesTests: XCTestCase {
         }
     }
 
+    // MARK: - Expired bearer
+
+    /// Value writes are `natural_idempotent`: an expired bearer refreshes once
+    /// and the same write goes out again, so it never enters the D4 backoff
+    /// resending the stale token.
+    func testExpiredBearerRefreshesAndResendsTheWriteOnce() async throws {
+        await tokenStore.saveTokens(accessToken: "expired-access", refreshToken: "refresh-a")
+        let device = AppleDeviceIdentity.current
+        stub.sequence([
+            .json(401, problem(401, type: "https://siloserver.org/docs/api/v2/problems/unauthorized")),
+            .json(200, #"{"access_token":"fresh-access","refresh_token":"refresh-b","expires_in":3600}"#),
+            .json(200, receipt(key: "player.hdr_enabled", scope: "profile_device", value: "false", deviceId: device.id)),
+        ])
+
+        let stored = try await api.putValue(key: .playerHdrEnabled, scope: .profileDevice, value: false)
+
+        XCTAssertEqual(stored.settingKey, .playerHdrEnabled)
+        XCTAssertEqual(stub.requests.map { "\($0.method) \($0.path)" }, [
+            "PUT /api/v2/settings/values/player.hdr_enabled",
+            "POST /api/v2/auth/refresh",
+            "PUT /api/v2/settings/values/player.hdr_enabled",
+        ])
+        XCTAssertEqual(stub.requests.first?.header("Authorization"), "Bearer expired-access")
+        XCTAssertEqual(stub.requests.last?.header("Authorization"), "Bearer fresh-access")
+    }
+
     // MARK: - Failure classes (owner decision D4)
 
     func testProblemsMapOntoSettingsErrorsAndWriteFailures() async throws {

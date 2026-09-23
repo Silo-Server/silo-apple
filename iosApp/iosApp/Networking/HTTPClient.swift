@@ -1890,12 +1890,13 @@ actor HTTPClient {
     /// The v2 exclusions are single-dispatch mutations (`docs/native-api-v2.md`):
     /// a 401 on one of them surfaces as the failure it is instead of being
     /// re-sent under a refreshed bearer, because the server may already have
-    /// consumed the first attempt.
+    /// consumed the first attempt. Settings value writes are
+    /// `natural_idempotent` and are not excluded: a 401 refreshes once and
+    /// re-sends the same desired value under the same captured owner.
     private func shouldAttemptRefresh(path: String, method: String) -> Bool {
         // Matches the guard in AuthInterceptorImpl.kt:96.
         let diagnosticsUploads = "/api/v2/diagnostics/reports/uploads"
         return !Self.isPublicAuthPath(path) && path != "/api/v2/diagnostics/reports"
-            && !(["PUT", "DELETE"].contains(method) && path.hasPrefix("/api/v2/settings/values/"))
             && !(method == "POST" && path.hasPrefix("/api/v2/playback/sessions/") && path.hasSuffix("/control/ws-ticket"))
             && !(method == "POST" && path.hasPrefix("/api/v2/playback/") && (path.hasSuffix("/replan") || path.hasSuffix("/route-events")))
             && path != "/api/v2/subtitles/download"
