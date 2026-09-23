@@ -191,8 +191,17 @@ actor SiloAPI {
 
     /// The page after `continuation`, read for the owner and query of the
     /// first page. A changed owner throws instead of returning their cards.
+    /// When the server rejects the cursor because the list changed, this
+    /// reads a fresh first page for the same owner and query instead, marked
+    /// `startsOver`, so the caller never resends a dead cursor.
     func nextCatalogPage(_ continuation: APIv2CatalogContinuation) async throws -> CatalogListPage {
-        CatalogListPage(try await apiV2Client.nextCatalogPage(continuation))
+        do {
+            return CatalogListPage(try await apiV2Client.nextCatalogPage(continuation))
+        } catch where APIv2Error.isCatalogRestart(error) {
+            return CatalogListPage(try await apiV2Client.catalogPage(
+                query: continuation.query, operation: continuation.operation, auth: continuation.auth
+            ), startsOver: true)
+        }
     }
 
     func itemDetail(contentId: String, libraryId: Int? = nil) async throws -> ItemDetail {

@@ -84,7 +84,7 @@ class BrowseViewModel {
 
         do {
             let page: CatalogListPage
-            let startsOver = continuation == nil
+            var startsOver = continuation == nil
             if let continuation {
                 page = try await SiloAPI.shared.nextCatalogPage(continuation)
             } else {
@@ -96,6 +96,7 @@ class BrowseViewModel {
             // Discard if another reset superseded us while we awaited.
             guard myGeneration == generation else { return }
 
+            startsOver = startsOver || page.startsOver
             if startsOver {
                 items = page.response.items
                 ResponseCache.shared.set(page.response, for: currentCacheKey)

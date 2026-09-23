@@ -745,11 +745,14 @@ struct LibraryCollectionDetailView: View {
             let page: CatalogListPage
             if let nextPage {
                 page = try await SiloAPI.shared.nextCatalogPage(nextPage)
-                items.append(contentsOf: page.response.items)
             } else {
                 page = try await SiloAPI.shared.catalogPage(.collectionItems(
                     kind: kind ?? .regular, collectionId: collectionId, limit: pageSize
                 ))
+            }
+            if nextPage != nil, !page.startsOver {
+                items.append(contentsOf: page.response.items)
+            } else {
                 items = page.response.items
                 ResponseCache.shared.set(page.response, for: cacheKey)
             }

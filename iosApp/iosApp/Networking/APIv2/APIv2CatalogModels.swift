@@ -190,10 +190,31 @@ extension APIv2CatalogQuery {
 struct CatalogListPage {
     let response: CatalogResponse
     let continuation: APIv2CatalogContinuation?
+    /// This is a fresh first page read in place of a rejected cursor, so the
+    /// caller replaces its list instead of appending.
+    let startsOver: Bool
 
-    init(_ result: APIv2CatalogResult) {
+    init(_ result: APIv2CatalogResult, startsOver: Bool = false) {
         response = CatalogResponse(catalogPage: result.value)
         continuation = result.continuation
+        self.startsOver = startsOver
+    }
+}
+
+extension APIv2Error {
+    /// The cursor can never succeed again: the server rejected it because the
+    /// list changed since the first page (`invalid_cursor`: a collection edit,
+    /// a library scan, a changed access policy), or the server's cursor chain
+    /// repeated or dropped a cursor. The list has to start over from page 1.
+    static func isCatalogRestart(_ error: Error) -> Bool {
+        switch error {
+        case APIv2Error.invalidCatalogContinuation:
+            return true
+        case APIv2Error.problem(let problem):
+            return problem.identifier == "invalid_cursor"
+        default:
+            return false
+        }
     }
 }
 

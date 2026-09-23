@@ -133,7 +133,7 @@ class SearchViewModel {
             guard !Task.isCancelled, myGeneration == generation else { return }
             let response = page.response
 
-            if reset {
+            if reset || page.startsOver {
                 results = response.items
             } else {
                 let existingIds = Set(results.map(\.contentId))

@@ -235,7 +235,7 @@ final class PersonDetailViewModel {
             }
             guard currentGeneration == generation else { return }
 
-            if startsOver {
+            if startsOver || page.startsOver {
                 items = page.response.items
             } else {
                 items.append(contentsOf: page.response.items)

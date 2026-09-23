@@ -52,12 +52,16 @@ class HistoryViewModel {
         let nextPage = reset ? nil : continuation
 
         do {
+            let page: CatalogListPage
             if let nextPage {
-                let page = try await SiloAPI.shared.nextCatalogPage(nextPage)
+                page = try await SiloAPI.shared.nextCatalogPage(nextPage)
+            } else {
+                page = try await SiloAPI.shared.catalogPage(.history(limit: pageSize))
+            }
+            if nextPage != nil, !page.startsOver {
                 items.append(contentsOf: page.response.items)
                 advance(with: page)
             } else {
-                let page = try await SiloAPI.shared.catalogPage(.history(limit: pageSize))
                 apply(firstPage: page.response)
                 continuation = page.continuation
                 hasMore = page.continuation != nil

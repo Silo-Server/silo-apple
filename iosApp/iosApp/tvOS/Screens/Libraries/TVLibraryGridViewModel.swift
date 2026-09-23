@@ -239,7 +239,7 @@ final class TVLibraryGridViewModel {
             // Discard if another reload superseded us while we awaited.
             guard myGeneration == generation else { return }
 
-            if startsOver {
+            if startsOver || page.startsOver {
                 items = page.response.items
                 ResponseCache.shared.set(page.response, for: currentCacheKey)
             } else {

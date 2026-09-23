@@ -110,6 +110,62 @@ final class CatalogPagingAPITests: XCTestCase {
         }
     }
 
+    private let changedSource = #"{"type":"https://siloserver.org/docs/api/v2/problems/invalid_cursor","title":"Invalid cursor","status":400,"detail":"The catalog source changed. Restart from the first page."}"#
+    private let freshFirstPage = #"{"items":[{"content_id":"movie:thief","type":"movie","title":"Thief"}],"page":{"has_more":true,"next_cursor":"fresh-2"},"total":3,"total_exact":true,"window_cursor":"w2"}"#
+
+    func testRejectedCursorStartsOverFromTheFirstPage() async throws {
+        let stub = APIv2TestStub()
+        let (api, _) = try await client(stub: stub)
+        stub.sequence([.json(200, firstPage), .json(400, changedSource), .json(200, freshFirstPage), .json(200, lastPage)])
+
+        let first = try await api.catalogPage(.collectionItems(kind: .userCollections, collectionId: "c1", limit: 60))
+        let restarted = try await api.nextCatalogPage(XCTUnwrap(first.continuation))
+        XCTAssertTrue(restarted.startsOver, "the caller replaces its grid")
+        XCTAssertEqual(restarted.response.items.map(\.contentId), ["movie:thief"])
+        XCTAssertEqual(restarted.response.total, 3)
+        let next = try await api.nextCatalogPage(XCTUnwrap(restarted.continuation))
+        XCTAssertFalse(next.startsOver)
+
+        let requests = stub.requests
+        XCTAssertEqual(requests.map { $0.query["cursor"] }, [nil, "cursor-2", nil, "fresh-2"],
+                       "the rejected cursor is never sent again")
+        for request in requests {
+            XCTAssertEqual(request.query["source"], "user_collection")
+            XCTAssertEqual(request.query["collection_id"], "c1")
+            XCTAssertEqual(request.header("x-profile-id"), "profile-one")
+        }
+    }
+
+    func testRepeatedCursorStartsOverFromTheFirstPage() async throws {
+        let stub = APIv2TestStub()
+        let (api, _) = try await client(stub: stub)
+        stub.sequence([.json(200, firstPage), .json(200, firstPage), .json(200, freshFirstPage)])
+
+        let first = try await api.catalogPage(.history(limit: 60))
+        let restarted = try await api.nextCatalogPage(XCTUnwrap(first.continuation))
+
+        XCTAssertTrue(restarted.startsOver)
+        XCTAssertEqual(restarted.response.items.map(\.contentId), ["movie:thief"])
+        XCTAssertEqual(stub.requests.map { $0.query["cursor"] }, [nil, "cursor-2", nil])
+    }
+
+    func testOtherPageFailuresDoNotStartOver() async throws {
+        let stub = APIv2TestStub()
+        let (api, _) = try await client(stub: stub)
+        stub.sequence([.json(200, firstPage), .json(400, #"{"type":"https://siloserver.org/docs/api/v2/problems/validation_failed","title":"Invalid","status":400,"detail":"limit is out of range"}"#)])
+
+        let first = try await api.catalogPage(.history(limit: 60))
+        do {
+            _ = try await api.nextCatalogPage(XCTUnwrap(first.continuation))
+            XCTFail("Only a rejected cursor starts over")
+        } catch APIv2Error.problem(let problem) {
+            XCTAssertEqual(problem.identifier, "validation_failed")
+        } catch {
+            XCTFail("unexpected \(error)")
+        }
+        XCTAssertEqual(stub.requests.count, 2, "no first page is reread")
+    }
+
     func testContinuationRefusesAReplacedProfile() async throws {
         let stub = APIv2TestStub()
         let (api, tokens) = try await client(stub: stub)
