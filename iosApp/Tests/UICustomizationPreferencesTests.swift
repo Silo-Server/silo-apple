@@ -2728,6 +2728,21 @@ final class UICustomizationPreferencesTests: XCTestCase {
         XCTAssertEqual(snapshot.putAttempts, 2)
         XCTAssertEqual(snapshot.effectiveReads, 0)
 
+        // A server that answers "settings are not available here" (disabled,
+        // not configured, or not allowed) says nothing about its version: the
+        // cache keeps painting and nothing is sent.
+        await transport.setCapabilities(.unavailable)
+        await unavailable.refresh()
+
+        snapshot = await transport.snapshot()
+        XCTAssertEqual(unavailable.capabilityState, .unavailable)
+        XCTAssertEqual(unavailable.supportProjection, .unknown)
+        XCTAssertFalse(unavailable.allowsEditing)
+        XCTAssertEqual(unavailable.cardPresentation, desired)
+        XCTAssertEqual(unavailable.primaryMenu, customMenu)
+        XCTAssertEqual(snapshot.putAttempts, 2)
+        XCTAssertEqual(snapshot.effectiveReads, 0)
+
         await transport.setCapabilities(.serverUpgradeRequired)
         await unavailable.refresh()
 
@@ -2794,7 +2809,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         XCTAssertEqual(snapshot.putAttempts, 2, "an old server must not receive revision-5 writes")
         XCTAssertEqual(snapshot.effectiveReads, 0)
 
-        await transport.setCapabilities(.available(testCapabilities(idempotentWrites: false)))
+        await transport.setCapabilities(.available(testCapabilities(clientFamilies: ["tv", "web"])))
         await unavailable.refresh()
 
         snapshot = await transport.snapshot()
@@ -2805,7 +2820,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         XCTAssertEqual(
             snapshot.putAttempts,
             2,
-            "an outbox must not replay when the server cannot deduplicate an ambiguous retry"
+            "a server that cannot store this client family's card presentation must not receive the outbox"
         )
         XCTAssertEqual(snapshot.effectiveReads, 0)
     }
@@ -3477,17 +3492,16 @@ private func testCacheKey(for identity: HTTPRequestIdentity) -> String {
 
 private func testCapabilities(
     batchedEffective: Bool = true,
-    idempotentWrites: Bool = true,
-    atomicShortcuts: Bool = true
-) -> SettingsContractCapabilities {
-    SettingsContractCapabilities(
-        apiVersion: 1,
-        revision: SettingKey.revision,
-        contractEtag: "test",
-        definitionCount: 3,
-        scopes: ["profile", "profile_client", "profile_device"],
+    atomicShortcuts: Bool = true,
+    clientFamilies: [String] = ["tv", "mobile", "tablet", "desktop", "web"]
+) -> APIv2SettingsContractCapabilities {
+    APIv2SettingsContractCapabilities(
+        revision: "test",
+        state: "available",
+        allowed: true,
+        manifestRevision: SettingKey.revision,
+        clientFamilies: clientFamilies,
         supportsBatchedEffective: batchedEffective,
-        supportsIdempotentWrites: idempotentWrites,
         supportsAtomicShortcuts: atomicShortcuts
     )
 }

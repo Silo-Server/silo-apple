@@ -248,7 +248,17 @@ struct APIv2Client: Sendable {
         if profileRequired && auth.profileId == nil { throw SettingsAPIError.profileRequired }
         if let profileID, profileID != auth.profileId { throw HTTPError.requestIdentityChanged }
         let identity = auth.profileId.map { Self.requestIdentity(auth, profile: $0) }
-        if let expectedIdentity, expectedIdentity != identity { throw HTTPError.requestIdentityChanged }
+        // The captured account URL is normalized; a caller's identity may carry
+        // the registry spelling, which HTTPClient normalizes the same way.
+        if let expectedIdentity {
+            let normalizedExpected = HTTPRequestIdentity(
+                serverId: expectedIdentity.serverId,
+                serverURL: ServerRegistry.normalize(url: expectedIdentity.serverURL),
+                profileId: expectedIdentity.profileId,
+                clientFamily: expectedIdentity.clientFamily
+            )
+            if normalizedExpected != identity { throw HTTPError.requestIdentityChanged }
+        }
         let response = try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {
                 try await http.requestData(method: "GET", path: path, repeatedQuery: query,

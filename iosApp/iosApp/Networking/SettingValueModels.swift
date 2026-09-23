@@ -2,16 +2,16 @@
 //  SettingValueModels.swift
 //  Silo (iOS + tvOS + macOS)
 //
-//  Wire types for the canonical settings API — the contract endpoints and
-//  the typed `/settings/values/*` routes:
+//  Wire types for the canonical settings API — the typed
+//  `/settings/values/*` routes:
 //
-//    GET    /api/v1/settings/contract/capabilities  — feature detection
-//    GET    /api/v1/settings/values/effective       — batched resolution
+//    GET    /api/v2/settings/values/effective       — batched resolution
 //    PUT    /api/v1/settings/values/{key}           — write one scope
 //    DELETE /api/v1/settings/values/{key}           — clear one scope
 //
-//  These mirror `internal/api/handlers/settings_values.go` on the server.
-//  They are deliberately *not* the legacy `/settings/{key}` registry types in
+//  The v2 capability document lives in APIv2SettingsModels.swift.
+//
+//  These types are deliberately *not* the legacy `/settings/{key}` registry types in
 //  SubtitleAppearance.swift: values here are typed JSON rather than strings,
 //  every value names the scope it lives at, and a key that is not in the
 //  manifest cannot be expressed because `SettingKey` is generated from it.
@@ -250,7 +250,7 @@ extension SettingJSONValue: ExpressibleByBooleanLiteral,
 
 /// The scopes a value can be stored at.
 ///
-/// `other` exists because `/api/v1` is additive: a newer server may resolve a
+/// `other` exists because the settings API is additive: a newer server may resolve a
 /// value at a scope this build has never heard of, and one unfamiliar row must
 /// not fail the whole batch.
 ///
@@ -463,8 +463,10 @@ struct StoredSettingValue: Codable, Hashable, Sendable {
     }
 }
 
-/// One resolved value plus where it came from.
-struct EffectiveSettingValue: Codable, Hashable, Sendable {
+/// One resolved value plus where it came from (`EffectiveSettingValue` in
+/// the v2 contract). Members this client does not use, such as
+/// `definition_revision` and `source_context`, are not decoded.
+struct EffectiveSettingValue: Decodable, Hashable, Sendable {
     let key: String
     let value: SettingJSONValue
     let source: SettingSource
@@ -489,6 +491,9 @@ struct EffectiveSettingValue: Codable, Hashable, Sendable {
     let profileId: String?
     let clientFamily: String?
     let deviceId: String?
+    /// The library of the winning row. The wire sends an opaque string id;
+    /// the scope identity addresses libraries by number, so a non-numeric id
+    /// decodes as nil and that row cannot be targeted by a reset.
     let libraryId: Int?
     let seriesId: String?
 
@@ -525,7 +530,7 @@ struct EffectiveSettingValue: Codable, Hashable, Sendable {
         profileId = try container.decodeIfPresent(String.self, forKey: .profileId)
         clientFamily = try container.decodeIfPresent(String.self, forKey: .clientFamily)
         deviceId = try container.decodeIfPresent(String.self, forKey: .deviceId)
-        libraryId = try container.decodeIfPresent(Int.self, forKey: .libraryId)
+        libraryId = try container.decodeIfPresent(String.self, forKey: .libraryId).flatMap { Int($0) }
         seriesId = try container.decodeIfPresent(String.self, forKey: .seriesId)
     }
 
@@ -580,13 +585,17 @@ struct EffectiveSettingValue: Codable, Hashable, Sendable {
     }
 }
 
-/// A batched resolution plus the contract revision it was computed at.
-struct EffectiveSettingValuesResponse: Codable, Hashable, Sendable {
+/// A batched resolution plus the contract revision it was computed at
+/// (`EffectiveSettingCollection` in the v2 contract). The resolver is
+/// bounded, so the optional `page` member is never present and is not read.
+struct EffectiveSettingValuesResponse: Decodable, Hashable, Sendable {
     let settings: [EffectiveSettingValue]
+    /// The settings manifest revision, an integer here (unlike the opaque
+    /// capability document revision).
     let revision: Int
 
     enum CodingKeys: String, CodingKey {
-        case settings
+        case settings = "items"
         case revision
     }
 
@@ -615,100 +624,24 @@ struct EffectiveSettingValuesResponse: Codable, Hashable, Sendable {
     }
 }
 
-/// What the connected server's settings contract supports.
-///
-/// Feature detection rather than version sniffing: `scopes` stays a raw string
-/// list precisely so a scope added after this build still reads back.
-struct SettingsContractCapabilities: Codable, Hashable, Sendable {
-    let apiVersion: Int
-    let revision: Int
-    let contractEtag: String
-    let definitionCount: Int
-    let scopes: [String]
-    let supportsBatchedEffective: Bool
-    let supportsIdempotentWrites: Bool
-    /// Revision-5 semantic shortcut mutations. Whole-document shortcut PUTs
-    /// are intentionally not a safe fallback because concurrent clients can
-    /// otherwise replace one another's pins.
-    let supportsAtomicShortcuts: Bool
-
-    enum CodingKeys: String, CodingKey {
-        case apiVersion = "api_version"
-        case revision
-        case contractEtag = "contract_etag"
-        case definitionCount = "definition_count"
-        case scopes
-        case supportsBatchedEffective = "supports_batched_effective"
-        case supportsIdempotentWrites = "supports_idempotent_writes"
-        case supportsAtomicShortcuts = "supports_atomic_shortcuts"
-    }
-
-    init(
-        apiVersion: Int,
-        revision: Int,
-        contractEtag: String,
-        definitionCount: Int,
-        scopes: [String],
-        supportsBatchedEffective: Bool,
-        supportsIdempotentWrites: Bool,
-        supportsAtomicShortcuts: Bool
-    ) {
-        self.apiVersion = apiVersion
-        self.revision = revision
-        self.contractEtag = contractEtag
-        self.definitionCount = definitionCount
-        self.scopes = scopes
-        self.supportsBatchedEffective = supportsBatchedEffective
-        self.supportsIdempotentWrites = supportsIdempotentWrites
-        self.supportsAtomicShortcuts = supportsAtomicShortcuts
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        apiVersion = try container.decode(Int.self, forKey: .apiVersion)
-        revision = try container.decode(Int.self, forKey: .revision)
-        contractEtag = try container.decode(String.self, forKey: .contractEtag)
-        definitionCount = try container.decode(Int.self, forKey: .definitionCount)
-        scopes = try container.decode([String].self, forKey: .scopes)
-        supportsBatchedEffective = try container.decode(Bool.self, forKey: .supportsBatchedEffective)
-        supportsIdempotentWrites = try container.decode(Bool.self, forKey: .supportsIdempotentWrites)
-        // Older capability payloads predate the flag. Missing must fail
-        // closed, never silently opt into the atomic-only UI.
-        supportsAtomicShortcuts = try container.decodeIfPresent(
-            Bool.self,
-            forKey: .supportsAtomicShortcuts
-        ) ?? false
-    }
-
-    /// True when this build was generated from a newer manifest than the
-    /// server serves — the client must hide definitions the server does not
-    /// know rather than offer a choice it will refuse.
-    var contractIsAheadOfServer: Bool {
-        SettingKey.revision > revision
-    }
-
-    var supportsUICustomizationRevision: Bool {
-        revision >= 5
-            && supportsBatchedEffective
-            && supportsIdempotentWrites
-            && supportsAtomicShortcuts
-    }
-}
-
 /// The result of probing the canonical settings contract.
 ///
-/// A server that predates the canonical settings API has no
-/// `/api/v1/settings/contract` routes at all, while one on an older contract
-/// revision lacks definitions this build exposes. Both are actionable states:
-/// the UI must say "this server needs an upgrade" rather than render an empty
-/// or incomplete settings screen, so they are a typed case here instead of
-/// dissolving into the generic error path.
+/// A v1-only server has no `/api/v2` settings routes at all, while one on an
+/// older manifest revision lacks definitions this build exposes. Both are
+/// actionable states: the UI must say "this server needs an upgrade" rather
+/// than render an empty or incomplete settings screen, so they are a typed
+/// case here instead of dissolving into the generic error path.
 enum SettingsCapabilitiesResult: Equatable, Sendable {
-    case available(SettingsContractCapabilities)
+    case available(APIv2SettingsContractCapabilities)
     case serverUpgradeRequired
+    /// The server answered, but settings are not available to this principal
+    /// (`disabled`, `not_configured`, not `allowed`, or a state this build
+    /// does not know). An answer, not an incompatibility: nothing is known
+    /// about the server's version.
+    case unavailable
     case failed(SettingsAPIError)
 
-    var capabilities: SettingsContractCapabilities? {
+    var capabilities: APIv2SettingsContractCapabilities? {
         if case .available(let capabilities) = self { return capabilities }
         return nil
     }
@@ -777,6 +710,9 @@ enum SettingsAPIError: Error, Equatable, Sendable {
         if let settingsError = error as? SettingsAPIError {
             return settingsError
         }
+        if let v2Error = error as? APIv2Error {
+            return from(v2Error, key: key)
+        }
         guard let httpError = error as? HTTPError else {
             return .transport(description: String(describing: error))
         }
@@ -802,6 +738,30 @@ enum SettingsAPIError: Error, Equatable, Sendable {
             return .mutationIdConflict
         default:
             return .server(status: status, code: code, message: message)
+        }
+    }
+
+    /// The v2 reads. A v1-only server surfaces as `serverUpdateRequired`
+    /// (the probe verdict or the legacy listener's plain 404), and a key
+    /// missing from the server's contract is a 422 at `query.keys` rather
+    /// than v1's 404 `unknown_setting`.
+    private static func from(_ error: APIv2Error, key: String?) -> SettingsAPIError {
+        switch error {
+        case .serverUpdateRequired:
+            return .serverUpgradeRequired
+        case .problem(let problem):
+            if problem.status == 422, problem.errors?.contains(where: { $0.location == "query.keys" }) == true {
+                return .unknownSetting(key: key ?? "")
+            }
+            return .server(
+                status: problem.status,
+                code: problem.identifier,
+                message: error.errorDescription
+            )
+        case .httpStatus(let status):
+            return .server(status: status, code: nil, message: nil)
+        default:
+            return .transport(description: error.errorDescription ?? String(describing: error))
         }
     }
 }

@@ -405,7 +405,6 @@ final class SiloUICustomizationTransport: UICustomizationTransport {
     ) async throws -> EffectiveSettingValuesResponse {
         try await api.getEffectiveValues(
             keys: keys,
-            profileId: requestIdentity.profileId,
             requestIdentity: requestIdentity
         )
     }
@@ -749,7 +748,8 @@ final class UICustomizationPreferences {
               capturedIdentity(for: targetCacheKey) == identity else { return }
 
         switch capabilities {
-        case .available(let capabilities) where capabilities.supportsUICustomizationRevision:
+        case .available(let capabilities)
+            where capabilities.supportsUICustomization(clientFamily: identity.clientFamily):
             capabilityState = .supported
             supportProjection = .supported
             saveCache(for: targetCacheKey)
@@ -760,7 +760,7 @@ final class UICustomizationPreferences {
             updateSyncErrorMessage()
             saveCache(for: targetCacheKey)
             return
-        case .failed:
+        case .unavailable, .failed:
             capabilityState = .unavailable
             refreshSyncErrorMessage = capabilityState.userMessage
             updateSyncErrorMessage()
