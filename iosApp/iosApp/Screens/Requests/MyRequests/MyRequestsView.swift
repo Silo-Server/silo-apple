@@ -183,7 +183,7 @@ struct MyRequestsView: View {
     }
 
     private func isCancelable(_ record: MediaRequest) -> Bool {
-        rowState(record).isCancelable
+        rowState(record).isCancelable && !viewModel.isCancelUnconfirmed(record)
     }
 
     private func rowMeta(_ record: MediaRequest) -> String {

@@ -74,9 +74,19 @@ enum RequestAvailability: String, Codable, Hashable {
 
 // MARK: - Feature status
 
-/// `GET /requests/status` — drives every entry point's visibility.
-struct RequestsFeatureStatus: Codable {
+/// `GET /api/v2/requests/status` — drives every entry point's visibility.
+/// `allowed` is optional because a server without the requests service
+/// omits it; a missing value means "not allowed".
+struct RequestsFeatureStatus: Decodable {
     let requestsEnabled: Bool
+    let state: String
+    let allowed: Bool?
+
+    /// The feature is on and this profile may use it. A blocked account sees
+    /// `requests_enabled: true` with `allowed: false`.
+    var isAvailable: Bool {
+        requestsEnabled && allowed == true && state == "available"
+    }
 }
 
 // MARK: - Search / discover results
@@ -120,7 +130,7 @@ struct RequestMediaPage: Codable {
     let results: [RequestMediaResult]
 }
 
-/// One curated TMDB carousel from `GET /requests/discover`. Keys are
+/// One curated TMDB carousel from `GET /api/v2/requests/discover`. Keys are
 /// server-fixed (`trending_movies`, `popular_series`, …).
 struct RequestDiscoverySection: Codable, Identifiable {
     let key: String
@@ -129,12 +139,11 @@ struct RequestDiscoverySection: Codable, Identifiable {
     let totalPages: Int
     let totalResults: Int
     let results: [RequestMediaResult]
+    /// The provider page to ask for next when rating backfill consumed more
+    /// than one; absent when `page + 1` applies.
+    let nextPage: Int?
 
     var id: String { key }
-}
-
-struct RequestDiscoverResponse: Codable {
-    let sections: [RequestDiscoverySection]
 }
 
 // MARK: - Detail
@@ -180,8 +189,8 @@ struct RequestTarget: Codable, Hashable {
     let lastError: String?
 }
 
-/// Full request record from `/requests/mine`, `/requests/{id}`, and the
-/// create/cancel responses.
+/// Full request record from `/api/v2/requests/mine` and the create/cancel
+/// responses.
 struct MediaRequest: Codable, Identifiable, Hashable {
     let id: String
     let mediaType: RequestMediaType
@@ -199,10 +208,6 @@ struct MediaRequest: Codable, Identifiable, Hashable {
     let createdAt: Date
     let updatedAt: Date
     let completedAt: Date?
-}
-
-struct MediaRequestsResponse: Codable {
-    let requests: [MediaRequest]
 }
 
 // MARK: - Mutations
