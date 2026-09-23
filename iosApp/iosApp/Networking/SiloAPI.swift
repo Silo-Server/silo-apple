@@ -122,8 +122,10 @@ actor SiloAPI {
     }
 
     /// Cards the recommendation engine considers similar to `contentId`,
-    /// in ranked order. Throws when the acting owner changed while the
-    /// read was in flight so a rail never shows another profile's picks.
+    /// in ranked order. The client's owner fence throws `authorityChanged`
+    /// when the acting owner changed while the read was in flight; the
+    /// re-check here covers a switch during decoding. Either way a rail
+    /// never shows another profile's picks.
     func recommendationsSimilar(contentId: String, limit: Int = 12) async throws -> [BrowseItem] {
         let auth = try await detailReadAuth()
         let cards = try await apiV2Client.similarCards(id: contentId, limit: limit, auth: auth)

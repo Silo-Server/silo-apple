@@ -50,7 +50,11 @@ final class RecommendationsAPITests: XCTestCase {
         do {
             _ = try await read.value
             XCTFail("Cards fetched for one profile must not reach the next")
-        } catch {}
+        } catch HTTPError.authorityChanged {
+            // The owner fence around the request rejects the response.
+        } catch {
+            XCTFail("unexpected \(error)")
+        }
     }
 
     func testSimilarRejectsLimitsTheServerWouldRefuseBeforeDispatch() async throws {
