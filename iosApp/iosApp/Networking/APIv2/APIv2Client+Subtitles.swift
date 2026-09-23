@@ -62,11 +62,10 @@ extension APIv2Client {
         do {
             wire = try await subtitlesCall("POST", path: "/api/v2/subtitles/download", body: data,
                 timeout: .extended, status: 200, auth: auth)
-        } catch HTTPError.authorityChanged {
-            throw APIv2SubtitleRequestError.outcomeUnknownOwnerChanged
-        } catch HTTPError.requestIdentityChanged {
-            // Raised both just before the bytes leave and after the response
-            // arrives, so it cannot prove the download was never sent.
+        } catch HTTPError.authorityChanged, HTTPError.requestIdentityChanged {
+            // `requestIdentityChanged` is raised both just before the bytes
+            // leave and after the response arrives, so it cannot prove the
+            // download was never sent.
             throw APIv2SubtitleRequestError.outcomeUnknownOwnerChanged
         }
         return try wire.subtitle.playerValue(mediaFileID: body.mediaFileId)
