@@ -7,7 +7,7 @@ with git show <commit>:<path> from the server repository, never from a
 working tree. Do not hand-edit the vendored files; re-run the script at a
 new server commit instead, then cd iosApp && xcodegen generate.
 
-Vendored from the server, 33 files: the SELECTED bodies in the script,
+Vendored from the server, 36 files: the SELECTED bodies in the script,
 index.json filtered to those entries, and fixtures.schema.json.
   fixtures.schema.json
   index.json
@@ -16,7 +16,10 @@ index.json filtered to those entries, and fixtures.schema.json.
   download_manifest.json
   download_status_event.json
   downloads_empty.json
+  get_catalog_filters_ok.json
+  get_catalog_search_capabilities_ok.json
   get_current_user_ok.json
+  get_metadata_ai_capability_ok.json
   get_setup_status_ok.json
   get_system_info_ok.json
   list_progress_offset_rejected.json
@@ -43,9 +46,10 @@ index.json filtered to those entries, and fixtures.schema.json.
   user_libraries.json
   validation_failed_body.json
 
-Client-authored, 1 file(s): the AUTHORED list in the script, written by
+Client-authored, 2 file(s): the AUTHORED list in the script, written by
 hand from the server OpenAPI document for cases the server fixture set does
 not publish. They are absent from index.json and the script never
 overwrites them; it refuses to run once the server publishes one of them,
 so it can move to SELECTED. The script deletes any other *.json here.
+  playback_control_capabilities.json
   playback_stop_draining.json

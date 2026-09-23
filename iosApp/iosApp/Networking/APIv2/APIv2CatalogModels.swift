@@ -27,14 +27,23 @@ struct APIv2CatalogSearchDiagnostics: Decodable {
     let sessionExpiresAt: Date?
 }
 
+/// `GET /api/v2/catalog/search/capabilities`. Only `revision`, `state` and
+/// `allowed` are required; the provider and its limits are absent when search
+/// is not configured.
 struct APIv2CatalogSearchCapabilities: Decodable {
     let revision: String
     let state: String
-    let allowed: Bool?
-    let provider: String
+    let allowed: Bool
+    let provider: String?
     let resultWindowLimit: Int?
     let sessionTtlSeconds: Int?
     let maxSessionsPerAccount: Int?
+    /// People search accepts `media_scope` and filters credits by access.
+    let peopleMediaScope: Bool?
+    /// Person reads accept `prefetch=true` without queueing a refresh.
+    let personPrefetch: Bool?
+
+    var isAvailable: Bool { allowed && state == "available" }
 }
 
 enum APIv2CatalogRuleValue: Encodable, Hashable {

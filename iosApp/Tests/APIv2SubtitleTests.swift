@@ -144,6 +144,25 @@ final class APIv2SubtitleTests: XCTestCase {
                             "a numeric id is not the wire contract")
     }
 
+    /// One stored row the player cannot address leaves the rest of the list
+    /// usable; nothing traps on an opaque or oversized ID.
+    func testStoredListDropsRowsThatDoNotFitPlayerHandles() throws {
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: fixture("subtitles_stored")) as? [String: Any])
+        let row = try XCTUnwrap((object["subtitles"] as? [[String: Any]])?.first)
+        var rows = [row]
+        for (id, file) in [("opaque-id", "42"), ("9223372036854775808", "42"), ("07", "42"), ("8", "43")] {
+            var other = row
+            other["id"] = id
+            other["media_file_id"] = file
+            rows.append(other)
+        }
+        object["subtitles"] = rows
+        let wire = try HTTPClient.makeJSONDecoder().decode(APIv2StoredSubtitles.self,
+            from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertEqual(wire.subtitles.count, 5)
+        XCTAssertEqual(wire.playerValues(mediaFileID: 42).map(\.id), [7])
+    }
+
     func testSearchUsesStringFileIDAndPreservesPartialResultWarning() throws {
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase

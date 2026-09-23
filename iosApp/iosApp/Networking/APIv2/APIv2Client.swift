@@ -683,11 +683,30 @@ struct APIv2Client: Sendable {
         return APIv2CatalogResult(auth: auth, value: page, continuation: continuation)
     }
 
-    func catalogFilters(libraryId: String?, includeTechnical: Bool = true) async throws -> APIv2CatalogFilters {
+    /// Facets depend on the viewer's library access, so the read is bound to
+    /// the caller's captured owner like the other catalog reads.
+    func catalogFilters(libraryId: String?, includeTechnical: Bool = true,
+                        auth: CapturedOrdinaryRequestAuth) async throws -> APIv2CatalogFilters {
+        try await gate()
+        guard let profile = auth.profileId, !profile.isEmpty,
+              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try Task.checkCancellation()
         var query: [String: String] = [:]
         if let libraryId { query["library_id"] = libraryId }
         if !includeTechnical { query["skip_technical"] = "true" }
-        return try await requestGet("/api/v2/catalog/filters", query: query)
+        let requestQuery = query
+        let identity = Self.requestIdentity(auth, profile: profile)
+        let raw = try await tokenStore.withOwnerFence(auth) {
+            try await mapErrors {
+                try await http.requestData(method: "GET", path: "/api/v2/catalog/filters", query: requestQuery,
+                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+            }
+        }
+        try Task.checkCancellation()
+        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
+        return try HTTPClient.makeJSONDecoder().decode(APIv2CatalogFilters.self, from: raw.data)
     }
 
     func catalogSearchCapabilities(auth suppliedAuth: CapturedOrdinaryRequestAuth? = nil) async throws -> APIv2CatalogSearchCapabilities {
@@ -1287,9 +1306,9 @@ struct APIv2Client: Sendable {
                                 auth: CapturedOrdinaryRequestAuth) async throws -> URLRequest {
         guard UUID(uuidString: sessionID) != nil else { throw PlaybackSequencedError.invalidSession }
         let capabilityRaw = try await playbackRequest(method: "GET", suffix: "/sessions/control/capabilities", auth: auth)
+        guard capabilityRaw.statusCode == 200 else { throw PlaybackSequencedError.invalidResponse }
         let capability = try HTTPClient.makeJSONDecoder().decode(APIv2PlaybackControlCapabilities.self, from: capabilityRaw.data)
-        guard capabilityRaw.statusCode == 200, capability.available, capability.ownerLeaseAdmission,
-              capability.protocol == "silo.playback-control.v2" else { throw PlaybackSequencedError.invalidResponse }
+        guard capability.servesControlHandshake else { throw PlaybackSequencedError.invalidResponse }
         struct Body: Encodable { let installationId: String }
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase

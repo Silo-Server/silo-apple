@@ -76,12 +76,18 @@ SELECTED=(
   subtitles_search_partial
   subtitles_stored
   user_libraries
+  # Catalog and metadata AI capability documents; they pin the unwired v2
+  # decoders.
+  get_catalog_filters_ok
+  get_catalog_search_capabilities_ok
+  get_metadata_ai_capability_ok
 )
 
 # Fixtures written by hand from the server OpenAPI document, for cases the
 # server fixture set does not publish. The script never overwrites them. Any
 # other *.json in the APIv2 directory is stale and the script deletes it.
 AUTHORED=(
+  playback_control_capabilities
   playback_stop_draining
 )
 

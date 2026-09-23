@@ -2,6 +2,13 @@ import Foundation
 
 struct APIv2StoredSubtitles: Decodable {
     let subtitles: [APIv2StoredSubtitle]
+
+    /// The rows the player can address. A row whose opaque ID does not fit a
+    /// player handle, or that names another file, is left out instead of
+    /// failing the whole list.
+    func playerValues(mediaFileID: Int) -> [DownloadedSubtitle] {
+        subtitles.compactMap { try? $0.playerValue(mediaFileID: mediaFileID) }
+    }
 }
 
 struct APIv2StoredSubtitle: Decodable {

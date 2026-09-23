@@ -249,10 +249,19 @@ struct APIv2PlaybackControlTicket: Decodable {
     }
 }
 
+/// `GET /api/v2/playback/sessions/control/capabilities`. The server sends
+/// an empty `protocol` while the handshake is not served.
 struct APIv2PlaybackControlCapabilities: Decodable {
     let available: Bool
     let `protocol`: String
-    let ownerLeaseAdmission: Bool
+    let revision: String
+    let state: String
+    let allowed: Bool
+
+    /// Whether this owner may mint a ticket for the v2 control handshake.
+    var servesControlHandshake: Bool {
+        allowed && state == "available" && available && `protocol` == "silo.playback-control.v2"
+    }
 }
 
 struct APIv2PlaybackReplanBody: Encodable {
