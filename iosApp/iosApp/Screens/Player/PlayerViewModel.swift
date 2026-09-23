@@ -1615,6 +1615,9 @@ class PlayerViewModel {
         isBuffering = false
         isLoadingSubtitles = false
         bufferingProgress = nil
+        // The credential refresh runs before any engine event; hold the intro
+        // pill's timer through it like any other stall.
+        syncIntroSkipPrompt()
         streamLoadGeneration &+= 1
         let recoveryGeneration = streamLoadGeneration
 
@@ -1953,6 +1956,9 @@ class PlayerViewModel {
         isBuffering = false
         isLoadingSubtitles = false
         bufferingProgress = nil
+        // The replan is prepared before any engine event; hold the intro
+        // pill's timer through it like any other stall.
+        syncIntroSkipPrompt()
         streamLoadGeneration &+= 1
         let currentStreamLoadGeneration = streamLoadGeneration
         protocolV3ReplanTask = Task { @MainActor [weak self] in
@@ -4019,6 +4025,10 @@ class PlayerViewModel {
             preferredSidecarSubtitleTrackId: request.preferredSidecarSubtitleTrackId,
             preferredProtocolV3SubtitleIndex: request.preferredProtocolV3SubtitleIndex
         )
+        // No engine event arrives while the replacement session is prepared,
+        // so hand the pill the stall now. A same-content reload keeps the
+        // `always` undo, and its timer must hold through the spinner.
+        syncIntroSkipPrompt()
 
         // The prior item's timer reads bridge state at each tick. Stop it
         // before a replacement session becomes provisional or it can publish
