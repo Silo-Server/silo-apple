@@ -716,6 +716,10 @@ enum TVSettingsDetailFocus: Hashable {
     case playbackDeinterlaceFieldRate
     case playbackNextUpPrompt
     case playbackIntroSkipMode
+    case playbackVideoSkipBack
+    case playbackVideoSkipForward
+    case playbackAudiobookSkipBack
+    case playbackAudiobookSkipForward
     case subtitleBehavior
     case subtitleUseDeviceSettings
     case subtitleMetadataLanguage

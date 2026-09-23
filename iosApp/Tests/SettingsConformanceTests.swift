@@ -388,6 +388,82 @@ final class SettingsConformanceTests: XCTestCase {
         XCTAssertFalse(fixture.cases.isEmpty, "the fixture declares no cases")
     }
 
+    /// Raw manifest definitions by key, for fields the resolver model does
+    /// not carry.
+    private func rawDefinitions() throws -> [String: [String: Any]] {
+        let object = try JSONSerialization.jsonObject(with: try fixtureData("manifest.json"))
+        let root = try XCTUnwrap(object as? [String: Any])
+        let definitions = try XCTUnwrap(root["definitions"] as? [[String: Any]])
+        var byKey: [String: [String: Any]] = [:]
+        for definition in definitions {
+            byKey[try XCTUnwrap(definition["key"] as? String)] = definition
+        }
+        return byKey
+    }
+
+    /// Per-key gating is only as right as this hand-kept table.
+    func testIntroducedInMatchesTheVendoredManifest() throws {
+        let definitions = try rawDefinitions()
+        for key in SettingKey.allCases {
+            let definition = try XCTUnwrap(definitions[key.rawValue], key.rawValue)
+            let introducedIn = try XCTUnwrap(
+                definition["introduced_in"] as? Int,
+                "\(key.rawValue) has no introduced_in"
+            )
+            XCTAssertEqual(key.introducedIn, introducedIn, key.rawValue)
+        }
+    }
+
+    /// A batch read fails as a whole when one of its keys is newer than the
+    /// server, so a feature with no per-key fallback must only read keys
+    /// every accepted server serves. The player batch carries
+    /// `playback.intro_skip_mode` (revision 7), which is what keeps
+    /// `minimumServerRevision` from dropping below it.
+    func testBatchesWithoutAFallbackAreServedAtTheMinimumRevision() {
+        let batches: [(name: String, keys: [SettingKey])] = [
+            ("player", SettingKey.playerDeviceSettings),
+            ("profile", ProfileSettingKeys.all),
+        ]
+        for batch in batches {
+            for key in batch.keys {
+                XCTAssertTrue(
+                    key.isServed(atRevision: SettingKey.minimumServerRevision),
+                    "\(batch.name) batch reads \(key.rawValue), introduced in \(key.introducedIn)"
+                )
+            }
+        }
+    }
+
+    /// The generated bindings carry keys only, so the seek choices, defaults,
+    /// and scope restated in `SeekIntervalContract` must track the manifest.
+    func testSeekIntervalContractMatchesTheVendoredManifest() throws {
+        let definitions = try rawDefinitions()
+        for media in SeekMedia.allCases {
+            for direction in SeekDirection.allCases {
+                let key = SeekIntervalContract.key(media, direction)
+                let definition = try XCTUnwrap(definitions[key.rawValue], key.rawValue)
+                XCTAssertEqual(
+                    definition["default_value"] as? Int,
+                    SeekIntervalContract.defaultValue(direction),
+                    key.rawValue
+                )
+                XCTAssertEqual(definition["allowed_scopes"] as? [String], ["profile"], key.rawValue)
+                XCTAssertEqual(
+                    definition["resolution_order"] as? [String],
+                    ["profile", "default"],
+                    key.rawValue
+                )
+                let schema = try XCTUnwrap(definition["value_schema"] as? [String: Any])
+                let values = try XCTUnwrap(schema["values"] as? [[String: Any]])
+                XCTAssertEqual(
+                    values.compactMap { $0["value"] as? Int },
+                    SeekIntervalContract.choices,
+                    key.rawValue
+                )
+            }
+        }
+    }
+
     func testTheVendoredManifestCoversTheGeneratedBindings() throws {
         let manifest = try loadManifest()
 

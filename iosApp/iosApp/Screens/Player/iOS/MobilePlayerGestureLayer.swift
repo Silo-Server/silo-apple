@@ -6,7 +6,8 @@ import SwiftUI
 /// stays a plain button surface:
 ///
 /// - single tap            → toggle the controls overlay
-/// - double tap left/right → skip ±10s (with a ripple flash at the tap side)
+/// - double tap left/right → skip by the profile's video intervals (with a
+///   ripple flash at the tap side)
 /// - double tap center     → play/pause
 /// - touch & hold          → 2× playback while held (chip at top center)
 /// - drag on left edge     → screen brightness (vertical gauge)
@@ -26,6 +27,7 @@ struct MobilePlayerGestureLayer: View {
 
     private struct SkipFlash: Equatable {
         let forward: Bool
+        let seconds: Int
         let id: UUID
     }
 
@@ -88,7 +90,7 @@ struct MobilePlayerGestureLayer: View {
         }
         // The controls scrim should swallow touches while the overlay is up,
         // but SwiftUI tap recognizers on an occluded sibling can still track
-        // touches — rapid presses on the overlay's ±10s buttons registered
+        // touches — rapid presses on the overlay's skip buttons registered
         // here as a double-tap skip. Drop out of hit testing entirely while
         // the overlay owns the screen.
         .allowsHitTesting(!viewModel.showControls)
@@ -120,11 +122,13 @@ struct MobilePlayerGestureLayer: View {
             // summoning the overlay would drop its scrim on top of this
             // layer and swallow the next double-tap.
             if x < size.width * Self.skipZoneFraction {
-                viewModel.skipBackward(10, revealingControls: false)
-                showSkipFlash(forward: false)
+                let seconds = viewModel.skipIntervals.backward
+                viewModel.skipBackward(Double(seconds), revealingControls: false)
+                showSkipFlash(forward: false, seconds: seconds)
             } else if x > size.width * (1 - Self.skipZoneFraction) {
-                viewModel.skipForward(10, revealingControls: false)
-                showSkipFlash(forward: true)
+                let seconds = viewModel.skipIntervals.forward
+                viewModel.skipForward(Double(seconds), revealingControls: false)
+                showSkipFlash(forward: true, seconds: seconds)
             } else {
                 viewModel.togglePlayPause()
             }
@@ -203,8 +207,8 @@ struct MobilePlayerGestureLayer: View {
 
     // MARK: - Transient feedback
 
-    private func showSkipFlash(forward: Bool) {
-        skipFlash = SkipFlash(forward: forward, id: UUID())
+    private func showSkipFlash(forward: Bool, seconds: Int) {
+        skipFlash = SkipFlash(forward: forward, seconds: seconds, id: UUID())
         skipFlashHideTask?.cancel()
         skipFlashHideTask = Task {
             try? await Task.sleep(nanoseconds: 700_000_000)
@@ -272,9 +276,12 @@ struct MobilePlayerGestureLayer: View {
 
     private func skipFlashView(_ flash: SkipFlash) -> some View {
         VStack(spacing: 3) {
-            Image(systemName: flash.forward ? "goforward.10" : "gobackward.10")
+            Image(systemName: SeekIntervalLabel.symbolName(
+                flash.forward ? .forward : .backward,
+                seconds: flash.seconds
+            ))
                 .font(.system(size: 26, weight: .semibold))
-            Text(flash.forward ? "+10s" : "−10s")
+            Text(flash.forward ? "+\(flash.seconds)s" : "−\(flash.seconds)s")
                 .font(.system(size: 11, weight: .bold))
         }
         .foregroundStyle(.white)

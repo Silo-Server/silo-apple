@@ -617,21 +617,31 @@ struct EffectiveSettingValuesResponse: Decodable, Hashable, Sendable {
         settings.first { $0.key == key.rawValue }
     }
 
-    /// True when this build was generated from a newer manifest than the
-    /// server used for this resolution. Applying the response would silently
-    /// substitute missing rows with this client's newer contract defaults.
-    var contractIsAheadOfServer: Bool {
-        SettingKey.revision > revision
+    /// True when the server resolved these values against a contract older
+    /// than any this build supports.
+    var predatesMinimumRevision: Bool {
+        revision < SettingKey.minimumServerRevision
+    }
+
+    /// True when every requested key existed in the contract the server used
+    /// for this resolution. A key introduced later has no row, and applying
+    /// the response would silently substitute this client's contract default
+    /// for a value the server never resolved.
+    func servesAll(_ keys: [SettingKey]) -> Bool {
+        keys.allSatisfy { $0.isServed(atRevision: revision) }
     }
 }
 
 /// The result of probing the canonical settings contract.
 ///
-/// A v1-only server has no `/api/v2` settings routes at all, while one on an
-/// older manifest revision lacks definitions this build exposes. Both are
-/// actionable states: the UI must say "this server needs an upgrade" rather
-/// than render an empty or incomplete settings screen, so they are a typed
-/// case here instead of dissolving into the generic error path.
+/// A v1-only server has no `/api/v2` settings routes at all, while one below
+/// ``SettingKey/minimumServerRevision`` lacks definitions this build's
+/// existing features rely on. Both are actionable states: the UI must say
+/// "this server needs an upgrade" rather than render an empty or incomplete
+/// settings screen, so they are a typed case here instead of dissolving into
+/// the generic error path. A server at or above the minimum is `available`
+/// even when it predates newer keys; those features gate on
+/// ``APIv2SettingsContractCapabilities/supports(_:)``.
 enum SettingsCapabilitiesResult: Equatable, Sendable {
     case available(APIv2SettingsContractCapabilities)
     case serverUpgradeRequired

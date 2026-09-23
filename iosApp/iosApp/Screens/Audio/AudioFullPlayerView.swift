@@ -336,11 +336,11 @@ private struct TVPlayerLayout: View {
                     .accessibilityLabel("Previous Chapter")
 
                     Button {
-                        player.skip(by: -30)
+                        player.skipBackward()
                     } label: {
-                        Image(systemName: "gobackward.30")
+                        Image(systemName: SeekIntervalLabel.symbolName(.backward, seconds: player.skipIntervals.backward))
                     }
-                    .accessibilityLabel("Back 30 Seconds")
+                    .accessibilityLabel(SeekIntervalLabel.accessibilityLabel(.backward, seconds: player.skipIntervals.backward))
 
                     Button {
                         player.togglePlayPause()
@@ -351,11 +351,11 @@ private struct TVPlayerLayout: View {
                     .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
 
                     Button {
-                        player.skip(by: 30)
+                        player.skipForward()
                     } label: {
-                        Image(systemName: "goforward.30")
+                        Image(systemName: SeekIntervalLabel.symbolName(.forward, seconds: player.skipIntervals.forward))
                     }
-                    .accessibilityLabel("Forward 30 Seconds")
+                    .accessibilityLabel(SeekIntervalLabel.accessibilityLabel(.forward, seconds: player.skipIntervals.forward))
 
                     Button {
                         player.nextChapter()
@@ -464,8 +464,8 @@ private struct AudioScrubberSection: View {
         )
         .accessibilityAdjustableAction { direction in
             switch direction {
-            case .increment: player.skip(by: 30)
-            case .decrement: player.skip(by: -30)
+            case .increment: player.skipForward()
+            case .decrement: player.skipBackward()
             @unknown default: break
             }
         }
@@ -556,14 +556,14 @@ private struct AudioTransportControls: View {
             .accessibilityLabel("Previous Chapter")
 
             Button {
-                player.skip(by: -30)
+                player.skipBackward()
             } label: {
-                Image(systemName: "gobackward.30")
+                Image(systemName: SeekIntervalLabel.symbolName(.backward, seconds: player.skipIntervals.backward))
                     .font(.title)
                     .frame(width: 50, height: 50)
                     .contentShape(Rectangle())
             }
-            .accessibilityLabel("Back 30 Seconds")
+            .accessibilityLabel(SeekIntervalLabel.accessibilityLabel(.backward, seconds: player.skipIntervals.backward))
 
             Button {
                 player.togglePlayPause()
@@ -582,14 +582,14 @@ private struct AudioTransportControls: View {
             .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
 
             Button {
-                player.skip(by: 30)
+                player.skipForward()
             } label: {
-                Image(systemName: "goforward.30")
+                Image(systemName: SeekIntervalLabel.symbolName(.forward, seconds: player.skipIntervals.forward))
                     .font(.title)
                     .frame(width: 50, height: 50)
                     .contentShape(Rectangle())
             }
-            .accessibilityLabel("Forward 30 Seconds")
+            .accessibilityLabel(SeekIntervalLabel.accessibilityLabel(.forward, seconds: player.skipIntervals.forward))
 
             Button {
                 player.nextChapter()

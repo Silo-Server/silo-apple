@@ -40,6 +40,18 @@ final class AudioPlayerViewModel {
     /// context of a newer book that superseded it. Kept separate from
     /// `loadGeneration`, which fences seeks and per-file session loads.
     private var startGeneration = 0
+    /// Where the latest requested seek will land while its load is still in
+    /// flight. Relative skips build on it so quick repeated presses add up.
+    private var pendingSeekTarget: Double?
+    /// Identifies the seek that owns `pendingSeekTarget`. A seek that ends
+    /// (loaded, failed, or superseded by a non-seek load such as an
+    /// automatic part advance) releases the target only if no newer seek
+    /// has claimed it.
+    private var seekSequence = 0
+    /// Profile-wide audiobook skip intervals, read at each press so a change
+    /// applies without restarting the book.
+    @ObservationIgnored let seekIntervalPreferences = SeekIntervalPreferences.shared
+    @ObservationIgnored private var isObservingSeekIntervals = false
     private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "Playback"
@@ -91,6 +103,11 @@ final class AudioPlayerViewModel {
             .max { $0.startSeconds < $1.startSeconds }
     }
 
+    /// The intervals the audiobook controls use right now.
+    var skipIntervals: SeekIntervalPair {
+        seekIntervalPreferences.pair(for: .audiobook)
+    }
+
     init(api: SiloAPI = .shared) {
         self.api = api
         engine.onEvent = { [weak self] event in
@@ -106,6 +123,8 @@ final class AudioPlayerViewModel {
         let generation = startGeneration
         isLoading = true
         error = nil
+        pendingSeekTarget = nil
+        Task { await seekIntervalPreferences.refresh() }
         do {
             // No AVAudioSession setup here: AetherEngine declares the category
             // (.playback/.moviePlayback, multichannel, off-main) at init and activates it
@@ -166,20 +185,51 @@ final class AudioPlayerViewModel {
 
     func seek(to globalTime: Double) {
         guard context != nil else { return }
+        let target = clampGlobal(globalTime)
+        seekSequence += 1
+        let sequence = seekSequence
+        pendingSeekTarget = target
         Task {
             do {
-                try await loadTrack(at: clampGlobal(globalTime), autoplay: isPlaying)
+                try await loadTrack(at: target, autoplay: isPlaying)
+                releasePendingSeek(sequence)
                 await syncNow()
             } catch is CancellationError {
+                // A newer seek keeps its own target. Anything else that
+                // superseded this load (close, an automatic part advance)
+                // abandoned the target, so later skips must start from the
+                // playhead again.
+                releasePendingSeek(sequence)
                 return
             } catch {
+                releasePendingSeek(sequence)
                 handlePlaybackError(error)
             }
         }
     }
 
+    private func releasePendingSeek(_ sequence: Int) {
+        if seekSequence == sequence { pendingSeekTarget = nil }
+    }
+
+    /// Relative skip by signed seconds, measured from the latest requested
+    /// target rather than a playhead that has not caught up yet.
     func skip(by seconds: Double) {
-        seek(to: currentTime + seconds)
+        guard context != nil else { return }
+        seek(to: RelativeSeek.target(
+            current: currentTime,
+            pending: pendingSeekTarget,
+            delta: seconds,
+            duration: duration
+        ))
+    }
+
+    func skipBackward() {
+        skip(by: -Double(skipIntervals.backward))
+    }
+
+    func skipForward() {
+        skip(by: Double(skipIntervals.forward))
     }
 
     func jumpToChapter(_ chapter: AudioPlaybackChapter) {
@@ -225,6 +275,7 @@ final class AudioPlayerViewModel {
         let closedAuthority = activeAuthority
         let position = currentTime
         let total = duration
+        pendingSeekTarget = nil
         loadingEngineEpoch = nil
         activeEngineEpoch = nil
         engine.stop()
@@ -259,6 +310,7 @@ final class AudioPlayerViewModel {
         syncTask?.cancel()
         syncTask = nil
         loadGeneration += 1
+        pendingSeekTarget = nil
         loadingEngineEpoch = nil
         activeEngineEpoch = nil
         engine.stop()
@@ -649,6 +701,9 @@ final class AudioPlayerViewModel {
         let nextStart = current.startOffsetSeconds + current.durationSeconds + 0.01
         if AudioPlaybackTimeline.trackIndex(at: nextStart, tracks: context.tracks) != activeTrackIndex,
            nextStart < duration {
+            // The advance replaces any in-flight seek load, so that seek's
+            // target no longer describes where playback is heading.
+            pendingSeekTarget = nil
             do {
                 try await loadTrack(at: nextStart, autoplay: true)
             } catch is CancellationError {
@@ -736,14 +791,30 @@ final class AudioPlayerViewModel {
             pause: { [weak self] in self?.pause() },
             isPaused: { [weak self] in !(self?.isPlaying ?? false) },
             currentTime: { [weak self] in self?.currentTime ?? 0 },
-            seek: { [weak self] target in self?.seek(to: target) }
+            seek: { [weak self] target in self?.seek(to: target) },
+            skip: { [weak self] delta in self?.skip(by: delta) }
         )
+        if !isObservingSeekIntervals {
+            isObservingSeekIntervals = true
+            seekIntervalPreferences.observe(self) { [weak self] in
+                self?.syncNowPlayingSkipIntervals()
+            }
+        }
+        syncNowPlayingSkipIntervals()
         #if os(iOS) || os(tvOS)
         nowPlaying.attach(session: engine.audioNowPlayingSession, handlers: handlers)
         #else
         nowPlaying.attach(handlers: handlers)
         #endif
         pushNowPlaying()
+    }
+
+    private func syncNowPlayingSkipIntervals() {
+        let pair = skipIntervals
+        nowPlaying.setPreferredSkipIntervals(
+            backward: Double(pair.backward),
+            forward: Double(pair.forward)
+        )
     }
 
     private func pushNowPlaying() {

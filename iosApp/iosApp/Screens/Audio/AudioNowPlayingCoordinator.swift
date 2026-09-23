@@ -20,6 +20,9 @@ final class AudioNowPlayingCoordinator {
         let isPaused: () -> Bool
         let currentTime: () -> Double
         let seek: (Double) -> Void
+        /// Relative skip by signed seconds. Routed through the player so
+        /// repeated presses build on a seek that is still loading.
+        let skip: (Double) -> Void
     }
 
     private static let logger = Logger(
@@ -31,7 +34,7 @@ final class AudioNowPlayingCoordinator {
     private var commandCenter: MPRemoteCommandCenter?
     private var infoCenter: MPNowPlayingInfoCenter?
     private var remoteCommandTargets: [(command: MPRemoteCommand, target: Any)] = []
-    private var preferredSkipInterval: TimeInterval = 30
+    private var preferredSkipIntervals: (backward: TimeInterval, forward: TimeInterval) = (30, 30)
     private var nowPlayingInfo: [String: Any] = [:]
     private var artworkURL: URL?
     private var artworkFetchTask: Task<Void, Never>?
@@ -71,6 +74,15 @@ final class AudioNowPlayingCoordinator {
         publishNowPlayingInfo()
     }
     #endif
+
+    /// Updates the intervals system controls advertise and fall back to,
+    /// live when commands are already registered.
+    func setPreferredSkipIntervals(backward: TimeInterval, forward: TimeInterval) {
+        preferredSkipIntervals = (backward, forward)
+        guard let center = commandCenter else { return }
+        center.skipForwardCommand.preferredIntervals = [NSNumber(value: forward)]
+        center.skipBackwardCommand.preferredIntervals = [NSNumber(value: backward)]
+    }
 
     func detach() {
         handlers = nil
@@ -181,21 +193,23 @@ final class AudioNowPlayingCoordinator {
             return .success
         }
 
-        center.skipForwardCommand.preferredIntervals = [NSNumber(value: preferredSkipInterval)]
+        // The system sends back the interval it displayed, which is the
+        // preferred interval unless a client (such as CarPlay) chose its own.
+        center.skipForwardCommand.preferredIntervals = [NSNumber(value: preferredSkipIntervals.forward)]
         center.skipForwardCommand.isEnabled = true
         addTarget(to: center.skipForwardCommand) { [weak self] event in
             guard let self, let handlers else { return .commandFailed }
-            let interval = (event as? MPSkipIntervalCommandEvent)?.interval ?? preferredSkipInterval
-            handlers.seek(handlers.currentTime() + interval)
+            let interval = (event as? MPSkipIntervalCommandEvent)?.interval ?? preferredSkipIntervals.forward
+            handlers.skip(interval)
             return .success
         }
 
-        center.skipBackwardCommand.preferredIntervals = [NSNumber(value: preferredSkipInterval)]
+        center.skipBackwardCommand.preferredIntervals = [NSNumber(value: preferredSkipIntervals.backward)]
         center.skipBackwardCommand.isEnabled = true
         addTarget(to: center.skipBackwardCommand) { [weak self] event in
             guard let self, let handlers else { return .commandFailed }
-            let interval = (event as? MPSkipIntervalCommandEvent)?.interval ?? preferredSkipInterval
-            handlers.seek(max(0, handlers.currentTime() - interval))
+            let interval = (event as? MPSkipIntervalCommandEvent)?.interval ?? preferredSkipIntervals.backward
+            handlers.skip(-interval)
             return .success
         }
 

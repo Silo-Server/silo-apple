@@ -354,7 +354,8 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(capabilities.revision, "36e767e32d6613323df470594b9c91068ed062132912c3af462965668b2d31a4")
         XCTAssertEqual(capabilities.manifestRevision, 12)
         XCTAssertTrue(capabilities.isAvailable)
-        XCTAssertFalse(capabilities.contractIsAheadOfServer, "manifest 12 is not behind revision \(SettingKey.revision)")
+        XCTAssertFalse(capabilities.predatesMinimumRevision, "manifest 12 is not below revision \(SettingKey.minimumServerRevision)")
+        XCTAssertTrue(capabilities.supports(.playerVideoSkipBackSeconds))
         XCTAssertTrue(capabilities.supportsUICustomization(clientFamily: "tv"))
         XCTAssertFalse(
             capabilities.supportsUICustomization(clientFamily: "mobile"),
@@ -374,6 +375,7 @@ final class SettingValuesAPITests: XCTestCase {
 
         XCTAssertFalse(capabilities.isAvailable)
         XCTAssertFalse(capabilities.supportsUICustomization(clientFamily: "tv"))
+        XCTAssertFalse(capabilities.supports(.playbackSubtitleLanguage))
     }
 
     // MARK: - Requests over the wire
@@ -402,12 +404,29 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(recorded.path, "/api/v2/settings/contract/capabilities")
     }
 
-    func testGetContractCapabilitiesRequiresTheServersManifestRevisionToBeCurrent() async throws {
-        SettingsStubProtocol.reset(mode: .olderContractRevision)
+    func testGetContractCapabilitiesRequiresTheMinimumServerRevision() async throws {
+        SettingsStubProtocol.reset(mode: .belowMinimumContractRevision)
         let api = await makeStubbedAPI()
 
         let result = await api.getContractCapabilities()
         XCTAssertEqual(result, .serverUpgradeRequired)
+    }
+
+    /// A binding refresh must not turn every settings feature off on a server
+    /// one revision behind: only the keys that revision lacks are gated.
+    func testCapabilitiesFromThePreviousRevisionGateOnlyTheKeysItLacks() async throws {
+        SettingsStubProtocol.reset(mode: .previousContractRevision)
+        let api = await makeStubbedAPI()
+
+        guard case .available(let capabilities) = await api.getContractCapabilities() else {
+            return XCTFail("a server one revision behind must still report capabilities")
+        }
+        XCTAssertEqual(capabilities.manifestRevision, SettingKey.revision - 1)
+        XCTAssertTrue(capabilities.supports(.playbackSubtitleLanguage))
+        XCTAssertTrue(capabilities.supports(.playbackIntroSkipMode))
+        for key in SettingKey.allCases where key.introducedIn == SettingKey.revision {
+            XCTAssertFalse(capabilities.supports(key), "\(key.rawValue) is newer than the server")
+        }
     }
 
     func testGetContractCapabilitiesGatesOnStateAndAllowed() async throws {
@@ -2289,13 +2308,30 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(recorded.header("X-Silo-Device-Id")?.isEmpty, false)
     }
 
-    func testGetEffectiveValuesRejectsAnOlderContractRevision() async throws {
-        SettingsStubProtocol.reset(mode: .olderContractRevision)
+    func testGetEffectiveValuesRejectsARevisionBelowTheMinimum() async throws {
+        SettingsStubProtocol.reset(mode: .belowMinimumContractRevision)
         let api = await makeStubbedAPI()
 
         do {
             _ = try await api.getEffectiveValues(keys: [.playbackSubtitleLanguage])
-            XCTFail("a client must not apply an effective response from an older contract")
+            XCTFail("a client must not apply an effective response from an unsupported contract")
+        } catch let error as SettingsAPIError {
+            XCTAssertEqual(error, .serverUpgradeRequired)
+        }
+    }
+
+    func testGetEffectiveValuesFromThePreviousRevisionServesOnlyKeysItKnows() async throws {
+        SettingsStubProtocol.reset(mode: .previousContractRevision)
+        let api = await makeStubbedAPI()
+
+        let response = try await api.getEffectiveValues(keys: [.playbackSubtitleLanguage])
+        XCTAssertEqual(response.revision, SettingKey.revision - 1)
+
+        let newest = SettingKey.allCases.filter { $0.introducedIn == SettingKey.revision }
+        XCTAssertFalse(newest.isEmpty)
+        do {
+            _ = try await api.getEffectiveValues(keys: [.playbackSubtitleLanguage] + newest)
+            XCTFail("a resolution for keys the server does not know is only the default")
         } catch let error as SettingsAPIError {
             XCTAssertEqual(error, .serverUpgradeRequired)
         }
@@ -2505,8 +2541,11 @@ final class SettingsStubProtocol: URLProtocol {
         case normal
         /// A server predating it: the router 404s with no Silo envelope.
         case serverTooOld
-        /// A server with the canonical routes but an older manifest revision.
-        case olderContractRevision
+        /// A server with the canonical routes but a manifest revision older
+        /// than ``SettingKey/minimumServerRevision``.
+        case belowMinimumContractRevision
+        /// A server one manifest revision behind the generated bindings.
+        case previousContractRevision
         /// Two expired scoped requests race one rotating account refresh.
         case concurrentScopedRefresh
         /// A scoped request owns refresh while an ordinary 401 joins it.
@@ -2750,9 +2789,15 @@ final class SettingsStubProtocol: URLProtocol {
             respond(status: 404, body: "404 page not found\n", contentType: "text/plain", headers: [:])
             return
         }
-        let responseRevision = mode == .olderContractRevision
-            ? SettingKey.revision - 1
-            : SettingKey.revision
+        let responseRevision: Int
+        switch mode {
+        case .belowMinimumContractRevision:
+            responseRevision = SettingKey.minimumServerRevision - 1
+        case .previousContractRevision:
+            responseRevision = SettingKey.revision - 1
+        default:
+            responseRevision = SettingKey.revision
+        }
 
         switch (recorded.method, recorded.path) {
         case ("GET", ConnectionMonitor.healthPath):

@@ -46,9 +46,9 @@ struct TVPlayerTransportCluster: View {
     private var primaryRow: some View {
         HStack(spacing: 10) {
             iconButton(
-                systemName: "gobackward.10",
+                systemName: SeekIntervalLabel.symbolName(.backward, seconds: viewModel.skipIntervals.backward),
                 focus: .skipBack,
-                accessibilityLabel: "Skip back 10 seconds"
+                accessibilityLabel: SeekIntervalLabel.accessibilityLabel(.backward, seconds: viewModel.skipIntervals.backward)
             ) { viewModel.skipBackward() }
 
             iconButton(
@@ -59,9 +59,9 @@ struct TVPlayerTransportCluster: View {
             ) { viewModel.togglePlayPause() }
 
             iconButton(
-                systemName: "goforward.30",
+                systemName: SeekIntervalLabel.symbolName(.forward, seconds: viewModel.skipIntervals.forward),
                 focus: .skipForward,
-                accessibilityLabel: "Skip forward 30 seconds"
+                accessibilityLabel: SeekIntervalLabel.accessibilityLabel(.forward, seconds: viewModel.skipIntervals.forward)
             ) { viewModel.skipForward() }
         }
     }
