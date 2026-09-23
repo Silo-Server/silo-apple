@@ -146,7 +146,9 @@ extension APIv2Client {
     /// Every page names the validator captured before the first page; a page
     /// without an answer is sent again with the same validator and cursor.
     /// A 409 means the monitor changed: it is read again and the sync starts
-    /// over under its new validator. A paused monitor is not synced.
+    /// over under its new validator. A 404 on either read, or on a page
+    /// when the monitor read then answers 404 too, means the server no
+    /// longer has the monitor. A paused monitor is not synced.
     ///
     /// Throws when a page is refused, when the server or network asks to
     /// wait, or when the sync does not finish within its bounds.
@@ -190,6 +192,15 @@ extension APIv2Client {
                     throw DownloadSubscriptionError.incompleteSync
                 }
                 cursor = next
+            } catch let pageError where Self.downloadStatus(of: pageError) == 404 {
+                // The monitor was deleted, or its series is no longer
+                // accessible; both answer 404, so only a read tells which.
+                do {
+                    _ = try await downloadSubscription(id: id, auth: auth)
+                } catch where Self.downloadStatus(of: error) == 404 {
+                    return DownloadSubscriptionSyncOutcome(registered: registered, reloaded: nil, removed: true)
+                } catch {}
+                throw pageError
             } catch where Self.downloadStatus(of: error) == 409 {
                 guard restarts < Self.downloadSubscriptionSyncRestarts else { throw error }
                 restarts += 1

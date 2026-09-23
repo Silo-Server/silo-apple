@@ -297,6 +297,21 @@ final class DownloadSubscriptionsV2Tests: XCTestCase {
         XCTAssertEqual(stub.methods, ["POST", "GET"])
     }
 
+    func testSyncPage404MeansRemovedOnlyWhenTheMonitorIsGone() async throws {
+        let (api, auth) = try await client()
+        stub.sequence([.json(404, problem(404, "not_found")), .json(404, problem(404, "not_found"))])
+        let removed = try await api.syncDownloadSubscription(id: "m1", etag: #""e1""#, auth: auth, retryDelay: 0)
+        XCTAssertTrue(removed.removed)
+        XCTAssertEqual(stub.methods, ["POST", "GET"])
+
+        // The monitor still exists, so its series is what the server hid.
+        stub.reset()
+        stub.sequence([.json(404, problem(404, "not_found")), .json(200, monitor())])
+        let failed = await status { _ = try await api.syncDownloadSubscription(id: "m1", etag: #""e1""#, auth: auth, retryDelay: 0) }
+        XCTAssertEqual(failed, 404)
+        XCTAssertEqual(stub.methods, ["POST", "GET"])
+    }
+
     func testSyncStopsWhenTheRequestNeverLeft() async throws {
         let (api, auth) = try await client()
         stub.fail(.notConnectedToInternet)
@@ -371,7 +386,7 @@ final class DownloadSubscriptionsV2Tests: XCTestCase {
                 try server("earlier", created: "2026-09-01T00:00:00.000Z"),
                 try server("new", created: "2026-09-20T00:00:00.000Z"),
             ],
-            pendingDeletes: ["stopped"],
+            stopped: ["stopped"],
             legacyRemovalDate: removal
         )
 
@@ -379,6 +394,78 @@ final class DownloadSubscriptionsV2Tests: XCTestCase {
         XCTAssertEqual(merged[0].seriesTitle, "Known Show")
         XCTAssertEqual(merged[0].etag, #""known-2""#)
         XCTAssertNil(merged[1].seriesTitle)
+    }
+
+    func testListReadBeforeADeleteLandedDoesNotBringTheMonitorBack() throws {
+        let decoder = HTTPClient.makeJSONDecoder()
+        func server(_ id: String) throws -> ServerSubscription {
+            try decoder.decode(ServerSubscription.self, from: Data(monitor(id, series: "s-\(id)").utf8))
+        }
+        let kept = DownloadSubscription(from: try server("kept"), seriesTitle: "Kept")
+        var writes = SubscriptionWriteLedger()
+
+        // The list read starts, then the DELETE for "stopped" lands and its
+        // pending entry goes away before the list answers.
+        let started = writes.generation
+        writes.deleteSent("stopped")
+        XCTAssertFalse(writes.deleteAnswered("stopped", landed: true))
+        let landed = writes.landed(since: started)
+        let merged = DownloadManager.mergeSubscriptions(
+            local: [kept], listed: [try server("kept"), try server("stopped")],
+            stopped: landed.deleted, createdDuringRead: landed.created, legacyRemovalDate: nil)
+        writes.listCompleted(startedAt: started)
+        XCTAssertEqual(merged.map(\.id), ["kept"])
+
+        // The next read started after the DELETE, so it no longer needs it.
+        XCTAssertTrue(writes.wasDeleted("stopped"))
+        writes.listCompleted(startedAt: writes.generation)
+        XCTAssertFalse(writes.wasDeleted("stopped"))
+    }
+
+    func testListReadBeforeACreateAnsweredKeepsTheCreatedMonitor() throws {
+        let decoder = HTTPClient.makeJSONDecoder()
+        let created = DownloadSubscription(
+            from: try decoder.decode(ServerSubscription.self, from: Data(monitor("new").utf8)), seriesTitle: "New")
+        var writes = SubscriptionWriteLedger()
+
+        let started = writes.generation
+        writes.createAnswered("new", cancelledPendingDelete: false)
+        let landed = writes.landed(since: started)
+        let merged = DownloadManager.mergeSubscriptions(
+            local: [created], listed: [], stopped: landed.deleted, createdDuringRead: landed.created,
+            legacyRemovalDate: nil)
+        XCTAssertEqual(merged.map(\.id), ["new"])
+
+        // A read that started after the create is authoritative again.
+        writes.listCompleted(startedAt: started)
+        let later = writes.landed(since: writes.generation)
+        XCTAssertTrue(DownloadManager.mergeSubscriptions(
+            local: [created], listed: [], stopped: later.deleted, createdDuringRead: later.created,
+            legacyRemovalDate: nil).isEmpty)
+    }
+
+    func testCreateAnsweredDuringItsMonitorsDeleteDependsOnThatDelete() {
+        // The DELETE lands after a create answered with the same monitor:
+        // the created monitor is gone.
+        var writes = SubscriptionWriteLedger()
+        writes.deleteSent("m1")
+        writes.createAnswered("m1", cancelledPendingDelete: true)
+        XCTAssertTrue(writes.awaitsDelete("m1"))
+        XCTAssertTrue(writes.deleteAnswered("m1", landed: true))
+        XCTAssertTrue(writes.wasDeleted("m1"))
+        XCTAssertFalse(writes.awaitsDelete("m1"))
+
+        // The DELETE was refused: the monitor the create returned stays.
+        writes = SubscriptionWriteLedger()
+        writes.deleteSent("m1")
+        writes.createAnswered("m1", cancelledPendingDelete: true)
+        XCTAssertFalse(writes.deleteAnswered("m1", landed: false))
+        XCTAssertFalse(writes.wasDeleted("m1"))
+
+        // A pending DELETE that was never sent leaves nothing to wait for.
+        writes = SubscriptionWriteLedger()
+        writes.createAnswered("m1", cancelledPendingDelete: true)
+        XCTAssertFalse(writes.awaitsDelete("m1"))
     }
 
     func testCreateAnsweredWithDifferentOptionsNeedsAnEdit() throws {
