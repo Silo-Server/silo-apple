@@ -87,6 +87,9 @@ final class ReceiverPairingCoordinator {
         let verifiedServerId: String?
         let accessToken: String
         let refreshToken: String
+        /// The account the tokens authenticate (`TokenPair.user.id`), bound
+        /// as the session's verified account.
+        let accountID: String
     }
 
     private enum AlternateChoice: Sendable {
@@ -382,7 +385,8 @@ final class ReceiverPairingCoordinator {
                 started = try await api.start(serverURL: loginURL, deviceName: device.name, devicePlatform: device.platform)
             } catch {
                 try Task.checkCancellation()
-                throw Self.isTransportFailure(error) ? AttemptFailure.unreachable : error
+                if let requirement = UpdateRequirement(error) { throw AttemptFailure.updateRequired(requirement) }
+                throw error is URLError ? AttemptFailure.unreachable : error
             }
             state = .awaitingApproval(serverName: displayName, matchCode: started.matchCode, automatic: automatic)
             try await session.send(.deviceStarted(serverURL: pushedURL, userCode: started.userCode, matchCode: started.matchCode))
@@ -392,14 +396,18 @@ final class ReceiverPairingCoordinator {
             var pollInterval = max(1, started.interval)
             while Date() < deadline {
                 try Task.checkCancellation() // abort promptly on peer cancel / drop
-                let poll: DeviceLoginPollResponse
+                let poll: APIv2DevicePoll
                 do {
                     poll = try await api.poll(serverURL: loginURL, deviceCode: started.deviceCode)
                 } catch {
                     try Task.checkCancellation()
-                    if case PairingDeviceAPI.APIError.http(404) = error {
+                    if let requirement = UpdateRequirement(error) { throw AttemptFailure.updateRequired(requirement) }
+                    if Self.isMissingRequest(error) {
                         throw AttemptFailure.expired // the server has expired and removed this request
                     }
+                    // An approval without usable tokens cannot be collected
+                    // again: the server issues them once.
+                    if case APIv2Error.incompleteAuthResponse = error { throw error }
                     // Match the ordinary device-login flow and Android TV:
                     // a deploy, proxy hiccup, or brief network loss must not
                     // invalidate a still-live device code.
@@ -410,15 +418,15 @@ final class ReceiverPairingCoordinator {
                 try Task.checkCancellation() // a cancel that raced the network must win — persist nothing
                 switch poll.status {
                 case "approved":
-                    guard let access = poll.accessToken, let refresh = poll.refreshToken else {
-                        throw PairingDeviceAPI.APIError.decode
-                    }
+                    // `validated()` guarantees complete tokens on `approved`.
+                    guard let tokens = poll.tokens else { throw APIv2Error.incompleteAuthResponse }
                     guard await persist(PersistedPairing(
                         url: loginURL,
                         fetchedName: push.serverName,
                         verifiedServerId: push.serverIdentity,
-                        accessToken: access,
-                        refreshToken: refresh
+                        accessToken: tokens.accessToken,
+                        refreshToken: tokens.refreshToken,
+                        accountID: tokens.user.id
                     )) else {
                         return
                     }
@@ -435,7 +443,7 @@ final class ReceiverPairingCoordinator {
                 case "expired", "consumed":
                     throw AttemptFailure.expired
                 default: // "pending"
-                    pollInterval = max(1, poll.pollAfter ?? pollInterval)
+                    pollInterval = max(1, poll.pollAfter)
                     try await Task.sleep(for: .seconds(pollInterval))
                 }
             }
@@ -449,12 +457,9 @@ final class ReceiverPairingCoordinator {
                 return
             }
             Self.logger.error("server pairing failed: \(String(describing: error), privacy: .private)")
-            let code = (error as? AttemptFailure)?.code ?? .authFailed
-            state = .failed(
-                serverName: displayName,
-                code: code,
-                help: code == .unreachable ? push.unreachableHelp() : nil
-            )
+            let failure = error as? AttemptFailure
+            let code = failure?.code ?? .authFailed
+            state = .failed(serverName: displayName, code: code, help: failure?.help(for: push))
             try? await session.send(.serverResult(serverURL: pushedURL, status: .failed, error: code.rawValue))
         }
     }
@@ -464,6 +469,8 @@ final class ReceiverPairingCoordinator {
         case identityMismatch
         case denied
         case expired
+        /// The server is v1-only, or no longer accepts this app version.
+        case updateRequired(UpdateRequirement)
 
         var code: PairingFailureCode {
             switch self {
@@ -471,14 +478,28 @@ final class ReceiverPairingCoordinator {
             case .identityMismatch: return .identityMismatch
             case .denied: return .denied
             case .expired: return .expired
+            case .updateRequired: return .updateRequired
+            }
+        }
+
+        func help(for push: PushedServer) -> String? {
+            switch self {
+            case .unreachable: return push.unreachableHelp()
+            case .updateRequired(let requirement): return requirement.message
+            case .identityMismatch, .denied, .expired: return nil
             }
         }
     }
 
-    private static func isTransportFailure(_ error: Error) -> Bool {
-        if error is URLError { return true }
-        if case PairingDeviceAPI.APIError.http(let status) = error, status < 0 { return true }
-        return false
+    /// A poll the server answers with 404 names a request it no longer has
+    /// (expired and removed); a legacy 404 was already classified as an
+    /// update requirement.
+    private static func isMissingRequest(_ error: Error) -> Bool {
+        switch error {
+        case APIv2Error.problem(let problem): return problem.status == 404
+        case APIv2Error.httpStatus(404): return true
+        default: return false
+        }
     }
 
     /// The address to run device authorization at.
@@ -569,7 +590,7 @@ final class ReceiverPairingCoordinator {
         let previousProfileID = await TokenStore.shared.getProfileId()
         let previousProfileToken = await TokenStore.shared.getProfileToken()
         // Re-pairing an already saved server replaces its credential slot in
-        // `saveTokens` below (and adopts the slot even when the write fails
+        // the session install below (and adopts the slot even when the write fails
         // part way), before the registry commit can still fail. Keep what
         // the slot and its server-scoped profile proof held, so either
         // failure puts it back instead of leaving the new credentials, an
@@ -613,7 +634,7 @@ final class ReceiverPairingCoordinator {
         await TokenStore.shared.setProfileId(nil)
         await TokenStore.shared.setProfileToken(nil)
         // One rollback for both failure points below. The slot is restored
-        // first (a failed `saveTokens` has still blocked the runtime session
+        // first (a failed install has still blocked the runtime session
         // and may have adopted the slot; a failed commit has the candidate's
         // tokens persisted in it), then the URL and profile, so the previous
         // server reads exactly as it did before pairing started. When the
@@ -632,7 +653,15 @@ final class ReceiverPairingCoordinator {
             restoreRememberedProfile()
             await HTTPClient.shared.endIdentityTransition(transitionLease)
         }
-        guard await TokenStore.shared.saveTokens(accessToken: access, refreshToken: refresh) else {
+        do {
+            try await TokenStore.shared.installAccountSession(
+                accessToken: access,
+                refreshToken: refresh,
+                accountID: pairing.accountID,
+                clearProfile: false
+            )
+        } catch {
+            Self.logger.error("pairing session install failed: \(String(describing: error), privacy: .private)")
             await rollBack()
             return false
         }

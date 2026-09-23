@@ -309,6 +309,43 @@ final class AccountSessionPersistenceTests: XCTestCase {
         let afterRestart = await next.getAccessToken()
         XCTAssertNil(afterRestart, "Adoption marker blocks stale legacy fallback")
     }
+    #if os(iOS) || os(tvOS)
+    /// Pairing and login install a verified session directly; a failed write
+    /// must still leave the durable breadcrumb a diagnostics report relies on.
+    func testFailedVerifiedInstallRecordsSessionInstallBreadcrumb() async throws {
+        let memory = SessionMemory()
+        let (store, _, _, _) = try await harness(memory)
+        // Close the process journal so the essential line stages in the
+        // early-boot buffer, where the test can read it back.
+        let buffer = EarlyBootBuffer.shared
+        DiagnosticsCoordinator.activeProfileWillChange()
+        DiagnosticsCoordinator.installBreadcrumbConsentContextForTests(nil)
+        DiagnosticsCoordinator.installBreadcrumbDecisionInEffectForTests(false)
+        DiagnosticsCoordinator.installLaunchProfileRestorationPassSpentForTests(false)
+        buffer.resetForTests()
+        addTeardownBlock {
+            buffer.resetForTests()
+            DiagnosticsCoordinator.installBreadcrumbConsentContextForTests(nil)
+            DiagnosticsCoordinator.installBreadcrumbDecisionInEffectForTests(false)
+            DiagnosticsCoordinator.installLaunchProfileRestorationPassSpentForTests(false)
+        }
+        memory.failRecordWrites = true
+        do {
+            try await store.installAccountSession(accessToken: "paired", refreshToken: "paired-refresh",
+                accountID: "12", clearProfile: false)
+            XCTFail("Install succeeded although the session record could not be written")
+        } catch AccountSessionPersistenceError.unavailable {}
+        let decoder = DiagnosticsJSONCoding.makeDecoder()
+        let events = buffer.snapshot().lines.compactMap {
+            try? decoder.decode(DiagnosticsLogLine.self, from: Data($0.utf8))
+        }.filter { $0.tag == "Auth" && $0.msg == "session credential event" }
+        XCTAssertEqual(events.map { $0.attrs ?? [:] }, [[
+            "phase": .string("sessionInstall"),
+            "outcome": .string("failed"),
+            "reason": .string("persistenceUnavailable"),
+        ]])
+    }
+    #endif
     func testVerifiedLegacyMigrationPreservesEpochAndBindsAccount() async throws {
         let (store, keys, _, memory) = try await harness()
         let account = keys.withAudience(.userIndependent)
