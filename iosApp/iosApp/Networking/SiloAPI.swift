@@ -43,10 +43,11 @@ actor SiloAPI {
     /// Extra query entries asking the server to bake a larger image
     /// variant into every image URL in the response.
     ///
-    /// One place decides this for every image-bearing endpoint, so call
-    /// sites just merge it in. Empty off tvOS, and empty until (or
-    /// unless) the capability probe in ``ImageSizeCapability`` lands —
-    /// which makes iOS and macOS requests byte-identical to before.
+    /// One place decides this for every image-bearing endpoint; call sites
+    /// pass `imageSizeQuery["image_size"]` to the `APIv2Client` method.
+    /// Empty off tvOS, and empty until (or unless) the capability probe in
+    /// ``ImageSizeCapability`` lands — which makes iOS and macOS requests
+    /// byte-identical to before.
     private var imageSizeQuery: [String: String] {
         get async {
             // Gate only the artwork request, never launch/profile navigation.
@@ -55,12 +56,6 @@ actor SiloAPI {
             await ImageSizeCapability.shared.refresh(retryFailed: false)
             return ImageSizeCapability.shared.requestQuery
         }
-    }
-
-    /// Merge ``imageSizeQuery`` into a caller-built query. Caller-supplied
-    /// values win, so an explicit size is never overwritten.
-    private func withImageSize(_ query: [String: String]) async -> [String: String] {
-        query.merging(await imageSizeQuery) { caller, _ in caller }
     }
 
     /// `GET /api/v2/images/capabilities`. Throws `HTTPError.http(404, _)`
@@ -318,22 +313,19 @@ actor SiloAPI {
 
     // --- Personal data ---
 
-    // These build their own query rather than routing through
-    // `catalogPage(_:)`, so each merges the image-size entry itself.
-    // They back real poster grids on TV.
-
-    func favorites(offset: Int, limit: Int) async throws -> CatalogResponse {
-        try await http.get("/api/v1/favorites", query: await withImageSize([
-            "offset": String(offset),
-            "limit": String(limit),
-        ]))
+    /// The acting profile's whole favorites list, read page by page from
+    /// `/api/v2/favorites`. The screens filter it locally by media type.
+    func favorites() async throws -> CatalogResponse {
+        try await apiV2Client.personalListItems(
+            kind: .favorites, imageSize: await imageSizeQuery["image_size"], auth: try await detailReadAuth()
+        )
     }
 
-    func watchlist(offset: Int, limit: Int) async throws -> CatalogResponse {
-        try await http.get("/api/v1/watchlist", query: await withImageSize([
-            "offset": String(offset),
-            "limit": String(limit),
-        ]))
+    /// The acting profile's whole watchlist from `/api/v2/watchlist`.
+    func watchlist() async throws -> CatalogResponse {
+        try await apiV2Client.personalListItems(
+            kind: .watchlist, imageSize: await imageSizeQuery["image_size"], auth: try await detailReadAuth()
+        )
     }
 
     /// Server returns 204 when the item is a favorite and 404 otherwise.
