@@ -90,7 +90,7 @@ final class UpdateRequirementTests: XCTestCase {
         for (name, reply) in replies {
             let stub = APIv2TestStub(fallback: reply)
             do {
-                let _: SetupStatus = try await HTTPClient(session: stub.makeSession())
+                let _: HealthStatus = try await HTTPClient(session: stub.makeSession())
                     .getUnauthenticated(serverURL: "https://new.example", path: Self.httpLayerPath)
                 XCTFail("expected the 410 to surface: \(name)")
             } catch {
@@ -161,10 +161,9 @@ final class UpdateRequirementTests: XCTestCase {
     }
 
     /// Runs the add-server flow against one stubbed reply per candidate
-    /// scheme. The check goes through the real request layers: v2 setup, or
-    /// a plain `HTTPClient` request standing in for today's v1 setup call.
+    /// scheme. The check goes through the real v2 setup read.
     @MainActor
-    private func connect(v2Setup: Bool, replies: [String: CandidateReply]) async -> String? {
+    private func connect(replies: [String: CandidateReply]) async -> String? {
         let handler = StubURLProtocol.Handler()
         handler.route(StubURLProtocol.any) { request in
             let key = "\(request.url?.scheme ?? ""):\(request.url?.port ?? 0)"
@@ -179,13 +178,9 @@ final class UpdateRequirementTests: XCTestCase {
                 throw URLError(.cannotConnectToHost)
             }
         }
-        let http = HTTPClient(session: handler.makeSession())
+        let client = APIv2Client(http: HTTPClient(session: handler.makeSession()), isUpdateRequired: { false })
         let viewModel = ServerSetupViewModel(checkServer: { url in
-            if v2Setup {
-                let status = try await APIv2Client(http: http, isUpdateRequired: { false }).setupStatus(serverURL: url)
-                return SetupStatus(needsSetup: status.needsSetup)
-            }
-            return try await http.getUnauthenticated(serverURL: url, path: Self.httpLayerPath)
+            try await client.setupStatus(serverURL: url)
         })
         viewModel.host = "silo.example"
         await viewModel.connect(router: AppRouter())
@@ -195,18 +190,16 @@ final class UpdateRequirementTests: XCTestCase {
     @MainActor
     func testServerAddExplainsVersionMismatchInsteadOfUnreachable() async {
         let unreachable = "Could not reach a Silo server at that address."
-        let cases: [(String, Bool, [String: CandidateReply], String)] = [
-            ("v1-only server", true, ["https:0": .legacyNotFound, "http:0": .legacyNotFound, "http:8090": .legacyNotFound],
+        let cases: [(String, [String: CandidateReply], String)] = [
+            ("v1-only server", ["https:0": .legacyNotFound, "http:0": .legacyNotFound, "http:8090": .legacyNotFound],
              UpdateRequirement.serverMessage),
-            ("v1-only behind one scheme", true, ["http:0": .legacyNotFound], UpdateRequirement.serverMessage),
-            ("app too old (HTTPClient layer)", false, ["https:0": .upgradeProblem], UpdateRequirement.appMessage),
-            ("app too old (v2 layer)", true, ["https:0": .upgradeProblem], UpdateRequirement.appMessage),
-            ("HTTPClient layer legacy 404", false, ["https:0": .legacyNotFound], unreachable),
-            ("proxy 404", true, ["https:0": .htmlNotFound], unreachable),
-            ("nothing answers", true, [:], unreachable),
+            ("v1-only behind one scheme", ["http:0": .legacyNotFound], UpdateRequirement.serverMessage),
+            ("app too old", ["https:0": .upgradeProblem], UpdateRequirement.appMessage),
+            ("proxy 404", ["https:0": .htmlNotFound], unreachable),
+            ("nothing answers", [:], unreachable),
         ]
-        for (name, v2Setup, replies, expected) in cases {
-            let message = await connect(v2Setup: v2Setup, replies: replies)
+        for (name, replies, expected) in cases {
+            let message = await connect(replies: replies)
             XCTAssertEqual(message, expected, name)
         }
     }

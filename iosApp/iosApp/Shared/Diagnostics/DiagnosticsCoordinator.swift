@@ -2353,6 +2353,16 @@ actor DiagnosticsCoordinator {
                 return false
             }
         }
+        // The account read is v2 (`SiloAPI.currentUser`), so its non-2xx
+        // answers arrive as `APIv2Error`; transport failures stay `HTTPError`.
+        switch error {
+        case APIv2Error.problem(let problem):
+            return (500...599).contains(problem.status)
+        case APIv2Error.httpStatus(let statusCode):
+            return (500...599).contains(statusCode)
+        default:
+            break
+        }
         if let httpError = error as? HTTPError {
             switch httpError {
             case .network:

@@ -34,11 +34,10 @@ enum RestoredSessionValidationResult: Equatable, Sendable {
 
 /// A small injected boundary around the two requests needed to validate a
 /// restored account. Tests supply deterministic closures; production uses the
-/// existing unauthenticated setup endpoint followed by the authenticated
-/// current-user endpoint.
+/// public v2 setup read followed by the authenticated v2 account read.
 struct RestoredSessionValidator: Sendable {
-    typealias SetupProbe = @Sendable (String) async throws -> SetupStatus
-    typealias AccountProbe = @Sendable () async throws -> UserInfo
+    typealias SetupProbe = @Sendable (String) async throws -> APIv2SetupStatus
+    typealias AccountProbe = @Sendable () async throws -> Void
     typealias IdentityReader = @Sendable () async -> RefreshAccountIdentity?
     typealias AccessTokenReader = @Sendable (String) async -> Bool
 
@@ -65,28 +64,32 @@ struct RestoredSessionValidator: Sendable {
     }
 
     static var live: RestoredSessionValidator {
+        live(client: SiloAPI.shared.apiV2Client, tokenStore: .shared)
+    }
+
+    /// `GET /api/v2/system/setup` by the remembered URL, then
+    /// `GET /api/v2/account/me` for the restored credentials. The account
+    /// read also binds the verified account ID to a session installed
+    /// without one.
+    static func live(client: APIv2Client, tokenStore: TokenStore) -> RestoredSessionValidator {
         RestoredSessionValidator(
             setupProbe: { serverURL in
-                try await HTTPClient.shared.getUnauthenticated(
-                    serverURL: serverURL,
-                    path: "/api/v1/auth/setup",
-                    quietStatuses: [404]
-                )
+                try await client.setupStatus(serverURL: serverURL)
             },
             accountProbe: {
-                try await SiloAPI.shared.currentUser()
+                _ = try await client.currentUser()
             },
             identityReader: {
-                await TokenStore.shared.refreshAccountIdentity()
+                await tokenStore.refreshAccountIdentity()
             },
             accessTokenReader: { serverID in
-                await TokenStore.shared.hasAccessTokenForActiveServer(serverId: serverID)
+                await tokenStore.hasAccessTokenForActiveServer(serverId: serverID)
             }
         )
     }
 
     func validate(expected: RefreshAccountIdentity) async -> RestoredSessionValidationResult {
-        let setup: SetupStatus
+        let setup: APIv2SetupStatus
         do {
             setup = try await setupProbe(expected.serverURL)
         } catch {
@@ -101,7 +104,7 @@ struct RestoredSessionValidator: Sendable {
         }
 
         do {
-            _ = try await accountProbe()
+            try await accountProbe()
         } catch {
             return await result(for: error, stage: .account, expected: expected)
         }
@@ -143,30 +146,41 @@ struct RestoredSessionValidator: Sendable {
         if let requirement = UpdateRequirement(error) {
             return .serverRecovery(ServerRecoveryReason(requirement))
         }
-        guard let httpError = error as? HTTPError else {
+        // `APIv2Client` turns every non-2xx answer into `APIv2Error`;
+        // transport, decoding and identity failures stay `HTTPError`.
+        switch error {
+        case APIv2Error.problem(let problem):
+            return Self.result(forStatus: problem.status, stage: stage)
+        case APIv2Error.httpStatus(let statusCode):
+            return Self.result(forStatus: statusCode, stage: stage)
+        case let httpError as HTTPError:
+            switch httpError {
+            case .requestIdentityChanged, .authorityChanged:
+                return .identityChanged
+            case .network, .encodingFailed:
+                return .indeterminate
+            case .http(let statusCode, _):
+                return Self.result(forStatus: statusCode, stage: stage)
+            case .invalidResponse, .decodingFailed, .serverUrlNotConfigured, .invalidURL:
+                return .serverRecovery(.serverNotRecognized)
+            }
+        default:
             return .indeterminate
         }
+    }
 
-        switch httpError {
-        case .requestIdentityChanged, .authorityChanged:
-            return .identityChanged
-        case .network, .encodingFailed:
+    private static func result(forStatus statusCode: Int, stage: Stage) -> RestoredSessionValidationResult {
+        if isRetryable(statusCode) {
             return .indeterminate
-        case .http(let statusCode, _):
-            if Self.isRetryable(statusCode) {
-                return .indeterminate
-            }
-            if stage == .account, (statusCode == 401 || statusCode == 403) {
-                // HTTPClient removes the token before returning only when the
-                // refresh endpoint authoritatively rejects it. If the token is
-                // still present, refresh may instead have failed transiently;
-                // keep the cached session rather than manufacturing a logout.
-                return .indeterminate
-            }
-            return .serverRecovery(.serverNotRecognized)
-        case .invalidResponse, .decodingFailed, .serverUrlNotConfigured, .invalidURL:
-            return .serverRecovery(.serverNotRecognized)
         }
+        if stage == .account, (statusCode == 401 || statusCode == 403) {
+            // HTTPClient removes the token before returning only when the
+            // refresh endpoint authoritatively rejects it. If the token is
+            // still present, refresh may instead have failed transiently;
+            // keep the cached session rather than manufacturing a logout.
+            return .indeterminate
+        }
+        return .serverRecovery(.serverNotRecognized)
     }
 
     static func isRetryable(_ statusCode: Int) -> Bool {

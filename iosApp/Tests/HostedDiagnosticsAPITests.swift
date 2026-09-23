@@ -1921,7 +1921,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                 ))
                 XCTAssertEqual(selfHostedStub.requestedPaths(), [
                     "/api/v1/diagnostics/status",
-                    "/api/v1/auth/me",
+                    "/api/v2/account/me",
                     "/api/v1/diagnostics/reports",
                 ])
 
@@ -3311,8 +3311,8 @@ private final class SelfHostedDiagnosticsStub: @unchecked Sendable {
             let serverInstanceID = lock.withLock { self.serverInstanceID }
             return .json(#"{"status":"available","server_instance_id":"\#(serverInstanceID)","accepted_schema_versions":[1],"max_bundle_bytes":10485760,"max_manifest_bytes":65536,"retention_days":30,"consent_notice_version":1}"#)
         }
-        handler.route(StubURLProtocol.method("GET", path: "/api/v1/auth/me")) { _ in
-            .json(#"{"id":42,"username":"diagnostics-test","email":"diagnostics@example.invalid","role":"user","download_allowed":true,"impersonation":null}"#)
+        handler.route(StubURLProtocol.method("GET", path: "/api/v2/account/me")) { _ in
+            .json(#"{"id":"42","username":"diagnostics-test","email":"diagnostics@example.invalid","role":"user","permissions":[],"download_allowed":true}"#)
         }
         handler.route(StubURLProtocol.method("POST", path: "/api/v1/diagnostics/reports")) { [self] _ in
             let reportID = lock.withLock { self.reportID }

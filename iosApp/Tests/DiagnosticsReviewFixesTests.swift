@@ -269,6 +269,14 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         XCTAssertTrue(DiagnosticsCoordinator.isTransientCaptureFallbackFailure(
             HostedDiagnosticsAPIError.http(statusCode: 429, code: "rate_limited")
         ))
+        // The v2 account read reports server errors as `APIv2Error`.
+        XCTAssertTrue(DiagnosticsCoordinator.isTransientCaptureFallbackFailure(
+            APIv2Error.httpStatus(502)
+        ))
+        XCTAssertTrue(DiagnosticsCoordinator.isTransientCaptureFallbackFailure(
+            APIv2Error.problem(APIv2Problem(type: "about:blank", title: "Unavailable", status: 503,
+                detail: "", instance: nil, errors: nil))
+        ))
     }
 
     func testSelfHostedBindingRejectsReservedHostedPrefix() {
@@ -298,6 +306,15 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
                 "HTTP \(status) must fail closed"
             )
         }
+        for status in [401, 403, 404, 410] {
+            XCTAssertFalse(
+                DiagnosticsCoordinator.isTransientCaptureFallbackFailure(APIv2Error.httpStatus(status)),
+                "v2 HTTP \(status) must fail closed"
+            )
+        }
+        XCTAssertFalse(DiagnosticsCoordinator.isTransientCaptureFallbackFailure(
+            APIv2Error.serverUpdateRequired
+        ))
         XCTAssertFalse(DiagnosticsCoordinator.isTransientCaptureFallbackFailure(
             HTTPError.invalidResponse
         ))

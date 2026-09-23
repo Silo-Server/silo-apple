@@ -209,14 +209,16 @@ final class APIv2ContractStateTests: XCTestCase {
         monitor.activeServerIdProvider = { registry.activeServerId }
 
         let stub = APIv2TestStub()
-        stub.reply(path: "/api/v1/auth/setup", 200, #"{"needs_setup":false}"#)
-        stub.reply(path: "/api/v1/theme/branding", 200, #"{"server_name":"Probed"}"#)
+        stub.reply(path: "/api/v2/system/setup", 200, #"{"needs_setup":false,"wizard_completed":true}"#)
+        stub.reply(path: ServerIdentity.brandingPath, 200,
+            #"{"server_name":"Probed","login_subtitle":"","storage_available":false}"#)
         stub.reply(path: APIv2Probe.path, 404, "404 page not found\n")
         let http = HTTPClient(session: stub.makeSession())
         let service = AuthService(
             serverIdentityResolver: ServerIdentityResolver(httpClient: http),
             serverRegistry: registry,
             contractProbe: APIv2Probe(httpClient: http),
+            apiV2Client: APIv2Client(http: http, isUpdateRequired: { false }),
             httpClient: http
         )
 
