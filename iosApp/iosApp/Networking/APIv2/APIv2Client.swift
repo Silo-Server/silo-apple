@@ -2,8 +2,9 @@ import Foundation
 
 /// Errors raised by the v2 request layer.
 enum APIv2Error: LocalizedError, Sendable {
-    /// The connected server is v1-only (see `APIv2Probe`). Pilot operations
-    /// are refused rather than routed to a v1 path.
+    /// The connected server is v1-only: the recorded `APIv2Probe` verdict
+    /// refused the call before it left the device, or a v2 route answered with
+    /// the legacy listener's plain 404. Never routed to a v1 path instead.
     case serverUpdateRequired
     case invalidSubtitleResponse
     case invalidNotificationContinuation
@@ -23,9 +24,6 @@ enum APIv2Error: LocalizedError, Sendable {
     case problem(APIv2Problem)
     /// A non-2xx status whose body was not a problem document.
     case httpStatus(Int)
-
-    static let serverUpdateRequiredMessage =
-        "This server needs to be updated before this version of Silo can use it."
 
     var errorDescription: String? {
         switch self {
@@ -53,8 +51,9 @@ enum APIv2Error: LocalizedError, Sendable {
         case .incompleteRequestList:
             return "The request list could not be loaded completely. Please reload."
         case .serverUpdateRequired:
-            return Self.serverUpdateRequiredMessage
+            return UpdateRequirement.serverMessage
         case .problem(let problem):
+            if UpdateRequirement.isClientUpgradeRequired(problem) { return UpdateRequirement.appMessage }
             return problem.detail.isEmpty ? problem.title : problem.detail
         case .httpStatus(let status):
             return "The server returned HTTP \(status)."
@@ -1454,6 +1453,11 @@ struct APIv2Client: Sendable {
             if let body, let data = body.data(using: .utf8),
                let problem = try? HTTPClient.makeJSONDecoder().decode(APIv2Problem.self, from: data) {
                 throw APIv2Error.problem(problem)
+            }
+            // Every path here is `/api/v2`, so Go's plain 404 can only come
+            // from a v1-only server's legacy listener.
+            if statusCode == 404, APIv2Probe.isLegacyNotFound(body: body) {
+                throw APIv2Error.serverUpdateRequired
             }
             throw APIv2Error.httpStatus(statusCode)
         }

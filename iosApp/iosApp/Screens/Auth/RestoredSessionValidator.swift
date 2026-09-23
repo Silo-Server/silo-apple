@@ -6,6 +6,17 @@ enum ServerRecoveryReason: String, Equatable, Hashable, Sendable {
     case needsSetup
     /// The URL no longer exposes the native Silo setup/session contract.
     case serverNotRecognized
+    /// The server is v1-only and must be updated for this app version.
+    case serverUpdateRequired
+    /// The server no longer accepts this app version.
+    case appUpdateRequired
+
+    init(_ requirement: UpdateRequirement) {
+        switch requirement {
+        case .server: self = .serverUpdateRequired
+        case .app: self = .appUpdateRequired
+        }
+    }
 }
 
 /// Result of checking a Keychain-restored account against its remembered URL.
@@ -126,6 +137,11 @@ struct RestoredSessionValidator: Sendable {
 
         if error is CancellationError {
             return .indeterminate
+        }
+        // A version mismatch is authoritative but never a credential problem:
+        // show the update copy and keep the saved session.
+        if let requirement = UpdateRequirement(error) {
+            return .serverRecovery(ServerRecoveryReason(requirement))
         }
         guard let httpError = error as? HTTPError else {
             return .indeterminate

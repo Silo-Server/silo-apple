@@ -51,6 +51,7 @@ struct ErrorView: View {
     }
 
     private var headline: String {
+        if state.updateRequirement != nil { return "Update required" }
         if state.isAuthFailure { return "Session expired" }
         if state.isNotFound { return "Not found" }
         return "Something went wrong"

@@ -2365,6 +2365,9 @@ enum HTTPError: LocalizedError, CustomStringConvertible {
         case .decodingFailed(let type, let error):
             return "Failed to decode \(type): \(error.localizedDescription)"
         case .http(let statusCode, let body):
+            if UpdateRequirement.isClientUpgradeRequired(statusCode: statusCode, body: body) {
+                return UpdateRequirement.appMessage
+            }
             if let message = Self.parseServerMessage(body) {
                 return message
             }

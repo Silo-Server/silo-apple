@@ -7,6 +7,9 @@ import Foundation
 struct ErrorState: Equatable {
     let statusCode: Int?
     let message: String
+    /// Set when the failure is a version mismatch between this app and the
+    /// server; `message` then carries the matching update copy.
+    let updateRequirement: UpdateRequirement?
 
     /// Refresh flow has given up; user must re-authenticate.
     var isAuthFailure: Bool {
@@ -14,21 +17,30 @@ struct ErrorState: Equatable {
         return statusCode == 401 || statusCode == 403
     }
 
-    var isNotFound: Bool { statusCode == 404 }
+    var isNotFound: Bool { updateRequirement == nil && statusCode == 404 }
 
     /// A retry might succeed without user action. `nil` status means a
     /// network-layer error (no HTTP response), which is also transient.
     var isTransient: Bool {
+        guard updateRequirement == nil else { return false }
         guard let statusCode else { return true }
         return statusCode >= 500 || statusCode == 408 || statusCode == 429
     }
 
-    init(statusCode: Int?, message: String) {
+    init(statusCode: Int?, message: String, updateRequirement: UpdateRequirement? = nil) {
         self.statusCode = statusCode
         self.message = message
+        self.updateRequirement = updateRequirement
     }
 
     init(_ error: Error) {
+        if let requirement = UpdateRequirement(error) {
+            self.statusCode = (error as? HTTPError)?.statusCode
+            self.message = requirement.message
+            self.updateRequirement = requirement
+            return
+        }
+        self.updateRequirement = nil
         if let httpError = error as? HTTPError {
             self.statusCode = httpError.statusCode
             self.message = Self.humanize(httpError: httpError)
