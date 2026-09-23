@@ -536,10 +536,6 @@ actor SiloAPI {
 
     // --- Playback ---
 
-    func playbackV3Capability() async throws -> PlaybackV3CapabilityResponse {
-        try await http.get("/api/v1/playback/capability")
-    }
-
     // Stream probing and transcode startup can exceed the standard request timeout.
     func startPlaybackV3(request: PlaybackV3StartRequest) async throws -> PlaybackV3DecisionResponse {
         try await http.post("/api/v1/playback/start", body: request, timeout: .extended)

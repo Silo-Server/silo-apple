@@ -567,34 +567,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         )
     }
 
-    func testRecoveredServerRequestAndCapabilityFixturesDecode() throws {
-        let capability = try PlaybackV3FixtureTestSupport.decode(
-            PlaybackV3CapabilityResponse.self,
-            named: "capability_response",
-            bundleClass: Self.self
-        )
-        XCTAssertEqual(capability.protocolVersions, [3])
-        XCTAssertTrue(capability.features.contains(PlaybackProtocolV3.neutralContractFeature))
-        XCTAssertTrue(capability.features.contains(PlaybackProtocolV3.headerAuthenticatedMediaFeature))
-        XCTAssertEqual(
-            Set(capability.deliveries),
-            [
-                "original_http",
-                "server_remux_progressive",
-                "server_remux_hls",
-                "server_transcode_hls"
-            ]
-        )
-        XCTAssertEqual(
-            capability.transformations.first { $0.name == "hdr_to_sdr_tonemap" },
-            PlaybackV3Transformation(
-                name: "hdr_to_sdr_tonemap",
-                executor: "server",
-                recipeVersion: "1",
-                validatedClaims: ["hdr_metadata_removed", "sdr_bt709_output"]
-            )
-        )
-
+    func testRecoveredServerRequestFixturesDecode() throws {
         let start = try PlaybackV3FixtureTestSupport.decode(
             PlaybackV3StartRequest.self,
             named: "start_request",
@@ -1660,54 +1633,6 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         let object = try encodedObject(request)
         XCTAssertEqual(object["progress_persistence"] as? String, "client")
         XCTAssertEqual(object["start_position"] as? Double, 0)
-    }
-
-    func testAetherCapabilityGateRequiresNeutralAndHeaderAuthenticatedMedia() {
-        let capability = PlaybackV3CapabilityResponse(
-            enabled: true,
-            protocolVersions: [3],
-            features: [
-                PlaybackProtocolV3.planFeature,
-                PlaybackProtocolV3.neutralContractFeature,
-                PlaybackProtocolV3.headerAuthenticatedMediaFeature
-            ],
-            deliveries: ["original_http"],
-            transformations: [],
-            reason: nil
-        )
-        XCTAssertTrue(PlaybackSessionBridge.supportsNeutralProtocolV3(capability))
-        XCTAssertFalse(PlaybackSessionBridge.supportsNeutralProtocolV3(
-            PlaybackV3CapabilityResponse(
-                enabled: true,
-                protocolVersions: [3],
-                features: [
-                    PlaybackProtocolV3.planFeature,
-                    PlaybackProtocolV3.neutralContractFeature,
-                ],
-                deliveries: ["original_http"],
-                transformations: [],
-                reason: nil
-            )
-        ))
-        XCTAssertFalse(PlaybackSessionBridge.supportsNeutralProtocolV3(
-            PlaybackV3CapabilityResponse(
-                enabled: true,
-                protocolVersions: [3],
-                features: [PlaybackProtocolV3.planFeature],
-                deliveries: ["original_http"],
-                transformations: [],
-                reason: nil
-            )
-        ))
-        XCTAssertTrue(PlaybackSessionBridge.isMissingProtocolV3Capability(
-            HTTPError.http(statusCode: 404, body: nil)
-        ))
-        XCTAssertTrue(PlaybackSessionBridge.isMissingProtocolV3Capability(
-            HTTPError.http(statusCode: 405, body: nil)
-        ))
-        XCTAssertFalse(PlaybackSessionBridge.isMissingProtocolV3Capability(
-            HTTPError.http(statusCode: 500, body: nil)
-        ))
     }
 
     func testTerminalStartRouteEventIsSessionlessAndAttemptScoped() {
