@@ -23,6 +23,9 @@ struct CreateProfileView: View {
     @State private var allowedLibraryIds: Set<Int> = []
     @State private var libraries: [Library] = []
     @State private var libraryLoad: LibraryLoad = .loading
+    /// A retry after a failed read runs with the failed state still shown,
+    /// so the focused Try Again button stays mounted on tvOS.
+    @State private var isRetryingLibraries: Bool = false
     @State private var isLoading: Bool = false
     @State private var formError: CreateProfileFailure?
     @Environment(\.dismiss) private var dismiss
@@ -464,10 +467,22 @@ struct CreateProfileView: View {
                         Text("Couldn't load libraries. \(message)")
                             .font(.siloCaption)
                             .foregroundStyle(Color.siloSecondaryText)
-                        Button("Try Again") {
+                        // Not `.disabled` while retrying: that would move focus
+                        // off the button, which is what keeping it mounted avoids.
+                        Button {
+                            guard !isRetryingLibraries else { return }
                             Task { await loadLibraries() }
+                        } label: {
+                            HStack(spacing: 6) {
+                                if isRetryingLibraries {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                }
+                                Text("Try Again")
+                            }
                         }
                         .buttonStyle(GhostChipButtonStyle())
+                        .accessibilityValue(isRetryingLibraries ? "Loading" : "")
                     }
                 } else if libraries.isEmpty {
                     Text("No libraries are available to assign.")
@@ -576,8 +591,15 @@ struct CreateProfileView: View {
 
     // MARK: - Libraries
 
+    /// The first read shows a progress row. A retry leaves the failed state
+    /// (and its focused button) in place until the new result arrives.
     private func loadLibraries() async {
-        libraryLoad = .loading
+        if case .failed = libraryLoad {
+            isRetryingLibraries = true
+        } else {
+            libraryLoad = .loading
+        }
+        defer { isRetryingLibraries = false }
         do {
             libraries = try await SiloAPI.shared.libraries().libraries
             libraryLoad = .loaded
