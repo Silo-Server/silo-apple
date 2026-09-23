@@ -112,12 +112,13 @@ final class DownloadManager {
     /// True until the user dismisses the notice that this version removed
     /// downloads saved by an earlier one.
     private(set) var legacyDownloadsNoticePending = false
-    /// When that removal ran. Server rows created before it belong to the
-    /// removed storage, so reconcile deletes them instead of importing them.
-    private var legacyRemovalDate: Date?
-    /// Server rows from the removed storage whose DELETE is in flight, so a
-    /// reconcile that overlaps the first one doesn't send it twice.
-    private var legacyRowDeletes: Set<String> = []
+    /// True when this launch's removal did not finish. The next launch runs
+    /// it again; until then nothing tells the earlier version's server rows
+    /// from new ones, so reconcile imports no unknown row.
+    private var legacyRemovalIncomplete = false
+    /// Registry rows whose DELETE is in flight, so a reconcile that overlaps
+    /// the first one doesn't send it twice.
+    private var serverDeletesInFlight: Set<String> = []
 
     private init() {
         // Drain background-session events for the lifetime of the app.
@@ -473,9 +474,10 @@ final class DownloadManager {
             // Transfers an earlier version started would land their media in
             // the storage removed below; stop them first.
             await sessionDelegate.cancelAllTasks()
-            legacyDownloadsNoticePending = await store.removeLegacyStorage()
+            let removal = await store.removeLegacyStorage()
+            legacyDownloadsNoticePending = removal.hadDownloads
+            legacyRemovalIncomplete = !removal.completed
         }
-        legacyRemovalDate = await store.legacyRemovalDate()
     }
 
     func acknowledgeLegacyDownloadsNotice() {
@@ -1261,12 +1263,21 @@ final class DownloadManager {
 
     func reconcileWithServer(triggerPipeline: Bool) async {
         guard !scopeServerId.isEmpty, downloadsEnabled else { return }
-        let rows: [ServerDownloadRow]
+        let serverId = scopeServerId
+        let profileId = scopeProfileId
+        let listed: [ServerDownloadRow]
         do {
-            rows = try await SiloAPI.shared.listDownloads()
+            listed = try await SiloAPI.shared.listDownloads()
         } catch {
             return
         }
+        // The legacy classification below must judge this scope's rows only.
+        guard scopeServerId == serverId, scopeProfileId == profileId else { return }
+        // A complete read that no longer lists a row confirms its DELETE. The
+        // others stay hidden until theirs lands.
+        let pendingDeletes = (file.pendingServerDeletes ?? []).intersection(listed.map(\.id))
+        file.pendingServerDeletes = pendingDeletes.isEmpty ? nil : pendingDeletes
+        let rows = listed.filter { !pendingDeletes.contains($0.id) }
         let byId = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 
         for (id, original) in file.records {
@@ -1301,15 +1312,24 @@ final class DownloadManager {
         }
 
         // Pick up rows registered out-of-band (e.g. subscription sync).
-        let unknownRows = Self.partitionUnknownRows(
-            rows.filter { file.records[$0.id] == nil },
-            legacyRemovalDate: legacyRemovalDate
-        )
-        for row in unknownRows.imported {
-            file.records[row.id] = makeRecord(from: row, type: row.episodeId != nil ? "episode" : nil)
+        if legacyRemovalIncomplete {
+            Self.logger.warning("Not importing unknown server downloads: removing earlier versions' downloads did not finish")
+        } else {
+            let unknownRows = Self.partitionUnknownRows(
+                rows.filter { file.records[$0.id] == nil },
+                legacyRowsPending: file.legacyRowsPending == true
+            )
+            for row in unknownRows.imported {
+                file.records[row.id] = makeRecord(from: row, type: row.episodeId != nil ? "episode" : nil)
+            }
+            if !unknownRows.legacy.isEmpty {
+                Self.logger.notice("Deleting \(unknownRows.legacy.count, privacy: .public) server downloads registered by an earlier version")
+                file.pendingServerDeletes = (file.pendingServerDeletes ?? []).union(unknownRows.legacy.map(\.id))
+            }
+            file.legacyRowsPending = nil
         }
         persist()
-        deleteLegacyServerRows(ids: unknownRows.legacy.map(\.id))
+        sendPendingServerDeletes()
 
         await reconnectActiveTasks()
         if triggerPipeline {
@@ -1319,47 +1339,48 @@ final class DownloadManager {
     }
 
     /// Splits server rows the store doesn't know into rows to import and rows
-    /// an earlier version registered. The store only holds downloads made
-    /// after the removal of earlier versions' storage, so an unknown row
-    /// created before that removal is one of the removed downloads: importing
-    /// it would bring it back as a download nobody asked for. A row without a
-    /// creation date is imported, since nothing shows it is old.
+    /// an earlier version registered. A store the legacy removal wrote
+    /// (`legacyRowsPending`) has not seen a complete registry read yet. A
+    /// download this version registers is recorded when its create answers,
+    /// so every unknown row that first read lists is one of the removed
+    /// downloads, and importing it would bring it back as a download nobody
+    /// asked for.
+    /// After that read, and in every scope the earlier version never wrote,
+    /// unknown rows are imported. No server timestamp is compared with the
+    /// device clock.
     nonisolated static func partitionUnknownRows(
         _ rows: [ServerDownloadRow],
-        legacyRemovalDate: Date?
+        legacyRowsPending: Bool
     ) -> (imported: [ServerDownloadRow], legacy: [ServerDownloadRow]) {
-        guard let legacyRemovalDate else { return (rows, []) }
-        var imported: [ServerDownloadRow] = []
-        var legacy: [ServerDownloadRow] = []
-        for row in rows {
-            if let createdAt = row.createdAt, createdAt < legacyRemovalDate {
-                legacy.append(row)
-            } else {
-                imported.append(row)
-            }
-        }
-        return (imported, legacy)
+        legacyRowsPending ? ([], rows) : (rows, [])
     }
 
-    /// Delete the server rows of downloads the removal deleted locally, so
-    /// they stop counting against the device's quota. A failed DELETE is
-    /// retried by the next reconcile, which still sees the row as old; a 404
-    /// means it is already gone.
-    private func deleteLegacyServerRows(ids: [String]) {
-        let pending = ids.filter { !legacyRowDeletes.contains($0) }
+    /// Sends the DELETE of every row in `pendingServerDeletes`, so the
+    /// removed downloads stop counting against the device's quota. The ids
+    /// persist first; a failed DELETE is retried by the next reconcile, and a
+    /// row a complete read no longer lists is dropped from the set there.
+    private func sendPendingServerDeletes() {
+        let pending = (file.pendingServerDeletes ?? []).subtracting(serverDeletesInFlight).sorted()
         guard !pending.isEmpty else { return }
-        legacyRowDeletes.formUnion(pending)
+        serverDeletesInFlight.formUnion(pending)
         let serverId = scopeServerId
         let profileId = scopeProfileId
-        Self.logger.notice("Deleting \(pending.count, privacy: .public) server downloads registered by an earlier version")
         Task { @MainActor [weak self] in
             for id in pending {
                 // The request goes to whichever account is active; stop if
                 // that is no longer the one that listed these rows.
                 guard let self, self.scopeServerId == serverId, self.scopeProfileId == profileId else { break }
-                try? await SiloAPI.shared.deleteDownloadRow(id: id)
+                do {
+                    try await SiloAPI.shared.deleteDownloadRow(id: id)
+                } catch {
+                    continue
+                }
+                guard self.scopeServerId == serverId, self.scopeProfileId == profileId else { break }
+                self.file.pendingServerDeletes?.remove(id)
+                if self.file.pendingServerDeletes?.isEmpty == true { self.file.pendingServerDeletes = nil }
+                self.persist()
             }
-            self?.legacyRowDeletes.subtract(pending)
+            self?.serverDeletesInFlight.subtract(pending)
         }
     }
 

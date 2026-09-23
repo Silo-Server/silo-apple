@@ -753,6 +753,14 @@ struct DownloadStoreFile: Codable, Sendable {
     var progressQueue: [QueuedProgress]
     var progressCursor: String?
     var localProgress: [String: LocalProgressEntry]
+    /// Registry entries this device deleted locally whose server DELETE has
+    /// not been confirmed. Reconcile never imports them and retries the
+    /// DELETE.
+    var pendingServerDeletes: Set<String>? = nil
+    /// Set when this store replaced one an earlier version wrote (see
+    /// `LegacyDownloadStorage`). The scope's first complete registry read
+    /// deletes every row the store doesn't know instead of importing it.
+    var legacyRowsPending: Bool? = nil
 
     static let currentVersion = 1
 

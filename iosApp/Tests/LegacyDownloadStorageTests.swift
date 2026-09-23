@@ -40,11 +40,15 @@ final class LegacyDownloadStorageTests: XCTestCase {
         let store = makeStore()
         let initialState = await store.legacyStorageState()
         XCTAssertEqual(initialState, .removalNeeded)
-        let hadDownloads = await store.removeLegacyStorage()
-        XCTAssertTrue(hadDownloads)
+        let removal = await store.removeLegacyStorage()
+        XCTAssertEqual(removal, LegacyDownloadStorage.Removal(hadDownloads: true, completed: true))
 
-        XCTAssertEqual(try contents(of: root), [LegacyDownloadStorage.markerFileName])
+        XCTAssertEqual(try contents(of: root), [LegacyDownloadStorage.markerFileName, "server"])
+        XCTAssertEqual(try contents(of: scope), [DownloadFilePaths.storeFileName], "only a fresh store is left")
         XCTAssertEqual(try contents(of: sandbox), ["SiloDownloads"], "the moved-aside tree is deleted")
+        let carried = await store.load(serverId: "server", profileId: "profile")
+        XCTAssertTrue(carried.records.isEmpty)
+        XCTAssertEqual(carried.legacyRowsPending, true, "the scope's first registry read deletes the old rows")
         let stateAfterRemoval = await store.legacyStorageState()
         XCTAssertEqual(stateAfterRemoval, .removed(noticePending: true))
 
@@ -67,7 +71,7 @@ final class LegacyDownloadStorageTests: XCTestCase {
         try FileManager.default.createDirectory(at: emptyScope, withIntermediateDirectories: true)
 
         let legacy = LegacyDownloadStorage(root: root)
-        XCTAssertFalse(try legacy.remove())
+        XCTAssertEqual(legacy.remove(), LegacyDownloadStorage.Removal(hadDownloads: false, completed: true))
         XCTAssertEqual(legacy.state(), .removed(noticePending: false))
     }
 
@@ -75,8 +79,101 @@ final class LegacyDownloadStorageTests: XCTestCase {
         try FileManager.default.removeItem(at: root)
         let legacy = LegacyDownloadStorage(root: root)
         XCTAssertEqual(legacy.state(), .removalNeeded)
-        XCTAssertFalse(try legacy.remove())
+        XCTAssertEqual(legacy.remove(), LegacyDownloadStorage.Removal(hadDownloads: false, completed: true))
         XCTAssertEqual(legacy.state(), .removed(noticePending: false))
+    }
+
+    func testMissingMarkerWithNothingOnDiskFlagsNoScope() async throws {
+        // A reinstall or a restore to a new device: the marker went with the
+        // downloads root, but the device id (and the rows and monitors this
+        // version registered under it) survived. Nothing on disk is an
+        // earlier version's, so nothing on the server may be judged legacy.
+        let store = makeStore()
+        let removal = await store.removeLegacyStorage()
+        XCTAssertEqual(removal, LegacyDownloadStorage.Removal(hadDownloads: false, completed: true))
+        XCTAssertEqual(try contents(of: root), [LegacyDownloadStorage.markerFileName])
+        let loaded = await store.load(serverId: "server", profileId: "profile")
+        XCTAssertNil(loaded.legacyRowsPending)
+    }
+
+    // MARK: - Queued offline progress
+
+    func testQueuedProgressSurvivesTheRemoval() async throws {
+        // A main-era store: no `state` on queue entries, dates as the default
+        // JSONEncoder wrote them (seconds since 2001-01-01).
+        let scope = try writeScope(server: "server", profile: "profile", storeJSON: """
+        {"version":1,"records":{"d1":{}},"subscriptions":[],"localProgress":{},"progressQueue":[
+          {"id":"6F1C0E1A-2B0F-4C38-9D4E-2C0B7B9A0001","mediaItemId":"episode-1","position":120.5,"duration":1500,"updatedAt":780000000,"attempts":2},
+          {"id":"6F1C0E1A-2B0F-4C38-9D4E-2C0B7B9A0002","mediaItemId":"episode-1","position":900,"duration":1500,"updatedAt":780000600,"attempts":0},
+          {"id":"6F1C0E1A-2B0F-4C38-9D4E-2C0B7B9A0003","mediaItemId":"movie-9","position":42,"duration":6000,"updatedAt":780000300,"attempts":0},
+          {"id":"not-a-uuid","mediaItemId":"movie-10","position":1,"duration":2,"updatedAt":780000000}
+        ]}
+        """)
+        try FileManager.default.createDirectory(
+            at: scope.appendingPathComponent("d1", isDirectory: true), withIntermediateDirectories: true
+        )
+        let store = makeStore()
+
+        let removal = await store.removeLegacyStorage()
+        XCTAssertTrue(removal.completed)
+
+        let loaded = await store.load(serverId: "server", profileId: "profile")
+        XCTAssertTrue(loaded.records.isEmpty)
+        let queue = loaded.progressQueue.sorted { $0.mediaItemId < $1.mediaItemId }
+        XCTAssertEqual(queue.map(\.mediaItemId), ["episode-1", "movie-9"], "newest entry per item; the unreadable one is dropped")
+        XCTAssertEqual(queue.map(\.position), [900, 42])
+        XCTAssertEqual(queue.first?.id.uuidString, "6F1C0E1A-2B0F-4C38-9D4E-2C0B7B9A0002")
+        XCTAssertEqual(queue.first?.updatedAt, Date(timeIntervalSinceReferenceDate: 780_000_600))
+        XCTAssertEqual(queue.map(\.attempts), [0, 0])
+    }
+
+    func testQueuedProgressWithoutDownloadsSurvivesWithoutANotice() async throws {
+        _ = try writeScope(server: "server", profile: "profile", storeJSON: """
+        {"records":{},"progressQueue":[
+          {"id":"6F1C0E1A-2B0F-4C38-9D4E-2C0B7B9A0004","mediaItemId":"movie-1","position":30,"duration":600,"updatedAt":780000000,"attempts":0}
+        ]}
+        """)
+        let store = makeStore()
+
+        let removal = await store.removeLegacyStorage()
+        XCTAssertEqual(removal, LegacyDownloadStorage.Removal(hadDownloads: false, completed: true))
+        let state = await store.legacyStorageState()
+        XCTAssertEqual(state, .removed(noticePending: false))
+        let loaded = await store.load(serverId: "server", profileId: "profile")
+        XCTAssertEqual(loaded.progressQueue.map(\.mediaItemId), ["movie-1"])
+    }
+
+    func testUndecodableStoreStillGivesUpItsQueue() async throws {
+        // `records` in a shape this version can't decode must not block the
+        // harvest.
+        _ = try writeScope(server: "server", profile: "profile", storeJSON: """
+        {"version":"x","records":[1,2],"progressQueue":[
+          {"id":"6F1C0E1A-2B0F-4C38-9D4E-2C0B7B9A0005","mediaItemId":"movie-2","position":5,"duration":60,"updatedAt":780000000}
+        ]}
+        """)
+        let store = makeStore()
+        _ = await store.removeLegacyStorage()
+        let loaded = await store.load(serverId: "server", profileId: "profile")
+        XCTAssertEqual(loaded.progressQueue.map(\.mediaItemId), ["movie-2"])
+    }
+
+    func testFailedMarkerWriteStillFreesTheOldTreeAndReportsIncomplete() async throws {
+        // An earlier-version scope directory named like the marker makes the
+        // carried store occupy the marker path, so the marker write fails
+        // after the move, the way a full disk would.
+        _ = try writeScope(server: LegacyDownloadStorage.markerFileName, profile: "profile", storeJSON: """
+        {"records":{"d1":{}},"progressQueue":[
+          {"id":"6F1C0E1A-2B0F-4C38-9D4E-2C0B7B9A0006","mediaItemId":"movie-3","position":5,"duration":60,"updatedAt":780000000}
+        ]}
+        """)
+        let store = makeStore()
+
+        let removal = await store.removeLegacyStorage()
+
+        XCTAssertEqual(removal, LegacyDownloadStorage.Removal(hadDownloads: true, completed: false))
+        XCTAssertEqual(try contents(of: sandbox), ["SiloDownloads"], "the moved-aside tree is deleted anyway")
+        let loaded = await store.load(serverId: LegacyDownloadStorage.markerFileName, profileId: "profile")
+        XCTAssertEqual(loaded.progressQueue.map(\.mediaItemId), ["movie-3"], "the queue survives in the new root")
     }
 
     func testInterruptedRemovalKeepsTheNoticeAndFinishesTheDelete() throws {
@@ -88,7 +185,7 @@ final class LegacyDownloadStorageTests: XCTestCase {
         try FileManager.default.removeItem(at: root)
 
         let legacy = LegacyDownloadStorage(root: root)
-        XCTAssertTrue(try legacy.remove())
+        XCTAssertEqual(legacy.remove(), LegacyDownloadStorage.Removal(hadDownloads: true, completed: true))
         XCTAssertEqual(try contents(of: sandbox), ["SiloDownloads"])
         XCTAssertEqual(legacy.state(), .removed(noticePending: true))
     }
@@ -96,8 +193,8 @@ final class LegacyDownloadStorageTests: XCTestCase {
     func testAcknowledgedNoticeStaysDismissed() async throws {
         _ = try writeScope(server: "server", profile: "profile", storeJSON: #"{"records":{"d1":{}}}"#)
         let store = makeStore()
-        let hadDownloads = await store.removeLegacyStorage()
-        XCTAssertTrue(hadDownloads)
+        let removal = await store.removeLegacyStorage()
+        XCTAssertTrue(removal.hadDownloads)
 
         await store.acknowledgeLegacyRemovalNotice()
 
@@ -106,46 +203,35 @@ final class LegacyDownloadStorageTests: XCTestCase {
         XCTAssertEqual(state, .removed(noticePending: false))
     }
 
-    func testRemovalDateSurvivesTheNoticeAcknowledgement() throws {
-        _ = try writeScope(server: "server", profile: "profile", storeJSON: #"{"records":{"d1":{}}}"#)
-        let removedAt = Date(timeIntervalSince1970: 1_790_000_000)
-        let legacy = LegacyDownloadStorage(root: root)
-        XCTAssertNil(legacy.removalDate())
-
-        XCTAssertTrue(try legacy.remove(at: removedAt))
-        legacy.acknowledgeNotice()
-
-        XCTAssertEqual(legacy.state(), .removed(noticePending: false))
-        XCTAssertEqual(legacy.removalDate(), removedAt)
-    }
-
     // MARK: - Server rows
 
-    func testReconcileDropsServerRowsRegisteredBeforeTheRemoval() throws {
+    func testFirstReadOfACarriedScopeDropsEveryUnknownRow() throws {
         // The server keeps listing what earlier versions registered for this
-        // device, in every state those versions left behind.
+        // device, in every state those versions left behind. Timestamps don't
+        // matter: a device clock ahead of or behind the server's must not
+        // change the answer.
         let rows = try decodeRows("""
         [
           {"id": "old-completed", "content_id": "m1", "status": "completed", "created_at": "2026-09-01T10:00:00Z"},
           {"id": "old-downloading", "content_id": "m2", "status": "downloading", "created_at": "2026-09-01T10:00:00Z"},
-          {"id": "old-ready", "content_id": "m3", "status": "ready", "created_at": "2026-09-01T10:00:00Z"},
-          {"id": "old-preparing", "content_id": "m4", "status": "preparing", "created_at": "2026-09-01T10:00:00Z"},
-          {"id": "new-ready", "content_id": "m5", "status": "ready", "created_at": "2026-09-23T10:00:01Z"}
+          {"id": "old-ready", "content_id": "m3", "status": "ready", "created_at": "2099-01-01T10:00:00Z"},
+          {"id": "old-preparing", "content_id": "m4", "status": "preparing"}
         ]
         """)
-        let removedAt = ISO8601DateFormatter().date(from: "2026-09-23T10:00:00Z")!
 
-        let split = DownloadManager.partitionUnknownRows(rows, legacyRemovalDate: removedAt)
+        let split = DownloadManager.partitionUnknownRows(rows, legacyRowsPending: true)
 
         XCTAssertEqual(split.legacy.map(\.id), ["old-completed", "old-downloading", "old-ready", "old-preparing"])
-        XCTAssertEqual(split.imported.map(\.id), ["new-ready"])
+        XCTAssertTrue(split.imported.isEmpty)
     }
 
-    func testReconcileImportsEveryRowWhenNoRemovalDateIsKnown() throws {
+    func testLaterReadsImportEveryUnknownRow() throws {
+        // After the first complete read, or in a scope no earlier version
+        // wrote (a reinstall), a row created long ago is still this version's.
         let rows = try decodeRows("""
-        [{"id": "d1", "content_id": "m1", "status": "ready", "created_at": "2026-09-01T10:00:00Z"}]
+        [{"id": "d1", "content_id": "m1", "status": "ready", "created_at": "2020-09-01T10:00:00Z"}]
         """)
-        let split = DownloadManager.partitionUnknownRows(rows, legacyRemovalDate: nil)
+        let split = DownloadManager.partitionUnknownRows(rows, legacyRowsPending: false)
         XCTAssertEqual(split.imported.map(\.id), ["d1"])
         XCTAssertTrue(split.legacy.isEmpty)
     }

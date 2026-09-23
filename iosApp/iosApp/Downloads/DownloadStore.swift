@@ -95,21 +95,10 @@ actor DownloadStore {
     }
 
     /// Delete the downloads earlier versions saved and record that this ran.
-    /// Returns whether the user should be told.
-    func removeLegacyStorage() -> Bool {
-        do {
-            let hadDownloads = try LegacyDownloadStorage(root: rootDirectory()).remove()
-            Self.logger.notice("Removed download storage saved by an earlier version (had downloads: \(hadDownloads, privacy: .public))")
-            return hadDownloads
-        } catch {
-            Self.logger.error("Legacy downloads removal failed: \(String(describing: error), privacy: .public)")
-            return false
-        }
-    }
-
-    /// When the removal ran; see `LegacyDownloadStorage.removalDate()`.
-    func legacyRemovalDate() -> Date? {
-        LegacyDownloadStorage(root: rootDirectory()).removalDate()
+    func removeLegacyStorage() -> LegacyDownloadStorage.Removal {
+        let removal = LegacyDownloadStorage(root: rootDirectory()).remove()
+        Self.logger.notice("Removed download storage saved by an earlier version (had downloads: \(removal.hadDownloads, privacy: .public), completed: \(removal.completed, privacy: .public))")
+        return removal
     }
 
     func acknowledgeLegacyRemovalNotice() {
