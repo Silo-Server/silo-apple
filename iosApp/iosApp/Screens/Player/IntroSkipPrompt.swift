@@ -295,6 +295,14 @@ final class IntroSkipPrompt {
         return true
     }
 
+    /// Takes the pill down without deciding anything, for when playback stops
+    /// underneath it: a failed reload or a terminal error. An `ask` intro is
+    /// offered again if playback later comes back into it; `always` resolved
+    /// its intro when it skipped, so its undo does not return.
+    func withdraw() {
+        clearPrompt()
+    }
+
     /// Forgets every decision, for when playback moves to different content.
     func reset() {
         resolved.removeAll()

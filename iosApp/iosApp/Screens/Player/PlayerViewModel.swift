@@ -4441,6 +4441,9 @@ class PlayerViewModel {
             disposeAetherPlayback()
             isLoading = false
             isPlaying = false
+            // The reload froze the pill's timer; with no playback left under
+            // it, it would sit over the dead player indefinitely.
+            introSkipPrompt.withdraw()
             showNotice(
                 title: "Playback recovery failed",
                 message: message,
@@ -4484,6 +4487,9 @@ class PlayerViewModel {
         disposeAetherPlayback()
         activePlaybackSessionId = nil
         activePreparedProtocolV3 = nil
+        // The error view hides the pill, but Menu, Escape and Return still
+        // reach it; a reload's stall froze its timer, so it would never leave.
+        introSkipPrompt.withdraw()
         error = message
         isLoading = false
         isPlaying = false

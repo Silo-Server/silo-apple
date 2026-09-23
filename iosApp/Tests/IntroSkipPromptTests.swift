@@ -323,6 +323,51 @@ final class IntroSkipPromptTests: XCTestCase {
         XCTAssertEqual(prompt.select(), intro.start, "the undo still knows the intro it skipped")
     }
 
+    // MARK: - Failed reloads
+
+    func testAlwaysAFailedReloadWithdrawsTheFrozenUndoWithoutSkippingAgain() {
+        start(.always)
+        move(to: 35)
+        // The reload drops the markers and stalls past the grace window,
+        // which freezes the undo's timer, then fails.
+        inputs.range = nil
+        inputs.key = nil
+        set(.stalled)
+        clock.advance(by: 2)
+        XCTAssertEqual(kind, .undo)
+        XCTAssertNil(prompt.pill?.deadline)
+
+        prompt.withdraw()
+        XCTAssertNil(prompt.pill)
+        XCTAssertFalse(prompt.dismiss(), "Back after the failure must reach the player")
+        XCTAssertNil(prompt.select())
+
+        // A retry that lands short of the end is still not a fresh intro.
+        inputs.range = intro
+        inputs.key = key
+        inputs.position = 88.5
+        set(.playing)
+        XCTAssertEqual(automaticSeeks, [intro.end])
+        XCTAssertNil(prompt.pill)
+    }
+
+    func testAskAWithdrawnOfferReturnsWhenPlaybackComesBackIntoTheIntro() {
+        start(.ask)
+        move(to: 35)
+        prompt.withdraw()
+        XCTAssertNil(prompt.pill)
+
+        // Nothing is offered while playback is down.
+        set(.paused)
+        XCTAssertNil(prompt.pill)
+
+        // Withdrawing decided nothing, so a retry back inside the intro
+        // offers it again with a full timer.
+        set(.playing)
+        XCTAssertEqual(kind, .skip)
+        XCTAssertEqual(remaining(), 5)
+    }
+
     // MARK: - Mode changes and reset
 
     func testAskToNeverMidIntroTakesThePillDown() {
