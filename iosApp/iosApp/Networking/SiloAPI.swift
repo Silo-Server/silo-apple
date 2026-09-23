@@ -43,10 +43,11 @@ actor SiloAPI {
     /// Extra query entries asking the server to bake a larger image
     /// variant into every image URL in the response.
     ///
-    /// One place decides this for every image-bearing endpoint, so call
-    /// sites just merge it in. Empty off tvOS, and empty until (or
-    /// unless) the capability probe in ``ImageSizeCapability`` lands —
-    /// which makes iOS and macOS requests byte-identical to before.
+    /// One place decides this for every image-bearing endpoint; call sites
+    /// pass `imageSizeQuery["image_size"]` to the `APIv2Client` method.
+    /// Empty off tvOS, and empty until (or unless) the capability probe in
+    /// ``ImageSizeCapability`` lands — which makes iOS and macOS requests
+    /// byte-identical to before.
     private var imageSizeQuery: [String: String] {
         get async {
             // Gate only the artwork request, never launch/profile navigation.
@@ -55,12 +56,6 @@ actor SiloAPI {
             await ImageSizeCapability.shared.refresh(retryFailed: false)
             return ImageSizeCapability.shared.requestQuery
         }
-    }
-
-    /// Merge ``imageSizeQuery`` into a caller-built query. Caller-supplied
-    /// values win, so an explicit size is never overwritten.
-    private func withImageSize(_ query: [String: String]) async -> [String: String] {
-        query.merging(await imageSizeQuery) { caller, _ in caller }
     }
 
     /// `GET /api/v2/images/capabilities`. Throws `HTTPError.http(404, _)`
