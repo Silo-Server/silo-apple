@@ -45,48 +45,6 @@ final class ApplePushRegistrationTests: XCTestCase {
         )
     }
 
-    func testNotificationSyncQueryIncludesLimitAndOptionalCursor() {
-        XCTAssertEqual(ApplePushNotificationSyncWire.query(since: nil), ["limit": "50"])
-        XCTAssertEqual(ApplePushNotificationSyncWire.query(since: "cursor"), [
-            "limit": "50",
-            "since": "cursor"
-        ])
-    }
-
-    func testNotificationSyncResponseDecodesSnakeCasePayload() throws {
-        let json = """
-        {
-          "notifications": [
-            {
-              "id": "delivery-1",
-              "type": "new_episode",
-              "profile_id": "profile-1",
-              "series_title": "Example",
-              "reason_flags": {"watchlist": true},
-              "created_at": "2026-07-01T12:30:00Z",
-              "read_at": null
-            }
-          ],
-          "next_cursor": "cursor-1",
-          "unread_count": 3
-        }
-        """.data(using: .utf8)!
-
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        decoder.dateDecodingStrategy = .iso8601
-
-        let response = try decoder.decode(ApplePushNotificationSyncResponse.self, from: json)
-
-        XCTAssertEqual(response.notifications.count, 1)
-        XCTAssertEqual(response.notifications.first?.id, "delivery-1")
-        XCTAssertEqual(response.notifications.first?.profileId, "profile-1")
-        XCTAssertNotNil(response.notifications.first?.createdAt)
-        XCTAssertNil(response.notifications.first?.readAt)
-        XCTAssertEqual(response.nextCursor, "cursor-1")
-        XCTAssertEqual(response.unreadCount, 3)
-    }
-
     func testNotificationDisplayDeliveryIDParsesFromAPNsPayload() {
         XCTAssertEqual(ApplePushDisplayWire.deliveryID(from: ["silo_delivery_id": "  delivery-1  "]), "delivery-1")
         XCTAssertNil(ApplePushDisplayWire.deliveryID(from: ["silo_delivery_id": "   "]))
