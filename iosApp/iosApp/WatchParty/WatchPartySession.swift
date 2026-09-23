@@ -392,6 +392,7 @@ final class WatchPartySession {
                 self.commandTask = nil
                 self.applyingCommand = nil
                 self.commands = WatchPartyCommandState()
+                var openedAt: Date?
                 do {
                     let receipt = self.state.receipt
                     let response = try await self.api.watchPartyRoom(id: room.roomId, token: self.roomToken, auth: auth)
@@ -406,10 +407,10 @@ final class WatchPartySession {
                         guard await self.validateIdentity(), !Task.isCancelled, owner == self.engagement, socketID == self.connectionID else { return }
                         switch event {
                         case .opened:
+                            openedAt = Date()
                             self.connection = .connected
                             self.trace("socket connected")
                             self.errorMessage = nil
-                            failures = 0
                             self.startReporting(owner: owner, socketID: socketID)
                             self.refreshSuggestions()
                         case .message(let message): self.receive(message)
@@ -435,6 +436,15 @@ final class WatchPartySession {
                 self.reportTask?.cancel()
                 self.commandTask?.cancel()
                 self.attachmentConfirmed = false
+                // The server ends every room socket at its connection deadline
+                // (five minutes, or sooner when the bearer expires). A socket
+                // that stayed up reconnects at once, without backing off or
+                // showing the party as reconnecting. One that closes soon after
+                // opening keeps backing off.
+                if let openedAt, Date().timeIntervalSince(openedAt) >= 30 {
+                    failures = 0
+                    continue
+                }
                 failures += 1
                 self.connection = .reconnecting
                 do { try await Task.sleep(for: .seconds(min(15, pow(2, Double(min(failures - 1, 4)))))) }
