@@ -106,7 +106,7 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
 
     func testHeaderAuthenticatedStreamResolutionStaysOnAPIMediaOrigin() throws {
         let request = try XCTUnwrap(StreamRequest.resolve(
-            rawURL: "/playback/transcode/session-1/master.m3u8?seek=12",
+            rawURL: "/api/v2/playback/transcode/session-1/master.m3u8?seek=12",
             serverURL: "https://dev.example.test/",
             additionalHeaders: [
                 "authorization": "Bearer stale-wire-token",
@@ -118,7 +118,7 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
 
         XCTAssertEqual(
             request.url.absoluteString,
-            "https://dev.example.test/api/v1/playback/transcode/session-1/master.m3u8?seek=12"
+            "https://dev.example.test/api/v2/playback/transcode/session-1/master.m3u8?seek=12"
         )
         XCTAssertEqual(request.headers["Authorization"], "Bearer current-token")
         XCTAssertNil(request.headers["authorization"])
@@ -209,21 +209,22 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
 
     func testHeaderAuthenticatedStreamRejectsAbsoluteAndNonMediaRoutes() {
         for raw in [
-            "https://dev.example.test/api/v1/stream/session-1",
+            "https://dev.example.test/api/v2/stream/session-1",
             "https://cdn.example.test/stream/session-1",
             "//cdn.example.test/stream/session-1",
             "/admin/settings",
-            "/api/v1/stream/session-1",
-            "/stream/../admin/settings",
-            "/stream/%2e%2e/admin/settings",
-            "/stream/session-1?st=legacy-secret",
-            "/stream/session-1?token=legacy-secret",
-            "/stream/session-1?access_token=legacy-secret",
-            "/stream/session-1?credential=legacy-secret",
-            "/stream/session-1?seek=not-a-number",
-            "/stream/session-1?seek=-1",
-            "/stream/session-1?seek=12&seek=13",
-            "/stream/session-1#token=legacy-secret",
+            "/stream/session-1",
+            "/playback/transcode/session-1/master.m3u8",
+            "/api/v2/stream/../admin/settings",
+            "/api/v2/stream/%2e%2e/admin/settings",
+            "/api/v2/stream/session-1?st=legacy-secret",
+            "/api/v2/stream/session-1?token=legacy-secret",
+            "/api/v2/stream/session-1?access_token=legacy-secret",
+            "/api/v2/stream/session-1?credential=legacy-secret",
+            "/api/v2/stream/session-1?seek=not-a-number",
+            "/api/v2/stream/session-1?seek=-1",
+            "/api/v2/stream/session-1?seek=12&seek=13",
+            "/api/v2/stream/session-1#token=legacy-secret",
             "file:///private/movie.mkv",
         ] {
             XCTAssertNil(StreamRequest.resolve(
@@ -238,12 +239,12 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
 
     func testHeaderAuthenticatedStreamAcceptsSubtitleArtifactIdentifiers() throws {
         for raw in [
-            "/stream/session-1/subtitles/2.vtt?file_id=631745",
-            "/stream/session-1/subtitles/2.vtt?file_id=631745&downloaded_subtitle_id=8",
-            "/stream/session-1/subtitles/2/fonts?file_id=631745",
-            "/stream/session-1/subtitles/2.vtt?file_id=631745&embedded_stream_index=0",
-            "/stream/session-1/subtitles/2/fonts?file_id=631745&embedded_stream_index=3",
-            "/stream/session-1/subtitles/2.srt?file_id=631745&external_subtitle_key=" + String(repeating: "a1", count: 32),
+            "/api/v2/stream/session-1/subtitles/2.vtt?file_id=631745",
+            "/api/v2/stream/session-1/subtitles/2.vtt?file_id=631745&downloaded_subtitle_id=8",
+            "/api/v2/stream/session-1/subtitles/2/fonts?file_id=631745",
+            "/api/v2/stream/session-1/subtitles/2.vtt?file_id=631745&embedded_stream_index=0",
+            "/api/v2/stream/session-1/subtitles/2/fonts?file_id=631745&embedded_stream_index=3",
+            "/api/v2/stream/session-1/subtitles/2.srt?file_id=631745&external_subtitle_key=" + String(repeating: "a1", count: 32),
         ] {
             let request = try XCTUnwrap(StreamRequest.resolve(
                 rawURL: raw,
@@ -254,7 +255,7 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
             ), "unexpectedly rejected \(raw)")
             XCTAssertEqual(
                 request.url.absoluteString,
-                "https://dev.example.test/api/v1" + raw
+                "https://dev.example.test" + raw
             )
             XCTAssertEqual(request.headers["Authorization"], "Bearer current-token")
         }
@@ -263,31 +264,31 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
     func testHeaderAuthenticatedStreamRejectsSubtitleIdentifiersOnMediaAndMalformedValues() {
         for raw in [
             // Media routes keep the seek-only rule.
-            "/stream/session-1?file_id=631745",
-            "/stream/session-1/master.m3u8?file_id=631745",
-            "/playback/transcode/session-1/master.m3u8?downloaded_subtitle_id=8",
-            "/stream/session-1/master.m3u8?embedded_stream_index=0",
-            "/stream/session-1?external_subtitle_key=" + String(repeating: "a1", count: 32),
-            "/stream/session-1/subtitles/2.vtt?embedded_stream_index=-1",
-            "/stream/session-1/subtitles/2.vtt?embedded_stream_index=1.5",
-            "/stream/session-1/subtitles/2.vtt?embedded_stream_index=",
-            "/stream/session-1/subtitles/2.vtt?embedded_stream_index=999999999999999999999999",
-            "/stream/session-1/subtitles/2.vtt?embedded_stream_index=0&embedded_stream_index=1",
-            "/stream/session-1/subtitles/2.vtt?embedded_stream_index=0&downloaded_subtitle_id=8",
-            "/stream/session-1/subtitles/2.vtt?external_subtitle_key=" + String(repeating: "a", count: 63),
-            "/stream/session-1/subtitles/2.vtt?external_subtitle_key=" + String(repeating: "g", count: 64),
-            "/stream/session-1/subtitles/2.vtt?external_subtitle_key=" + String(repeating: "a", count: 64) + "&embedded_stream_index=0",
+            "/api/v2/stream/session-1?file_id=631745",
+            "/api/v2/stream/session-1/master.m3u8?file_id=631745",
+            "/api/v2/playback/transcode/session-1/master.m3u8?downloaded_subtitle_id=8",
+            "/api/v2/stream/session-1/master.m3u8?embedded_stream_index=0",
+            "/api/v2/stream/session-1?external_subtitle_key=" + String(repeating: "a1", count: 32),
+            "/api/v2/stream/session-1/subtitles/2.vtt?embedded_stream_index=-1",
+            "/api/v2/stream/session-1/subtitles/2.vtt?embedded_stream_index=1.5",
+            "/api/v2/stream/session-1/subtitles/2.vtt?embedded_stream_index=",
+            "/api/v2/stream/session-1/subtitles/2.vtt?embedded_stream_index=999999999999999999999999",
+            "/api/v2/stream/session-1/subtitles/2.vtt?embedded_stream_index=0&embedded_stream_index=1",
+            "/api/v2/stream/session-1/subtitles/2.vtt?embedded_stream_index=0&downloaded_subtitle_id=8",
+            "/api/v2/stream/session-1/subtitles/2.vtt?external_subtitle_key=" + String(repeating: "a", count: 63),
+            "/api/v2/stream/session-1/subtitles/2.vtt?external_subtitle_key=" + String(repeating: "g", count: 64),
+            "/api/v2/stream/session-1/subtitles/2.vtt?external_subtitle_key=" + String(repeating: "a", count: 64) + "&embedded_stream_index=0",
             // Unknown names stay rejected on the subtitle artifact family.
-            "/stream/session-1/subtitles/2.vtt?st=legacy-secret",
-            "/stream/session-1/subtitles/2.vtt?file_id=631745&token=legacy-secret",
+            "/api/v2/stream/session-1/subtitles/2.vtt?st=legacy-secret",
+            "/api/v2/stream/session-1/subtitles/2.vtt?file_id=631745&token=legacy-secret",
             // Non-negative integers only, and no duplicates.
-            "/stream/session-1/subtitles/2.vtt?file_id=-1",
-            "/stream/session-1/subtitles/2.vtt?file_id=abc",
-            "/stream/session-1/subtitles/2.vtt?file_id=1.5",
-            "/stream/session-1/subtitles/2.vtt?file_id=",
-            "/stream/session-1/subtitles/2.vtt?downloaded_subtitle_id=-8",
-            "/stream/session-1/subtitles/2.vtt?file_id=1&file_id=2",
-            "/stream/session-1/subtitles/2.vtt?file_id=1#token=legacy-secret",
+            "/api/v2/stream/session-1/subtitles/2.vtt?file_id=-1",
+            "/api/v2/stream/session-1/subtitles/2.vtt?file_id=abc",
+            "/api/v2/stream/session-1/subtitles/2.vtt?file_id=1.5",
+            "/api/v2/stream/session-1/subtitles/2.vtt?file_id=",
+            "/api/v2/stream/session-1/subtitles/2.vtt?downloaded_subtitle_id=-8",
+            "/api/v2/stream/session-1/subtitles/2.vtt?file_id=1&file_id=2",
+            "/api/v2/stream/session-1/subtitles/2.vtt?file_id=1#token=legacy-secret",
         ] {
             XCTAssertNil(StreamRequest.resolve(
                 rawURL: raw,
@@ -305,10 +306,10 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
 
     func testAuthorizedOriginsStillAcceptRelativeAPIMediaURLs() throws {
         for raw in [
-            "/stream/v3/session-1",
-            "/stream/v3/session-1/master.m3u8?seek=12",
-            "/playback/transcode/session-1/master.m3u8",
-            "/stream/session-1/subtitles/2.vtt?file_id=631745",
+            "/api/v2/stream/v3/session-1",
+            "/api/v2/stream/v3/session-1/master.m3u8?seek=12",
+            "/api/v2/playback/transcode/session-1/master.m3u8",
+            "/api/v2/stream/session-1/subtitles/2.vtt?file_id=631745",
         ] {
             let request = try XCTUnwrap(StreamRequest.resolve(
                 rawURL: raw,
@@ -318,7 +319,7 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
                 requiresHeaderAuthenticatedMedia: true,
                 authorizedMediaOriginSessionId: "session-1"
             ), "unexpectedly rejected \(raw)")
-            XCTAssertEqual(request.url.absoluteString, "https://dev.example.test/api/v1" + raw)
+            XCTAssertEqual(request.url.absoluteString, "https://dev.example.test" + raw)
             XCTAssertEqual(request.headers["Authorization"], "Bearer current-token")
         }
     }
@@ -339,7 +340,7 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
                 requiresHeaderAuthenticatedMedia: true,
                 authorizedMediaOriginSessionId: "session-1"
             ), "unexpectedly rejected \(raw)")
-            // Used exactly as handed: no `/api/v1` prefix, no rewriting.
+            // Used exactly as handed: no API prefix, no rewriting.
             XCTAssertEqual(request.url.absoluteString, raw)
             XCTAssertEqual(request.headers["Authorization"], "Bearer current-token")
             XCTAssertEqual(request.headers["X-Transport"], "preserved")
@@ -402,7 +403,7 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         for raw in [
             // Wrong route family, or the API family spelled absolutely.
             "\(Self.proxyOrigin)/stream/session-1",
-            "\(Self.proxyOrigin)/api/v1/stream/v3/session-1",
+            "\(Self.proxyOrigin)/api/v2/stream/v3/session-1",
             "\(Self.proxyOrigin)/playback/transcode/session-1/master.m3u8",
             "\(Self.proxyOrigin)/stream/v3",
             "\(Self.proxyOrigin)/stream/v3/",
@@ -485,10 +486,10 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
     func testAuthorizedOriginsDoNotRelaxTheRelativeMediaContract() {
         for raw in [
             "/admin/settings",
-            "/api/v1/stream/v3/session-1",
-            "/stream/../admin/settings",
-            "/stream/v3/session-1?st=legacy-secret",
-            "/stream/v3/session-1#token=legacy-secret",
+            "/stream/v3/session-1",
+            "/api/v2/stream/../admin/settings",
+            "/api/v2/stream/v3/session-1?st=legacy-secret",
+            "/api/v2/stream/v3/session-1#token=legacy-secret",
             "file:///private/movie.mkv",
         ] {
             XCTAssertNil(StreamRequest.resolve(
@@ -523,11 +524,7 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
     }
 
     func testV3FixtureMapsToAuthenticatedAetherLoad() throws {
-        let response = try PlaybackV3FixtureTestSupport.decode(
-            PlaybackV3DecisionResponse.self,
-            named: "decision_response",
-            bundleClass: Self.self
-        )
+        let response = try PlaybackV3FixtureTestSupport.v2Decision(bundleClass: Self.self)
         guard case .playable(let plan, let sessionID) = response.validatedForApple() else {
             return XCTFail("Expected a playable fixture")
         }
@@ -566,13 +563,7 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
     }
 
     func testServerHLSUsesAetherAuthenticatedRemoteBypass() throws {
-        let fixtureURL = try PlaybackV3FixtureTestSupport.fixtureURL(
-            named: "decision_response",
-            bundleClass: Self.self
-        )
-        var object = try XCTUnwrap(
-            JSONSerialization.jsonObject(with: Data(contentsOf: fixtureURL)) as? [String: Any]
-        )
+        var object = try PlaybackV3FixtureTestSupport.v2DecisionObject(bundleClass: Self.self)
         var planObject = try XCTUnwrap(object["playback_plan"] as? [String: Any])
         planObject["delivery"] = PlaybackProtocolV3.PlanDelivery.transcodeHLS
         var streamObject = try XCTUnwrap(planObject["stream"] as? [String: Any])
@@ -582,10 +573,7 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         streamObject["headers"] = ["Authorization": "Bearer test"]
         planObject["stream"] = streamObject
         object["playback_plan"] = planObject
-        let response = try PlaybackV3FixtureTestSupport.decoder.decode(
-            PlaybackV3DecisionResponse.self,
-            from: JSONSerialization.data(withJSONObject: object)
-        )
+        let response = try PlaybackV3FixtureTestSupport.v2Decision(object)
         guard case .playable(let plan, let sessionID) = response.validatedForApple() else {
             return XCTFail("Expected a playable HLS fixture")
         }
@@ -605,13 +593,7 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
     }
 
     func testV3CredentialReloadTranslatesCurrentSourcePositionOntoPlanTimeline() throws {
-        let fixtureURL = try PlaybackV3FixtureTestSupport.fixtureURL(
-            named: "decision_response",
-            bundleClass: Self.self
-        )
-        var object = try XCTUnwrap(
-            JSONSerialization.jsonObject(with: Data(contentsOf: fixtureURL)) as? [String: Any]
-        )
+        var object = try PlaybackV3FixtureTestSupport.v2DecisionObject(bundleClass: Self.self)
         var planObject = try XCTUnwrap(object["playback_plan"] as? [String: Any])
         var timeline = try XCTUnwrap(planObject["timeline"] as? [String: Any])
         timeline["source_start_seconds"] = 42.5
@@ -621,10 +603,7 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         planObject["timeline"] = timeline
         object["playback_plan"] = planObject
 
-        let response = try PlaybackV3FixtureTestSupport.decoder.decode(
-            PlaybackV3DecisionResponse.self,
-            from: JSONSerialization.data(withJSONObject: object)
-        )
+        let response = try PlaybackV3FixtureTestSupport.v2Decision(object)
         guard case .playable(let plan, let sessionID) = response.validatedForApple() else {
             return XCTFail("Expected a playable fixture")
         }
@@ -632,7 +611,7 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
             validating: plan,
             sessionID: sessionID,
             matchContentEnabled: false,
-            sourceURLOverride: URL(string: "https://dev.example.test/api/v1/stream/session"),
+            sourceURLOverride: URL(string: "https://dev.example.test/api/v2/stream/session"),
             requestHeaders: ["Authorization": "Bearer refreshed-token"],
             resumeSourcePosition: 92.0,
             panelIsInHDRMode: false
@@ -643,12 +622,7 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
     }
 
     func testServerSubtitleArtifactsReachLoadSpecThroughProductionResolver() throws {
-        let fixtureURL = try PlaybackV3FixtureTestSupport.fixtureURL(
-            named: "decision_response", bundleClass: Self.self
-        )
-        let object = try XCTUnwrap(
-            JSONSerialization.jsonObject(with: Data(contentsOf: fixtureURL)) as? [String: Any]
-        )
+        let object = try PlaybackV3FixtureTestSupport.v2DecisionObject(bundleClass: Self.self)
         let originalPlan = try XCTUnwrap(object["playback_plan"] as? [String: Any])
         let originalSubtitle = try XCTUnwrap(originalPlan["subtitle"] as? [String: Any])
         let inventory = try XCTUnwrap(originalSubtitle["inventory"] as? [[String: Any]])
@@ -672,21 +646,18 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
             planObject["selected_tracks"] = tracks
             var selectedObject = object
             selectedObject["playback_plan"] = planObject
-            let response = try PlaybackV3FixtureTestSupport.decoder.decode(
-                PlaybackV3DecisionResponse.self,
-                from: JSONSerialization.data(withJSONObject: selectedObject)
-            )
+            let response = try PlaybackV3FixtureTestSupport.v2Decision(selectedObject)
             guard case .playable(let plan, let sessionID) = response.validatedForApple() else {
                 return XCTFail("Expected fixture subtitle \(trackID) to be playable")
             }
             let spec = try Self.loadSpec(for: plan, sessionID: sessionID)
             let artifact = try XCTUnwrap(spec.options.externalSubtitles.first)
-            XCTAssertEqual(artifact.url.absoluteString, "https://dev.example.test/api/v1" + rawURL)
+            XCTAssertEqual(artifact.url.absoluteString, "https://dev.example.test" + rawURL)
             XCTAssertEqual(artifact.httpHeaders?["Authorization"], "Bearer current-token")
             if let fontURL = item["font_bundle_url"] as? String {
                 let request = try XCTUnwrap(spec.subtitleFontRequests[
                     SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: index)])
-                XCTAssertEqual(request.url?.absoluteString, "https://dev.example.test/api/v1" + fontURL)
+                XCTAssertEqual(request.url?.absoluteString, "https://dev.example.test" + fontURL)
                 XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer current-token")
             }
             testedSources.insert(try XCTUnwrap(item["source"] as? String))
@@ -696,13 +667,7 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
     }
 
     func testV3SubtitleArtifactUsesMergedCurrentRequestHeaders() throws {
-        let fixtureURL = try PlaybackV3FixtureTestSupport.fixtureURL(
-            named: "decision_response",
-            bundleClass: Self.self
-        )
-        var object = try XCTUnwrap(
-            JSONSerialization.jsonObject(with: Data(contentsOf: fixtureURL)) as? [String: Any]
-        )
+        var object = try PlaybackV3FixtureTestSupport.v2DecisionObject(bundleClass: Self.self)
         var planObject = try XCTUnwrap(object["playback_plan"] as? [String: Any])
         var selectedTracks = try XCTUnwrap(planObject["selected_tracks"] as? [String: Any])
         selectedTracks["subtitle"] = [
@@ -714,7 +679,7 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         subtitle["mode"] = "render"
         subtitle["track_id"] = "file:42:subtitle:0"
         subtitle["artifact"] = [
-            "url": "/stream/session/subtitles/0.vtt",
+            "url": "/api/v2/stream/session/subtitles/0.vtt",
             "mime_type": "text/vtt",
             "format": "vtt",
             "timing_origin_seconds": 0,
@@ -722,10 +687,7 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         planObject["subtitle"] = subtitle
         object["playback_plan"] = planObject
 
-        let response = try PlaybackV3FixtureTestSupport.decoder.decode(
-            PlaybackV3DecisionResponse.self,
-            from: JSONSerialization.data(withJSONObject: object)
-        )
+        let response = try PlaybackV3FixtureTestSupport.v2Decision(object)
         guard case .playable(let plan, let sessionID) = response.validatedForApple() else {
             return XCTFail("Expected a playable subtitle fixture")
         }
@@ -755,13 +717,7 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
     }
 
     func testV3SubtitleSidecarKeepsBearerWhenMediaIsOnAProxyOrigin() throws {
-        let fixtureURL = try PlaybackV3FixtureTestSupport.fixtureURL(
-            named: "decision_response",
-            bundleClass: Self.self
-        )
-        var object = try XCTUnwrap(
-            JSONSerialization.jsonObject(with: Data(contentsOf: fixtureURL)) as? [String: Any]
-        )
+        var object = try PlaybackV3FixtureTestSupport.v2DecisionObject(bundleClass: Self.self)
         var planObject = try XCTUnwrap(object["playback_plan"] as? [String: Any])
         var selectedTracks = try XCTUnwrap(planObject["selected_tracks"] as? [String: Any])
         selectedTracks["subtitle"] = ["id": "file:42:subtitle:0", "index": 0]
@@ -770,7 +726,7 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         subtitle["mode"] = "render"
         subtitle["track_id"] = "file:42:subtitle:0"
         subtitle["artifact"] = [
-            "url": "/stream/session/subtitles/0.vtt",
+            "url": "/api/v2/stream/session/subtitles/0.vtt",
             "mime_type": "text/vtt",
             "format": "vtt",
             "timing_origin_seconds": 0,
@@ -778,10 +734,7 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         planObject["subtitle"] = subtitle
         object["playback_plan"] = planObject
 
-        let response = try PlaybackV3FixtureTestSupport.decoder.decode(
-            PlaybackV3DecisionResponse.self,
-            from: JSONSerialization.data(withJSONObject: object)
-        )
+        let response = try PlaybackV3FixtureTestSupport.v2Decision(object)
         guard case .playable(let plan, let sessionID) = response.validatedForApple() else {
             return XCTFail("Expected a playable subtitle fixture")
         }
@@ -816,8 +769,8 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         XCTAssertTrue(sidecar.httpRequestAuthorization === subtitleAuthorization)
         // Sidecars and fonts choose independently: a third-party resource
         // stays unauthenticated even when its paired resource is API-owned.
-        for path in ["/api/v1/stream/session/subtitles/1.ass", "/api/v1/stream/session/subtitles/1/fonts",
-                     "/api/v1/stream/wrong-session/subtitles/1.ass", "/admin/settings"] {
+        for path in ["/api/v2/stream/session/subtitles/1.ass", "/api/v2/stream/session/subtitles/1/fonts",
+                     "/api/v2/stream/wrong-session/subtitles/1.ass", "/admin/settings"] {
             let url = try XCTUnwrap(URL(string: "https://dev.example.test:443" + path))
             XCTAssertTrue(spec.subtitleRequestAuthorization(for: url) === subtitleAuthorization)
         }
@@ -830,20 +783,14 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
     }
 
     func testV3SubtitleArtifactRejectsOffOriginAndNonMediaURLs() throws {
-        let fixtureURL = try PlaybackV3FixtureTestSupport.fixtureURL(
-            named: "decision_response",
-            bundleClass: Self.self
-        )
-        let fixtureObject = try XCTUnwrap(
-            JSONSerialization.jsonObject(with: Data(contentsOf: fixtureURL)) as? [String: Any]
-        )
+        let fixtureObject = try PlaybackV3FixtureTestSupport.v2DecisionObject(bundleClass: Self.self)
 
         for artifactURL in [
             "https://subtitles.example.net/movie.vtt",
             "/admin/settings",
-            "/stream/session/../admin/settings",
-            "/stream/session/subtitle.vtt?st=legacy-secret",
-            "/stream/session/subtitle.vtt?credential=legacy-secret",
+            "/api/v2/stream/session/../admin/settings",
+            "/api/v2/stream/session/subtitle.vtt?st=legacy-secret",
+            "/api/v2/stream/session/subtitle.vtt?credential=legacy-secret",
         ] {
             var object = fixtureObject
             var planObject = try XCTUnwrap(object["playback_plan"] as? [String: Any])
@@ -861,10 +808,7 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
             ]
             planObject["subtitle"] = subtitle
             object["playback_plan"] = planObject
-            let response = try PlaybackV3FixtureTestSupport.decoder.decode(
-                PlaybackV3DecisionResponse.self,
-                from: JSONSerialization.data(withJSONObject: object)
-            )
+            let response = try PlaybackV3FixtureTestSupport.v2Decision(object)
             guard case .playable(let plan, let sessionID) = response.validatedForApple() else {
                 return XCTFail("Expected a playable subtitle fixture")
             }
@@ -873,7 +817,7 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
                 validating: plan,
                 sessionID: sessionID,
                 matchContentEnabled: true,
-                sourceURLOverride: URL(string: "https://dev.example.test/api/v1/stream/session")!,
+                sourceURLOverride: URL(string: "https://dev.example.test/api/v2/stream/session")!,
                 requestHeaders: ["Authorization": "Bearer current-token"],
                 resolveURL: {
                     StreamRequest.resolve(
@@ -1108,13 +1052,7 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         let selectedCombinedIndex = try XCTUnwrap(
             Int(selectedTrackId.split(separator: ":").last ?? "")
         )
-        let fixtureURL = try PlaybackV3FixtureTestSupport.fixtureURL(
-            named: "decision_response",
-            bundleClass: Self.self
-        )
-        var object = try XCTUnwrap(
-            JSONSerialization.jsonObject(with: Data(contentsOf: fixtureURL)) as? [String: Any]
-        )
+        var object = try PlaybackV3FixtureTestSupport.v2DecisionObject(bundleClass: Self.self)
         var planObject = try XCTUnwrap(object["playback_plan"] as? [String: Any])
         var inventory: [[String: Any]] = [
             ("ara", "Arabic"), ("dan", "Danish"), ("eng", "English"), ("spa", "Spanish"),
@@ -1130,7 +1068,7 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
                 "default": false,
                 "hearing_impaired": false,
                 "delivery": "sidecar",
-                "url": "/stream/session/subtitles/\(combinedIndex).srt?file_id=42",
+                "url": "/api/v2/stream/session/subtitles/\(combinedIndex).srt?file_id=42",
             ]
         }
         inventory.append([
@@ -1152,7 +1090,7 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         ]
         if includeArtifact {
             subtitle["artifact"] = [
-                "url": "/stream/session/subtitles/\(selectedCombinedIndex).srt?file_id=42",
+                "url": "/api/v2/stream/session/subtitles/\(selectedCombinedIndex).srt?file_id=42",
                 "mime_type": "application/x-subrip",
                 "format": "srt",
                 "timing_origin_seconds": 0,
@@ -1167,10 +1105,7 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         planObject["selected_tracks"] = selectedTracks
         object["playback_plan"] = planObject
 
-        let response = try PlaybackV3FixtureTestSupport.decoder.decode(
-            PlaybackV3DecisionResponse.self,
-            from: JSONSerialization.data(withJSONObject: object)
-        )
+        let response = try PlaybackV3FixtureTestSupport.v2Decision(object)
         guard case .playable(let plan, let sessionID) = response.validatedForApple() else {
             throw XCTSkip("Expected a playable sidecar-inventory fixture")
         }
@@ -1185,7 +1120,7 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
             validating: plan,
             sessionID: sessionID,
             matchContentEnabled: false,
-            sourceURLOverride: URL(string: "https://dev.example.test/api/v1/stream/session"),
+            sourceURLOverride: URL(string: "https://dev.example.test/api/v2/stream/session"),
             requestHeaders: ["Authorization": "Bearer current-token"],
             resolveURL: {
                 StreamRequest.resolve(
@@ -1384,7 +1319,7 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         let controller = try AetherPlaybackController()
         defer { controller.stop() }
         let spec = try AetherLoadSpec(
-            directURL: URL(string: "https://dev.example.test/api/v1/stream/session")!,
+            directURL: URL(string: "https://dev.example.test/api/v2/stream/session")!,
             headers: [:],
             startPosition: 0,
             audioOnly: false

@@ -323,7 +323,7 @@ final class AIModelDecodingTests: XCTestCase {
 
     /// Synthesizing the player descriptor mirrors Android's `SubtitleTrackMerge`:
     /// combined index = `baseTrackCount + position`, and the stream URL is on
-    /// the session-scoped combined-index mount `/stream/{session}/subtitles/{idx}<ext>`.
+    /// the session-scoped combined-index mount `/api/v2/stream/{session}/subtitles/{idx}<ext>`.
     func testSynthesizedDescriptorURLIndexAndExtSrt() {
         let sub = DownloadedSubtitle(
             id: 77, mediaFileId: 42, provider: "opensubtitles",
@@ -338,7 +338,7 @@ final class AIModelDecodingTests: XCTestCase {
         )
         XCTAssertNotNil(descriptor)
         XCTAssertTrue(descriptor?.index == 3)
-        XCTAssertTrue(descriptor?.url.absoluteString == "https://host/stream/sess-1/subtitles/3.vtt")
+        XCTAssertTrue(descriptor?.url.absoluteString == "https://host/api/v2/stream/sess-1/subtitles/3.vtt")
         XCTAssertTrue(descriptor?.source == "downloaded")
         XCTAssertTrue(descriptor?.codec == "subrip")
         XCTAssertTrue(descriptor?.language == "es")
@@ -358,7 +358,7 @@ final class AIModelDecodingTests: XCTestCase {
             resolveURL: { path in URL(string: "https://host\(path)") }
         )
         XCTAssertTrue(descriptor?.index == 3)
-        XCTAssertTrue(descriptor?.url.absoluteString == "https://host/stream/sess-9/subtitles/3.ass")
+        XCTAssertTrue(descriptor?.url.absoluteString == "https://host/api/v2/stream/sess-9/subtitles/3.ass")
     }
 
     /// PGS maps to `.sup`; an unresolvable URL yields `nil` (no track).

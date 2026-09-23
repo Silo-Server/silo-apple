@@ -6704,21 +6704,18 @@ class PlayerViewModel {
         )
     }
 
-    /// Turns a server-supplied URL (absolute or API-relative) into an absolute URL.
+    /// Turns a server-supplied URL (absolute or API-rooted) into an absolute URL.
     /// Local `file://` URLs (offline downloads and their cached sidecar
-    /// subtitles) pass through untouched.
+    /// subtitles) pass through untouched. v2 decisions mint every media,
+    /// subtitle and font URL under `/api/v2/`; a relative path without an API
+    /// root is refused rather than assigned a version.
     private func resolveServerUrl(_ raw: String, serverUrl: String) -> URL? {
         if raw.hasPrefix("http://") || raw.hasPrefix("https://") || raw.hasPrefix("file://") {
             return URL(string: raw)
         }
 
-        guard !serverUrl.isEmpty else { return nil }
-
-        let relativePath = raw.hasPrefix("/") ? raw : "/\(raw)"
-        let urlString = relativePath.hasPrefix("/api/")
-            ? "\(serverUrl)\(relativePath)"
-            : "\(serverUrl)/api/v1\(relativePath)"
-        return URL(string: urlString)
+        guard !serverUrl.isEmpty, raw.hasPrefix("/api/") else { return nil }
+        return URL(string: serverUrl + raw)
     }
 
     private func stablePlaybackFailureToken(for message: String) -> String {

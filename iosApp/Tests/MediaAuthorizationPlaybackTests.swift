@@ -20,7 +20,7 @@ final class MediaAuthorizationPlaybackTests: XCTestCase {
         let serverURL: String
     }
 
-    private static let progressPath = "/api/v1/playback/\(RotatingMediaOrigin.sessionID)/progress"
+    private static let progressPath = "/api/v2/playback/\(RotatingMediaOrigin.sessionID)/progress"
     private static let refreshPath = "/api/v2/auth/refresh"
     private static let refreshedTokens = #"{"access_token":"synthetic-rotated","refresh_token":"synthetic-refresh-rotated","expires_in":3600}"#
 
@@ -223,8 +223,7 @@ final class MediaAuthorizationPlaybackTests: XCTestCase {
         sourceURL: URL, auth: AuthorizationHarness, options: LoadOptions,
         subtitleAuthorization: HTTPRequestAuthorization
     ) throws -> AetherLoadSpec {
-        let fixture = try PlaybackV3FixtureTestSupport.fixtureURL(named: "decision_response", bundleClass: Self.self)
-        let response = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: fixture)) as? [String: Any])
+        let response = try PlaybackV3FixtureTestSupport.v2DecisionObject(bundleClass: Self.self)
         var plan = try XCTUnwrap(response["playback_plan"] as? [String: Any])
         plan["session_id"] = RotatingMediaOrigin.sessionID
         plan["delivery"] = PlaybackProtocolV3.PlanDelivery.remuxHLS
@@ -235,8 +234,8 @@ final class MediaAuthorizationPlaybackTests: XCTestCase {
         timeline["player_start_seconds"] = 0
         plan["timeline"] = timeline
         plan["selected_tracks"] = ["subtitle": ["id": "file:42:subtitle:1", "index": 1]]
-        let subtitlePath = "/stream/\(RotatingMediaOrigin.sessionID)/subtitles/1.ass"
-        let fontPath = "/stream/\(RotatingMediaOrigin.sessionID)/subtitles/1/fonts"
+        let subtitlePath = RotatingMediaOrigin.subtitlePath
+        let fontPath = RotatingMediaOrigin.fontPath
         plan["subtitle"] = [
             "mode": "render", "track_id": "file:42:subtitle:1",
             "artifact": ["url": subtitlePath, "mime_type": "text/x-ass", "format": "ass", "timing_origin_seconds": 0],
@@ -245,13 +244,12 @@ final class MediaAuthorizationPlaybackTests: XCTestCase {
                            "hearing_impaired": false, "delivery": "sidecar", "url": subtitlePath,
                            "font_bundle_url": fontPath]],
         ] as [String: Any]
-        let decoded = try PlaybackV3FixtureTestSupport.decoder.decode(
-            PlaybackV3Plan.self, from: JSONSerialization.data(withJSONObject: plan))
+        let decoded = try PlaybackV3FixtureTestSupport.v2Plan(plan)
         return try AetherLoadSpec(
             validating: decoded, sessionID: RotatingMediaOrigin.sessionID, matchContentEnabled: false,
             sourceURLOverride: sourceURL, requestHeaders: options.httpHeaders,
             requestAuthorization: options.httpRequestAuthorization, subtitleRequestAuthorization: subtitleAuthorization,
-            resolveURL: { URL(string: auth.serverURL + "/api/v1" + $0) },
+            resolveURL: { URL(string: auth.serverURL + $0) },
             apiOriginURL: URL(string: auth.serverURL), panelIsInHDRMode: false
         )
     }

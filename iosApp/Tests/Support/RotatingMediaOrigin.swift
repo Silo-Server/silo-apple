@@ -10,9 +10,9 @@ final class RotatingMediaOrigin: @unchecked Sendable {
     static let initialAuthorization = "Bearer \(initialAccessToken)"
     static let rotatedAuthorization = "Bearer \(rotatedAccessToken)"
     static let sessionID = "test-session"
-    static let mediaPath = "/api/v1/playback/transcode/\(sessionID)"
-    static let subtitlePath = "/api/v1/stream/\(sessionID)/subtitles/1.ass"
-    static let fontPath = "/api/v1/stream/\(sessionID)/subtitles/1/fonts"
+    static let mediaPath = "/api/v2/playback/transcode/\(sessionID)"
+    static let subtitlePath = "/api/v2/stream/\(sessionID)/subtitles/1.ass"
+    static let fontPath = "/api/v2/stream/\(sessionID)/subtitles/1/fonts"
     static let firstGatedSegment = 6
 
     struct Request: Sendable {
@@ -65,9 +65,9 @@ final class RotatingMediaOrigin: @unchecked Sendable {
             throw NSError(domain: "RotatingMediaOrigin", code: 3)
         }
         subtitle = try Data(contentsOf: subtitleURL)
-        fonts = try JSONSerialization.data(withJSONObject: [[
+        fonts = try JSONSerialization.data(withJSONObject: ["items": [[
             "name": "fixture.ttf", "data": try Data(contentsOf: fontURL).base64EncodedString()
-        ]])
+        ]]])
         segments = try (0...1).map { index in
             guard let url = bundle.url(forResource: "v3_hls_0\(index)", withExtension: "ts") else {
                 throw NSError(domain: "RotatingMediaOrigin", code: 1, userInfo: [

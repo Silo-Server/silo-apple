@@ -493,11 +493,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
     }
 
     func testServerGoldenDecisionDecodesAndPublishesCompleteSubtitleInventory() throws {
-        let response = try PlaybackV3FixtureTestSupport.decode(
-            PlaybackV3DecisionResponse.self,
-            named: "decision_response",
-            bundleClass: Self.self
-        )
+        let response = try PlaybackV3FixtureTestSupport.v2Decision(bundleClass: Self.self)
 
         guard case .playable(let plan, let sessionId) = response.validatedForApple() else {
             return XCTFail("Expected the recovered server fixture to be playable")
@@ -535,7 +531,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(authoredASS.hearingImpaired, false)
         XCTAssertEqual(
             authoredASS.fontBundleUrl,
-            "/stream/11111111-1111-4111-8111-111111111111/subtitles/1/fonts?file_id=42&embedded_stream_index=0"
+            "/api/v2/stream/11111111-1111-4111-8111-111111111111/subtitles/1/fonts?file_id=42&embedded_stream_index=0"
         )
     }
 
@@ -580,11 +576,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(Set(start.clientPlaybackContext.deliveries.keys), ["original_http"])
 
         let replan = try fixtureObject(named: "replan_request")
-        let decision = try PlaybackV3FixtureTestSupport.decode(
-            PlaybackV3DecisionResponse.self,
-            named: "decision_response",
-            bundleClass: Self.self
-        )
+        let decision = try PlaybackV3FixtureTestSupport.v2Decision(bundleClass: Self.self)
         let plan = try XCTUnwrap(decision.playbackPlan)
         XCTAssertTrue(decision.serverFeatures.contains(PlaybackProtocolV3.neutralContractFeature))
         XCTAssertTrue(decision.serverFeatures.contains(PlaybackProtocolV3.headerAuthenticatedMediaFeature))
@@ -1261,7 +1253,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             default: false,
             hearingImpaired: false,
             delivery: "sidecar",
-            url: "/api/v1/playback/session-v3/subtitles/2.sup",
+            url: "/api/v2/stream/session-v3/subtitles/2.sup",
             fontBundleUrl: nil
         )
         let original = PlayerViewModel.LoadRequest(
@@ -2369,7 +2361,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             delivery: delivery,
             planAttemptKey: planAttemptKey,
             stream: PlaybackV3Stream(
-                url: "/stream/session-v3",
+                url: "/api/v2/stream/session-v3",
                 protocol: streamProtocol,
                 container: container,
                 mimeType: streamProtocol == "hls"
@@ -2565,7 +2557,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             default: false,
             hearingImpaired: false,
             delivery: delivery,
-            url: delivery == "sidecar" ? "/stream/subtitles/\(combinedIndex)" : nil,
+            url: delivery == "sidecar" ? "/api/v2/stream/session-v3/subtitles/\(combinedIndex)" : nil,
             fontBundleUrl: nil
         )
     }
