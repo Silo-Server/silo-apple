@@ -1217,6 +1217,8 @@ struct APIv2Client: Sendable {
 
     // MARK: Active account/device authentication
 
+    /// `login` is `non_retryable` and public: one dispatch with no bearer, and
+    /// a 401 is the wrong-credentials answer, never a refresh trigger.
     func login(username: String, password: String, expectedAccount: RefreshAccountIdentity) async throws -> APIv2LoginTokens {
         try await gate()
         let body = try JSONEncoder().encode(LoginRequest(username: username, password: password))
@@ -1224,8 +1226,9 @@ struct APIv2Client: Sendable {
             try await http.requestData(method: "POST", path: "/api/v2/auth/login", body: body, expectedAccount: expectedAccount)
         }
         guard await tokenStore.refreshAccountIdentity() == expectedAccount else { throw HTTPError.requestIdentityChanged }
+        guard response.statusCode == 200 else { throw APIv2Error.incompleteAuthResponse }
         let value = try HTTPClient.makeJSONDecoder().decode(APIv2LoginTokens.self, from: response.data)
-        guard response.statusCode == 200, !value.accessToken.isEmpty, !value.refreshToken.isEmpty,
+        guard !value.accessToken.isEmpty, !value.refreshToken.isEmpty,
               !value.user.id.isEmpty else { throw APIv2Error.incompleteAuthResponse }
         return value
     }
@@ -1276,10 +1279,15 @@ struct APIv2Client: Sendable {
         guard response.statusCode == 200, value.status == (approveHandoff ? "approved" : "denied") else { throw APIv2Error.incompleteAuthResponse }
     }
 
+    /// Ends the login session that `expectedAccount` currently holds. The
+    /// request carries the bearer only: v2 logout does not accept
+    /// `X-Profile-Id`, so a temporary scope's profile proof is left off too.
+    /// `natural_idempotent`, so the usual 401 refresh and resend is safe.
     func logout(expectedAccount: RefreshAccountIdentity) async throws {
         try await gate()
         let response = try await mapErrors {
-            try await http.requestData(method: "POST", path: "/api/v2/auth/logout", expectedAccount: expectedAccount)
+            try await http.requestData(method: "POST", path: "/api/v2/auth/logout",
+                expectedAccount: expectedAccount, sendsProfile: false)
         }
         guard response.statusCode == 204 else { throw APIv2Error.incompleteAuthResponse }
     }

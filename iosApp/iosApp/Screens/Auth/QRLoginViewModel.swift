@@ -113,9 +113,11 @@ class QRLoginViewModel {
                     finalize(.error(message: "Server approved the session but did not return tokens."))
                     return
                 }
+                // The v1 poll answer carries no verified account id.
                 try await auth.installSession(
                     accessToken: accessToken,
                     refreshToken: refreshToken,
+                    accountID: nil,
                     expectedAccount: expectedAccount
                 )
                 finalize(.approved)

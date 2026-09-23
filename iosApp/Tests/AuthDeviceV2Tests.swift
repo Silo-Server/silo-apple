@@ -173,6 +173,103 @@ final class AuthDeviceV2Tests: XCTestCase {
         XCTAssertEqual(stub.requestedPaths, ["/api/v2/auth/device/start", "/api/v2/auth/device/start"])
     }
 
+    // MARK: Logout
+
+    /// v2 logout refuses `X-Profile-Id`. Neither the persistent session's
+    /// profile nor a SiloRemote temporary scope's profile proof may ride along.
+    func testLogoutSendsOnlyTheBearer() async throws {
+        let (api, tokens) = try await harness()
+        try await tokens.installAccountSession(accessToken: "acc", refreshToken: "ref", accountID: "1")
+        await tokens.setProfileId("profile")
+        _ = await tokens.setProfileToken("proof")
+        let persistentValue = await tokens.refreshAccountIdentity()
+        let persistent = try XCTUnwrap(persistentValue)
+        stub.reply(204, "")
+        try await api.logout(expectedAccount: persistent)
+
+        await tokens.beginTemporaryScope(TemporaryAuthScope(serverId: "server", serverURL: "https://auth.example",
+            accessToken: "temporary", refreshToken: "temporary-refresh", profileId: "remote-profile",
+            profileToken: "remote-proof", controllerDeviceId: "controller", expiresAt: Date().addingTimeInterval(600)))
+        let temporaryValue = await tokens.refreshAccountIdentity()
+        let temporary = try XCTUnwrap(temporaryValue)
+        try await api.logout(expectedAccount: temporary)
+
+        XCTAssertEqual(stub.requestedPaths, ["/api/v2/auth/logout", "/api/v2/auth/logout"])
+        XCTAssertEqual(stub.requests.map { $0.header("authorization") }, ["Bearer acc", "Bearer temporary"])
+        for request in stub.requests {
+            XCTAssertEqual(request.method, "POST")
+            XCTAssertNil(request.header("x-profile-id"))
+            XCTAssertNil(request.header("x-profile-token"))
+        }
+    }
+
+    /// Logout is `natural_idempotent`, so an expired bearer refreshes and the
+    /// revocation is resent once, still without the profile header.
+    func testLogoutResendAfterRefreshKeepsProfileHeaderOff() async throws {
+        let (api, tokens) = try await harness()
+        try await tokens.installAccountSession(accessToken: "expired", refreshToken: "ref", accountID: "1")
+        await tokens.setProfileId("profile")
+        let accountValue = await tokens.refreshAccountIdentity()
+        let account = try XCTUnwrap(accountValue)
+        stub.reply(path: HTTPClient.refreshPath, 200, #"{"access_token":"fresh","refresh_token":"ref-2","expires_in":3600}"#)
+        stub.sequence([.json(401, #"{"type":"https://siloserver.org/docs/api/v2/problems/session_expired","title":"Session expired","status":401,"detail":"The session is no longer valid; sign in again."}"#)])
+        stub.reply(204, "")
+        try await api.logout(expectedAccount: account)
+
+        let logouts = stub.requests.filter { $0.path == "/api/v2/auth/logout" }
+        XCTAssertEqual(logouts.map { $0.header("authorization") }, ["Bearer expired", "Bearer fresh"])
+        XCTAssertTrue(logouts.allSatisfy { $0.header("x-profile-id") == nil })
+    }
+
+    func testLogoutRequiresNoContent() async throws {
+        let (api, tokens) = try await harness()
+        try await tokens.installAccountSession(accessToken: "acc", refreshToken: "ref", accountID: "1")
+        let accountValue = await tokens.refreshAccountIdentity()
+        let account = try XCTUnwrap(accountValue)
+        stub.reply(200, "{}")
+        do {
+            try await api.logout(expectedAccount: account)
+            XCTFail("logout answers 204")
+        } catch APIv2Error.incompleteAuthResponse { }
+    }
+
+    /// A v1-only verdict skips the revocation instead of sending it anywhere
+    /// else; the caller's local sign-out does not depend on it.
+    func testLogoutIsNotSentToAV1OnlyServer() async throws {
+        let (_, tokens) = try await harness()
+        try await tokens.installAccountSession(accessToken: "acc", refreshToken: "ref", accountID: "1")
+        let accountValue = await tokens.refreshAccountIdentity()
+        let account = try XCTUnwrap(accountValue)
+        let api = APIv2Client(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens),
+            tokenStore: tokens, isUpdateRequired: { true })
+        do {
+            try await api.logout(expectedAccount: account)
+            XCTFail("a v1-only server must not receive the v2 logout")
+        } catch APIv2Error.serverUpdateRequired { }
+        XCTAssertTrue(stub.requests.isEmpty)
+    }
+
+    // MARK: Sign-in errors
+
+    /// The login form reads v2 problem statuses, and an update requirement
+    /// wins over every other reading.
+    func testLoginMessagesFollowProblemStatusAndUpdateRequirement() throws {
+        func problem(_ status: Int, _ type: String) throws -> Error {
+            APIv2Error.problem(try HTTPClient.makeJSONDecoder().decode(APIv2Problem.self, from: Data(
+                #"{"type":"https://siloserver.org/docs/api/v2/problems/\#(type)","title":"t","status":\#(status),"detail":"server detail"}"#.utf8)))
+        }
+        XCTAssertEqual(LoginViewModel.message(for: APIv2Error.serverUpdateRequired), UpdateRequirement.serverMessage)
+        XCTAssertEqual(LoginViewModel.message(for: try problem(410, "client_upgrade_required")), UpdateRequirement.appMessage)
+        let wrongPassword = LoginViewModel.message(for: try problem(401, "invalid_token"))
+        let disabled = LoginViewModel.message(for: try problem(403, "permission_denied"))
+        let invalid = LoginViewModel.message(for: try problem(422, "validation_failed"))
+        let limited = LoginViewModel.message(for: try problem(429, "rate_limited"))
+        XCTAssertEqual(Set([wrongPassword, disabled, invalid, limited]).count, 4, "each rejection reads differently")
+        XCTAssertFalse([wrongPassword, disabled, invalid, limited].contains("server detail"))
+        XCTAssertEqual(LoginViewModel.message(for: APIv2Error.httpStatus(401)), wrongPassword)
+        XCTAssertEqual(LoginViewModel.message(for: try problem(503, "service_unavailable")), "server detail")
+    }
+
     private static let login_ok = #"""
 {
   "access_token": "acc",

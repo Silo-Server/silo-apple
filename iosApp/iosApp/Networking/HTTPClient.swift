@@ -395,13 +395,15 @@ actor HTTPClient {
         }
     }
 
-    /// Best-effort revocation after local sign-out. The captured bearer belongs
-    /// to the outgoing session; never refresh it or read the replacement account.
+    /// Best-effort revocation after local sign-out (`POST /api/v2/auth/logout`).
+    /// The captured bearer belongs to the outgoing session; never refresh it or
+    /// read the replacement account. The request carries only that bearer: v2
+    /// logout does not accept the profile header.
     func revokeSession(_ auth: CapturedOrdinaryRequestAuth) async {
         guard let token = auth.accessToken, !token.isEmpty else { return }
         do {
             var request = try buildRequest(serverUrl: auth.account.serverURL,
-                method: "POST", path: "/api/v1/auth/logout", query: [:], body: nil)
+                method: "POST", path: "/api/v2/auth/logout", query: [:], body: nil)
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             request.timeoutInterval = 5
             // Removing the server or signing in again cancels ordinary traffic.
@@ -521,6 +523,10 @@ actor HTTPClient {
     /// `acceptedStatuses` only applies with `requestIdentity`; it exposes
     /// selected non-2xx responses after normal scoped auth handling, without
     /// adding retries. `repeatedQuery` carries query items that repeat a name.
+    /// `sendsProfile: false` sends the account credential without
+    /// `X-Profile-Id`/`X-Profile-Token`, for operations whose contract forbids
+    /// the profile header (v2 logout). It applies only without
+    /// `requestIdentity`, whose scoped requests always name a profile.
     func requestData(
         method: String,
         path: String,
@@ -534,7 +540,8 @@ actor HTTPClient {
         requestIdentity: HTTPRequestIdentity? = nil,
         acceptedStatuses: Set<Int> = [],
         expectedAccount: RefreshAccountIdentity? = nil,
-        expectedAuth: CapturedOrdinaryRequestAuth? = nil
+        expectedAuth: CapturedOrdinaryRequestAuth? = nil,
+        sendsProfile: Bool = true
     ) async throws -> HTTPRawResponse {
         if let requestIdentity {
             let dispatchRevision = try captureRequestDispatchRevision()
@@ -657,7 +664,8 @@ actor HTTPClient {
             quietStatuses: quietStatuses,
             timeout: timeout,
             expectedAccount: expectedAccount,
-            expectedAuth: expectedAuth
+            expectedAuth: expectedAuth,
+            sendsProfile: sendsProfile
         ) { serverUrl in
             var request = try self.buildRequest(
                 serverUrl: serverUrl,
@@ -1088,6 +1096,7 @@ actor HTTPClient {
         timeout: HTTPTimeout,
         expectedAccount: RefreshAccountIdentity? = nil,
         expectedAuth: CapturedOrdinaryRequestAuth? = nil,
+        sendsProfile: Bool = true,
         makeRequest: (String) throws -> URLRequest
     ) async throws -> (Data, HTTPURLResponse) {
         let dispatchRevision = try captureRequestDispatchRevision()
@@ -1120,6 +1129,7 @@ actor HTTPClient {
             await attachLegacyAuthHeaders(&request)
         }
         Self.apply(additionalHeaders, to: &request)
+        if !sendsProfile { Self.removeProfileHeaders(from: &request) }
 
         let (data, response) = try await perform(
             request: request,
@@ -1147,6 +1157,7 @@ actor HTTPClient {
                 var retry = try makeRequest(serverUrl)
                 attachOrdinaryAuthHeaders(&retry, auth: refreshedAuth)
                 Self.apply(additionalHeaders, to: &retry)
+                if !sendsProfile { Self.removeProfileHeaders(from: &retry) }
                 #if os(iOS) || os(tvOS)
                 Self.logRefreshRetry(
                     method: method,
@@ -1182,6 +1193,11 @@ actor HTTPClient {
         for (name, value) in headers {
             request.setValue(value, forHTTPHeaderField: name)
         }
+    }
+
+    private static func removeProfileHeaders(from request: inout URLRequest) {
+        request.setValue(nil, forHTTPHeaderField: "X-Profile-Id")
+        request.setValue(nil, forHTTPHeaderField: "X-Profile-Token")
     }
 
     private func sendRawBody<T: Decodable>(
