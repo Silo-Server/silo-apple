@@ -1651,25 +1651,18 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(event.diagnostics["error_cause"], "No executable route is available.")
     }
 
-    func testMissingPlaybackSessionDetectionRequiresTheSpecific404() {
-        XCTAssertTrue(PlaybackSessionBridge.isPlaybackSessionMissing(
-            HTTPError.http(
-                statusCode: 404,
-                body: #"{"error":"playback_session_not_found","message":"Playback session not found"}"#
-            )
-        ))
-        XCTAssertTrue(PlaybackSessionBridge.isPlaybackSessionMissing(
-            HTTPError.http(statusCode: 404, body: "Playback session not found")
-        ))
-        XCTAssertFalse(PlaybackSessionBridge.isPlaybackSessionMissing(
-            HTTPError.http(statusCode: 404, body: "Not found")
-        ))
-        XCTAssertFalse(PlaybackSessionBridge.isPlaybackSessionMissing(
-            HTTPError.http(
-                statusCode: 500,
-                body: #"{"error":"playback_session_not_found"}"#
-            )
-        ))
+    func testMissingPlaybackSessionIsAV2NotFoundOrAChangedInstallation() throws {
+        func problem(_ status: Int, _ type: String) throws -> Error {
+            APIv2Error.problem(try HTTPClient.makeJSONDecoder().decode(APIv2Problem.self, from: Data(
+                #"{"type":"https://siloserver.org/docs/api/v2/problems/\#(type)","title":"t","status":\#(status),"detail":"d"}"#.utf8)))
+        }
+        XCTAssertTrue(PlaybackSessionBridge.isPlaybackSessionMissing(try problem(404, "not_found")))
+        XCTAssertTrue(PlaybackSessionBridge.isPlaybackSessionMissing(try problem(409, "installation_changed")))
+        XCTAssertFalse(PlaybackSessionBridge.isPlaybackSessionMissing(try problem(409, "progress_conflict")))
+        XCTAssertFalse(PlaybackSessionBridge.isPlaybackSessionMissing(try problem(503, "dependency_unavailable")))
+        // A v1-only server's plain 404 is update-required, not a lost session.
+        XCTAssertFalse(PlaybackSessionBridge.isPlaybackSessionMissing(APIv2Error.serverUpdateRequired))
+        XCTAssertFalse(PlaybackSessionBridge.isPlaybackSessionMissing(HTTPError.http(statusCode: 404, body: "Not found")))
     }
 
     func testHDRAttestationDoesNotInventHDR10PlusOrMacDolbyVision() {
