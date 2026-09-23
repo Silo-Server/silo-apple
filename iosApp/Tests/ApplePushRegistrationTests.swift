@@ -178,23 +178,6 @@ final class ApplePushRegistrationTests: XCTestCase {
         XCTAssertNil(displayOnly.accessTokenFallback)
     }
 
-    func testRegistrationResponseDecodesOptionalDisplayToken() throws {
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-
-        let modern = try decoder.decode(ApplePushRegistrationResponse.self, from: Data("""
-        {"id":"push-1","server_device_id":"dev-1","enabled":true,"push_mode":"private_push","display_token":"tok","display_token_expires_at":"2026-10-03T00:00:00Z"}
-        """.utf8))
-        XCTAssertEqual(modern.displayToken, "tok")
-        XCTAssertEqual(modern.displayTokenExpiresAt, "2026-10-03T00:00:00Z")
-
-        let legacy = try decoder.decode(ApplePushRegistrationResponse.self, from: Data("""
-        {"id":"push-1","server_device_id":"dev-1","enabled":true,"push_mode":"private_push"}
-        """.utf8))
-        XCTAssertNil(legacy.displayToken)
-        XCTAssertNil(legacy.displayTokenExpiresAt)
-    }
-
     func testDisplayTokenExpiryParsesWithAndWithoutFractionalSeconds() throws {
         let plain = try XCTUnwrap(ApplePushDisplayTokenStore.parseExpiry("2026-10-03T00:00:00Z"))
         let fractional = try XCTUnwrap(ApplePushDisplayTokenStore.parseExpiry("2026-10-03T00:00:00.250Z"))
