@@ -102,28 +102,7 @@ actor SiloAPI {
         try await http.postVoid("/api/v1/onboarding/progress", body: request)
     }
 
-    // --- User settings ---
-
-    func setDeviceSetting(key: String, value: String) async throws {
-        try await http.putVoid("/api/v1/settings/device/\(key)", body: SetSettingBody(value: value))
-    }
-
-    func setSetting(key: String, value: String) async throws {
-        try await http.putVoid("/api/v1/settings/\(key)", body: SetSettingBody(value: value))
-    }
-
-    func deleteSetting(key: String) async throws {
-        try await http.delete("/api/v1/settings/\(key)")
-    }
-
-    /// Read a user-scoped setting (the `setting_user.user_id` partition,
-    /// distinct from `/settings/device/{key}` which is device-scoped).
-    /// The server returns 404 when the key is unset — callers that want
-    /// "default if absent" semantics catch `HTTPError.http(404, _)` and
-    /// fall through to their own defaults.
-    func getUserSetting(key: String) async throws -> SettingEntryResponse {
-        try await http.get("/api/v1/settings/\(key)")
-    }
+    // --- Settings ---
 
     /// Read the server-wide overlay configuration: the admin kill
     /// switch and the optional baseline `card_overlays` defaults for

@@ -5,8 +5,6 @@ protocol OnboardingTourAPI: Sendable {
     func onboardingFlow(surface: String) async throws -> OnboardingFlow
     func postOnboardingProgress(_ request: OnboardingProgressRequest) async throws
     func updateProfile(profileId: String, body: UpdateProfileBody) async throws
-    func setSetting(key: String, value: String) async throws
-    func setDeviceSetting(key: String, value: String) async throws
 }
 
 extension SiloAPI: OnboardingTourAPI {}
@@ -33,6 +31,10 @@ private enum OnboardingTourError: LocalizedError {
 class OnboardingTourViewModel {
     /// Step kinds this client can render; anything else is dropped at load.
     private static let knownKinds: Set<String> = ["welcome", "feature_card", "setting_choice", "handoff"]
+    /// The only setting target this client can save. The server emits only
+    /// `profile_field`; a `setting_choice` step naming any other target is
+    /// dropped at load like an unknown kind, because it could not be saved.
+    private static let supportedSettingTarget = "profile_field"
 
     var isLoading: Bool = true
     var steps: [OnboardingStep] = []
@@ -63,7 +65,7 @@ class OnboardingTourViewModel {
     func load(resumeStepId: String? = nil) async {
         do {
             let flow = try await api.onboardingFlow(surface: "phone")
-            let renderable = flow.steps.filter { Self.knownKinds.contains($0.kind) }
+            let renderable = flow.steps.filter(Self.isRenderable)
             if renderable.isEmpty {
                 // Nothing we can show: dismiss now and persist a retry marker
                 // before posting completion so a transient failure cannot
@@ -257,13 +259,15 @@ class OnboardingTourViewModel {
                 key: spec.key,
                 value: value
             )
-        case "setting":
-            try await api.setSetting(key: spec.key, value: value)
-        case "device_setting":
-            try await api.setDeviceSetting(key: spec.key, value: value)
         default:
             throw OnboardingTourError.unsupportedSetting(spec.key)
         }
+    }
+
+    private static func isRenderable(_ step: OnboardingStep) -> Bool {
+        guard knownKinds.contains(step.kind) else { return false }
+        guard step.kind == "setting_choice", let target = step.setting?.target else { return true }
+        return target == supportedSettingTarget
     }
 
     private func boolean(_ value: String, key: String) throws -> Bool {

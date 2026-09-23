@@ -49,30 +49,38 @@ final class OnboardingInvitationTests: XCTestCase {
     }
 
     @MainActor
-    func testSettingTargetsAreAwaitedAndDispatchedToTheirOwnEndpoints() async throws {
-        let api = OnboardingTourAPIStub()
-        let model = OnboardingTourViewModel(api: api)
-
+    func testStepsWithRetiredSettingTargetsAreDroppedAtLoad() async {
+        let profileStep = Self.settingStep(id: "quality", target: "profile_field", key: "quality_preference")
         let userStep = Self.settingStep(id: "user", target: "setting", key: "playback.auto_play_next")
-        await model.choose(step: userStep, value: "true")
         let deviceStep = Self.settingStep(id: "device", target: "device_setting", key: "playback.quality")
-        await model.choose(step: deviceStep, value: "1080p")
+        let api = OnboardingTourAPIStub(flow: Self.flow(steps: [userStep, profileStep, deviceStep]))
+        let model = OnboardingTourViewModel(api: api, activeProfileId: { "profile-1" })
 
-        let writes = await api.writes()
-        XCTAssertEqual(writes, [
-            "setting:playback.auto_play_next=true",
-            "device:playback.quality=1080p",
-        ])
-        XCTAssertEqual(model.selectedValues["user"], "true")
-        XCTAssertEqual(model.selectedValues["device"], "1080p")
-        XCTAssertNil(model.error)
+        await model.load()
+
+        XCTAssertEqual(model.steps.map(\.id), ["quality"])
+        XCTAssertFalse(model.finished)
+    }
+
+    @MainActor
+    func testChoosingARetiredSettingTargetWritesNothing() async {
+        let api = OnboardingTourAPIStub()
+        let model = OnboardingTourViewModel(api: api, activeProfileId: { "profile-1" })
+        let step = Self.settingStep(id: "user", target: "setting", key: "playback.auto_play_next")
+
+        await model.choose(step: step, value: "true")
+
+        let events = await api.events()
+        XCTAssertEqual(events, [])
+        XCTAssertNil(model.selectedValues["user"])
+        XCTAssertNotNil(model.error)
     }
 
     @MainActor
     func testFailedSettingWriteStaysVisibleAndDoesNotSelectValue() async {
         let api = OnboardingTourAPIStub(failWrites: true)
-        let model = OnboardingTourViewModel(api: api)
-        let step = Self.settingStep(id: "failed", target: "setting", key: "playback.auto_play_next")
+        let model = OnboardingTourViewModel(api: api, activeProfileId: { "profile-1" })
+        let step = Self.settingStep(id: "failed", target: "profile_field", key: "auto_skip_intro")
 
         await model.choose(step: step, value: "true")
 
@@ -96,12 +104,16 @@ final class OnboardingInvitationTests: XCTestCase {
     func testFinishingFinalSettingStepPersistsDisplayedDefaultFirst() async {
         let step = Self.settingStep(
             id: "final-default",
-            target: "setting",
-            key: "playback.auto_play_next",
+            target: "profile_field",
+            key: "auto_skip_intro",
             defaultValue: "true"
         )
         let api = OnboardingTourAPIStub(flow: Self.flow(steps: [step]))
-        let model = OnboardingTourViewModel(api: api)
+        let model = OnboardingTourViewModel(
+            api: api,
+            runtimeSettingsRefresher: OnboardingRuntimeSettingsRefresherStub(),
+            activeProfileId: { "profile-1" }
+        )
 
         await model.load()
         XCTAssertTrue(model.isToggleEnabled(for: step))
@@ -109,7 +121,7 @@ final class OnboardingInvitationTests: XCTestCase {
 
         let events = await api.events()
         XCTAssertEqual(events, [
-            "setting:playback.auto_play_next=true",
+            "profile:profile-1",
             "progress:final-default:completed",
         ])
         XCTAssertEqual(model.selectedValues[step.id], "true")
@@ -120,11 +132,11 @@ final class OnboardingInvitationTests: XCTestCase {
     func testContinueWithoutSavingPostsCompletionBeforeDismissal() async {
         let step = Self.settingStep(
             id: "failed-setting",
-            target: "setting",
-            key: "playback.auto_play_next"
+            target: "profile_field",
+            key: "auto_skip_intro"
         )
         let api = OnboardingTourAPIStub(failWrites: true, flow: Self.flow(steps: [step]))
-        let model = OnboardingTourViewModel(api: api)
+        let model = OnboardingTourViewModel(api: api, activeProfileId: { "profile-1" })
 
         await model.load()
         await model.choose(step: step, value: "true")
@@ -248,7 +260,6 @@ final class OnboardingInvitationTests: XCTestCase {
 }
 
 private actor OnboardingTourAPIStub: OnboardingTourAPI {
-    private var recordedWrites: [String] = []
     private var recordedEvents: [String] = []
     private var recordedProfileUpdates: [String] = []
     private let failWrites: Bool
@@ -265,7 +276,6 @@ private actor OnboardingTourAPIStub: OnboardingTourAPI {
         self.flow = flow
     }
 
-    func writes() -> [String] { recordedWrites }
     func events() -> [String] { recordedEvents }
     func profileUpdates() -> [String] { recordedProfileUpdates }
 
@@ -282,18 +292,6 @@ private actor OnboardingTourAPIStub: OnboardingTourAPI {
         if failWrites { throw URLError(.cannotConnectToHost) }
         recordedProfileUpdates.append(profileId)
         recordedEvents.append("profile:\(profileId)")
-    }
-
-    func setSetting(key: String, value: String) async throws {
-        if failWrites { throw URLError(.cannotConnectToHost) }
-        recordedWrites.append("setting:\(key)=\(value)")
-        recordedEvents.append("setting:\(key)=\(value)")
-    }
-
-    func setDeviceSetting(key: String, value: String) async throws {
-        if failWrites { throw URLError(.cannotConnectToHost) }
-        recordedWrites.append("device:\(key)=\(value)")
-        recordedEvents.append("device:\(key)=\(value)")
     }
 }
 
