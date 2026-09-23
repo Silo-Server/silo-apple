@@ -1,14 +1,15 @@
 import Foundation
 
-/// Cached holder for the server's `requests_enabled` feature flag, gating
+/// Cached holder for the server's requests capability, gating
 /// every media-request entry point (profile-menu row, tvOS dropdown row,
 /// the "Available to request" search section).
 ///
 /// Follows the `AICapabilities` precedent: a `@MainActor` `@Observable`
 /// singleton, probed once per session and reset on profile/server switch.
-/// The probe is failure-tolerant — a 404 (older server without the requests
-/// API) or any transient error reads as "disabled", so entry points simply
-/// never render and no error surfaces.
+/// The capability counts only when `allowed` and `state == available`
+/// (`RequestsFeatureStatus.isAvailable`). A failed probe keeps the previous
+/// value, which starts as "disabled", so entry points simply never render
+/// and no error surfaces.
 ///
 /// Reset + refresh hooks live in `AuthService`/`ServerRegistry`/`ContentView`
 /// next to the existing `AICapabilities` calls.
@@ -17,7 +18,7 @@ import Foundation
 final class RequestsFeatureStore {
     static let shared = RequestsFeatureStore()
 
-    /// False until the first successful probe reports the feature on.
+    /// False until the first successful probe reports the feature available.
     /// Hiding entry points during the brief startup probe is the correct
     /// default, so no separate loading state exists.
     private(set) var isEnabled = false
@@ -38,7 +39,7 @@ final class RequestsFeatureStore {
         let status = try? await api.requestsStatus()
         guard gen == generation else { return }
         if let status {
-            isEnabled = status.requestsEnabled
+            isEnabled = status.isAvailable
         }
         // On error, keep the previous value: a transient failure shouldn't
         // yank an already-visible entry point, and foreground/auth-state

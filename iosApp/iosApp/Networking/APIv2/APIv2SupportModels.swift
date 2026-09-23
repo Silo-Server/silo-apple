@@ -49,14 +49,6 @@ struct APIv2OnboardingSession: Sendable {
     let flow: OnboardingFlow?
 }
 
-// MARK: Requests
-
-/// `GET /api/v2/requests/mine` page.
-struct APIv2RequestsPage: Decodable {
-    let items: [MediaRequest]
-    let page: APIv2Page
-}
-
 // MARK: Home
 
 /// In-memory provenance for the Home section consumers, mirroring

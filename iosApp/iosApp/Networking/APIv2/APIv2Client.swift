@@ -215,7 +215,7 @@ struct APIv2Client: Sendable {
         return profile
     }
 
-    // MARK: Requests
+    // MARK: Owner-bound calls
 
     /// A read bound to the owner current at capture: the response is
     /// discarded if the account, credential owner, or profile changed while
@@ -568,36 +568,6 @@ struct APIv2Client: Sendable {
         }
         return APIv2OnboardingSession(auth: auth,
             tag: try Self.entityTag(raw.header("ETag")), state: state, flow: session.flow)
-    }
-
-    func myRequests() async throws -> [MediaRequest] {
-        guard let auth = await tokenStore.captureOrdinaryRequestAuth(),
-              let profile = auth.profileId else { throw HTTPError.requestIdentityChanged }
-        let identity = Self.requestIdentity(auth, profile: profile)
-        var records: [MediaRequest] = []
-        var cursor: String?
-        var seen: Set<String> = []
-        for _ in 0..<100 {
-            try await gate()
-            var query = ["limit": "50"]
-            if let cursor { query["cursor"] = cursor }
-            let requestQuery = query
-            let raw = try await tokenStore.withOwnerFence(auth) {
-                try await mapErrors {
-                    try await http.requestData(method: "GET", path: "/api/v2/requests/mine",
-                        query: requestQuery, requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-                }
-            }
-            guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
-            let response = try HTTPClient.makeJSONDecoder().decode(APIv2RequestsPage.self, from: raw.data)
-            records.append(contentsOf: response.items)
-            if !response.page.hasMore { return records }
-            guard let next = response.page.nextCursor, !next.isEmpty, seen.insert(next).inserted else {
-                throw APIv2Error.incompleteRequestList
-            }
-            cursor = next
-        }
-        throw APIv2Error.incompleteRequestList
     }
 
     // MARK: Personal collections
@@ -1182,7 +1152,7 @@ struct APIv2Client: Sendable {
     /// Every path-building site percent-encodes through here. `/`, `?`, `#`
     /// and `%` are never allowed through unencoded, and `.`/`..` never become
     /// a segment.
-    private func catalogPathSegment(_ value: String) throws -> String {
+    func catalogPathSegment(_ value: String) throws -> String {
         guard let escaped = CatalogPathSegment.encode(value) else {
             throw APIv2Error.invalidCatalogQuery
         }

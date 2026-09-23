@@ -52,7 +52,8 @@ final class RequestImageURLTests: XCTestCase {
             page: 1,
             totalPages: 1,
             totalResults: results.count,
-            results: results
+            results: results,
+            nextPage: nil
         )
     }
 

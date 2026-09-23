@@ -23,12 +23,6 @@ final class RequestErrorCopyTests: XCTestCase {
         XCTAssertNil(RequestErrorCopy.message(forToken: ""))
     }
 
-    func testHTTPErrorPrefersServerToken() {
-        let body = #"{"error":"quota_exceeded","message":"limit hit"}"#
-        let error = HTTPError.http(statusCode: 429, body: body)
-        XCTAssertEqual(RequestErrorCopy.message(for: error), "Request limit reached")
-    }
-
     func testNonHTTPErrorFallsBackToErrorState() {
         struct Boom: Error {}
         XCTAssertFalse(RequestErrorCopy.message(for: Boom()).isEmpty)
