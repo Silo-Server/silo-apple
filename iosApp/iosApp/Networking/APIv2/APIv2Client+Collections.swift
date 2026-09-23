@@ -39,17 +39,11 @@ extension APIv2Client {
     }
 
     func collectionEditor(id: String, auth: CapturedOrdinaryRequestAuth) async throws -> CollectionEditor<UserCollection> {
-        let editor: CollectionEditor<UserCollection> = try await editorRead(
-            "/api/v2/collections/\(try Self.collectionSegment(id))", auth: auth)
-        guard editor.value.id == id else { throw APIv2Error.incompleteCollection }
-        return editor
+        try await editorRead(id: id, under: "/api/v2/collections/", auth: auth)
     }
 
     func collectionGroupEditor(id: String, auth: CapturedOrdinaryRequestAuth) async throws -> CollectionEditor<CollectionGroup> {
-        let editor: CollectionEditor<CollectionGroup> = try await editorRead(
-            "/api/v2/collections/groups/\(try Self.collectionSegment(id))", auth: auth)
-        guard editor.value.id == id else { throw APIv2Error.incompleteCollection }
-        return editor
+        try await editorRead(id: id, under: "/api/v2/collections/groups/", auth: auth)
     }
 
     /// Moves the collection into `groupId`, or out of any group for `nil`
@@ -101,10 +95,16 @@ extension APIv2Client {
         throw APIv2Error.incompleteCollection
     }
 
-    private func editorRead<Value: Decodable>(_ path: String, auth: CapturedOrdinaryRequestAuth) async throws -> CollectionEditor<Value> {
+    /// The canonical read of item `id` under `prefix`, refused unless it
+    /// answers for that same item.
+    private func editorRead<Value: Decodable & Identifiable>(
+        id: String, under prefix: String, auth: CapturedOrdinaryRequestAuth
+    ) async throws -> CollectionEditor<Value> where Value.ID == String {
+        let path = prefix + (try Self.collectionSegment(id))
         let raw = try await collectionRequest("GET", path: path, status: 200, auth: auth)
         let tag = try Self.entityTag(raw.header("ETag"))
         let value = try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(Value.self, from: raw.data)
+        guard value.id == id else { throw APIv2Error.incompleteCollection }
         return CollectionEditor(value: value, version: CollectionEditVersion(path: path, etag: tag, auth: auth))
     }
 

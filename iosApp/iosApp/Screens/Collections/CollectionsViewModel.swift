@@ -212,7 +212,7 @@ class CollectionsViewModel {
         defer { isSaving = false }
         createError = nil
         do {
-            let _: UserCollection = try await api.createCollection(name: name)
+            _ = try await api.createCollection(name: name)
             newCollectionName = ""
             showCreateSheet = false
             // Drop the cached snapshot so the upcoming loadCollections()
