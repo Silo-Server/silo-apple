@@ -133,6 +133,95 @@ final class AuthDeviceV2Tests: XCTestCase {
         XCTAssertEqual(stub.requests.last?.header("authorization"), "Bearer acc")
     }
 
+    // MARK: SiloRemote handoff
+
+    private func handoffOwner(_ tokens: TokenStore) async throws -> (HTTPRequestIdentity, CapturedOrdinaryRequestAuth) {
+        try await tokens.installAccountSession(accessToken: "acc", refreshToken: "ref", accountID: "1")
+        await tokens.setProfileId("profile")
+        let authValue = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(authValue)
+        let identity = HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
+            profileId: "profile", clientFamily: AppleDeviceIdentity.current.clientFamily)
+        return (identity, auth)
+    }
+
+    /// The phone reads the TV's request, approves it for its profile, and
+    /// denies it on the way out of a failed handoff, all on the v2 paths.
+    func testHandoffLookupApproveAndDenyUseTheV2Wire() async throws {
+        let (api, tokens) = try await harness()
+        let (identity, auth) = try await handoffOwner(tokens)
+        let remoteLookup = Self.get_device_login_ok
+            .replacingOccurrences(of: #""client_purpose": "device_login""#, with: #""client_purpose": "remote_playback""#)
+            .replacingOccurrences(of: #""temporary": false"#, with: #""temporary": true"#)
+        stub.sequence([
+            .json(200, remoteLookup),
+            .json(200, #"{"status":"approved"}"#),
+            .json(200, #"{"status":"denied"}"#),
+        ])
+
+        let lookup = try await api.deviceLookup(code: "ABCD-1234", identity: identity,
+            expectedAccount: auth.account, expectedAuth: auth)
+        XCTAssertEqual(lookup.matchCode, "42")
+        XCTAssertEqual(lookup.clientPurpose, "remote_playback")
+        XCTAssertEqual(lookup.temporary, true)
+        try await api.decideDeviceLogin(code: "ABCD-1234", approveHandoff: true, identity: identity,
+            expectedAccount: auth.account, expectedAuth: auth)
+        try await api.decideDeviceLogin(code: "ABCD-1234", approveHandoff: false, identity: identity,
+            expectedAccount: auth.account, expectedAuth: auth)
+
+        XCTAssertEqual(stub.requests.map(\.method), ["GET", "POST", "POST"])
+        XCTAssertEqual(stub.requestedPaths,
+            ["/api/v2/auth/device", "/api/v2/auth/device/approve-handoff", "/api/v2/auth/device/deny"])
+        XCTAssertEqual(stub.requests.first?.query, ["code": "ABCD-1234"])
+        for request in stub.requests {
+            XCTAssertEqual(request.header("authorization"), "Bearer acc")
+            XCTAssertEqual(request.header("x-profile-id"), "profile", "approve-handoff requires X-Profile-Id")
+        }
+        for request in stub.requests.dropFirst() {
+            let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.body)) as? [String: String])
+            XCTAssertEqual(body, ["code": "ABCD-1234"])
+        }
+    }
+
+    /// A deny answered as approved is not a deny, and an expired request
+    /// surfaces the server's problem instead of a generic failure.
+    func testHandoffDecisionFailuresAreTyped() async throws {
+        let (api, tokens) = try await harness()
+        let (identity, auth) = try await handoffOwner(tokens)
+        stub.reply(200, #"{"status":"approved"}"#)
+        do {
+            try await api.decideDeviceLogin(code: "code", approveHandoff: false, identity: identity,
+                expectedAccount: auth.account, expectedAuth: auth)
+            XCTFail("a deny answered as approved is not a success")
+        } catch APIv2Error.incompleteAuthResponse { }
+        stub.reply(410, #"{"type":"https://siloserver.org/docs/api/v2/problems/gone","title":"Gone","status":410,"detail":"This pairing request has expired."}"#)
+        do {
+            try await api.decideDeviceLogin(code: "code", approveHandoff: true, identity: identity,
+                expectedAccount: auth.account, expectedAuth: auth)
+            XCTFail("an expired request is not approved")
+        } catch APIv2Error.problem(let problem) {
+            XCTAssertEqual(problem.status, 410)
+        }
+        let tokensAfter = await tokens.getAccessToken()
+        XCTAssertEqual(tokensAfter, "acc", "a 410 leaves the session alone")
+    }
+
+    /// The captured owner covers the profile proof too: a re-verified
+    /// profile between the TV's challenge and the approval refuses the
+    /// approval before it is sent.
+    func testHandoffApprovalRefusesAChangedProfileProofBeforeDispatch() async throws {
+        let (api, tokens) = try await harness()
+        let (identity, auth) = try await handoffOwner(tokens)
+        _ = await tokens.setProfileToken("new-proof")
+        stub.reply(200, #"{"status":"approved"}"#)
+        do {
+            try await api.decideDeviceLogin(code: "code", approveHandoff: true, identity: identity,
+                expectedAccount: auth.account, expectedAuth: auth)
+            XCTFail("an approval under a replaced owner was sent")
+        } catch HTTPError.requestIdentityChanged { }
+        XCTAssertTrue(stub.requests.isEmpty)
+    }
+
     func testActualNestedPollAndStrictStartLookupCapabilityFixtures() async throws {
         let decoder = HTTPClient.makeJSONDecoder()
         let poll = try decoder.decode(APIv2DevicePoll.self, from: Data(Self.poll_device_login_ok.utf8)).validated()

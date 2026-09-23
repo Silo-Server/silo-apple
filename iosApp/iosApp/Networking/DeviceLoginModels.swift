@@ -38,16 +38,10 @@ enum DeviceLoginStatus: String {
     }
 }
 
-/// Body of a device-login decision (sent by an authenticated client).
-struct DeviceApproveRequest: Codable {
-    let code: String
-}
-
 /// A pairing request as the approving client shows it: the authoritative
-/// match code and the requesting device. Pairing builds it from the v2
-/// lookup (`APIv2DeviceLookup.presentation`); the SiloRemote handoff still
-/// decodes it from its own lookup call.
-struct DeviceLookupResponse: Codable {
+/// match code and the requesting device. Pairing and the SiloRemote handoff
+/// both build it from the v2 lookup (`APIv2DeviceLookup.presentation`).
+struct DeviceLookupResponse {
     let matchCode: String?
     let deviceName: String?
     let devicePlatform: String?
