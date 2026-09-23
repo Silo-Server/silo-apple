@@ -85,10 +85,6 @@ actor DiagnosticsAPI {
         self.http = http
     }
 
-    func getDiagnosticsStatus() async throws -> DiagnosticsStatusResponse {
-        try await http.get("/api/v1/diagnostics/status")
-    }
-
     func upload(manifestData: Data, bundleData: Data) async throws -> DiagnosticsUploadResponse {
         do {
             return try await http.postMultipart(

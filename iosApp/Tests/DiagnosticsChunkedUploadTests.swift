@@ -53,8 +53,11 @@ final class DiagnosticsChunkedUploadTests: XCTestCase {
     // MARK: - Status decoding with and without upload_chunk_bytes
 
     func testStatusDecodesUploadChunkBytes() throws {
-        let status = try HTTPClient.makeJSONDecoder().decode(DiagnosticsStatusResponse.self, from: Data("""
+        let status = try HTTPClient.makeJSONDecoder().decode(APIv2DiagnosticsCapabilities.self, from: Data("""
         {
+          "revision": "r1",
+          "state": "available",
+          "allowed": true,
           "status": "available",
           "server_instance_id": "srv_123",
           "accepted_schema_versions": [1],
@@ -64,14 +67,15 @@ final class DiagnosticsChunkedUploadTests: XCTestCase {
           "consent_notice_version": 1,
           "upload_chunk_bytes": 786432
         }
-        """.utf8))
+        """.utf8)).statusResponse
         XCTAssertEqual(status.uploadChunkBytes, 786_432)
         XCTAssertTrue(status.supportsChunkedUpload)
     }
 
-    func testStatusFromOlderServerWithoutChunkFieldDecodes() throws {
-        // Older servers omit upload_chunk_bytes entirely; decoding must not
-        // fail and chunking must read as unsupported.
+    func testStatusSnapshotWithoutChunkFieldDecodes() throws {
+        // Snapshots persisted from servers that predate chunked uploads omit
+        // upload_chunk_bytes; decoding must not fail and chunking must read
+        // as unsupported.
         let status = try HTTPClient.makeJSONDecoder().decode(DiagnosticsStatusResponse.self, from: Data("""
         {
           "status": "available",

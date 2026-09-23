@@ -43,17 +43,21 @@ final class DiagnosticsContractTests: XCTestCase {
     func testDiagnosticsAPIDecodesWithHTTPClientSnakeCaseStrategy() throws {
         let decoder = HTTPClient.makeJSONDecoder()
 
-        let status = try decoder.decode(DiagnosticsStatusResponse.self, from: Data("""
+        let status = try decoder.decode(APIv2DiagnosticsCapabilities.self, from: Data("""
         {
+          "revision": "r1",
+          "state": "available",
+          "allowed": true,
           "status": "available",
           "server_instance_id": "srv_123",
           "accepted_schema_versions": [1],
           "max_bundle_bytes": 1048576,
           "max_manifest_bytes": 65536,
           "retention_days": 30,
-          "consent_notice_version": 2
+          "consent_notice_version": 2,
+          "upload_chunk_bytes": 786432
         }
-        """.utf8))
+        """.utf8)).statusResponse
 
         XCTAssertEqual(status.status, .available)
         XCTAssertEqual(status.serverInstanceID, "srv_123")

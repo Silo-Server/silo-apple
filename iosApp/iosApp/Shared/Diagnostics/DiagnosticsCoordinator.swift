@@ -448,7 +448,7 @@ actor DiagnosticsCoordinator {
             throw DiagnosticsCoordinatorError.identityChanged
         }
 
-        let status = try await api.getDiagnosticsStatus()
+        let status = try await siloAPI.apiV2Client.diagnosticsCapabilities()
         let user = try await siloAPI.currentUser()
         // Re-check the *stable* identity after the awaits: the active server
         // registry id plus the freshly fetched account user id. Comparing
@@ -2353,15 +2353,18 @@ actor DiagnosticsCoordinator {
                 return false
             }
         }
-        // The account read is v2 (`SiloAPI.currentUser`), so its non-2xx
-        // answers arrive as `APIv2Error`; transport failures stay `HTTPError`.
-        switch error {
-        case APIv2Error.problem(let problem):
-            return (500...599).contains(problem.status)
-        case APIv2Error.httpStatus(let statusCode):
-            return (500...599).contains(statusCode)
-        default:
-            break
+        // The capabilities read and the account read (`SiloAPI.currentUser`)
+        // are v2, so their non-2xx answers arrive as `APIv2Error`; transport
+        // failures stay `HTTPError`.
+        if let apiError = error as? APIv2Error {
+            switch apiError {
+            case .httpStatus(let statusCode):
+                return (500...599).contains(statusCode)
+            case .problem(let problem):
+                return (500...599).contains(problem.status)
+            default:
+                return false
+            }
         }
         if let httpError = error as? HTTPError {
             switch httpError {

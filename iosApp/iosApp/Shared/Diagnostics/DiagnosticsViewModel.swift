@@ -358,7 +358,7 @@ final class DiagnosticsViewModel {
                 destination: destination,
                 expectedGeneration: expectedGeneration
             )
-        } catch let error as HTTPError where error.statusCode == 404 {
+        } catch APIv2Error.serverUpdateRequired {
             guard isCurrent(destination: destination, generation: expectedGeneration) else {
                 return
             }
