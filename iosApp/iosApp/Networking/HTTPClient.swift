@@ -247,11 +247,18 @@ actor HTTPClient {
 
     // MARK: - Public API
 
-    func get<T: Decodable>(
-        _ path: String,
-        query: [String: String] = [:]
-    ) async throws -> T {
-        try await send(method: "GET", path: path, query: query, body: Optional<String>.none)
+    /// Authenticated JSON GET against the active server, with the ordinary
+    /// 401 refresh-and-retry.
+    func get<T: Decodable>(_ path: String) async throws -> T {
+        let (data, response) = try await performWithAuthRetry(method: "GET", path: path, timeout: .standard) { serverURL in
+            try self.buildRequest(serverUrl: serverURL, method: "GET", path: path, query: [:])
+        }
+        do {
+            return try Self.makeJSONDecoder(artworkServerURL: response.url).decode(T.self, from: data)
+        } catch {
+            Self.logDecodingFailure(type: String(describing: T.self), path: path, error: error, data: data)
+            throw HTTPError.decodingFailed(type: String(describing: T.self), underlying: error)
+        }
     }
 
     /// Probe a candidate server without mutating global routing state or
@@ -335,8 +342,7 @@ actor HTTPClient {
             serverUrl: ServerRegistry.normalize(url: serverURL),
             method: "GET",
             path: path,
-            query: [:],
-            body: Optional<String>.none
+            query: [:]
         )
         if let bearer {
             request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
@@ -363,38 +369,6 @@ actor HTTPClient {
         }
     }
 
-    func post<T: Decodable>(
-        _ path: String,
-        body: (any Encodable)? = nil,
-        query: [String: String] = [:],
-        timeout: HTTPTimeout = .standard
-    ) async throws -> T {
-        try await send(method: "POST", path: path, query: query, body: body, timeout: timeout)
-    }
-
-    func postVoid(
-        _ path: String,
-        body: (any Encodable)? = nil,
-        query: [String: String] = [:],
-        expectedAccount: RefreshAccountIdentity? = nil
-    ) async throws {
-        _ = try await performWithAuthRetry(
-            method: "POST",
-            path: path,
-            quietStatuses: [],
-            timeout: .standard,
-            expectedAccount: expectedAccount
-        ) { serverUrl in
-            try self.buildRequest(
-                serverUrl: serverUrl,
-                method: "POST",
-                path: path,
-                query: query,
-                body: body
-            )
-        }
-    }
-
     /// Best-effort revocation after local sign-out (`POST /api/v2/auth/logout`).
     /// The captured bearer belongs to the outgoing session; never refresh it or
     /// read the replacement account. The request carries only that bearer: v2
@@ -403,7 +377,7 @@ actor HTTPClient {
         guard let token = auth.accessToken, !token.isEmpty else { return }
         do {
             var request = try buildRequest(serverUrl: auth.account.serverURL,
-                method: "POST", path: "/api/v2/auth/logout", query: [:], body: nil)
+                method: "POST", path: "/api/v2/auth/logout", query: [:])
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             request.timeoutInterval = 5
             // Removing the server or signing in again cancels ordinary traffic.
@@ -414,80 +388,6 @@ actor HTTPClient {
         } catch {
             // Local sign-out is complete even when the server is unavailable.
         }
-    }
-
-    func postMultipart<T: Decodable>(
-        _ path: String,
-        parts: [HTTPMultipartPart],
-        timeout: HTTPTimeout = .extended
-    ) async throws -> T {
-        let boundary = "SiloDiagnostics-\(UUID().uuidString)"
-        return try await sendRawBody(
-            method: "POST",
-            path: path,
-            body: Self.multipartBody(parts: parts, boundary: boundary),
-            contentType: "multipart/form-data; boundary=\(boundary)",
-            timeout: timeout
-        )
-    }
-
-    /// POST a pre-encoded body verbatim. Exists for callers whose payload
-    /// cannot go through `JSONEncoder` — e.g. diagnostics chunked-upload init,
-    /// which embeds an already-serialized manifest byte-for-byte (re-encoding
-    /// could reorder keys and break the server's manifest equality check).
-    func postRaw<T: Decodable>(
-        _ path: String,
-        body: Data,
-        contentType: String,
-        timeout: HTTPTimeout = .standard
-    ) async throws -> T {
-        try await sendRawBody(method: "POST", path: path, body: body, contentType: contentType, timeout: timeout)
-    }
-
-    /// PUT a raw binary body (e.g. one diagnostics bundle chunk).
-    func putRaw<T: Decodable>(
-        _ path: String,
-        body: Data,
-        contentType: String,
-        timeout: HTTPTimeout = .extended
-    ) async throws -> T {
-        try await sendRawBody(method: "PUT", path: path, body: body, contentType: contentType, timeout: timeout)
-    }
-
-    func put<T: Decodable>(
-        _ path: String,
-        body: (any Encodable)? = nil,
-        query: [String: String] = [:]
-    ) async throws -> T {
-        try await send(method: "PUT", path: path, query: query, body: body)
-    }
-
-    func putVoid(
-        _ path: String,
-        body: (any Encodable)? = nil,
-        query: [String: String] = [:]
-    ) async throws {
-        _ = try await sendRaw(method: "PUT", path: path, query: query, body: body)
-    }
-
-    func delete(_ path: String, query: [String: String] = [:]) async throws {
-        _ = try await sendRaw(method: "DELETE", path: path, query: query, body: Optional<String>.none)
-    }
-
-    func patch<T: Decodable>(
-        _ path: String,
-        body: (any Encodable)? = nil,
-        query: [String: String] = [:]
-    ) async throws -> T {
-        try await send(method: "PATCH", path: path, query: query, body: body)
-    }
-
-    func patchVoid(
-        _ path: String,
-        body: (any Encodable)? = nil,
-        query: [String: String] = [:]
-    ) async throws {
-        _ = try await sendRaw(method: "PATCH", path: path, query: query, body: body)
     }
 
     /// Send a request with a caller-supplied body and extra headers, doing no
@@ -681,8 +581,7 @@ actor HTTPClient {
                 serverUrl: serverUrl,
                 method: method,
                 path: path,
-                query: query,
-                body: Optional<String>.none
+                query: query
             )
             try Self.appendQuery(repeatedQuery, to: &request)
             if let body {
@@ -749,8 +648,7 @@ actor HTTPClient {
             serverUrl: auth.serverURL,
             method: method,
             path: path,
-            query: query,
-            body: Optional<String>.none
+            query: query
         )
         if let body {
             request.httpBody = body
@@ -945,28 +843,7 @@ actor HTTPClient {
         }
     }
 
-    // MARK: - Core send
-
-    private func send<T: Decodable>(
-        method: String,
-        path: String,
-        query: [String: String],
-        body: (any Encodable)?,
-        timeout: HTTPTimeout = .standard
-    ) async throws -> T {
-        let (data, response) = try await performWithAuthRetry(method: method, path: path, timeout: timeout) { serverURL in
-            try self.buildRequest(serverUrl: serverURL, method: method, path: path, query: query, body: body)
-        }
-        if data.isEmpty, let empty = EmptyResponse.empty as? T {
-            return empty
-        }
-        do {
-            return try Self.makeJSONDecoder(artworkServerURL: response.url).decode(T.self, from: data)
-        } catch {
-            Self.logDecodingFailure(type: String(describing: T.self), path: path, error: error, data: data)
-            throw HTTPError.decodingFailed(type: String(describing: T.self), underlying: error)
-        }
-    }
+    // MARK: - Decoding diagnostics
 
     /// Diagnostic log for decoding failures. Emits the endpoint, the specific
     /// DecodingError case (keyNotFound / typeMismatch / valueNotFound /
@@ -1081,32 +958,6 @@ actor HTTPClient {
 
     private static func codingPathString(_ path: [CodingKey]) -> String {
         path.map { $0.intValue.map(String.init) ?? $0.stringValue }.joined(separator: ".")
-    }
-
-    /// Returns raw response body bytes. Handles auth injection, 401 retry,
-    /// and non-2xx status translation.
-    private func sendRaw(
-        method: String,
-        path: String,
-        query: [String: String],
-        body: (any Encodable)?,
-        quietStatuses: Set<Int> = [],
-        timeout: HTTPTimeout = .standard
-    ) async throws -> Data {
-        try await performWithAuthRetry(
-            method: method,
-            path: path,
-            quietStatuses: quietStatuses,
-            timeout: timeout
-        ) { serverUrl in
-            try self.buildRequest(
-                serverUrl: serverUrl,
-                method: method,
-                path: path,
-                query: query,
-                body: body
-            )
-        }.0
     }
 
     /// Shared server-URL/auth/401-refresh/success skeleton for every request
@@ -1248,66 +1099,41 @@ actor HTTPClient {
         request.setValue(nil, forHTTPHeaderField: "X-Profile-Token")
     }
 
-    private func sendRawBody<T: Decodable>(
-        method: String,
-        path: String,
-        body: Data,
-        contentType: String,
-        timeout: HTTPTimeout
-    ) async throws -> T {
-        let data = try await sendRawBodyData(
-            method: method,
-            path: path,
-            body: body,
-            contentType: contentType,
-            timeout: timeout
-        )
-        if data.isEmpty, let empty = EmptyResponse.empty as? T {
-            return empty
-        }
-        do {
-            return try decoder.decode(T.self, from: data)
-        } catch {
-            Self.logDecodingFailure(type: String(describing: T.self), path: path, error: error, data: data)
-            throw HTTPError.decodingFailed(type: String(describing: T.self), underlying: error)
-        }
-    }
-
-    private func sendRawBodyData(
-        method: String,
-        path: String,
-        body: Data,
-        contentType: String,
-        timeout: HTTPTimeout
-    ) async throws -> Data {
-        try await performWithAuthRetry(method: method, path: path, timeout: timeout) { serverUrl in
-            var request = try self.buildRequest(
-                serverUrl: serverUrl,
-                method: method,
-                path: path,
-                query: [:],
-                body: Optional<String>.none
-            )
-            request.setValue(contentType, forHTTPHeaderField: "Content-Type")
-            request.httpBody = body
-            return request
-        }.0
-    }
-
     // MARK: - Request building
 
+    /// Whether `path` is a Silo server route this client may request: a
+    /// `/api/v2` operation, or the retained unauthenticated health probe
+    /// (``ConnectionMonitor/healthPath``). `path` is the route relative to the
+    /// server URL, so a server mounted under a base path still passes.
+    ///
+    /// Only requests built here are checked. Token refresh uses the constant
+    /// ``refreshPath``; other origins (the hosted diagnostics service) and
+    /// server-minted absolute media URLs never come through this client's
+    /// request builder, so they need no exemption.
+    static func isSiloServerPath(_ path: String) -> Bool {
+        let normalizedPath = path.hasPrefix("/") ? path : "/" + path
+        return normalizedPath == "/api/v2" || normalizedPath.hasPrefix("/api/v2/")
+            || normalizedPath == ConnectionMonitor.healthPath
+    }
+
+    /// The funnel every request to the active or a candidate Silo server
+    /// passes through.
     private func buildRequest(
         serverUrl: String,
         method: String,
         path: String,
-        query: [String: String],
-        body: (any Encodable)?
+        query: [String: String]
     ) throws -> URLRequest {
+        #if DEBUG
+        if !Self.isSiloServerPath(path) {
+            assertionFailure("HTTPClient request outside /api/v2: \(method) \(path)")
+        }
+        #endif
         guard var components = URLComponents(string: serverUrl) else {
             throw HTTPError.invalidURL(serverUrl)
         }
 
-        // `path` arrives either as `/api/v1/foo` or `api/v1/foo`; normalize.
+        // `path` arrives either as `/api/v2/foo` or `api/v2/foo`; normalize.
         let normalizedPath = path.hasPrefix("/") ? path : "/" + path
         let basePath = components.percentEncodedPath
         let trimmedBase = basePath.hasSuffix("/") ? String(basePath.dropLast()) : basePath
@@ -1326,16 +1152,6 @@ actor HTTPClient {
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-
-        if let body {
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            do {
-                request.httpBody = try encoder.encode(AnyEncodable(body))
-            } catch {
-                throw HTTPError.encodingFailed(underlying: error)
-            }
-        }
-
         return request
     }
 
@@ -1901,7 +1717,7 @@ actor HTTPClient {
     ///
     /// `path` here is the caller's route argument rather than a built URL, and
     /// it still goes through ``HTTPDiagnosticsPath``: callers interpolate ids
-    /// into it (`"/api/v1/items/\(contentId)"`), and that helper also truncates
+    /// into it (`"/api/v2/catalog/items/\(itemID)"`), and that helper also truncates
     /// at the first `?` or `#`, so neither an id nor a query string can leak
     /// through this line.
     private static func logRefreshRetry(method: String, path: String, outcome: String) {
@@ -2513,7 +2329,6 @@ enum HTTPError: LocalizedError, CustomStringConvertible {
     case invalidURL(String)
     case invalidResponse
     case network(underlying: Error)
-    case encodingFailed(underlying: Error)
     case decodingFailed(type: String, underlying: Error)
     case http(statusCode: Int, body: String?)
 
@@ -2531,16 +2346,11 @@ enum HTTPError: LocalizedError, CustomStringConvertible {
             return "Invalid server response."
         case .network(let error):
             return "Network error: \(error.localizedDescription)"
-        case .encodingFailed(let error):
-            return "Failed to encode request body: \(error.localizedDescription)"
         case .decodingFailed(let type, let error):
             return "Failed to decode \(type): \(error.localizedDescription)"
         case .http(let statusCode, let body):
             if UpdateRequirement.isClientUpgradeRequired(statusCode: statusCode, body: body) {
                 return UpdateRequirement.appMessage
-            }
-            if let message = Self.parseServerMessage(body) {
-                return message
             }
             return "Server returned status \(statusCode)"
         }
@@ -2562,8 +2372,6 @@ enum HTTPError: LocalizedError, CustomStringConvertible {
             return "invalid_response"
         case .network:
             return "network_error"
-        case .encodingFailed:
-            return "encoding_failed"
         case .decodingFailed(let type, _):
             return "decoding_failed(type: \(type))"
         case .http(let statusCode, _):
@@ -2574,64 +2382,6 @@ enum HTTPError: LocalizedError, CustomStringConvertible {
     var statusCode: Int? {
         if case .http(let code, _) = self { return code }
         return nil
-    }
-
-    /// Machine-readable identifier from the server's JSON error envelope
-    /// (e.g. `profile_limit_reached`). Callers that want to branch on the
-    /// specific condition — rather than just showing `errorDescription` —
-    /// can match on this without re-parsing the body.
-    var serverErrorCode: String? {
-        if case .http(_, let body) = self {
-            return Self.parseServerError(body)?.error
-        }
-        return nil
-    }
-
-    /// The server's JSON error shape, mirrored from Go `errorResponse` in
-    /// `internal/api/handlers/auth.go`. Both fields are optional because
-    /// not every failing endpoint emits a body, and some middleware emits
-    /// just plain text (e.g. router 404s).
-    private struct ServerError: Decodable {
-        let error: String?
-        let message: String?
-    }
-
-    private static func parseServerError(_ body: String?) -> ServerError? {
-        guard let body, !body.isEmpty,
-              let data = body.data(using: .utf8),
-              let parsed = try? JSONDecoder().decode(ServerError.self, from: data)
-        else { return nil }
-        return parsed
-    }
-
-    private static func parseServerMessage(_ body: String?) -> String? {
-        guard let parsed = parseServerError(body) else { return nil }
-        if let message = parsed.message, !message.isEmpty { return message }
-        return nil
-    }
-}
-
-// MARK: - Internal helpers
-
-/// Sentinel used to satisfy `send<T>` for generic calls that expect an
-/// empty/void response. Not public.
-private struct EmptyResponse: Decodable {
-    static let empty = EmptyResponse()
-    init() {}
-    init(from decoder: Decoder) throws {}
-}
-
-/// Type-erased `Encodable` so `send` can accept `(any Encodable)?` bodies
-/// and hand them to `JSONEncoder` (which needs a concrete conforming type).
-private struct AnyEncodable: Encodable {
-    private let wrapped: any Encodable
-
-    init(_ wrapped: any Encodable) {
-        self.wrapped = wrapped
-    }
-
-    func encode(to encoder: Encoder) throws {
-        try wrapped.encode(to: encoder)
     }
 }
 
@@ -2650,7 +2400,7 @@ private struct AnyEncodable: Encodable {
 /// `attrs.path` value. Two categories of real Silo route pass the first check
 /// and are still rejected:
 ///
-/// * **Dotted segments.** `/api/v1/settings/values/downloads.default_quality`
+/// * **Dotted segments.** `/api/v2/settings/values/downloads.default_quality`
 ///   is a static route with a static key, and every segment is a legal
 ///   identifier — but the collector reads `downloads.default_quality` as a
 ///   hostname-shaped token and rejects the report. It maintains a hand-curated

@@ -70,14 +70,19 @@ enum UpdateRequirement: Equatable, Sendable {
 
     /// Accepts both shapes the server documents for the v1 retirement
     /// tombstone: a problem document, or the v1 error envelope
-    /// (`{"error":"client_upgrade_required",...}`).
+    /// (`{"error":"client_upgrade_required",...}`). The envelope matters only
+    /// for the retained `ConnectionMonitor.healthPath` probe, the one request
+    /// that can still reach a v1 route.
     static func isClientUpgradeRequired(statusCode: Int, body: String?) -> Bool {
-        guard statusCode == 410 else { return false }
-        if let data = body?.data(using: .utf8),
-           let problem = try? HTTPClient.makeJSONDecoder().decode(APIv2Problem.self, from: data) {
+        guard statusCode == 410, let data = body?.data(using: .utf8) else { return false }
+        if let problem = try? HTTPClient.makeJSONDecoder().decode(APIv2Problem.self, from: data) {
             return isClientUpgradeRequired(problem)
         }
-        return HTTPError.http(statusCode: statusCode, body: body).serverErrorCode == clientUpgradeRequiredProblem
+        return (try? JSONDecoder().decode(TombstoneEnvelope.self, from: data))?.error == clientUpgradeRequiredProblem
+    }
+
+    private struct TombstoneEnvelope: Decodable {
+        let error: String?
     }
 }
 

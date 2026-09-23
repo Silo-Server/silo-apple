@@ -235,28 +235,6 @@ struct APIv2Client: Sendable {
         return try HTTPClient.makeJSONDecoder(artworkServerURL: response.url).decode(T.self, from: response.data)
     }
 
-    /// Create and cancel are never replayed after an ambiguous transport
-    /// failure, and, like every other v2 mutation, dispatch only under the
-    /// owner captured here.
-    func requestPost<T: Decodable, B: Encodable>(_ path: String, body: B, timeout: HTTPTimeout = .standard) async throws -> T {
-        try await gate()
-        guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
-        let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
-        encoder.dateEncodingStrategy = .iso8601
-        let data = try encoder.encode(body)
-        let identity = auth.profileId.map { Self.requestIdentity(auth, profile: $0) }
-        let response = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "POST", path: path, body: data,
-                    headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:], timeout: timeout,
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
-        guard (200..<300).contains(response.statusCode) else { throw APIv2Error.httpStatus(response.statusCode) }
-        return try HTTPClient.makeJSONDecoder(artworkServerURL: response.url).decode(T.self, from: response.data)
-    }
-
     func settingsRead(_ path: String, query: [URLQueryItem] = [], profileID: String? = nil,
                       expectedIdentity: HTTPRequestIdentity? = nil, profileRequired: Bool = false) async throws -> Data {
         try await gate()

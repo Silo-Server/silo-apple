@@ -17,7 +17,7 @@ final class UpdateRequirementTests: XCTestCase {
     static let legacyNotFound = "404 page not found\n"
     /// Any route the `HTTPClient` layer requests: its classification depends
     /// only on the reply, never on the path.
-    static let httpLayerPath = "/probe"
+    static let httpLayerPath = "/api/v2/system/info"
 
     private func problem(_ json: String) throws -> APIv2Problem {
         try HTTPClient.makeJSONDecoder().decode(APIv2Problem.self, from: Data(json.utf8))
@@ -115,7 +115,7 @@ final class UpdateRequirementTests: XCTestCase {
         let stub = APIv2TestStub(fallback: .json(410, Self.upgradeProblem))
         let http = HTTPClient(session: stub.makeSession(), tokenStore: tokens)
         do {
-            let _: AuthUser = try await http.get(Self.httpLayerPath)
+            let _: HealthStatus = try await http.get(Self.httpLayerPath)
             XCTFail("expected the HTTPClient 410 to surface")
         } catch {
             XCTAssertEqual(UpdateRequirement(error), .app)

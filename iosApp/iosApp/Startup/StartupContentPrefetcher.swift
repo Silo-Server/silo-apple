@@ -211,14 +211,11 @@ enum StartupContentPrefetcher {
     }
 
     nonisolated static func indicatesInvalidProfile(_ error: Error) -> Bool {
-        if case .problem(let problem) = error as? APIv2Error {
-            // v2 names a locked profile without a valid X-Profile-Token this
-            // way. A missing profile is a plain `not_found`, which v2 does
-            // not tell apart from any other missing resource.
-            return problem.identifier == "profile_verification_required"
-        }
-        guard let error = error as? HTTPError else { return false }
-        return ["profile_unverified", "profile_not_found"].contains(error.serverErrorCode)
+        // v2 names a locked profile without a valid X-Profile-Token this way.
+        // A missing profile is a plain `not_found`, which v2 does not tell
+        // apart from any other missing resource.
+        guard case .problem(let problem) = error as? APIv2Error else { return false }
+        return problem.identifier == "profile_verification_required"
     }
 
     #if os(iOS) || os(tvOS)
@@ -274,7 +271,6 @@ enum StartupContentPrefetcher {
             if nsError.domain == NSURLErrorDomain { return "network" }
             return "other"
         }
-        if indicatesInvalidProfile(httpError) { return "invalid_profile" }
         switch httpError {
         case .serverUrlNotConfigured:
             return "no_server"
@@ -297,7 +293,7 @@ enum StartupContentPrefetcher {
             return "decode_failed"
         case .http(let statusCode, _):
             return statusReason(statusCode)
-        case .invalidURL, .invalidResponse, .encodingFailed:
+        case .invalidURL, .invalidResponse:
             return "other"
         }
     }

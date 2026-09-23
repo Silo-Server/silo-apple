@@ -9,7 +9,7 @@ import XCTest
 final class RefreshSessionV2Tests: XCTestCase {
     private static let serverId = "server"
     private static let serverURL = "https://refresh.example"
-    private static let resourcePath = "/resource"
+    private static let resourcePath = "/api/v2/account/me"
     private static let rotatedTokens = #"{"access_token":"new-access","refresh_token":"new-refresh","expires_in":3600}"#
     private static let upgradeProblem = """
     {"type":"https://siloserver.org/docs/api/v2/problems/client_upgrade_required",

@@ -49,10 +49,17 @@ ok "empty or headerless allowlist fails"
 
 printf 'let a = "/api/v2/health"\n' > "$tmp/iosApp/iosApp/Networking/Client.swift"
 printf 'let e = "/api/v2/items"\n' > "$tmp/iosApp/Tests/ClientTests.swift"
-run > /dev/null || fail "lowered count passes the ceiling check"
-ok "lowered count passes"
-out="$(run --exact 2>&1)" && fail "lowered count fails with --exact"
-[[ "$out" == *"has 0 /api/v1 path match(es); the allowlist still records 5"* ]] || fail "exact message: $out"
-ok "lowered count fails with --exact"
+out="$(run 2>&1)" && fail "removed matches fail until the allowlist is lowered"
+[[ "$out" == *"has 0 /api/v1 path match(es); the allowlist still records 5"* ]] || fail "removed file message: $out"
+ok "removed matches fail"
+
+printf 'let a = "/api/v1/health"\nlet b = "/api/v2/items"\n' > "$tmp/iosApp/iosApp/Networking/Client.swift"
+out="$(run 2>&1)" && fail "lowered count fails"
+[[ "$out" == *"has 1 /api/v1 path match(es); the allowlist still records 5"* ]] || fail "lowered count message: $out"
+ok "lowered count fails"
+
+run --print-counts > "$tmp/allow.txt"
+run > /dev/null || fail "regenerated allowlist passes"
+ok "regenerated allowlist passes"
 
 echo "ALL PASS"

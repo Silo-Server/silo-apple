@@ -7,15 +7,15 @@ import Foundation
 // Usage
 //
 //     let stub = StubURLProtocol.Handler()
-//     stub.route(.method("GET", path: "/api/v1/health")) { _ in
-//         .json(#"{"status":"ok"}"#)
+//     stub.route(.method("GET", path: "/api/v2/system/info")) { _ in
+//         .json(#"{"server_id":"server"}"#)
 //     }
 //     stub.expect(.path("/api/v2/auth/refresh")) { _ in .status(401) }   // one-shot
 //     let session = stub.makeSession()                                    // or stub.install(into: config)
 //
 //     ... exercise the code under test with `session` ...
 //
-//     XCTAssertEqual(stub.requests.map(\.path), ["/api/v1/health"])
+//     XCTAssertEqual(stub.requests.map(\.path), ["/api/v2/system/info"])
 //
 // Vocabulary
 //

@@ -77,8 +77,8 @@ final class AuthService: @unchecked Sendable {
     /// also drops the result unless `serverId` is still the active server.
     /// Only `.v2` and `.updateServer` change the verdict; a transport or HTTP
     /// failure leaves the previous one in place (a timeout is not an old
-    /// server). Nothing here throws: v1 paths keep working against a v1-only
-    /// server, and the verdict only closes the v2 pilot gate.
+    /// server). Nothing here throws: the verdict closes the v2 gate, and
+    /// gated calls then report that the server needs an update.
     private func recordContractVerdict(serverId: String, serverURL: String) async {
         let generation = await MainActor.run {
             ConnectionMonitor.shared.beginContractProbe(serverId: serverId)

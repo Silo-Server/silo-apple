@@ -22,6 +22,11 @@ final class MediaAuthorizationPlaybackTests: XCTestCase {
 
     private static let progressPath = "/api/v2/playback/\(RotatingMediaOrigin.sessionID)/progress"
     private static let refreshPath = "/api/v2/auth/refresh"
+
+    private static func postProgress(_ http: HTTPClient, position: Double) async throws -> HTTPRawResponse {
+        let body = try JSONSerialization.data(withJSONObject: ["position": position])
+        return try await http.requestData(method: "POST", path: progressPath, body: body)
+    }
     private static let refreshedTokens = #"{"access_token":"synthetic-rotated","refresh_token":"synthetic-refresh-rotated","expires_in":3600}"#
 
     func testSyntheticHLSContinuesWhenLaterSegmentsAreReleased() async throws {
@@ -125,7 +130,7 @@ final class MediaAuthorizationPlaybackTests: XCTestCase {
                 .json(200, Self.refreshedTokens),
                 .json(204, ""),
             ])
-            try await auth.http.postVoid(Self.progressPath, body: ["position": timeBeforeRotation])
+            _ = try await Self.postProgress(auth.http, position: timeBeforeRotation)
             XCTAssertEqual(auth.stub.requestedPaths, [Self.progressPath, Self.refreshPath, Self.progressPath])
             let progressRequests = auth.stub.requests.filter { $0.path == Self.progressPath }
             XCTAssertEqual(progressRequests.first?.header("Authorization"), RotatingMediaOrigin.initialAuthorization)
@@ -166,7 +171,7 @@ final class MediaAuthorizationPlaybackTests: XCTestCase {
             XCTAssertEqual(accessToken, RotatingMediaOrigin.rotatedAccessToken)
             if rotation == .mediaChallenge {
                 XCTAssertGreaterThan(after.rejectedRequests, 0, "The held old request must exercise reactive refresh")
-                try await auth.http.postVoid(Self.progressPath, body: ["position": player.currentTime().seconds])
+                _ = try await Self.postProgress(auth.http, position: player.currentTime().seconds)
             } else {
                 XCTAssertEqual(after.rejectedRequests, 0, "API rotation must authorize future media before its first attempt")
             }

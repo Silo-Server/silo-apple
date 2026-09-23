@@ -24,15 +24,15 @@ final class DiagnosticsRedactionTests: XCTestCase {
     }
 
     func testHTTPSURLHostIsHashedAndQueryDropped() throws {
-        let line = try rendered("HTTP 404 GET https://media.example.com/api/v1/settings/card_overlays?probe=1")
+        let line = try rendered("HTTP 404 GET https://media.example.com/api/v2/settings/card_overlays?probe=1")
         XCTAssertFalse(line.contains("media.example.com"))
         XCTAssertFalse(line.contains("probe=1"))
         XCTAssertTrue(line.contains("[host:"))
-        XCTAssertTrue(line.contains("/api/v1/settings/card_overlays"))
+        XCTAssertTrue(line.contains("/api/v2/settings/card_overlays"))
     }
 
     func testWebSocketURLHostIsHashed() throws {
-        let line = try rendered(#"loop failed UserInfo={NSErrorFailingURLStringKey=wss://media.example.com/api/v1/playback/sessions/abc/realtime}"#)
+        let line = try rendered(#"loop failed UserInfo={NSErrorFailingURLStringKey=wss://media.example.com/api/v2/playback/sessions/abc/realtime}"#)
         XCTAssertFalse(line.contains("media.example.com"))
         XCTAssertTrue(line.contains("wss://[host:"))
     }
@@ -88,7 +88,7 @@ final class DiagnosticsRedactionTests: XCTestCase {
     //   → GET /path headers=[auth(…suffix), profileId=..., profileToken(…suffix), device=...]
     func testHTTPClientDebugHeaderProfileAndTokensAreRedacted() throws {
         let line = try rendered(
-            "→ GET /api/v1/library headers=[auth(…9f8e7d), profileId=prof-abc-123, profileToken(…a1b2c3), device=tvos]"
+            "→ GET /api/v2/library headers=[auth(…9f8e7d), profileId=prof-abc-123, profileToken(…a1b2c3), device=tvos]"
         )
         // Token suffixes wrapped in parentheses are redacted.
         XCTAssertFalse(line.contains("9f8e7d"))
@@ -119,8 +119,8 @@ final class DiagnosticsRedactionTests: XCTestCase {
     }
 
     func testURLPathAPIVocabularyIsNotMistakenForAnIdentifier() throws {
-        let line = try rendered("HTTP 200 GET https://media.example.com/api/v1/settings/card_overlays")
-        XCTAssertTrue(line.contains("/api/v1/settings/card_overlays"))
+        let line = try rendered("HTTP 200 GET https://media.example.com/api/v2/settings/card_overlays")
+        XCTAssertTrue(line.contains("/api/v2/settings/card_overlays"))
     }
 
     // Every DiagTrace, breadcrumb, and early-boot line goes through this layer,

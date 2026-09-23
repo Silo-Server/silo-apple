@@ -190,7 +190,7 @@ struct RestoredSessionValidator: Sendable {
             switch httpError {
             case .requestIdentityChanged, .authorityChanged:
                 return .identityChanged
-            case .network, .encodingFailed:
+            case .network:
                 return .indeterminate
             case .http(let statusCode, _):
                 return Self.result(forStatus: statusCode, stage: stage)

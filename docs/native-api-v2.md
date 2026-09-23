@@ -3,8 +3,10 @@
 The stable native business API is `/api/v2`. Apple release callers use the
 accepted v2 operation contracts and refuse unavailable operations. A failed or
 unconfigured v2 playback request must not silently start a v1 session. The
-retained `/api/v1/health` probe is an operational exception, not a playback
-fallback. The server's [native API contract](https://github.com/Silo-Server/silo-server/blob/main/docs/architecture/api-contract.md)
+retained `/api/v1/health` probe is the only v1 request and an operational
+exception, not a fallback. Debug builds assert this in `HTTPClient`, and
+`scripts/ci/check-no-api-v1.sh` holds every v1 path mention in the sources to
+an exact allowlist. The server's [native API contract](https://github.com/Silo-Server/silo-server/blob/main/docs/architecture/api-contract.md)
 defines the release boundary.
 
 ## Displayed reads authorize card actions

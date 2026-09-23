@@ -29,7 +29,7 @@ enum APIv2MutationOutcome: Equatable, Sendable {
             self = .ownerChanged(beforeDispatch: true)
         case HTTPError.requestIdentityChanged, HTTPError.authorityChanged:
             self = .ownerChanged(beforeDispatch: dispatched == false)
-        case HTTPError.serverUrlNotConfigured, HTTPError.invalidURL, HTTPError.encodingFailed, is EncodingError:
+        case HTTPError.serverUrlNotConfigured, HTTPError.invalidURL, is EncodingError:
             self = .notSent
         case HTTPError.network(let underlying):
             self = Self.transport(underlying)

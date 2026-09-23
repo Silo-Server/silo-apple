@@ -92,7 +92,7 @@ struct ErrorState: Equatable {
             return "The server returned an unexpected response."
         case .network:
             return "Can't reach the server. Check your connection and try again."
-        case .encodingFailed, .decodingFailed:
+        case .decodingFailed:
             return "The server response was in an unexpected format."
         case .http(let code, _):
             return humanize(statusCode: code)
