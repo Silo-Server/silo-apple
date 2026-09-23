@@ -966,8 +966,8 @@ struct ContentView: View {
         didAttemptDebugAutoPlay = true
 
         do {
-            let sections = try await SiloAPI.shared.homeSections()
-            guard let contentId = sections.sections.lazy
+            let home = try await SiloAPI.shared.homeSections()
+            guard let contentId = home.sections.lazy
                 .compactMap({ $0.items.first?.contentId })
                 .first else {
                 return

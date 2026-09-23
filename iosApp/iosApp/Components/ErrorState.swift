@@ -1,9 +1,9 @@
 import Foundation
 
 /// Normalized error payload for UI. Wraps `Error` with a humanized message
-/// and — when the source is an `HTTPError` / `APIError` — the HTTP status
-/// code so `ErrorView` can pick recovery actions without the UI needing to
-/// know about networking error types.
+/// and — when the source is an `HTTPError`, `APIError` or a status-carrying
+/// `APIv2Error` — the HTTP status code so `ErrorView` can pick recovery
+/// actions without the UI needing to know about networking error types.
 struct ErrorState: Equatable {
     let statusCode: Int?
     let message: String
@@ -35,7 +35,7 @@ struct ErrorState: Equatable {
 
     init(_ error: Error) {
         if let requirement = UpdateRequirement(error) {
-            self.statusCode = (error as? HTTPError)?.statusCode
+            self.statusCode = (error as? HTTPError)?.statusCode ?? Self.statusCode(v2: error)
             self.message = requirement.message
             self.updateRequirement = requirement
             return
@@ -46,6 +46,19 @@ struct ErrorState: Equatable {
             self.message = Self.humanize(httpError: httpError)
             return
         }
+        if let code = Self.statusCode(v2: error) {
+            // 401/403/404 keep the copy that matches ErrorView's "Session
+            // expired" / "Not found" headlines; other problems carry the
+            // server's own detail, which says more than a status category.
+            self.statusCode = code
+            switch error {
+            case APIv2Error.problem where ![401, 403, 404].contains(code):
+                self.message = (error as? LocalizedError)?.errorDescription ?? Self.humanize(statusCode: code)
+            default:
+                self.message = Self.humanize(statusCode: code)
+            }
+            return
+        }
         if let apiError = error as? APIError, case .httpError(let code) = apiError {
             self.statusCode = code
             self.message = Self.humanize(statusCode: code)
@@ -54,6 +67,17 @@ struct ErrorState: Equatable {
         self.statusCode = nil
         self.message = (error as? LocalizedError)?.errorDescription
             ?? error.localizedDescription
+    }
+
+    /// The HTTP status behind a v2 failure. `APIv2Client` maps every non-2xx
+    /// `HTTPError.http` into one of these two cases, so without this a v2 401
+    /// or 404 would read as a status-less (transient) network error.
+    private static func statusCode(v2 error: Error) -> Int? {
+        switch error {
+        case APIv2Error.problem(let problem): return problem.status
+        case APIv2Error.httpStatus(let code): return code
+        default: return nil
+        }
     }
 
     private static func humanize(httpError: HTTPError) -> String {

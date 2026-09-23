@@ -87,23 +87,33 @@ actor SiloAPI {
 
     // --- Home / sections ---
 
-    func homeSections() async throws -> SectionsResponse {
-        try await http.get("/api/v1/home/sections", query: await imageSizeQuery)
+    /// The acting profile's Home rows. The read carries the owner it was
+    /// fetched for so a caller can refuse to apply it after a switch.
+    func homeSections() async throws -> APIv2HomeSectionsRead {
+        let auth = try await detailReadAuth()
+        return try await apiV2Client.homeSections(imageSize: await imageSizeQuery["image_size"], auth: auth)
     }
 
+    /// True while `auth` still names the active server, account and profile.
+    func isCurrentOwner(_ auth: CapturedOrdinaryRequestAuth) async -> Bool {
+        await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+    }
+
+    /// Hide an in-progress card until it is played again. The server keys
+    /// the dismissal on the card's exact `progress_updated_at`.
     func dismissContinueWatchingItem(contentId: String, progressUpdatedAt: String) async throws {
-        try await http.putVoid(
-            "/api/v1/home/dismissals/continue_watching/\(contentId)",
-            body: HomeDismissalBody(progressUpdatedAt: progressUpdatedAt)
+        try await apiV2Client.dismissHomeItem(
+            id: contentId, progressUpdatedAt: progressUpdatedAt, seriesId: nil,
+            auth: await tokenStore.captureOrdinaryRequestAuth()
         )
     }
 
     /// Next Up episodes carry no progress row, so the server keys their
     /// dismissal on the parent series instead of `progress_updated_at`.
     func dismissNextUpItem(contentId: String, seriesId: String) async throws {
-        try await http.putVoid(
-            "/api/v1/home/dismissals/next_up/\(contentId)",
-            body: NextUpDismissalBody(seriesId: seriesId)
+        try await apiV2Client.dismissHomeItem(
+            id: contentId, progressUpdatedAt: nil, seriesId: seriesId,
+            auth: await tokenStore.captureOrdinaryRequestAuth()
         )
     }
 
@@ -549,12 +559,4 @@ enum APIError: LocalizedError {
             return message
         }
     }
-}
-
-private struct HomeDismissalBody: Encodable {
-    let progressUpdatedAt: String
-}
-
-private struct NextUpDismissalBody: Encodable {
-    let seriesId: String
 }
