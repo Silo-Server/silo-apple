@@ -26,8 +26,9 @@ enum PersonalStateOutcome: Equatable {
     /// The server answered 204 under the captured owner.
     case applied
     /// Never sent, or the server answered with a non-2xx status. Nothing was
-    /// applied; revert and tell the viewer once.
-    case failed
+    /// applied; revert and tell the viewer once. The requirement is set when
+    /// the server or this app needs an update, so retrying cannot succeed.
+    case failed(UpdateRequirement?)
     /// Sent with no answer, or an earlier change to the same flag is still
     /// held. Nothing is re-sent; the viewer can discard the held change.
     case held(PersonalStateHeldChange)
@@ -167,7 +168,7 @@ enum PersonalStateSync {
             case .inFlight: return .skipped
             }
         }
-        return classify(error) == .ownerChanged ? .skipped : .failed
+        return classify(error) == .ownerChanged ? .skipped : .failed(UpdateRequirement(error))
     }
 
     static func outcome(_ operation: () async throws -> Void) async -> PersonalStateOutcome {

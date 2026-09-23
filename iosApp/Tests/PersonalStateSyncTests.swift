@@ -14,7 +14,7 @@ final class PersonalStateSyncTests: XCTestCase {
         stub = APIv2TestStub()
     }
 
-    private func client() async throws -> (APIv2Client, TokenStore) {
+    private func client(serverUpdateRequired: Bool = false) async throws -> (APIv2Client, TokenStore) {
         let name = "PersonalStateSyncTests.\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: name))
         addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
@@ -24,7 +24,7 @@ final class PersonalStateSyncTests: XCTestCase {
         await tokens.setServerUrl("https://personal.example")
         await tokens.setProfileId("profile-one")
         let http = HTTPClient(session: stub.makeSession(), tokenStore: tokens)
-        return (APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false }), tokens)
+        return (APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { serverUpdateRequired }), tokens)
     }
 
     @MainActor
@@ -62,16 +62,43 @@ final class PersonalStateSyncTests: XCTestCase {
 
         stub.reply(404, notFound)
         let rejected = await set(.watchlist, api: api, tokens: tokens, holds: holds)
-        XCTAssertEqual(rejected, .failed, "a server answer is a definite failure")
+        XCTAssertEqual(rejected, .failed(nil), "a server answer is a definite failure")
 
         stub.fail(.cannotConnectToHost)
         let unsent = await set(.watchlist, api: api, tokens: tokens, holds: holds)
-        XCTAssertEqual(unsent, .failed, "a request that never connected is a definite failure")
+        XCTAssertEqual(unsent, .failed(nil), "a request that never connected is a definite failure")
 
         stub.reply(204, "")
         let retried = await set(.watchlist, api: api, tokens: tokens, holds: holds)
         XCTAssertEqual(retried, .applied, "a released flag accepts the viewer's next change")
         XCTAssertEqual(stub.requests.count, 3)
+    }
+
+    /// A retry cannot succeed until the server or the app is updated, so the
+    /// notice names the update instead of asking the viewer to try again.
+    @MainActor
+    func testUpdateRequiredFailuresAskForTheUpdateInsteadOfARetry() async throws {
+        let (api, tokens) = try await client()
+        let holds = PersonalStateHolds()
+        stub.reply(410, UpdateRequirementTests.upgradeProblem)
+        let refusedApp = await set(.favorite, api: api, tokens: tokens, holds: holds)
+        XCTAssertEqual(refusedApp, .failed(.app))
+        let appNotice = try XCTUnwrap(PersonalStateNotice(refusedApp))
+        XCTAssertEqual(appNotice.message, UpdateRequirement.appMessage)
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        XCTAssertNil(holds.change(for: .favorite, contentId: "movie:one", owner: try XCTUnwrap(captured)),
+                     "an update answer is definite, not held")
+
+        let (legacyAPI, legacyTokens) = try await client(serverUpdateRequired: true)
+        let requestsBefore = stub.requests.count
+        let refusedServer = await set(.watched, api: legacyAPI, tokens: legacyTokens, holds: holds)
+        XCTAssertEqual(refusedServer, .failed(.server))
+        XCTAssertEqual(stub.requests.count, requestsBefore, "a v1-only server is refused before dispatch")
+        XCTAssertEqual(PersonalStateNotice(refusedServer)?.message, UpdateRequirement.serverMessage)
+
+        stub.reply(410, UpdateRequirementTests.sessionEndedProblem)
+        let otherGone = await set(.watchlist, api: api, tokens: tokens, holds: holds)
+        XCTAssertEqual(otherGone, .failed(nil), "only client_upgrade_required asks for an update")
     }
 
     @MainActor

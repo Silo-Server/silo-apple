@@ -69,7 +69,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     @State private var pendingResumeEpisode: EpisodeListItem?
     @State private var isUpdatingWatched = false
     @State private var watchedUpdateFailed = false
-    @State private var heldWatchedNotice: PersonalStateNotice?
+    @State private var watchedNotice: PersonalStateNotice?
     private struct PendingEpisodePlayRequest: Equatable {
         let seasonNumber: Int?
     }
@@ -143,7 +143,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
         } message: {
             Text("Please check your connection and try again.")
         }
-        .personalStateNoticeAlert($heldWatchedNotice)
+        .personalStateNoticeAlert($watchedNotice)
     }
 
     private var heroToContentSpacing: CGFloat {
@@ -354,8 +354,10 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     private func reportWatchedOutcome(_ outcome: PersonalStateOutcome) {
         switch outcome {
         case .applied, .skipped: break
-        case .failed: watchedUpdateFailed = true
-        case .held: heldWatchedNotice = PersonalStateNotice(outcome)
+        // An update requirement uses the shared notice, which names the update
+        // instead of asking the viewer to check the connection.
+        case .failed(nil): watchedUpdateFailed = true
+        case .failed, .held: watchedNotice = PersonalStateNotice(outcome)
         }
     }
 

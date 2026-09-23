@@ -279,11 +279,11 @@ struct MediaCard: View {
             playedOverride = played
             let outcome: PersonalStateOutcome
             if let onSetWatched {
-                outcome = await onSetWatched(played) ? .applied : .failed
+                outcome = await onSetWatched(played) ? .applied : .failed(nil)
             } else if let contentId {
                 outcome = await MediaCardWatchedSync.setWatched(contentId: contentId, played: played)
             } else {
-                outcome = .failed
+                outcome = .failed(nil)
             }
             if outcome == .applied {
                 onUserStateChanged?(MediaItemUserState(

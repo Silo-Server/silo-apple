@@ -26,7 +26,7 @@ final class MediaActionFeedback {
     func report(_ outcome: PersonalStateOutcome, reportsFailure: Bool = true) {
         switch outcome {
         case .applied, .skipped: break
-        case .failed: if reportsFailure { notice = .failed }
+        case .failed(let requirement): if reportsFailure { notice = .failed(requirement) }
         case .held(let change): notice = .held(change)
         }
     }
@@ -34,13 +34,15 @@ final class MediaActionFeedback {
 
 /// What a personal-state control tells the viewer after a change did not land.
 enum PersonalStateNotice: Equatable {
-    case failed
+    /// A definite failure. With a requirement, the server or this app must be
+    /// updated first, so the notice asks for that instead of a retry.
+    case failed(UpdateRequirement?)
     case held(PersonalStateHeldChange)
 
     init?(_ outcome: PersonalStateOutcome) {
         switch outcome {
         case .applied, .skipped: return nil
-        case .failed: self = .failed
+        case .failed(let requirement): self = .failed(requirement)
         case .held(let change): self = .held(change)
         }
     }
@@ -50,14 +52,16 @@ enum PersonalStateNotice: Equatable {
 
     var title: String {
         switch self {
-        case .failed: return "Couldn't Update Item"
+        case .failed(nil): return "Couldn't Update Item"
+        case .failed: return "Update Required"
         case .held: return "Change Not Confirmed"
         }
     }
 
     var message: String {
         switch self {
-        case .failed: return "Your change wasn't saved. Please try again."
+        case .failed(nil): return "Your change wasn't saved. Please try again."
+        case .failed(let requirement?): return requirement.message
         case .held: return Self.heldMessage
         }
     }

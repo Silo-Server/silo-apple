@@ -234,7 +234,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     @State private var hierarchyRetryTask: Task<Void, Never>?
     @State private var isUpdatingSeasonWatched = false
     @State private var seasonWatchedUpdateFailed = false
-    @State private var heldSeasonWatchedNotice: PersonalStateNotice?
+    @State private var seasonWatchedNotice: PersonalStateNotice?
     @State private var primaryFocusRegion: PrimaryFocusRegion = .outside
     @State private var episodeRailFocusRequest = 0
     @State private var episodeRailFocusTarget: String?
@@ -342,7 +342,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         } message: {
             Text("Please check your connection and try again.")
         }
-        .personalStateNoticeAlert($heldSeasonWatchedNotice)
+        .personalStateNoticeAlert($seasonWatchedNotice)
     }
 
     // MARK: - Fixed series hero
@@ -704,8 +704,13 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         Task {
             defer { isUpdatingSeasonWatched = false }
             let outcome = await onSetSeasonWatched(season, played)
-            seasonWatchedUpdateFailed = outcome == .failed
-            if case .held = outcome { heldSeasonWatchedNotice = PersonalStateNotice(outcome) }
+            // An update requirement uses the shared notice, which names the
+            // update instead of asking the viewer to check the connection.
+            if outcome == .failed(nil) {
+                seasonWatchedUpdateFailed = true
+            } else {
+                seasonWatchedNotice = PersonalStateNotice(outcome)
+            }
         }
     }
 

@@ -440,7 +440,7 @@ struct EpisodeThumbCard: View {
             playedOverride = played
             let outcome: PersonalStateOutcome
             if let onSetWatched {
-                outcome = await onSetWatched(played) ? .applied : .failed
+                outcome = await onSetWatched(played) ? .applied : .failed(nil)
             } else {
                 outcome = await MediaCardWatchedSync.setWatched(
                     contentId: item.contentId, played: played, seriesId: item.seriesId
