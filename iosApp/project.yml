@@ -310,9 +310,9 @@ targets:
       # The whole tree, fixtures included. XcodeGen's default inference puts
       # every non-Swift file under Tests/Fixtures into the resources phase
       # (Fixtures/DiagnosticsContract has always been bundled this way), so
-      # nothing is excluded and re-listed by hand. The two provenance files
-      # named SOURCE stay in the project but out of the bundle: nothing reads
-      # them at runtime.
+      # nothing is excluded and re-listed by hand. The provenance files named
+      # SOURCE stay in the project but out of the bundle: nothing reads them
+      # at runtime.
       - path: Tests
         excludes:
           # Provenance and tooling next to the fixtures, not fixtures. They
@@ -327,6 +327,8 @@ targets:
       - path: Tests/Fixtures/PlaybackV3/SOURCE
         buildPhase: none
       - path: Tests/Fixtures/APIv2/SOURCE
+        buildPhase: none
+      - path: Tests/Fixtures/DiagnosticsContract/SOURCE
         buildPhase: none
       - path: Tests/Fixtures/ASS/README.md
         buildPhase: none
@@ -385,6 +387,8 @@ targets:
       - path: Tests/Fixtures/PlaybackV3/SOURCE
         buildPhase: none
       - path: Tests/Fixtures/APIv2/SOURCE
+        buildPhase: none
+      - path: Tests/Fixtures/DiagnosticsContract/SOURCE
         buildPhase: none
       - path: Tests/Fixtures/ASS/README.md
         buildPhase: none

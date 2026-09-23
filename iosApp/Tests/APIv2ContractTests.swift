@@ -25,7 +25,7 @@ final class APIv2ContractTests: XCTestCase {
     /// type the model layer routes on, and the body decodes as that type.
     func testEveryVendoredFixtureRoutesByStatusAndMediaType() throws {
         let entries = try Support.index(bundleClass: Self.self)
-        XCTAssertEqual(entries.count, 14, "vendored index must list exactly the selected fixtures")
+        XCTAssertEqual(entries.count, 31, "vendored index must list exactly the selected fixtures")
         for entry in entries {
             let data = try fixture(entry.name)
             XCTAssertEqual(entry.responseHeaders["Content-Type"], entry.responseMediaType, entry.name)
