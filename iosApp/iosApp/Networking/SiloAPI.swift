@@ -12,10 +12,15 @@ actor SiloAPI {
     /// downloads API) can reuse the same injected transport.
     let http: HTTPClient
     private let tokenStore: TokenStore
+    /// The one v2 client for this facade, built from the same injected
+    /// transport and token store. `nonisolated` so callers outside the
+    /// actor can use `SiloAPI.shared.apiV2Client` without a hop.
+    nonisolated let apiV2Client: APIv2Client
 
     init(http: HTTPClient = .shared, tokenStore: TokenStore = .shared) {
         self.http = http
         self.tokenStore = tokenStore
+        self.apiV2Client = APIv2Client(http: http, tokenStore: tokenStore)
     }
 
     // MARK: - Session state accessors
@@ -243,7 +248,7 @@ actor SiloAPI {
 
     func itemDetail(contentId: String, libraryId: Int? = nil) async throws -> ItemDetail {
         let auth = try await detailReadAuth()
-        let item = try await APIv2Client(http: http, tokenStore: tokenStore).catalogItem(
+        let item = try await apiV2Client.catalogItem(
             id: contentId, libraryId: libraryId.map(String.init),
             imageSize: await imageSizeQuery["image_size"], auth: auth
         )
@@ -272,7 +277,7 @@ actor SiloAPI {
         #else
         let includeArtwork: Bool? = nil
         #endif
-        let seasons = try await APIv2Client(http: http, tokenStore: tokenStore).catalogSeasons(
+        let seasons = try await apiV2Client.catalogSeasons(
             seriesId: seriesId, libraryId: libraryId.map(String.init),
             imageSize: await imageSizeQuery["image_size"], includeArtwork: includeArtwork, auth: auth
         )
@@ -281,7 +286,7 @@ actor SiloAPI {
 
     func episodes(seriesId: String, seasonNumber: Int, libraryId: Int? = nil) async throws -> EpisodesResponse {
         let auth = try await detailReadAuth()
-        let episodes = try await APIv2Client(http: http, tokenStore: tokenStore).catalogEpisodes(
+        let episodes = try await apiV2Client.catalogEpisodes(
             seriesId: seriesId, seasonNumber: seasonNumber, libraryId: libraryId.map(String.init),
             imageSize: await imageSizeQuery["image_size"], auth: auth
         )
@@ -290,7 +295,7 @@ actor SiloAPI {
 
     func watchDetail(contentId: String, libraryId: Int? = nil) async throws -> WatchDetail {
         let auth = try await detailReadAuth()
-        return try await APIv2Client(http: http, tokenStore: tokenStore).watchDetail(
+        return try await apiV2Client.watchDetail(
             id: contentId, libraryId: libraryId.map(String.init),
             imageSize: await imageSizeQuery["image_size"], auth: auth
         )
