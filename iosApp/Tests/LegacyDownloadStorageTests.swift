@@ -215,7 +215,7 @@ final class LegacyDownloadStorageTests: XCTestCase {
           {"id": "old-completed", "content_id": "m1", "status": "completed", "created_at": "2026-09-01T10:00:00Z"},
           {"id": "old-downloading", "content_id": "m2", "status": "downloading", "created_at": "2026-09-01T10:00:00Z"},
           {"id": "old-ready", "content_id": "m3", "status": "ready", "created_at": "2099-01-01T10:00:00Z"},
-          {"id": "old-preparing", "content_id": "m4", "status": "preparing"}
+          {"id": "old-preparing", "content_id": "m4", "status": "preparing", "created_at": "2026-09-23T10:00:01Z"}
         ]
         """)
 
@@ -291,11 +291,18 @@ final class LegacyDownloadStorageTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func decodeRows(_ json: String) throws -> [ServerDownloadRow] {
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        decoder.dateDecodingStrategy = .iso8601
-        return try decoder.decode([ServerDownloadRow].self, from: Data(json.utf8))
+    /// Registry entries from the fields a test cares about; the other
+    /// required `DownloadEntry` fields get fixed values.
+    private func decodeRows(_ json: String) throws -> [APIv2DownloadEntry] {
+        let partial = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [[String: Any]])
+        let defaults: [String: Any] = [
+            "media_file_id": "1", "file_size": 1, "bytes_sent": 0, "kind": "queued", "quality": "original",
+            "effective_quality": "original", "delivery_format": "original", "target_bitrate_kbps": 0,
+            "revision": 1, "device_id": "device",
+        ]
+        let full = partial.map { defaults.merging($0) { _, row in row } }
+        let data = try JSONSerialization.data(withJSONObject: full)
+        return try HTTPClient.makeJSONDecoder().decode([APIv2DownloadEntry].self, from: data)
     }
 
     private func makeStore() -> DownloadStore {

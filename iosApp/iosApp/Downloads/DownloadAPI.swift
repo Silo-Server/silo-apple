@@ -6,43 +6,7 @@ import Foundation
 /// than the legacy path dispatcher. Contract: server `docs/downloads-api.md`.
 extension SiloAPI {
 
-    // MARK: - Capability
-
-    func downloadCapability() async throws -> DownloadCapability {
-        try await http.get("/api/v1/downloads/capability")
-    }
-
-    // MARK: - Download registry
-
-    /// Register a managed download. Returns one row for a single item, or
-    /// every batch member for a series/season request.
-    func createDownload(_ request: CreateDownloadRequest) async throws -> [ServerDownloadRow] {
-        let response: CreateDownloadResponse = try await http.post(
-            "/api/v1/downloads",
-            body: request
-        )
-        return response.downloads
-    }
-
-    /// The calling device's managed entries. Primary poll-for-readiness and
-    /// reconcile-on-launch call.
-    func listDownloads() async throws -> [ServerDownloadRow] {
-        let response: ServerDownloadsResponse = try await http.get("/api/v1/downloads")
-        return response.downloads
-    }
-
-    /// Report local progression so the server row reflects reality. Only
-    /// `downloading` / `completed` are accepted.
-    func patchDownloadStatus(id: String, status: String) async throws {
-        try await http.patchVoid(
-            "/api/v1/downloads/\(id)",
-            body: DownloadStatusUpdate(status: status)
-        )
-    }
-
-    func deleteDownloadRow(id: String) async throws {
-        try await http.delete("/api/v1/downloads/\(id)")
-    }
+    // MARK: - Manifest and assets
 
     func fetchManifest(downloadId: String) async throws -> OfflineManifest {
         try await http.get("/api/v1/downloads/\(downloadId)/manifest")
@@ -99,31 +63,5 @@ extension SiloAPI {
         var query: [String: String] = [:]
         if let cursor, !cursor.isEmpty { query["since"] = cursor }
         return try await http.get("/api/v1/progress", query: query)
-    }
-}
-
-// MARK: - Request/response helpers
-
-private struct DownloadStatusUpdate: Encodable {
-    let status: String
-}
-
-/// `POST /api/v1/downloads` returns either a bare row (single item) or a
-/// `{ "downloads": [...] }` batch. This decodes both into a row list.
-struct CreateDownloadResponse: Decodable, Sendable {
-    let downloads: [ServerDownloadRow]
-
-    private enum CodingKeys: String, CodingKey {
-        case downloads
-    }
-
-    init(from decoder: Decoder) throws {
-        if let keyed = try? decoder.container(keyedBy: CodingKeys.self),
-           let rows = try? keyed.decode([ServerDownloadRow].self, forKey: .downloads) {
-            self.downloads = rows
-            return
-        }
-        let single = try ServerDownloadRow(from: decoder)
-        self.downloads = [single]
     }
 }

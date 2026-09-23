@@ -120,7 +120,7 @@ extension APIv2Client {
 
     /// URL loading errors raised before any request bytes could reach the
     /// server: no route, no name, no connection, or no trusted TLS session.
-    private static let neverConnected: Set<URLError.Code> = [
+    static let neverConnected: Set<URLError.Code> = [
         .notConnectedToInternet, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed,
         .internationalRoamingOff, .dataNotAllowed, .callIsActive,
         .appTransportSecurityRequiresSecureConnection, .secureConnectionFailed,
