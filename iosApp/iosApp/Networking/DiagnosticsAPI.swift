@@ -243,7 +243,7 @@ actor DiagnosticsAPI {
         }
         if case HTTPError.network(let underlying) = error,
            let urlError = underlying as? URLError,
-           isBeforeConnection(urlError.code) {
+           APIv2Client.neverConnected.contains(urlError.code) {
             return .retryable(HTTPDiagnosticsErrorCode.classify(transport: urlError))
         }
         return .deliveryUncertain
@@ -316,20 +316,6 @@ actor DiagnosticsAPI {
             return .retryable("http_\(status)")
         default:
             return .underlying("http_\(status)")
-        }
-    }
-
-    private static func isBeforeConnection(_ code: URLError.Code) -> Bool {
-        switch code {
-        case .notConnectedToInternet, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed,
-             .internationalRoamingOff, .dataNotAllowed, .callIsActive,
-             .appTransportSecurityRequiresSecureConnection, .secureConnectionFailed,
-             .serverCertificateUntrusted, .serverCertificateHasBadDate, .serverCertificateNotYetValid,
-             .serverCertificateHasUnknownRoot, .clientCertificateRejected, .clientCertificateRequired,
-             .badURL, .unsupportedURL:
-            return true
-        default:
-            return false
         }
     }
 }
