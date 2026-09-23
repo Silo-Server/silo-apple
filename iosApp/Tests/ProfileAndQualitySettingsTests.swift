@@ -650,6 +650,52 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         XCTAssertEqual(transport.writes().count, attempts, "discarding sends nothing")
     }
 
+    /// Offline, the reload after a discard fails and leaves the fields alone.
+    /// The discarded value must not stay on screen as an unsaved edit that
+    /// the next change to any other control sends along with it.
+    func testDiscardingAHeldChangeOfflineDoesNotSendItWithTheNextEdit() async throws {
+        let transport = FakeProfileSettingsTransport()
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
+        transport.effective = [
+            .init(
+                key: SettingKey.playbackSubtitleLanguage.rawValue,
+                value: .string("en"),
+                source: .scope(.profile),
+                scope: .profile
+            ),
+            .init(
+                key: SettingKey.catalogMetadataLanguage.rawValue,
+                value: .string("de"),
+                source: .scope(.profile),
+                scope: .profile
+            ),
+        ]
+        await editor.load()
+
+        transport.failWritesWith = .transport(description: "offline")
+        transport.failReadsWith = .transport(description: "offline")
+        editor.subtitleLanguage = "ja"
+        await editor.saveSubtitlePrefs()
+        editor.preferredMetadataLanguage = "ko"
+        await editor.saveMetadataLanguage()
+        XCTAssertTrue(editor.hasHeldChanges)
+        let heldAttempts = transport.writes().count
+
+        await editor.discardHeldChanges()
+        XCTAssertFalse(editor.hasHeldChanges)
+        XCTAssertEqual(editor.subtitleLanguage, "en", "the discarded control shows the last server value")
+        XCTAssertEqual(editor.preferredMetadataLanguage, "de")
+
+        transport.failWritesWith = nil
+        editor.subtitleMode = SubtitleMode.always.rawValue
+        await editor.saveSubtitlePrefs()
+        await editor.saveMetadataLanguage()
+
+        let sent = transport.writes().dropFirst(heldAttempts)
+        XCTAssertEqual(sent.map(\.key), [.playbackSubtitleMode], "only the new edit is sent")
+        XCTAssertEqual(editor.saveState, .saved)
+    }
+
     func testANewEditReplacesAHeldValue() async throws {
         let transport = FakeProfileSettingsTransport()
         let editor = ProfilePrefsEditor(writer: Self.writer(transport))
@@ -684,6 +730,43 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         XCTAssertEqual(transport.writes().count, 1)
         XCTAssertEqual(editor.saveState, .failed("not a language tag"))
         XCTAssertFalse(editor.hasHeldChanges)
+    }
+
+    /// A value the server refused is released: the control goes back to the
+    /// saved value, and the next edit of a sibling control does not send the
+    /// refused value again.
+    func testARefusedSubtitleWriteIsNotSentAgainWithTheNextEdit() async throws {
+        let refusals: [SettingsAPIError] = [
+            .invalidValue(message: "not a language tag"),
+            .server(status: 403, code: "forbidden", message: nil),
+        ]
+        for refusal in refusals {
+            let transport = FakeProfileSettingsTransport()
+            transport.failWritesByKey[.playbackSubtitleLanguage] = refusal
+            let editor = ProfilePrefsEditor(writer: Self.writer(transport))
+            editor.seed(from: nil)
+
+            editor.subtitleLanguage = "not a tag"
+            await editor.saveSubtitlePrefs()
+            guard case .failed = editor.saveState else {
+                return XCTFail("the refusal must be reported: \(refusal)")
+            }
+            XCTAssertEqual(editor.subtitleLanguage, PlaybackPrefSentinel.none, "\(refusal)")
+
+            editor.subtitleMode = SubtitleMode.always.rawValue
+            await editor.saveSubtitlePrefs()
+
+            XCTAssertEqual(
+                transport.writes().filter { $0.key == .playbackSubtitleLanguage }.count,
+                1,
+                "a refused value is not re-sent: \(refusal)"
+            )
+            XCTAssertEqual(
+                transport.writes().filter { $0.key == .playbackSubtitleMode }.map(\.value),
+                [.string("always")]
+            )
+            XCTAssertEqual(editor.saveState, .saved)
+        }
     }
 
     func testEachEditProducesItsOwnWrite() async throws {

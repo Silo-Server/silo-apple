@@ -285,8 +285,30 @@ final class ProfilePrefsEditor {
 
     /// "Discard Held Change": stop trying to send the held changes and repaint
     /// what the server holds. Nothing is sent.
+    ///
+    /// Each control still showing a discarded value is repainted from the
+    /// baseline first. A change is usually held because the server is
+    /// unreachable, and then `load()` fails and leaves the fields alone: a
+    /// discarded value still on screen differs from the baseline, so the next
+    /// save would send it as an edit. A control the user has since moved
+    /// shows a newer edit, which is not discarded.
     @MainActor
     func discardHeldChanges() async {
+        for (identity, held) in heldSubtitleEditorValues
+        where identity.profileId == boundProfileId && currentEditorValue(for: identity.key) == held {
+            if pendingSubtitleEditorValues[identity] == held {
+                pendingSubtitleEditorValues.removeValue(forKey: identity)
+            }
+            if let baseline = savedBaselineValue(for: identity.key) {
+                setEditorValue(baseline, for: identity.key)
+            }
+        }
+        if let held = heldMetadataWrite,
+           held.profileId == boundProfileId,
+           Self.outboundLanguage(preferredMetadataLanguage) == held.language {
+            if pendingMetadataWrite == held { pendingMetadataWrite = nil }
+            preferredMetadataLanguage = savedBaseline.metadataLanguage ?? PlaybackPrefSentinel.none
+        }
         heldSubtitleEditorValues.removeAll()
         heldMetadataWrite = nil
         saveState = nil
@@ -444,7 +466,21 @@ final class ProfilePrefsEditor {
                         }
                         failures[identity] = error
                         let stillEditingWrittenProfile = boundProfileId == write.profileId
-                        if pendingSubtitleEditorValues[identity] == nil,
+                        if SettingsAPIError.from(error).writeFailure == .release {
+                            // The server answered and refused this value;
+                            // sending it again gets the same answer. Release
+                            // it: nothing is owed, and a control still showing
+                            // it goes back to the baseline so the next save
+                            // does not read it as an edit. Out of the active
+                            // set first, or the repaint would queue the
+                            // baseline as a compensating write.
+                            activeSubtitleEditorValues.removeValue(forKey: identity)
+                            if stillEditingWrittenProfile,
+                               currentEditorValue(for: write.key) == write.editorValue,
+                               let baseline = savedBaselineValue(for: write.key) {
+                                setEditorValue(baseline, for: write.key)
+                            }
+                        } else if pendingSubtitleEditorValues[identity] == nil,
                            (!stillEditingWrittenProfile
                             || currentEditorValue(for: write.key) == write.editorValue) {
                             // The server may have applied this request even
