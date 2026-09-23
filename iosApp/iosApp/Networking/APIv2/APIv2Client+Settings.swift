@@ -26,6 +26,13 @@ extension APIv2Client {
         return try HTTPClient.makeJSONDecoder().decode(APIv2SettingsContractCapabilities.self, from: data)
     }
 
+    /// `getOverlayConfig` (profile optional): the admin overlay kill switch
+    /// and baseline, the same for every profile of the server.
+    func overlayConfig(expectedIdentity: HTTPRequestIdentity? = nil) async throws -> APIv2OverlayConfig {
+        let data = try await settingsRead("/api/v2/settings/overlay-config", expectedIdentity: expectedIdentity)
+        return try HTTPClient.makeJSONDecoder().decode(APIv2OverlayConfig.self, from: data)
+    }
+
     /// `listEffectiveSettings` (profile required) for `profileID`, which must
     /// be the profile the captured session has selected: the household-parent
     /// `profile_id` override is not used, so every row answers for the caller.
