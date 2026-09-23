@@ -311,8 +311,11 @@ struct APIv2Client: Sendable {
         return wire.playerValue
     }
 
-    // The selection owner supplies authority captured before scheduling the write.
-    func writeTrackPreference<Body: Encodable>(kind: String, seriesId: String, body: Body,
+    /// `updateAudioPreference` / `updateSubtitlePreference`: replaces the
+    /// acting profile's remembered track for one series (or movie) id. The
+    /// operation is `natural_idempotent` and answers 204; the body schema is
+    /// closed, so `body` encodes snake_case with nil members omitted.
+    func writeTrackPreference<Body: Encodable>(kind: TrackPreferenceKind, seriesId: String, body: Body,
                                               auth: CapturedOrdinaryRequestAuth) async throws {
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
@@ -320,14 +323,17 @@ struct APIv2Client: Sendable {
                                         body: encoder.encode(body), auth: auth)
     }
 
-    func deleteTrackPreference(kind: String, seriesId: String, auth: CapturedOrdinaryRequestAuth) async throws {
+    /// `deleteAudioPreference` / `deleteSubtitlePreference`. The server
+    /// answers 204 whether or not a preference existed.
+    func deleteTrackPreference(kind: TrackPreferenceKind, seriesId: String,
+                               auth: CapturedOrdinaryRequestAuth) async throws {
         try await mutateTrackPreference(kind: kind, seriesId: seriesId, method: "DELETE", body: nil, auth: auth)
     }
 
-    private func mutateTrackPreference(kind: String, seriesId: String, method: String, body: Data?,
+    private func mutateTrackPreference(kind: TrackPreferenceKind, seriesId: String, method: String, body: Data?,
                                        auth: CapturedOrdinaryRequestAuth) async throws {
         try await gate()
-        guard ["audio", "subtitle"].contains(kind), !seriesId.isEmpty,
+        guard !seriesId.isEmpty,
               let profile = auth.profileId, !profile.isEmpty,
               await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
             throw HTTPError.requestIdentityChanged
@@ -336,8 +342,8 @@ struct APIv2Client: Sendable {
         let identity = Self.requestIdentity(auth, profile: profile)
         let response = try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {
-                try await http.requestData(method: method, path: "/api/v2/\(kind)-prefs/\(segment)", body: body,
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+                try await http.requestData(method: method, path: "/api/v2/\(kind.rawValue)-prefs/\(segment)",
+                    body: body, requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
             }
         }
         guard response.statusCode == 204 else { throw APIv2Error.httpStatus(response.statusCode) }

@@ -15,8 +15,9 @@
 //  whole series), movies under their own content id — which is exactly
 //  the key the server's detail resolver reads movie prefs back from.
 //
-//  Writes are best-effort fire-and-forget: a failed PUT costs the user
-//  a remembered preference, never playback. Reads never happen here —
+//  Writes go to `/api/v2/{audio,subtitle}-prefs/{key}` and are
+//  best-effort fire-and-forget: a failed PUT costs the user a
+//  remembered preference, never playback. Reads never happen here —
 //  the server folds saved prefs into `WatchDetail.effective_*` /
 //  `FileVersion.effectiveAudioTrackIndex`, which the detail page and
 //  player already consume.
@@ -155,56 +156,66 @@ enum TrackSelectionPersistence {
 
     // MARK: - Fire-and-forget writers
 
-    static func saveAudio(prefKey: String, request: AudioPrefRequest) {
-        Task {
-            do {
-                try await SiloAPI.shared.setAudioPref(seriesId: prefKey, body: request)
-            } catch {
-                logger.warning(
-                    "audio pref save failed key=\(prefKey, privacy: .public): \(String(describing: error), privacy: .public)"
-                )
-            }
+    // Each writer captures the signed-in owner when it is dispatched and the
+    // v2 client sends the write only while that owner is still current, so a
+    // pick made under one profile never lands on another. The writes are
+    // `natural_idempotent`, but a failed or unanswered write is logged and
+    // dropped rather than retried: the next explicit pick sends a fresh one.
+
+    @discardableResult
+    static func saveAudio(prefKey: String, request: AudioPrefRequest,
+                          client: APIv2Client = SiloAPI.shared.apiV2Client,
+                          tokenStore: TokenStore = .shared) -> Task<Void, Never> {
+        dispatch("audio pref save", prefKey: prefKey, tokenStore: tokenStore) { auth in
+            try await client.writeTrackPreference(kind: .audio, seriesId: prefKey, body: request, auth: auth)
         }
     }
 
-    static func saveSubtitle(prefKey: String, request: SubtitlePrefRequest) {
-        Task {
-            do {
-                try await SiloAPI.shared.setSubtitlePref(seriesId: prefKey, body: request)
-            } catch {
-                logger.warning(
-                    "subtitle pref save failed key=\(prefKey, privacy: .public): \(String(describing: error), privacy: .public)"
-                )
-            }
+    @discardableResult
+    static func saveSubtitle(prefKey: String, request: SubtitlePrefRequest,
+                             client: APIv2Client = SiloAPI.shared.apiV2Client,
+                             tokenStore: TokenStore = .shared) -> Task<Void, Never> {
+        dispatch("subtitle pref save", prefKey: prefKey, tokenStore: tokenStore) { auth in
+            try await client.writeTrackPreference(kind: .subtitle, seriesId: prefKey, body: request, auth: auth)
         }
     }
 
     /// The detail selectors' "Auto" choice — remove the sticky override
-    /// so the library/profile cascade applies again. A 404 just means
-    /// no override existed.
-    static func clearAudio(prefKey: String) {
-        Task {
-            do {
-                try await SiloAPI.shared.deleteAudioPref(seriesId: prefKey)
-            } catch HTTPError.http(let code, _) where code == 404 {
-                // Nothing to clear.
-            } catch {
-                logger.warning(
-                    "audio pref clear failed key=\(prefKey, privacy: .public): \(String(describing: error), privacy: .public)"
-                )
-            }
+    /// so the library/profile cascade applies again. The server answers
+    /// 204 whether or not an override existed.
+    @discardableResult
+    static func clearAudio(prefKey: String,
+                           client: APIv2Client = SiloAPI.shared.apiV2Client,
+                           tokenStore: TokenStore = .shared) -> Task<Void, Never> {
+        dispatch("audio pref clear", prefKey: prefKey, tokenStore: tokenStore) { auth in
+            try await client.deleteTrackPreference(kind: .audio, seriesId: prefKey, auth: auth)
         }
     }
 
-    static func clearSubtitle(prefKey: String) {
+    @discardableResult
+    static func clearSubtitle(prefKey: String,
+                              client: APIv2Client = SiloAPI.shared.apiV2Client,
+                              tokenStore: TokenStore = .shared) -> Task<Void, Never> {
+        dispatch("subtitle pref clear", prefKey: prefKey, tokenStore: tokenStore) { auth in
+            try await client.deleteTrackPreference(kind: .subtitle, seriesId: prefKey, auth: auth)
+        }
+    }
+
+    private static func dispatch(
+        _ action: String,
+        prefKey: String,
+        tokenStore: TokenStore,
+        operation: @escaping @Sendable (CapturedOrdinaryRequestAuth) async throws -> Void
+    ) -> Task<Void, Never> {
         Task {
             do {
-                try await SiloAPI.shared.deleteSubtitlePref(seriesId: prefKey)
-            } catch HTTPError.http(let code, _) where code == 404 {
-                // Nothing to clear.
+                guard let auth = await tokenStore.captureOrdinaryRequestAuth() else {
+                    throw HTTPError.requestIdentityChanged
+                }
+                try await operation(auth)
             } catch {
                 logger.warning(
-                    "subtitle pref clear failed key=\(prefKey, privacy: .public): \(String(describing: error), privacy: .public)"
+                    "\(action, privacy: .public) failed key=\(prefKey, privacy: .public): \(String(describing: error), privacy: .public)"
                 )
             }
         }

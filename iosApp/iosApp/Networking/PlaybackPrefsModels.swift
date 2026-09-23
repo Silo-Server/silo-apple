@@ -17,7 +17,7 @@ import Foundation
 /// Identifier used to re-locate the same subtitle track across episodes
 /// in a series when the FFmpeg stream index shifts. Server tries an
 /// exact signature match first, falls back to language match.
-struct SubtitleTrackSignature: Codable, Hashable {
+struct SubtitleTrackSignature: Codable, Hashable, Sendable {
     let source: String?           // "embedded", "external", "downloaded"
     let language: String?         // ISO 639-1 / -2
     let codec: String?            // "subrip", "ass", "pgs", …
@@ -55,7 +55,7 @@ struct SubtitleTrackSignature: Codable, Hashable {
 /// Audio counterpart to `SubtitleTrackSignature`. Layout + channels let
 /// the server prefer "5.1 English Atmos" over "stereo English commentary"
 /// across episodes.
-struct AudioTrackSignature: Codable, Hashable {
+struct AudioTrackSignature: Codable, Hashable, Sendable {
     let language: String?
     let title: String?
     let embeddedTitle: String?
@@ -232,9 +232,18 @@ enum SubtitleMode: String, CaseIterable, Codable, Hashable {
     }
 }
 
+// MARK: - Per-series track prefs
+
+/// Which per-series track preference a v2 write targets. The raw value is
+/// the path prefix: `/api/v2/{kind}-prefs/{series_id}`.
+enum TrackPreferenceKind: String, Sendable {
+    case audio
+    case subtitle
+}
+
 // MARK: - Per-series subtitle pref
 
-struct SubtitlePrefRequest: Codable {
+struct SubtitlePrefRequest: Codable, Sendable {
     let subtitleLanguage: String
     let subtitleTrackIndex: Int
     let externalSubtitlePath: String
@@ -245,7 +254,7 @@ struct SubtitlePrefRequest: Codable {
 
 // MARK: - Per-series audio pref
 
-struct AudioPrefRequest: Codable {
+struct AudioPrefRequest: Codable, Sendable {
     let audioTrackIndex: Int
     let audioLanguage: String
     let trackSignature: AudioTrackSignature?
