@@ -1657,7 +1657,14 @@ actor PlaybackSessionBridge {
                 if nextSessionId != currentSessionId {
                     await retireAbandonedSession(nextSessionId, reason: "room_source_changed")
                 }
-                throw Self.fixedSourceFailure()
+                let failure = Self.fixedSourceFailure()
+                await emitProtocolV3Terminal(
+                    active: active,
+                    sessionId: currentSessionId,
+                    reason: failure.reason,
+                    message: failure.message
+                )
+                throw failure
             }
             guard response.serverFeatures.contains(
                 PlaybackProtocolV3.headerAuthenticatedMediaFeature

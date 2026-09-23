@@ -354,7 +354,8 @@ class PlayerViewModel {
     }
 
     var showCreditsSkip: Bool {
-        guard let creditsRange else { return false }
+        // A party member who may not seek has nothing to press.
+        guard let creditsRange, canRequestSeek else { return false }
         return currentTime >= creditsRange.start && currentTime < creditsRange.end
     }
 
