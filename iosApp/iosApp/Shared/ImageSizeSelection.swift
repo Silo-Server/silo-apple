@@ -4,12 +4,11 @@ import Foundation
 /// Top Shelf extension both decode this lightweight model so every tvOS
 /// artwork surface negotiates the same server-advertised query parameter.
 struct ImageSizeCapabilityResponse: Codable, Equatable {
-    let schemaVersion: Int?
     let param: String
     let sizes: [String]
     let widths: [String: [String: Int]]
     let originalMaxWidthPx: Int
-    var state: String? = nil
+    let state: String
     var storageBackend: String? = nil
     var delivery: String? = nil
 }
@@ -23,7 +22,7 @@ enum ImageSizeSelection {
     ) -> [String: String] {
         guard prefersLargeImages,
               let capability,
-              (capability.schemaVersion == 1 || (capability.schemaVersion == nil && capability.state == "available")),
+              capability.state == "available",
               !capability.param.isEmpty,
               capability.sizes.contains(requestedSize)
         else { return [:] }

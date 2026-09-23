@@ -53,6 +53,24 @@ final class PlaybackSessionTransportTests: XCTestCase {
         }
     }
 
+    // `PlaybackStartBody` and `ClientPlaybackContextV3` in the server's
+    // contracts/api/v2/openapi.json at the commit Fixtures/APIv2/SOURCE pins.
+    // Both declare additionalProperties: false.
+    private static let startRequired: Set<String> = [
+        "installation_id", "protocol_version", "client_features", "file_id", "profile_id",
+        "playback_attempt_id", "quality_preference", "subtitle_fidelity_preference", "metered",
+        "client_capabilities", "client_playback_context",
+    ]
+    private static let startMembers = startRequired.union([
+        "allow_alternate_versions", "audio_track_id", "audio_track_index", "bandwidth_cap_kbps",
+        "bandwidth_estimate_kbps", "progress_persistence", "start_position", "subtitle_track_id",
+        "subtitle_track_index",
+    ])
+    private static let contextRequired: Set<String> = [
+        "protocol_version", "form_factor", "app_version", "device", "output", "deliveries",
+    ]
+    private static let contextMembers = contextRequired.union(["app_build", "app_channel"])
+
     private func startRequest() -> PlaybackV3StartRequest {
         let snapshot = ApplePlaybackV3Capabilities.audiobookSnapshot()
         return PlaybackV3StartRequest(
@@ -86,7 +104,14 @@ final class PlaybackSessionTransportTests: XCTestCase {
         XCTAssertEqual(sent["installation_id"] as? String, installation)
         XCTAssertEqual(sent["file_id"] as? String, "42", "v2 file ids are opaque strings")
         XCTAssertEqual(sent["progress_persistence"] as? String, "client")
-        XCTAssertNil(sent["timeline_id"], "the schema refuses unknown members")
+        XCTAssertEqual(sent["start_position"] as? Double, 0, "an explicit zero start is sent, not omitted")
+        XCTAssertTrue(Self.startRequired.isSubset(of: sent.keys), "missing \(Self.startRequired.subtracting(sent.keys))")
+        XCTAssertTrue(Set(sent.keys).isSubset(of: Self.startMembers),
+                      "the schema refuses unknown members: \(Set(sent.keys).subtracting(Self.startMembers))")
+        let context = try XCTUnwrap(sent["client_playback_context"] as? [String: Any])
+        XCTAssertTrue(Self.contextRequired.isSubset(of: context.keys), "missing \(Self.contextRequired.subtracting(context.keys))")
+        XCTAssertTrue(Set(context.keys).isSubset(of: Self.contextMembers),
+                      "the schema refuses unknown members: \(Set(context.keys).subtracting(Self.contextMembers))")
         guard case .playable(let plan, let sessionID) = decision.validatedForApple() else {
             return XCTFail("expected a playable decision")
         }

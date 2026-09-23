@@ -43,6 +43,34 @@ final class PairingProtocolTests: XCTestCase {
         XCTAssertTrue(json["v"] as? Int == PairingProtocol.version, "missing/incorrect version")
     }
 
+    /// Every frame as a peer puts it on the wire; silo-android's
+    /// `PairingMessageCodec` writes the same keys. A round trip passes even
+    /// when a key is renamed on both sides of this codec, which would strand
+    /// older phones and TVs; these literals fail instead.
+    func testLiteralWireFramesDecodeAndEncodeExactly() throws {
+        let url = "https://media.example.com"
+        let frames: [(String, PairingMessage)] = [
+            (#"{"type":"hello","v":1,"tvName":"Living Room","tvDeviceId":"ABC-123","state":"setup","supportedVersions":[1]}"#,
+             .hello(tvName: "Living Room", tvDeviceId: "ABC-123", state: .setup, supportedVersions: [1])),
+            (#"{"type":"pushServer","v":1,"serverURL":"https://media.example.com","serverName":"Home"}"#,
+             .pushServer(serverURL: url, serverName: "Home")),
+            (#"{"type":"deviceStarted","v":1,"serverURL":"https://media.example.com","userCode":"WXYZ-12","matchCode":"brave-otter"}"#,
+             .deviceStarted(serverURL: url, userCode: "WXYZ-12", matchCode: "brave-otter")),
+            (#"{"type":"serverResult","v":1,"serverURL":"https://media.example.com","status":"signedIn"}"#,
+             .serverResult(serverURL: url, status: .signedIn, error: nil)),
+            (#"{"type":"serverResult","v":1,"serverURL":"https://media.example.com","status":"failed","error":"unreachable"}"#,
+             .serverResult(serverURL: url, status: .failed, error: PairingFailureCode.unreachable.rawValue)),
+            (#"{"type":"done","v":1}"#, .done),
+            (#"{"type":"cancel","v":1,"reason":"user_declined"}"#, .cancel(reason: "user_declined")),
+        ]
+        for (frame, message) in frames {
+            XCTAssertEqual(try decoder.decode(PairingMessage.self, from: Data(frame.utf8)), message, frame)
+            let encoded = try XCTUnwrap(JSONSerialization.jsonObject(with: encoder.encode(message)) as? NSDictionary)
+            let expected = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(frame.utf8)) as? NSDictionary)
+            XCTAssertEqual(encoded, expected, frame)
+        }
+    }
+
     /// Protocol stays v1: the identity fields are additive and optional, so a
     /// legacy push decodes and a legacy peer sees no new required key.
     func testPushServerIdentityFieldsAreOptionalOnTheWire() throws {

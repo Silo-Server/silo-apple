@@ -150,9 +150,7 @@ final class AuthDeviceV2Tests: XCTestCase {
     func testHandoffLookupApproveAndDenyUseTheV2Wire() async throws {
         let (api, tokens) = try await harness()
         let (identity, auth) = try await handoffOwner(tokens)
-        let remoteLookup = Self.get_device_login_ok
-            .replacingOccurrences(of: #""client_purpose": "device_login""#, with: #""client_purpose": "remote_playback""#)
-            .replacingOccurrences(of: #""temporary": false"#, with: #""temporary": true"#)
+        let remoteLookup = Self.fixture("get_device_login_ok", setting: ["client_purpose": "remote_playback", "temporary": true])
         stub.sequence([
             .json(200, remoteLookup),
             .json(200, #"{"status":"approved"}"#),
@@ -236,7 +234,7 @@ final class AuthDeviceV2Tests: XCTestCase {
         XCTAssertThrowsError(try decoder.decode(APIv2DevicePoll.self, from: Data(approvedWithoutTokens.utf8)).validated()) { error in
             guard case APIv2Error.incompleteAuthResponse = error else { return XCTFail("Unexpected \(error)") }
         }
-        let pendingWithTokens = Self.poll_device_login_ok.replacingOccurrences(of: #""status": "approved""#, with: #""status": "pending""#)
+        let pendingWithTokens = Self.fixture("poll_device_login_ok", setting: ["status": "pending"])
         XCTAssertThrowsError(try decoder.decode(APIv2DevicePoll.self, from: Data(pendingWithTokens.utf8)).validated()) { error in
             guard case APIv2Error.incompleteAuthResponse = error else { return XCTFail("Unexpected \(error)") }
         }
@@ -427,7 +425,7 @@ final class AuthDeviceV2Tests: XCTestCase {
     func testQRSignInFollowsPollAfterAndBindsTheTokenPairAccount() async throws {
         let (model, tokens) = try await qrViewModel()
         stub.sequence([
-            .json(201, Self.start_device_login_ok.replacingOccurrences(of: #""interval": 5"#, with: #""interval": 30"#)),
+            .json(201, Self.fixture("start_device_login_ok", setting: ["interval": 30])),
             .json(200, #"{"status":"pending","poll_after":1,"profile_id":"","profile_token":"","temporary":false}"#),
             .json(200, Self.poll_device_login_ok),
         ])
@@ -453,11 +451,12 @@ final class AuthDeviceV2Tests: XCTestCase {
     @MainActor
     func testQRSignInRefusesATemporaryApproval() async throws {
         let (model, tokens) = try await qrViewModel()
-        let temporary = Self.poll_device_login_ok
-            .replacingOccurrences(of: #""profile_id": """#, with: #""profile_id": "remote-profile""#)
-            .replacingOccurrences(of: #""profile_token": """#, with: #""profile_token": "remote-proof""#)
-            .replacingOccurrences(of: #""temporary": false"#,
-                with: #""temporary": true, "session_expires_at": "2026-01-02T03:14:05.678Z""#)
+        let temporary = Self.fixture("poll_device_login_ok", setting: [
+            "profile_id": "remote-profile",
+            "profile_token": "remote-proof",
+            "temporary": true,
+            "session_expires_at": "2026-01-02T03:14:05.678Z",
+        ])
         // The answer passes wire validation, so the refusal is the sign-in's own.
         let decoded = try HTTPClient.makeJSONDecoder().decode(APIv2DevicePoll.self, from: Data(temporary.utf8)).validated()
         XCTAssertTrue(decoded.temporary)
@@ -499,82 +498,13 @@ final class AuthDeviceV2Tests: XCTestCase {
         return model.state
     }
 
-    private static let login_ok = #"""
-{
-  "access_token": "acc",
-  "refresh_token": "ref",
-  "expires_in": 3600,
-  "user": {
-    "id": "1",
-    "username": "laura",
-    "email": "laura@example.test",
-    "role": "user",
-    "permissions": [
-      "marker_edit"
-    ],
-    "download_allowed": true
-  }
-}
-"""#
-    private static let poll_device_login_ok = #"""
-{
-  "status": "approved",
-  "poll_after": 5,
-  "tokens": {
-    "access_token": "acc",
-    "refresh_token": "ref",
-    "expires_in": 3600,
-    "user": {
-      "id": "1",
-      "username": "laura",
-      "email": "laura@example.test",
-      "role": "user",
-      "permissions": [],
-      "download_allowed": true
+    /// Server fixtures vendored by scripts/sync-apiv2-fixtures.sh.
+    private static func fixture(_ name: String, setting members: [String: Any] = [:]) -> String {
+        APIv2FixtureTestSupport.text(named: name, bundleClass: AuthDeviceV2Tests.self, setting: members)
     }
-  },
-  "profile_id": "",
-  "profile_token": "",
-  "temporary": false
-}
-"""#
-    private static let start_device_login_ok = #"""
-{
-  "device_code": "dev-1",
-  "user_code": "ABCD-1234",
-  "match_code": "42",
-  "verification_uri": "https://silo.example.test/link",
-  "verification_uri_complete": "https://silo.example.test/link?code=ABCD-1234",
-  "expires_at": "2026-01-02T03:14:05.678Z",
-  "expires_in": 600,
-  "interval": 5,
-  "device_name": "Living room TV",
-  "device_platform": "tvos",
-  "client_purpose": "device_login",
-  "temporary": false
-}
-"""#
-    private static let get_device_login_ok = #"""
-{
-  "status": "pending",
-  "user_code": "ABCD-1234",
-  "match_code": "42",
-  "device_name": "Living room TV",
-  "device_platform": "tvos",
-  "ip_address_hint": "192.168.1.x",
-  "expires_at": "2026-01-02T03:14:05.678Z",
-  "client_purpose": "device_login",
-  "temporary": false
-}
-"""#
-    private static let get_device_login_capability_ok = #"""
-{
-  "revision": "1",
-  "state": "available",
-  "remote_playback_handoff": true,
-  "protocol_versions": [
-    2
-  ]
-}
-"""#
+    private static var login_ok: String { fixture("login_ok") }
+    private static var poll_device_login_ok: String { fixture("poll_device_login_ok") }
+    private static var start_device_login_ok: String { fixture("start_device_login_ok") }
+    private static var get_device_login_ok: String { fixture("get_device_login_ok") }
+    private static var get_device_login_capability_ok: String { fixture("get_device_login_capability_ok") }
 }

@@ -72,6 +72,21 @@ enum APIv2FixtureTestSupport {
         return try JSONSerialization.data(withJSONObject: object)
     }
 
+    /// A fixture body as text for a stubbed transport, with `members`
+    /// replacing top-level members. A missing fixture records a failure and
+    /// yields an empty body, so stub routes can call this without `try`.
+    static func text(named name: String, bundleClass: AnyClass, setting members: [String: Any] = [:]) -> String {
+        do {
+            let body = members.isEmpty
+                ? try data(named: name, bundleClass: bundleClass)
+                : try mutatedBody(named: name, bundleClass: bundleClass) { $0.merge(members) { $1 } }
+            return String(decoding: body, as: UTF8.self)
+        } catch {
+            XCTFail("API v2 fixture \(name): \(error)")
+            return ""
+        }
+    }
+
     static func jsonObject(_ data: Data) throws -> [String: Any] {
         try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
     }

@@ -81,6 +81,19 @@ SELECTED=(
   get_catalog_filters_ok
   get_catalog_search_capabilities_ok
   get_metadata_ai_capability_ok
+  # Item detail and trailer refresh.
+  get_catalog_item_ok
+  refresh_catalog_item_trailers_ok
+  # Image size negotiation.
+  get_image_capabilities_ok
+  # Device sign-in, pairing and Apple push display; the tests replay these
+  # bodies through the stubbed transport.
+  login_ok
+  start_device_login_ok
+  get_device_login_ok
+  poll_device_login_ok
+  get_device_login_capability_ok
+  notification_apple_push_display
 )
 
 # Fixtures written by hand from the server OpenAPI document, for cases the

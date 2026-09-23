@@ -123,7 +123,6 @@ final class DetailVersionSelectionTests: XCTestCase {
             "file_id": 10,
             "edition_raw": "Final Cut",
             "edition_key": "final_cut",
-            "edition": "Legacy Cut",
             "resolution": "4K"
           }
         ]
@@ -133,30 +132,14 @@ final class DetailVersionSelectionTests: XCTestCase {
 
         XCTAssertTrue(version.editionRaw == "Final Cut")
         XCTAssertTrue(version.editionKey == "final_cut")
-        XCTAssertTrue(version.edition == "Legacy Cut")
         XCTAssertTrue(version.editionDisplayLabel == "Final Cut")
-    }
-
-    func testLegacyEditionFallbackStillGroups() {
-        let versions = decodedVersions("""
-        [
-          { "file_id": 1, "edition": "Theatrical", "resolution": "1080p" },
-          { "file_id": 2, "edition": "Theatrical", "resolution": "720p" }
-        ]
-        """)
-
-        let editions = PlaybackEditions.editions(from: versions)
-
-        XCTAssertTrue(editions.count == 1, "Legacy edition field should still group versions")
-        XCTAssertTrue(editions[0].label == "Theatrical")
-        XCTAssertTrue(editions[0].versions.map(\.fileId) == [1, 2])
     }
 
     func testEditionForFileIdFindsOwningEdition() {
         let versions = decodedVersions("""
         [
-          { "file_id": 1, "edition": "Theatrical", "resolution": "1080p" },
-          { "file_id": 2, "edition": "Extended", "resolution": "1080p" }
+          { "file_id": 1, "edition_raw": "Theatrical", "edition_key": "theatrical", "resolution": "1080p" },
+          { "file_id": 2, "edition_raw": "Extended", "edition_key": "extended", "resolution": "1080p" }
         ]
         """)
 

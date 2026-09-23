@@ -2,11 +2,10 @@
 //  ImageSizeCapabilityTests.swift
 //  SiloTests
 //
-//  Wire-decoding + query-injection tests for image-size selection.
-//  Decodes raw snake_case JSON exactly as `HTTPClient` does
-//  (`.convertFromSnakeCase`), and covers the gating matrix for the
-//  query entries the networking layer merges into image-bearing
-//  requests.
+//  Decoding + query-injection tests for image-size selection. The payload
+//  is the vendored server fixture for `GET /api/v2/images/capabilities`,
+//  decoded with the production decoder, and the gating matrix covers the
+//  query entries the networking layer merges into image-bearing requests.
 //
 //  The `platformPrefersLargeImages` flag is passed explicitly rather
 //  than read from `#if os(tvOS)`: the test target is hosted by the iOS
@@ -19,65 +18,56 @@ import Foundation
 
 final class ImageSizeCapabilityTests: XCTestCase {
 
-    private func decoder() -> JSONDecoder {
-        let d = JSONDecoder()
-        d.keyDecodingStrategy = .convertFromSnakeCase
-        return d
-    }
-
-    /// The capability payload as the server documents it.
-    private let capabilityJSON = """
-    {
-      "schema_version": 1,
-      "param": "image_size",
-      "sizes": ["small", "medium", "large", "original"],
-      "widths": {
-        "poster": {"small": 300, "medium": 500, "large": 780},
-        "still": {"small": 300, "medium": 500, "large": 780},
-        "logo": {"small": 300, "medium": 500, "large": 1280},
-        "backdrop": {"small": 300, "medium": 780, "large": 1920}
-      },
-      "original_max_width_px": 1920
-    }
-    """
+    private static let fixture = "get_image_capabilities_ok"
 
     private func decodedCapability() throws -> ImageSizeCapabilityResponse {
-        try decoder().decode(
-            ImageSizeCapabilityResponse.self,
-            from: Data(capabilityJSON.utf8)
-        )
+        try APIv2FixtureTestSupport.decode(ImageSizeCapabilityResponse.self, named: Self.fixture, bundleClass: Self.self)
+    }
+
+    private func capability(
+        state: String = "available",
+        param: String = "image_size",
+        sizes: [String] = ["small", "medium", "large", "original"]
+    ) -> ImageSizeCapabilityResponse {
+        ImageSizeCapabilityResponse(param: param, sizes: sizes, widths: [:], originalMaxWidthPx: 1920, state: state)
     }
 
     // MARK: - Decoding
 
-    func testCapabilityDecodesServerPayload() throws {
+    func testCapabilityDecodesServerFixture() throws {
         let capability = try decodedCapability()
-        XCTAssertEqual(capability.schemaVersion, 1)
+        XCTAssertEqual(capability.state, "available")
         XCTAssertEqual(capability.param, "image_size")
         XCTAssertEqual(capability.sizes, ["small", "medium", "large", "original"])
         XCTAssertEqual(capability.originalMaxWidthPx, 1920)
         XCTAssertEqual(capability.widths["poster"]?["large"], 780)
         XCTAssertEqual(capability.widths["logo"]?["large"], 1280)
         XCTAssertEqual(capability.widths["backdrop"]?["large"], 1920)
+        XCTAssertEqual(capability.storageBackend, "local")
+        XCTAssertEqual(capability.delivery, "server")
     }
 
     /// Roles the client doesn't know about must not fail the decode —
     /// the server is free to add image roles without a client release.
     func testCapabilityDecodesUnknownImageRole() throws {
-        let json = """
-        {
-          "schema_version": 1,
-          "param": "image_size",
-          "sizes": ["small", "large"],
-          "widths": {"thumb": {"small": 120, "large": 480}},
-          "original_max_width_px": 1920
+        let body = try APIv2FixtureTestSupport.mutatedBody(named: Self.fixture, bundleClass: Self.self) { object in
+            var widths = object["widths"] as? [String: Any] ?? [:]
+            widths["thumb"] = ["small": 120, "large": 480]
+            object["widths"] = widths
         }
-        """
-        let capability = try decoder().decode(
-            ImageSizeCapabilityResponse.self,
-            from: Data(json.utf8)
-        )
+        let capability = try APIv2FixtureTestSupport.decoder.decode(ImageSizeCapabilityResponse.self, from: body)
         XCTAssertEqual(capability.widths["thumb"]?["large"], 480)
+    }
+
+    /// A v1-era document (`schema_version`, no capability `state`) is not a
+    /// v2 answer. It fails the decode, so the probe stays empty and the
+    /// client sends no parameter.
+    func testLegacySchemaVersionDocumentIsNotACapability() throws {
+        let body = try APIv2FixtureTestSupport.mutatedBody(named: Self.fixture, bundleClass: Self.self) { object in
+            object["state"] = nil
+            object["schema_version"] = 1
+        }
+        XCTAssertThrowsError(try APIv2FixtureTestSupport.decoder.decode(ImageSizeCapabilityResponse.self, from: body))
     }
 
     // MARK: - Query injection
@@ -109,36 +99,26 @@ final class ImageSizeCapabilityTests: XCTestCase {
         XCTAssertTrue(entries.isEmpty)
     }
 
-    /// A schema the client doesn't understand is treated as "off".
-    func testQueryEntriesEmptyForUnknownSchemaVersion() {
-        let capability = ImageSizeCapabilityResponse(
-            schemaVersion: 2,
-            param: "image_size",
-            sizes: ["small", "large"],
-            widths: [:],
-            originalMaxWidthPx: 1920
-        )
-        XCTAssertTrue(
-            ImageSizeCapability.queryEntries(
-                capability: capability,
-                platformPrefersLargeImages: true
-            ).isEmpty
-        )
+    /// Only an available capability turns the parameter on; every other
+    /// server state, including one this client doesn't know, is "off".
+    func testQueryEntriesEmptyUnlessCapabilityIsAvailable() {
+        for state in ["disabled", "not_configured", "unsupported", "future_state"] {
+            XCTAssertTrue(
+                ImageSizeCapability.queryEntries(
+                    capability: capability(state: state),
+                    platformPrefersLargeImages: true
+                ).isEmpty,
+                state
+            )
+        }
     }
 
     /// A server that doesn't advertise `large` gets no parameter at all,
     /// because an unadvertised value is a 400.
     func testQueryEntriesEmptyWhenLargeNotAdvertised() {
-        let capability = ImageSizeCapabilityResponse(
-            schemaVersion: 1,
-            param: "image_size",
-            sizes: ["small", "medium"],
-            widths: [:],
-            originalMaxWidthPx: 1920
-        )
         XCTAssertTrue(
             ImageSizeCapability.queryEntries(
-                capability: capability,
+                capability: capability(sizes: ["small", "medium"]),
                 platformPrefersLargeImages: true
             ).isEmpty
         )
@@ -146,16 +126,9 @@ final class ImageSizeCapabilityTests: XCTestCase {
 
     /// The parameter name comes from the payload, not a hardcoded string.
     func testQueryEntriesUseServerSuppliedParamName() {
-        let capability = ImageSizeCapabilityResponse(
-            schemaVersion: 1,
-            param: "img_size",
-            sizes: ["large"],
-            widths: [:],
-            originalMaxWidthPx: 1920
-        )
         XCTAssertEqual(
             ImageSizeCapability.queryEntries(
-                capability: capability,
+                capability: capability(param: "img_size", sizes: ["large"]),
                 platformPrefersLargeImages: true
             ),
             ["img_size": "large"]

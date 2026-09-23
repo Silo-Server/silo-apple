@@ -2,8 +2,8 @@ import Foundation
 
 /// Groups a content's file versions into editions (Director's Cut, Theatrical,
 /// …) and resolves the edition that owns a given file. The server's
-/// `edition_key` is the stable grouping identity; display falls back through
-/// `edition_raw`, legacy `edition`, then "Standard".
+/// `edition_key` is the stable grouping identity; display uses `edition_raw`,
+/// then "Standard".
 /// A version with no edition label is grouped under "Standard".
 enum PlaybackEditions {
     struct Edition: Identifiable, Hashable {

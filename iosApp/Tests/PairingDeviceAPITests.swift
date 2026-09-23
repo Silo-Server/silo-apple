@@ -168,61 +168,16 @@ final class PairingDeviceAPITests: XCTestCase {
         )
     }
 
+    /// Server fixtures vendored by scripts/sync-apiv2-fixtures.sh.
+    private static func fixture(_ name: String, setting members: [String: Any] = [:]) -> String {
+        APIv2FixtureTestSupport.text(named: name, bundleClass: PairingDeviceAPITests.self, setting: members)
+    }
+
     private static func capability(state: String) -> String {
-        #"{"revision":"1","state":"\#(state)","remote_playback_handoff":true,"protocol_versions":[2]}"#
+        fixture("get_device_login_capability_ok", setting: ["state": state])
     }
 
-    private static let start = #"""
-{
-  "device_code": "dev-1",
-  "user_code": "ABCD-1234",
-  "match_code": "42",
-  "verification_uri": "https://silo.example.test/link",
-  "verification_uri_complete": "https://silo.example.test/link?code=ABCD-1234",
-  "expires_at": "2026-01-02T03:14:05.678Z",
-  "expires_in": 600,
-  "interval": 5,
-  "device_name": "Living room TV",
-  "device_platform": "tvos",
-  "client_purpose": "device_login",
-  "temporary": false
-}
-"""#
-
-    private static let approvedPoll = #"""
-{
-  "status": "approved",
-  "poll_after": 5,
-  "tokens": {
-    "access_token": "acc",
-    "refresh_token": "ref",
-    "expires_in": 3600,
-    "user": {
-      "id": "1",
-      "username": "laura",
-      "email": "laura@example.test",
-      "role": "user",
-      "permissions": [],
-      "download_allowed": true
-    }
-  },
-  "profile_id": "",
-  "profile_token": "",
-  "temporary": false
-}
-"""#
-
-    private static let lookup = #"""
-{
-  "status": "pending",
-  "user_code": "ABCD-1234",
-  "match_code": "42",
-  "device_name": "Living room TV",
-  "device_platform": "tvos",
-  "ip_address_hint": "192.168.1.x",
-  "expires_at": "2026-01-02T03:14:05.678Z",
-  "client_purpose": "device_login",
-  "temporary": false
-}
-"""#
+    private static var start: String { fixture("start_device_login_ok") }
+    private static var approvedPoll: String { fixture("poll_device_login_ok") }
+    private static var lookup: String { fixture("get_device_login_ok") }
 }
