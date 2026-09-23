@@ -384,24 +384,6 @@ actor SiloAPI {
         return try await catalog(query: query)
     }
 
-    // --- Playback preferences ---
-
-    func setSubtitlePref(seriesId: String, body: SubtitlePrefRequest) async throws {
-        try await http.putVoid("/api/v1/subtitle-prefs/\(seriesId)", body: body)
-    }
-
-    func deleteSubtitlePref(seriesId: String) async throws {
-        try await http.delete("/api/v1/subtitle-prefs/\(seriesId)")
-    }
-
-    func setAudioPref(seriesId: String, body: AudioPrefRequest) async throws {
-        try await http.putVoid("/api/v1/audio-prefs/\(seriesId)", body: body)
-    }
-
-    func deleteAudioPref(seriesId: String) async throws {
-        try await http.delete("/api/v1/audio-prefs/\(seriesId)")
-    }
-
     // --- Personal data ---
 
     // These three build their own query rather than routing through
