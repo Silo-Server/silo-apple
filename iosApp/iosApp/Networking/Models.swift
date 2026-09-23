@@ -1446,13 +1446,6 @@ struct EpisodesResponse: Codable {
     }
 }
 
-// MARK: - Progress Report (sent to server)
-
-struct ProgressReport: Codable {
-    let position: Double
-    let isPaused: Bool
-}
-
 // MARK: - Collection Create
 
 struct CreateCollectionRequest: Codable {

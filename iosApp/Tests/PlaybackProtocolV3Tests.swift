@@ -11,11 +11,10 @@ actor PlaybackTestActorBox<Value: Sendable> {
 
 @MainActor
 final class PlaybackProtocolV3Tests: XCTestCase {
-    func testSequencedSampleRejectsInvalidItemPosition() throws {
-        _ = try PlaybackSequencedSample(sequence: 1, position: 10, isPaused: false, itemPosition: 0)
-        _ = try PlaybackSequencedSample(sequence: 1, position: 10, isPaused: false, itemPosition: nil)
-        for bad in [-1.0, .infinity, .nan] {
-            XCTAssertThrowsError(try PlaybackSequencedSample(sequence: 1, position: 10, isPaused: false, itemPosition: bad)) { error in
+    func testSequencedSampleRejectsAnUnorderedOrUnusableSample() throws {
+        _ = try PlaybackSequencedSample(sequence: 1, position: 0, isPaused: false)
+        for (sequence, position) in [(0, 10.0), (-1, 10.0), (1, -1.0), (1, .infinity), (1, .nan)] as [(Int64, Double)] {
+            XCTAssertThrowsError(try PlaybackSequencedSample(sequence: sequence, position: position, isPaused: false)) { error in
                 guard case PlaybackSequencedError.invalidSample = error else { return XCTFail("Unexpected \(error)") }
             }
         }
@@ -494,11 +493,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
     }
 
     func testServerGoldenDecisionDecodesAndPublishesCompleteSubtitleInventory() throws {
-        let response = try PlaybackV3FixtureTestSupport.decode(
-            PlaybackV3DecisionResponse.self,
-            named: "decision_response",
-            bundleClass: Self.self
-        )
+        let response = try PlaybackV3FixtureTestSupport.v2Decision(bundleClass: Self.self)
 
         guard case .playable(let plan, let sessionId) = response.validatedForApple() else {
             return XCTFail("Expected the recovered server fixture to be playable")
@@ -536,7 +531,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(authoredASS.hearingImpaired, false)
         XCTAssertEqual(
             authoredASS.fontBundleUrl,
-            "/stream/11111111-1111-4111-8111-111111111111/subtitles/1/fonts?file_id=42&embedded_stream_index=0"
+            "/api/v2/stream/11111111-1111-4111-8111-111111111111/subtitles/1/fonts?file_id=42&embedded_stream_index=0"
         )
     }
 
@@ -581,11 +576,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(Set(start.clientPlaybackContext.deliveries.keys), ["original_http"])
 
         let replan = try fixtureObject(named: "replan_request")
-        let decision = try PlaybackV3FixtureTestSupport.decode(
-            PlaybackV3DecisionResponse.self,
-            named: "decision_response",
-            bundleClass: Self.self
-        )
+        let decision = try PlaybackV3FixtureTestSupport.v2Decision(bundleClass: Self.self)
         let plan = try XCTUnwrap(decision.playbackPlan)
         XCTAssertTrue(decision.serverFeatures.contains(PlaybackProtocolV3.neutralContractFeature))
         XCTAssertTrue(decision.serverFeatures.contains(PlaybackProtocolV3.headerAuthenticatedMediaFeature))
@@ -1262,7 +1253,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             default: false,
             hearingImpaired: false,
             delivery: "sidecar",
-            url: "/api/v1/playback/session-v3/subtitles/2.sup",
+            url: "/api/v2/stream/session-v3/subtitles/2.sup",
             fontBundleUrl: nil
         )
         let original = PlayerViewModel.LoadRequest(
@@ -1660,25 +1651,18 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(event.diagnostics["error_cause"], "No executable route is available.")
     }
 
-    func testMissingPlaybackSessionDetectionRequiresTheSpecific404() {
-        XCTAssertTrue(PlaybackSessionBridge.isPlaybackSessionMissing(
-            HTTPError.http(
-                statusCode: 404,
-                body: #"{"error":"playback_session_not_found","message":"Playback session not found"}"#
-            )
-        ))
-        XCTAssertTrue(PlaybackSessionBridge.isPlaybackSessionMissing(
-            HTTPError.http(statusCode: 404, body: "Playback session not found")
-        ))
-        XCTAssertFalse(PlaybackSessionBridge.isPlaybackSessionMissing(
-            HTTPError.http(statusCode: 404, body: "Not found")
-        ))
-        XCTAssertFalse(PlaybackSessionBridge.isPlaybackSessionMissing(
-            HTTPError.http(
-                statusCode: 500,
-                body: #"{"error":"playback_session_not_found"}"#
-            )
-        ))
+    func testMissingPlaybackSessionIsAV2NotFoundOrAChangedInstallation() throws {
+        func problem(_ status: Int, _ type: String) throws -> Error {
+            APIv2Error.problem(try HTTPClient.makeJSONDecoder().decode(APIv2Problem.self, from: Data(
+                #"{"type":"https://siloserver.org/docs/api/v2/problems/\#(type)","title":"t","status":\#(status),"detail":"d"}"#.utf8)))
+        }
+        XCTAssertTrue(PlaybackSessionBridge.isPlaybackSessionMissing(try problem(404, "not_found")))
+        XCTAssertTrue(PlaybackSessionBridge.isPlaybackSessionMissing(try problem(409, "installation_changed")))
+        XCTAssertFalse(PlaybackSessionBridge.isPlaybackSessionMissing(try problem(409, "progress_conflict")))
+        XCTAssertFalse(PlaybackSessionBridge.isPlaybackSessionMissing(try problem(503, "dependency_unavailable")))
+        // A v1-only server's plain 404 is update-required, not a lost session.
+        XCTAssertFalse(PlaybackSessionBridge.isPlaybackSessionMissing(APIv2Error.serverUpdateRequired))
+        XCTAssertFalse(PlaybackSessionBridge.isPlaybackSessionMissing(HTTPError.http(statusCode: 404, body: "Not found")))
     }
 
     func testHDRAttestationDoesNotInventHDR10PlusOrMacDolbyVision() {
@@ -2370,7 +2354,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             delivery: delivery,
             planAttemptKey: planAttemptKey,
             stream: PlaybackV3Stream(
-                url: "/stream/session-v3",
+                url: "/api/v2/stream/session-v3",
                 protocol: streamProtocol,
                 container: container,
                 mimeType: streamProtocol == "hls"
@@ -2566,7 +2550,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             default: false,
             hearingImpaired: false,
             delivery: delivery,
-            url: delivery == "sidecar" ? "/stream/subtitles/\(combinedIndex)" : nil,
+            url: delivery == "sidecar" ? "/api/v2/stream/session-v3/subtitles/\(combinedIndex)" : nil,
             fontBundleUrl: nil
         )
     }

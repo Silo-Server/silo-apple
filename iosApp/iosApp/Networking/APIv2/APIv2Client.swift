@@ -1337,14 +1337,15 @@ struct APIv2Client: Sendable {
     /// One playback request under a captured owner. Fenced before and after
     /// the await; callers check the status they expect.
     func playbackRequest(method: String, suffix: String, body: Data? = nil,
-                         auth: CapturedOrdinaryRequestAuth, query: [String: String] = [:]) async throws -> HTTPRawResponse {
+                         auth: CapturedOrdinaryRequestAuth, query: [String: String] = [:],
+                         timeout: HTTPTimeout = .standard) async throws -> HTTPRawResponse {
         try await gate()
         guard let profile = auth.profileId, !profile.isEmpty else { throw HTTPError.requestIdentityChanged }
         let identity = Self.requestIdentity(auth, profile: profile)
         return try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {
                 try await http.requestData(method: method, path: "/api/v2/playback" + suffix, query: query, body: body,
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+                    timeout: timeout, requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
             }
         }
     }

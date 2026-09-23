@@ -2,10 +2,16 @@ Source: silo-server internal/playback/testdata/protocol_v3
 Server commit: 8b9c08624767396e3c3c70390fbdfa71e21631b7
 Vendored: 2026-09-08
 
-All nine JSON files come from internal/playback/testdata/protocol_v3. Six are
+Seven JSON files come from internal/playback/testdata/protocol_v3. Four are
 also published byte-identically under docs/design/schemas/playback-v3/v3/fixtures/valid;
 attempt_keys.json, conformance_matrix.json and subtitle_inventory.json exist only
 under testdata, so the testdata directory is the single copy source.
+
+decision_response.json and native-decision_response.json are not vendored:
+they are the protocol domain's decision with API-relative media URLs and
+integer file ids, which is what the retired v1 routes returned. The client
+now decodes the v2 decision; its fixture is
+Tests/Fixtures/APIv2/playback_start_opaque_ids.json.
 
 capability_response.json is not vendored: it is the retired v1 capability
 document. The v2 capability fixtures live in Tests/Fixtures/APIv2.

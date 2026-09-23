@@ -114,12 +114,14 @@ final class ASSSubtitleRendererTests: XCTestCase {
                                                      isExternal: false, delaySeconds: 0.5), 4.5)
     }
 
-    func testFontBundleDecodingRejectsMalformedData() throws {
-        let decoded = try ASSSubtitleSession.decodeFonts(Data("[{\"name\":\"font.ttf\",\"data\":\"AQID\"}]".utf8))
+    func testFontBundleDecodingReadsTheV2CollectionAndRejectsMalformedData() throws {
+        let decoded = try ASSSubtitleSession.decodeFonts(Data(#"{"items":[{"name":"font.ttf","data":"AQID"}]}"#.utf8))
         XCTAssertEqual(decoded.first?.data, Data([1, 2, 3]))
-        XCTAssertThrowsError(try ASSSubtitleSession.decodeFonts(Data("[{\"name\":\"font.ttf\",\"data\":\"bad base64\"}]".utf8)))
-        XCTAssertThrowsError(try ASSSubtitleSession.decodeFonts(Data("[{\"name\":\"\",\"data\":\"AQID\"}]".utf8)))
-        XCTAssertEqual(try ASSSubtitleSession.decodeFonts(Data("[]".utf8)), [])
+        XCTAssertThrowsError(try ASSSubtitleSession.decodeFonts(Data(#"{"items":[{"name":"font.ttf","data":"bad base64"}]}"#.utf8)))
+        XCTAssertThrowsError(try ASSSubtitleSession.decodeFonts(Data(#"{"items":[{"name":"","data":"AQID"}]}"#.utf8)))
+        XCTAssertThrowsError(try ASSSubtitleSession.decodeFonts(Data(#"[{"name":"font.ttf","data":"AQID"}]"#.utf8)),
+                             "the bare array is the retired v1 shape")
+        XCTAssertEqual(try ASSSubtitleSession.decodeFonts(Data(#"{"items":[]}"#.utf8)), [])
     }
 
     @MainActor

@@ -228,10 +228,13 @@ final class ASSSubtitleSession: ObservableObject {
         return try decodeFonts(data)
     }
 
+    /// `GET /api/v2/stream/{session_id}/subtitles/{track}/fonts` answers with
+    /// the shared collection envelope, `{"items": [{"name", "data"}]}`.
     nonisolated static func decodeFonts(_ data: Data) throws -> [FontAttachment] {
         struct Item: Decodable { let name: String; let data: Data }
+        struct Bundle: Decodable { let items: [Item] }
         guard data.count <= 48 * 1_024 * 1_024 else { throw URLError(.dataLengthExceedsMaximum) }
-        let items = try JSONDecoder().decode([Item].self, from: data)
+        let items = try JSONDecoder().decode(Bundle.self, from: data).items
         guard items.count <= 64, items.allSatisfy({ !$0.name.isEmpty && !$0.data.isEmpty }),
               items.reduce(0, { $0 + $1.data.count }) <= 32 * 1_024 * 1_024 else {
             throw URLError(.cannotDecodeContentData)

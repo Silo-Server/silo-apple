@@ -30,8 +30,8 @@ enum PlaybackMediaAuthorization {
                 throw ValidationError.invalidSourceURL
             }
 
-            let apiHLS = basePath + ["api", "v1", "playback", "transcode", sessionID, "master.m3u8"]
-            let apiProgressive = basePath + ["api", "v1", "stream", sessionID]
+            let apiHLS = basePath + ["api", "v2", "playback", "transcode", sessionID, "master.m3u8"]
+            let apiProgressive = basePath + ["api", "v2", "stream", sessionID]
             let proxyHLS = ["stream", "v3", sessionID, "master.m3u8"]
             let proxyProgressive = ["stream", "v3", sessionID]
             let apiSource = StreamRequest.hasSameOrigin(sourceURL, server)
@@ -131,7 +131,7 @@ enum PlaybackMediaAuthorization {
             }
             self.server = server
             self.sessionID = sessionID
-            prefix = base + ["api", "v1", "stream", sessionID, "subtitles"]
+            prefix = base + ["api", "v2", "stream", sessionID, "subtitles"]
         }
 
         func allows(_ url: URL) -> Bool {
@@ -142,7 +142,7 @@ enum PlaybackMediaAuthorization {
             let tail = path.dropFirst(prefix.count)
             guard tail.count == 1 || (tail.count == 2 && tail.last == "fonts") else { return false }
             return StreamRequest.hasAllowedHeaderAuthenticatedMediaQuery(
-                path: "/stream/\(sessionID)/subtitles/" + tail.joined(separator: "/"),
+                path: StreamRequest.mediaRoot + "stream/\(sessionID)/subtitles/" + tail.joined(separator: "/"),
                 items: components.queryItems ?? []
             )
         }

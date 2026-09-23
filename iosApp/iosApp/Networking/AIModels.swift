@@ -348,7 +348,7 @@ extension DownloadedSubtitle {
         resolveURL: (String) -> URL?
     ) -> SidecarSubtitleDescriptor? {
         let combinedIndex = baseTrackCount + position
-        let path = "/stream/\(sessionId)/subtitles/\(combinedIndex)\(streamURLExtension)"
+        let path = "/api/v2/stream/\(sessionId)/subtitles/\(combinedIndex)\(streamURLExtension)"
         guard let url = resolveURL(path) else { return nil }
         let label = releaseName.isEmpty
             ? (provider.isEmpty ? language : provider)

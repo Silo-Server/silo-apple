@@ -97,7 +97,7 @@ struct PlaybackV3TerminalFailure: LocalizedError, Equatable {
 /// Secondary metadata shown in the tvOS player overlay's hero strip.
 /// Populated from the playback session at load time via
 /// `PreparedPlayback.playerMetadata(primaryAudioLayout:)` — everything here
-/// is already fetched as part of `/api/v1/watch/{id}`, so no extra API
+/// is already fetched as part of `/api/v2/watch/{id}`, so no extra API
 /// calls are needed.
 struct PlayerMetadata: Equatable {
     /// For episodes: series title, e.g. "Foundation".
@@ -430,6 +430,14 @@ actor PlaybackSessionBridge {
 
     private var sessionId: String?
     private var currentSession: PlaybackSessionResponse?
+    /// The owner and installation of the newest adopted start. Stale sessions
+    /// of this player are retired under it as well: the owner cannot change
+    /// under a live player, and the server compares the installation with its
+    /// current one, so the newest is the one it accepts.
+    private var authority: PlaybackV2SessionAuthority?
+    /// Sequences every progress sample, including the final one a stop
+    /// carries, per server session.
+    private var progressSequence = PlaybackProgressSequence()
 
     private struct ActiveProtocolV3 {
         let playbackAttemptId: String
@@ -477,6 +485,7 @@ actor PlaybackSessionBridge {
         let sessionId: String
         let selectedVersion: FileVersion
         let session: PlaybackSessionResponse
+        let authority: PlaybackV2SessionAuthority
     }
 
     struct InitialProtocolV3SubtitleIntent: Equatable {
@@ -562,10 +571,18 @@ actor PlaybackSessionBridge {
     /// logged; these paths used a bare `try?` and were silent.
     private func retireAbandonedSession(
         _ abandonedSessionId: String,
-        reason: String
+        reason: String,
+        authority explicitAuthority: PlaybackV2SessionAuthority? = nil
     ) async {
+        progressSequence.forget(abandonedSessionId)
+        guard let authority = explicitAuthority ?? authority else {
+            logger.error(
+                "abandoned-session stop skipped for \(abandonedSessionId, privacy: .public) (\(reason, privacy: .public)): no playback authority; server-side session may linger until idle timeout"
+            )
+            return
+        }
         do {
-            try await SiloAPI.shared.stopPlayback(sessionId: abandonedSessionId)
+            try await authority.stop(abandonedSessionId, finalSample: nil)
         } catch {
             logger.error(
                 "abandoned-session stop failed for \(abandonedSessionId, privacy: .public) (\(reason, privacy: .public)); server-side session may linger until idle timeout: \(MediaLogRedactor.sanitize(error), privacy: .public)"
@@ -891,8 +908,8 @@ actor PlaybackSessionBridge {
             )
         }
         // Protocol v3 is the only playback contract. There is no legacy start
-        // path to fall back to — `/api/v1/playback/start` rejects any body
-        // whose `protocol_version` is not 3.
+        // path to fall back to — `POST /api/v2/playback/start` rejects any
+        // body whose `protocol_version` is not 3.
         return try await startProtocolV3(
             watchDetail: watchDetail,
             selectedVersion: selectedVersion,
@@ -1039,10 +1056,17 @@ actor PlaybackSessionBridge {
     ) async throws -> StagedProtocolV3Start {
         let snapshot = ApplePlaybackV3Capabilities.snapshot()
         cmpLog("[CMP-OUTPUT] phase=start \(snapshot.outputDiagnosticsLogFields)")
+        // Every request of this session runs for the owner captured here; the
+        // body's profile must be the one the request declares.
+        guard let owner = await TokenStore.shared.captureOrdinaryRequestAuth(),
+              owner.profileId == profileId else {
+            throw HTTPError.requestIdentityChanged
+        }
         // A start refused because the server's playback installation changed
         // runs once more with the refreshed capability and a new attempt id.
         let gate = PlaybackV3CapabilityGate.shared
-        let (capability, playbackAttemptId, response) = try await gate.withInstallationRefresh { capability in
+        let (capability, playbackAttemptId, authority, response) = try await gate.withInstallationRefresh { capability in
+            let authority = PlaybackV2SessionAuthority(owner: owner, installationID: capability.installationID)
             let playbackAttemptId = "apple:\(UUID().uuidString.lowercased())"
             let request = PlaybackV3StartRequest(
                 protocolVersion: PlaybackProtocolV3.version,
@@ -1079,22 +1103,15 @@ actor PlaybackSessionBridge {
             // mid-flight used to leave that session stranded until the server's idle
             // timeout. Shield the request from cancellation and retire whatever it
             // allocated if the caller has already walked away.
+            // The transport retry runs inside the shield so the reclaim path
+            // below sees the final outcome, not the ambiguous one.
             let response = try await PlaybackCancellationShield.run {
-                do {
-                    return try await SiloAPI.shared.startPlaybackV3(request: request)
-                } catch let error as HTTPError {
-                    guard case .network = error else { throw error }
-                    // Reuse the exact request and playback_attempt_id so an
-                    // ambiguous first response cannot allocate a second logical
-                    // attempt. Retried inside the shield so the reclaim path below
-                    // sees the final outcome, not the ambiguous one.
-                    return try await SiloAPI.shared.startPlaybackV3(request: request)
-                }
+                try await authority.start(request)
             } reclaim: { [self] abandoned in
                 guard let orphaned = Self.allocatedSessionId(in: abandoned) else { return }
-                await retireAbandonedSession(orphaned, reason: "cancelled_start")
+                await retireAbandonedSession(orphaned, reason: "cancelled_start", authority: authority)
             }
-            return (capability, playbackAttemptId, response)
+            return (capability, playbackAttemptId, authority, response)
         }
         // Optional opt-in: on a server that never advertises it the token is
         // simply absent and the attempt stays entirely on the API origin.
@@ -1106,7 +1123,8 @@ actor PlaybackSessionBridge {
                 await Self.reportTerminalStart(
                     playbackAttemptId: playbackAttemptId,
                     snapshot: snapshot,
-                    terminal: terminal
+                    terminal: terminal,
+                    authority: authority
                 )
             }
             throw PlaybackV3TerminalFailure(
@@ -1118,7 +1136,8 @@ actor PlaybackSessionBridge {
             if let allocatedSessionId {
                 await retireAbandonedSession(
                     allocatedSessionId,
-                    reason: "incompatible_start_response"
+                    reason: "incompatible_start_response",
+                    authority: authority
                 )
             }
             throw PlaybackV3TerminalFailure(
@@ -1132,7 +1151,8 @@ actor PlaybackSessionBridge {
             ) else {
                 await retireAbandonedSession(
                     resolvedSessionId,
-                    reason: "start_without_header_authenticated_media"
+                    reason: "start_without_header_authenticated_media",
+                    authority: authority
                 )
                 throw PlaybackV3TerminalFailure(
                     reason: "server_upgrade_required",
@@ -1145,7 +1165,8 @@ actor PlaybackSessionBridge {
             } catch {
                 await retireAbandonedSession(
                     resolvedSessionId,
-                    reason: "unexecutable_start_plan"
+                    reason: "unexecutable_start_plan",
+                    authority: authority
                 )
                 throw error
             }
@@ -1154,7 +1175,8 @@ actor PlaybackSessionBridge {
             }) else {
                 await retireAbandonedSession(
                     resolvedSessionId,
-                    reason: "start_effective_file_unavailable"
+                    reason: "start_effective_file_unavailable",
+                    authority: authority
                 )
                 throw PlaybackV3TerminalFailure(
                     reason: "effective_file_unavailable",
@@ -1184,7 +1206,8 @@ actor PlaybackSessionBridge {
                 plan: plan,
                 sessionId: resolvedSessionId,
                 selectedVersion: effectiveVersion,
-                session: session
+                session: session,
+                authority: authority
             )
         }
     }
@@ -1197,6 +1220,7 @@ actor PlaybackSessionBridge {
             candidateSessionId: staged.sessionId,
             candidatePlanId: staged.plan.planId
         )
+        authority = staged.authority
         let planAttemptId = "apple-plan:\(UUID().uuidString.lowercased())"
         // Attempt keys are server-owned; the client only ever echoes them.
         let planAttemptKey = staged.plan.planAttemptKey
@@ -1314,7 +1338,8 @@ actor PlaybackSessionBridge {
     static func reportTerminalStart(
         playbackAttemptId: String,
         snapshot: ApplePlaybackV3CapabilitySnapshot,
-        terminal: PlaybackV3Terminal
+        terminal: PlaybackV3Terminal,
+        authority: PlaybackV2SessionAuthority
     ) async {
         let event = terminalStartRouteEvent(
             playbackAttemptId: playbackAttemptId,
@@ -1322,7 +1347,7 @@ actor PlaybackSessionBridge {
             terminal: terminal
         )
         do {
-            try await SiloAPI.shared.reportPlaybackRouteEventV3(event)
+            try await authority.reportRouteEvent(event)
         } catch {
             Logger(
                 subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
@@ -1387,7 +1412,8 @@ actor PlaybackSessionBridge {
         outputRouteSnapshot: ApplePlaybackV3CapabilitySnapshot? = nil
     ) async throws -> PreparedPlayback? {
         guard var active = activeProtocolV3,
-              let currentSessionId = sessionId else {
+              let currentSessionId = sessionId,
+              let authority else {
             return nil
         }
         // Resolved after the guard because the intent mapping depends on what
@@ -1538,9 +1564,11 @@ actor PlaybackSessionBridge {
             clientCapabilities: active.snapshot.capabilities,
             clientPlaybackContext: active.snapshot.context
         )
-        let response = try await SiloAPI.shared.replanPlaybackV3(
-            sessionId: currentSessionId,
-            request: request
+        let response = try await SiloAPI.shared.apiV2Client.replanPlayback(
+            sessionID: currentSessionId,
+            request,
+            installationID: authority.installationID,
+            auth: authority.owner
         )
         let validatedResponse = response.validatedForApple()
         guard isCurrentProtocolV3Attempt(expectedAttempt, sessionId: currentSessionId) else {
@@ -1812,8 +1840,9 @@ actor PlaybackSessionBridge {
             outputContextId: active.snapshot.outputContextId,
             diagnostics: diagnostics
         )
+        guard let authority else { return }
         do {
-            try await SiloAPI.shared.reportPlaybackRouteEventV3(event)
+            try await authority.reportRouteEvent(event)
         } catch {
             logger.warning("Protocol V3 route event \(event.event, privacy: .public) failed: \(MediaLogRedactor.sanitize(error), privacy: .public)")
         }
@@ -1914,14 +1943,21 @@ actor PlaybackSessionBridge {
 
     @discardableResult
     func reportProgress(position: Double, isPaused: Bool) async -> PlaybackProgressReportResult {
-        guard let sid = sessionId else { return .transientFailure }
+        guard let sid = sessionId, let authority else { return .transientFailure }
         guard position.isFinite, position >= 0 else { return .transientFailure }
 
-        let report = ProgressReport(position: position, isPaused: isPaused)
         do {
-            try await SiloAPI.shared.reportPlaybackProgress(
-                sessionId: sid,
-                report: report
+            // The sequence is drawn before the await, so samples of one
+            // session stay ordered however this actor interleaves; a sample
+            // that arrives after a newer one is answered with stale_sample.
+            let sample = try PlaybackSequencedSample(
+                sequence: progressSequence.next(for: sid), position: position, isPaused: isPaused
+            )
+            _ = try await SiloAPI.shared.apiV2Client.updatePlaybackProgress(
+                sessionID: sid,
+                sample: sample,
+                installationID: authority.installationID,
+                auth: authority.owner
             )
             consecutiveProgressFailures = 0
             emittedOrphanedSessionWarning = false
@@ -1998,7 +2034,13 @@ actor PlaybackSessionBridge {
     func stopSession(position: Double, isPaused: Bool) async {
         guard let sid = sessionId else { return }
         let stoppingProtocolV3 = activeProtocolV3
+        let stoppingAuthority = authority
         let supersededSessionId = pendingProtocolV3Transition?.priorSessionId
+        // The final position rides on the stop as the session's last sample.
+        let finalSample = position.isFinite && position >= 0
+            ? try? PlaybackSequencedSample(sequence: progressSequence.next(for: sid), position: position, isPaused: isPaused)
+            : nil
+        progressSequence.forget(sid)
 
         sessionId = nil
         currentSession = nil
@@ -2039,22 +2081,9 @@ actor PlaybackSessionBridge {
             )
         }
 
-        if position.isFinite, position >= 0 {
-            let report = ProgressReport(position: position, isPaused: isPaused)
-            do {
-                try await SiloAPI.shared.reportPlaybackProgress(
-                    sessionId: sid,
-                    report: report
-                )
-            } catch {
-                logger.warning(
-                    "final stop-session progress report failed for \(sid, privacy: .public): \(MediaLogRedactor.sanitize(error), privacy: .public)"
-                )
-            }
-        }
-
         do {
-            try await SiloAPI.shared.stopPlayback(sessionId: sid)
+            guard let stoppingAuthority else { throw HTTPError.requestIdentityChanged }
+            try await stoppingAuthority.stop(sid, finalSample: finalSample)
         } catch {
             // Best-effort delete; the server times out idle sessions on its
             // own, but a missed delete extends the grace period. Log so
@@ -2072,16 +2101,14 @@ actor PlaybackSessionBridge {
 
     // MARK: - Helpers
 
+    /// Whether a session mutation failed because the session cannot be
+    /// continued: the server answers 404 for a stopped, expired or unknown
+    /// session, and 409 `installation_changed` once its playback installation
+    /// changed, which ends every session of the old one. The player renews
+    /// either way; the fresh start refreshes the capability.
     static func isPlaybackSessionMissing(_ error: Error) -> Bool {
-        guard case let HTTPError.http(statusCode, body) = error,
-              statusCode == 404 else {
-            return false
-        }
-        if let httpError = error as? HTTPError,
-           httpError.serverErrorCode == "playback_session_not_found" {
-            return true
-        }
-        return (body ?? "").contains("Playback session not found")
+        guard case APIv2Error.problem(let problem) = error else { return false }
+        return problem.status == 404 || PlaybackV3CapabilityGate.isInstallationChanged(error)
     }
 
     private func normalizedQualityPreference(_ quality: String?) -> String? {
