@@ -251,6 +251,16 @@ final class ProfilesV2Tests: XCTestCase {
         XCTAssertEqual(stub.requests.count, 1)
     }
 
+    /// A 2xx other than the declared 201 means the server acted: the profile
+    /// may exist, so the form closes instead of inviting a duplicate.
+    func testCreateAnsweredWithAnUnexpectedSuccessStatusClosesTheForm() {
+        let failure = CreateProfileFailure(APIv2Error.httpStatus(200))
+        XCTAssertEqual(failure.title, "Profile May Have Been Created")
+        XCTAssertTrue(failure.closesForm)
+        XCTAssertEqual(MutationDelivery(APIv2Error.httpStatus(204)), .unconfirmed)
+        XCTAssertEqual(MutationDelivery(APIv2Error.httpStatus(500)), .definite)
+    }
+
     /// v2 refuses profile writes from non-admins on a demo-mode server with a
     /// 403 `permission_denied` whose detail says so; the form shows it rather
     /// than a generic or session-expired message.

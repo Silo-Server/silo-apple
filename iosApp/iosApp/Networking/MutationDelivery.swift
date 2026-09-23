@@ -12,43 +12,16 @@ enum MutationDelivery: String, Sendable {
     /// The request may have reached the server without an answer.
     case unconfirmed
 
+    /// Maps the shared classification (`APIv2MutationOutcome`); this type
+    /// keeps no transport or status rules of its own.
     init(_ error: Error) {
-        if let http = error as? HTTPError {
-            switch http {
-            case .requestIdentityChanged, .authorityChanged:
-                self = .ownerChanged
-            case .serverUrlNotConfigured, .invalidURL, .encodingFailed, .http, .decodingFailed:
-                self = .definite
-            case .network(let underlying):
-                self = Self.wasNeverSent(underlying) ? .definite : .unconfirmed
-            case .invalidResponse:
-                self = .unconfirmed
-            }
-            return
-        }
-        // Every APIv2Error is either a refusal before dispatch (`gate()`) or a
-        // decoded server answer.
-        if error is APIv2Error {
+        switch APIv2MutationOutcome(error) {
+        case .definite, .notSent:
             self = .definite
-            return
-        }
-        // Cancellation and anything unrecognized may have left the device.
-        self = .unconfirmed
-    }
-
-    /// Transport failures that happen before any request byte reaches the
-    /// server: no route, no name, no connection, or a failed TLS handshake.
-    private static func wasNeverSent(_ error: Error) -> Bool {
-        guard let code = (error as? URLError)?.code else { return false }
-        switch code {
-        case .notConnectedToInternet, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed,
-             .internationalRoamingOff, .dataNotAllowed, .callIsActive, .badURL, .unsupportedURL,
-             .appTransportSecurityRequiresSecureConnection, .secureConnectionFailed,
-             .serverCertificateUntrusted, .serverCertificateHasBadDate, .serverCertificateNotYetValid,
-             .serverCertificateHasUnknownRoot, .clientCertificateRejected, .clientCertificateRequired:
-            return true
-        default:
-            return false
+        case .ownerChanged:
+            self = .ownerChanged
+        case .uncertain:
+            self = .unconfirmed
         }
     }
 }
