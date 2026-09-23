@@ -2,8 +2,8 @@ import Foundation
 
 // MARK: - Canonical settings API
 
-/// The typed settings endpoints (`/api/v1/settings/contract*`,
-/// `/api/v1/settings/values/*`).
+/// The typed settings endpoints: the v2 contract capabilities and effective
+/// reads (`APIv2Client+Settings.swift`), and the `/settings/values/*` writes.
 ///
 /// Values are typed JSON, the scope is explicit and validated against the
 /// manifest, and a key that is not in the manifest cannot be named because
@@ -20,34 +20,28 @@ extension SiloAPI {
     /// What the connected server's settings contract supports.
     ///
     /// Returns a typed result rather than throwing, because the interesting
-    /// failure is not an error: a server may predate the canonical settings
-    /// API entirely or serve an older manifest revision than this build. The
-    /// UI must say "this server needs an upgrade" rather than render an empty
-    /// or incomplete settings screen, so that case is
-    /// ``SettingsCapabilitiesResult/serverUpgradeRequired`` instead of
-    /// dissolving into the generic error path.
+    /// failure is not an error: a server may be v1-only or serve an older
+    /// manifest revision than this build. The UI must say "this server needs
+    /// an upgrade" rather than render an empty or incomplete settings screen,
+    /// so that case is ``SettingsCapabilitiesResult/serverUpgradeRequired``
+    /// instead of dissolving into the generic error path.
     ///
     /// Needs no profile: the contract is the same for every profile on the
-    /// server, so this route sits outside the server's `RequireProfile` group
-    /// and can be probed before profile selection.
+    /// server, so it can be probed before profile selection.
     func getContractCapabilities(
         requestIdentity: HTTPRequestIdentity? = nil
     ) async -> SettingsCapabilitiesResult {
         do {
-            let response = try await http.requestData(
-                method: "GET",
-                path: "/api/v1/settings/contract/capabilities",
-                // A 404 here is the documented "server is too old" signal, not
-                // a failure worth logging as one.
-                quietStatuses: [404],
-                requestIdentity: requestIdentity
+            let capabilities = try await apiV2Client.settingsContractCapabilities(
+                expectedIdentity: requestIdentity
             )
-            let capabilities = try SettingsWireCoding.makeDecoder()
-                .decode(SettingsContractCapabilities.self, from: response.data)
-            guard !capabilities.contractIsAheadOfServer else {
-                return .serverUpgradeRequired
+            if capabilities.isAvailable {
+                return capabilities.contractIsAheadOfServer ? .serverUpgradeRequired : .available(capabilities)
             }
-            return .available(capabilities)
+            // `unsupported` means this server build cannot provide the
+            // settings contract; any other state is an answer about this
+            // principal or configuration, not about the server's version.
+            return capabilities.state == "unsupported" ? .serverUpgradeRequired : .unavailable
         } catch {
             let mapped = SettingsAPIError.from(error)
             return mapped == .serverUpgradeRequired ? .serverUpgradeRequired : .failed(mapped)
@@ -57,7 +51,7 @@ extension SiloAPI {
     // MARK: Read
 
     /// Resolve settings the way the server does, including the scope each
-    /// answer came from.
+    /// answer came from, for the session's selected profile.
     ///
     /// Batched on purpose: a settings screen wants every key at once and a
     /// season view wants several keys across many series, and the server
@@ -67,37 +61,32 @@ extension SiloAPI {
     /// `libraryIds` and `seriesIds` widen the resolution context to those
     /// content scopes — a key stored at `profile_library` only surfaces when
     /// its library is named here. The profile and device halves of the context
-    /// come from the session headers.
+    /// come from the session headers. `requestIdentity`, when given, pins the
+    /// read to that server and profile: it fails rather than follow a switch.
     func getEffectiveValues(
         keys: [SettingKey] = [],
         libraryIds: [Int] = [],
         seriesIds: [String] = [],
-        profileId: String? = nil,
         requestIdentity: HTTPRequestIdentity? = nil
     ) async throws -> EffectiveSettingValuesResponse {
-        let headers = try await profileHeaders(explicit: profileId)
-
-        var query: [String: String] = [:]
-        if !keys.isEmpty {
-            query["keys"] = keys.map(\.rawValue).joined(separator: ",")
+        // Resolved here so a call made before profile selection fails locally
+        // with a named error instead of the server's 400.
+        var profile = requestIdentity?.profileId
+        if profile == nil || profile?.isEmpty == true {
+            profile = await currentProfileId()
         }
-        if !libraryIds.isEmpty {
-            query["library_ids"] = libraryIds.map(String.init).joined(separator: ",")
-        }
-        if !seriesIds.isEmpty {
-            query["series_ids"] = seriesIds.joined(separator: ",")
+        guard let profile, !profile.isEmpty else {
+            throw SettingsAPIError.profileRequired
         }
 
         do {
-            let response = try await http.requestData(
-                method: "GET",
-                path: "/api/v1/settings/values/effective",
-                query: query,
-                headers: headers,
-                requestIdentity: requestIdentity
+            let decoded = try await apiV2Client.effectiveSettings(
+                keys: keys,
+                libraryIds: libraryIds,
+                seriesIds: seriesIds,
+                profileID: profile,
+                expectedIdentity: requestIdentity
             )
-            let decoded = try SettingsWireCoding.makeDecoder()
-                .decode(EffectiveSettingValuesResponse.self, from: response.data)
             guard !decoded.contractIsAheadOfServer else {
                 throw SettingsAPIError.serverUpgradeRequired
             }
@@ -122,7 +111,7 @@ extension SiloAPI {
     /// A value that exceeds a policy restriction is stored, not rejected: the
     /// restriction filters what the preference does at resolution time, so a
     /// successful write does not mean playback will use this value. Call
-    /// ``getEffectiveValues(keys:libraryIds:seriesIds:profileId:requestIdentity:)``
+    /// ``getEffectiveValues(keys:libraryIds:seriesIds:requestIdentity:)``
     /// for that.
     @discardableResult
     func putValue(

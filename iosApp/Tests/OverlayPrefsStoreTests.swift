@@ -44,7 +44,7 @@ final class OverlayPrefsStoreTests: XCTestCase {
         // baseline that overlay-config just returned.
         let effectiveAnswers: [StubURLProtocol.Response] = [
             .text("404 page not found", status: 404),
-            .json(#"{"settings":[{"key":"ui.card_overlays","value":null,"source":"default"}],"revision":1}"#),
+            .json(#"{"items":[{"key":"ui.card_overlays","value":null,"source":"default"}],"revision":1}"#),
         ]
         let baseline = #"{"version":2,"preset":"pill","order":[],"items":{}}"#
         for answer in effectiveAnswers {
@@ -74,11 +74,11 @@ final class OverlayPrefsStoreTests: XCTestCase {
         }
         stub.route(StubURLProtocol.pathSuffix(Self.effectivePath)) { request in
             guard request.header("X-Profile-Id") == "profile-a" else {
-                return .json(#"{"settings":[{"key":"ui.card_overlays","value":null,"source":"default"}],"revision":99}"#)
+                return .json(#"{"items":[{"key":"ui.card_overlays","value":null,"source":"default"}],"revision":99}"#)
             }
             await gate.wait()
             return .json(#"""
-            {"settings":[{"key":"ui.card_overlays","value":\#(Self.savedDocument),
+            {"items":[{"key":"ui.card_overlays","value":\#(Self.savedDocument),
              "source":"profile","scope":"profile"}],"revision":99}
             """#)
         }
@@ -111,7 +111,7 @@ final class OverlayPrefsStoreTests: XCTestCase {
         }
         stub.route(StubURLProtocol.pathSuffix(Self.effectivePath)) { _ in
             .json(#"""
-            {"settings":[{"key":"ui.card_overlays","value":\#(Self.savedDocument),
+            {"items":[{"key":"ui.card_overlays","value":\#(Self.savedDocument),
              "source":"profile","scope":"profile"}],"revision":99}
             """#)
         }
