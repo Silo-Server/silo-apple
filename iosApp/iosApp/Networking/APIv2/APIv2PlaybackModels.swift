@@ -224,24 +224,25 @@ struct APIv2PlaybackControlTicket: Decodable {
     let maxConnectionSeconds: Int
     let `protocol`: String
 
-    /// The ticket travels in the `Sec-WebSocket-Protocol` header of the
-    /// handshake. Plain-`http` servers are supported for ordinary bearer
-    /// requests, but this delegated credential is only sent over TLS; a
-    /// cleartext origin fails closed here rather than exposing the ticket to
-    /// an on-path observer. Loopback origins are the one exception, for
-    /// local development against a server on the same machine.
-    func request(serverURL: String, sessionID: String) throws -> URLRequest {
+    /// The longest connection lifetime accepted from a ticket. The server
+    /// sends four hours; anything past a day is a misbehaving server or proxy.
+    static let maxAcceptedConnectionSeconds = 86_400
+
+    /// The upgrade request for this ticket. The ticket travels only in the
+    /// `Sec-WebSocket-Protocol` header, never as a bearer token or in the URL.
+    /// A plain-`http` server gets a `ws` upgrade: the ticket works for one
+    /// handshake and expires within seconds, while every other request to that
+    /// server already carries the full bearer token in cleartext.
+    func handshake(serverURL: String, sessionID: String) throws -> APIv2PlaybackControlHandshake {
         let safeTicket = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
-        guard `protocol` == "silo.playback-control.v2", expiresIn > 0, maxConnectionSeconds > 0,
+        guard `protocol` == "silo.playback-control.v2", expiresIn > 0,
+              (1...Self.maxAcceptedConnectionSeconds).contains(maxConnectionSeconds),
               !ticket.isEmpty, ticket.unicodeScalars.allSatisfy(safeTicket.contains),
               UUID(uuidString: sessionID) != nil,
               var url = URLComponents(string: serverURL),
-              ["http", "https"].contains(url.scheme), let host = url.host,
+              ["http", "https"].contains(url.scheme), url.host != nil,
               url.user == nil, url.password == nil, url.query == nil, url.fragment == nil else {
             throw PlaybackSequencedError.invalidResponse
-        }
-        guard url.scheme == "https" || Self.isLoopback(host) else {
-            throw PlaybackSequencedError.controlRequiresTLS
         }
         url.scheme = url.scheme == "https" ? "wss" : "ws"
         url.percentEncodedPath = url.percentEncodedPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -250,13 +251,16 @@ struct APIv2PlaybackControlTicket: Decodable {
         guard let resolved = url.url else { throw PlaybackSequencedError.invalidResponse }
         var request = URLRequest(url: resolved)
         request.setValue("\(`protocol`), silo.ticket.\(ticket)", forHTTPHeaderField: "Sec-WebSocket-Protocol")
-        return request
+        return APIv2PlaybackControlHandshake(request: request, maxConnectionSeconds: maxConnectionSeconds)
     }
+}
 
-    private static func isLoopback(_ host: String) -> Bool {
-        let lowered = host.lowercased()
-        return lowered == "localhost" || lowered == "127.0.0.1" || lowered == "::1" || lowered == "[::1]"
-    }
+/// One control socket connection: the ticketed upgrade request and the
+/// longest the connection may stay open before it reconnects with a new
+/// ticket.
+struct APIv2PlaybackControlHandshake: Sendable {
+    let request: URLRequest
+    let maxConnectionSeconds: Int
 }
 
 /// `GET /api/v2/playback/sessions/control/capabilities`. The server sends

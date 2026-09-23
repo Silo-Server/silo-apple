@@ -670,6 +670,14 @@ actor PlaybackSessionBridge {
         return currentSession
     }
 
+    /// The owner and installation of the committed session `expectedSessionId`,
+    /// for its control socket. Nil once a newer transition or teardown replaced
+    /// that session, so a late bind cannot mint tickets for it.
+    func committedProtocolV3Authority(sessionId expectedSessionId: String) -> PlaybackV2SessionAuthority? {
+        guard pendingProtocolV3Transition == nil, sessionId == expectedSessionId else { return nil }
+        return authority
+    }
+
     /// Promotes a candidate that Aether could not open solely so the client
     /// can report that exact failed attempt and request the next server route.
     /// This is not an execution commit: it emits no success event, binds no

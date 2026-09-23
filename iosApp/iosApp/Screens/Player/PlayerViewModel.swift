@@ -2111,7 +2111,7 @@ class PlayerViewModel {
                 }
                 if previousSessionId != prepared.session.sessionId {
                     await self.realtimeClient.unbind()
-                    await self.realtimeClient.bind(sessionId: prepared.session.sessionId)
+                    await self.bindRealtimeControl(sessionId: prepared.session.sessionId)
                 }
                 await self.sessionBridge.reportProtocolV3PlanExecutionStarted(prepared)
             } catch is CancellationError {
@@ -4230,7 +4230,7 @@ class PlayerViewModel {
                     // committed session. Binding before Aether accepts the
                     // candidate can leave commands attached to a rolled-back
                     // session after a failed load.
-                    await self.realtimeClient.bind(sessionId: session.sessionId)
+                    await self.bindRealtimeControl(sessionId: session.sessionId)
                     await self.sessionBridge.reportProtocolV3PlanExecutionStarted(prepared)
                     try self.requireCurrentStreamLoad(currentStreamLoadGeneration)
                     self.reapplyDeferredAutoSubtitlePolicyIfNeeded()
@@ -6456,6 +6456,14 @@ class PlayerViewModel {
                 await realtimeClient?.unbind()
             }
         }
+    }
+
+    /// Binds the control socket to a committed session under the owner and
+    /// installation that started it.
+    @MainActor
+    private func bindRealtimeControl(sessionId: String) async {
+        guard let authority = await sessionBridge.committedProtocolV3Authority(sessionId: sessionId) else { return }
+        await realtimeClient.bind(sessionId: sessionId, authority: authority)
     }
 
     @MainActor
