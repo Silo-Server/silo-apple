@@ -72,7 +72,7 @@ extension SiloAPI {
         // Resolved here so a call made before profile selection fails locally
         // with a named error instead of the server's 400.
         var profile = requestIdentity?.profileId
-        if profile == nil || profile?.isEmpty == true {
+        if profile?.isEmpty ?? true {
             profile = await currentProfileId()
         }
         guard let profile, !profile.isEmpty else {
