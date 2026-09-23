@@ -1,84 +1,23 @@
 import Foundation
 
-// MARK: - Profiles (server wire format)
+// MARK: - Profiles
 
-/// Full profile payload as returned by the server.
-///
-/// Distinct from ``UserProfile`` (the reduced shape used by the UI): this
-/// type maps every field the server sends. `SiloAPI.listProfiles()`
-/// converts to `[UserProfile]` at the API boundary so call sites keep
-/// their existing types.
-struct Profile: Codable {
-    let id: String
-    let name: String
-    let avatar: String?
-    /// Server-resolved avatar URL (`avatar_url`). For uploads this is a
-    /// short-lived presigned object-store URL that changes on every fetch, so
-    /// it must not be persisted long-term. For presets it is a DiceBear URL or
-    /// a server-relative `/profile-avatars/{id}.svg` path.
-    @ArtworkURL var avatarUrl: String?
-    /// `avatar_source`: "upload", "preset", or "none".
-    let avatarSource: String?
-    let hasPin: Bool?
-    let isChild: Bool?
-    let isPrimary: Bool?
-    let maxContentRating: String?
-    let qualityPreference: String?
-    let language: String?
-    let subtitleLanguage: String?
-    let subtitleMode: String?
-    let showForcedSubtitles: Bool?
-    /// Preferred metadata language (ISO 639-1). `""`/nil = inherit the
-    /// library default. Drives server-side translation of overviews and
-    /// taglines in the normal detail/browse responses.
-    let preferredMetadataLanguage: String?
-    let autoSkipIntro: Bool?
-    let autoSkipCredits: Bool?
-    let autoSkipRecap: Bool?
-    let libraryRestrictionsEnabled: Bool?
-    let allowedLibraryIds: [Int]?
-    let maxPlaybackQuality: String?
-    let createdAt: String?
-    let updatedAt: String?
-
-    /// Convert to the reduced ``UserProfile`` shape used by the UI.
-    var asUserProfile: UserProfile {
-        UserProfile(
-            id: id,
-            name: name,
-            avatarEmoji: avatar,
-            avatarImageUrl: avatarUrl,
-            hasPin: hasPin ?? false,
-            isChild: isChild ?? false,
-            isPrimary: isPrimary ?? false,
-            subtitleLanguage: subtitleLanguage,
-            subtitleMode: subtitleMode,
-            showForcedSubtitles: showForcedSubtitles,
-            preferredMetadataLanguage: preferredMetadataLanguage
-        )
-    }
-}
-
-/// PUT body for `/api/v1/profiles/{id}`. All fields are optional so the
-/// caller can patch one or many at a time. Wire format mirrors the
-/// server's `updateProfileRequest`.
-struct UpdateProfileBody: Encodable {
-    /// Streaming quality ceiling preset ("auto", "1080p", "4k"). Encodes as
-    /// `quality_preference`. Written by the onboarding tour's quality step.
+/// The profile fields the onboarding tour can change. All fields are
+/// optional so the caller can patch one or many at a time;
+/// `asAPIv2Patch` turns it into the `PATCH /api/v2/profiles/{id}` body.
+struct UpdateProfileBody {
+    /// Streaming quality ceiling preset ("auto", "1080p", "4k"). Written by
+    /// the onboarding tour's quality step.
     var qualityPreference: String?
     var subtitleLanguage: String?
     var subtitleMode: String?
     var showForcedSubtitles: Bool?
     /// Preferred metadata language (ISO 639-1; `""` = inherit the library
-    /// default). Encodes as `preferred_metadata_language`.
+    /// default, sent as a clearing `null`).
     var preferredMetadataLanguage: String?
     var autoSkipIntro: Bool?
     var autoSkipCredits: Bool?
     var autoSkipRecap: Bool?
-}
-
-struct ProfilesResponse: Codable {
-    let profiles: [Profile]
 }
 
 struct VerifyPinRequest: Codable {
@@ -91,9 +30,9 @@ struct VerifyPinResponse: Codable {
     let expiresAt: String?
 }
 
-/// Wire-format body for POST /api/v1/profiles.
-///
-/// Mirrors Kotlin `CreateProfileRequest`; `SiloAPI.createProfile` builds this wire body.
+/// The new-profile form's values. `APIv2Client.createHouseholdProfile`
+/// turns it into the `POST /api/v2/profiles` body (`APIv2ProfileCreate`),
+/// sending the library IDs as strings.
 struct CreateProfileRequestBody: Codable {
     let name: String
     let avatar: String?

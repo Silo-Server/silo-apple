@@ -4,6 +4,8 @@ enum ProfileTransitionError: LocalizedError {
     case noActiveAccount
     case temporaryIdentityActive
     case missingPINProof
+    /// The server checked the PIN and it did not match.
+    case incorrectPIN
     case noActiveServer
     case identityChanged
     case accountEpochUnavailable
@@ -16,6 +18,8 @@ enum ProfileTransitionError: LocalizedError {
             return "End remote playback before switching profiles."
         case .missingPINProof:
             return "Silo couldn't verify that profile's PIN. Please try again."
+        case .incorrectPIN:
+            return "That PIN is incorrect. Try again."
         case .noActiveServer:
             return "Choose a server before selecting a profile."
         case .identityChanged:

@@ -6,7 +6,7 @@ import Foundation
 /// seeds across clients (the same `batch` index + style yields the same 18
 /// avatars on web and iOS).
 ///
-/// Wire format sent to `POST /api/v1/profiles`:
+/// Wire format sent to `POST /api/v2/profiles`:
 ///
 ///     preset:dicebear:<styleId>:<seed>
 ///

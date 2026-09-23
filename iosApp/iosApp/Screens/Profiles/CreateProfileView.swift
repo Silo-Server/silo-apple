@@ -22,17 +22,22 @@ struct CreateProfileView: View {
     @State private var libraryRestrictionsEnabled: Bool = false
     @State private var allowedLibraryIds: Set<Int> = []
     @State private var libraries: [Library] = []
+    @State private var libraryLoad: LibraryLoad = .loading
     @State private var isLoading: Bool = false
-    @State private var formError: FormError?
+    @State private var formError: CreateProfileFailure?
     @Environment(\.dismiss) private var dismiss
 
     @FocusState private var focusedField: Field?
 
     private enum Field: Hashable { case name, pin }
 
-    private struct FormError: Equatable {
-        var title: String = "Couldn't Create Profile"
-        var message: String
+    /// Whether the assignable libraries are known yet. A failed read is kept
+    /// apart from an empty list so the form never claims there is nothing to
+    /// assign when it simply could not ask.
+    private enum LibraryLoad: Equatable {
+        case loading
+        case loaded
+        case failed(String)
     }
 
     private var presets: [ProfileAvatarPresets.Preset] {
@@ -79,13 +84,18 @@ struct CreateProfileView: View {
                 set: { if !$0 { formError = nil } }
             ),
             presenting: formError
-        ) { _ in
-            Button("OK", role: .cancel) { formError = nil }
+        ) { err in
+            Button("OK", role: .cancel) {
+                formError = nil
+                // The server may already have the profile: close the form so
+                // the refreshed list shows whether it exists before any retry.
+                if err.closesForm { onCreated() }
+            }
         } message: { err in
             Text(err.message)
         }
         .task {
-            libraries = (try? await SiloAPI.shared.libraries().libraries) ?? []
+            await loadLibraries()
         }
         .onChange(of: isChild) { _, child in
             if child {
@@ -446,7 +456,20 @@ struct CreateProfileView: View {
                 .tint(.siloAccent)
 
             if libraryRestrictionsEnabled {
-                if libraries.isEmpty {
+                if case .loading = libraryLoad {
+                    ProgressView("Loading libraries…")
+                        .font(.siloCaption)
+                } else if case .failed(let message) = libraryLoad {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Couldn't load libraries. \(message)")
+                            .font(.siloCaption)
+                            .foregroundStyle(Color.siloSecondaryText)
+                        Button("Try Again") {
+                            Task { await loadLibraries() }
+                        }
+                        .buttonStyle(GhostChipButtonStyle())
+                    }
+                } else if libraries.isEmpty {
                     Text("No libraries are available to assign.")
                         .font(.siloCaption)
                         .foregroundStyle(Color.siloSecondaryText)
@@ -551,15 +574,27 @@ struct CreateProfileView: View {
         selectedSeed = nil
     }
 
+    // MARK: - Libraries
+
+    private func loadLibraries() async {
+        libraryLoad = .loading
+        do {
+            libraries = try await SiloAPI.shared.libraries().libraries
+            libraryLoad = .loaded
+        } catch {
+            libraryLoad = .failed(ErrorState(error).message)
+        }
+    }
+
     // MARK: - Submit
 
     private func createProfile() async {
         guard !name.trimmingCharacters(in: .whitespaces).isEmpty else {
-            formError = FormError(title: "Name Required", message: "Please enter a name.")
+            formError = CreateProfileFailure(title: "Name Required", message: "Please enter a name.")
             return
         }
         guard !libraryRestrictionsEnabled || !allowedLibraryIds.isEmpty else {
-            formError = FormError(
+            formError = CreateProfileFailure(
                 title: "Choose a Library",
                 message: "Select at least one library for this child profile."
             )
@@ -584,37 +619,51 @@ struct CreateProfileView: View {
             )
             onCreated()
         } catch {
-            formError = Self.mapSubmitError(error)
+            formError = CreateProfileFailure(error)
         }
     }
+}
 
-    /// Translate a submit failure into a user-facing title/message.
-    ///
-    /// Detection is layered so the dialog degrades gracefully:
-    /// 1. Prefer the server's machine-readable `error` code from the JSON
-    ///    envelope (parsed inside `HTTPError`).
-    /// 2. Fall back to the raw HTTP status — on this endpoint the server
-    ///    only returns 409 for `profile_limit_reached`, so we can trust
-    ///    the status even when the body didn't parse (e.g. a proxy
-    ///    rewrote it).
-    /// 3. Otherwise surface whatever message the server sent.
-    private static func mapSubmitError(_ error: Error) -> FormError {
-        if let http = error as? HTTPError {
-            let fallback = http.errorDescription ?? "Something went wrong."
+/// What the new-profile form tells the user after a submit fails.
+///
+/// `POST /api/v2/profiles` is `non_retryable`, so nothing here re-sends it:
+/// - a server answer or a request that never left the device is a definite
+///   failure; the form stays open with the server's reason;
+/// - a request that was sent without an answer may have created the
+///   profile, so the form closes and the refreshed profile list shows the
+///   result instead of inviting a duplicate.
+struct CreateProfileFailure: Equatable {
+    let title: String
+    let message: String
+    /// Close the form and reload the profile list when the alert is dismissed.
+    let closesForm: Bool
 
-            if http.serverErrorCode == "profile_limit_reached"
-                || http.statusCode == 409 {
-                return FormError(
-                    title: "Profile Limit Reached",
-                    message: "You've reached the maximum number of profiles for this account."
-                )
-            }
-            if http.serverErrorCode == "bad_request" {
-                return FormError(title: "Can't Create Profile", message: fallback)
-            }
-            return FormError(message: fallback)
+    init(title: String = "Couldn't Create Profile", message: String, closesForm: Bool = false) {
+        self.title = title
+        self.message = message
+        self.closesForm = closesForm
+    }
+
+    init(_ error: Error) {
+        if MutationDelivery(error) == .unconfirmed {
+            self.init(
+                title: "Profile May Have Been Created",
+                message: "Silo didn't get an answer from the server. Check the profile list before trying again.",
+                closesForm: true
+            )
+            return
         }
-        return FormError(message: error.localizedDescription)
+        // v2 reports a taken name and a full household as 409 `conflict`, and
+        // a rejected member as 422 `validation_failed`; the detail names which.
+        if case APIv2Error.problem(let problem) = error,
+           UpdateRequirement(error) == nil,
+           problem.status == 409 || problem.status == 422 {
+            let reason = problem.errors?.first(where: { !$0.detail.isEmpty })?.detail ?? problem.detail
+            self.init(title: "Can't Create Profile",
+                      message: reason.isEmpty ? ErrorState(error).message : reason)
+            return
+        }
+        self.init(message: ErrorState(error).message)
     }
 }
 

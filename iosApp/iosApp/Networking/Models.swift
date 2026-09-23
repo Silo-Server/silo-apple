@@ -1264,6 +1264,10 @@ struct Library: Codable, Identifiable, Hashable {
     }
 }
 
+/// The viewer's libraries as the app keeps them: built from
+/// `GET /api/v2/user/libraries` by `SiloAPI.libraries()` and persisted by
+/// `ResponseCache` in its own `{"libraries": [...]}` shape. It is not a wire
+/// model; the v2 rows are `APIv2UserLibrary`.
 struct LibrariesResponse: Codable {
     let libraries: [Library]
 
@@ -1272,11 +1276,6 @@ struct LibrariesResponse: Codable {
     }
 
     init(from decoder: Decoder) throws {
-        if let list = try? [Library](from: decoder) {
-            libraries = list.filter(\.isSupportedLibrary)
-            return
-        }
-
         let c = try decoder.container(keyedBy: CodingKeys.self)
         libraries = try c.decodeIfPresent([Library].self, forKey: .libraries)?
             .filter(\.isSupportedLibrary) ?? []

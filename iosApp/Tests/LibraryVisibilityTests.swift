@@ -5,7 +5,7 @@ import Foundation
 final class LibraryVisibilityTests: XCTestCase {
     func testLibrariesResponseOnlyIncludesSupportedAppleLibraryTypes() {
         let json = """
-        [
+        { "libraries": [
           { "id": 1, "name": "Movies", "type": "movies" },
           { "id": 2, "name": "Series", "type": "series" },
           { "id": 3, "name": "Audiobooks", "type": "audiobooks" },
@@ -14,7 +14,7 @@ final class LibraryVisibilityTests: XCTestCase {
           { "id": 6, "name": "Comics", "type": "comics" },
           { "id": 7, "name": "Podcasts", "type": "podcasts" },
           { "id": 8, "name": "Mixed Media", "type": "mixed" }
-        ]
+        ] }
         """
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase

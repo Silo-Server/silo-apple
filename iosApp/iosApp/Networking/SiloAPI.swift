@@ -305,9 +305,12 @@ actor SiloAPI {
 
     // --- Libraries ---
 
+    /// `GET /api/v2/user/libraries`. The rows keep their numeric app IDs; a
+    /// row whose ID is not a canonical positive integer fails the whole read
+    /// rather than disappearing from the list.
     func libraries() async throws -> LibrariesResponse {
-        let libs: [Library] = try await http.get("/api/v1/user/libraries")
-        return LibrariesResponse(libraries: libs)
+        let rows = try await apiV2Client.userLibraries()
+        return LibrariesResponse(libraries: try rows.map(Library.init(v2:)))
     }
 
     /// The library's Collections tab. Personal collections in it belong to
@@ -406,8 +409,7 @@ actor SiloAPI {
     // --- Profiles ---
 
     func listProfiles() async throws -> [UserProfile] {
-        let response: ProfilesResponse = try await http.get("/api/v1/profiles")
-        return response.profiles.map(\.asUserProfile)
+        try await apiV2Client.householdProfiles()
     }
 
     /// Verifies a protected profile without mutating process-wide identity.
@@ -417,21 +419,22 @@ actor SiloAPI {
     func verifyProfileSelection(profileId: String, pin: String?) async throws -> String? {
         // Profiles without a PIN: just record the selection locally; there's
         // nothing to verify and the server's /verify-pin rejects empty PINs
-        // with 400. Mirrors `ProfileSelectionViewModel.onProfileTapped` on
+        // with 422. Mirrors `ProfileSelectionViewModel.onProfileTapped` on
         // Android, which skips the verify call when `hasPin` is false.
         if let pin, !pin.isEmpty {
-            let response: VerifyPinResponse = try await http.post(
-                "/api/v1/profiles/\(profileId)/verify-pin",
-                body: VerifyPinRequest(pin: pin)
-            )
+            // A wrong PIN is a 200 with `valid: false`, not an error status.
+            let response = try await apiV2Client.verifyHouseholdPIN(id: profileId, pin: pin)
             guard response.valid else {
-                throw APIError.httpError(statusCode: 401)
+                throw ProfileTransitionError.incorrectPIN
             }
             return response.profileToken
         }
         return nil
     }
 
+    /// `POST /api/v2/profiles` is `non_retryable`: it is sent once, and a
+    /// failure is never replayed here. `CreateProfileFailure` decides what the
+    /// form tells the user.
     func createProfile(
         name: String,
         avatarEmoji: String?,
@@ -441,9 +444,8 @@ actor SiloAPI {
         libraryRestrictionsEnabled: Bool = false,
         allowedLibraryIds: [Int] = []
     ) async throws -> UserProfile {
-        let profile: Profile = try await http.post(
-            "/api/v1/profiles",
-            body: CreateProfileRequestBody(
+        try await apiV2Client.createHouseholdProfile(
+            CreateProfileRequestBody(
                 name: name,
                 avatar: avatarEmoji,
                 pin: pin,
@@ -453,14 +455,14 @@ actor SiloAPI {
                 allowedLibraryIds: allowedLibraryIds
             )
         )
-        return profile.asUserProfile
     }
 
-    /// Patch a profile. Send only the fields you want to change — the
-    /// server treats absent fields as untouched. Used by Settings to
-    /// persist subtitle prefs.
+    /// Patch the active profile through `PATCH /api/v2/profiles/{id}`. Only
+    /// the set fields are sent; the server leaves the rest untouched. Used by
+    /// the onboarding tour's profile-field steps. The write is
+    /// `non_retryable` and is sent once.
     func updateProfile(profileId: String, body: UpdateProfileBody) async throws {
-        try await http.putVoid("/api/v1/profiles/\(profileId)", body: body)
+        _ = try await apiV2Client.updateProfile(id: profileId, patch: body.asAPIv2Patch)
     }
 }
 

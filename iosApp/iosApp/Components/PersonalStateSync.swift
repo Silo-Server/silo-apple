@@ -180,49 +180,10 @@ enum PersonalStateSync {
         }
     }
 
-    enum Delivery: String {
-        /// A response arrived, or the request never left the device.
-        case definite
-        /// The owner changed; nothing is applied under the new one.
-        case ownerChanged = "owner_changed"
-        /// The request may have reached the server without an answer.
-        case unconfirmed
-    }
+    typealias Delivery = MutationDelivery
 
     static func classify(_ error: Error) -> Delivery {
-        if let http = error as? HTTPError {
-            switch http {
-            case .requestIdentityChanged, .authorityChanged:
-                return .ownerChanged
-            case .serverUrlNotConfigured, .invalidURL, .encodingFailed, .http, .decodingFailed:
-                return .definite
-            case .network(let underlying):
-                return wasNeverSent(underlying) ? .definite : .unconfirmed
-            case .invalidResponse:
-                return .unconfirmed
-            }
-        }
-        // Every APIv2Error is either a refusal before dispatch (`gate()`) or a
-        // decoded server answer.
-        if error is APIv2Error { return .definite }
-        // Cancellation and anything unrecognized may have left the device.
-        return .unconfirmed
-    }
-
-    /// Transport failures that happen before any request byte reaches the
-    /// server: no route, no name, no connection, or a failed TLS handshake.
-    private static func wasNeverSent(_ error: Error) -> Bool {
-        guard let code = (error as? URLError)?.code else { return false }
-        switch code {
-        case .notConnectedToInternet, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed,
-             .internationalRoamingOff, .dataNotAllowed, .callIsActive, .badURL, .unsupportedURL,
-             .appTransportSecurityRequiresSecureConnection, .secureConnectionFailed,
-             .serverCertificateUntrusted, .serverCertificateHasBadDate, .serverCertificateNotYetValid,
-             .serverCertificateHasUnknownRoot, .clientCertificateRejected, .clientCertificateRequired:
-            return true
-        default:
-            return false
-        }
+        MutationDelivery(error)
     }
 
     /// Drops every cached read that can show an item's personal flags.
