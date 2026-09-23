@@ -102,12 +102,7 @@ extension APIv2Client {
         var validator = etag
         var reapplied = false
         while true {
-            let current: String
-            if let validator, !validator.isEmpty {
-                current = validator
-            } else {
-                current = try await downloadSubscription(id: id, auth: auth).etag
-            }
+            let current = try await monitorValidator(id: id, stored: validator, auth: auth)
             do {
                 let response = try await downloadRegistryRequest(method: "PATCH", path: path, body: body,
                     headers: ["If-Match": current], auth: auth)
@@ -131,12 +126,7 @@ extension APIv2Client {
         var reapplied = false
         while true {
             do {
-                let current: String
-                if let validator, !validator.isEmpty {
-                    current = validator
-                } else {
-                    current = try await downloadSubscription(id: id, auth: auth).etag
-                }
+                let current = try await monitorValidator(id: id, stored: validator, auth: auth)
                 let response = try await downloadRegistryRequest(method: "DELETE", path: path,
                     headers: ["If-Match": current], auth: auth)
                 guard response.statusCode == 204 else { throw APIv2Error.httpStatus(response.statusCode) }
@@ -248,6 +238,13 @@ extension APIv2Client {
     }
 
     // MARK: Helpers
+
+    /// The validator a write sends as `If-Match`: `stored` when it is set,
+    /// otherwise the monitor's current one, read from the server.
+    private func monitorValidator(id: String, stored: String?, auth: CapturedOrdinaryRequestAuth) async throws -> String {
+        if let stored, !stored.isEmpty { return stored }
+        return try await downloadSubscription(id: id, auth: auth).etag
+    }
 
     /// The HTTP status of a failed monitor or registry call, if it has one.
     static func downloadStatus(of error: Error) -> Int? {
