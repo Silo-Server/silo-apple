@@ -64,6 +64,12 @@ final class PlaybackSessionTransportTests: XCTestCase {
             clientCapabilities: snapshot.capabilities, clientPlaybackContext: snapshot.context)
     }
 
+    private func terminalRouteEvent() -> PlaybackV3RouteEvent {
+        PlaybackSessionBridge.terminalStartRouteEvent(
+            playbackAttemptId: "apple:attempt", snapshot: ApplePlaybackV3Capabilities.snapshot(),
+            terminal: PlaybackV3Terminal(reason: "no_route", message: "No route", retryable: false))
+    }
+
     // MARK: Start and replan
 
     func testStartSendsTheV2BodyAndProjectsTheCreatedDecision() async throws {
@@ -135,9 +141,7 @@ final class PlaybackSessionTransportTests: XCTestCase {
 
     func testRouteEventMintsAnEventIDAndRequiresItsEcho() async throws {
         let h = try await makeHarness()
-        let event = PlaybackSessionBridge.terminalStartRouteEvent(
-            playbackAttemptId: "apple:attempt", snapshot: ApplePlaybackV3Capabilities.snapshot(),
-            terminal: PlaybackV3Terminal(reason: "no_route", message: "No route", retryable: false))
+        let event = terminalRouteEvent()
         // The receipt must echo the id the client minted; the stub cannot
         // know it, so the first call sees a foreign id and is refused.
         h.stub.reply(202, #"{"event_id":"33333333-3333-4333-8333-333333333333","outcome":"accepted"}"#)
@@ -164,9 +168,7 @@ final class PlaybackSessionTransportTests: XCTestCase {
         }
         let api = APIv2Client(http: HTTPClient(session: echo.makeSession(), tokenStore: h.tokens),
             tokenStore: h.tokens, isUpdateRequired: { false })
-        let event = PlaybackSessionBridge.terminalStartRouteEvent(
-            playbackAttemptId: "apple:attempt", snapshot: ApplePlaybackV3Capabilities.snapshot(),
-            terminal: PlaybackV3Terminal(reason: "no_route", message: "No route", retryable: false))
+        let event = terminalRouteEvent()
 
         try await api.reportPlaybackRouteEvent(event, installationID: installation, auth: h.auth)
 
@@ -176,9 +178,7 @@ final class PlaybackSessionTransportTests: XCTestCase {
     func testRouteEventTooManyRequestsIsAProblemTheCallerDrops() async throws {
         let h = try await makeHarness()
         h.stub.reply(429, try fixture("rate_limited"))
-        let event = PlaybackSessionBridge.terminalStartRouteEvent(
-            playbackAttemptId: "apple:attempt", snapshot: ApplePlaybackV3Capabilities.snapshot(),
-            terminal: PlaybackV3Terminal(reason: "no_route", message: "No route", retryable: false))
+        let event = terminalRouteEvent()
         do {
             try await h.api.reportPlaybackRouteEvent(event, installationID: installation, auth: h.auth)
             XCTFail("expected a problem")
