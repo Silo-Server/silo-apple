@@ -70,6 +70,34 @@ final class PlaybackRealtimeClientTests: XCTestCase {
         await client.unbind()
     }
 
+    /// The HTTP client refuses requests while any identity transition holds
+    /// its dispatch gate, even one that keeps this owner. That refusal must
+    /// not end remote control for the session.
+    func testARefusedDispatchUnderAnUnchangedOwnerRetriesWithANewTicket() async {
+        let recorder = Recorder()
+        let retried = expectation(description: "second ticket minted")
+        let client = PlaybackRealtimeClient(
+            handshake: { sessionId, authority in
+                await recorder.record(sessionId, authority)
+                if await recorder.mints.count == 1 { throw HTTPError.requestIdentityChanged }
+                retried.fulfill()
+                try await Task.sleep(nanoseconds: 60_000_000_000)
+                throw CancellationError()
+            },
+            ownerIsCurrent: { _ in true },
+            reconnectDelaysNanos: [1_000_000],
+            commandHandler: { _ in }
+        )
+        await client.bind(sessionId: Self.sessionId, authority: Self.authority)
+        await fulfillment(of: [retried], timeout: 5)
+
+        let mints = await recorder.mints
+        XCTAssertEqual(mints.count, 2)
+        let unavailable = await client.isRealtimeUnavailable
+        XCTAssertFalse(unavailable)
+        await client.unbind()
+    }
+
     func testNoTicketIsMintedOnceTheSessionOwnerIsNoLongerCurrent() async {
         let recorder = Recorder()
         let client = makeClient(recorder: recorder, ownerIsCurrent: false, failure: URLError(.badServerResponse))

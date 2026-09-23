@@ -58,7 +58,10 @@ actor PlaybackRealtimeClient {
     init(
         session: URLSession = .shared,
         handshake: @escaping Handshake = { sessionId, authority in
-            try await SiloAPI.shared.apiV2Client.playbackControlHandshake(
+            // Wait out an identity transition instead of spending reconnect
+            // attempts on requests the closed dispatch gate would refuse.
+            guard await HTTPClient.shared.waitForRequestDispatchOpen() else { throw CancellationError() }
+            return try await SiloAPI.shared.apiV2Client.playbackControlHandshake(
                 sessionID: sessionId, installationID: authority.installationID, auth: authority.owner)
         },
         ownerIsCurrent: @escaping OwnerCheck = PlaybackRealtimeClient.isCurrentOwner,
@@ -189,10 +192,16 @@ actor PlaybackRealtimeClient {
     /// Failures that no reconnect can fix: the session's owner is no longer
     /// the current one, the server does not serve the control handshake, or
     /// the server needs an update for v2.
+    ///
+    /// `HTTPError.requestIdentityChanged` is not one of them. The HTTP client
+    /// also throws it while any identity transition holds the dispatch gate,
+    /// including ones that leave this owner in place (removing another server,
+    /// a refused sign-out). It takes the ordinary backoff, and the owner check
+    /// at the top of the next attempt stops the loop if the owner did change.
     private static func endsControl(_ error: Error) -> Bool {
         switch error {
         case PlaybackSequencedError.authorityChanged, PlaybackSequencedError.controlUnavailable,
-             HTTPError.authorityChanged, HTTPError.requestIdentityChanged, APIv2Error.serverUpdateRequired:
+             HTTPError.authorityChanged, APIv2Error.serverUpdateRequired:
             return true
         default:
             return false
