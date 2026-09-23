@@ -17,8 +17,10 @@ class BrowseViewModel {
     /// Live facet vocabulary for the filter sheet, loaded lazily.
     private(set) var facets: CatalogFacets?
 
-    private var currentPage = 0
-    private let pageSize = 60
+    /// Where the next page starts; `nil` before page 1 arrives and after the
+    /// last page. Only the live page-1 fetch sets it: a cached page 1 has
+    /// no continuation, so a load-more over it restarts from page 1.
+    private var continuation: APIv2CatalogContinuation?
     private var libraryId: Int?
     private var hasConfigured = false
     private var configurationGeneration = 0
@@ -40,7 +42,7 @@ class BrowseViewModel {
 
         if libraryChanged {
             generation += 1
-            currentPage = 0
+            continuation = nil
             hasMore = true
             items = []
             filterState = BrowsePrefsStore.shared.savedState(libraryId: libraryId) ?? .none
@@ -65,7 +67,7 @@ class BrowseViewModel {
                 hydratePage1FromCache()
                 isRefreshing = !items.isEmpty
             }
-            currentPage = 0
+            continuation = nil
             hasMore = true
         } else if isLoading {
             return
@@ -81,35 +83,29 @@ class BrowseViewModel {
         error = nil
 
         do {
-            let response: CatalogResponse
-            if reset && currentPage == 0 {
-                response = try await StartupContentPrefetcher.fetchBrowseFirstPage(
+            let page: CatalogListPage
+            var startsOver = continuation == nil
+            if let continuation {
+                page = try await SiloAPI.shared.nextCatalogPage(continuation)
+            } else {
+                page = try await StartupContentPrefetcher.fetchBrowseFirstPage(
                     libraryId: libraryId,
                     state: filterState
                 )
-            } else {
-                let query = CatalogQueryBuilder.build(
-                    filterState,
-                    libraryId: libraryId,
-                    mediaType: mediaType,
-                    offset: currentPage * pageSize,
-                    limit: pageSize,
-                    includeType: false
-                )
-                response = try await SiloAPI.shared.catalog(query: query)
             }
             // Discard if another reset superseded us while we awaited.
             guard myGeneration == generation else { return }
 
-            if reset {
-                items = response.items
-                ResponseCache.shared.set(response, for: currentCacheKey)
-                refineMediaType(from: response)
+            startsOver = startsOver || page.startsOver
+            if startsOver {
+                items = page.response.items
+                ResponseCache.shared.set(page.response, for: currentCacheKey)
+                refineMediaType(from: page.response)
             } else {
-                items.append(contentsOf: response.items)
+                items.append(contentsOf: page.response.items)
             }
-            hasMore = response.hasMore ?? false
-            currentPage += 1
+            continuation = page.continuation
+            hasMore = page.continuation != nil
         } catch let err {
             guard myGeneration == generation else { return }
             if items.isEmpty {

@@ -9,9 +9,10 @@ import Nuke
 ///
 /// Key differences from iOS:
 ///
-/// - **Pagination** uses the server's snapshot timestamp (`snapshot_at`) as a
-///   fence so pages stay coherent even if items are being ingested mid-scroll.
-/// - **Page size** is 100 (the server's hard cap) instead of 60.
+/// - **Pagination** follows the v2 catalog cursor. The server fences the
+///   cursor at the first page, so pages stay coherent even if items are being
+///   ingested mid-scroll.
+/// - **Page size** is 100 (the v2 query cap) instead of 60.
 /// - **Prefetch trigger** fires earlier (more lead rows) and warms posters via
 ///   Nuke.
 /// - **Filter state** resets pagination when changed; any in-flight fetch is
@@ -40,8 +41,9 @@ final class TVLibraryGridViewModel {
     private let sendsType: Bool
     private let pageSize: Int = 100
 
-    private var snapshot: String? = nil
-    private var nextOffset: Int = 0
+    /// Where the next page starts; `nil` before the live page 1 arrives and
+    /// after the last page. A cached page 1 has no continuation.
+    private var continuation: APIv2CatalogContinuation?
     @ObservationIgnored private var prefetchedPosterURLs: Set<URL> = []
     @ObservationIgnored private var visiblePosterRows: [Int: Range<Int>] = [:]
     /// Decoded into the memory cache so a cell scrolling into view paints the
@@ -84,8 +86,6 @@ final class TVLibraryGridViewModel {
         }
         items = cached.items
         hasMore = cached.hasMore ?? false
-        nextOffset = cached.items.count
-        snapshot = cached.snapshot
     }
 
     // MARK: - Public API
@@ -95,7 +95,9 @@ final class TVLibraryGridViewModel {
     }
 
     func loadMoreIfNeeded() async {
-        guard hasMore, !isLoading else { return }
+        guard hasMore, !isLoading, !isRefreshing else { return }
+        // Without a continuation the grid shows a cached page 1 whose refresh
+        // failed; `fetchPage` starts over from page 1 instead of guessing a cursor.
         await fetchPage(reset: false)
     }
 
@@ -198,9 +200,8 @@ final class TVLibraryGridViewModel {
         stopPosterPrefetchRequests()
         generation += 1
         items = []
-        nextOffset = 0
+        continuation = nil
         hasMore = true
-        snapshot = nil
         error = nil
         hydratePage1FromCache()
         refreshPosterPrefetch()
@@ -209,7 +210,9 @@ final class TVLibraryGridViewModel {
 
     private func fetchPage(reset: Bool) async {
         let myGeneration = generation
-        if reset, !items.isEmpty {
+        let nextPage = reset ? nil : continuation
+        let startsOver = nextPage == nil
+        if startsOver, !items.isEmpty {
             isRefreshing = true
         } else {
             isLoading = true
@@ -219,37 +222,31 @@ final class TVLibraryGridViewModel {
             isRefreshing = false
         }
 
-        let requestOffset = reset ? 0 : nextOffset
-        let requestSnapshot = reset ? nil : snapshot
-        let query = CatalogQueryBuilder.build(
-            filter,
-            libraryId: libraryId,
-            mediaType: mediaType,
-            offset: requestOffset,
-            limit: pageSize,
-            snapshot: requestSnapshot,
-            includeType: sendsType
-        )
-
         do {
-            let response: CatalogResponse = try await SiloAPI.shared.catalog(
-                query: query
-            )
+            let page: CatalogListPage
+            if let nextPage {
+                page = try await SiloAPI.shared.nextCatalogPage(nextPage)
+            } else {
+                page = try await SiloAPI.shared.catalogPage(CatalogQueryBuilder.build(
+                    filter,
+                    libraryId: libraryId,
+                    mediaType: mediaType,
+                    limit: pageSize,
+                    includeType: sendsType
+                ))
+            }
 
             // Discard if another reload superseded us while we awaited.
             guard myGeneration == generation else { return }
 
-            if reset {
-                items = response.items
-                ResponseCache.shared.set(response, for: currentCacheKey)
-                nextOffset = response.items.count
-                snapshot = response.snapshot
+            if startsOver || page.startsOver {
+                items = page.response.items
+                ResponseCache.shared.set(page.response, for: currentCacheKey)
             } else {
-                items.append(contentsOf: response.items)
-                nextOffset += response.items.count
-                if snapshot == nil { snapshot = response.snapshot }
+                items.append(contentsOf: page.response.items)
             }
-            hasMore = response.hasMore ?? false
+            continuation = page.continuation
+            hasMore = page.continuation != nil
             refreshPosterPrefetch()
         } catch {
             guard myGeneration == generation else { return }

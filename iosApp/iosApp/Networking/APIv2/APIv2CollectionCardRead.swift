@@ -23,14 +23,8 @@ extension APIv2Client {
 
 extension CatalogResponse {
     /// A complete personal-collection card list assembled from v2 catalog
-    /// pages. There is no snapshot and no further page by construction.
+    /// pages. There is no further page by construction.
     init(collectionCards: [BrowseItem]) {
-        total = collectionCards.count
-        totalExact = true
-        hasMore = false
-        items = collectionCards
-        source = "user_collection"
-        title = nil
-        snapshot = nil
+        self.init(items: collectionCards, total: collectionCards.count, totalExact: true, hasMore: false)
     }
 }

@@ -641,8 +641,9 @@ struct LibraryCollectionDetailView: View {
     @State private var error: ErrorState?
     @State private var hasMore = true
     @State private var totalItems: Int?
-    @State private var nextOffset = 0
-    @State private var snapshot: String?
+    /// Where the next page starts; `nil` before the live first page and
+    /// after the last one. A cached first page has no continuation.
+    @State private var continuation: APIv2CatalogContinuation?
 
     @Environment(AppRouter.self) private var router
 
@@ -717,61 +718,47 @@ struct LibraryCollectionDetailView: View {
 
     private func loadItems(reset: Bool) async {
         guard !isLoading else { return }
+        let cacheKey = CacheKey.catalogCollectionItems(collectionId)
         if reset {
-            // Surface the cached page-1 snapshot instantly so the grid
-            // doesn't blank out while the network call runs.
+            // Surface the cached first page instantly so the grid doesn't
+            // blank out while the network call runs.
             if items.isEmpty,
-               let cached: CatalogResponse = ResponseCache.shared.get(
-                   CacheKey.collectionItems(collectionId)
-               ) {
+               let cached: CatalogResponse = ResponseCache.shared.get(cacheKey) {
                 items = cached.items
                 hasMore = cached.hasMore ?? false
                 totalItems = cached.totalExact == false ? nil : cached.total
-                nextOffset = cached.items.count
-                snapshot = cached.snapshot
-            } else {
-                items = []
+            } else if items.isEmpty {
                 hasMore = true
                 totalItems = nil
-                nextOffset = 0
-                snapshot = nil
             }
         }
-        guard hasMore else { return }
+        guard reset || hasMore else { return }
 
         isLoading = true
         error = nil
 
+        // A reset, or a load-more over a cached first page, starts over from
+        // the first page and replaces the grid instead of appending to it.
+        let nextPage = reset ? nil : continuation
+
         do {
-            let response: CatalogResponse
-            if kind == .userCollections {
-                response = try await SiloAPI.shared.userCollectionItems(
-                    collectionId: collectionId,
-                    offset: nextOffset,
-                    limit: pageSize,
-                    snapshot: snapshot
-                )
+            let page: CatalogListPage
+            if let nextPage {
+                page = try await SiloAPI.shared.nextCatalogPage(nextPage)
             } else {
-                response = try await SiloAPI.shared.libraryCollectionItems(
-                    libraryId: libraryId,
-                    collectionId: collectionId,
-                    offset: nextOffset,
-                    limit: pageSize,
-                    snapshot: snapshot
-                )
+                page = try await SiloAPI.shared.catalogPage(.collectionItems(
+                    kind: kind ?? .regular, collectionId: collectionId, limit: pageSize
+                ))
             }
-            if reset {
-                items = response.items
-                ResponseCache.shared.set(response, for: CacheKey.collectionItems(collectionId))
+            if nextPage != nil, !page.startsOver {
+                items.append(contentsOf: page.response.items)
             } else {
-                items.append(contentsOf: response.items)
+                items = page.response.items
+                ResponseCache.shared.set(page.response, for: cacheKey)
             }
-            totalItems = response.totalExact == false ? nil : response.total
-            hasMore = response.hasMore ?? false
-            nextOffset += response.items.count
-            if snapshot == nil {
-                snapshot = response.snapshot
-            }
+            totalItems = page.response.totalExact == false ? nil : page.response.total
+            continuation = page.continuation
+            hasMore = page.continuation != nil
         } catch let err {
             if items.isEmpty {
                 error = ErrorState(err)
