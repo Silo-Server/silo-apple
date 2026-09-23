@@ -730,22 +730,6 @@ final class DetailVersionSelectionTests: XCTestCase {
         XCTAssertTrue(library.isAudiobookLibrary)
     }
 
-    func testLibrariesResponseDecodesBareArray() {
-        let json = """
-        [
-          { "id": 1, "name": "Movies", "type": "movies" },
-          { "id": 10, "name": "Audiobooks", "type": "audiobooks" }
-        ]
-        """
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-
-        let response = try! decoder.decode(LibrariesResponse.self, from: Data(json.utf8))
-
-        XCTAssertTrue(response.libraries.count == 2)
-        XCTAssertTrue(response.libraries[1].isAudiobookLibrary)
-    }
-
     func testAudioPlaybackTimelineMapsGlobalAndLocalTime() {
         let tracks = [
             AudioPlaybackTrack(

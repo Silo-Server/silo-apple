@@ -142,7 +142,7 @@ enum PersonalStateSync {
                 try await api.setWatchedState(id: contentId, included: included, auth: owner)
             }
         } catch {
-            let delivery = classify(error)
+            let delivery = MutationDelivery(error)
             logger.error("""
                 \(target.rawValue, privacy: .public) \(included ? "set" : "clear", privacy: .public) \
                 \(delivery.rawValue, privacy: .public): \(String(describing: error), privacy: .private)
@@ -168,7 +168,7 @@ enum PersonalStateSync {
             case .inFlight: return .skipped
             }
         }
-        return classify(error) == .ownerChanged ? .skipped : .failed(UpdateRequirement(error))
+        return MutationDelivery(error) == .ownerChanged ? .skipped : .failed(UpdateRequirement(error))
     }
 
     static func outcome(_ operation: () async throws -> Void) async -> PersonalStateOutcome {
@@ -177,51 +177,6 @@ enum PersonalStateSync {
             return .applied
         } catch {
             return outcome(for: error)
-        }
-    }
-
-    enum Delivery: String {
-        /// A response arrived, or the request never left the device.
-        case definite
-        /// The owner changed; nothing is applied under the new one.
-        case ownerChanged = "owner_changed"
-        /// The request may have reached the server without an answer.
-        case unconfirmed
-    }
-
-    static func classify(_ error: Error) -> Delivery {
-        if let http = error as? HTTPError {
-            switch http {
-            case .requestIdentityChanged, .authorityChanged:
-                return .ownerChanged
-            case .serverUrlNotConfigured, .invalidURL, .encodingFailed, .http, .decodingFailed:
-                return .definite
-            case .network(let underlying):
-                return wasNeverSent(underlying) ? .definite : .unconfirmed
-            case .invalidResponse:
-                return .unconfirmed
-            }
-        }
-        // Every APIv2Error is either a refusal before dispatch (`gate()`) or a
-        // decoded server answer.
-        if error is APIv2Error { return .definite }
-        // Cancellation and anything unrecognized may have left the device.
-        return .unconfirmed
-    }
-
-    /// Transport failures that happen before any request byte reaches the
-    /// server: no route, no name, no connection, or a failed TLS handshake.
-    private static func wasNeverSent(_ error: Error) -> Bool {
-        guard let code = (error as? URLError)?.code else { return false }
-        switch code {
-        case .notConnectedToInternet, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed,
-             .internationalRoamingOff, .dataNotAllowed, .callIsActive, .badURL, .unsupportedURL,
-             .appTransportSecurityRequiresSecureConnection, .secureConnectionFailed,
-             .serverCertificateUntrusted, .serverCertificateHasBadDate, .serverCertificateNotYetValid,
-             .serverCertificateHasUnknownRoot, .clientCertificateRejected, .clientCertificateRequired:
-            return true
-        default:
-            return false
         }
     }
 
