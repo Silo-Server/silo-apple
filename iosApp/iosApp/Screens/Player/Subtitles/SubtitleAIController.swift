@@ -146,14 +146,14 @@ final class SubtitleAIController {
     /// current track list. Nil when no session is active (then the handoff is
     /// reported as a soft failure rather than silently dropped).
     ///
-    /// `sessionId` scopes the stream mount, `baseTrackCount` is the combined
-    /// ordinal the first downloaded track occupies (the count of non-downloaded
-    /// entries in the plan's authoritative subtitle inventory), and
+    /// `sessionId` scopes the stream mount, `ordinals` places a stored row in
+    /// the plan's combined ordinal space (from its authoritative subtitle
+    /// inventory), and
     /// `resolveURL` turns the synthesized API-relative path into an absolute
     /// URL against the active server base.
     struct HandoffContext {
         let sessionId: String
-        let baseTrackCount: Int
+        let ordinals: DownloadedSubtitleOrdinals
         let resolveURL: (String) -> URL?
     }
     private let handoffContextProvider: @MainActor () -> HandoffContext?
@@ -237,7 +237,7 @@ final class SubtitleAIController {
         // Falls back to the selecting closure when omitted.
         registerDescriptorWithoutSelecting: (@MainActor (SidecarSubtitleDescriptor) -> Void)? = nil,
         // Test seam for the handoff listing fetch. Nil in production → the call
-        // site uses `api.downloadedSubtitles`. Injected by unit tests so the
+        // site uses `api.downloadedSubtitles` (v2 stored subtitles). Injected by unit tests so the
         // poller-vs-websocket handoff race can be exercised without the network.
         downloadedSubtitlesFetch: (@Sendable (Int) async throws -> [DownloadedSubtitle])? = nil
     ) {
@@ -590,10 +590,11 @@ final class SubtitleAIController {
     /// The listing (`GET /subtitles/{media_file_id}`) returns the server's
     /// `DownloadedSubtitle` shape: a DB `id` plus metadata, **no** stream
     /// `url` and **no** combined player index. We synthesize the descriptor
-    /// exactly like Android's `SubtitleTrackMerge` (combined index past the
-    /// existing external+embedded+downloaded tracks; stream URL on the
-    /// session-scoped `/stream/{session}/subtitles/{combined-index}<ext>`
-    /// mount, which keys on the combined index — verified server-side).
+    /// with the row's ordinal in the plan's combined space (see
+    /// ``DownloadedSubtitleOrdinals``) and a stream URL on the session-scoped
+    /// `/stream/{session}/subtitles/...` mount that pins the row with
+    /// `downloaded_subtitle_id` (see
+    /// ``DownloadedSubtitle/synthesizedDescriptor(sessionId:ordinal:resolveURL:)``).
     ///
     /// `generation` is the value captured at submit time; a reset mid-fetch
     /// invalidates the handoff so a stale completion can't land on the next
@@ -656,9 +657,11 @@ final class SubtitleAIController {
                 if autoSelect { self?.failHandoff(message) }
             }
 
-            // Match by DB id (Android: `it.id == resultSubtitleId`); the
-            // matched entry's position in the listing fixes its combined index.
-            guard let position = downloaded.firstIndex(where: { $0.id == resultId }) else {
+            // Match by stored id (Android: `it.id == resultSubtitleId`). The
+            // v2 listing can omit rows, so the ordinal comes from the plan's
+            // inventory and the synthesized URL pins the row by id.
+            // Listing ids are opaque strings; the job's is still an integer.
+            guard let position = downloaded.firstIndex(where: { $0.id == String(resultId) }) else {
                 Self.logger.warning(
                     "[AI-SUB] result subtitle id=\(resultId, privacy: .public) not found among \(downloaded.count, privacy: .public) downloaded subtitles"
                 )
@@ -674,8 +677,7 @@ final class SubtitleAIController {
 
             guard let descriptor = downloaded[position].synthesizedDescriptor(
                 sessionId: context.sessionId,
-                baseTrackCount: context.baseTrackCount,
-                position: position,
+                ordinal: context.ordinals.ordinal(at: position, in: downloaded),
                 resolveURL: context.resolveURL
             ) else {
                 Self.logger.warning("[AI-SUB] could not synthesize stream URL for completed subtitle id=\(resultId, privacy: .public)")

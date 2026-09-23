@@ -1,13 +1,50 @@
 import Foundation
 
+// MARK: getSubtitleProviderStatus
+
+/// `GET /api/v2/subtitles/providers/status`. Search is usable only when the
+/// viewer is `allowed`, the state is `available`, and a provider is enabled.
+struct APIv2SubtitleProviderStatus: Decodable {
+    let schemaVersion: Int
+    let enabled: Bool
+    let providers: [String]
+    let revision: String
+    let state: String
+    let allowed: Bool
+
+    var isAvailable: Bool { allowed && state == "available" && enabled }
+}
+
+/// Requests refused on this device, and the one unknown outcome of a
+/// provider download.
+enum APIv2SubtitleRequestError: LocalizedError, Equatable {
+    case invalidMediaFile
+    case tooManyLanguages
+    /// The owner changed once the download may have been sent. The server
+    /// may have stored the subtitle; the response was discarded.
+    case outcomeUnknownOwnerChanged
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidMediaFile: return "Subtitle search needs a media file."
+        case .tooManyLanguages: return "Search at most 100 subtitle languages at a time."
+        case .outcomeUnknownOwnerChanged: return "The account changed before the subtitle download finished."
+        }
+    }
+}
+
+// MARK: listStoredSubtitles
+
 struct APIv2StoredSubtitles: Decodable {
     let subtitles: [APIv2StoredSubtitle]
 
-    /// The rows the player can address. A row whose opaque ID does not fit a
-    /// player handle, or that names another file, is left out instead of
-    /// failing the whole list.
-    func playerValues(mediaFileID: Int) -> [DownloadedSubtitle] {
-        subtitles.compactMap { try? $0.playerValue(mediaFileID: mediaFileID) }
+    /// The listed rows, in server order. The server omits rows whose language
+    /// it cannot canonicalize, so a position here is not a combined subtitle
+    /// ordinal (see ``DownloadedSubtitleOrdinals``); the synthesized stream
+    /// URL pins each row by `id`. A row that names another file makes the
+    /// listing unusable.
+    func playerValues(mediaFileID: Int) throws -> [DownloadedSubtitle] {
+        try subtitles.map { try $0.playerValue(mediaFileID: mediaFileID) }
     }
 }
 
@@ -22,16 +59,16 @@ struct APIv2StoredSubtitle: Decodable {
     let hearingImpaired: Bool
     let createdAt: String
 
-    /// Player handles remain integers; reject opaque/unrepresentable values
-    /// rather than weakening the string-ID contract or rounding through Double.
+    /// The ID stays opaque; only the file must be the one asked for.
     func playerValue(mediaFileID: Int) throws -> DownloadedSubtitle {
-        guard let handle = Int(id), handle > 0, String(handle) == id,
-              mediaFileId == String(mediaFileID) else { throw APIv2Error.invalidSubtitleResponse }
-        return DownloadedSubtitle(id: handle, mediaFileId: mediaFileID, provider: provider,
+        guard !id.isEmpty, mediaFileId == String(mediaFileID) else { throw APIv2Error.invalidSubtitleResponse }
+        return DownloadedSubtitle(id: id, mediaFileId: mediaFileID, provider: provider,
             language: language, format: format, releaseName: releaseName, score: score,
             hearingImpaired: hearingImpaired, createdAt: createdAt)
     }
 }
+
+// MARK: searchSubtitles
 
 struct APIv2SubtitleSearchBody: Encodable {
     let mediaFileId: String
@@ -71,6 +108,8 @@ struct APIv2SubtitleJob: Decodable {
     let updatedAt: String
 }
 
+// MARK: downloadSubtitle
+
 struct APIv2SubtitleDownloadBody: Encodable {
     let mediaFileId: String
     let provider: String
@@ -94,7 +133,6 @@ struct APIv2SubtitleDownloadBody: Encodable {
 struct APIv2SubtitleDownloadResponse: Decodable {
     let subtitle: APIv2StoredSubtitle
 }
-
 
 struct APIv2SubtitleCreateBody: Encodable {
     let mediaFileId: String

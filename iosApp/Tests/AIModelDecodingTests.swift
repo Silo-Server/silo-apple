@@ -194,159 +194,105 @@ final class AIModelDecodingTests: XCTestCase {
         XCTAssertFalse(status.transcribeEnabled)
     }
 
-    // MARK: - Subtitle provider status (fail-OPEN, unlike every other status)
-
-    /// The full server shape, feature on.
-    func testSubtitleProvidersStatusEnabled() {
-        let status = decode(SubtitleProvidersStatus.self, """
-        {
-          "schema_version": 1,
-          "enabled": true,
-          "providers": ["opensubtitles", "subdl"]
-        }
-        """)
-        XCTAssertTrue(status.enabled)
-        XCTAssertTrue(status.providers == ["opensubtitles", "subdl"])
-    }
-
-    /// Only an affirmative `false` may disable the entry point.
-    func testSubtitleProvidersStatusExplicitlyDisabled() {
-        let status = decode(SubtitleProvidersStatus.self, """
-        { "schema_version": 1, "enabled": false, "providers": [] }
-        """)
-        XCTAssertFalse(status.enabled)
-        XCTAssertTrue(status.providers.isEmpty)
-    }
-
-    /// **The load-bearing case.** Unlike `SubtitleAIStatus`
-    /// — where an omitted `enabled` means "off" — this model must default to
-    /// `true`. Subtitle provider search shipped long before its status
-    /// endpoint, so a server answering without the key (or an older one whose
-    /// 404 the store also reads as "assume enabled") still has working search.
-    /// Flipping this default to `false` would disable the feature on every
-    /// server that hasn't updated yet, which is precisely the regression this
-    /// probe exists to avoid.
-    func testSubtitleProvidersStatusOmittedDefaultsEnabled() {
-        let status = decode(SubtitleProvidersStatus.self, "{}")
-        XCTAssertTrue(status.enabled)
-        XCTAssertTrue(status.providers.isEmpty)
-    }
-
-    /// A partial body (providers listed, `enabled` absent) also fails open,
-    /// and an absent `providers` list is not an error.
-    func testSubtitleProvidersStatusPartialBodyFailsOpen() {
-        let providersOnly = decode(SubtitleProvidersStatus.self, """
-        { "providers": ["opensubtitles"] }
-        """)
-        XCTAssertTrue(providersOnly.enabled)
-
-        let enabledOnly = decode(SubtitleProvidersStatus.self, """
-        { "enabled": true }
-        """)
-        XCTAssertTrue(enabledOnly.providers.isEmpty)
-    }
-
-    // MARK: - Downloaded subtitles (handoff source)
-
-    /// Decodes the REAL server shape (`internal/subtitles.DownloadedSubtitle`):
-    /// a DB `id` plus metadata, **no** combined `index` and **no** stream
-    /// `url`. The earlier model decoded this as `subtitle_urls[]` (which
-    /// requires `index`+`url`), so the decode threw and `try?` silently
-    /// dropped every completed AI track.
-    func testDownloadedSubtitlesResponse() {
-        let response = decode(DownloadedSubtitlesResponse.self, """
-        {
-          "subtitles": [
-            {
-              "id": 77,
-              "media_file_id": 42,
-              "provider": "opensubtitles",
-              "language": "es",
-              "format": "subrip",
-              "release_name": "Movie.2020.1080p",
-              "score": 9.5,
-              "hearing_impaired": false,
-              "created_at": "2026-06-29T00:00:00Z"
-            }
-          ]
-        }
-        """)
-        XCTAssertTrue(response.subtitles.count == 1)
-        let sub = response.subtitles[0]
-        XCTAssertTrue(sub.id == 77)
-        XCTAssertTrue(sub.mediaFileId == 42)
-        XCTAssertTrue(sub.provider == "opensubtitles")
-        XCTAssertTrue(sub.language == "es")
-        XCTAssertTrue(sub.format == "subrip")
-        XCTAssertTrue(sub.releaseName == "Movie.2020.1080p")
-        XCTAssertTrue(sub.hearingImpaired == false)
-    }
-
-    /// Tolerant: only `id` is required; missing optional fields default.
-    func testDownloadedSubtitleTolerantOmittedFields() {
-        let sub = decode(DownloadedSubtitle.self, """
-        { "id": 5, "language": "fr", "format": "webvtt", "release_name": "x", "provider": "subdl" }
-        """)
-        XCTAssertTrue(sub.id == 5)
-        XCTAssertTrue(sub.mediaFileId == 0)
-        XCTAssertNil(sub.score)
-        XCTAssertNil(sub.createdAt)
-        XCTAssertNil(sub.hearingImpaired)
-    }
-
-    func testDownloadedSubtitlesResponseMissingArray() {
-        let response = decode(DownloadedSubtitlesResponse.self, "{}")
-        XCTAssertTrue(response.subtitles.isEmpty)
-    }
-
     // MARK: - Handoff descriptor synthesis (URL + combined index + ext)
 
-    /// Synthesizing the player descriptor mirrors Android's `SubtitleTrackMerge`:
-    /// combined index = `baseTrackCount + position`, and the stream URL is on
-    /// the session-scoped combined-index mount `/api/v2/stream/{session}/subtitles/{idx}<ext>`.
+    /// The descriptor takes the given ordinal, and the stream URL is on the
+    /// session-scoped mount `/api/v2/stream/{session}/subtitles/{ordinal}<ext>`.
     func testSynthesizedDescriptorURLIndexAndExtSrt() {
         let sub = DownloadedSubtitle(
-            id: 77, mediaFileId: 42, provider: "opensubtitles",
+            id: "77", mediaFileId: 42, provider: "opensubtitles",
             language: "es", format: "subrip", releaseName: "Movie.2020.1080p"
         )
-        // 3 existing non-downloaded tracks (max combined index 2) → base 3.
         let descriptor = sub.synthesizedDescriptor(
             sessionId: "sess-1",
-            baseTrackCount: 3,
-            position: 0,
+            ordinal: 3,
             resolveURL: { path in URL(string: "https://host\(path)") }
         )
         XCTAssertNotNil(descriptor)
         XCTAssertTrue(descriptor?.index == 3)
-        XCTAssertTrue(descriptor?.url.absoluteString == "https://host/api/v2/stream/sess-1/subtitles/3.vtt")
+        XCTAssertTrue(descriptor?.url.absoluteString
+            == "https://host/api/v2/stream/sess-1/subtitles/3.vtt?file_id=42&downloaded_subtitle_id=77")
         XCTAssertTrue(descriptor?.source == "downloaded")
         XCTAssertTrue(descriptor?.codec == "subrip")
         XCTAssertTrue(descriptor?.language == "es")
         XCTAssertTrue(descriptor?.label == "Movie.2020.1080p (opensubtitles)")
     }
 
-    /// Position offsets the combined index past earlier downloaded entries,
-    /// and ASS/SSA keep the raw `.ass` extension.
+    /// ASS/SSA keep the raw `.ass` extension.
     func testSynthesizedDescriptorPositionAndAssExt() {
         let sub = DownloadedSubtitle(
-            id: 88, provider: "subdl", language: "de", format: "ass", releaseName: "Show.S01E01"
+            id: "88", mediaFileId: 7, provider: "subdl", language: "de", format: "ass", releaseName: "Show.S01E01"
         )
         let descriptor = sub.synthesizedDescriptor(
             sessionId: "sess-9",
-            baseTrackCount: 2,
-            position: 1,
+            ordinal: 3,
             resolveURL: { path in URL(string: "https://host\(path)") }
         )
         XCTAssertTrue(descriptor?.index == 3)
-        XCTAssertTrue(descriptor?.url.absoluteString == "https://host/api/v2/stream/sess-9/subtitles/3.ass")
+        XCTAssertTrue(descriptor?.url.absoluteString
+            == "https://host/api/v2/stream/sess-9/subtitles/3.ass?file_id=7&downloaded_subtitle_id=88")
+    }
+
+    /// The v2 listing omits rows the server cannot canonicalize, while the
+    /// stream handler's unpinned ordinal counts them. A row after an omitted
+    /// one must still be fetched as itself, so the URL pins it by ID.
+    func testSynthesizedURLNamesTheRowWhenTheListingOmitsAnEarlierOne() throws {
+        // Server rows 11, 12, 13; the listing leaves out 11.
+        let listing = [
+            DownloadedSubtitle(id: "12", mediaFileId: 42, format: "srt"),
+            DownloadedSubtitle(id: "13", mediaFileId: 42, format: "srt"),
+        ]
+        let ordinals = DownloadedSubtitleOrdinals(published: ["11": 2, "12": 3], next: 4)
+        let position = try XCTUnwrap(listing.firstIndex { $0.id == "13" })
+        let descriptor = try XCTUnwrap(listing[position].synthesizedDescriptor(
+            sessionId: "s", ordinal: ordinals.ordinal(at: position, in: listing),
+            resolveURL: { URL(string: "https://host\($0)") }
+        ))
+        XCTAssertEqual(descriptor.index, 4)
+        XCTAssertEqual(descriptor.url.path, "/api/v2/stream/s/subtitles/4.vtt")
+        let query = try XCTUnwrap(URLComponents(url: descriptor.url, resolvingAgainstBaseURL: false)?.queryItems)
+        XCTAssertEqual(query, [
+            URLQueryItem(name: "file_id", value: "42"),
+            URLQueryItem(name: "downloaded_subtitle_id", value: "13"),
+        ])
+        XCTAssertTrue(StreamRequest.hasAllowedHeaderAuthenticatedMediaQuery(
+            path: descriptor.url.path, items: query
+        ))
+    }
+
+    /// The plan's inventory counts every stored row, the v2 listing does not.
+    /// A row the plan published keeps its ordinal; a new row follows every
+    /// published ordinal and earlier unpublished listing rows, never taking
+    /// the slot of a row the listing left out.
+    func testOrdinalsFollowThePlanNotTheListingPosition() {
+        // Base 2; the plan published rows 11 (ordinal 2, omitted from the
+        // listing) and 12 (ordinal 3). Rows 13 and 14 were stored since.
+        let ordinals = DownloadedSubtitleOrdinals(published: ["11": 2, "12": 3], next: 4)
+        let listing = ["12", "13", "14"].map { DownloadedSubtitle(id: $0, mediaFileId: 42) }
+        XCTAssertEqual((0..<listing.count).map { ordinals.ordinal(at: $0, in: listing) }, [3, 4, 5])
+    }
+
+    /// The server's pin accepts only a positive integer row and file; any
+    /// other ID yields no track rather than an unpinned ordinal.
+    func testSynthesizedDescriptorNeedsAPinnableRow() {
+        for sub in [
+            DownloadedSubtitle(id: "abc", mediaFileId: 42),
+            DownloadedSubtitle(id: "0", mediaFileId: 42),
+            DownloadedSubtitle(id: "007", mediaFileId: 42),
+            DownloadedSubtitle(id: "7", mediaFileId: 0),
+        ] {
+            XCTAssertNil(sub.synthesizedDescriptor(
+                sessionId: "s", ordinal: 0, resolveURL: { URL(string: "https://host\($0)") }
+            ), sub.id)
+        }
     }
 
     /// PGS maps to `.sup`; an unresolvable URL yields `nil` (no track).
     func testSynthesizedDescriptorPgsExtAndUnresolvable() {
-        let pgs = DownloadedSubtitle(id: 1, provider: "p", format: "pgs", releaseName: "r")
+        let pgs = DownloadedSubtitle(id: "1", provider: "p", format: "pgs", releaseName: "r")
         XCTAssertTrue(pgs.streamURLExtension == ".sup")
         let nilDescriptor = pgs.synthesizedDescriptor(
-            sessionId: "s", baseTrackCount: 0, position: 0, resolveURL: { (_: String) -> URL? in nil }
+            sessionId: "s", ordinal: 0, resolveURL: { (_: String) -> URL? in nil }
         )
         XCTAssertNil(nilDescriptor)
     }

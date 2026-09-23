@@ -118,7 +118,7 @@ final class SubtitleAIControllerTests: XCTestCase {
             handoffContext: {
                 SubtitleAIController.HandoffContext(
                     sessionId: "sess-1",
-                    baseTrackCount: 3,
+                    ordinals: DownloadedSubtitleOrdinals(published: [:], next: 3),
                     resolveURL: { path in URL(string: "https://host\(path)") }
                 )
             },
@@ -201,7 +201,7 @@ final class SubtitleAIControllerTests: XCTestCase {
     /// A persisted downloaded subtitle whose `id` matches a job's
     /// `result_subtitle_id` so the handoff can synthesize a descriptor.
     private func persisted(id: Int) -> DownloadedSubtitle {
-        DownloadedSubtitle(id: id, mediaFileId: 1, provider: "p", language: "es", format: "subrip", releaseName: "r")
+        DownloadedSubtitle(id: String(id), mediaFileId: 1, provider: "p", language: "es", format: "subrip", releaseName: "r")
     }
 
     private func runningJob(id: String, resultSubtitleId: Int? = nil) -> SubtitleJob {
@@ -364,7 +364,7 @@ final class SubtitleAIControllerTests: XCTestCase {
         await h.waitForRegisterOnlyCount(1)
         XCTAssertEqual(h.registerSelectCount(), 1, "owned auto-select count unchanged")
         XCTAssertEqual(h.registerOnlyCount(), 1, "different ready id registered once (register-only)")
-        // baseTrackCount (3) + position of id 900 in the listing (1) == combined index 4.
+        // next ordinal (3) + unpublished rows before id 900 in the listing (1) == combined index 4.
         XCTAssertEqual(h.lastRegisterOnlyIndex(), 4)
     }
 

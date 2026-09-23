@@ -19,14 +19,14 @@
 //  ``SubtitleAIKind/transcribeTranslate`` whose wire value
 //  (`transcribe_translate`) isn't a clean snake_case of the case name.
 //
-//  Endpoints in play (see ``SiloAI``):
+//  Stored-subtitle listing and provider search are on v2
+//  (`APIv2/APIv2SubtitleModels.swift`). AI endpoints in play (see ``SiloAI``):
 //    GET  /api/v1/subtitles/ai/status
 //    GET  /api/v1/subtitles/ai/quota
 //    POST /api/v1/subtitles/ai/translate
 //    GET  /api/v1/subtitles/ai/jobs/{job_id}
 //    GET  /api/v1/subtitles/ai/jobs?media_file_id=N
 //    POST /api/v1/subtitles/ai/jobs/{job_id}/cancel
-//    GET  /api/v1/subtitles/{media_file_id}
 //
 
 import Foundation
@@ -91,31 +91,6 @@ struct SubtitleAIStatus: Codable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
         transcribeEnabled = try c.decodeIfPresent(Bool.self, forKey: .transcribeEnabled) ?? false
-    }
-}
-
-/// `GET /api/v1/subtitles/providers/status`. Whether the server has any
-/// external subtitle providers (OpenSubtitles / SubDL / Subsource)
-/// configured, so the client can disable the in-player "Search Subtitles…"
-/// entry point instead of running a fan-out search that can only return
-/// nothing.
-///
-/// **The decoder defaults `enabled` to `true`, not `false`** — unlike every
-/// other status model in this file. Subtitle search shipped long before this
-/// endpoint did, so anything short of an affirmative "no providers" must
-/// leave the feature usable or every not-yet-updated server regresses. Same
-/// rule as ``SubtitleProvidersStore``, which owns the full rationale.
-///
-/// `providers` is informational (the configured provider ids); nothing gates
-/// on it today.
-struct SubtitleProvidersStatus: Codable {
-    let enabled: Bool
-    let providers: [String]
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
-        providers = try c.decodeIfPresent([String].self, forKey: .providers) ?? []
     }
 }
 
@@ -224,21 +199,17 @@ struct SubtitleJobEnvelope: Codable {
 }
 
 /// One server-stored downloaded subtitle, as listed by
-/// `GET /api/v1/subtitles/{media_file_id}`.
+/// `GET /api/v2/subtitles/{media_file_id}` (see ``APIv2StoredSubtitle``).
 ///
-/// This is the server's `internal/subtitles.DownloadedSubtitle` JSON shape —
-/// **not** the playback-session `subtitle_urls[]` shape. It carries the
-/// subtitle's DB **`id`** (which the job's `result_subtitle_id` references)
-/// but **no combined `index` and no `url`**: the server never includes a
-/// stream URL here. The player synthesizes both at handoff time the way the
-/// Android client does (see ``synthesizedDescriptor(sessionId:baseTrackCount:position:serverBaseURL:)``
-/// and `SubtitleTrackMerge.kt`).
-///
-/// Decoders are tolerant: only `id` is required, everything else defaults so
-/// a provider that omits e.g. `score` / `created_at` still decodes.
-struct DownloadedSubtitle: Codable, Identifiable, Equatable {
-    /// Subtitle DB id — what a job's `result_subtitle_id` points at.
-    let id: Int
+/// It carries the subtitle's stored **`id`** (which the job's
+/// `result_subtitle_id` references) but **no combined `index` and no `url`**:
+/// the server never includes a stream URL here. The player synthesizes both
+/// at handoff time (see
+/// ``synthesizedDescriptor(sessionId:ordinal:resolveURL:)``), and the URL
+/// names the row by `id` rather than by listing position.
+struct DownloadedSubtitle: Identifiable, Equatable {
+    /// Opaque stored-subtitle ID — what a job's `result_subtitle_id` points at.
+    let id: String
     let mediaFileId: Int
     let provider: String
     let language: String
@@ -249,22 +220,9 @@ struct DownloadedSubtitle: Codable, Identifiable, Equatable {
     let hearingImpaired: Bool?
     let createdAt: String?
 
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.decode(Int.self, forKey: .id)
-        mediaFileId = try c.decodeIfPresent(Int.self, forKey: .mediaFileId) ?? 0
-        provider = try c.decodeIfPresent(String.self, forKey: .provider) ?? ""
-        language = try c.decodeIfPresent(String.self, forKey: .language) ?? ""
-        format = try c.decodeIfPresent(String.self, forKey: .format) ?? ""
-        releaseName = try c.decodeIfPresent(String.self, forKey: .releaseName) ?? ""
-        score = try c.decodeIfPresent(Double.self, forKey: .score)
-        hearingImpaired = try c.decodeIfPresent(Bool.self, forKey: .hearingImpaired)
-        createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt)
-    }
-
     /// Memberwise init for tests / synthesis.
     init(
-        id: Int,
+        id: String,
         mediaFileId: Int = 0,
         provider: String = "",
         language: String = "",
@@ -307,37 +265,36 @@ extension DownloadedSubtitle {
 
     /// Synthesize the player-track descriptor for this downloaded subtitle.
     ///
-    /// The server's `GET /subtitles/{media_file_id}` listing carries no
-    /// stream URL and no combined player index, so the client builds both —
-    /// **identically to Android's `SubtitleTrackMerge.mergeDownloadedSubtitles`**
-    /// — because the `/stream/{session_id}/subtitles/{track}` route keys on the
-    /// **combined** subtitle index (external → embedded → downloaded), not the
-    /// subtitle DB id (verified in server `StreamHandler.HandleSubtitle` +
-    /// `ParseSubtitleTrackParam`).
+    /// The server's `GET /api/v2/subtitles/{media_file_id}` listing carries no
+    /// stream URL and no combined player index, so the client builds both.
+    /// The URL matches the server's `DownloadedSubtitleStreamURLV3`:
+    /// `/api/v2/stream/{session}/subtitles/{ordinal}{ext}?file_id={file}&downloaded_subtitle_id={id}`.
+    /// The `downloaded_subtitle_id` pin makes the stream handler serve this
+    /// row by identity. Without it the handler resolves the ordinal against
+    /// its unfiltered stored-subtitle list, while the v2 listing omits rows
+    /// whose language the server cannot canonicalize, so a listing position
+    /// can name a different row.
     ///
     /// - Parameters:
     ///   - sessionId: the active playback session id (the stream mount is
     ///     session-scoped).
-    ///   - baseTrackCount: the combined index the **first** downloaded track
-    ///     occupies — Android's `(max(existing non-downloaded .index) + 1)`,
-    ///     computed `+1` over the max rather than the list size so server-side
-    ///     burn-in skipping (which can leave index gaps) is honored.
-    ///   - position: this subtitle's position within the downloaded listing
-    ///     (0-based). The combined index is `baseTrackCount + position`,
-    ///     matching Android's `baseIndex + i`.
+    ///   - ordinal: the combined ordinal the player files this track under
+    ///     (see ``DownloadedSubtitleOrdinals``). The pin, not the ordinal,
+    ///     selects the row.
     ///   - resolveURL: turns the synthesized API-relative stream path into an
     ///     absolute `URL` against the active server base (the player's
     ///     existing `resolveServerUrl`). Returns `nil` if it can't resolve.
-    /// - Returns: a ready-to-register descriptor, or `nil` if the URL can't be
-    ///   resolved.
+    /// - Returns: a ready-to-register descriptor, or `nil` if the row has no
+    ///   positive integer ID or file (the server's pin needs both) or the URL
+    ///   can't be resolved.
     func synthesizedDescriptor(
         sessionId: String,
-        baseTrackCount: Int,
-        position: Int,
+        ordinal combinedIndex: Int,
         resolveURL: (String) -> URL?
     ) -> SidecarSubtitleDescriptor? {
-        let combinedIndex = baseTrackCount + position
+        guard mediaFileId > 0, let rowID = Int(id), rowID > 0, String(rowID) == id else { return nil }
         let path = "/api/v2/stream/\(sessionId)/subtitles/\(combinedIndex)\(streamURLExtension)"
+            + "?file_id=\(mediaFileId)&downloaded_subtitle_id=\(rowID)"
         guard let url = resolveURL(path) else { return nil }
         let label = releaseName.isEmpty
             ? (provider.isEmpty ? language : provider)
@@ -354,15 +311,27 @@ extension DownloadedSubtitle {
     }
 }
 
-/// Envelope for `GET /api/v1/subtitles/{media_file_id}` → the downloaded
-/// subtitle tracks for a file. Used after a job completes to locate the
-/// persisted track by `result_subtitle_id` and merge it into the player's
-/// track list.
-struct DownloadedSubtitlesResponse: Codable {
-    let subtitles: [DownloadedSubtitle]
+/// Where the plan's combined subtitle ordinals place stored subtitles.
+///
+/// The player files a sidecar under its ordinal, and a later plan's inventory
+/// replaces a locally registered row with the same ordinal. The inventory
+/// counts every stored row, but the v2 listing omits rows whose language the
+/// server cannot canonicalize, so a listing position is not an ordinal: after
+/// an omitted row it would name an earlier stored subtitle's slot.
+struct DownloadedSubtitleOrdinals: Equatable {
+    /// Ordinals the current plan published, keyed by stored row ID.
+    let published: [String: Int]
+    /// The first ordinal past every track the plan published.
+    let next: Int
 
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        subtitles = try c.decodeIfPresent([DownloadedSubtitle].self, forKey: .subtitles) ?? []
+    /// The ordinal for `listing[position]`: the published one when the plan
+    /// names the row; otherwise `next`, advanced past earlier listing rows the
+    /// plan does not name. The server orders stored rows by creation time, so
+    /// rows stored after the plan follow every published one. A row stored
+    /// after the plan and left out of the listing still shifts the server's
+    /// later ordinals; the URL pin keeps the content right in that case.
+    func ordinal(at position: Int, in listing: [DownloadedSubtitle]) -> Int {
+        if let ordinal = published[listing[position].id] { return ordinal }
+        return next + listing[..<position].filter { published[$0.id] == nil }.count
     }
 }

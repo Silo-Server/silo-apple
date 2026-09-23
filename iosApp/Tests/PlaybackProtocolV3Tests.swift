@@ -1696,7 +1696,29 @@ final class PlaybackProtocolV3Tests: XCTestCase {
     }
 
     func testEmptySubtitleInventoryStartsDownloadedIdentityAtZero() {
-        XCTAssertEqual(PlayerViewModel.protocolV3DownloadedSubtitleBaseTrackCount([]), 0)
+        XCTAssertEqual(PlayerViewModel.protocolV3DownloadedSubtitleOrdinals([]),
+                       DownloadedSubtitleOrdinals(published: [:], next: 0))
+    }
+
+    /// Published downloaded rows keep the inventory's ordinal, read from the
+    /// URL pin; burn-in-only tracks still count toward the next ordinal.
+    func testSubtitleInventoryPublishesDownloadedOrdinalsByRowID() {
+        func downloaded(_ index: Int, row: Int) -> PlaybackV3SubtitleInventoryItem {
+            PlaybackV3SubtitleInventoryItem(
+                trackId: "file:42:subtitle:\(index)", combinedIndex: index, source: "downloaded",
+                codec: "srt", language: "en", label: nil, forced: false, default: false,
+                hearingImpaired: false, delivery: "sidecar",
+                url: "/api/v2/stream/s/subtitles/\(index).vtt?file_id=42&downloaded_subtitle_id=\(row)",
+                fontBundleUrl: nil
+            )
+        }
+        let ordinals = PlayerViewModel.protocolV3DownloadedSubtitleOrdinals([
+            makeInventoryItem(combinedIndex: 0, source: "external"),
+            makeInventoryItem(combinedIndex: 1, source: "embedded", delivery: "burn_in_only"),
+            downloaded(2, row: 11),
+            downloaded(3, row: 12),
+        ])
+        XCTAssertEqual(ordinals, DownloadedSubtitleOrdinals(published: ["11": 2, "12": 3], next: 4))
     }
 
     func testBurnInSelectionSurvivesInventoryBeforeAndAfterLoadEstablishes() async {
