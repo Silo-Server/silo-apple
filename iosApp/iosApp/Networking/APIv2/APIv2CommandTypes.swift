@@ -14,31 +14,44 @@ enum PlaybackSequencedContract {
     static let feature = "sequenced_progress_v1"
 }
 
+/// One progress sample of a playback session. `sequence` orders the samples
+/// of one session: a higher sequence wins even when the position moves back.
 struct PlaybackSequencedSample: Codable, Equatable, Sendable {
     let sequence: Int64
     let position: Double
     let isPaused: Bool
-    let timelineId: String?
-    let itemPosition: Double?
 
-    init(sequence: Int64, position: Double, isPaused: Bool, timelineId: String? = nil, itemPosition: Double? = nil) throws {
-        guard sequence > 0, position.isFinite, position >= 0,
-              itemPosition.map({ $0.isFinite && $0 >= 0 }) ?? true else { throw PlaybackSequencedError.invalidSample }
+    init(sequence: Int64, position: Double, isPaused: Bool) throws {
+        guard sequence > 0, position.isFinite, position >= 0 else { throw PlaybackSequencedError.invalidSample }
         self.sequence = sequence
         self.position = position
         self.isPaused = isPaused
-        self.timelineId = timelineId
-        self.itemPosition = itemPosition
     }
 
-    enum CodingKeys: String, CodingKey { case sequence, position, isPaused = "is_paused", timelineId = "timeline_id", itemPosition = "item_position" }
+    enum CodingKeys: String, CodingKey { case sequence, position, isPaused = "is_paused" }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         try self.init(sequence: values.decode(Int64.self, forKey: .sequence),
-            position: values.decode(Double.self, forKey: .position), isPaused: values.decode(Bool.self, forKey: .isPaused),
-            timelineId: values.decodeIfPresent(String.self, forKey: .timelineId),
-            itemPosition: values.decodeIfPresent(Double.self, forKey: .itemPosition))
+            position: values.decode(Double.self, forKey: .position), isPaused: values.decode(Bool.self, forKey: .isPaused))
+    }
+}
+
+/// The strictly increasing `sequence` of each server session this client
+/// reports progress for. The server keeps the highest sequence per session
+/// and answers a lower one with `stale_sample`, so every sample of one
+/// session, including the final one a stop carries, draws from one counter.
+struct PlaybackProgressSequence: Sendable {
+    private var last: [String: Int64] = [:]
+
+    mutating func next(for sessionID: String) -> Int64 {
+        let value = (last[sessionID] ?? 0) + 1
+        last[sessionID] = value
+        return value
+    }
+
+    mutating func forget(_ sessionID: String) {
+        last[sessionID] = nil
     }
 }
 

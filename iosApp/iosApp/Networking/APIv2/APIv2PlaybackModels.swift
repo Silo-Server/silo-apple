@@ -1,6 +1,9 @@
 import Foundation
 
-struct APIv2PlaybackStartBody: Codable {
+/// `POST /api/v2/playback/start`. The server refuses unknown members, so the
+/// body is exactly the v3 start plus `installation_id`, with `file_id` as the
+/// opaque string the v2 schema declares.
+struct APIv2PlaybackStartBody: Encodable {
     let installationId: String
     let protocolVersion: Int
     let clientFeatures: [String]
@@ -9,7 +12,6 @@ struct APIv2PlaybackStartBody: Codable {
     let playbackAttemptId: String
     let qualityPreference: String
     let subtitleFidelityPreference: String
-    let timelineId: String?
     let progressPersistence: String?
     let startPosition: Double?
     let audioTrackId: String?
@@ -22,9 +24,7 @@ struct APIv2PlaybackStartBody: Codable {
     let clientCapabilities: PlaybackV3CodecCapabilities
     let clientPlaybackContext: PlaybackV3ClientContext
 
-    /// `timelineID` is the bound client timeline negotiated before the start;
-    /// `PlaybackV3StartRequest` on this branch has no slot for it.
-    init(_ request: PlaybackV3StartRequest, installationID: String, timelineID: String? = nil) {
+    init(_ request: PlaybackV3StartRequest, installationID: String) {
         installationId = installationID
         protocolVersion = request.protocolVersion
         clientFeatures = request.clientFeatures
@@ -33,7 +33,6 @@ struct APIv2PlaybackStartBody: Codable {
         playbackAttemptId = request.playbackAttemptId
         qualityPreference = request.qualityPreference
         subtitleFidelityPreference = request.subtitleFidelityPreference
-        timelineId = timelineID
         progressPersistence = request.progressPersistence
         startPosition = request.startPosition
         audioTrackId = request.audioTrackId
@@ -302,4 +301,56 @@ struct APIv2PlaybackRouteEventBody: Encodable {
 struct APIv2PlaybackRouteEventReceipt: Decodable {
     let eventId: String
     let outcome: String
+}
+
+/// `POST /api/v2/playback/{session_id}/progress`: one sequenced sample.
+struct APIv2PlaybackProgressBody: Encodable {
+    let installationID: String
+    let sample: PlaybackSequencedSample
+    private enum CodingKeys: String, CodingKey { case installationID = "installation_id" }
+    func encode(to encoder: Encoder) throws {
+        try sample.encode(to: encoder)
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(installationID, forKey: .installationID)
+    }
+}
+
+/// `DELETE /api/v2/playback/{session_id}`. The optional final sample rides on
+/// the stop, so `sequence` and `position` are sent together or not at all.
+struct APIv2PlaybackStopBody: Encodable {
+    let installationID: String
+    let stopID: String
+    let finalSample: PlaybackSequencedSample?
+    private enum CodingKeys: String, CodingKey { case installationID = "installation_id", stopID = "stop_id" }
+    func encode(to encoder: Encoder) throws {
+        try finalSample?.encode(to: encoder)
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(installationID, forKey: .installationID)
+        try values.encode(stopID, forKey: .stopID)
+    }
+}
+
+/// The receipt for a progress or stop mutation. `accepted` is the latest
+/// sample the server committed for the attempt, when there is one.
+struct APIv2PlaybackMutation: Decodable, Equatable {
+    struct Accepted: Decodable, Equatable {
+        let sequence: Int64
+        let position: Double
+        let isPaused: Bool
+    }
+
+    let outcome: String
+    let accepted: Accepted?
+    let stopId: String?
+    let historyId: String?
+
+    /// Progress: a newer or equal-and-identical sample was recorded, or the
+    /// server already holds a newer one. Stop: this request's stop won, or an
+    /// earlier stop (another client's, or the server's own expiry) did.
+    enum Outcome {
+        static let applied = "applied"
+        static let replayed = "replayed"
+        static let staleSample = "stale_sample"
+        static let stopped = "stopped"
+    }
 }

@@ -11,11 +11,10 @@ actor PlaybackTestActorBox<Value: Sendable> {
 
 @MainActor
 final class PlaybackProtocolV3Tests: XCTestCase {
-    func testSequencedSampleRejectsInvalidItemPosition() throws {
-        _ = try PlaybackSequencedSample(sequence: 1, position: 10, isPaused: false, itemPosition: 0)
-        _ = try PlaybackSequencedSample(sequence: 1, position: 10, isPaused: false, itemPosition: nil)
-        for bad in [-1.0, .infinity, .nan] {
-            XCTAssertThrowsError(try PlaybackSequencedSample(sequence: 1, position: 10, isPaused: false, itemPosition: bad)) { error in
+    func testSequencedSampleRejectsAnUnorderedOrUnusableSample() throws {
+        _ = try PlaybackSequencedSample(sequence: 1, position: 0, isPaused: false)
+        for (sequence, position) in [(0, 10.0), (-1, 10.0), (1, -1.0), (1, .infinity), (1, .nan)] as [(Int64, Double)] {
+            XCTAssertThrowsError(try PlaybackSequencedSample(sequence: sequence, position: position, isPaused: false)) { error in
                 guard case PlaybackSequencedError.invalidSample = error else { return XCTFail("Unexpected \(error)") }
             }
         }
