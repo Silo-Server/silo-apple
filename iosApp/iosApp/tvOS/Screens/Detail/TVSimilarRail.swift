@@ -3,9 +3,9 @@ import SwiftUI
 
 /// Horizontal poster rail of "More Like This" items used at the bottom
 /// of the tvOS Movie / Series detail pages. Mirrors `PhoneSimilarRail`
-/// — same `/recommendations/similar/{id}` flow, same parallel detail
-/// resolution — but renders `TVMediaCard` posters at the 10-foot scale
-/// so cards focus-lift consistently with the rest of the detail body.
+/// — same single similar-cards request — but renders `TVMediaCard`
+/// posters at the 10-foot scale so cards focus-lift consistently with
+/// the rest of the detail body.
 ///
 /// The rail self-loads on appear and silently hides if the request
 /// fails or returns nothing — recommendations are non-essential, so a
@@ -148,53 +148,12 @@ struct TVSimilarRail: View {
         }
 
         do {
-            let scored = try await SiloAPI.shared.recommendationsSimilar(
+            let cards = try await SiloAPI.shared.recommendationsSimilar(
                 contentId: contentId,
                 limit: 12
             )
-            var indexedDetails: [(Int, ItemDetail)] = []
-
-            // Resolve a few cards at a time. The previous all-at-once fanout
-            // could launch twelve full item requests while the above-fold
-            // poster and episode stills were still cold.
-            for batchStart in stride(from: 0, to: scored.count, by: 3) {
-                guard !Task.isCancelled else { return }
-                let batchEnd = min(batchStart + 3, scored.count)
-                let batch = Array(scored[batchStart..<batchEnd])
-                let resolvedBatch = await withTaskGroup(
-                    of: (Int, ItemDetail?).self
-                ) { group in
-                    for (offset, ref) in batch.enumerated() {
-                        group.addTask {
-                            let detail = try? await MetadataRequestPool.shared.itemDetail(
-                                contentId: ref.mediaItemId
-                            )
-                            return (batchStart + offset, detail)
-                        }
-                    }
-
-                    var pairs: [(Int, ItemDetail)] = []
-                    for await (index, detail) in group {
-                        if let detail { pairs.append((index, detail)) }
-                    }
-                    return pairs
-                }
-                indexedDetails.append(contentsOf: resolvedBatch)
-            }
-
             guard !Task.isCancelled else { return }
-            let resolved = indexedDetails
-                .sorted(by: { $0.0 < $1.0 })
-                .map(\.1)
-            for detail in resolved {
-                // Selecting a recommendation can now paint its authoritative
-                // detail payload on the destination's first body evaluation.
-                ResponseCache.shared.set(
-                    detail,
-                    for: CacheKey.itemDetail(detail.contentId)
-                )
-            }
-            let refreshed = resolved.map(SimilarPosterItem.init(detail:))
+            let refreshed = cards.map(SimilarPosterItem.init(card:))
             items = refreshed
             ResponseCache.shared.set(refreshed, for: cacheKey)
         } catch {
@@ -227,9 +186,9 @@ private extension View {
 
 // MARK: - Card model
 
-/// View-side projection of an `ItemDetail` containing only what the
-/// poster card needs. Decoupled so the card never re-renders when
-/// unrelated detail fields change.
+/// View-side projection of a recommendation card containing only what
+/// the poster card needs. Decoupled so the card never re-renders when
+/// unrelated card fields change.
 struct SimilarPosterItem: Identifiable, Hashable {
     let contentId: String
     let title: String
@@ -238,12 +197,12 @@ struct SimilarPosterItem: Identifiable, Hashable {
     let year: Int?
     var id: String { contentId }
 
-    init(detail: ItemDetail) {
-        self.contentId = detail.contentId
-        self.title = detail.title
-        self.posterUrl = detail.posterUrl
-        self.posterThumbhash = detail.posterThumbhash
-        self.year = detail.year
+    init(card: BrowseItem) {
+        self.contentId = card.contentId
+        self.title = card.title
+        self.posterUrl = card.posterUrl
+        self.posterThumbhash = card.posterThumbhash
+        self.year = card.year
     }
 }
 #endif
