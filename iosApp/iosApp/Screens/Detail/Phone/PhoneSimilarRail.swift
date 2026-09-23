@@ -2,11 +2,8 @@
 import SwiftUI
 
 /// Horizontal poster rail of "More Like This" items shown at the bottom
-/// of Movie / Series detail pages. Mirrors the web frontend's
-/// `RecommendationGrid` flow:
-///   1. Hit `/recommendations/similar/{contentId}` for scored IDs
-///   2. Resolve each ID to an `ItemDetail` in parallel
-///   3. Render a poster card per resolved item; tap opens detail
+/// of Movie / Series detail pages. One request returns the ranked cards;
+/// tapping a card opens its detail page.
 ///
 /// The rail self-loads its data when the parent provides a
 /// `contentId`. Hidden when the request fails or returns nothing —
@@ -98,29 +95,11 @@ struct PhoneSimilarRail: View {
         items = []
 
         do {
-            let scored = try await SiloAPI.shared.recommendationsSimilar(
+            let cards = try await SiloAPI.shared.recommendationsSimilar(
                 contentId: contentId,
                 limit: 12
             )
-            // Resolve detail pages in parallel — preserve the engine's
-            // ranking by zipping the resolved details back to their
-            // original index. Failed resolutions are dropped silently.
-            let resolved = await withTaskGroup(of: (Int, ItemDetail?).self) { group in
-                for (index, ref) in scored.enumerated() {
-                    group.addTask {
-                        let detail = try? await SiloAPI.shared.itemDetail(
-                            contentId: ref.mediaItemId
-                        )
-                        return (index, detail)
-                    }
-                }
-                var pairs: [(Int, ItemDetail)] = []
-                for await (index, detail) in group {
-                    if let detail { pairs.append((index, detail)) }
-                }
-                return pairs.sorted(by: { $0.0 < $1.0 }).map(\.1)
-            }
-            items = resolved.map(SimilarPosterItem.init(detail:))
+            items = cards.map(SimilarPosterItem.init(card:))
         } catch {
             items = []
         }
@@ -130,9 +109,9 @@ struct PhoneSimilarRail: View {
 
 // MARK: - Card model
 
-/// View-side projection of an `ItemDetail` containing only what the
-/// poster card needs. Decoupled so the card never re-renders when
-/// unrelated detail fields change.
+/// View-side projection of a recommendation card containing only what
+/// the poster card needs. Decoupled so the card never re-renders when
+/// unrelated card fields change.
 struct SimilarPosterItem: Identifiable, Hashable {
     let contentId: String
     let title: String
@@ -145,12 +124,12 @@ struct SimilarPosterItem: Identifiable, Hashable {
         [title, year.map(String.init)].compactMap { $0 }.joined(separator: ", ")
     }
 
-    init(detail: ItemDetail) {
-        self.contentId = detail.contentId
-        self.title = detail.title
-        self.posterUrl = detail.posterUrl
-        self.posterThumbhash = detail.posterThumbhash
-        self.year = detail.year
+    init(card: BrowseItem) {
+        self.contentId = card.contentId
+        self.title = card.title
+        self.posterUrl = card.posterUrl
+        self.posterThumbhash = card.posterThumbhash
+        self.year = card.year
     }
 }
 

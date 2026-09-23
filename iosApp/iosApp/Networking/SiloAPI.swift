@@ -121,27 +121,23 @@ actor SiloAPI {
         try await http.get("/api/v1/library/\(libraryId)/sections", query: await imageSizeQuery)
     }
 
-    /// Fetch the IDs of items the recommendation engine considers
-    /// similar to `contentId`. The server returns scored IDs only —
-    /// resolve each into a poster card via `itemDetail` (in parallel).
-    func recommendationsSimilar(
-        contentId: String,
-        limit: Int = 12
-    ) async throws -> [ScoredItemRef] {
-        let response: ScoredItemsResponse = try await http.get(
-            "/api/v1/recommendations/similar/\(contentId)",
-            query: ["limit": String(limit)]
-        )
-        return response.items
+    /// Cards the recommendation engine considers similar to `contentId`,
+    /// in ranked order. Throws when the acting owner changed while the
+    /// read was in flight so a rail never shows another profile's picks.
+    func recommendationsSimilar(contentId: String, limit: Int = 12) async throws -> [BrowseItem] {
+        let auth = try await detailReadAuth()
+        let cards = try await apiV2Client.similarCards(id: contentId, limit: limit, auth: auth)
+        guard await isCurrentOwner(auth) else { throw HTTPError.requestIdentityChanged }
+        return cards
     }
 
     func recommendationsDiscover() async throws -> SectionsResponse {
-        let response: DiscoverResponse = try await http.get("/api/v1/recommendations/discover")
-        let resolved = response.rows.enumerated().map { index, row -> ResolvedSection in
+        let rows = try await apiV2Client.discover(auth: try await detailReadAuth())
+        let resolved = rows.enumerated().map { index, row -> ResolvedSection in
             ResolvedSection(
                 id: "discover_\(index)_\(row.type)",
                 sectionType: row.type,
-                title: row.label,
+                title: row.title,
                 featured: false,
                 itemLimit: row.items.count,
                 totalCount: row.items.count,

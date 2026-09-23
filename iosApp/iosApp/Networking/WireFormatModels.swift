@@ -104,59 +104,6 @@ struct CreateProfileRequestBody: Codable {
     let allowedLibraryIds: [Int]
 }
 
-// MARK: - Recommendations (wire format for /discover)
-
-struct DiscoverResponse: Codable {
-    let rows: [DiscoverRow]
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        rows = try c.decodeIfPresent([DiscoverRow].self, forKey: .rows) ?? []
-    }
-}
-
-struct DiscoverRow: Codable {
-    let type: String
-    let label: String
-    let items: [SectionItem]
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        type = try c.decode(String.self, forKey: .type)
-        label = try c.decode(String.self, forKey: .label)
-        items = try c.decodeIfPresent([SectionItem].self, forKey: .items) ?? []
-    }
-}
-
-// MARK: - Recommendations (wire format for /similar/{id})
-
-/// `/api/v1/recommendations/similar/{itemId}` returns a list of scored
-/// item references. Each row carries only the media item ID, a relevance
-/// score, and a short reason string — the client resolves each ID to a
-/// catalog detail to render a poster card.
-struct ScoredItemsResponse: Codable {
-    let items: [ScoredItemRef]
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        items = try c.decodeIfPresent([ScoredItemRef].self, forKey: .items) ?? []
-    }
-}
-
-struct ScoredItemRef: Codable, Hashable, Identifiable {
-    let mediaItemId: String
-    let score: Double?
-    let reason: String?
-    var id: String { mediaItemId }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        mediaItemId = try c.decode(String.self, forKey: .mediaItemId)
-        score = try c.decodeIfPresent(Double.self, forKey: .score)
-        reason = try c.decodeIfPresent(String.self, forKey: .reason)
-    }
-}
-
 // MARK: - Library collections (tolerant decoder)
 
 /// One ordered section of a library tab response: either a named group
