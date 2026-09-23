@@ -1,5 +1,13 @@
 import Foundation
 
+/// A v2 request was refused because its owner changed before the request
+/// reached the URL session. Nothing was sent.
+struct APIv2OwnerChangedBeforeDispatch: LocalizedError, Sendable {
+    var errorDescription: String? {
+        "The active server or profile changed before the request could start."
+    }
+}
+
 /// Errors raised by the v2 request layer.
 enum APIv2Error: LocalizedError, Sendable {
     /// The connected server is v1-only: the recorded `APIv2Probe` verdict
@@ -10,7 +18,6 @@ enum APIv2Error: LocalizedError, Sendable {
     case invalidNotificationContinuation
     case incompleteAuthResponse
     case incompleteRequestList
-    case missingCollectionVersion
     /// A conditional resource read answered without a usable strong `ETag`.
     case missingEntityTag
     case incompleteCollection
@@ -53,8 +60,6 @@ enum APIv2Error: LocalizedError, Sendable {
             return "The catalog page could not be continued. Reload to start again."
         case .incompleteCollection:
             return "The collection could not be loaded completely. Reload to try again."
-        case .missingCollectionVersion:
-            return "The server did not provide a collection version. Reload before editing."
         case .missingEntityTag:
             return "The server did not provide a version tag. Reload before saving."
         case .incompleteRequestList:
@@ -595,54 +600,43 @@ struct APIv2Client: Sendable {
         throw APIv2Error.incompleteRequestList
     }
 
-    // MARK: Collection editors
+    // MARK: Personal collections
 
-    func collectionEditor<T: Decodable>(_ path: String) async throws -> CollectionEditor<T> {
+    /// One personal-collection request for `auth`'s profile, used by
+    /// `APIv2Client+Collections.swift`. `ifMatch` is the strong tag of the
+    /// editor read the write is based on. The answer must carry exactly
+    /// `status`; anything else throws.
+    ///
+    /// An owner change is reported by when it was caught:
+    /// `APIv2OwnerChangedBeforeDispatch` when the request never reached the
+    /// URL session (this guard, the fence's entry check, or `HTTPClient`'s
+    /// dispatch gate), and `HTTPError.requestIdentityChanged` or
+    /// `.authorityChanged` when it was sent and its answer discarded.
+    func collectionRequest(_ method: String, path: String, body: Data? = nil, ifMatch: String? = nil,
+                           status: Int, auth: CapturedOrdinaryRequestAuth) async throws -> HTTPRawResponse {
         try await gate()
-        guard let auth = await tokenStore.captureOrdinaryRequestAuth(), let profile = auth.profileId else {
-            throw HTTPError.requestIdentityChanged
-        }
-        let identity = Self.requestIdentity(auth, profile: profile)
-        let raw = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "GET", path: path, requestIdentity: identity,
-                    expectedAccount: auth.account, expectedAuth: auth)
+        let dispatch = HTTPDispatchRecord()
+        let raw: HTTPRawResponse
+        do {
+            guard let profile = auth.profileId, !profile.isEmpty,
+                  await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+                throw HTTPError.requestIdentityChanged
             }
-        }
-        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
-        guard let tag = raw.headers["etag"], !tag.isEmpty else { throw APIv2Error.missingCollectionVersion }
-        return CollectionEditor(value: try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(T.self, from: raw.data),
-            version: CollectionEditVersion(path: path, etag: tag, identity: identity, account: auth.account, auth: auth))
-    }
-
-    func mutateCollection<T: Decodable, B: Encodable>(method: String, version: CollectionEditVersion,
-                                                     body: B) async throws -> T {
-        let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
-        let raw = try await collectionMutation(method: method, version: version, body: encoder.encode(body))
-        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
-        return try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(T.self, from: raw.data)
-    }
-
-    func deleteCollection(version: CollectionEditVersion) async throws {
-        let raw = try await collectionMutation(method: "DELETE", version: version, body: nil)
-        guard raw.statusCode == 204 else { throw APIv2Error.httpStatus(raw.statusCode) }
-    }
-
-    private func collectionMutation(method: String, version: CollectionEditVersion, body: Data?) async throws -> HTTPRawResponse {
-        try await gate()
-        let auth = version.auth
-        guard auth.account == version.account, auth.profileId == version.identity.profileId,
-              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
-            throw HTTPError.requestIdentityChanged
-        }
-        return try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: method, path: version.path, body: body,
-                    headers: ["If-Match": version.etag], requestIdentity: version.identity,
-                    expectedAccount: version.account, expectedAuth: auth)
+            let identity = Self.requestIdentity(auth, profile: profile)
+            raw = try await tokenStore.withOwnerFence(auth) {
+                try await mapErrors {
+                    try await http.requestData(method: method, path: path, body: body,
+                        headers: ifMatch.map { ["If-Match": $0] } ?? [:], requestIdentity: identity,
+                        expectedAccount: auth.account, expectedAuth: auth, dispatchRecord: dispatch)
+                }
             }
+        } catch HTTPError.requestIdentityChanged where !dispatch.didDispatch {
+            throw APIv2OwnerChangedBeforeDispatch()
+        } catch HTTPError.authorityChanged where !dispatch.didDispatch {
+            throw APIv2OwnerChangedBeforeDispatch()
         }
+        guard raw.statusCode == status else { throw APIv2Error.httpStatus(raw.statusCode) }
+        return raw
     }
 
     // MARK: Catalog contract
@@ -1489,7 +1483,7 @@ struct APIv2Client: Sendable {
 
     /// A strong entity tag: quoted, non-empty, single line. Anything else is
     /// refused rather than echoed back as an `If-Match` precondition.
-    private static func entityTag(_ tag: String?) throws -> String {
+    static func entityTag(_ tag: String?) throws -> String {
         guard let tag, tag.count > 2, tag.first == "\"", tag.last == "\"",
               !tag.contains("\r"), !tag.contains("\n") else { throw APIv2Error.missingEntityTag }
         return tag

@@ -1224,8 +1224,8 @@ struct UserCollection: Codable, Identifiable {
     let includeInServerCollections: Bool?
 }
 
-/// A user-defined grouping bucket for personal collections. Matches the
-/// server's `/api/v1/collections` `groups[*]` shape.
+/// A user-defined grouping bucket for personal collections: the v2
+/// `CollectionGroup` shape (`/api/v2/collections` `groups[*]`).
 struct CollectionGroup: Codable, Identifiable, Hashable {
     let id: String
     let name: String
@@ -1414,7 +1414,8 @@ struct EpisodesResponse: Codable {
 
 // MARK: - Collection Create
 
-struct CreateCollectionRequest: Codable {
+/// `POST /api/v2/collections` body.
+struct CreateCollectionRequest: Encodable {
     let name: String
     let collectionType: String
 }
@@ -1429,9 +1430,8 @@ struct UserInfo: Codable, Sendable {
 
 // MARK: - Collections Response (array wrapper)
 
-/// Server payload for `GET /api/v1/collections`. The server emits both
-/// `collections` and `groups` arrays alongside each other; the latter is
-/// optional for backward compatibility with older deployments.
+/// The personal-collections page as the screen caches it
+/// (`CacheKey.collections`), built from ``APIv2PersonalCollections``.
 struct CollectionsResponse: Codable {
     let collections: [UserCollection]?
     let groups: [CollectionGroup]?
@@ -1450,13 +1450,14 @@ struct CollectionsResponse: Codable {
 
 // MARK: - Collection group requests
 
-struct CreateCollectionGroupRequest: Codable {
+/// `POST /api/v2/collections/groups` body; the server derives the slug.
+struct CreateCollectionGroupRequest: Encodable {
     let name: String
-    let slug: String?
 }
 
-struct UpdateCollectionGroupRequest: Codable {
-    let name: String?
+/// `PATCH /api/v2/collections/groups/{id}` body.
+struct UpdateCollectionGroupRequest: Encodable {
+    let name: String
 }
 
 /// Move-to-group payload. Always serializes `group_id`, including the
