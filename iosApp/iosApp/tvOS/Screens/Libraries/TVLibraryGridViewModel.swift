@@ -210,7 +210,8 @@ final class TVLibraryGridViewModel {
 
     private func fetchPage(reset: Bool) async {
         let myGeneration = generation
-        let startsOver = reset || continuation == nil
+        let nextPage = reset ? nil : continuation
+        let startsOver = nextPage == nil
         if startsOver, !items.isEmpty {
             isRefreshing = true
         } else {
@@ -223,8 +224,8 @@ final class TVLibraryGridViewModel {
 
         do {
             let page: CatalogListPage
-            if !startsOver, let continuation {
-                page = try await SiloAPI.shared.nextCatalogPage(continuation)
+            if let nextPage {
+                page = try await SiloAPI.shared.nextCatalogPage(nextPage)
             } else {
                 page = try await SiloAPI.shared.catalogPage(CatalogQueryBuilder.build(
                     filter,

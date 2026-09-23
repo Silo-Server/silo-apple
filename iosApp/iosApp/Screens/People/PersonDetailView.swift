@@ -223,10 +223,11 @@ final class PersonDetailViewModel {
         defer { isLoadingItems = false }
 
         do {
-            let startsOver = reset || continuation == nil
+            let nextPage = reset ? nil : continuation
+            let startsOver = nextPage == nil
             let page: CatalogListPage
-            if !startsOver, let continuation {
-                page = try await SiloAPI.shared.nextCatalogPage(continuation)
+            if let nextPage {
+                page = try await SiloAPI.shared.nextCatalogPage(nextPage)
             } else {
                 page = try await SiloAPI.shared.catalogPage(.personCredits(
                     personId: personId, type: selectedFilter.catalogType, limit: pageSize
