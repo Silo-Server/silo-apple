@@ -109,8 +109,10 @@ struct ApplePushRegistrationCommand: Equatable, Sendable {
 /// as a new installation. If the record alone is lost, the server's proof
 /// check refuses every later registration for this device (403, or 409 when
 /// the generation falls behind). The contract has no recovery for that, so
-/// the client does not guess: a refusal is recorded and logged, an unreadable
-/// record is never overwritten and nothing is sent for that server, and the
+/// the client does not guess: a 409 is recorded as a refusal, a 403 holds
+/// the intent and is retried after a back-off (the server also answers 403
+/// for transient login-authority failures), an unreadable record is never
+/// overwritten and nothing is sent for that server, and the
 /// Notification Service extension falls back to the access token. Recovery
 /// needs the server to drop this device's installation.
 struct ApplePushInstallationJournal: Sendable {

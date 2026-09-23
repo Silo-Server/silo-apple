@@ -153,10 +153,20 @@ enum ApplePushRegistrationWire {
 /// - Accepted: the journal records the receipt; the display token is stored
 ///   (or cleared for a disabled or removed registration) under the captured
 ///   durable owner.
-/// - Refused (400, 403, 404, 406, 409, 413, 415, 422, or a receipt for another
+/// - Refused (400, 404, 406, 409, 413, 415, 422, or a receipt for another
 ///   generation): the journal records the refusal and the intent is not sent
 ///   again. The next changed intent (APNs token, account, login, profile)
 ///   takes the next generation. There is no generation rebase and no new key.
+/// - Held (403, or a refused display-token renewal other than 409): the
+///   journal keeps what it had, `pending` or `accepted`, and the same
+///   generation is not sent again for `heldGenerationRetryInterval`. The
+///   server answers 403 both for a bad installation proof and for a login
+///   authority check that can fail transiently, with the same problem type,
+///   so a 403 is not a verdict on the intent. A renewal is an exact replay of
+///   an accepted intent, and the server never changes a registration for it,
+///   so its refusal leaves the accepted registration in place. A 409 on a
+///   renewal means the server has moved past this generation and is recorded
+///   as a refusal.
 /// - Anything else (no answer, 401 after refresh, 408, 429, 5xx, owner change
 ///   while in flight): the intent stays pending with its generation and is
 ///   sent again exactly, same key, generation and body, on the next trigger
@@ -171,6 +181,9 @@ actor ApplePushRegistrar {
         /// The server does not offer ordered Apple registration to this owner.
         case unavailable
         case refused(reason: String)
+        /// The server refused this send without a verdict on the intent. The
+        /// journal is unchanged and the generation is held for a while.
+        case held(reason: String)
         /// Sent, but the answer was lost or discarded. Kept for exact replay.
         case uncertain
         /// Nothing was sent.
@@ -181,17 +194,20 @@ actor ApplePushRegistrar {
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "ApplePush"
     )
-    /// A server that accepted the registration without a display token is
-    /// asked again after this long, so a server upgrade is noticed.
-    static let displayTokenUnavailableRetryInterval: TimeInterval = 6 * 60 * 60
-    private static let refusalStatuses: Set<Int> = [400, 403, 404, 406, 409, 413, 415, 422]
+    /// How long a held generation is not sent again: after a registration
+    /// accepted without a display token (so a server upgrade is noticed), a
+    /// 403, or a refused renewal. The hold is in memory, so a relaunch also
+    /// retries.
+    static let heldGenerationRetryInterval: TimeInterval = 6 * 60 * 60
+    private static let refusalStatuses: Set<Int> = [400, 404, 406, 409, 413, 415, 422]
 
     private let api: APIv2Client
     private let tokenStore: TokenStore
     private let journal: ApplePushInstallationJournal
     private let displayTokens: ApplePushDisplayTokenStore
     private let now: @Sendable () -> Date
-    private var displayTokenUnavailable: (serverID: String, generation: Int64, at: Date)?
+    /// Per server: the generation not to send again until the interval ends.
+    private var held: [String: (generation: Int64, at: Date)] = [:]
 
     init(api: APIv2Client = SiloAPI.shared.apiV2Client, tokenStore: TokenStore = .shared,
          journal: ApplePushInstallationJournal = ApplePushInstallationJournal(),
@@ -220,6 +236,11 @@ actor ApplePushRegistrar {
             return .notSent(reason: "journal_\(error)")
         }
         guard let command = planned.command else { return .unchanged }
+        // A held pending intent. A held accepted intent never gets here:
+        // `needsDisplayToken` already declined its renewal.
+        if !planned.allocated, isHeld(serverID: serverID, generation: command.generation) {
+            return .notSent(reason: "held")
+        }
 
         do {
             let capability = try await api.applePushRegistrationCapability(auth: owner.request)
@@ -252,10 +273,15 @@ actor ApplePushRegistrar {
             receipt = try await api.registerApplePush(command.intent.body, installationKey: command.installationKey,
                 generation: command.generation, auth: owner.request)
         } catch {
-            if let reason = Self.refusalReason(error) {
+            if let reason = Self.refusalReason(error), !command.isRenewal || Self.isGenerationConflict(error) {
                 record(.refused(reason: reason), for: command, serverID: serverID)
                 Self.logger.error("Apple push registration refused: generation=\(command.generation, privacy: .public) reason=\(reason, privacy: .public) error=\(String(describing: error), privacy: .public)")
                 return .refused(reason: reason)
+            }
+            if let reason = Self.refusalReason(error) ?? Self.forbiddenReason(error) {
+                held[serverID] = (command.generation, now())
+                Self.logger.error("Apple push registration held: generation=\(command.generation, privacy: .public) renewal=\(command.isRenewal, privacy: .public) reason=\(reason, privacy: .public) error=\(String(describing: error), privacy: .public)")
+                return .held(reason: reason)
             }
             Self.logger.info("Apple push registration outcome unknown; keeping generation \(command.generation, privacy: .public) for exact replay: \(String(describing: error), privacy: .public)")
             return .uncertain
@@ -279,20 +305,19 @@ actor ApplePushRegistrar {
         } catch {
             Self.logger.info("Discarding Apple push display token: owner changed while in flight")
         }
-        displayTokenUnavailable = registration.isActive && receipt.displayToken == nil
-            ? (serverID, command.generation, now()) : nil
+        held[serverID] = registration.isActive && receipt.displayToken == nil
+            ? (command.generation, now()) : nil
         Self.logger.info("Registered APNs token with Silo generation=\(command.generation, privacy: .public) renewal=\(command.isRenewal, privacy: .public) server_device_id=\(receipt.serverDeviceId, privacy: .private) enabled=\(receipt.enabled, privacy: .public) removed=\(receipt.removed, privacy: .public) displayToken=\(token != nil, privacy: .public)")
         return .registered(registration)
     }
 
     private func needsDisplayToken(serverID: String, generation: Int64) -> Bool {
-        if displayTokens.hasCurrentToken(forServerID: serverID) { return false }
-        if let unavailable = displayTokenUnavailable, unavailable.serverID == serverID,
-           unavailable.generation == generation,
-           now().timeIntervalSince(unavailable.at) < Self.displayTokenUnavailableRetryInterval {
-            return false
-        }
-        return true
+        !displayTokens.hasCurrentToken(forServerID: serverID) && !isHeld(serverID: serverID, generation: generation)
+    }
+
+    private func isHeld(serverID: String, generation: Int64) -> Bool {
+        guard let entry = held[serverID], entry.generation == generation else { return false }
+        return now().timeIntervalSince(entry.at) < Self.heldGenerationRetryInterval
     }
 
     /// Records the answer for `command`. A failed write leaves the intent
@@ -308,8 +333,8 @@ actor ApplePushRegistrar {
     }
 
     /// A definite refusal of this exact intent, or `nil` when the outcome is
-    /// unknown or the refusal is not about the intent (401, 408, 410, 429,
-    /// 5xx, a v1-only server).
+    /// unknown or the refusal is not about the intent (401, 403, 408, 410,
+    /// 429, 5xx, a v1-only server).
     private static func refusalReason(_ error: Error) -> String? {
         switch error {
         case ApplePushRegistrationError.invalidReceipt:
@@ -320,6 +345,30 @@ actor ApplePushRegistrar {
             return "http_\(status)"
         default:
             return nil
+        }
+    }
+
+    /// A 403: a bad installation proof, or a login authority check that
+    /// failed, possibly transiently. The server uses one problem type for
+    /// both, so the client cannot tell them apart.
+    private static func forbiddenReason(_ error: Error) -> String? {
+        switch error {
+        case APIv2Error.problem(let problem) where problem.status == 403:
+            return "http_403_\(problem.identifier)"
+        case APIv2Error.httpStatus(403):
+            return "http_403"
+        default:
+            return nil
+        }
+    }
+
+    /// A 409: the server holds a newer generation, or another intent for this
+    /// one.
+    private static func isGenerationConflict(_ error: Error) -> Bool {
+        switch error {
+        case APIv2Error.problem(let problem): return problem.status == 409
+        case APIv2Error.httpStatus(let status): return status == 409
+        default: return false
         }
     }
 }

@@ -68,6 +68,13 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         }
     }
 
+    private final class Clock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var current = Date(timeIntervalSince1970: 1_800_000_000)
+        var now: Date { lock.withLock { current } }
+        func advance(by interval: TimeInterval) { lock.withLock { current += interval } }
+    }
+
     private struct Harness {
         let tokens: TokenStore
         let server: PushServer
@@ -75,8 +82,9 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         let displayTokens: ApplePushDisplayTokenStore
         let api: APIv2Client
 
-        func registrar() -> ApplePushRegistrar {
-            ApplePushRegistrar(api: api, tokenStore: tokens, journal: journal, displayTokens: displayTokens)
+        func registrar(clock: Clock? = nil) -> ApplePushRegistrar {
+            let now: @Sendable () -> Date = clock.map { clock in { clock.now } } ?? { Date() }
+            return ApplePushRegistrar(api: api, tokenStore: tokens, journal: journal, displayTokens: displayTokens, now: now)
         }
 
         func owner() async throws -> CapturedDurableAccountAuth {
@@ -253,15 +261,42 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         XCTAssertEqual(h.server.registrations.map { $0.header("X-Push-Generation") }, ["1", "2"])
     }
 
-    func testForbiddenAndValidationFailuresAreRefusals() async throws {
-        for (status, type) in [(403, "permission_denied"), (422, "validation_failed")] {
-            let h = try await makeHarness()
-            h.server.enqueue(.problem(status, type))
-            let owner = try await h.owner()
+    func testValidationFailureIsRefusal() async throws {
+        let h = try await makeHarness()
+        h.server.enqueue(.problem(422, "validation_failed"))
+        let owner = try await h.owner()
         let result = await h.registrar().register(Self.body(), owner: owner)
-            XCTAssertEqual(result, .refused(reason: "http_\(status)_\(type)"))
-            XCTAssertEqual(try h.record()?.latest?.outcome, .refused(reason: "http_\(status)_\(type)"))
-        }
+        XCTAssertEqual(result, .refused(reason: "http_422_validation_failed"))
+        XCTAssertEqual(try h.record()?.latest?.outcome, .refused(reason: "http_422_validation_failed"))
+    }
+
+    /// The server answers 403 both for a bad installation proof and for a
+    /// login authority check that can fail transiently. The intent stays
+    /// pending and is replayed exactly once the hold ends.
+    func testForbiddenHoldsIntentPendingAndReplaysItAfterBackoff() async throws {
+        let h = try await makeHarness()
+        let clock = Clock()
+        let registrar = h.registrar(clock: clock)
+        let owner = try await h.owner()
+        h.server.enqueue(.problem(403, "permission_denied"))
+
+        let first = await registrar.register(Self.body(), owner: owner)
+        XCTAssertEqual(first, .held(reason: "http_403_permission_denied"))
+        XCTAssertEqual(try h.record()?.latest?.outcome, .pending)
+        let count = h.server.handler.requests.count
+
+        let during = await registrar.register(Self.body(), owner: owner)
+        XCTAssertEqual(during, .notSent(reason: "held"))
+        XCTAssertEqual(h.server.handler.requests.count, count, "a held intent must not be resent before the hold ends")
+
+        clock.advance(by: ApplePushRegistrar.heldGenerationRetryInterval + 1)
+        let after = await registrar.register(Self.body(), owner: owner)
+
+        XCTAssertEqual(after, Self.accepted)
+        let sends = h.server.registrations
+        XCTAssertEqual(sends.map { $0.header("X-Push-Generation") }, ["1", "1"])
+        XCTAssertEqual(sends[0].header("X-Push-Installation-Key"), sends[1].header("X-Push-Installation-Key"))
+        XCTAssertEqual(sends[0].body, sends[1].body)
     }
 
     /// A server error is not about the intent: it stays pending for exact
@@ -346,6 +381,51 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         let after = await h.registrar().register(Self.body(), owner: owner)
         XCTAssertEqual(after, .unchanged)
         XCTAssertEqual(h.server.handler.requests.count, count)
+    }
+
+    /// A renewal is an exact replay the server never acts on, so its refusal
+    /// leaves the accepted registration in place and the renewal is retried
+    /// once the hold ends.
+    func testRefusedRenewalKeepsAcceptedRegistrationAndRenewsAfterBackoff() async throws {
+        let h = try await makeHarness()
+        let clock = Clock()
+        let registrar = h.registrar(clock: clock)
+        let owner = try await h.owner()
+        _ = await registrar.register(Self.body(), owner: owner)
+        let accepted = try h.record()?.latest?.outcome
+        h.displayTokens.store(nil, expiresAt: nil, serverId: Self.serverID)
+        h.server.enqueue(.problem(403, "permission_denied"))
+
+        let renewal = await registrar.register(Self.body(), owner: owner)
+        XCTAssertEqual(renewal, .held(reason: "http_403_permission_denied"))
+        XCTAssertEqual(try h.record()?.latest?.outcome, accepted)
+        let count = h.server.handler.requests.count
+
+        let during = await registrar.register(Self.body(), owner: owner)
+        XCTAssertEqual(during, .unchanged)
+        XCTAssertEqual(h.server.handler.requests.count, count)
+
+        clock.advance(by: ApplePushRegistrar.heldGenerationRetryInterval + 1)
+        let after = await registrar.register(Self.body(), owner: owner)
+
+        XCTAssertEqual(after, Self.accepted)
+        XCTAssertEqual(h.server.registrations.map { $0.header("X-Push-Generation") }, ["1", "1", "1"])
+        XCTAssertTrue(h.displayTokens.hasCurrentToken(forServerID: Self.serverID))
+    }
+
+    /// A 409 on a renewal means the server has moved past this generation,
+    /// so the accepted state is no longer true and renewal stops.
+    func testConflictOnRenewalIsRecordedAsRefusal() async throws {
+        let h = try await makeHarness()
+        let owner = try await h.owner()
+        _ = await h.registrar().register(Self.body(), owner: owner)
+        h.displayTokens.store(nil, expiresAt: nil, serverId: Self.serverID)
+        h.server.enqueue(.problem(409, "conflict"))
+
+        let renewal = await h.registrar().register(Self.body(), owner: owner)
+
+        XCTAssertEqual(renewal, .refused(reason: "http_409_conflict"))
+        XCTAssertEqual(try h.record()?.latest?.outcome, .refused(reason: "http_409_conflict"))
     }
 
     /// An owner change while the send is in flight discards the answer: no
