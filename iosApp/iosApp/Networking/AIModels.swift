@@ -8,25 +8,11 @@
 //  translation/transcription (translate an existing track, transcribe
 //  audio via Whisper, or transcribe-and-translate).
 //
-//  The metadata AI wire shapes live in
-//  `APIv2/APIv2MetadataAIModels.swift` and go through ``APIv2Client``;
-//  ``MetadataAIStatus`` here is a plain domain value built from them.
-//
-//  The subtitle AI models still ride the native API (`/api/v1/...`) and
-//  go through ``HTTPClient/shared``, whose coders are `.convertFromSnakeCase` /
-//  `.convertToSnakeCase`. Properties therefore stay camelCase with no
-//  `CodingKeys` boilerplate; the only exception is
-//  ``SubtitleAIKind/transcribeTranslate`` whose wire value
-//  (`transcribe_translate`) isn't a clean snake_case of the case name.
-//
-//  Stored-subtitle listing and provider search are on v2
-//  (`APIv2/APIv2SubtitleModels.swift`). AI endpoints in play (see ``SiloAI``):
-//    GET  /api/v1/subtitles/ai/status
-//    GET  /api/v1/subtitles/ai/quota
-//    POST /api/v1/subtitles/ai/translate
-//    GET  /api/v1/subtitles/ai/jobs/{job_id}
-//    GET  /api/v1/subtitles/ai/jobs?media_file_id=N
-//    POST /api/v1/subtitles/ai/jobs/{job_id}/cancel
+//  Every AI call goes through ``APIv2Client`` (see ``SiloAI``). The wire
+//  shapes live in `APIv2/APIv2MetadataAIModels.swift`,
+//  `APIv2/APIv2SubtitleModels.swift` and `APIv2/APIv2SubtitleAIModels.swift`;
+//  the types here are the domain values the player and settings read, built
+//  from those wire models.
 //
 
 import Foundation
@@ -36,7 +22,7 @@ import Foundation
 /// Lifecycle of an AI subtitle job. Unknown wire values decode to
 /// `.pending` so a server that introduces a new transient state never
 /// trips the poller into a false terminal stop.
-enum AIJobStatus: String, Codable {
+enum AIJobStatus: String, Decodable {
     case pending
     case running
     case completed
@@ -81,57 +67,44 @@ struct MetadataAIStatus {
 
 // MARK: - Subtitle AI
 
-/// `GET /api/v1/subtitles/ai/status`. `transcribeEnabled` additionally
+/// Whether the player may offer AI subtitles. Projected from
+/// ``APIv2SubtitleAIStatus``: each flag is on only when the viewer is
+/// `allowed` and the state is `available`. `transcribeEnabled` additionally
 /// gates the Whisper transcription controls + the quota gauge.
-struct SubtitleAIStatus: Codable {
+struct SubtitleAIStatus: Equatable {
     let enabled: Bool
     let transcribeEnabled: Bool
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
-        transcribeEnabled = try c.decodeIfPresent(Bool.self, forKey: .transcribeEnabled) ?? false
-    }
 }
 
-/// `GET /api/v1/subtitles/ai/quota`. The per-user ASR allowance. When
-/// `limited` is false the remaining fields are typically absent and the
-/// feature is effectively unmetered.
-struct SubtitleAIQuota: Codable, Equatable {
+/// The per-user ASR allowance, from ``APIv2SubtitleAIQuota``. When `limited`
+/// is false the feature is effectively unmetered.
+struct SubtitleAIQuota: Equatable {
     let limited: Bool
     let limit: Int?
     let used: Int?
     let remaining: Int?
     let period: String?
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        limited = try c.decodeIfPresent(Bool.self, forKey: .limited) ?? false
-        limit = try c.decodeIfPresent(Int.self, forKey: .limit)
-        used = try c.decodeIfPresent(Int.self, forKey: .used)
-        remaining = try c.decodeIfPresent(Int.self, forKey: .remaining)
-        period = try c.decodeIfPresent(String.self, forKey: .period)
-    }
 }
 
 /// What an AI subtitle job should do.
 /// - `translate`: translate an existing text track (default).
 /// - `transcribe`: Whisper ASR of an audio track to subtitles.
 /// - `transcribeTranslate`: ASR then translate the transcript.
-enum SubtitleAIKind: String, Codable {
+enum SubtitleAIKind: String, Encodable {
     case translate
     case transcribe
     case transcribeTranslate = "transcribe_translate"
 }
 
-/// Body for `POST /api/v1/subtitles/ai/translate` → `202 { job }`.
+/// What the player asks an AI subtitle job to do. ``APIv2SubtitleCreateBody``
+/// checks it and builds the `POST /api/v2/subtitles/ai/translate` body.
 ///
 /// `sourceIndex` is the combined player subtitle index for `translate`,
 /// or the audio track index (`-1` = default) for `transcribe*`. When
 /// `sessionId` is present the server streams cues live over the playback
 /// control websocket; `startPosition` (seconds) is the playhead so the
 /// watched region translates first.
-struct TranslateSubtitleBody: Encodable {
+struct TranslateSubtitleBody: Equatable {
     let mediaFileId: Int
     let kind: SubtitleAIKind?
     let sourceIndex: Int
@@ -141,10 +114,11 @@ struct TranslateSubtitleBody: Encodable {
     let startPosition: Double?
 }
 
-/// One AI subtitle job. `resultSubtitleId` is populated once the job
-/// reaches `completed`; the persisted track then appears in the normal
-/// downloaded-subtitle listing.
-struct SubtitleJob: Codable, Identifiable, Equatable {
+/// One AI subtitle job, projected from ``APIv2SubtitleJob``. The job `id`
+/// and `resultSubtitleId` stay opaque strings. `resultSubtitleId` is set
+/// once the job reaches `completed`; the persisted track then appears in the
+/// stored-subtitle listing under that ID.
+struct SubtitleJob: Identifiable, Equatable {
     let id: String
     let mediaFileId: Int
     let kind: SubtitleAIKind
@@ -156,46 +130,10 @@ struct SubtitleJob: Codable, Identifiable, Equatable {
     let status: AIJobStatus
     let progress: Double
     let progressMessage: String?
-    let resultSubtitleId: Int?
+    let resultSubtitleId: String?
     let errorMessage: String?
     let createdAt: String?
     let updatedAt: String?
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        // The server serializes the job's `ID int64` bare, so `id` arrives as a
-        // JSON **number** (`{"id":42}`), not a string. Decoding `String.self`
-        // against a number throws — which used to make EVERY real 202/poll
-        // response fail to decode, silently disabling the whole pipeline. Decode
-        // tolerantly: accept a number or a string and normalize to `String` so
-        // the `"ai-<id>"` track-key join still matches the server's
-        // `liveTrackKey` (`fmt.Sprintf("ai-%d", jobID)`). An integer normalizes
-        // to its plain decimal form (`42` → `"42"`).
-        if let intID = try? c.decode(Int64.self, forKey: .id) {
-            id = String(intID)
-        } else {
-            id = try c.decode(String.self, forKey: .id)
-        }
-        mediaFileId = try c.decodeIfPresent(Int.self, forKey: .mediaFileId) ?? 0
-        kind = try c.decodeIfPresent(SubtitleAIKind.self, forKey: .kind) ?? .translate
-        sourceIndex = try c.decodeIfPresent(Int.self, forKey: .sourceIndex) ?? -1
-        sourceLanguage = try c.decodeIfPresent(String.self, forKey: .sourceLanguage)
-        targetLanguage = try c.decodeIfPresent(String.self, forKey: .targetLanguage)
-        engine = try c.decodeIfPresent(String.self, forKey: .engine)
-        model = try c.decodeIfPresent(String.self, forKey: .model)
-        status = try c.decodeIfPresent(AIJobStatus.self, forKey: .status) ?? .pending
-        progress = try c.decodeIfPresent(Double.self, forKey: .progress) ?? 0
-        progressMessage = try c.decodeIfPresent(String.self, forKey: .progressMessage)
-        resultSubtitleId = try c.decodeIfPresent(Int.self, forKey: .resultSubtitleId)
-        errorMessage = try c.decodeIfPresent(String.self, forKey: .errorMessage)
-        createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt)
-        updatedAt = try c.decodeIfPresent(String.self, forKey: .updatedAt)
-    }
-}
-
-/// Envelope for the single-job endpoints (`translate`, `jobs/{id}`).
-struct SubtitleJobEnvelope: Codable {
-    let job: SubtitleJob
 }
 
 /// One server-stored downloaded subtitle, as listed by

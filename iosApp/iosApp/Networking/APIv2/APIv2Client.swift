@@ -366,51 +366,6 @@ struct APIv2Client: Sendable {
         return auth
     }
 
-    func createSubtitle(_ body: APIv2SubtitleCreateBody, auth: CapturedOrdinaryRequestAuth) async throws -> SubtitleCreationResult {
-        try await gate()
-        guard await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
-            throw HTTPError.requestIdentityChanged
-        }
-        let identity = auth.profileId.map { Self.requestIdentity(auth, profile: $0) }
-        let encoder = JSONEncoder(); encoder.keyEncodingStrategy = .convertToSnakeCase
-        let data = try encoder.encode(body)
-        let raw = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "POST", path: "/api/v2/subtitles/ai/translate", body: data,
-                    headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:],
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
-        guard raw.statusCode == 202 else { throw APIv2Error.invalidSubtitleResponse }
-        let response = try HTTPClient.makeJSONDecoder().decode(APIv2SubtitleCreateResponse.self, from: raw.data)
-        guard !response.job.id.isEmpty,
-              response.job.mediaFileId == body.mediaFileId, response.job.kind == body.kind.rawValue,
-              response.job.sourceIndex == body.sourceIndex,
-              !response.liveDeliveryAttached || body.sessionId != nil else { throw APIv2Error.invalidSubtitleResponse }
-        return try SubtitleCreationResult(job: SubtitleJob(v2: response.job, expectedJobID: response.job.id),
-            liveDeliveryAttached: response.liveDeliveryAttached)
-    }
-
-    /// Acknowledges a cancellation request; completion may already have won.
-    func cancelSubtitleJob(id: String) async throws {
-        guard let segment = try? catalogPathSegment(id) else {
-            throw APIv2Error.invalidSubtitleResponse
-        }
-        try await gate()
-        guard let auth = await tokenStore.captureOrdinaryRequestAuth() else {
-            throw HTTPError.requestIdentityChanged
-        }
-        let identity = auth.profileId.map { Self.requestIdentity(auth, profile: $0) }
-        let response = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "POST", path: "/api/v2/subtitles/ai/jobs/\(segment)/cancel",
-                    headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:],
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
-        guard response.statusCode == 204, response.data.isEmpty else { throw APIv2Error.invalidSubtitleResponse }
-    }
-
     private func householdRequest<T: Decodable>(_ method: String, path: String, body: Data? = nil, status: Int) async throws -> T {
         try await gate()
         guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }

@@ -84,8 +84,9 @@ final class APIv2SubtitleTests: XCTestCase {
             stub.reply(202, String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self))
             let auth = try await api.captureAIAuthority()
             if id.isEmpty {
+                // The job may exist even though its receipt is unusable.
                 do { _ = try await api.createSubtitle(body, auth: auth); XCTFail("Accepted empty job ID") }
-                catch APIv2Error.invalidSubtitleResponse { }
+                catch SubtitleCreationError.outcomeUnknown { }
                 let count = stub.requests.count
                 do { try await api.cancelSubtitleJob(id: id); XCTFail("Dispatched empty job ID") }
                 catch APIv2Error.invalidSubtitleResponse { }
@@ -124,34 +125,326 @@ final class APIv2SubtitleTests: XCTestCase {
         assertInvalidSubtitleResponse(try SubtitleJob(v2: playable.job, expectedJobID: "9007199254740992"), "job id mismatch")
     }
 
-    func testAIJobResultUsesExactIntegerProjection() throws {
+    /// Result IDs stay opaque; only an empty one breaks the contract. The
+    /// file ID must be a string holding a positive integer.
+    func testAIJobResultIDStaysOpaque() throws {
         var object = try XCTUnwrap(JSONSerialization.jsonObject(with: fixture("subtitle_ai_job_opaque_id")) as? [String: Any])
         var row = try XCTUnwrap(object["job"] as? [String: Any])
         row["kind"] = "translate"
-        for raw in ["9007199254740993", "9223372036854775808", "07", "opaque"] {
+        for raw in ["9007199254740993", "9223372036854775808", "07", "opaque", ""] {
             row["result_subtitle_id"] = raw
             object["job"] = row
             let wire = try HTTPClient.makeJSONDecoder().decode(APIv2SubtitleJobEnvelope.self,
                 from: JSONSerialization.data(withJSONObject: object))
-            if raw == "9007199254740993" {
-                XCTAssertEqual(try SubtitleJob(v2: wire.job, expectedJobID: wire.job.id).resultSubtitleId, 9007199254740993)
+            if raw.isEmpty {
+                assertInvalidSubtitleResponse(try SubtitleJob(v2: wire.job, expectedJobID: wire.job.id), "empty result id")
             } else {
-                assertInvalidSubtitleResponse(try SubtitleJob(v2: wire.job, expectedJobID: wire.job.id), "result id \(raw)")
+                XCTAssertEqual(try SubtitleJob(v2: wire.job, expectedJobID: wire.job.id).resultSubtitleId, raw)
             }
         }
+        row["result_subtitle_id"] = NSNull()
+        row["status"] = "queued"
+        object["job"] = row
+        let pending = try HTTPClient.makeJSONDecoder().decode(APIv2SubtitleJobEnvelope.self,
+            from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertEqual(try SubtitleJob(v2: pending.job, expectedJobID: pending.job.id).status, .pending,
+                       "an unknown status must not stop the poller")
         row["media_file_id"] = 42
         object["job"] = row
         assertDecodingFails(APIv2SubtitleJobEnvelope.self, from: try JSONSerialization.data(withJSONObject: object),
                             "a numeric media_file_id is not the wire contract")
     }
 
-    func testAIQuotaFixtureRetainsBudgetFields() throws {
-        let quota = try HTTPClient.makeJSONDecoder().decode(SubtitleAIQuota.self, from: fixture("subtitle_ai_quota"))
-        XCTAssertTrue(quota.limited)
-        XCTAssertEqual(quota.limit, 5)
-        XCTAssertEqual(quota.used, 2)
-        XCTAssertEqual(quota.remaining, 3)
-        XCTAssertEqual(quota.period, "daily")
+    func testAIQuotaReadsTheV2PathAndRequiresEveryField() async throws {
+        let (api, _) = try await client()
+        stub.reply(200, String(decoding: try fixture("subtitle_ai_quota"), as: UTF8.self))
+        let quota = try await api.subtitleAIQuota()
+        XCTAssertEqual(quota, SubtitleAIQuota(limited: true, limit: 5, used: 2, remaining: 3, period: "daily"))
+        let request = try XCTUnwrap(stub.requests.first)
+        XCTAssertEqual(request.method, "GET")
+        XCTAssertEqual(request.path, "/api/v2/subtitles/ai/quota")
+        XCTAssertEqual(request.header("X-Profile-Id"), "profile-one")
+
+        // The v1 server left the counters out when unmetered; v2 always sends them.
+        stub.reply(200, #"{"limited":false}"#)
+        do { _ = try await api.subtitleAIQuota(); XCTFail("Decoded a quota without its counters") }
+        catch is DecodingError { }
+    }
+
+    func testAIStatusIsAvailableOnlyWhenAllowedAndAvailable() async throws {
+        let (api, _) = try await client()
+        func body(enabled: Bool, transcribe: Bool, state: String, allowed: Bool) -> String {
+            #"{"enabled":\#(enabled),"transcribe_enabled":\#(transcribe),"revision":"r","state":"\#(state)","allowed":\#(allowed)}"#
+        }
+        let cases: [(String, SubtitleAIStatus)] = [
+            (body(enabled: true, transcribe: true, state: "available", allowed: true),
+             SubtitleAIStatus(enabled: true, transcribeEnabled: true)),
+            (body(enabled: false, transcribe: true, state: "available", allowed: true),
+             SubtitleAIStatus(enabled: false, transcribeEnabled: true)),
+            (body(enabled: true, transcribe: true, state: "available", allowed: false),
+             SubtitleAIStatus(enabled: false, transcribeEnabled: false)),
+            (body(enabled: true, transcribe: true, state: "disabled", allowed: true),
+             SubtitleAIStatus(enabled: false, transcribeEnabled: false)),
+            (body(enabled: true, transcribe: true, state: "future_state", allowed: true),
+             SubtitleAIStatus(enabled: false, transcribeEnabled: false)),
+        ]
+        for (json, expected) in cases {
+            stub.reply(200, json)
+            let status = try await api.subtitleAIStatus()
+            XCTAssertEqual(status, expected, json)
+        }
+        XCTAssertEqual(Set(stub.requestedPaths), ["/api/v2/subtitles/ai/status"])
+        XCTAssertEqual(stub.requests.first?.header("X-Profile-Id"), "profile-one")
+
+        // The contract requires `allowed` and `state`; the v1 shape is not an answer.
+        stub.reply(200, #"{"enabled":true,"transcribe_enabled":true}"#)
+        do { _ = try await api.subtitleAIStatus(); XCTFail("Decoded a status without allowed/state") }
+        catch is DecodingError { }
+    }
+
+    /// A failed probe is not an answer: the capability keeps its last value.
+    @MainActor
+    func testAICapabilitiesKeepTheSubtitleStatusWhenTheProbeFails() async throws {
+        let (api, _) = try await client()
+        let capabilities = AICapabilities(api: SiloAI(v2: api))
+        stub.reply(path: "/api/v2/subtitles/ai/status", 200,
+                   #"{"enabled":true,"transcribe_enabled":false,"revision":"r","state":"available","allowed":true}"#)
+        await capabilities.refresh()
+        XCTAssertTrue(capabilities.subtitleEnabled)
+        stub.reply(path: "/api/v2/subtitles/ai/status", 503, Self.problem("service_unavailable", 503, "Down"))
+        await capabilities.refresh()
+        XCTAssertTrue(capabilities.subtitleEnabled)
+        XCTAssertFalse(capabilities.transcribeEnabled)
+    }
+
+    // MARK: Subtitle AI jobs
+
+    private static func aiJob(id: String = "77", kind: String = "translate", sourceIndex: Int = 0,
+                              file: String = "42", status: String = "running") -> String {
+        #"{"id":"\#(id)","media_file_id":"\#(file)","kind":"\#(kind)","source_index":\#(sourceIndex),"source_language":"en","target_language":"fr","engine":"llm","model":"m","status":"\#(status)","progress":0.5,"progress_message":"","result_subtitle_id":null,"created_at":"2026-01-02T03:04:05.678Z","updated_at":"2026-01-02T03:04:05.678Z"}"#
+    }
+
+    private static func receipt(_ job: String = aiJob(), attached: Bool = false) -> String {
+        #"{"job":\#(job),"live_delivery_attached":\#(attached)}"#
+    }
+
+    private static func translate(to target: String = "fr", sessionId: String? = nil) -> TranslateSubtitleBody {
+        TranslateSubtitleBody(mediaFileId: 42, kind: .translate, sourceIndex: 0, sourceLanguage: "en",
+                              targetLanguage: target, sessionId: sessionId, startPosition: 12.5)
+    }
+
+    private func postCount() -> Int { stub.requests.filter { $0.method == "POST" }.count }
+
+    func testCreatePostsTheContractBody() async throws {
+        let (api, tokens) = try await client()
+        let ai = SiloAI(v2: api)
+        let auth = try await owner(tokens)
+        stub.reply(202, Self.receipt())
+        let created = try await ai.translateSubtitle(Self.translate(), auth: auth)
+        XCTAssertEqual(created.job.id, "77")
+        XCTAssertEqual(created.job.mediaFileId, 42)
+        let request = try XCTUnwrap(stub.requests.first)
+        XCTAssertEqual(request.method, "POST")
+        XCTAssertEqual(request.path, "/api/v2/subtitles/ai/translate")
+        XCTAssertEqual(request.header("X-Profile-Id"), "profile-one")
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.body)) as? [String: Any])
+        XCTAssertEqual(Set(body.keys), ["media_file_id", "kind", "source_index", "source_language",
+                                        "target_language", "start_position"])
+        XCTAssertEqual(body["media_file_id"] as? String, "42")
+        XCTAssertEqual(body["kind"] as? String, "translate")
+        XCTAssertEqual(body["start_position"] as? Double, 12.5)
+
+        // Transcription sends both languages even when the player has none,
+        // and a live session only when there is one.
+        stub.reset()
+        stub.reply(202, Self.receipt(Self.aiJob(kind: "transcribe", sourceIndex: -1), attached: true))
+        let transcribe = TranslateSubtitleBody(mediaFileId: 42, kind: .transcribe, sourceIndex: -1, sourceLanguage: nil,
+                                               targetLanguage: nil, sessionId: "session-1", startPosition: 0)
+        let live = try await ai.translateSubtitle(transcribe, auth: auth)
+        XCTAssertTrue(live.liveDeliveryAttached)
+        let liveBody = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(stub.requests.first?.body)) as? [String: Any])
+        XCTAssertEqual(liveBody["source_language"] as? String, "")
+        XCTAssertEqual(liveBody["target_language"] as? String, "")
+        XCTAssertEqual(liveBody["session_id"] as? String, "session-1")
+        XCTAssertEqual(liveBody["source_index"] as? Int, -1)
+    }
+
+    /// `createSubtitleAIJob` is `non_retryable`. A server answer or a request
+    /// that never left releases the request; anything that may have started a
+    /// job holds it until the user discards it. Nothing is ever resent.
+    func testCreateHoldsOnlyAnUnknownOutcome() async throws {
+        let (api, tokens) = try await client()
+        let auth = try await owner(tokens)
+        let definite: [APIv2TestStub.Reply] = [
+            .failure(URLError(.cannotConnectToHost)),
+            .json(422, Self.problem("validation_failed", 422, "The subtitle request is not valid.")),
+            .json(429, Self.problem("rate_limited", 429, "Transcription quota exhausted.")),
+            .json(503, Self.problem("dependency_unavailable", 503, "AI subtitle processing is not configured")),
+        ]
+        for reply in definite {
+            stub.reset()
+            let ai = SiloAI(v2: api)
+            stub.reply(reply)
+            do { _ = try await ai.translateSubtitle(Self.translate(), auth: auth); XCTFail("Expected \(reply) to fail") }
+            catch { XCTAssertFalse(SubtitleCreationError.isUncertain(error), "\(error)") }
+            stub.reply(202, Self.receipt())
+            _ = try await ai.translateSubtitle(Self.translate(), auth: auth)
+            XCTAssertEqual(postCount(), 2, "a definite failure is released: \(reply)")
+        }
+
+        let uncertain: [APIv2TestStub.Reply] = [
+            .failure(URLError(.networkConnectionLost)),
+            .failure(URLError(.timedOut)),
+            .json(202, #"{"job":"#),
+            .json(200, Self.receipt()),
+            .json(202, Self.receipt(Self.aiJob(file: "43"))),
+        ]
+        for reply in uncertain {
+            stub.reset()
+            let ai = SiloAI(v2: api)
+            stub.reply(reply)
+            do { _ = try await ai.translateSubtitle(Self.translate(), auth: auth); XCTFail("Expected \(reply) to fail") }
+            catch { XCTAssertTrue(SubtitleCreationError.isUncertain(error), "\(error)") }
+
+            // A new playhead does not make it a new request.
+            let moved = TranslateSubtitleBody(mediaFileId: 42, kind: .translate, sourceIndex: 0, sourceLanguage: "en",
+                                              targetLanguage: "fr", sessionId: "session-2", startPosition: 99)
+            do { _ = try await ai.translateSubtitle(moved, auth: auth); XCTFail("Resent a held request") }
+            catch SubtitleCreationError.unresolved { }
+            XCTAssertEqual(postCount(), 1, "a held request is never resent: \(reply)")
+
+            stub.reply(202, Self.receipt())
+            _ = try await ai.translateSubtitle(Self.translate(to: "de"), auth: auth)
+            XCTAssertEqual(postCount(), 2, "another target language is a different request")
+
+            await ai.discardUnresolvedSubtitle(Self.translate(), auth: auth)
+            _ = try await ai.translateSubtitle(Self.translate(), auth: auth)
+            XCTAssertEqual(postCount(), 3, "a discarded hold can be sent again")
+        }
+    }
+
+    func testCreateForAReplacedOwnerIsRefusedOrHeld() async throws {
+        // Replaced before the call: refused, nothing sent, nothing held.
+        let (api, tokens) = try await client()
+        let ai = SiloAI(v2: api)
+        let auth = try await owner(tokens)
+        await tokens.setProfileId("profile-two")
+        for _ in 0..<2 {
+            do { _ = try await ai.translateSubtitle(Self.translate(), auth: auth); XCTFail("Sent for a replaced owner") }
+            catch HTTPError.requestIdentityChanged { }
+        }
+        XCTAssertTrue(stub.requests.isEmpty)
+
+        // Replaced while in flight: the server may have started the job.
+        stub.reset()
+        let (inFlight, inFlightTokens) = try await client()
+        let inFlightAI = SiloAI(v2: inFlight)
+        let inFlightOwner = try await owner(inFlightTokens)
+        stub.reply(202, Self.receipt())
+        stub.hold()
+        let task = Task { try await inFlightAI.translateSubtitle(Self.translate(), auth: inFlightOwner) }
+        await stub.waitUntilHeld()
+        await inFlightTokens.setProfileToken("replacement")
+        stub.release()
+        do {
+            _ = try await task.value
+            XCTFail("A receipt for a replaced owner cannot publish")
+        } catch {
+            XCTAssertEqual(error as? SubtitleCreationError, .outcomeUnknown)
+        }
+        do { _ = try await inFlightAI.translateSubtitle(Self.translate(), auth: inFlightOwner); XCTFail("Resent") }
+        catch SubtitleCreationError.unresolved { }
+        XCTAssertEqual(stub.requests.count, 1)
+    }
+
+    func testPollAndCancelRunForTheJobOwner() async throws {
+        let (api, tokens) = try await client()
+        let auth = try await owner(tokens)
+        stub.reply(200, #"{"job":\#(Self.aiJob(status: "completed"))}"#)
+        let job = try await api.subtitleJob(id: "77", auth: auth)
+        XCTAssertEqual(job.status, .completed)
+        let poll = try XCTUnwrap(stub.requests.first)
+        XCTAssertEqual(poll.method, "GET")
+        XCTAssertEqual(poll.path, "/api/v2/subtitles/ai/jobs/77")
+        XCTAssertEqual(poll.header("X-Profile-Id"), "profile-one")
+
+        // A snapshot of another job is not this job's state.
+        stub.reply(200, #"{"job":\#(Self.aiJob(id: "78"))}"#)
+        do { _ = try await api.subtitleJob(id: "77", auth: auth); XCTFail("Accepted another job") }
+        catch APIv2Error.invalidSubtitleResponse { }
+
+        stub.reset()
+        stub.reply(204, "")
+        try await api.cancelSubtitleJob(id: "77", auth: auth)
+        XCTAssertEqual(stub.requests.first?.method, "POST")
+        XCTAssertEqual(stub.requests.first?.path, "/api/v2/subtitles/ai/jobs/77/cancel")
+
+        // Neither runs for an owner that has been replaced.
+        stub.reset()
+        await tokens.setProfileId("profile-two")
+        do { _ = try await api.subtitleJob(id: "77", auth: auth); XCTFail("Polled for a replaced owner") }
+        catch HTTPError.requestIdentityChanged { }
+        do { try await api.cancelSubtitleJob(id: "77", auth: auth); XCTFail("Cancelled for a replaced owner") }
+        catch HTTPError.requestIdentityChanged { }
+        XCTAssertTrue(stub.requests.isEmpty)
+    }
+
+    /// The menu shows an unknown outcome as a failure with a way to let the
+    /// held request go; a repeat tap is refused without sending.
+    @MainActor
+    func testControllerHoldsAnUnknownOutcomeUntilDiscarded() async throws {
+        let (api, _) = try await client()
+        stub.fail(.networkConnectionLost)
+        let controller = SubtitleAIController(
+            api: SiloAI(v2: api),
+            mediaFileId: { 42 },
+            currentTime: { 3 },
+            handoffContext: { nil },
+            registerAndSelectDescriptor: { _ in }
+        )
+        func settle() async {
+            for _ in 0..<500 where controller.phase == .submitting { try? await Task.sleep(for: .milliseconds(10)) }
+        }
+
+        controller.transcribe(audioIndex: -1, translateTo: "fr")
+        await settle()
+        XCTAssertEqual(controller.phase, .failed)
+        XCTAssertTrue(controller.hasHeldRequest)
+        XCTAssertEqual(controller.errorMessage, SubtitleCreationError.outcomeUnknown.errorDescription)
+
+        controller.transcribe(audioIndex: -1, translateTo: "fr")
+        await settle()
+        XCTAssertEqual(controller.phase, .failed)
+        XCTAssertTrue(controller.hasHeldRequest)
+        XCTAssertEqual(controller.errorMessage, SubtitleCreationError.unresolved.errorDescription)
+        XCTAssertEqual(postCount(), 1, "the held request was not sent again")
+
+        controller.discardHeldRequest()
+        XCTAssertEqual(controller.phase, .idle)
+        XCTAssertFalse(controller.hasHeldRequest)
+        XCTAssertNil(controller.errorMessage)
+    }
+
+    /// When the poller gives up, the job may still finish on the server; the
+    /// menu says so instead of showing progress forever.
+    @MainActor
+    func testControllerReportsAJobThePollerLostTrackOf() async throws {
+        let (api, _) = try await client()
+        stub.sequence([.json(202, Self.receipt(Self.aiJob(kind: "transcribe", sourceIndex: -1)))])
+        stub.fail(.networkConnectionLost)
+        let controller = SubtitleAIController(
+            api: SiloAI(v2: api),
+            mediaFileId: { 42 },
+            currentTime: { 0 },
+            handoffContext: { nil },
+            registerAndSelectDescriptor: { _ in }
+        )
+        controller.transcribe(audioIndex: -1, translateTo: nil)
+        for _ in 0..<1500 where controller.phase != .failed { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(controller.phase, .failed)
+        XCTAssertFalse(controller.hasHeldRequest, "the job was accepted; nothing is held")
+        XCTAssertEqual(stub.requests.filter { $0.method == "GET" }.count, AIJobPoller.maxConsecutiveFailures)
+        XCTAssertEqual(postCount(), 1)
     }
 
     // MARK: Stored subtitles

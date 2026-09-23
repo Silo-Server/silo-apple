@@ -9,10 +9,15 @@
 //
 //  Milestone 3 ships the complete feature over **polling**, the same contract
 //  the Android client uses:
-//    POST /subtitles/ai/translate  →  store the job  →  poll
-//    GET  /subtitles/ai/jobs/{id}   until terminal    →  on `completed`,
-//    fetch GET /subtitles/{media_file_id}, locate the result subtitle, and
-//    register it as a normal downloaded sidecar track (then auto-select it).
+//    POST /api/v2/subtitles/ai/translate  →  store the job  →  poll
+//    GET  /api/v2/subtitles/ai/jobs/{id}   until terminal    →  on `completed`,
+//    fetch GET /api/v2/subtitles/{media_file_id}, locate the result subtitle,
+//    and register it as a normal downloaded sidecar track (then auto-select it).
+//
+//  The POST is `non_retryable` and sent once. When its outcome is unknown the
+//  request is held (see ``SiloAI/translateSubtitle(_:auth:)``): the menu shows
+//  the failure with a "Discard held request" action, and an identical request
+//  is not sent again until the user discards it.
 //
 //  Milestone 4 (now) layers REAL-TIME cue streaming over the websocket on top
 //  of that polling authority. The POST now passes `session_id` (the active
@@ -89,6 +94,17 @@ final class SubtitleAIController {
         phase == .submitting || phase == .running
     }
 
+    /// A job request whose outcome is unknown: it may have started a job, so
+    /// ``SiloAI`` will not send it again. Set with `phase == .failed`.
+    private struct HeldRequest {
+        let body: TranslateSubtitleBody
+        let auth: CapturedOrdinaryRequestAuth
+    }
+    private var heldRequest: HeldRequest?
+
+    /// Whether the failure on screen holds a request the user can discard.
+    var hasHeldRequest: Bool { heldRequest != nil }
+
     // MARK: - Injected collaborators
 
     /// AI endpoints facade.
@@ -138,7 +154,11 @@ final class SubtitleAIController {
     /// `activeJob.resultSubtitleId` guard alone — `handleSubtitleReady`
     /// short-circuits on this id too, avoiding a redundant second listing fetch
     /// + register. Cleared on a new submission and on `reset()`.
-    private var ownedHandoffSubtitleId: Int?
+    private var ownedHandoffSubtitleId: String?
+
+    /// The owner the active job was started for. Polls and the cancel run
+    /// for this owner, so a job is never read or cancelled for another one.
+    private var activeJobAuth: CapturedOrdinaryRequestAuth?
 
     /// Context the controller needs to synthesize a completed subtitle's
     /// player descriptor (the server's listing carries no URL/index). Fetched
@@ -321,6 +341,7 @@ final class SubtitleAIController {
         guard phase == .submitting || job?.status.isTerminal == false else { return }
         generation &+= 1
         let jobId = job?.id
+        let jobAuth = activeJobAuth
         pollDrainTask?.cancel()
         pollDrainTask = nil
         // Tear down any live presentation (restores selection / resumes). This
@@ -333,12 +354,26 @@ final class SubtitleAIController {
         clearEarlyFrameBuffer()
         Task { [api, poller] in
             await poller.cancel()
-            if let jobId {
-                try? await api.cancelSubtitleJob(id: jobId)
+            // A cancel while the POST is still in flight has no job to name;
+            // that request may still start one and is held by `SiloAI`.
+            if let jobId, let jobAuth {
+                try? await api.cancelSubtitleJob(id: jobId, auth: jobAuth)
             }
         }
         phase = .idle
         activeJob = nil
+        activeJobAuth = nil
+        errorMessage = nil
+    }
+
+    /// Drop the held request behind the current failure so the user can send
+    /// it again. The earlier request may still have started a job.
+    func discardHeldRequest() {
+        guard let held = heldRequest else { return }
+        heldRequest = nil
+        Task { [api] in await api.discardUnresolvedSubtitle(held.body, auth: held.auth) }
+        guard phase == .failed else { return }
+        phase = .idle
         errorMessage = nil
     }
 
@@ -359,6 +394,8 @@ final class SubtitleAIController {
         ownedHandoffSubtitleId = nil
         clearEarlyFrameBuffer()
         activeJob = nil
+        activeJobAuth = nil
+        heldRequest = nil
         phase = .idle
         errorMessage = nil
         quota = nil
@@ -400,16 +437,31 @@ final class SubtitleAIController {
 
         pollDrainTask = Task { [weak self] in
             guard let self else { return }
+            let auth: CapturedOrdinaryRequestAuth
             do {
-                let job = try await self.api.translateSubtitle(body)
+                auth = try await self.api.captureAuthority()
+            } catch {
+                guard !Task.isCancelled, gen == self.generation else { return }
+                self.fail(with: Self.message(for: error))
+                return
+            }
+            // A reset while the owner was captured invalidates this
+            // submission before anything is sent.
+            guard gen == self.generation else { return }
+            do {
+                let result = try await self.api.translateSubtitle(body, auth: auth)
                 // A reset (sign-out / profile or session switch) while the POST
                 // was in flight invalidates this submission.
                 guard gen == self.generation else { return }
-                self.onJobAccepted(job)
-                await self.drainPoll(jobId: job.id, isASR: kind != .translate, generation: gen)
+                self.activeJobAuth = auth
+                self.onJobAccepted(result.job)
+                await self.drainPoll(jobId: result.job.id, isASR: kind != .translate, auth: auth, generation: gen)
             } catch {
-                if Task.isCancelled { return }
-                guard gen == self.generation else { return }
+                // `SiloAI` keeps the hold even when this submission was
+                // superseded; the controller only needs it to offer the discard.
+                let held = (error as? SubtitleCreationError) == .unresolved || SubtitleCreationError.isUncertain(error)
+                guard !Task.isCancelled, gen == self.generation else { return }
+                self.heldRequest = held ? HeldRequest(body: body, auth: auth) : nil
                 self.fail(with: Self.message(for: error))
             }
         }
@@ -435,6 +487,8 @@ final class SubtitleAIController {
         phase = .submitting
         errorMessage = nil
         activeJob = nil
+        activeJobAuth = nil
+        heldRequest = nil
         liveCoordinator?.beginPreparing()
         refreshLivePresentationState()
         return gen
@@ -512,21 +566,26 @@ final class SubtitleAIController {
     /// Drain the poller stream, updating `activeJob` per snapshot and acting
     /// on the terminal snapshot. `generation` is the value captured at submit
     /// time; a reset mid-poll invalidates the remaining snapshots.
-    private func drainPoll(jobId: String, isASR: Bool, generation gen: Int) async {
+    private func drainPoll(jobId: String, isASR: Bool, auth: CapturedOrdinaryRequestAuth,
+                           generation gen: Int) async {
         let api = self.api
         let stream = await poller.poll(jobId: jobId) { id in
-            try await api.subtitleJob(id: id)
+            try await api.subtitleJob(id: id, auth: auth)
         }
         for await snapshot in stream {
             guard gen == self.generation else { return }
             activeJob = snapshot
             if snapshot.status.isTerminal {
                 handleTerminal(snapshot, isASR: isASR, generation: gen)
-                break
+                return
             } else {
                 phase = .running
             }
         }
+        // The poller gave up after repeated read failures. The job may still
+        // finish on the server; say so instead of showing progress forever.
+        guard !Task.isCancelled, gen == self.generation, phase == .running else { return }
+        failHandoff("Silo lost track of this subtitle job. If it finishes, the subtitles will appear in the subtitle list.")
     }
 
     private func handleTerminal(_ job: SubtitleJob, isASR: Bool, generation gen: Int) {
@@ -607,7 +666,7 @@ final class SubtitleAIController {
     private func completePersistedHandoff(
         jobId: String,
         mediaFileId: Int,
-        resultSubtitleId: Int?,
+        resultSubtitleId: String?,
         generation gen: Int,
         viaWebsocket: Bool,
         autoSelect: Bool = true
@@ -660,8 +719,7 @@ final class SubtitleAIController {
             // Match by stored id (Android: `it.id == resultSubtitleId`). The
             // v2 listing can omit rows, so the ordinal comes from the plan's
             // inventory and the synthesized URL pins the row by id.
-            // Listing ids are opaque strings; the job's is still an integer.
-            guard let position = downloaded.firstIndex(where: { $0.id == String(resultId) }) else {
+            guard let position = downloaded.firstIndex(where: { $0.id == resultId }) else {
                 Self.logger.warning(
                     "[AI-SUB] result subtitle id=\(resultId, privacy: .public) not found among \(downloaded.count, privacy: .public) downloaded subtitles"
                 )
@@ -804,8 +862,11 @@ final class SubtitleAIController {
         // `subtitle_ready` broadcast for the just-completed id is recognized
         // immediately, before the ~1.5s poller snapshot, and skips a redundant
         // downloaded-subtitles fetch + register.
-        if let job = activeJob, job.resultSubtitleId == subtitleId { return }
-        if ownedHandoffSubtitleId == subtitleId { return }
+        // The websocket event still carries an integer ID; job and listing IDs
+        // are opaque strings.
+        let storedId = String(subtitleId)
+        if let job = activeJob, job.resultSubtitleId == storedId { return }
+        if ownedHandoffSubtitleId == storedId { return }
         Self.logger.info("[AI-LIVE] subtitle_ready broadcast subtitleId=\(subtitleId, privacy: .public) fileId=\(fileId, privacy: .public)")
         // A per-id synthetic latch key so a repeated broadcast registers once
         // and never clashes with a real job's `ai-<jobID>` key. Register-only
@@ -813,7 +874,7 @@ final class SubtitleAIController {
         completePersistedHandoff(
             jobId: "ready-\(subtitleId)",
             mediaFileId: mediaFileId,
-            resultSubtitleId: subtitleId,
+            resultSubtitleId: storedId,
             generation: generation,
             viaWebsocket: true,
             autoSelect: false
@@ -829,7 +890,7 @@ final class SubtitleAIController {
         completePersistedHandoff(
             jobId: job.id,
             mediaFileId: job.mediaFileId,
-            resultSubtitleId: subtitleId,
+            resultSubtitleId: String(subtitleId),
             generation: generation,
             viaWebsocket: true
         )
@@ -871,28 +932,22 @@ final class SubtitleAIController {
     }
 
     private static func message(for error: Error) -> String {
-        if let http = error as? HTTPError {
-            // 503 from the AI endpoints means the feature is configured but the
-            // AI service is unreachable right now — give a clearer line than the
-            // generic "Server returned status 503". A server-supplied message (if
-            // any) still wins via `errorDescription`.
-            if http.statusCode == 503, Self.parsedServerMessage(http) == nil {
-                return "AI subtitles aren't available right now. Try again later."
-            }
-            // `HTTPError` is a `LocalizedError` whose `errorDescription` already
-            // surfaces the server's parsed error message; fall through to it.
-            return http.errorDescription ?? "Couldn't start subtitle translation."
+        switch error {
+        case let creation as SubtitleCreationError:
+            return creation.errorDescription ?? genericSubmitFailure
+        case _ where SubtitleCreationError.isUncertain(error):
+            return SubtitleCreationError.outcomeUnknown.errorDescription ?? genericSubmitFailure
+        case APIv2Error.httpStatus(503):
+            // 503 without a problem document means the feature is configured
+            // but the AI service is unreachable right now. A problem's own
+            // detail wins below.
+            return "AI subtitles aren't available right now. Try again later."
+        case APIv2Error.problem, APIv2Error.serverUpdateRequired:
+            return error.localizedDescription
+        default:
+            return genericSubmitFailure
         }
-        return "Couldn't start subtitle translation."
     }
 
-    /// True-ish helper: whether the server attached a human message to the
-    /// error body (so we prefer it over our generic 503 copy).
-    private static func parsedServerMessage(_ http: HTTPError) -> String? {
-        guard case .http = http else { return nil }
-        // `errorDescription` returns the parsed server message when present,
-        // otherwise the "Server returned status N" fallback — detect the latter.
-        let description = http.errorDescription ?? ""
-        return description.hasPrefix("Server returned status") ? nil : description
-    }
+    private static let genericSubmitFailure = "Couldn't start subtitle translation."
 }
