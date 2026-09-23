@@ -62,6 +62,12 @@ final class DownloadManager {
 
     private(set) var scopeServerId: String = ""
     private(set) var scopeProfileId: String = ""
+    /// The scope `file` was loaded for. While a scope switch waits on its
+    /// load, `scopeServerId`/`scopeProfileId` already name the new scope but
+    /// `file` still holds the old one, so saves and registry owners go by
+    /// this instead.
+    private var fileServerId = ""
+    private var fileProfileId = ""
 
     /// Coalesces the several legitimate app-lifecycle callers that can all ask
     /// for the same scope at launch. Without this, a late disk read can replace
@@ -423,7 +429,9 @@ final class DownloadManager {
             releaseHeldSessionEvents()
             return false
         }
-        if serverId == scopeServerId, profileId == scopeProfileId, !file.records.isEmpty || file.capability != nil {
+        if serverId == scopeServerId, profileId == scopeProfileId,
+           fileServerId == serverId, fileProfileId == profileId,
+           !file.records.isEmpty || file.capability != nil {
             releaseHeldSessionEvents()
             return true
         }
@@ -461,6 +469,8 @@ final class DownloadManager {
             // Exactly one waiter installs this snapshot. Later waiters observe
             // the already-hydrated `file` instead of assigning it a second time.
             file = loadedFile
+            fileServerId = serverId
+            fileProfileId = profileId
             if let released = releasedProgressClaims.removeValue(forKey: Self.progressClaimKey(serverId, profileId)),
                OfflineProgressQueue.releaseClaims(&file.progressQueue, ids: released) {
                 persist()
@@ -543,6 +553,8 @@ final class DownloadManager {
         scopeServerId = ""
         scopeProfileId = ""
         file = .empty
+        fileServerId = ""
+        fileProfileId = ""
         rateSamples.removeAll()
         transferRates.removeAll()
     }
@@ -780,8 +792,11 @@ final class DownloadManager {
             throw error
         case .conflict, .uncertain:
             await reconcileWithServer(triggerPipeline: true)
-            // That read deletes entries left by an earlier version; wait for
-            // it so a retry does not meet the same entry again.
+            // A pending DELETE of this item's entry, or of one left by an
+            // earlier version, makes the create conflict. Send it, even when
+            // the read failed, and wait for it so a retry does not meet the
+            // same entry again.
+            sendPendingServerDeletes()
             await serverDeleteTask?.value
             guard isCurrent(owner) else { throw DownloadError.scopeChangedDuringRegistration }
             if let leafId, let record = record(forContentId: leafId),
@@ -1442,6 +1457,7 @@ final class DownloadManager {
             file.legacyRowsPending = nil
         }
         persist()
+        // Also sends the DELETEs still pending from an earlier pass.
         queueServerDeletes(legacyRowIds)
         reportPendingStatusEvents()
 
@@ -1474,37 +1490,52 @@ final class DownloadManager {
     /// The request owner of the active download scope, captured before a
     /// registry call so its answer is applied only to that scope.
     private struct ScopeOwner {
+        let scope: ScopeKey
+        let auth: CapturedOrdinaryRequestAuth
+
+        var generation: UInt64 { scope.generation }
+    }
+
+    /// One activation of a download scope. The generation advances on every
+    /// scope change, so a switch away and back gives a different key.
+    private struct ScopeKey: Equatable {
         let serverId: String
         let profileId: String
         let generation: UInt64
-        let auth: CapturedOrdinaryRequestAuth
     }
 
-    private func captureScopeOwner() async -> ScopeOwner? {
-        let serverId = scopeServerId
-        let profileId = scopeProfileId
-        let generation = registrationScopeGeneration
-        guard !serverId.isEmpty, !profileId.isEmpty,
+    /// The active scope, or nil when there is none or its store has not
+    /// loaded into `file` yet.
+    private var loadedScope: ScopeKey? {
+        guard !scopeServerId.isEmpty, !scopeProfileId.isEmpty,
+              fileServerId == scopeServerId, fileProfileId == scopeProfileId else { return nil }
+        return ScopeKey(serverId: scopeServerId, profileId: scopeProfileId, generation: registrationScopeGeneration)
+    }
+
+    /// Captures the request owner of `expected`, or of the active scope when
+    /// nil. Background work passes the scope it was started under, captured
+    /// synchronously, so it never pairs a newer scope's auth with a store
+    /// it did not read.
+    private func captureScopeOwner(expecting expected: ScopeKey? = nil) async -> ScopeOwner? {
+        guard let scope = loadedScope, expected == nil || expected == scope,
               let auth = await TokenStore.shared.captureOrdinaryRequestAuth(),
-              auth.account.serverId == serverId, auth.profileId == profileId else { return nil }
-        let owner = ScopeOwner(serverId: serverId, profileId: profileId, generation: generation, auth: auth)
+              auth.account.serverId == scope.serverId, auth.profileId == scope.profileId else { return nil }
+        let owner = ScopeOwner(scope: scope, auth: auth)
         return isCurrent(owner) ? owner : nil
     }
 
-    /// Whether the scope `owner` was captured for is still active. The
-    /// generation advances on every scope change, so a switch away and back
-    /// also fails this.
+    /// Whether the scope `owner` was captured for is still active and its
+    /// store is the one in `file`.
     private func isCurrent(_ owner: ScopeOwner) -> Bool {
-        owner.generation == registrationScopeGeneration
-            && owner.serverId == scopeServerId
-            && owner.profileId == scopeProfileId
+        loadedScope == owner.scope
     }
 
     /// Records that these registry entries must be deleted on the server,
-    /// then sends the DELETEs. The record persists first, so an entry whose
-    /// DELETE never lands is not imported again by a later reconcile.
+    /// then sends every pending DELETE, including ones an earlier pass could
+    /// not send. The record persists first, so an entry whose DELETE never
+    /// lands is not imported again by a later reconcile. Every complete
+    /// reconcile calls this, with or without new ids.
     private func queueServerDeletes(_ ids: [String]) {
-        guard !ids.isEmpty else { return }
         var pending = file.pendingServerDeletes ?? []
         if !pending.isSuperset(of: ids) {
             pending.formUnion(ids)
@@ -1519,16 +1550,17 @@ final class DownloadManager {
     /// definite answer stays pending and a later pass sends it again; a 204
     /// or a 404 ends it. The pass stops when the active owner changes.
     private func sendPendingServerDeletes() {
-        guard serverDeleteTask == nil, file.pendingServerDeletes?.isEmpty == false else { return }
+        guard serverDeleteTask == nil, file.pendingServerDeletes?.isEmpty == false,
+              let scope = loadedScope else { return }
         serverDeleteTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.runServerDeletePass()
+            await self.runServerDeletePass(scope: scope)
             self.serverDeleteTask = nil
         }
     }
 
-    private func runServerDeletePass() async {
-        guard let owner = await captureScopeOwner() else { return }
+    private func runServerDeletePass(scope: ScopeKey) async {
+        guard let owner = await captureScopeOwner(expecting: scope) else { return }
         var attempted: Set<String> = []
         while isCurrent(owner),
               let id = (file.pendingServerDeletes ?? []).subtracting(attempted).sorted().first {
@@ -1590,11 +1622,11 @@ final class DownloadManager {
         let ids = file.records.values
             .filter { $0.pendingStatusEvent != nil && !statusReportsInFlight.contains($0.id) }
             .map(\.id)
-        guard !ids.isEmpty else { return }
+        guard !ids.isEmpty, let scope = loadedScope else { return }
         statusReportsInFlight.formUnion(ids)
         Task { @MainActor [weak self] in
             guard let self else { return }
-            let superseded = await self.sendStatusEvents(ids: ids)
+            let superseded = await self.sendStatusEvents(ids: ids, scope: scope)
             self.statusReportsInFlight.subtract(ids)
             // A newer event recorded while its predecessor was in flight.
             if superseded { self.reportPendingStatusEvents() }
@@ -1603,8 +1635,8 @@ final class DownloadManager {
 
     /// Returns whether any record got a newer event while its report was in
     /// flight.
-    private func sendStatusEvents(ids: [String]) async -> Bool {
-        guard let owner = await captureScopeOwner() else { return false }
+    private func sendStatusEvents(ids: [String], scope: ScopeKey) async -> Bool {
+        guard let owner = await captureScopeOwner(expecting: scope) else { return false }
         var superseded = false
         var needsReconcile = false
         for id in ids {
@@ -2164,12 +2196,14 @@ final class DownloadManager {
         return Int64(values?.fileSize ?? 0)
     }
 
+    /// Saves `file` to the store of the scope it was loaded for, which lags
+    /// the active scope while a switch waits on its load.
     private func persist() {
-        guard !scopeServerId.isEmpty, !scopeProfileId.isEmpty else { return }
+        guard !fileServerId.isEmpty, !fileProfileId.isEmpty else { return }
         lastProgressPersist = Date()
         let snapshot = file
-        let serverId = scopeServerId
-        let profileId = scopeProfileId
+        let serverId = fileServerId
+        let profileId = fileProfileId
         // Chain each save after the previous so writes land in call order.
         let previous = saveChain
         saveChain = Task { @MainActor in
