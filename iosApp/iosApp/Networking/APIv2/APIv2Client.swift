@@ -1296,21 +1296,23 @@ struct APIv2Client: Sendable {
         return page
     }
 
-    struct ApplePushCapability: Decodable {
-        let revision: String
-        let registrationAvailable: Bool
-    }
-
-    func applePushRegistrationCapability(auth: CapturedOrdinaryRequestAuth) async throws -> ApplePushCapability {
+    func applePushRegistrationCapability(auth: CapturedOrdinaryRequestAuth) async throws -> APIv2ApplePushCapability {
         let data = try await applePushRequest(method: "GET", path: "/api/v2/devices/push/apple/capabilities", auth: auth)
-        return try HTTPClient.makeJSONDecoder().decode(ApplePushCapability.self, from: data)
+        return try HTTPClient.makeJSONDecoder().decode(APIv2ApplePushCapability.self, from: data)
     }
 
-    /// `installationKey` and `generation` are the ordered-intent headers the
-    /// server uses to discard a stale registration; the caller's journal owns
-    /// their sequence.
-    func registerApplePush(_ body: ApplePushRegistrationRequest, installationKey: String, generation: Int64,
-                           auth: CapturedOrdinaryRequestAuth) async throws -> APIv2ApplePushRegistration {
+    /// Sends one ordered installation intent. `installationKey` and
+    /// `generation` come from `ApplePushInstallationJournal`, which owns their
+    /// sequence; an exact replay passes the same three values again. The body
+    /// is encoded with sorted keys so a replay sends the same bytes.
+    ///
+    /// Throws `ApplePushRegistrationError.invalidReceipt` when the server's
+    /// receipt does not describe this generation and payload.
+    func registerApplePush(_ body: APIv2ApplePushRegistrationBody, installationKey: String, generation: Int64,
+                           auth: CapturedOrdinaryRequestAuth) async throws -> APIv2ApplePushRegistrationReceipt {
+        guard ApplePushInstallationJournal.isInstallationKey(installationKey), generation > 0 else {
+            throw ApplePushRegistrationError.invalidInstallation
+        }
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
         encoder.outputFormatting = .sortedKeys
@@ -1318,7 +1320,12 @@ struct APIv2Client: Sendable {
             body: encoder.encode(body),
             headers: ["X-Push-Installation-Key": installationKey, "X-Push-Generation": String(generation)],
             auth: auth)
-        return try HTTPClient.makeJSONDecoder().decode(APIv2ApplePushRegistration.self, from: data)
+        let receipt = try HTTPClient.makeJSONDecoder().decode(APIv2ApplePushRegistrationReceipt.self, from: data)
+        guard receipt.generation == String(generation), !receipt.id.isEmpty, !receipt.serverDeviceId.isEmpty,
+              receipt.pushMode == body.pushMode else {
+            throw ApplePushRegistrationError.invalidReceipt
+        }
+        return receipt
     }
 
     private func applePushRequest(method: String, path: String, body: Data? = nil, headers: [String: String] = [:],

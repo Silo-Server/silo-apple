@@ -26,7 +26,7 @@ struct APIv2HomeSectionsRead {
     var sections: [ResolvedSection] { response.sections }
 }
 
-// MARK: Notifications and push (iOS)
+// MARK: Notifications (iOS)
 
 #if os(iOS)
 /// `GET /api/v2/notifications/sync` page.
@@ -46,20 +46,5 @@ struct APIv2NotificationSyncItem: Decodable, Equatable, Identifiable {
     let profileId: String
     let createdAt: Date?
     let readAt: Date?
-}
-
-/// `POST /api/v2/devices/push/apple` response.
-struct APIv2ApplePushRegistration: Decodable {
-    let generation: String
-    let removed: Bool
-    let id: String
-    let serverDeviceId: String
-    let enabled: Bool
-    let pushMode: String
-    /// Long-lived, profile-scoped token for the Notification Service
-    /// extension's display fetch. Absent on older servers.
-    let displayToken: String?
-    /// RFC 3339 expiry of `displayToken`. Absent with it.
-    let displayTokenExpiresAt: String?
 }
 #endif
