@@ -135,7 +135,10 @@ extension APIv2Client {
         guard event.revision >= 1, let segment = CatalogPathSegment.encode(id), !id.isEmpty else {
             throw DownloadRegistryError.invalidRequest
         }
-        let body = try JSONEncoder().encode(APIv2DownloadStatusBody(event: event))
+        // Sorted keys keep a retry's body byte-identical to the first send.
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        let body = try encoder.encode(APIv2DownloadStatusBody(event: event))
         let response = try await downloadRegistryRequest(method: "PATCH", path: "/api/v2/downloads/\(segment)",
             body: body, auth: auth)
         guard response.statusCode == 200 else { throw APIv2Error.httpStatus(response.statusCode) }
