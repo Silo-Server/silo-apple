@@ -158,15 +158,18 @@ enum TrackSelectionPersistence {
 
     // Each writer captures the signed-in owner when it is dispatched and the
     // v2 client sends the write only while that owner is still current, so a
-    // pick made under one profile never lands on another. The writes are
-    // `natural_idempotent`, but a failed or unanswered write is logged and
-    // dropped rather than retried: the next explicit pick sends a fresh one.
+    // pick made under one profile never lands on another. Writes for the same
+    // kind and key run one at a time in dispatch order, so a pick followed by
+    // "Auto" cannot be overtaken by the earlier PUT and leave a stale
+    // override. The writes are `natural_idempotent`, but a failed or
+    // unanswered write is logged and dropped rather than retried: the next
+    // explicit pick sends a fresh one.
 
     @discardableResult
     static func saveAudio(prefKey: String, request: AudioPrefRequest,
                           client: APIv2Client = SiloAPI.shared.apiV2Client,
                           tokenStore: TokenStore = .shared) -> Task<Void, Never> {
-        dispatch("audio pref save", prefKey: prefKey, tokenStore: tokenStore) { auth in
+        dispatch("audio pref save", kind: .audio, prefKey: prefKey, tokenStore: tokenStore) { auth in
             try await client.writeTrackPreference(kind: .audio, seriesId: prefKey, body: request, auth: auth)
         }
     }
@@ -175,7 +178,7 @@ enum TrackSelectionPersistence {
     static func saveSubtitle(prefKey: String, request: SubtitlePrefRequest,
                              client: APIv2Client = SiloAPI.shared.apiV2Client,
                              tokenStore: TokenStore = .shared) -> Task<Void, Never> {
-        dispatch("subtitle pref save", prefKey: prefKey, tokenStore: tokenStore) { auth in
+        dispatch("subtitle pref save", kind: .subtitle, prefKey: prefKey, tokenStore: tokenStore) { auth in
             try await client.writeTrackPreference(kind: .subtitle, seriesId: prefKey, body: request, auth: auth)
         }
     }
@@ -187,7 +190,7 @@ enum TrackSelectionPersistence {
     static func clearAudio(prefKey: String,
                            client: APIv2Client = SiloAPI.shared.apiV2Client,
                            tokenStore: TokenStore = .shared) -> Task<Void, Never> {
-        dispatch("audio pref clear", prefKey: prefKey, tokenStore: tokenStore) { auth in
+        dispatch("audio pref clear", kind: .audio, prefKey: prefKey, tokenStore: tokenStore) { auth in
             try await client.deleteTrackPreference(kind: .audio, seriesId: prefKey, auth: auth)
         }
     }
@@ -196,27 +199,62 @@ enum TrackSelectionPersistence {
     static func clearSubtitle(prefKey: String,
                               client: APIv2Client = SiloAPI.shared.apiV2Client,
                               tokenStore: TokenStore = .shared) -> Task<Void, Never> {
-        dispatch("subtitle pref clear", prefKey: prefKey, tokenStore: tokenStore) { auth in
+        dispatch("subtitle pref clear", kind: .subtitle, prefKey: prefKey, tokenStore: tokenStore) { auth in
             try await client.deleteTrackPreference(kind: .subtitle, seriesId: prefKey, auth: auth)
         }
     }
 
+    private static let writeOrder = WriteOrder()
+
     private static func dispatch(
         _ action: String,
+        kind: TrackPreferenceKind,
         prefKey: String,
         tokenStore: TokenStore,
         operation: @escaping @Sendable (CapturedOrdinaryRequestAuth) async throws -> Void
     ) -> Task<Void, Never> {
-        Task {
+        writeOrder.enqueue("\(kind.rawValue)/\(prefKey)") { previous in
+            let auth = await tokenStore.captureOrdinaryRequestAuth()
+            await previous?.value
             do {
-                guard let auth = await tokenStore.captureOrdinaryRequestAuth() else {
-                    throw HTTPError.requestIdentityChanged
-                }
+                guard let auth else { throw HTTPError.requestIdentityChanged }
                 try await operation(auth)
             } catch {
                 logger.warning(
                     "\(action, privacy: .public) failed key=\(prefKey, privacy: .public): \(String(describing: error), privacy: .public)"
                 )
+            }
+        }
+    }
+
+    /// Chains the writes for one kind and key: each write starts only after
+    /// the one dispatched before it has finished, whatever its outcome.
+    /// Callers dispatch synchronously, so dispatch order is pick order.
+    private final class WriteOrder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var tails: [String: (id: UInt64, task: Task<Void, Never>)] = [:]
+        private var nextId: UInt64 = 0
+
+        func enqueue(
+            _ key: String,
+            _ body: @escaping @Sendable (_ previous: Task<Void, Never>?) async -> Void
+        ) -> Task<Void, Never> {
+            lock.withLock {
+                nextId += 1
+                let id = nextId
+                let previous = tails[key]?.task
+                let task = Task {
+                    await body(previous)
+                    self.finish(key, id)
+                }
+                tails[key] = (id, task)
+                return task
+            }
+        }
+
+        private func finish(_ key: String, _ id: UInt64) {
+            lock.withLock {
+                if tails[key]?.id == id { tails[key] = nil }
             }
         }
     }

@@ -114,6 +114,43 @@ final class TrackPreferencesV2Tests: XCTestCase {
         XCTAssertNil(stub.requests[0].body)
     }
 
+    func testAutoAfterAPickWaitsForThePickToFinish() async throws {
+        let (api, tokens) = try await client()
+        let request = TrackSelectionPersistence.subtitleOffRequest(showForced: nil)
+        stub.hold()
+
+        let pick = TrackSelectionPersistence.saveSubtitle(prefKey: "series-order", request: request,
+                                                          client: api, tokenStore: tokens)
+        await stub.waitUntilHeld()
+        let auto = TrackSelectionPersistence.clearSubtitle(prefKey: "series-order",
+                                                           client: api, tokenStore: tokens)
+        let otherKind = TrackSelectionPersistence.clearAudio(prefKey: "series-order",
+                                                             client: api, tokenStore: tokens)
+        await otherKind.value
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(stub.methods, ["PUT", "DELETE"],
+                       "the subtitle clear must not overtake the unanswered subtitle pick; audio is not blocked")
+        XCTAssertEqual(stub.requestedPaths.last, "/api/v2/audio-prefs/series-order")
+
+        stub.release()
+        await pick.value
+        await auto.value
+        XCTAssertEqual(stub.methods, ["PUT", "DELETE", "DELETE"])
+        XCTAssertEqual(stub.requestedPaths.last, "/api/v2/subtitle-prefs/series-order")
+    }
+
+    func testAFailedWriteDoesNotBlockTheNextOneForTheSameKey() async throws {
+        let (api, tokens) = try await client()
+        stub.sequence([.failure(URLError(.networkConnectionLost)), .response(.status(204))])
+
+        let first = TrackSelectionPersistence.clearAudio(prefKey: "series-fail", client: api, tokenStore: tokens)
+        let second = TrackSelectionPersistence.clearAudio(prefKey: "series-fail", client: api, tokenStore: tokens)
+        await first.value
+        await second.value
+
+        XCTAssertEqual(stub.methods, ["DELETE", "DELETE"], "the lost write is dropped, not replayed")
+    }
+
     func testWriteCapturedForAnotherOwnerIsNeverSent() async throws {
         let (api, tokens) = try await client()
         let captured = await tokens.captureOrdinaryRequestAuth()
