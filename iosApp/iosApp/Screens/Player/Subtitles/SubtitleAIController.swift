@@ -578,9 +578,8 @@ final class SubtitleAIController {
             if snapshot.status.isTerminal {
                 handleTerminal(snapshot, isASR: isASR, generation: gen)
                 return
-            } else {
-                phase = .running
             }
+            phase = .running
         }
         // The poller gave up after repeated read failures. The job may still
         // finish on the server; say so instead of showing progress forever.

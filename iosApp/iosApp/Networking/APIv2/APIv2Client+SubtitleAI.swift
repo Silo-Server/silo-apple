@@ -75,8 +75,7 @@ extension APIv2Client {
     /// when nil). The job ID is opaque and path-segment encoded.
     func subtitleJob(id: String, auth: CapturedOrdinaryRequestAuth? = nil) async throws -> SubtitleJob {
         guard !id.isEmpty, let segment = try? catalogPathSegment(id) else { throw APIv2Error.invalidSubtitleResponse }
-        let owner: CapturedOrdinaryRequestAuth
-        if let auth { owner = auth } else { owner = try await captureSubtitleAuthority() }
+        let owner = try await subtitleJobOwner(auth)
         let wire: APIv2SubtitleJobEnvelope = try await subtitlesCall(
             "GET", path: "/api/v2/subtitles/ai/jobs/\(segment)", status: 200, auth: owner)
         return try SubtitleJob(v2: wire.job, expectedJobID: id)
@@ -87,9 +86,14 @@ extension APIv2Client {
     /// Acknowledges a cancellation request; completion may already have won.
     func cancelSubtitleJob(id: String, auth: CapturedOrdinaryRequestAuth? = nil) async throws {
         guard !id.isEmpty, let segment = try? catalogPathSegment(id) else { throw APIv2Error.invalidSubtitleResponse }
-        let owner: CapturedOrdinaryRequestAuth
-        if let auth { owner = auth } else { owner = try await captureSubtitleAuthority() }
+        let owner = try await subtitleJobOwner(auth)
         let response = try await subtitlesRequest("POST", path: "/api/v2/subtitles/ai/jobs/\(segment)/cancel", auth: owner)
         guard response.statusCode == 204 else { throw APIv2Error.httpStatus(response.statusCode) }
+    }
+
+    /// The owner that started the job when known, otherwise the current owner.
+    private func subtitleJobOwner(_ auth: CapturedOrdinaryRequestAuth?) async throws -> CapturedOrdinaryRequestAuth {
+        if let auth { return auth }
+        return try await captureSubtitleAuthority()
     }
 }
