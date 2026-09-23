@@ -113,6 +113,14 @@ final class DownloadManager {
     /// Offline progress entries a running flush has sent and is still
     /// waiting on. Dispatched entries outside this set are held.
     private var progressUploadsInFlight: Set<UUID> = []
+    /// The last complete watch-state read applied in the active scope, and
+    /// the items it covered. See `refreshWatchState()`.
+    private var lastWatchStateRead: (scope: ScopeKey, at: Date, itemIds: Set<String>)?
+    /// v2 has no per-item progress read, so a watch-state read costs one
+    /// request per 200 entries of the profile's whole history (about 70 for a
+    /// long one). Runs closer together than this reuse the last read unless a
+    /// new download or queued upload needs an item it did not cover.
+    private static let watchStateReadInterval: TimeInterval = 10 * 60
     /// Claimed offline progress whose batch provably never reached the
     /// server, keyed by the scope that claimed it, when the flush lost its
     /// scope before it could resolve them. The store file is updated too;
@@ -1341,7 +1349,8 @@ final class DownloadManager {
         reportPendingStatusEvents()
         processQueue()
         refreshStorageUsage()
-        Task { await self.enforceRetention() }
+        // `delete_watched` waits for the next monitoring run, which removes a
+        // watched episode right after it reads the watch state in full.
     }
 
     private func handleMediaFailure(taskId: Int, statusCode: Int?, resumeData: Data?, message: String) {
@@ -2169,10 +2178,17 @@ final class DownloadManager {
             registered = await syncSubscriptions(owner: owner)
         }
         await flushProgressQueue()
-        await pullProgressDeltas()
+        let watchStateOwner = await refreshWatchState()
         await reconcileWithServer(triggerPipeline: true)
         notifyMonitoringBatch(registered: registered, priorRecordIds: priorRecordIds)
-        await enforceRetention()
+        let watched = Self.retentionDeletions(
+            readApplied: watchStateOwner != nil,
+            ownerStillCurrent: watchStateOwner.map(isCurrent) == true,
+            in: file
+        )
+        for id in watched {
+            deleteDownload(id: id)
+        }
     }
 
     /// One notification per sync batch when monitoring registered new
@@ -2194,25 +2210,35 @@ final class DownloadManager {
         #endif
     }
 
-    /// Client-enforced `delete_watched`: remove completed downloads whose
-    /// series is monitored with retention enabled and whose progress is
-    /// completed. The server never deletes on-device files.
-    private func enforceRetention() async {
+    /// Client-enforced `delete_watched` at the end of a monitoring run. It
+    /// acts only on watch state this run read in full: unless the run applied
+    /// a complete read and that read's owner is still current, it removes
+    /// nothing, so a read that failed or stopped early can never remove a
+    /// file. The server never deletes on-device files.
+    nonisolated static func retentionDeletions(
+        readApplied: Bool,
+        ownerStillCurrent: Bool,
+        in file: DownloadStoreFile
+    ) -> [String] {
+        guard readApplied, ownerStillCurrent else { return [] }
+        return watchedDownloadIds(in: file)
+    }
+
+    /// The completed downloads whose series is monitored with
+    /// `delete_watched` and whose progress in `file` is completed.
+    nonisolated static func watchedDownloadIds(in file: DownloadStoreFile) -> [String] {
         let retentionSeries = Set(
             file.subscriptions.filter { $0.deleteWatched }.map { $0.seriesId }
         )
-        guard !retentionSeries.isEmpty else { return }
-        let toDelete = file.records.values.filter { record in
+        guard !retentionSeries.isEmpty else { return [] }
+        return file.records.values.filter { record in
             // Progress is keyed by the leaf item id (the episode), which for an
             // episode download is `episodeId`, not the series `contentId`.
             let leafId = record.episodeId ?? record.contentId
             return record.localStatus == .completed
                 && record.seriesId.map(retentionSeries.contains) == true
                 && file.localProgress[leafId]?.completed == true
-        }
-        for record in toDelete {
-            deleteDownload(id: record.id)
-        }
+        }.map(\.id)
     }
 
     // MARK: - Offline progress
@@ -2338,33 +2364,126 @@ final class DownloadManager {
         serverId + "\n" + profileId
     }
 
-    func pullProgressDeltas() async {
-        do {
-            let response = try await SiloAPI.shared.pullProgressDeltas(since: file.progressCursor)
-            for item in response.progress {
-                let serverTime = item.updatedAt ?? Date()
-                var entry = file.localProgress[item.mediaItemId]
-                    ?? LocalProgressEntry(
-                        position: item.positionSeconds,
-                        duration: item.durationSeconds,
-                        completed: item.completed,
-                        updatedAt: serverTime
-                    )
-                if serverTime >= entry.updatedAt {
-                    entry.position = item.positionSeconds
-                    if item.durationSeconds > 0 { entry.duration = item.durationSeconds }
-                    entry.completed = entry.completed || item.completed
-                    entry.updatedAt = serverTime
-                    file.localProgress[item.mediaItemId] = entry
-                }
-            }
-            if let cursor = response.nextCursor, !cursor.isEmpty {
-                file.progressCursor = cursor
-            }
+    // MARK: - Watch state
+
+    /// Re-reads the profile's whole watch progress through
+    /// `GET /api/v2/progress` and merges the entries of this device's
+    /// downloads and queued uploads into `localProgress`, which drives
+    /// `isWatched`, offline resume and `delete_watched`. v2 has no delta or
+    /// per-item read, so a read covers the full set; a read that fails or
+    /// stops early changes nothing and is tried again on the next run.
+    ///
+    /// With no download and nothing queued there is nothing to merge, so no
+    /// request is made. A read is also skipped when the last one in this
+    /// scope is recent and covered every item (`watchStateReadInterval`).
+    ///
+    /// Returns the owner the read was applied under, or nil when nothing was
+    /// applied.
+    private func refreshWatchState() async -> ScopeOwner? {
+        guard let owner = await captureScopeOwner() else { return nil }
+        let itemIds = Self.watchStateItemIds(in: file)
+        if itemIds.isEmpty, !file.localProgress.isEmpty {
+            // Nothing left to keep progress for.
+            file.localProgress = [:]
             persist()
-        } catch {
-            // Non-fatal; retry next foreground.
         }
+        let last = lastWatchStateRead.flatMap { $0.scope == owner.scope ? $0 : nil }
+        guard Self.watchStateReadNeeded(itemIds: itemIds, lastReadAt: last?.at, lastItemIds: last?.itemIds) else {
+            return nil
+        }
+        let startedAt = Date()
+        let outcome: Result<[APIv2ProgressEntry], Error>
+        do {
+            outcome = .success(try await SiloAPI.shared.apiV2Client.listAllProgress(auth: owner.auth))
+        } catch {
+            Self.logger.warning("watch state read failed: \(String(describing: error), privacy: .public)")
+            outcome = .failure(error)
+        }
+        guard let merged = Self.applyWatchStateRead(
+            outcome,
+            ownerStillCurrent: isCurrent(owner),
+            to: file,
+            readStartedAt: startedAt
+        ) else { return nil }
+        lastWatchStateRead = (owner.scope, startedAt, itemIds)
+        if merged != file.localProgress {
+            file.localProgress = merged
+            persist()
+        }
+        return owner
+    }
+
+    /// Whether a monitoring run reads the watch state: only when some item
+    /// needs it, and not again within `watchStateReadInterval` of a read that
+    /// covered every item.
+    nonisolated static func watchStateReadNeeded(
+        itemIds: Set<String>,
+        lastReadAt: Date?,
+        lastItemIds: Set<String>?,
+        now: Date = Date()
+    ) -> Bool {
+        guard !itemIds.isEmpty else { return false }
+        guard let lastReadAt, let lastItemIds else { return true }
+        return now.timeIntervalSince(lastReadAt) >= watchStateReadInterval || !itemIds.isSubset(of: lastItemIds)
+    }
+
+    /// The items whose watch state this device keeps: the leaf item of every
+    /// download record and every item with a queued offline upload.
+    nonisolated static func watchStateItemIds(in file: DownloadStoreFile) -> Set<String> {
+        Set(file.records.values.map(\.leafMediaItemId)).union(file.progressQueue.map(\.mediaItemId))
+    }
+
+    /// The watch state one read leaves in `file`: the merge of a complete
+    /// read whose owner is still current, or nil when the read failed,
+    /// stopped early or outlived its owner, in which case nothing changes.
+    nonisolated static func applyWatchStateRead(
+        _ outcome: Result<[APIv2ProgressEntry], Error>,
+        ownerStillCurrent: Bool,
+        to file: DownloadStoreFile,
+        readStartedAt: Date
+    ) -> [String: LocalProgressEntry]? {
+        guard ownerStillCurrent, case .success(let entries) = outcome else { return nil }
+        return mergeProgress(
+            file.localProgress,
+            read: entries,
+            readStartedAt: readStartedAt,
+            queuedItemIds: Set(file.progressQueue.map(\.mediaItemId)),
+            keptItemIds: watchStateItemIds(in: file)
+        )
+    }
+
+    /// Merges a complete progress read into the local entries: for each item
+    /// the side with the later `updated_at` wins whole, `completed` included,
+    /// so an unwatch on another device reaches this one. An entry the read
+    /// does not hold has no progress on the server (cleared, or marked
+    /// unwatched) and is dropped, unless this device wrote it during the read
+    /// or still has it queued for upload. Only items in `keptItemIds` (this
+    /// device's downloads and queued uploads) are kept at all, so the rest of
+    /// the profile's history is never stored.
+    nonisolated static func mergeProgress(
+        _ local: [String: LocalProgressEntry],
+        read: [APIv2ProgressEntry],
+        readStartedAt: Date,
+        queuedItemIds: Set<String>,
+        keptItemIds: Set<String>
+    ) -> [String: LocalProgressEntry] {
+        var merged = local.filter { id, entry in
+            keptItemIds.contains(id) && (queuedItemIds.contains(id) || entry.updatedAt >= readStartedAt)
+        }
+        for item in read where keptItemIds.contains(item.mediaItemId) {
+            if let existing = local[item.mediaItemId], existing.updatedAt > item.updatedAt {
+                merged[item.mediaItemId] = existing
+                continue
+            }
+            let duration = item.durationSeconds > 0 ? item.durationSeconds : (local[item.mediaItemId]?.duration ?? 0)
+            merged[item.mediaItemId] = LocalProgressEntry(
+                position: item.positionSeconds,
+                duration: duration,
+                completed: item.completed,
+                updatedAt: item.updatedAt
+            )
+        }
+        return merged
     }
 
     // MARK: - Helpers

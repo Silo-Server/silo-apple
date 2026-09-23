@@ -1,5 +1,62 @@
 import Foundation
 
+// MARK: listProgress (profile_scoped)
+
+extension APIv2Client {
+    /// Entries per progress page (the server maximum), and pages per read.
+    /// One read covers at most 20,000 entries; a longer history fails instead
+    /// of being truncated.
+    static let progressPageLimit = 200
+    static let progressMaxPages = 100
+
+    /// Reads every progress entry of the owner in `auth`, page by page under
+    /// that owner. v2 has no delta read, so this is the whole set. A read
+    /// that ends early, repeats a cursor or an item, or overruns the page
+    /// bound throws: the caller treats an item missing from a finished read
+    /// as having no progress on the server, so it must never see a prefix.
+    func listAllProgress(auth: CapturedOrdinaryRequestAuth) async throws -> [APIv2ProgressEntry] {
+        try await gate()
+        guard let profile = auth.profileId, !profile.isEmpty,
+              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        let identity = Self.requestIdentity(auth, profile: profile)
+        var entries: [APIv2ProgressEntry] = []
+        var ids: Set<String> = []
+        var cursors: Set<String> = []
+        var cursor: String?
+        for _ in 0..<Self.progressMaxPages {
+            var query = ["limit": String(Self.progressPageLimit)]
+            if let cursor { query["cursor"] = cursor }
+            let response = try await tokenStore.withOwnerFence(auth) {
+                try await mapErrors {
+                    try await http.requestData(method: "GET", path: "/api/v2/progress", query: query,
+                        requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+                }
+            }
+            guard response.statusCode == 200 else { throw APIv2Error.httpStatus(response.statusCode) }
+            let page = try HTTPClient.makeJSONDecoder().decode(APIv2ProgressPage.self, from: response.data)
+            guard page.items.count <= Self.progressPageLimit else { throw ProgressReadError.incompleteRead }
+            for entry in page.items {
+                guard !entry.mediaItemId.isEmpty, ids.insert(entry.mediaItemId).inserted else {
+                    throw ProgressReadError.incompleteRead
+                }
+                entries.append(entry)
+            }
+            guard page.page.hasMore else {
+                guard page.page.nextCursor?.isEmpty ?? true else { throw ProgressReadError.incompleteRead }
+                return entries
+            }
+            guard let next = page.page.nextCursor, !next.isEmpty, !page.items.isEmpty,
+                  cursors.insert(next).inserted else {
+                throw ProgressReadError.incompleteRead
+            }
+            cursor = next
+        }
+        throw ProgressReadError.incompleteRead
+    }
+}
+
 // MARK: syncProgress (profile_scoped, non_retryable)
 
 extension APIv2Client {
