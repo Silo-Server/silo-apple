@@ -28,6 +28,7 @@ struct PlaybackSettingsView: View {
             }
             streamingSection
             behaviorSection
+            SeekIntervalSettingsSections()
             resetSection
         }
         .settingsListChrome()

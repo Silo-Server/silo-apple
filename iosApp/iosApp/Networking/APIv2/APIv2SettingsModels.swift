@@ -8,7 +8,8 @@ import Foundation
 /// the opaque digest of this capability document (it changes whenever any
 /// member does, so it is never compared as a number), while
 /// `manifestRevision` is the settings manifest revision the server resolves
-/// against, the number the generated `SettingKey.revision` is compared with.
+/// against, the number ``SettingKey/minimumServerRevision`` and each key's
+/// ``SettingKey/introducedIn`` are compared with.
 ///
 /// `supports_idempotent_writes` is deliberately not decoded: v2 advertises it
 /// while offering no mutation-id replay, so nothing may gate on it.
@@ -30,11 +31,21 @@ struct APIv2SettingsContractCapabilities: Decodable, Hashable, Sendable {
     /// The capability gate every v2 capability document shares.
     var isAvailable: Bool { allowed && state == "available" }
 
-    /// True when this build was generated from a newer manifest than the
-    /// server serves: the client must hide definitions the server does not
-    /// know rather than offer a choice it will refuse.
-    var contractIsAheadOfServer: Bool {
-        SettingKey.revision > manifestRevision
+    /// True when the server's manifest is older than any this build
+    /// supports. Newer servers, and older ones at or above the baseline, are
+    /// usable; individual features gate on ``supports(_:)``.
+    var predatesMinimumRevision: Bool {
+        manifestRevision < SettingKey.minimumServerRevision
+    }
+
+    /// Whether the server's contract defines `key` and resolves it in batched
+    /// reads — the same test the web client applies before offering a
+    /// setting. Clients must hide definitions the server does not know rather
+    /// than offer a choice it will refuse.
+    func supports(_ key: SettingKey) -> Bool {
+        isAvailable
+            && key.isServed(atRevision: manifestRevision)
+            && supportsBatchedEffective
     }
 
     /// Whether synced navigation and card presentation can run for

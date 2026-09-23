@@ -4,7 +4,7 @@ import SwiftUI
 /// Touch-driven overlay used on iOS/iPadOS. Layout (see
 /// docs/ios-player-redesign/mockups.html):
 /// - Top strip: close, title block (series eyebrow + episode title)
-/// - Center: skip back 10s, play/pause, skip forward 10s
+/// - Center: skip back, play/pause, skip forward (profile video intervals)
 /// - Bottom stack: time row (elapsed / status chips / remaining), capsule
 ///   scrubber with buffered range + intro tint + chapter ticks + scrub
 ///   preview bubble, then a labeled action row (Quality menu, Audio &
@@ -266,15 +266,15 @@ struct MobilePlayerControls: View {
     private var centerCluster: some View {
         HStack(spacing: 36) {
             Button {
-                viewModel.skipBackward(10)
+                viewModel.skipBackward()
             } label: {
-                Image(systemName: "gobackward.10")
+                Image(systemName: SeekIntervalLabel.symbolName(.backward, seconds: viewModel.skipIntervals.backward))
                     .font(.system(size: 20, weight: .medium))
                     .foregroundStyle(.white)
                     .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
             }
             .buttonStyle(MobilePlayerGlassButtonStyle())
-            .accessibilityLabel("Skip Back 10 Seconds")
+            .accessibilityLabel(SeekIntervalLabel.accessibilityLabel(.backward, seconds: viewModel.skipIntervals.backward))
 
             Button {
                 viewModel.togglePlayPause()
@@ -291,15 +291,15 @@ struct MobilePlayerControls: View {
             .accessibilityLabel(viewModel.isPlaying ? "Pause" : "Play")
 
             Button {
-                viewModel.skipForward(10)
+                viewModel.skipForward()
             } label: {
-                Image(systemName: "goforward.10")
+                Image(systemName: SeekIntervalLabel.symbolName(.forward, seconds: viewModel.skipIntervals.forward))
                     .font(.system(size: 20, weight: .medium))
                     .foregroundStyle(.white)
                     .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
             }
             .buttonStyle(MobilePlayerGlassButtonStyle())
-            .accessibilityLabel("Skip Forward 10 Seconds")
+            .accessibilityLabel(SeekIntervalLabel.accessibilityLabel(.forward, seconds: viewModel.skipIntervals.forward))
         }
     }
 
@@ -458,8 +458,8 @@ struct MobilePlayerControls: View {
             )
             .accessibilityAdjustableAction { direction in
                 switch direction {
-                case .increment: viewModel.skipForward(10)
-                case .decrement: viewModel.skipBackward(10)
+                case .increment: viewModel.skipForward()
+                case .decrement: viewModel.skipBackward()
                 @unknown default: break
                 }
             }

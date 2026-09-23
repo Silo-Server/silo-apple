@@ -51,8 +51,11 @@ struct MacPlayerControls: View {
             MacPlayerTimeline(viewModel: viewModel)
 
             HStack(spacing: 10) {
-                iconButton("gobackward.15", help: "Back 15 seconds") {
-                    viewModel.skipBackward(15)
+                iconButton(
+                    SeekIntervalLabel.symbolName(.backward, seconds: viewModel.skipIntervals.backward),
+                    help: SeekIntervalLabel.accessibilityLabel(.backward, seconds: viewModel.skipIntervals.backward)
+                ) {
+                    viewModel.skipBackward()
                 }
 
                 Button {
@@ -70,8 +73,11 @@ struct MacPlayerControls: View {
                 )
                 .help(viewModel.isPlaying ? "Pause" : "Play")
 
-                iconButton("goforward.15", help: "Forward 15 seconds") {
-                    viewModel.skipForward(15)
+                iconButton(
+                    SeekIntervalLabel.symbolName(.forward, seconds: viewModel.skipIntervals.forward),
+                    help: SeekIntervalLabel.accessibilityLabel(.forward, seconds: viewModel.skipIntervals.forward)
+                ) {
+                    viewModel.skipForward()
                 }
 
                 Divider()

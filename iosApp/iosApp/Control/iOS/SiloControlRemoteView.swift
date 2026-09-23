@@ -125,6 +125,7 @@ struct SiloControlRemoteView: View {
                 posterURL: artwork.posterURL ?? artwork.backdropURL,
                 onCommand: { controller.send($0) },
                 onTogglePlayPause: { controller.togglePlayPauseOptimistic() },
+                skipIntervals: controller.skipIntervals,
                 onSeek: { controller.seekOptimistic(to: $0) },
                 onPlayNext: { controller.playNext() },
                 onSetVolume: { controller.setVolume($0) },
@@ -215,6 +216,8 @@ private struct RemoteNowPlayingContent: View {
     let posterURL: String?
     let onCommand: (SiloControlCommand) -> Void
     let onTogglePlayPause: () -> Void
+    /// The profile's video intervals, or 10/30 on servers without them.
+    let skipIntervals: SeekIntervalPair
     let onSeek: (Double) -> Void
     let onPlayNext: () -> Void
     let onSetVolume: (Double) -> Void
@@ -360,6 +363,18 @@ private struct RemoteNowPlayingContent: View {
         return "-" + PlayerTimeFormatter.formatHMS(max(0, state.duration - live))
     }
 
+    /// The clock already shows the last optimistic seek, so repeated presses
+    /// build on the requested target.
+    private func skip(_ direction: SeekDirection) {
+        let seconds = Double(skipIntervals[direction])
+        onSeek(RelativeSeek.target(
+            current: clock.displayTime(),
+            pending: nil,
+            delta: direction == .backward ? -seconds : seconds,
+            duration: state.duration
+        ))
+    }
+
     private var transport: some View {
         HStack(spacing: 28) {
             if state.hasNextEpisode {
@@ -369,11 +384,12 @@ private struct RemoteNowPlayingContent: View {
             }
 
             Button {
-                onSeek(max(0, clock.displayTime() - 10))
+                skip(.backward)
             } label: {
-                Image(systemName: "gobackward.10").font(.system(size: 30, weight: .regular))
+                Image(systemName: SeekIntervalLabel.symbolName(.backward, seconds: skipIntervals.backward))
+                    .font(.system(size: 30, weight: .regular))
             }
-            .accessibilityLabel("Back 10 seconds")
+            .accessibilityLabel(SeekIntervalLabel.accessibilityLabel(.backward, seconds: skipIntervals.backward))
 
             Button {
                 onTogglePlayPause()
@@ -392,13 +408,12 @@ private struct RemoteNowPlayingContent: View {
             .accessibilityLabel(clock.isPlaying() ? "Pause" : "Play")
 
             Button {
-                let base = clock.displayTime()
-                let target = state.duration > 0 ? min(state.duration, base + 30) : base + 30
-                onSeek(target)
+                skip(.forward)
             } label: {
-                Image(systemName: "goforward.30").font(.system(size: 30, weight: .regular))
+                Image(systemName: SeekIntervalLabel.symbolName(.forward, seconds: skipIntervals.forward))
+                    .font(.system(size: 30, weight: .regular))
             }
-            .accessibilityLabel("Forward 30 seconds")
+            .accessibilityLabel(SeekIntervalLabel.accessibilityLabel(.forward, seconds: skipIntervals.forward))
 
             if state.hasNextEpisode {
                 Button { onPlayNext() } label: {
@@ -641,6 +656,7 @@ private extension SiloControlPlaybackState {
             posterURL: nil,
             onCommand: { _ in },
             onTogglePlayPause: {},
+            skipIntervals: SeekIntervalSurface.videoRemoteControl.legacy,
             onSeek: { _ in },
             onPlayNext: {},
             onSetVolume: { _ in },

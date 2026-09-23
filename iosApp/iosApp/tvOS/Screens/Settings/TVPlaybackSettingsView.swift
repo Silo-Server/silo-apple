@@ -8,6 +8,7 @@ struct TVPlaybackSettingsPane: View {
     @Bindable var viewModel: SettingsViewModel
     let detailFocus: FocusState<TVSettingsDetailFocus?>.Binding
     let presentPicker: (TVSettingsPickerRequest) -> Void
+    @State private var seekIntervals = SeekIntervalPreferences.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -23,8 +24,11 @@ struct TVPlaybackSettingsPane: View {
             if viewModel.playbackChangeWasRejected {
                 rejectedChangeRows
             }
+            skipIntervalSection(media: .video)
+            skipIntervalSection(media: .audiobook)
             resetSection
         }
+        .task { await seekIntervals.refresh() }
     }
 
     // MARK: - Sections
@@ -143,6 +147,57 @@ struct TVPlaybackSettingsPane: View {
             let value = !viewModel.skipCredits
             viewModel.skipCredits = value
             Task { await viewModel.setSkipCredits(value) }
+        }
+    }
+
+    /// "Video" and "Audiobooks" groups. The values belong to the profile on
+    /// the server; the rows stay visible but unfocusable when this server
+    /// cannot store them, and show the interval playback uses instead.
+    @ViewBuilder
+    private func skipIntervalSection(media: SeekMedia) -> some View {
+        TVSettingsSectionHeader(media == .video ? "VIDEO" : "AUDIOBOOKS")
+
+        ForEach(SeekDirection.allCases, id: \.self) { direction in
+            TVSettingsPickerRow(
+                title: direction == .backward ? "Skip Back" : "Skip Forward",
+                value: SeekIntervalLabel.choiceLabel(
+                    seekIntervals.seconds(direction, for: Self.surface(media))
+                )
+            ) { showPicker(.skipInterval(media, direction)) }
+            .focused(detailFocus, equals: Self.focus(media, direction))
+            .disabled(!seekIntervals.allowsEditing)
+        }
+
+        TVSettingsFooter(skipIntervalFooter(media: media))
+    }
+
+    private func skipIntervalFooter(media: SeekMedia) -> String {
+        var lines = [
+            media == .video
+                ? "Used by clicks and swipes on the Siri Remote and the on-screen skip buttons. Applies to every device signed in to this profile."
+                : "Used by the audiobook player's skip buttons. Applies to every device signed in to this profile.",
+        ]
+        if let status = seekIntervals.statusMessage {
+            lines.append(status)
+        }
+        for direction in SeekDirection.allCases {
+            if let error = seekIntervals.writeErrors[SeekIntervalContract.key(media, direction)] {
+                lines.append(error)
+            }
+        }
+        return lines.joined(separator: " ")
+    }
+
+    private static func surface(_ media: SeekMedia) -> SeekIntervalSurface {
+        media == .video ? .videoPlayer : .audiobook
+    }
+
+    private static func focus(_ media: SeekMedia, _ direction: SeekDirection) -> TVSettingsDetailFocus {
+        switch (media, direction) {
+        case (.video, .backward): return .playbackVideoSkipBack
+        case (.video, .forward): return .playbackVideoSkipForward
+        case (.audiobook, .backward): return .playbackAudiobookSkipBack
+        case (.audiobook, .forward): return .playbackAudiobookSkipForward
         }
     }
 
@@ -304,10 +359,26 @@ struct TVPlaybackSettingsPane: View {
                 ),
                 returnFocus: .playbackIntroSkipMode
             )
+        case .skipInterval(let media, let direction):
+            TVSettingsPickerRequest(
+                id: kind.id,
+                title: "\(media == .video ? "Video" : "Audiobook") \(direction == .backward ? "Skip Back" : "Skip Forward")",
+                options: SeekIntervalContract.choices.map {
+                    TVSettingsOption(id: String($0), label: SeekIntervalLabel.choiceLabel($0))
+                },
+                selection: Binding(
+                    get: { String(seekIntervals.seconds(direction, for: Self.surface(media))) },
+                    set: { value in
+                        guard let seconds = Int(value) else { return }
+                        seekIntervals.setInterval(seconds, media: media, direction: direction)
+                    }
+                ),
+                returnFocus: Self.focus(media, direction)
+            )
         }
     }
 
-    enum PickerKind: String, Identifiable {
+    enum PickerKind: Identifiable {
         case quality
         case audioLanguage
         case bufferAhead
@@ -315,8 +386,21 @@ struct TVPlaybackSettingsPane: View {
         case deinterlaceFieldRate
         case nextUpPrompt
         case introSkipMode
+        case skipInterval(SeekMedia, SeekDirection)
 
-        var id: String { rawValue }
+        var id: String {
+            switch self {
+            case .quality: return "quality"
+            case .audioLanguage: return "audioLanguage"
+            case .bufferAhead: return "bufferAhead"
+            case .deinterlaceMode: return "deinterlaceMode"
+            case .deinterlaceFieldRate: return "deinterlaceFieldRate"
+            case .nextUpPrompt: return "nextUpPrompt"
+            case .introSkipMode: return "introSkipMode"
+            case .skipInterval(let media, let direction):
+                return "skipInterval.\(media.rawValue).\(direction.rawValue)"
+            }
+        }
     }
 }
 #endif

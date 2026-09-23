@@ -750,6 +750,11 @@ final class PictureInPictureCoordinator {
             didTransitionToRenderSize newRenderSize: CMVideoDimensions
         ) {}
 
+        /// Picture in Picture cannot follow the profile's skip intervals.
+        /// AVKit draws the skip glyphs and chooses `skipInterval`, and it has
+        /// no public API to set either. The native `AVPlayerLayer` route
+        /// seeks inside AVKit without calling this at all. Honor the system
+        /// interval so the jump matches the glyph the user pressed.
         func pictureInPictureController(
             _ pictureInPictureController: AVPictureInPictureController,
             skipByInterval skipInterval: CMTime,

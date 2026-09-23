@@ -21,11 +21,14 @@ extension SiloAPI {
     /// What the connected server's settings contract supports.
     ///
     /// Returns a typed result rather than throwing, because the interesting
-    /// failure is not an error: a server may be v1-only or serve an older
-    /// manifest revision than this build. The UI must say "this server needs
-    /// an upgrade" rather than render an empty or incomplete settings screen,
-    /// so that case is ``SettingsCapabilitiesResult/serverUpgradeRequired``
-    /// instead of dissolving into the generic error path.
+    /// failure is not an error: a server may be v1-only or serve a manifest
+    /// revision below ``SettingKey/minimumServerRevision``. The UI must say
+    /// "this server needs an upgrade" rather than render an empty or
+    /// incomplete settings screen, so that case is
+    /// ``SettingsCapabilitiesResult/serverUpgradeRequired`` instead of
+    /// dissolving into the generic error path. A server at or above the
+    /// minimum but behind this build is still `available`; features built on
+    /// newer keys check ``APIv2SettingsContractCapabilities/supports(_:)``.
     ///
     /// Needs no profile: the contract is the same for every profile on the
     /// server, so it can be probed before profile selection.
@@ -37,7 +40,7 @@ extension SiloAPI {
                 expectedIdentity: requestIdentity
             )
             if capabilities.isAvailable {
-                return capabilities.contractIsAheadOfServer ? .serverUpgradeRequired : .available(capabilities)
+                return capabilities.predatesMinimumRevision ? .serverUpgradeRequired : .available(capabilities)
             }
             // `unsupported` means this server build cannot provide the
             // settings contract; any other state is an answer about this
@@ -95,7 +98,10 @@ extension SiloAPI {
                 profileID: profile,
                 expectedIdentity: requestIdentity
             )
-            guard !decoded.contractIsAheadOfServer else {
+            // Per key rather than against this build's newest revision: an
+            // older server still resolves the keys it defines, while a key it
+            // never heard of would come back as a missing row.
+            guard !decoded.predatesMinimumRevision, decoded.servesAll(keys) else {
                 throw SettingsAPIError.serverUpgradeRequired
             }
             return decoded
