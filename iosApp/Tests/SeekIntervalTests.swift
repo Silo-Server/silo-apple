@@ -357,6 +357,54 @@ final class SeekIntervalPreferencesTests: XCTestCase {
         XCTAssertTrue(store.allowsEditing)
     }
 
+    func testAChoiceMadeDuringTheProbeSurvivesAStaleRead() async {
+        transport.effective = ["player.video_skip_forward_seconds": 45]
+        let store = makeStore()
+        await store.refresh()
+
+        transport.onCapabilityProbe = {
+            store.setInterval(60, media: .video, direction: .forward)
+        }
+        // The read answers 45, then the write settles before the answer lands.
+        transport.beforeEffectiveReadReturns = { await store.waitForPendingWrites() }
+        await store.refresh()
+        await store.waitForPendingWrites()
+
+        XCTAssertEqual(transport.writes.map(\.value), [.int(60)])
+        XCTAssertEqual(store.seconds(.forward, for: .videoPlayer), 60)
+    }
+
+    func testAWritePendingWhenARefreshStartsIsNotOverwrittenByIt() async {
+        transport.effective = ["player.video_skip_back_seconds": 10]
+        let store = makeStore()
+        await store.refresh()
+
+        store.setInterval(30, media: .video, direction: .backward)
+        transport.beforeEffectiveReadReturns = { await store.waitForPendingWrites() }
+        await store.refresh()
+
+        XCTAssertEqual(store.seconds(.backward, for: .videoPlayer), 30)
+    }
+
+    func testTheCacheHoldsOnlyServerConfirmedValues() async {
+        let store = makeStore()
+        await store.refresh()
+
+        transport.failingKeys = [.playerVideoSkipForwardSeconds]
+        store.setInterval(90, media: .video, direction: .forward)
+        // Shown at once, but a relaunch before the write settles must not
+        // treat it as the profile's setting.
+        XCTAssertEqual(store.seconds(.forward, for: .videoPlayer), 90)
+        XCTAssertEqual(makeStore().seconds(.forward, for: .videoPlayer), 30)
+        await store.waitForPendingWrites()
+        XCTAssertEqual(makeStore().seconds(.forward, for: .videoPlayer), 30)
+
+        transport.failingKeys = []
+        store.setInterval(45, media: .video, direction: .forward)
+        await store.waitForPendingWrites()
+        XCTAssertEqual(makeStore().seconds(.forward, for: .videoPlayer), 45)
+    }
+
     func testReadFailureKeepsTheCachedAnswer() async {
         transport.effective = ["player.audiobook_skip_back_seconds": 90]
         await makeStore().refresh()
@@ -463,6 +511,9 @@ private final class FakeSeekIntervalTransport: SeekIntervalTransport, @unchecked
     var failingKeys: Set<SettingKey> = []
     /// Runs inside the capability probe, while a refresh is waiting on it.
     var onCapabilityProbe: (@MainActor () -> Void)?
+    /// Runs after the effective read has captured its answer and before it
+    /// returns, so a test can let a write settle behind a stale read.
+    var beforeEffectiveReadReturns: (@MainActor () async -> Void)?
 
     private(set) var capabilityProbes = 0
     private(set) var effectiveReads = 0
@@ -484,13 +535,17 @@ private final class FakeSeekIntervalTransport: SeekIntervalTransport, @unchecked
         keys: [SettingKey],
         requestIdentity: HTTPRequestIdentity
     ) async throws -> EffectiveSettingValuesResponse {
-        try await MainActor.run {
+        let response = try await MainActor.run {
             effectiveReads += 1
             requestedKeys = keys
             readIdentities.append(requestIdentity)
             if let effectiveError { throw effectiveError }
             return try effectiveResponse(effective)
         }
+        if let hook = await MainActor.run(body: { beforeEffectiveReadReturns }) {
+            await hook()
+        }
+        return response
     }
 
     nonisolated func putProfileValue(

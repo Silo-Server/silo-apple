@@ -132,6 +132,9 @@ final class SeekIntervalPreferences {
     @ObservationIgnored private var refreshSequence = 0
     @ObservationIgnored private var localMutationRevision = 0
     @ObservationIgnored private var pendingWriteCount = 0
+    /// Counts writes that finished, successfully or not. A read that saw a
+    /// write settle may carry the value from before that write.
+    @ObservationIgnored private var settledWriteCount = 0
     @ObservationIgnored private var writeTail: Task<Void, Never>?
     @ObservationIgnored private var observers: [Observer] = []
 
@@ -207,6 +210,10 @@ final class SeekIntervalPreferences {
         loadCache(for: context.cacheKey)
         refreshSequence += 1
         let sequence = refreshSequence
+        // Snapshot before the first suspension: a choice made, or a write that
+        // settles, at any point during this refresh is newer than its answer.
+        let mutationRevision = localMutationRevision
+        let settledWrites = settledWriteCount
         // `loadCache` already reset the state if the identity changed.
         if syncState != .supported {
             syncState = .checking
@@ -228,22 +235,24 @@ final class SeekIntervalPreferences {
             return
         }
 
-        let mutationRevision = localMutationRevision
         do {
             let response = try await transport.effectiveValues(
                 keys: SeekIntervalContract.keys,
                 requestIdentity: identity
             )
             guard refreshSequence == sequence, isCurrent(context) else { return }
-            // A write made while this read was in flight is newer than the
+            // A write made or settled while this refresh ran is newer than the
             // answer; keep it and let the next refresh reconcile.
-            guard localMutationRevision == mutationRevision, pendingWriteCount == 0 else { return }
+            guard localMutationRevision == mutationRevision,
+                  settledWriteCount == settledWrites,
+                  pendingWriteCount == 0 else { return }
             let resolved = SeekIntervalContract.resolve(response)
             for key in SeekIntervalContract.keys {
                 confirmed[key] = Self.value(for: key, in: resolved)
             }
             writeErrors = [:]
             apply(resolved, cacheKey: context.cacheKey)
+            persistConfirmed(cacheKey: context.cacheKey)
         } catch {
             guard refreshSequence == sequence, isCurrent(context) else { return }
             if SettingsAPIError.from(error) == .serverUpgradeRequired {
@@ -314,6 +323,7 @@ final class SeekIntervalPreferences {
     ) async {
         defer {
             pendingWriteCount = max(0, pendingWriteCount - 1)
+            settledWriteCount += 1
             isSaving = pendingWriteCount > 0
         }
         do {
@@ -324,6 +334,7 @@ final class SeekIntervalPreferences {
             )
             guard isCurrent(context) else { return }
             confirmed[key] = seconds
+            persistConfirmed(cacheKey: context.cacheKey)
             if latestWriteGeneration[key] == generation {
                 writeErrors[key] = nil
             }
@@ -338,15 +349,32 @@ final class SeekIntervalPreferences {
 
     // MARK: Cache and identity
 
+    /// Shows `next` on every surface. Only ``persistConfirmed(cacheKey:)``
+    /// writes the cache, so an optimistic choice never outlives a relaunch.
     private func apply(_ next: SeekIntervalValues?, cacheKey: String) {
         let changed = values != next
         values = next
-        if let next, let data = try? JSONEncoder().encode(Cache(values: next)) {
-            defaults.set(data, forKey: cacheKey)
-        } else if next == nil {
+        if next == nil {
             defaults.removeObject(forKey: cacheKey)
         }
         if changed { notifyObservers() }
+    }
+
+    /// Caches the values the server confirmed. A choice still in flight is
+    /// shown but not cached: if the app ends before the write settles, the
+    /// next offline launch must not treat it as the profile's setting.
+    private func persistConfirmed(cacheKey: String) {
+        guard var cached = values else { return }
+        for media in SeekMedia.allCases {
+            for direction in SeekDirection.allCases {
+                if let seconds = confirmed[SeekIntervalContract.key(media, direction)] {
+                    cached[media][direction] = seconds
+                }
+            }
+        }
+        if let data = try? JSONEncoder().encode(Cache(values: cached)) {
+            defaults.set(data, forKey: cacheKey)
+        }
     }
 
     private func clearServerValues(cacheKey: String) {
