@@ -386,6 +386,31 @@ final class SeekIntervalPreferencesTests: XCTestCase {
         XCTAssertEqual(store.seconds(.backward, for: .videoPlayer), 30)
     }
 
+    func testAnotherProfilesQueuedWriteDoesNotBlockThisProfilesRefresh() async {
+        let store = makeStore()
+        await store.refresh()
+        let gate = WriteGate()
+        transport.beforeWrite = { await gate.wait() }
+        store.setInterval(60, media: .video, direction: .forward)
+        XCTAssertTrue(store.isSaving)
+
+        identity = HTTPRequestIdentity(
+            serverId: "server-1",
+            serverURL: "https://silo.example",
+            profileId: "profile-b",
+            clientFamily: "ios"
+        )
+        transport.effective = ["player.video_skip_back_seconds": 5]
+        await store.refresh()
+
+        XCTAssertEqual(store.seconds(.backward, for: .videoPlayer), 5)
+        XCTAssertTrue(store.allowsEditing)
+        XCTAssertFalse(store.isSaving)
+
+        await gate.open()
+        await store.waitForPendingWrites()
+    }
+
     func testTheCacheHoldsOnlyServerConfirmedValues() async {
         let store = makeStore()
         await store.refresh()
@@ -472,6 +497,23 @@ final class SeekIntervalPreferencesTests: XCTestCase {
 
 // MARK: - Fixtures
 
+/// Holds writes in flight until a test opens it.
+private actor WriteGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        waiters.forEach { $0.resume() }
+        waiters = []
+    }
+}
+
 private func seekCapabilities(
     revision: Int,
     state: String = "available",
@@ -514,6 +556,8 @@ private final class FakeSeekIntervalTransport: SeekIntervalTransport, @unchecked
     /// Runs after the effective read has captured its answer and before it
     /// returns, so a test can let a write settle behind a stale read.
     var beforeEffectiveReadReturns: (@MainActor () async -> Void)?
+    /// Runs before a write reaches the server, so a test can hold it in flight.
+    var beforeWrite: (@MainActor () async -> Void)?
 
     private(set) var capabilityProbes = 0
     private(set) var effectiveReads = 0
@@ -553,6 +597,9 @@ private final class FakeSeekIntervalTransport: SeekIntervalTransport, @unchecked
         value: SettingJSONValue,
         requestIdentity: HTTPRequestIdentity
     ) async throws {
+        if let hook = await MainActor.run(body: { beforeWrite }) {
+            await hook()
+        }
         try await MainActor.run {
             writes.append(Write(key: key, value: value, identity: requestIdentity))
             if failingKeys.contains(key) {

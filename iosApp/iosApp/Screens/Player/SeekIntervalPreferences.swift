@@ -131,10 +131,13 @@ final class SeekIntervalPreferences {
     @ObservationIgnored private var latestWriteGeneration: [SettingKey: Int] = [:]
     @ObservationIgnored private var refreshSequence = 0
     @ObservationIgnored private var localMutationRevision = 0
-    @ObservationIgnored private var pendingWriteCount = 0
-    /// Counts writes that finished, successfully or not. A read that saw a
-    /// write settle may carry the value from before that write.
-    @ObservationIgnored private var settledWriteCount = 0
+    /// Writes still in flight, per profile cache key.
+    @ObservationIgnored private var pendingWrites: [String: Int] = [:]
+    /// Writes that finished, successfully or not, per profile cache key. A
+    /// read that saw one of its profile's writes settle may carry the value
+    /// from before that write. Keyed so another profile's queued write never
+    /// fences this profile's refresh.
+    @ObservationIgnored private var settledWrites: [String: Int] = [:]
     @ObservationIgnored private var writeTail: Task<Void, Never>?
     @ObservationIgnored private var observers: [Observer] = []
 
@@ -213,7 +216,7 @@ final class SeekIntervalPreferences {
         // Snapshot before the first suspension: a choice made, or a write that
         // settles, at any point during this refresh is newer than its answer.
         let mutationRevision = localMutationRevision
-        let settledWrites = settledWriteCount
+        let settledBefore = settledWrites[context.cacheKey, default: 0]
         // `loadCache` already reset the state if the identity changed.
         if syncState != .supported {
             syncState = .checking
@@ -244,8 +247,8 @@ final class SeekIntervalPreferences {
             // A write made or settled while this refresh ran is newer than the
             // answer; keep it and let the next refresh reconcile.
             guard localMutationRevision == mutationRevision,
-                  settledWriteCount == settledWrites,
-                  pendingWriteCount == 0 else { return }
+                  settledWrites[context.cacheKey, default: 0] == settledBefore,
+                  pendingWrites[context.cacheKey, default: 0] == 0 else { return }
             let resolved = SeekIntervalContract.resolve(response)
             for key in SeekIntervalContract.keys {
                 confirmed[key] = Self.value(for: key, in: resolved)
@@ -290,7 +293,7 @@ final class SeekIntervalPreferences {
         writeErrors[key] = nil
         apply(next, cacheKey: context.cacheKey)
 
-        pendingWriteCount += 1
+        pendingWrites[context.cacheKey, default: 0] += 1
         isSaving = true
         let prior = writeTail
         // Serialized so two quick choices for one key reach the server in
@@ -322,9 +325,9 @@ final class SeekIntervalPreferences {
         context: OperationContext
     ) async {
         defer {
-            pendingWriteCount = max(0, pendingWriteCount - 1)
-            settledWriteCount += 1
-            isSaving = pendingWriteCount > 0
+            pendingWrites[context.cacheKey] = max(0, pendingWrites[context.cacheKey, default: 0] - 1)
+            settledWrites[context.cacheKey, default: 0] += 1
+            isSaving = pendingWrites[loadedCacheKey ?? "", default: 0] > 0
         }
         do {
             try await transport.putProfileValue(
@@ -386,6 +389,7 @@ final class SeekIntervalPreferences {
     private func loadCache(for key: String?) {
         guard key != loadedCacheKey else { return }
         loadedCacheKey = key
+        isSaving = pendingWrites[key ?? "", default: 0] > 0
         syncState = .checking
         readErrorMessage = nil
         writeErrors = [:]
