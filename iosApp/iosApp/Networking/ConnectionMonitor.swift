@@ -12,8 +12,8 @@ import OSLog
 /// never blocks a request it hasn't seen fail. Any completed HTTP response —
 /// including a 4xx/5xx — proves the server is up; only transport-level
 /// failures (connection refused, timeout, DNS) mark it unreachable. While
-/// unreachable, a background loop probes `GET /api/v1/health` so the state
-/// self-heals as soon as the server comes back.
+/// unreachable, a background loop probes the server's health endpoint so the
+/// state self-heals as soon as the server comes back.
 @MainActor
 @Observable
 final class ConnectionMonitor {
@@ -230,12 +230,18 @@ final class ConnectionMonitor {
 
     // MARK: - Active probe
 
-    /// One-shot health check. The request flows through `HTTPClient`, whose
-    /// success/failure reporting updates `serverStatus` as a side effect.
+    /// The retained unversioned health probe. It is public and stays outside
+    /// the v2 contract and the v1 tombstone.
+    static let healthPath = "/api/v1/health"
+
+    /// One-shot health check of the active server. It goes out without
+    /// credentials, so an expired or revoked session can neither fail the
+    /// probe nor start a token refresh. `HTTPClient` reports the outcome, which
+    /// updates `serverStatus` as a side effect.
     @discardableResult
-    func probeServer() async -> Bool {
+    func probeServer(using httpClient: HTTPClient = .shared) async -> Bool {
         do {
-            let _: HealthStatus = try await HTTPClient.shared.get("/api/v1/health")
+            let _: HealthStatus = try await httpClient.getUnauthenticatedFromActiveServer(Self.healthPath)
             return true
         } catch {
             return false

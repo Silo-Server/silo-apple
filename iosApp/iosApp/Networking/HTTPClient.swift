@@ -76,7 +76,8 @@ struct HTTPIdentityTransitionLease: Hashable, Sendable {
 /// Responsibilities:
 /// - Resolve relative paths against the configured server URL from ``TokenStore``.
 /// - Attach `Authorization: Bearer <token>`, `X-Profile-Id`, and
-///   `X-Profile-Token` headers on every request except `/auth/refresh`.
+///   `X-Profile-Token` headers on every request except token refresh and the
+///   `getUnauthenticated…` reads of public endpoints.
 /// - On `401`, collapse concurrent failures into a single refresh using an
 ///   in-flight `Task`; retry the original request once with the refreshed
 ///   token. Semantics mirror `AuthInterceptorImpl.kt` in the shared Kotlin
@@ -272,6 +273,32 @@ actor HTTPClient {
         )
     }
 
+    /// Read a public endpoint of the active server with no bearer or profile
+    /// headers. A 401 never starts a refresh, so an expired or revoked session
+    /// cannot fail the read. Unlike ``getUnauthenticated(serverURL:path:quietStatuses:diagnosticPath:timeout:)``,
+    /// the outcome feeds `ConnectionMonitor`: the response comes from the
+    /// server every other request goes to.
+    func getUnauthenticatedFromActiveServer<T: Decodable>(_ path: String) async throws -> T {
+        // Capture the dispatch revision before the URL, as ordinary requests
+        // do, so a server switch in between rejects this read instead of
+        // reporting the old server's reachability as the new one's.
+        let dispatchRevision = try captureRequestDispatchRevision()
+        let serverURL = await tokenStore.getServerUrl()
+        guard !serverURL.isEmpty else {
+            throw HTTPError.serverUrlNotConfigured
+        }
+        return try await getByExplicitURL(
+            serverURL: serverURL,
+            path: path,
+            bearer: nil,
+            quietStatuses: [],
+            diagnosticPath: nil,
+            timeout: nil,
+            dispatchRevision: dispatchRevision,
+            reportReachability: true
+        )
+    }
+
     /// Read from an explicit server URL with an explicit bearer, outside the
     /// active credential slot. No refresh, no retry, no routing change: used
     /// for reading another saved server's documents (for example its
@@ -299,9 +326,11 @@ actor HTTPClient {
         bearer: String?,
         quietStatuses: Set<Int>,
         diagnosticPath: String?,
-        timeout: TimeInterval?
+        timeout: TimeInterval?,
+        dispatchRevision capturedRevision: UInt64? = nil,
+        reportReachability: Bool = false
     ) async throws -> T {
-        let dispatchRevision = try captureRequestDispatchRevision()
+        let dispatchRevision = try capturedRevision ?? captureRequestDispatchRevision()
         var request = try buildRequest(
             serverUrl: ServerRegistry.normalize(url: serverURL),
             method: "GET",
@@ -318,7 +347,7 @@ actor HTTPClient {
         let (data, response) = try await perform(
             request: request,
             dispatchRevision: dispatchRevision,
-            reportReachability: false
+            reportReachability: reportReachability
         )
         try ensureSuccess(data, response, method: "GET", quietStatuses: quietStatuses)
         do {
