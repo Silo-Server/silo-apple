@@ -2330,8 +2330,11 @@ class PlayerViewModel {
             }
 
             do {
-                let response = try await SiloAPI.shared.homeSections()
+                let read = try await SiloAPI.shared.homeSections()
+                let isCurrentOwner = await SiloAPI.shared.isCurrentOwner(read.auth)
                 guard !Task.isCancelled, !self.isDisposed else { return }
+                guard isCurrentOwner else { throw HTTPError.requestIdentityChanged }
+                let response = read.response
                 self.nextUpOnDeckItems = await self.resolveOnDeckItems(from: response, currentDetail: detail)
                 self.isLoadingNextUpOnDeck = false
                 self.updateNextUpPresentation(for: self.currentTime)

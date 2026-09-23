@@ -81,7 +81,9 @@ final class ResponseCache {
 /// Canonical key strings. Centralizing them keeps cache reads and
 /// writes from drifting apart and makes prefix-invalidation safe.
 enum CacheKey {
-    static let homeSections = "home:sections"
+    /// Versioned with the wire: rows from `/api/v2/home/sections` live under
+    /// a key that no v1-era writer uses.
+    static let homeSections = "home:sections:v2"
     static let recommendations = "recommendations:discover"
     static let collections = "collections:list"
     static let profiles = "profiles:list"

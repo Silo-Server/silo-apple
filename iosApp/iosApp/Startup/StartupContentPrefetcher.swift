@@ -32,7 +32,7 @@ enum StartupContentPrefetcher {
     ]
 
     private static var profilesTask: Task<[UserProfile], Error>?
-    private static var homeSectionsTask: Task<SectionsResponse, Error>?
+    private static var homeSectionsTask: Task<APIv2HomeSectionsRead, Error>?
     private static var recommendationsTask: Task<SectionsResponse, Error>?
     private static var userLibrariesTask: Task<LibrariesResponse, Error>?
     private static var librarySectionsTasks: [Int: Task<SectionsResponse, Error>] = [:]
@@ -160,7 +160,7 @@ enum StartupContentPrefetcher {
         #if os(iOS) || os(tvOS)
         let probe = PrefetchProbe.begin("home_sections", isOriginator: homeSectionsTask == nil)
         #endif
-        let task: Task<SectionsResponse, Error>
+        let task: Task<APIv2HomeSectionsRead, Error>
         if let homeSectionsTask {
             task = homeSectionsTask
         } else {
@@ -171,9 +171,14 @@ enum StartupContentPrefetcher {
         }
 
         do {
-            let response = try await task.value
+            let read = try await task.value
+            // The rows belong to the profile they were fetched for. Never
+            // cache or show them once the session acts as someone else.
+            let isCurrentOwner = await SiloAPI.shared.isCurrentOwner(read.auth)
             try validateProfileScopedGeneration(profileGeneration)
             try validateHomeSectionsGeneration(homeGeneration)
+            guard isCurrentOwner else { throw HTTPError.requestIdentityChanged }
+            let response = read.response
             if profileScopedGeneration == profileGeneration,
                homeSectionsGeneration == homeGeneration {
                 homeSectionsTask = nil
@@ -206,6 +211,12 @@ enum StartupContentPrefetcher {
     }
 
     nonisolated static func indicatesInvalidProfile(_ error: Error) -> Bool {
+        if case .problem(let problem) = error as? APIv2Error {
+            // v2 names a locked profile without a valid X-Profile-Token this
+            // way. A missing profile is a plain `not_found`, which v2 does
+            // not tell apart from any other missing resource.
+            return problem.identifier == "profile_verification_required"
+        }
         guard let error = error as? HTTPError else { return false }
         return ["profile_unverified", "profile_not_found"].contains(error.serverErrorCode)
     }
@@ -237,6 +248,19 @@ enum StartupContentPrefetcher {
     /// `indicatesCancellation`.
     nonisolated static func prefetchFailureReason(_ error: Error) -> String {
         if indicatesCancellation(error) { return "cancelled" }
+        if let apiError = error as? APIv2Error {
+            if indicatesInvalidProfile(apiError) { return "invalid_profile" }
+            switch apiError {
+            case .serverUpdateRequired:
+                return "server_update_required"
+            case .problem(let problem):
+                return statusReason(problem.status)
+            case .httpStatus(let statusCode):
+                return statusReason(statusCode)
+            default:
+                return "decode_failed"
+            }
+        }
         guard let httpError = error as? HTTPError else {
             // URLSession surfaces transport failures as NSError before
             // HTTPClient wraps them; the cancelled case was already claimed
@@ -268,15 +292,19 @@ enum StartupContentPrefetcher {
         case .decodingFailed:
             return "decode_failed"
         case .http(let statusCode, _):
-            // Bucketed, not verbatim: the status class is what distinguishes
-            // "the server rejected us" from "the server is broken", and the
-            // exact code adds cardinality without adding meaning here.
-            if statusCode == 401 || statusCode == 403 { return "unauthorized" }
-            if (500..<600).contains(statusCode) { return "server_error" }
-            return "http_\(statusCode / 100)xx"
+            return statusReason(statusCode)
         case .invalidURL, .invalidResponse, .encodingFailed:
             return "other"
         }
+    }
+
+    /// Bucketed, not verbatim: the status class is what distinguishes "the
+    /// server rejected us" from "the server is broken", and the exact code
+    /// adds cardinality without adding meaning here.
+    nonisolated private static func statusReason(_ statusCode: Int) -> String {
+        if statusCode == 401 || statusCode == 403 { return "unauthorized" }
+        if (500..<600).contains(statusCode) { return "server_error" }
+        return "http_\(statusCode / 100)xx"
     }
 
     /// True for every shape a cancelled prefetch can take.
