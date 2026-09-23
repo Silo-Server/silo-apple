@@ -9,39 +9,11 @@ import Foundation
 /// - **Unknown outcome:** the request may have reached the server but no
 ///   usable answer came back. Never resend it.
 ///
-/// Domain callers add their own "owner changed after dispatch" error on top.
+/// The rules live in `APIv2MutationOutcome`. Domain callers turn an owner
+/// change once the request may have been sent into their own error, so a
+/// bare owner-change error reaching this was raised before dispatch.
 enum APIv2DispatchFailure {
     static func isUncertain(_ error: Error) -> Bool {
-        switch error {
-        case HTTPError.network(let underlying):
-            return isUncertainTransport(underlying)
-        case let urlError as URLError:
-            return isUncertainTransport(urlError)
-        case is CancellationError:
-            return true
-        // A 2xx with an unexpected status or an unreadable body: the server
-        // acted, but the result cannot be applied.
-        case APIv2Error.httpStatus(let status):
-            return (200..<300).contains(status)
-        case is DecodingError, HTTPError.decodingFailed, HTTPError.invalidResponse:
-            return true
-        default:
-            return false
-        }
+        APIv2MutationOutcome(error, dispatched: false).mayHaveApplied
     }
-
-    private static func isUncertainTransport(_ error: Error) -> Bool {
-        guard let code = (error as? URLError)?.code else { return true }
-        return !neverSent.contains(code)
-    }
-
-    /// Transport failures that happen before any request bytes reach the
-    /// server: no route, no connection, or a refused TLS handshake.
-    private static let neverSent: Set<URLError.Code> = [
-        .notConnectedToInternet, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed,
-        .badURL, .unsupportedURL, .dataNotAllowed, .internationalRoamingOff, .callIsActive,
-        .appTransportSecurityRequiresSecureConnection, .secureConnectionFailed,
-        .serverCertificateUntrusted, .serverCertificateHasBadDate, .serverCertificateNotYetValid,
-        .serverCertificateHasUnknownRoot, .clientCertificateRejected, .clientCertificateRequired,
-    ]
 }
