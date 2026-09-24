@@ -249,21 +249,14 @@ struct IOSSettingsOverview: View {
 
     private var aboutSection: some View {
         SettingsOverviewSection("About") {
-            // Tapping the version reveals the Experimental section.
-            Button {
-                experimental.registerVersionTap()
-            } label: {
-                SettingsOverviewRow(
-                    title: "Version",
-                    subtitle: "Installed Silo app version",
-                    systemImage: "info.circle.fill",
-                    tint: .gray,
-                    value: versionString,
-                    showsChevron: false
-                )
-            }
-            .buttonStyle(.plain)
-            .sensoryFeedback(.success, trigger: experimental.isUnlocked) { _, unlocked in unlocked }
+            SettingsOverviewRow(
+                title: "Version",
+                subtitle: "Installed Silo app version",
+                systemImage: "info.circle.fill",
+                tint: .gray,
+                value: versionString,
+                showsChevron: false
+            )
 
             SettingsOverviewDivider()
 
@@ -431,9 +424,8 @@ struct IOSSettingsOverview: View {
     }
 
     private var matchesExperimentalSection: Bool {
-        experimental.isUnlocked
-            && (matches("experimental", "beta", "testing")
-                || ExperimentalFeature.allCases.contains { matches($0.title, $0.subtitle) })
+        matches("experimental", "beta", "testing")
+            || ExperimentalFeature.allCases.contains { matches($0.title, $0.subtitle) }
     }
 
     private var matchesSignOut: Bool {

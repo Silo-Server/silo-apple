@@ -35,25 +35,18 @@ enum ExperimentalFeature: String, CaseIterable, Identifiable {
     }
 }
 
-/// Device-local switches for features still in testing. Release builds keep
-/// every feature off and the Settings section hidden until someone taps the
-/// version row `unlockTapCount` times; Debug builds start with both on.
+/// Device-local switches for features still in testing. Release builds start
+/// with every feature off; Debug builds start with them on.
 @MainActor @Observable
 final class ExperimentalFeatures {
     static let shared = ExperimentalFeatures()
-    static let unlockTapCount = 7
 
-    private(set) var isUnlocked: Bool
     private var enabled: Set<ExperimentalFeature>
 
     @ObservationIgnored private let defaults: UserDefaults
-    @ObservationIgnored private let defaultOn: Bool
-    @ObservationIgnored private var versionTaps = 0
 
     init(defaults: UserDefaults = .standard, defaultOn: Bool = ExperimentalFeatures.isDebugBuild) {
         self.defaults = defaults
-        self.defaultOn = defaultOn
-        isUnlocked = defaultOn || defaults.bool(forKey: Self.unlockedKey)
         enabled = Set(ExperimentalFeature.allCases.filter { feature in
             let key = Self.key(for: feature)
             return defaults.object(forKey: key) == nil ? defaultOn : defaults.bool(forKey: key)
@@ -68,20 +61,6 @@ final class ExperimentalFeatures {
         if value { enabled.insert(feature) } else { enabled.remove(feature) }
         defaults.set(value, forKey: Self.key(for: feature))
     }
-
-    /// Counts taps on the version row. Returns true on the tap that reveals
-    /// the section, so the caller can acknowledge it.
-    @discardableResult
-    func registerVersionTap() -> Bool {
-        guard !isUnlocked else { return false }
-        versionTaps += 1
-        guard versionTaps >= Self.unlockTapCount else { return false }
-        isUnlocked = true
-        defaults.set(true, forKey: Self.unlockedKey)
-        return true
-    }
-
-    private static let unlockedKey = "experimental.unlocked"
 
     private static func key(for feature: ExperimentalFeature) -> String {
         "experimental.\(feature.rawValue)"
