@@ -29,6 +29,19 @@ extension SiloAppDelegate: UNUserNotificationCenterDelegate {
         handleEventsForBackgroundURLSession identifier: String,
         completionHandler: @escaping () -> Void
     ) {
+        if identifier == DownloadSessionDelegate.legacySessionIdentifier {
+            // Transfers an earlier build started finished in the pre-rename
+            // session. Scope activation drains it and moves their resume data
+            // onto the records before the system suspends the app again.
+            Task { @MainActor in
+                if let serverId = ServerRegistry.shared.activeServerId, !serverId.isEmpty {
+                    await TokenStore.shared.retargetActiveServer(serverId: serverId)
+                }
+                await DownloadManager.shared.activateScopeIfNeeded()
+                completionHandler()
+            }
+            return
+        }
         guard identifier == DownloadSessionDelegate.sessionIdentifier else {
             completionHandler()
             return

@@ -24,17 +24,40 @@ enum SharedStorage {
     static let keychainAccessGroup = RuntimeConfiguration.sharedKeychainAccessGroup
 
     /// Shared Keychain service name. Same on both sides.
-    static let keychainService = "com.continuum.app"
+    static let keychainService = "org.siloserver.silo"
+
+    /// Every Keychain account the apps own starts with this prefix.
+    static let keychainAccountPrefix = "org.siloserver.silo."
+
+    /// Builds before the continuum → silo rename stored every item under
+    /// this service, with `com.continuum.` where accounts now use
+    /// `keychainAccountPrefix`. `SharedKeychain`
+    /// moves an item to its current name the first time it is read, so
+    /// whichever process runs first after an update (app or extension)
+    /// migrates it.
+    static let legacyKeychainService = "com.continuum.app"
+    static let legacyKeychainAccountPrefix = "com.continuum."
+
+    /// The account that held `account` under the legacy service.
+    static func legacyKeychainAccount(for account: String) -> String {
+        if account.hasPrefix(keychainAccountPrefix) {
+            return legacyKeychainAccountPrefix + account.dropFirst(keychainAccountPrefix.count)
+        }
+        // Unprefixed names (`watchParty.recent.v1`) and names read as-is from
+        // before the rename (the single-server tokens `ServerRegistry`
+        // migrates) keep their account under the legacy service.
+        return account
+    }
 
     /// Stable account names for the mirrored active-server tokens.
-    static let mirroredAccessTokenAccount = "com.continuum.topshelf.accessToken"
-    static let mirroredProfileTokenAccount = "com.continuum.topshelf.profileToken"
+    static let mirroredAccessTokenAccount = keychainAccountPrefix + "topshelf.accessToken"
+    static let mirroredProfileTokenAccount = keychainAccountPrefix + "topshelf.profileToken"
 
     /// Long-lived, profile-scoped token the server returns from Apple push
     /// registration. The Notification Service extension prefers it over the
     /// mirrored access token because it cannot refresh an expired one.
     /// Written by `ApplePushRegistrationCoordinator`, cleared with the mirrors.
-    static let applePushDisplayTokenAccount = "com.continuum.push.displayToken"
+    static let applePushDisplayTokenAccount = keychainAccountPrefix + "push.displayToken"
     /// App Group defaults key: RFC 3339 expiry of the stored display token,
     /// used by the app to renew it before the extension starts sending an
     /// expired credential. Not read by the extension.
@@ -46,19 +69,19 @@ enum SharedStorage {
     static let applePushDisplayTokenServerIdKey = "applePush.displayTokenServerId"
 
     static func accessTokenAccount(for serverID: String) -> String {
-        "com.continuum.\(serverID).accessToken"
+        keychainAccountPrefix + "\(serverID).accessToken"
     }
 
     static func refreshTokenAccount(for serverID: String) -> String {
-        "com.continuum.\(serverID).refreshToken"
+        keychainAccountPrefix + "\(serverID).refreshToken"
     }
 
     static func profileTokenAccount(for serverID: String) -> String {
-        "com.continuum.\(serverID).profileToken"
+        keychainAccountPrefix + "\(serverID).profileToken"
     }
 
     static func accountEpochAccount(for serverID: String) -> String {
-        "com.continuum.\(serverID).accountEpoch"
+        keychainAccountPrefix + "\(serverID).accountEpoch"
     }
 
     /// UserDefaults keys shared between the app and the Top Shelf
@@ -262,17 +285,24 @@ struct SharedKeychain {
     let audience: KeychainAudience
     let usesUserIndependentKeychain: Bool
     let allowsAppLocalFallback: Bool
+    /// Service that held this keychain's items before the continuum → silo
+    /// rename. Defaults to the legacy service only for the shared service,
+    /// so isolated test keychains never read real legacy items.
+    let legacyService: String?
 
     init(service: String = SharedStorage.keychainService,
          accessGroup: String? = SharedStorage.keychainAccessGroup,
          audience: KeychainAudience = .currentUser,
          usesUserIndependentKeychain: Bool = RuntimeConfiguration.usesUserIndependentKeychain,
-         allowsAppLocalFallback: Bool = RuntimeConfiguration.allowsAppLocalKeychainFallback) {
+         allowsAppLocalFallback: Bool = RuntimeConfiguration.allowsAppLocalKeychainFallback,
+         legacyService: String? = nil) {
         self.service = service
         self.accessGroup = accessGroup
         self.audience = audience
         self.usesUserIndependentKeychain = usesUserIndependentKeychain
         self.allowsAppLocalFallback = allowsAppLocalFallback
+        self.legacyService = legacyService
+            ?? (service == SharedStorage.keychainService ? SharedStorage.legacyKeychainService : nil)
     }
 
     func withAudience(_ audience: KeychainAudience) -> SharedKeychain {
@@ -281,7 +311,8 @@ struct SharedKeychain {
             accessGroup: accessGroup,
             audience: audience,
             usesUserIndependentKeychain: usesUserIndependentKeychain,
-            allowsAppLocalFallback: allowsAppLocalFallback
+            allowsAppLocalFallback: allowsAppLocalFallback,
+            legacyService: legacyService
         )
     }
 
@@ -295,11 +326,17 @@ struct SharedKeychain {
             return false
         }
         let status = write(data, for: account, accessGroup: accessGroup)
-        if status == errSecSuccess { return true }
+        if status == errSecSuccess {
+            // A value written under the current name supersedes any copy
+            // still held under the pre-rename name.
+            deleteLegacyName(of: account)
+            return true
+        }
         if shouldUseAppLocalFallback(for: status) {
             let fallbackStatus = write(data, for: account, accessGroup: nil)
             if fallbackStatus == errSecSuccess {
                 Self.logger.notice("Shared Keychain entitlement unavailable; wrote app-local value.")
+                deleteLegacyName(of: account)
                 return true
             }
             Self.logger.error("App-local Keychain fallback write failed: status=\(fallbackStatus, privacy: .public)")
@@ -319,6 +356,22 @@ struct SharedKeychain {
     /// Strict reads for canonical authority. A locked/inaccessible keychain is
     /// not an absent record and must never authorize a legacy fallback.
     func getChecked(_ account: String) throws -> String? {
+        if let value = try getCheckedUnderCurrentName(account) { return value }
+        guard let legacy = legacyName(for: account),
+              let value = try legacy.keychain.getCheckedUnderCurrentName(legacy.account) else { return nil }
+        switch move(legacy, to: account) {
+        case .moved:
+            return value
+        case .alreadyPresent, .vanished:
+            // Another process moved, wrote, or deleted the item meanwhile;
+            // the current name is authoritative, even when it is now empty.
+            return try getCheckedUnderCurrentName(account)
+        case .failed:
+            return value
+        }
+    }
+
+    private func getCheckedUnderCurrentName(_ account: String) throws -> String? {
         let configured = readResult(account: account, accessGroup: accessGroup)
         if configured.status == errSecSuccess { return configured.value }
         if shouldUseAppLocalFallback(for: configured.status) {
@@ -350,15 +403,23 @@ struct SharedKeychain {
             // The app-local group is the active store for this build. Return
             // directly instead of passing through legacy migration, which
             // would otherwise delete the same value it just found.
-            return fallbackRead.value
+            return fallbackRead.value ?? adoptLegacyName(of: account)
+        }
+        // Every item lived under its pre-rename name in this same audience
+        // until the rename, so that copy is authoritative over the older
+        // locations below.
+        if let renamed = adoptLegacyName(of: account) {
+            return renamed
         }
         #if os(tvOS)
         // Account credentials written before Runs-as-Current-User were stored
         // in the ordinary persona Keychain. Copy them into the shared account
         // audience only after a verified write, then retire that one legacy
         // copy. Profile tokens never take this path because their audience is
-        // intentionally current-user scoped.
-        if audience == .userIndependent {
+        // intentionally current-user scoped. Without the user-independent
+        // Keychain both audiences address the same item, so there is nothing
+        // to move — and deleting the "legacy" copy would delete the item.
+        if audience == .userIndependent, usesUserIndependentKeychain {
             let legacyKeychain = withAudience(.currentUser)
             if let legacy = legacyKeychain.get(account) {
                 if set(legacy, for: account) {
@@ -402,8 +463,20 @@ struct SharedKeychain {
         return groups
     }
 
+    /// Removes the item under both its current and its pre-rename name, so a
+    /// signed-out token can't come back through the legacy read path.
+    ///
+    /// The legacy name goes first: another process may be renaming the item
+    /// at the same time (`move`), and a rename either lands before this
+    /// delete reaches the current name or finds nothing left to rename.
     @discardableResult
     func delete(_ account: String) -> Bool {
+        let legacyRemoved = legacyName(for: account).map { $0.keychain.deleteUnderCurrentName($0.account) } ?? true
+        return deleteUnderCurrentName(account) && legacyRemoved
+    }
+
+    @discardableResult
+    private func deleteUnderCurrentName(_ account: String) -> Bool {
         let status = deleteStatus(account: account, accessGroup: accessGroup)
         if status == errSecSuccess || status == errSecItemNotFound {
             guard allowsAppLocalFallback, accessGroup != nil else { return true }
@@ -425,6 +498,87 @@ struct SharedKeychain {
         }
         Self.logger.error("Keychain delete failed for account \(account, privacy: .public): status=\(status, privacy: .public)")
         return false
+    }
+
+    // MARK: - Pre-rename names
+
+    private enum MoveOutcome { case moved, alreadyPresent, vanished, failed }
+
+    /// The keychain and account that held `account` before the rename.
+    private func legacyName(for account: String) -> (keychain: SharedKeychain, account: String)? {
+        guard let legacyService, legacyService != service else { return nil }
+        let legacyAccount = SharedStorage.legacyKeychainAccount(for: account)
+        let keychain = SharedKeychain(
+            service: legacyService,
+            accessGroup: accessGroup,
+            audience: audience,
+            usesUserIndependentKeychain: usesUserIndependentKeychain,
+            allowsAppLocalFallback: allowsAppLocalFallback,
+            legacyService: legacyService
+        )
+        return (keychain, legacyAccount)
+    }
+
+    /// Moves the item held under the pre-rename name, if any, to the current
+    /// name and returns its value.
+    private func adoptLegacyName(of account: String) -> String? {
+        guard let legacy = legacyName(for: account),
+              let value = legacy.keychain.get(legacy.account) else { return nil }
+        switch move(legacy, to: account) {
+        case .moved:
+            return value
+        case .alreadyPresent, .vanished:
+            // Another process moved, wrote, or deleted the item meanwhile;
+            // the current name is authoritative, even when it is now empty.
+            let current = readResult(account: account, accessGroup: accessGroup)
+            if let found = current.value { return found }
+            guard shouldUseAppLocalFallback(for: current.status) else { return nil }
+            return readResult(account: account, accessGroup: nil).value
+        case .failed:
+            // Keep serving the legacy copy; the next read retries the move.
+            return value
+        }
+    }
+
+    private func deleteLegacyName(of account: String) {
+        guard let legacy = legacyName(for: account) else { return }
+        legacy.keychain.deleteUnderCurrentName(legacy.account)
+    }
+
+    /// Renames the item held under the pre-rename name to `account` in
+    /// place. A rename is atomic, so it can't race a sign-out or another
+    /// process's write into a stale or resurrected value: it either lands
+    /// before them or finds its source already gone. It never overwrites an
+    /// item already under the current name.
+    private func move(_ legacy: (keychain: SharedKeychain, account: String), to account: String) -> MoveOutcome {
+        var status = rename(legacy, to: account, accessGroup: accessGroup)
+        if shouldUseAppLocalFallback(for: status) {
+            status = rename(legacy, to: account, accessGroup: nil)
+        }
+        switch status {
+        case errSecSuccess:
+            return .moved
+        case errSecDuplicateItem:
+            return .alreadyPresent
+        case errSecItemNotFound:
+            return .vanished
+        default:
+            Self.logger.error("Keychain rename migration failed for account \(account, privacy: .public): status=\(status, privacy: .public)")
+            return .failed
+        }
+    }
+
+    private func rename(
+        _ legacy: (keychain: SharedKeychain, account: String),
+        to account: String,
+        accessGroup: String?
+    ) -> OSStatus {
+        let query = legacy.keychain.baseQuery(account: legacy.account, accessGroup: accessGroup)
+        let attributes: [String: Any] = [
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        return SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
     }
 
     // MARK: - Private

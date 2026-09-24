@@ -714,6 +714,10 @@ struct DownloadStoreFile: Codable, Sendable {
     /// Monitors an earlier version created. They stay on the server but are
     /// never shown or synced here.
     var legacyMonitorIds: Set<String>? = nil
+    /// Identifier of the background session the records' `taskIdentifier`
+    /// values belong to. Nil in stores written before the continuum → silo
+    /// rename moved transfers to a new session.
+    var taskSessionIdentifier: String? = nil
 
     static let currentVersion = 1
 

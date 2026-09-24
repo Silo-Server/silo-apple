@@ -135,7 +135,7 @@ struct ApplePushInstallationJournal: Sendable {
     }
 
     static func account(for serverID: String) -> String {
-        "com.continuum.push.apple.installation.\(serverID)"
+        SharedStorage.keychainAccountPrefix + "push.apple.installation.\(serverID)"
     }
 
     /// The stored record, `nil` only when no record exists for `serverID`.

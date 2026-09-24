@@ -741,7 +741,7 @@ final class ProfileLaunchMigrationTests: XCTestCase {
         )
         defaults.set(
             try JSONEncoder().encode(legacy),
-            forKey: "continuumServerRegistry.v1"
+            forKey: ServerRegistry.defaultsKey
         )
         XCTAssertTrue(keychain.set(
             "access",
@@ -766,9 +766,9 @@ final class ProfileLaunchMigrationTests: XCTestCase {
         #if os(tvOS)
         // tvOS persists the registry in the shared keychain and clears the
         // defaults copy, so the legacy field is gone with the whole record.
-        XCTAssertNil(defaults.data(forKey: "continuumServerRegistry.v1"))
+        XCTAssertNil(defaults.data(forKey: ServerRegistry.defaultsKey))
         #else
-        let migrated = try XCTUnwrap(defaults.data(forKey: "continuumServerRegistry.v1"))
+        let migrated = try XCTUnwrap(defaults.data(forKey: ServerRegistry.defaultsKey))
         XCTAssertFalse(String(decoding: migrated, as: UTF8.self).contains("profileId"))
         #endif
     }

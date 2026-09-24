@@ -228,10 +228,17 @@ extension APIv2Client {
     /// other transfer (resume data or a task an earlier version started) is
     /// discarded and the download restarts from its manifest.
     static func isDownloadFileURL(_ url: URL?) -> Bool {
+        downloadFileID(url) != nil
+    }
+
+    /// The download id a v2 download file URL requests, or nil for any other
+    /// URL.
+    static func downloadFileID(_ url: URL?) -> String? {
         guard let path = url?.path, path.hasSuffix("/file"),
-              let range = path.range(of: "/api/v2/downloads/") else { return false }
+              let range = path.range(of: "/api/v2/downloads/") else { return nil }
         let id = path[range.upperBound...].dropLast("/file".count)
-        return !id.isEmpty && !id.contains("/")
+        guard !id.isEmpty, !id.contains("/") else { return nil }
+        return String(id)
     }
 
     // MARK: Failure classification

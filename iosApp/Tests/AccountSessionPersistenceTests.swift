@@ -26,7 +26,7 @@ final class AccountSessionPersistenceTests: XCTestCase {
         memory: SessionMemory, registry: ServerRegistry, auth: AuthService, http: HTTPClient, stub: APIv2TestStub
     ) {
         let (store, keys, defaults, memory) = try await harness()
-        defaults.set(true, forKey: "continuumServerRegistry.migrated.v1")
+        defaults.set(true, forKey: ServerRegistry.migratedKey)
         let preferences = ProfileLaunchPreferences(defaults: defaults)
         let stub = APIv2TestStub()
         stub.reply(204, "")
