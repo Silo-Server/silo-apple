@@ -13,6 +13,7 @@ struct IOSSettingsOverview: View {
     @Environment(AppRouter.self) private var router
     @State private var navPrefs = AppNavPreferences.shared
     @State private var launchPreferences = ProfileLaunchPreferences.shared
+    @State private var experimental = ExperimentalFeatures.shared
     @State private var searchText = ""
 
     var body: some View {
@@ -48,6 +49,10 @@ struct IOSSettingsOverview: View {
 
                         if matchesConnectionSection {
                             connectionSection
+                        }
+
+                        if matchesExperimentalSection {
+                            experimentalSection
                         }
 
                         if matchesAboutSection {
@@ -244,14 +249,21 @@ struct IOSSettingsOverview: View {
 
     private var aboutSection: some View {
         SettingsOverviewSection("About") {
-            SettingsOverviewRow(
-                title: "Version",
-                subtitle: "Installed Silo app version",
-                systemImage: "info.circle.fill",
-                tint: .gray,
-                value: versionString,
-                showsChevron: false
-            )
+            // Tapping the version reveals the Experimental section.
+            Button {
+                experimental.registerVersionTap()
+            } label: {
+                SettingsOverviewRow(
+                    title: "Version",
+                    subtitle: "Installed Silo app version",
+                    systemImage: "info.circle.fill",
+                    tint: .gray,
+                    value: versionString,
+                    showsChevron: false
+                )
+            }
+            .buttonStyle(.plain)
+            .sensoryFeedback(.success, trigger: experimental.isUnlocked) { _, unlocked in unlocked }
 
             SettingsOverviewDivider()
 
@@ -278,6 +290,26 @@ struct IOSSettingsOverview: View {
                 )
             }
             .buttonStyle(.plain)
+        }
+    }
+
+    private var experimentalSection: some View {
+        SettingsOverviewSection("Experimental") {
+            ForEach(Array(ExperimentalFeature.allCases.enumerated()), id: \.element) { index, feature in
+                if index > 0 {
+                    SettingsOverviewDivider()
+                }
+                SettingsOverviewToggleRow(
+                    title: feature.title,
+                    subtitle: feature.subtitle,
+                    systemImage: feature.systemImage,
+                    tint: .pink,
+                    isOn: Binding(
+                        get: { experimental.isEnabled(feature) },
+                        set: { feature.setEnabled($0) }
+                    )
+                )
+            }
         }
     }
 
@@ -398,6 +430,12 @@ struct IOSSettingsOverview: View {
         )
     }
 
+    private var matchesExperimentalSection: Bool {
+        experimental.isUnlocked
+            && (matches("experimental", "beta", "testing")
+                || ExperimentalFeature.allCases.contains { matches($0.title, $0.subtitle) })
+    }
+
     private var matchesSignOut: Bool {
         matches("sign out", "account")
     }
@@ -417,6 +455,7 @@ struct IOSSettingsOverview: View {
             || (diagnosticsModel.shouldShowSettings && matchesDiagnostics)
             || matchesLibrarySection
             || matchesConnectionSection
+            || matchesExperimentalSection
             || matchesAboutSection
             || matchesSignOut
     }

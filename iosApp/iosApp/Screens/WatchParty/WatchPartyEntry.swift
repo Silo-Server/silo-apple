@@ -3,13 +3,20 @@ import SwiftUI
 
 @MainActor
 enum WatchPartyEntry {
-    // Release enablement follows the physical-device and mixed-client gate.
+    // Off in Release until the physical-device and mixed-client gate clears;
+    // testers opt in from Settings > Experimental.
     static var isEnabled: Bool {
-        #if DEBUG
-        true
-        #else
-        false
-        #endif
+        ExperimentalFeatures.shared.isEnabled(.watchParty)
+    }
+
+    static func setEnabled(_ enabled: Bool) {
+        ExperimentalFeatures.shared.setEnabled(.watchParty, enabled)
+        let session = WatchPartySession.shared
+        if enabled {
+            Task { await session.refreshCapabilities() }
+        } else {
+            session.leave()
+        }
     }
 
     static var isAvailable: Bool {
