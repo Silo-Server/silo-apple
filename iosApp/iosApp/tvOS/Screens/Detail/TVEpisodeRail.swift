@@ -572,6 +572,7 @@ struct TVEpisodeRail: View {
     @ViewBuilder
     private var anchoredContextActions: some View {
         if let episode = anchoredEpisode {
+            WatchPartyMenuButton(contentId: episode.contentId, title: episode.title ?? "Episode", type: "episode")
             if let onPlay {
                 Button {
                     onPlay(episode.contentId)
@@ -816,6 +817,7 @@ struct TVEpisodeCard: View {
 
     @ViewBuilder
     private var contextActions: some View {
+        WatchPartyMenuButton(contentId: episode.contentId, title: episode.title ?? "Episode", type: "episode")
         if let onPlay {
             Button {
                 onPlay(episode.contentId)

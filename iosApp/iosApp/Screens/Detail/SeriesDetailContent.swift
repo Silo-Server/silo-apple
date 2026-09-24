@@ -93,6 +93,11 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             }
             .ignoresSafeArea(edges: .top)
             .coordinateSpace(name: PhoneDetailScrollCoordinateSpace.name)
+            #if os(iOS)
+            .environment(\.watchPartyEpisodePreview) { [detail, seasons] episode in
+                WatchPartySelectedItem(previewing: episode, series: detail, seasons: seasons)
+            }
+            #endif
             .detailScrollDismissal()
             .onScrollGeometryChange(for: CGFloat.self) { geometry in
                 let offset = max(0, geometry.contentOffset.y + geometry.contentInsets.top)
@@ -291,6 +296,12 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     /// Menu contents for the action row's named "More" entry.
     @ViewBuilder
     private var overflowMenuItems: some View {
+        #if os(iOS)
+        if let episode = nextUpEpisode {
+            WatchPartyMenuButton(contentId: episode.contentId, title: episode.title ?? "Episode", type: "episode",
+                fileId: playbackFileId(for: episode), episode: episode)
+        }
+        #endif
         if let selectedSeason {
             Button {
                 setSeasonWatched(selectedSeason, !(selectedSeason.userData?.played ?? false))

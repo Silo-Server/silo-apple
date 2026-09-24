@@ -398,10 +398,10 @@ final class AuthService: @unchecked Sendable {
                 expectedAccount: expectedAccount
             )
             if committed {
-                // A cold trailer return may require the profile picker. Keep
-                // the record until the selected identity can validate it;
-                // explicit in-app profile changes clear it before this path.
-                await clearPerProfileCaches(preservingTrailerReturn: true)
+                // Cold return records may require the profile picker. Keep
+                // them until the selected identity can validate ownership;
+                // explicit in-app profile changes clear them before this path.
+                await clearPerProfileCaches(preservingTrailerReturn: true, preservingWatchPartyRecent: true)
             }
             return false
 
@@ -420,10 +420,9 @@ final class AuthService: @unchecked Sendable {
                     await clearPerProfileCaches()
                     return false
                 }
-                // This is launch restoration of the same remembered identity,
-                // not a profile boundary. Keep a matching trailer handoff
-                // alive until ContentView can consume it after authentication.
-                await clearPerProfileCaches(preservingTrailerReturn: true)
+                // Restore the same remembered identity without discarding its
+                // pending trailer handoff or its authority-scoped recent party.
+                await clearPerProfileCaches(preservingTrailerReturn: true, preservingWatchPartyRecent: true)
                 return true
             } else {
                 _ = await TokenStore.shared.deactivateProfile(
@@ -551,11 +550,10 @@ final class AuthService: @unchecked Sendable {
                 throw ProfileTransitionError.accountEpochUnavailable
             }
         }
-        // Preserve a cold trailer return through the picker. Once the router
-        // becomes authenticated, ContentView consumes it and the identity
-        // policy either restores the matching page or rejects the record.
-        // Explicit profile switches already clear it during deactivation.
-        await clearPerProfileCaches(preservingTrailerReturn: true)
+        // Preserve cold return records through the picker. After authentication,
+        // their owner checks accept only the same account and profile.
+        // Explicit profile switches already clear them during deactivation.
+        await clearPerProfileCaches(preservingTrailerReturn: true, preservingWatchPartyRecent: true)
         await HTTPClient.shared.endIdentityTransition(transitionLease)
         #if os(iOS) || os(tvOS)
         DiagnosticsCoordinator.activeProfileDidChange()
@@ -627,7 +625,7 @@ final class AuthService: @unchecked Sendable {
     /// restoring or changing profile identity so userData (watched, favorites,
     /// watchlist, home recommendations) doesn't leak between accounts.
     @MainActor
-    private func clearPerProfileCaches(preservingTrailerReturn: Bool = false) {
+    private func clearPerProfileCaches(preservingTrailerReturn: Bool = false, preservingWatchPartyRecent: Bool = false) {
         StartupContentPrefetcher.resetProfileScopedPrefetches()
         for prefix in CacheKey.perProfilePrefixes {
             ResponseCache.shared.removeAll(withPrefix: prefix)
@@ -646,6 +644,7 @@ final class AuthService: @unchecked Sendable {
         // profile switch; `selectProfile` re-fetches after the switch lands.
         AICapabilities.shared.reset()
         ImageSizeCapability.shared.reset()
+        WatchPartySession.shared.leave(forgetRecent: !preservingWatchPartyRecent)
         RequestsFeatureStore.shared.reset()
         CurrentProfileStore.shared.reset()
         SubtitleProvidersStore.shared.reset()
@@ -780,6 +779,7 @@ final class AuthService: @unchecked Sendable {
         ProfilePrefsStore.shared.clear()
         AICapabilities.shared.reset()
         ImageSizeCapability.shared.reset()
+        WatchPartySession.shared.leave(forgetRecent: true)
         RequestsFeatureStore.shared.reset()
         CurrentProfileStore.shared.reset()
         SubtitleProvidersStore.shared.reset()

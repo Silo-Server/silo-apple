@@ -30,6 +30,19 @@ extension EnvironmentValues {
     }
 }
 
+private struct AllowsDirectPlaybackKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    /// False where picking a title must not start solo playback (the Watch
+    /// Party picker). Cards keep Select but drop their Play/Pause action.
+    var allowsDirectPlayback: Bool {
+        get { self[AllowsDirectPlaybackKey.self] }
+        set { self[AllowsDirectPlaybackKey.self] = newValue }
+    }
+}
+
 private struct ItemDetailBrowseSourceKey: EnvironmentKey {
     static let defaultValue: ItemDetailBrowseSource? = nil
 }
@@ -120,6 +133,8 @@ class AppRouter {
             // session) is ended here rather than waiting on a view callback
             // that treats engaged PiP as a presentation handoff.
             if authState != .authenticated {
+                watchPartySheetPresented = false
+                pendingWatchPartyPresentation = nil
                 PlayerIdentityBoundary.endEngagedVideoPictureInPicture()
                 dismissItemDetail()
             }
@@ -200,6 +215,7 @@ class AppRouter {
         /// Keep ownership stable while the player is presented, rather than
         /// attaching competing covers to the root and the sheet.
         var detailPresentationID: UUID? = nil
+        var watchPartyContext: WatchPartyPlaybackContext? = nil
         /// Hints supplied by the originating screen (e.g. the detail page,
         /// which has just loaded the catalog item) so the player's now-
         /// playing widget can publish artwork without re-fetching the
@@ -209,6 +225,41 @@ class AppRouter {
     }
 
     var presentedPlayer: PlayerPresentation?
+    @ObservationIgnored private var watchPartySheetPresented = false
+    @ObservationIgnored private var pendingWatchPartyPresentation: WatchPartyPlaybackContext?
+
+    @MainActor
+    func watchPartySheetWillPresent() { watchPartySheetPresented = true }
+
+    @MainActor
+    func watchPartySheetDidDismiss() {
+        watchPartySheetPresented = false
+        if let context = pendingWatchPartyPresentation { presentWatchParty(context) }
+    }
+
+    @MainActor
+    func presentWatchParty(_ context: WatchPartyPlaybackContext?) {
+        pendingWatchPartyPresentation = context
+        guard let context else {
+            if presentedPlayer?.watchPartyContext != nil { presentedPlayer = nil }
+            return
+        }
+        if watchPartySheetPresented, presentedPlayer?.watchPartyContext == nil { return }
+        pendingWatchPartyPresentation = nil
+        guard presentedPlayer?.watchPartyContext != context else { return }
+        var presentation = PlayerPresentation(libraryId: context.libraryId,
+            contentId: context.contentId, fileId: context.fileId,
+            audioTrackIndex: nil, subtitleTrackIndex: nil,
+            startFromBeginning: false, resumePosition: context.startPosition,
+            prefersLastUsedVersion: false, returnToContentId: nil,
+            watchPartyContext: context, posterURL: nil, backdropURL: nil)
+        #if os(iOS)
+        // Reuse the active presenter's cover, including a detail-owned player.
+        // Replacing its content avoids racing a dismissal with a new cover.
+        presentation.detailPresentationID = presentedPlayer?.detailPresentationID ?? presentedItemDetail?.id
+        #endif
+        presentedPlayer = presentation
+    }
 
     #if os(iOS)
     /// Where a streaming play request should go. Installed by the root view
@@ -861,6 +912,8 @@ private extension Route {
             return "serverList"
         case .downloads:
             return "downloads"
+        case .watchParty:
+            return "watchParty"
         case .requestsHub:
             return "requestsHub"
         case .requestDetail:

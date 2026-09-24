@@ -358,17 +358,18 @@ struct PlayerSettingsSheet: View {
 
     private var sessionSection: some View {
         Section("Session") {
-            Picker("Speed", selection: Binding(
-                get: { Self.speedOptions.min(by: {
-                    abs($0 - viewModel.settings.playbackSpeed) < abs($1 - viewModel.settings.playbackSpeed)
-                }) ?? 1.0 },
-                set: { viewModel.setPlaybackSpeed($0) }
-            )) {
-                ForEach(Self.speedOptions, id: \.self) { speed in
-                    Text(speed == 1.0 ? "1×" : String(format: "%g×", speed)).tag(speed)
+            if !viewModel.isWatchPartyPlayback {
+                Picker("Speed", selection: Binding(
+                    get: { Self.speedOptions.min(by: {
+                        abs($0 - viewModel.settings.playbackSpeed) < abs($1 - viewModel.settings.playbackSpeed)
+                    }) ?? 1.0 },
+                    set: { viewModel.setPlaybackSpeed($0) }
+                )) {
+                    ForEach(Self.speedOptions, id: \.self) { speed in
+                        Text(speed == 1.0 ? "1×" : String(format: "%g×", speed)).tag(speed)
+                    }
                 }
             }
-
             sleepTimerPicker
 
             if sleepTimer.isActive {
@@ -378,11 +379,13 @@ struct PlayerSettingsSheet: View {
                 }
             }
 
-            Toggle("Auto-Play Next Episode", isOn: Binding(
-                get: { viewModel.settings.autoPlayNextEpisode },
-                set: { viewModel.settings.setAutoPlayNextEpisode($0) }
-            ))
-            .tint(.siloAccent)
+            if !viewModel.isWatchPartyPlayback {
+                Toggle("Auto-Play Next Episode", isOn: Binding(
+                    get: { viewModel.settings.autoPlayNextEpisode },
+                    set: { viewModel.settings.setAutoPlayNextEpisode($0) }
+                ))
+                .tint(.siloAccent)
+            }
         }
     }
 
@@ -535,18 +538,19 @@ struct PlayerSettingsSheet: View {
             // Speed — 0.5x through 3.0x, step 0.25x. Constrained to a Picker
             // so the tvOS remote gets a spinner instead of a free slider
             // (which doesn't focus well).
-            Picker("Speed", selection: Binding(
-                get: { viewModel.settings.playbackSpeed },
-                set: { newValue in
-                    viewModel.setPlaybackSpeed(newValue)
-                }
-            )) {
-                ForEach([0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0], id: \.self) { speed in
-                    Text(speed == 1.0 ? "Normal (1.0×)" : String(format: "%.2f×", speed))
-                        .tag(speed)
+            if !viewModel.isWatchPartyPlayback {
+                Picker("Speed", selection: Binding(
+                    get: { viewModel.settings.playbackSpeed },
+                    set: { newValue in
+                        viewModel.setPlaybackSpeed(newValue)
+                    }
+                )) {
+                    ForEach([0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0], id: \.self) { speed in
+                        Text(speed == 1.0 ? "Normal (1.0×)" : String(format: "%.2f×", speed))
+                            .tag(speed)
+                    }
                 }
             }
-
             Picker("Aspect", selection: Binding(
                 get: { viewModel.settings.videoGravity },
                 set: { newValue in
@@ -558,11 +562,13 @@ struct PlayerSettingsSheet: View {
                 }
             }
 
-            Toggle("Auto-play next episode", isOn: Binding(
-                get: { viewModel.settings.autoPlayNextEpisode },
-                set: { viewModel.settings.setAutoPlayNextEpisode($0) }
-            ))
-            .tint(.siloAccent)
+            if !viewModel.isWatchPartyPlayback {
+                Toggle("Auto-play next episode", isOn: Binding(
+                    get: { viewModel.settings.autoPlayNextEpisode },
+                    set: { viewModel.settings.setAutoPlayNextEpisode($0) }
+                ))
+                .tint(.siloAccent)
+            }
         }
     }
 

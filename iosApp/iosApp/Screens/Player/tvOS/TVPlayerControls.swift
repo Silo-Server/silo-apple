@@ -604,7 +604,7 @@ struct TVPlayerControls: View {
     }
 
     private func estimatedFinishDate(from now: Date) -> Date {
-        let speed = max(viewModel.settings.playbackSpeed, 0.1)
+        let speed = max(viewModel.effectivePlaybackSpeed, 0.1)
         return now.addingTimeInterval(remainingTime / speed)
     }
 

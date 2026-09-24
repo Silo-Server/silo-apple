@@ -56,6 +56,7 @@ struct SectionRow: View {
     @Environment(\.browseLibraryId) private var playbackLibraryId
     @Environment(AppRouter.self) private var router
     #endif
+    @Environment(\.allowsDirectPlayback) private var allowsDirectPlayback
 
     private var isContinueWatching: Bool {
         section.isContinueWatchingSection
@@ -109,7 +110,7 @@ struct SectionRow: View {
             title: section.title,
             items: section.items,
             onItemTap: selectItem,
-            onItemPlay: playItem,
+            onItemPlay: allowsDirectPlayback ? playItem : nil,
             onSeeAll: onSeeAll,
             showProgress: showProgress,
             icon: isContinueWatching ? "play.circle.fill" : nil,

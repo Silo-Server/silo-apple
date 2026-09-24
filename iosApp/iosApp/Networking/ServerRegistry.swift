@@ -512,6 +512,7 @@ final class ServerRegistry {
         await MainActor.run {
             AICapabilities.shared.reset()
             ImageSizeCapability.shared.reset()
+            WatchPartySession.shared.leave(forgetRecent: true)
             RequestsFeatureStore.shared.reset()
             CurrentProfileStore.shared.reset()
             SubtitleProvidersStore.shared.reset()
@@ -531,6 +532,10 @@ final class ServerRegistry {
             // "available", so this re-probe is what *dims* the search row on
             // a destination server that has no providers configured.
             Task { await SubtitleProvidersStore.shared.refresh() }
+            #if os(iOS) || os(tvOS)
+            // Watch Party entry points likewise need the destination's support.
+            if WatchPartyEntry.isEnabled { Task { await WatchPartySession.shared.refreshCapabilities() } }
+            #endif
         }
     }
 
@@ -733,6 +738,7 @@ final class ServerRegistry {
             await MainActor.run {
                 AICapabilities.shared.reset()
                 ImageSizeCapability.shared.reset()
+                WatchPartySession.shared.leave(forgetRecent: true)
                 RequestsFeatureStore.shared.reset()
                 CurrentProfileStore.shared.reset()
                 SubtitleProvidersStore.shared.reset()
@@ -744,6 +750,9 @@ final class ServerRegistry {
                 Task { await CurrentProfileStore.shared.refresh() }
                 Task { await ImageSizeCapability.shared.refresh() }
                 Task { await SubtitleProvidersStore.shared.refresh() }
+                #if os(iOS) || os(tvOS)
+                if WatchPartyEntry.isEnabled { Task { await WatchPartySession.shared.refreshCapabilities() } }
+                #endif
             }
         }
         return true

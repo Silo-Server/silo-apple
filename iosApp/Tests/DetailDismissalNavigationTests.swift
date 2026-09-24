@@ -22,6 +22,42 @@ private actor ContinueWatchingResponseGate {
 
 @MainActor
 final class DetailDismissalNavigationTests: XCTestCase {
+    func testPartyReusesTheCurrentDetailPresenterAndRejectsOutgoingDismissal() throws {
+        let router = AppRouter()
+        router.presentItemDetail(contentId: "movie", libraryId: 4)
+        router.presentPlayer(contentId: "solo")
+        let previous = try XCTUnwrap(router.presentedPlayer)
+        let context = WatchPartyPlaybackContext(roomId: "room", selectionRevision: 1,
+            contentId: "party-movie", fileId: 25, libraryId: 4, startPosition: 90)
+        router.presentWatchParty(context)
+        let party = try XCTUnwrap(router.presentedPlayer)
+        XCTAssertEqual(party.detailPresentationID, previous.detailPresentationID)
+        XCTAssertEqual(party.watchPartyContext, context)
+        XCTAssertEqual(party.fileId, 25)
+        router.dismissPlayerPresentation(id: previous.id)
+        XCTAssertEqual(router.presentedPlayer?.id, party.id)
+        router.presentWatchParty(nil)
+        XCTAssertNil(router.presentedPlayer)
+        XCTAssertNotNil(router.presentedItemDetail)
+    }
+
+    func testPartyWaitsForPickerDismissalAndCannotReopenAfterTermination() {
+        let router = AppRouter()
+        let context = WatchPartyPlaybackContext(roomId: "room", selectionRevision: 1,
+            contentId: "movie", fileId: 25, libraryId: 4, startPosition: 90)
+        router.watchPartySheetWillPresent()
+        router.presentWatchParty(context)
+        XCTAssertNil(router.presentedPlayer)
+        router.watchPartySheetDidDismiss()
+        XCTAssertEqual(router.presentedPlayer?.watchPartyContext, context)
+        router.presentWatchParty(nil)
+        router.watchPartySheetWillPresent()
+        router.presentWatchParty(context)
+        router.presentWatchParty(nil)
+        router.watchPartySheetDidDismiss()
+        XCTAssertNil(router.presentedPlayer)
+    }
+
     func testServerResolutionClearsPresentationsEvenWhenAuthStateStaysAuthenticated() {
         let router = AppRouter()
         router.authState = .authenticated
@@ -398,6 +434,36 @@ final class DetailDismissalNavigationTests: XCTestCase {
         XCTAssertNil(state.persistedOrientationMode)
         state.manuallyRotate(to: .landscapeLeft)
         XCTAssertEqual(state.persistedOrientationMode, .landscapeLocked)
+    }
+
+    func testCoveringPlayerRestoresBrowsingOrientationAndRetainsItsRotationLock() {
+        for lock: UIInterfaceOrientationMask? in [nil, .portrait, .landscapeLeft, .landscapeRight] {
+            var state = PlayerRotationState()
+            state.activate(lockedOrientation: lock)
+            state.setPlayerCovered(true)
+            XCTAssertEqual(PlayerOrientationCoordinator.geometryMask(
+                isPlayerActive: state.isPlayerActive, preferredOrientation: .landscape,
+                lockedOrientation: state.lockedOrientation, browsingOrientations: .portrait
+            ), .portrait, "A room panel must restore portrait even with a queued landscape request.")
+            XCTAssertEqual(state.lockedOrientation, lock)
+            state.setPlayerCovered(false)
+            XCTAssertEqual(PlayerOrientationCoordinator.orientationMask(
+                isPlayerActive: state.isPlayerActive, lockedOrientation: state.lockedOrientation
+            ), lock ?? .allButUpsideDown)
+        }
+    }
+
+    func testDismissingRoomPanelAfterPlayerClosesCannotReactivateItsOrientation() {
+        var state = PlayerRotationState()
+        state.activate(lockedOrientation: .landscapeRight)
+        state.setPlayerCovered(true)
+        state.deactivate()
+        state.setPlayerCovered(false)
+        XCTAssertFalse(state.isPlayerActive)
+        XCTAssertNil(state.lockedOrientation)
+        XCTAssertEqual(PlayerOrientationCoordinator.orientationMask(
+            isPlayerActive: state.isPlayerActive, browsingOrientations: .portrait
+        ), .portrait)
     }
 
     func testBrowsingStaysPortraitOnPhoneAndRotatesOnPad() {

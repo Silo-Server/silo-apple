@@ -362,12 +362,11 @@ struct MediaRow: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         #if os(tvOS)
-        // The leading gutter must be a content *margin*, not padding inside
-        // the scroll content: programmatic `scrollTo(anchor: .leading)` and
-        // the engine's scroll-to-focused both align to the margin-inset
-        // viewport, so with inner padding they overshoot left by the gutter
-        // width and then visibly drift back to the rest position.
-        .contentMargins(.horizontal, SiloTheme.safePadding, for: .scrollContent)
+        // Keep the gutter outside the scroll view. With content margins,
+        // tvOS adds the gutter to the resting offset again when focus leaves
+        // the row, shifting every card sideways. An inset viewport gives
+        // native focus scrolling and programmatic entry the same origin.
+        .padding(.horizontal, SiloTheme.safePadding)
         // tvOS focus lift expands cards on focus — give them breathing room
         // so they don't clip against the row above/below.
         .scrollClipDisabled()

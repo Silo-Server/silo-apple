@@ -188,6 +188,7 @@ targets:
           - "Screens/Player/iOS/**"
           - "Screens/Player/tvOS/**"
           - "Screens/Player/PlayerView.swift"
+          - "Screens/WatchParty/**"
       - path: iosApp/Screens/Player/PlayerTimeFormatter.swift
       - path: iosApp/tvOS/Caching/CachedAsyncImage.swift
       - path: iosApp/tvOS/Caching/PosterImageCache.swift

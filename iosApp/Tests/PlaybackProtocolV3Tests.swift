@@ -1580,6 +1580,124 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         }
     }
 
+    func testWatchPartySourceLockSurvivesAPIv2WireProjection() throws {
+        let snapshot = ApplePlaybackV3Capabilities.snapshot()
+        let request = PlaybackV3StartRequest(
+            protocolVersion: 3,
+            clientFeatures: ApplePlaybackV3Capabilities.features,
+            fileId: 42,
+            profileId: "profile-1",
+            playbackAttemptId: "apple-party:test",
+            qualityPreference: "auto",
+            subtitleFidelityPreference: "preserve",
+            progressPersistence: nil,
+            startPosition: 123.5,
+            audioTrackId: nil,
+            audioTrackIndex: nil,
+            subtitleTrackId: nil,
+            subtitleTrackIndex: nil,
+            metered: false,
+            bandwidthEstimateKbps: nil,
+            bandwidthCapKbps: nil,
+            clientCapabilities: snapshot.capabilities,
+            clientPlaybackContext: snapshot.context,
+            allowAlternateVersions: false
+        )
+        let object = try encodedObject(APIv2PlaybackStartBody(request, installationID: "installation"))
+        XCTAssertEqual(object["allow_alternate_versions"] as? Bool, false)
+        XCTAssertEqual(object["file_id"] as? String, "42")
+        XCTAssertEqual(object["start_position"] as? Double, 123.5)
+    }
+
+    func testWatchPartyRequiresAvailableExactSourceAndAuthoritativePosition() {
+        XCTAssertNoThrow(try PlaybackSessionBridge.validateFixedSource(
+            requestedFileId: 42, availableFileIds: [10, 42], position: 0
+        ))
+        XCTAssertThrowsError(try PlaybackSessionBridge.validateFixedSource(
+            requestedFileId: 42, availableFileIds: [10], position: 5
+        ))
+        let invalidPositions: [Double?] = [nil, -Double.infinity, Double.nan, -1]
+        for position in invalidPositions {
+            XCTAssertThrowsError(try PlaybackSessionBridge.validateFixedSource(
+                requestedFileId: 42, availableFileIds: [42], position: position
+            ))
+        }
+    }
+
+    func testWatchPartyRecoveryRetainsSourceLock() {
+        var request = PlayerViewModel.LoadRequest(
+            contentId: "movie", preferredFileId: 42, preferredAudioTrackIndex: nil,
+            preferredSubtitleTrackIndex: nil, preferredSidecarSubtitleTrackId: nil,
+            startFromBeginning: false
+        )
+        request.libraryId = 8
+        request.allowAlternateVersions = false
+        let recovered = request.copyForRecovery(
+            preferredFileId: 42, preferredAudioTrackIndex: 2,
+            preferredSubtitleTrackIndex: nil, preferredSidecarSubtitleTrackId: nil,
+            offlineDownloadId: nil
+        )
+        XCTAssertEqual(recovered.allowAlternateVersions, false)
+        XCTAssertEqual(recovered.preferredFileId, 42)
+        XCTAssertEqual(recovered.libraryId, 8)
+    }
+
+    func testWatchPartyGuestPlayPausePermissionNeverAllowsSeek() {
+        XCTAssertTrue(WatchPartyPlaybackAction.play.isPermitted(canPlayPause: true, canSeek: false))
+        XCTAssertTrue(WatchPartyPlaybackAction.pause.isPermitted(canPlayPause: true, canSeek: false))
+        XCTAssertFalse(WatchPartyPlaybackAction.seek(10).isPermitted(canPlayPause: true, canSeek: false))
+        XCTAssertFalse(WatchPartyPlaybackAction.play.isPermitted(canPlayPause: false, canSeek: false))
+        XCTAssertTrue(WatchPartyPlaybackAction.seek(10).isPermitted(canPlayPause: true, canSeek: true))
+    }
+
+    func testWatchPartySmallCorrectionOutsideWindowDoesNotReplan() {
+        XCTAssertEqual(WatchPartyCorrection.resolve(drift: 0.3, locallySeekable: true), .none)
+        XCTAssertEqual(WatchPartyCorrection.resolve(drift: 1.2, locallySeekable: true), .seek)
+        XCTAssertEqual(WatchPartyCorrection.resolve(drift: 1.2, locallySeekable: false), .temporaryRate(1.05))
+        XCTAssertEqual(WatchPartyCorrection.resolve(drift: -1.2, locallySeekable: false), .temporaryRate(0.95))
+        XCTAssertEqual(WatchPartyCorrection.resolve(drift: 3, locallySeekable: false), .seek)
+        XCTAssertEqual(WatchPartyCorrection.resolve(drift: .nan, locallySeekable: false), .none)
+    }
+
+    func testWatchPartyScrubResumeIsPartOfTheSeekRequest() {
+        let player = PlayerViewModel()
+        let adapter = WatchPartyPlaybackAdapter(player: player)
+        defer { adapter.stop() }
+        adapter.prepare(WatchPartyPlaybackContext(
+            roomId: "room", selectionRevision: 1, contentId: "movie",
+            fileId: 42, libraryId: nil, startPosition: 0
+        ))
+        adapter.canSeek = true
+        var requests: [(WatchPartyPlaybackAction, Bool)] = []
+        adapter.onUserTransport = { action, _, paused in requests.append((action, paused)) }
+        player.duration = 100
+        player.beginScrub(fraction: 0.5)
+        player.endScrub(resumePlayback: true)
+        XCTAssertEqual(requests.count, 1)
+        XCTAssertEqual(requests.first?.0, .seek(50))
+        XCTAssertEqual(requests.first?.1, false)
+        XCTAssertFalse(player.isScrubbing)
+    }
+
+    func testWatchPartyGuestSeekCannotMutateLocalPlayhead() {
+        let player = PlayerViewModel()
+        let adapter = WatchPartyPlaybackAdapter(player: player)
+        defer { adapter.stop() }
+        adapter.prepare(WatchPartyPlaybackContext(
+            roomId: "room", selectionRevision: 1, contentId: "movie",
+            fileId: 42, libraryId: nil, startPosition: 0
+        ))
+        player.currentTime = 23
+        player.duration = 100
+        var requests = 0
+        adapter.onUserTransport = { _, _, _ in requests += 1 }
+        player.seekTo(seconds: 50)
+        player.beginHoldSeek(forward: true)
+        XCTAssertEqual(player.currentTime, 23)
+        XCTAssertEqual(requests, 0)
+        XCTAssertFalse(player.isHoldSeeking)
+    }
+
     func testTerminalStartRouteEventIsSessionlessAndAttemptScoped() {
         let snapshot = ApplePlaybackV3Capabilities.audiobookSnapshot()
         let event = PlaybackSessionBridge.terminalStartRouteEvent(

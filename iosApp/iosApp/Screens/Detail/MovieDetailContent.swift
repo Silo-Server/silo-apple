@@ -225,6 +225,10 @@ struct MovieDetailContent<BelowOverview: View>: View {
     /// Menu contents for the action row's named "More" entry.
     @ViewBuilder
     private var overflowMenuItems: some View {
+        #if os(iOS)
+        WatchPartyMenuButton(contentId: detail.contentId, title: detail.title, type: detail.type,
+            fileId: selectedVersionFileId, preview: WatchPartySelectedItem(previewing: detail))
+        #endif
         if showsDownloadButton {
             Button {
                 showDownloadOptions = true

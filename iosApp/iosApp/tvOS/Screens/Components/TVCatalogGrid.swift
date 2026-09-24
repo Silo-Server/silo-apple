@@ -34,6 +34,7 @@ struct TVCatalogGrid: View {
     @State private var lastAppliedFocusRequest = 0
     @State private var uiCustomization = UICustomizationPreferences.shared
     @Environment(\.browseLibraryId) private var playbackLibraryId
+    @Environment(\.allowsDirectPlayback) private var allowsDirectPlayback
     @Environment(AppRouter.self) private var router
 
     private let columnSpacing: CGFloat = 40
@@ -140,7 +141,7 @@ struct TVCatalogGrid: View {
     }
 
     private func playAction(for item: BrowseItem) -> (() -> Void)? {
-        guard SiloMediaType.isDirectlyPlayable(item.type) else { return nil }
+        guard allowsDirectPlayback, SiloMediaType.isDirectlyPlayable(item.type) else { return nil }
         return {
             router.presentPlayer(
                 contentId: item.contentId,

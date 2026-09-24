@@ -19,6 +19,7 @@ import SwiftUI
 struct TVSettingsView: View {
     @State private var viewModel = SettingsViewModel()
     @State private var diagnosticsModel = DiagnosticsViewModel()
+    @State private var experimental = ExperimentalFeatures.shared
     @State private var showSignOutConfirm = false
     @State private var showPrivacyPolicy = false
     @State private var showOpenSourceAcknowledgements = false
@@ -638,7 +639,22 @@ struct TVSettingsView: View {
 
             TVSettingsSectionHeader("ABOUT")
 
-            TVSettingsInfoRow(title: "App Version", value: Self.versionString)
+            // Pressing the version reveals the Experimental section, so this
+            // row is focusable unlike the other fact rows.
+            Button { experimental.registerVersionTap() } label: {
+                HStack(spacing: 16) {
+                    Text("App Version")
+                        .font(.system(size: 26))
+                        .lineLimit(1)
+                    Spacer(minLength: 16)
+                    Text(Self.versionString)
+                        .font(.system(size: 24))
+                        .opacity(0.68)
+                        .lineLimit(1)
+                }
+            }
+            .buttonStyle(TVSettingsPaneRowStyle())
+            .focused($detailFocus, equals: .serverAppVersion)
 
             Button(action: presentPrivacyPolicy) {
                 HStack(spacing: 16) {
@@ -669,6 +685,20 @@ struct TVSettingsView: View {
             }
             .buttonStyle(TVSettingsPaneRowStyle())
             .focused($detailFocus, equals: .serverOpenSourceLicenses)
+
+            if experimental.isUnlocked {
+                TVSettingsSectionHeader("EXPERIMENTAL")
+
+                ForEach(ExperimentalFeature.allCases) { feature in
+                    TVSettingsToggleRow(
+                        title: feature.title,
+                        isOn: experimental.isEnabled(feature)
+                    ) {
+                        feature.setEnabled(!experimental.isEnabled(feature))
+                    }
+                    .focused($detailFocus, equals: .serverExperimental(feature))
+                }
+            }
         }
     }
 
@@ -731,8 +761,10 @@ enum TVSettingsDetailFocus: Hashable {
     case subtitleBackgroundOpacity
     case subtitleBackgroundColor
     case subtitlePosition
+    case serverAppVersion
     case serverPrivacyPolicy
     case serverOpenSourceLicenses
+    case serverExperimental(ExperimentalFeature)
 }
 
 // MARK: - Categories

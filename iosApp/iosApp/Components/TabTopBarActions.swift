@@ -87,6 +87,7 @@ private struct TopBarIconButton: View {
 /// Settings / Switch Profile / Sign Out so the user can reach app settings
 /// and manage their account without leaving the current tab.
 private struct ProfileAvatarMenu: View {
+    @Environment(AppRouter.self) private var router
     let profile: UserProfile?
     let onOpenSettings: () -> Void
     let onOpenRequests: () -> Void
@@ -102,6 +103,11 @@ private struct ProfileAvatarMenu: View {
 
     var body: some View {
         Menu {
+            #if os(iOS) || os(tvOS)
+            if WatchPartyEntry.isAvailable {
+                Button(WatchPartySession.shared.isEngaged ? "Return to Watch Party" : "Watch Party", systemImage: "person.3") { router.navigate(to: .watchParty) }
+            }
+            #endif
             if requestsEnabled {
                 Button {
                     onOpenRequests()

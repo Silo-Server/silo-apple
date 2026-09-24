@@ -101,6 +101,7 @@ extension AppRouter.PlayerPresentation {
             returnToContentId: returnToContentId,
             offlineDownloadId: offlineDownloadId,
             detailPresentationID: detailPresentationID,
+            watchPartyContext: watchPartyContext,
             posterURL: posterURL,
             backdropURL: backdropURL
         )

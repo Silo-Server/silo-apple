@@ -831,22 +831,24 @@ private struct VideoPane: View {
                         }
                         .focused($focusedField, equals: .quality)
 
-                        HUDSettingRow(label: "Speed", value: speedLabel(viewModel.settings.playbackSpeed)) {
-                            presentPicker(
-                                for: .speed,
-                                HUDPickerPresentation(
-                                    title: "Playback Speed",
-                                    options: Self.speedOptions,
-                                    selection: speedID(viewModel.settings.playbackSpeed),
-                                    onSelect: { value in
-                                        if let speed = Double(value) {
-                                            viewModel.setPlaybackSpeed(speed)
+                        if !viewModel.isWatchPartyPlayback {
+                            HUDSettingRow(label: "Speed", value: speedLabel(viewModel.settings.playbackSpeed)) {
+                                presentPicker(
+                                    for: .speed,
+                                    HUDPickerPresentation(
+                                        title: "Playback Speed",
+                                        options: Self.speedOptions,
+                                        selection: speedID(viewModel.settings.playbackSpeed),
+                                        onSelect: { value in
+                                            if let speed = Double(value) {
+                                                viewModel.setPlaybackSpeed(speed)
+                                            }
                                         }
-                                    }
+                                    )
                                 )
-                            )
+                            }
+                            .focused($focusedField, equals: .speed)
                         }
-                        .focused($focusedField, equals: .speed)
 
                         HUDSettingRow(label: "Aspect", value: viewModel.settings.videoGravity.label) {
                             presentPicker(
@@ -897,8 +899,10 @@ private struct VideoPane: View {
                             .focused($focusedField, equals: .subtitleDelay)
                         }
 
-                        HUDToggleRow(label: "Auto-play next", isOn: viewModel.settings.autoPlayNextEpisode) {
-                            viewModel.settings.setAutoPlayNextEpisode($0)
+                        if !viewModel.isWatchPartyPlayback {
+                            HUDToggleRow(label: "Auto-play next", isOn: viewModel.settings.autoPlayNextEpisode) {
+                                viewModel.settings.setAutoPlayNextEpisode($0)
+                            }
                         }
                     }
                 }

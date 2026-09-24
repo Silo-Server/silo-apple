@@ -102,6 +102,12 @@ final class PictureInPictureCoordinator {
         onRestoreUserInterface: ((@escaping (Bool) -> Void) -> Void)? = nil,
         onStartFailure: ((StartFailure) -> Void)? = nil
     ) {
+        // AVKit native transport bypasses the room authority boundary.
+        // Keep the prototype off both native and software PiP until qualified.
+        if let player = owner as? PlayerViewModel, player.isWatchPartyPlayback {
+            endSession(owner: owner)
+            return
+        }
         if self.engine === engine, lifecycleOwner === owner {
             if let onEngagementEnded {
                 self.onEngagementEnded = onEngagementEnded

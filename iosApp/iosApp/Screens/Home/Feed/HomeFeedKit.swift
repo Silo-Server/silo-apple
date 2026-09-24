@@ -125,6 +125,8 @@ private struct HomeCardTap<Label: View>: View {
     /// children into one element, so a nested play button would otherwise
     /// vanish from the accessibility tree.
     var accessibilityPlayAction: (name: String, perform: () -> Void)? = nil
+    /// Replaces opening detail, for hosts that pick rather than browse.
+    var onTap: (() -> Void)? = nil
     @ViewBuilder var label: () -> Label
 
     @Environment(AppRouter.self) private var router
@@ -135,6 +137,7 @@ private struct HomeCardTap<Label: View>: View {
 
     var body: some View {
         Button {
+            if let onTap { onTap(); return }
             router.pendingZoomSourceID = zoomInstanceID.uuidString
             if let continueWatchingItem {
                 router.presentContinueWatchingDetail(for: continueWatchingItem, libraryId: browseLibraryId, browseSource: detailBrowseSource)
@@ -319,6 +322,10 @@ struct HomePosterCard: View {
     /// Long-press actions, matching what `MediaCard` offers elsewhere.
     var onRemoveFromContinueWatching: (() -> Void)? = nil
     var onSetWatched: ((Bool) async -> Bool)? = nil
+    /// Replaces opening detail; see `HomeCardTap.onTap`.
+    var onTap: (() -> Void)? = nil
+    /// Replaces the year/metadata caption line.
+    var secondLineOverride: String? = nil
 
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
     /// Optimistic watched state, shared with the menu so the badge flips the
@@ -338,7 +345,8 @@ struct HomePosterCard: View {
         HomeCardTap(
             contentId: item.contentId,
             accessibilityLabel: accessibilityDescription,
-            continueWatchingItem: opensResumeContext ? item : nil
+            continueWatchingItem: opensResumeContext ? item : nil,
+            onTap: onTap
         ) {
             VStack(alignment: .leading, spacing: 7) {
                 artwork
@@ -420,7 +428,7 @@ struct HomePosterCard: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
 
-            if showsMetadata, let secondLine = HomeFeedMeta.cardSecondLine(for: item) {
+            if showsMetadata, let secondLine = secondLineOverride ?? HomeFeedMeta.cardSecondLine(for: item) {
                 Text(secondLine)
                     .font(.caption2)
                     .foregroundStyle(Color.siloOnSurface.opacity(0.5))
@@ -459,6 +467,8 @@ struct HomeStillCard: View {
     var opensResumeContext = false
     var onRemoveFromContinueWatching: (() -> Void)? = nil
     var onSetWatched: ((Bool) async -> Bool)? = nil
+    /// Replaces opening detail and drops the direct-play action; see `HomeCardTap.onTap`.
+    var onTap: (() -> Void)? = nil
 
     /// Optimistic watched state, shared with the menu — see `HomePosterCard`.
     @State private var playedOverride: Bool?
@@ -486,9 +496,10 @@ struct HomeStillCard: View {
             contentId: item.contentId,
             accessibilityLabel: accessibilityDescription,
             continueWatchingItem: opensResumeContext ? item : nil,
-            accessibilityPlayAction: isDirectlyPlayable
+            accessibilityPlayAction: isDirectlyPlayable && onTap == nil
                 ? (name: playActionName, perform: playItem)
-                : nil
+                : nil,
+            onTap: onTap
         ) {
             VStack(alignment: .leading, spacing: 8) {
                 artwork
@@ -554,7 +565,8 @@ struct HomeStillCard: View {
                 .stroke(.white.opacity(0.08), lineWidth: 0.5)
         )
         .overlay(alignment: .center) {
-            playBadge
+            // A host that picks on tap must not also offer direct playback.
+            if onTap == nil { playBadge }
         }
         // A watched item can sit in Continue Watching again on a rewatch —
         // the check says "you've finished this before" alongside the rail's

@@ -23,6 +23,7 @@ struct APIv2PlaybackStartBody: Encodable {
     let bandwidthCapKbps: Int?
     let clientCapabilities: PlaybackV3CodecCapabilities
     let clientPlaybackContext: PlaybackV3ClientContext
+    let allowAlternateVersions: Bool?
 
     init(_ request: PlaybackV3StartRequest, installationID: String) {
         installationId = installationID
@@ -44,6 +45,7 @@ struct APIv2PlaybackStartBody: Encodable {
         bandwidthCapKbps = request.bandwidthCapKbps
         clientCapabilities = request.clientCapabilities
         clientPlaybackContext = request.clientPlaybackContext
+        allowAlternateVersions = request.allowAlternateVersions
     }
 }
 

@@ -65,6 +65,14 @@ struct ContentView: View {
         // to the same auth state. Re-key the routed subtree so profile, home,
         // library, focus, and modal state cannot survive from the old server.
         .id(serverRegistry.activeServerId)
+        #if os(iOS) || os(tvOS)
+        .modifier(WatchPartyPresentationModifier(router: router))
+        .task(id: router.authState) {
+            if WatchPartyEntry.isEnabled, router.authState == .authenticated {
+                await WatchPartySession.shared.refreshCapabilities()
+            }
+        }
+        #endif
         .environment(audioStore)
         #if os(iOS)
         .environment(siloControl)
@@ -244,6 +252,7 @@ struct ContentView: View {
         #endif
         .task(id: router.authState) {
             if router.authState != .authenticated {
+                WatchPartySession.shared.leave(forgetRecent: router.authState != .loading && router.authState != .needsProfile)
                 playDeepLinkTask?.cancel()
                 playDeepLinkTask = nil
                 isDownloadCapabilityHydrated = false
@@ -264,6 +273,11 @@ struct ContentView: View {
             await maybeAutoPlayForDebug()
             #endif
             if router.authState == .authenticated {
+                #if DEBUG && (os(iOS) || os(tvOS))
+                if CommandLine.arguments.contains("-debugWatchParty") || CommandLine.arguments.contains("-debugWatchPartyCode") {
+                    router.navigate(to: .watchParty)
+                }
+                #endif
                 let hasPendingDeepLink = pendingDeepLink != nil
                 isDownloadCapabilityHydrated = false
                 drainPendingDeepLinkIfReady()
@@ -741,6 +755,25 @@ struct ContentView: View {
     }
 
     private func handleDeepLink(_ url: URL, revision: UInt) {
+        #if os(iOS) || os(tvOS)
+        if WatchPartyEntry.isEnabled, WatchPartyInvitation(url: url) != nil {
+            guard router.authState == .authenticated,
+                  !launchPreferences.requiresSelectionAfterBackground() else {
+                pendingDeepLink = url
+                return
+            }
+            let identity = currentDeepLinkIdentity
+            playDeepLinkTask = Task { @MainActor in
+                guard canCompletePlayDeepLink(revision: revision, identity: identity) else { return }
+                router.navigate(to: .watchParty)
+                let joined = await WatchPartySession.shared.join(invitation: url.absoluteString)
+                guard canCompletePlayDeepLink(revision: revision, identity: identity) else { return }
+                if joined && WatchPartySession.shared.playbackContext == nil { router.dismissItemDetail() }
+                if deepLinkRevision == revision { playDeepLinkTask = nil }
+            }
+            return
+        }
+        #endif
         guard url.scheme?.lowercased() == "continuum",
               let host = url.host?.lowercased() else { return }
 
@@ -2620,6 +2653,12 @@ struct MainTabView: View {
             CollectionDetailView(collectionId: id)
         case .browse(let libraryId):
             BrowseView(libraryId: libraryId)
+        case .watchParty:
+            #if os(iOS) || os(tvOS)
+            WatchPartyHubView(session: .shared)
+            #else
+            EmptyView()
+            #endif
         case .requestsHub:
             RequestsHubView()
         case .requestDetail(let mediaType, let tmdbId):

@@ -40,11 +40,13 @@ struct PlayerView: View {
     /// for artwork. Nil falls back to the prior fetch-on-prepare path.
     let posterURLHint: String?
     let backdropURLHint: String?
+    let watchPartyContext: WatchPartyPlaybackContext?
     let onPlaybackStarted: (() -> Void)?
     let onDismissRequested: (() -> Void)?
 
     @State private var viewModel: PlayerViewModel
     @State private var didNotifyPlaybackStarted = false
+    @State private var showsPartyPanel = false
     @Environment(\.dismiss) var dismiss
     #if os(iOS)
     @State private var orientationCoordinator = PlayerOrientationCoordinator.shared
@@ -71,6 +73,7 @@ struct PlayerView: View {
         offlineDownloadId: String? = nil,
         posterURLHint: String? = nil,
         backdropURLHint: String? = nil,
+        watchPartyContext: WatchPartyPlaybackContext? = nil,
         onPlaybackStarted: (() -> Void)? = nil,
         onDismissRequested: (() -> Void)? = nil
     ) {
@@ -86,6 +89,7 @@ struct PlayerView: View {
         self.offlineDownloadId = offlineDownloadId
         self.posterURLHint = posterURLHint
         self.backdropURLHint = backdropURLHint
+        self.watchPartyContext = watchPartyContext
         self.onPlaybackStarted = onPlaybackStarted
         self.onDismissRequested = onDismissRequested
     }
@@ -290,9 +294,17 @@ struct PlayerView: View {
                         #endif
                     }
 
+                    #if os(tvOS)
+                    if let message = watchPartySyncMessage {
+                        PlayerBufferingCapsule(message: message, delay: .milliseconds(500))
+                    } else if viewModel.isLoading || viewModel.isBuffering {
+                        PlayerBufferingCapsule()
+                    }
+                    #else
                     if viewModel.isLoading || viewModel.isBuffering {
                         PlayerBufferingCapsule()
                     }
+                    #endif
                 }
             }
         }
@@ -388,7 +400,32 @@ struct PlayerView: View {
             guard newValue != nil else { return }
             dismissPlayer()
         }
+        #if os(tvOS)
+        // A tvOS sheet is a narrow centered card; the lobby needs the screen.
+        .fullScreenCover(isPresented: $showsPartyPanel) {
+            WatchPartyRoomPanel(session: .shared)
+        }
+        #else
+        .sheet(isPresented: $showsPartyPanel) {
+            WatchPartyRoomPanel(session: .shared)
+        }
+        .onChange(of: showsPartyPanel) { _, isPresented in
+            orientationCoordinator.setPlayerCovered(isPresented)
+        }
+        #endif
         .onAppear {
+            if let context = watchPartyContext {
+                #if os(iOS)
+                orientationCoordinator.activatePlayer()
+                viewModel.playerPresentationDidAppear()
+                #endif
+                let adapter = WatchPartyPlaybackAdapter(player: viewModel)
+                WatchPartySession.shared.bind(adapter, context: context)
+                #if os(tvOS)
+                TVControlReceiver.shared.registerPlayer(viewModel, contentId: contentId)
+                #endif
+                return
+            }
             #if os(iOS)
             // A Picture in Picture restore re-presents this cover for a session
             // that is still playing. Adopt that view model instead of minting a
@@ -501,6 +538,10 @@ struct PlayerView: View {
     }
 
     private func dismissPlayer() {
+        if watchPartyContext != nil, WatchPartySession.shared.isEngaged, viewModel.remoteDismissToken == nil {
+            showsPartyPanel = true
+            return
+        }
         viewModel.cleanup()
         closePresentation()
     }
@@ -627,6 +668,24 @@ struct PlayerView: View {
                 )
             }
     }
+
+    #if os(tvOS)
+    private var watchPartySyncMessage: LocalizedStringKey? {
+        guard let context = watchPartyContext, viewModel.error == nil,
+              let room = WatchPartySession.shared.room,
+              room.roomId == context.roomId, room.selectionRevision == context.selectionRevision,
+              room.phase == .playing else { return nil }
+        if WatchPartySession.shared.connection == .reconnecting {
+            return "Reconnecting to the party…"
+        }
+        let playback = viewModel.watchPartyPlaybackSnapshot
+        if room.playbackState == .waiting || playback.isBuffering || playback.isSeeking
+            || room.members.contains(where: { $0.isSelf && $0.isSyncing }) {
+            return "Syncing with the party…"
+        }
+        return nil
+    }
+    #endif
 
     #if !os(tvOS)
     /// Tap-to-reveal close control while loading and on Next Up, in
