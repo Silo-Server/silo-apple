@@ -49,8 +49,11 @@ enum WatchPartyEntry {
                 if session.room?.selfCanManageRoom == true, session.room?.selectionMode == .hostPick {
                     await session.select(selection, preview: preview)
                 } else {
+                    // The server stores what the suggester sends; without the
+                    // preview's art the lobby shows a blank poster.
                     await session.addSuggestion(WatchPartyNewSuggestion(
-                        contentId: contentId, contentType: type, title: title))
+                        contentId: contentId, contentType: type, title: title,
+                        subtitle: preview?.subtitle, posterUrl: preview?.posterUrl))
                 }
             } else {
                 await session.create(selection: selection, preview: preview)

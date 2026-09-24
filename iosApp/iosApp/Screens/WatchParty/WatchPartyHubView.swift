@@ -868,21 +868,27 @@ struct WatchPartyLobbyView: View {
                     statusBanner(room)
                 }
             } else {
-                VStack(alignment: .leading, spacing: 30) {
-                    heroText(room, titleSize: WatchPartyMetrics.heroTitle)
-                    if let overview = displayedItem?.overview, !overview.isEmpty {
-                        Text(overview)
-                            .font(.system(size: 24))
-                            .lineSpacing(6)
-                            .foregroundStyle(Color.siloSecondaryText)
-                            .lineLimit(hostPickSuggestionsShown(room) ? 2 : 3)
+                // Suggestions take the empty side of the screen so the hero
+                // keeps its height and the seats stay put.
+                HStack(alignment: .top, spacing: 40) {
+                    VStack(alignment: .leading, spacing: 30) {
+                        heroText(room, titleSize: WatchPartyMetrics.heroTitle)
+                        if let overview = displayedItem?.overview, !overview.isEmpty {
+                            Text(overview)
+                                .font(.system(size: 24))
+                                .lineSpacing(6)
+                                .foregroundStyle(Color.siloSecondaryText)
+                                .lineLimit(3)
+                        }
+                        statusBanner(room)
                     }
-                    statusBanner(room)
+                    .frame(width: 760, alignment: .leading)
                     if hostPickSuggestionsShown(room) {
+                        Spacer(minLength: 0)
                         WatchPartyLobbySuggestions(session: session, room: room)
+                            .frame(maxWidth: 820, alignment: .leading)
                     }
                 }
-                .frame(width: 760, alignment: .leading)
                 .padding(.top, 90)
             }
 
@@ -925,13 +931,25 @@ struct WatchPartyLobbyView: View {
 
 /// Guests' suggestions in a host-pick lobby. The host still decides, so the
 /// action stages a suggestion as the pick rather than starting it; everyone
-/// else sees what has been put forward and can pull their own.
+/// else sees what has been put forward and can pull their own. (Promote
+/// would start playback, so queueing goes through the selection instead.)
 struct WatchPartyLobbySuggestions: View {
     let session: WatchPartySession
     let room: WatchPartyRoom
 
     private var canQueue: Bool {
         room.selfCanManageRoom && !session.locksControls && session.connection == .connected
+    }
+
+    /// Without staged selection the server starts whatever the host selects.
+    private var queueLabel: String { session.capabilities?.stagedSelection == true ? "Queue" : "Play" }
+
+    private func isQueued(_ suggestion: WatchPartySuggestion) -> Bool {
+        suggestion.contentId == room.selectedContentId
+    }
+
+    private func queue(_ suggestion: WatchPartySuggestion) {
+        Task { await session.select(WatchPartySelection(contentId: suggestion.contentId)) }
     }
 
     var body: some View {
@@ -948,7 +966,9 @@ struct WatchPartyLobbySuggestions: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(alignment: .top, spacing: 24) {
                     ForEach(session.votes.rows) { suggestion in
-                        WatchPartySuggestionCard(session: session, suggestion: suggestion, canQueue: canQueue)
+                        WatchPartySuggestionCard(session: session, suggestion: suggestion,
+                                                 canQueue: canQueue && !isQueued(suggestion),
+                                                 queueLabel: queueLabel, onQueue: queue)
                     }
                 }
                 .padding(.vertical, 14)
@@ -958,7 +978,8 @@ struct WatchPartyLobbySuggestions: View {
             #else
             VStack(spacing: 8) {
                 ForEach(session.votes.rows) { suggestion in
-                    WatchPartySuggestionRow(session: session, suggestion: suggestion, canQueue: canQueue)
+                    WatchPartySuggestionRow(session: session, suggestion: suggestion, canQueue: canQueue,
+                                            isQueued: isQueued(suggestion), queueLabel: queueLabel, onQueue: queue)
                 }
             }
             #endif
@@ -971,6 +992,9 @@ private struct WatchPartySuggestionRow: View {
     let session: WatchPartySession
     let suggestion: WatchPartySuggestion
     let canQueue: Bool
+    let isQueued: Bool
+    let queueLabel: String
+    let onQueue: (WatchPartySuggestion) -> Void
 
     var body: some View {
         HStack(spacing: 12) {
@@ -983,11 +1007,16 @@ private struct WatchPartySuggestionRow: View {
                     .font(.system(size: 12)).foregroundStyle(Color.siloSecondaryText).lineLimit(1)
             }
             Spacer(minLength: 4)
-            if canQueue {
-                Button("Queue") { Task { await session.promoteSuggestion(id: suggestion.id) } }
+            if isQueued {
+                Text("Up next")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.siloSecondaryText)
+                    .padding(.horizontal, 8)
+            } else if canQueue {
+                Button(queueLabel) { onQueue(suggestion) }
                     .buttonStyle(WatchPartyButtonStyle(kind: .secondary))
                     .fixedSize()
-                    .accessibilityLabel("Queue \(suggestion.title)")
+                    .accessibilityLabel("\(queueLabel) \(suggestion.title)")
             }
         }
         .padding(8)
@@ -1011,6 +1040,8 @@ private struct WatchPartySuggestionCard: View {
     let session: WatchPartySession
     let suggestion: WatchPartySuggestion
     let canQueue: Bool
+    let queueLabel: String
+    let onQueue: (WatchPartySuggestion) -> Void
     @FocusState private var isFocused: Bool
 
     private static let poster = CGSize(width: 120, height: 180)
@@ -1021,7 +1052,7 @@ private struct WatchPartySuggestionCard: View {
             // so the context menu can remove it; other guests' cards are
             // display-only.
             Button {
-                if canQueue { Task { await session.promoteSuggestion(id: suggestion.id) } }
+                if canQueue { onQueue(suggestion) }
             } label: {
                 WatchPartyPoster(url: suggestion.posterUrl, width: Self.poster.width, cornerRadius: 10)
                     .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -1033,7 +1064,7 @@ private struct WatchPartySuggestionCard: View {
             .buttonStyle(.siloFlat)
             .focused($isFocused)
             .disabled(!canQueue && !session.canRemoveSuggestion(suggestion))
-            .accessibilityLabel(canQueue ? "Queue \(suggestion.title)" : suggestion.title)
+            .accessibilityLabel(canQueue ? "\(queueLabel) \(suggestion.title)" : suggestion.title)
             .contextMenu {
                 if session.canRemoveSuggestion(suggestion) {
                     Button(role: .destructive) { Task { await session.deleteSuggestion(id: suggestion.id) } } label: { Text("Remove suggestion") }
