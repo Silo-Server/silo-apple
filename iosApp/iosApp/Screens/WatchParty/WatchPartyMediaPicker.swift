@@ -966,7 +966,10 @@ private struct WatchPartyEpisodePicker: View {
             let values = try await SiloAPI.shared.apiV2Client.catalogSeasons(seriesId: series.contentId, imageSize: nil, auth: auth)
             guard !Task.isCancelled, roomId == session.room?.roomId else { return }
             seasons = try values.map { try Season(catalog: $0) }.sortedForDisplay()
-            let target = seasons.first(where: { $0.seasonNumber == initialSeasonNumber })
+            // A retry keeps the season being viewed; the first load opens on
+            // the initial season.
+            let target = seasons.first(where: { $0.seasonNumber == seasonNumber })
+                ?? seasons.first(where: { $0.seasonNumber == initialSeasonNumber })
                 ?? seasons.first(where: { $0.seasonNumber > 0 }) ?? seasons.first
             if seasonNumber == target?.seasonNumber { await loadEpisodes() }
             else { seasonNumber = target?.seasonNumber }
