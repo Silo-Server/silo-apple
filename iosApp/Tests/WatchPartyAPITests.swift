@@ -108,6 +108,26 @@ final class WatchPartyAPITests: XCTestCase {
         }
     }
 
+    func testAppLinkInvitationMatchesTheWebLink() throws {
+        let app = try XCTUnwrap(WatchPartyInvitation(url: URL(string:
+            "silo://watch-party?server=https%3A%2F%2Fexample.test%2Fsilo%2F&token=invite%2Bproof")!))
+        let web = try XCTUnwrap(WatchPartyInvitation(url: URL(string: "https://example.test/silo/rooms/join?token=invite%2Bproof")!))
+        XCTAssertEqual(app, web)
+        let lan = try XCTUnwrap(WatchPartyInvitation(url: URL(string: "SILO://watch-party?server=HTTP://192.168.1.10:8090&token=t")!))
+        XCTAssertEqual(lan.serverURL, "http://192.168.1.10:8090")
+        for value in ["silo://watch-party?token=a", "silo://watch-party?server=https://example.test&token=",
+                      "silo://watch-party?server=https://example.test&token=a&token=b",
+                      "silo://watch-party?server=https://example.test&server=https://other.test&token=a",
+                      "silo://watch-party?server=https://user:pass@example.test&token=a",
+                      "silo://watch-party?server=https://example.test?x=1&token=a",
+                      "silo://watch-party?server=file:///srv&token=a", "silo://watch-party?server=example.test&token=a",
+                      "silo://watch-party/other?server=https://example.test&token=a",
+                      "silo://invite?server=https://example.test&token=a",
+                      "continuum://watch-party?server=https://example.test&token=a"] {
+            XCTAssertNil(WatchPartyInvitation(url: URL(string: value)!), value)
+        }
+    }
+
     func testStageCarriesCapturedProfileRoomProofAndStringIDs() async throws {
         stub.reply(200, try response())
         let (api, _, auth) = try await client()

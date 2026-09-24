@@ -177,7 +177,7 @@ The codebase already encodes several tvOS lessons — preserve them:
    - Reduce Motion on → marquee snaps, no crossfade
 4. Confirm iOS (`Silo` scheme) Home/Browse still show the Featured carousel
    exactly as before — screenshot-compare if in doubt.
-5. Confirm Top Shelf deep links and `continuum://` routes still resolve.
+5. Confirm Top Shelf deep links and `silo://` routes still resolve.
 6. Report results honestly, including anything you could not verify in the
    simulator, and list any synopsis/badge fields missing from section models
    (for the §9 server audit).

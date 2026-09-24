@@ -474,7 +474,7 @@ stays empty (backdrop scrim only) until the first row has content.
 - Home sections, library sections, collections, calendar, and recommendations
   endpoints are otherwise reused as-is; "For You" folding is purely a client
   presentation change.
-- Top Shelf (tvOS) and deep links (`continuum://`) are unaffected — routes for
+- Top Shelf (tvOS) and deep links (`silo://`) are unaffected — routes for
   detail/player don't change.
 
 ---
