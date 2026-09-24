@@ -33,6 +33,8 @@ struct WatchPartyPlaybackSnapshot: Equatable, Sendable {
     var isBuffering = false
     var isReady = false
     var isSeeking = false
+    /// The stream reached end of file and is parked there.
+    var isEnded = false
 }
 
 enum WatchPartyPlaybackError: Error {
@@ -107,6 +109,9 @@ final class WatchPartyPlaybackAdapter {
     @discardableResult
     func request(_ action: WatchPartyPlaybackAction, isPaused: Bool? = nil) -> Bool {
         guard context != nil else { return false }
+        // Play from the end would re-anchor the room at a finished or dead
+        // position. A seek is how a member leaves the end.
+        if action == .play, snapshot.isEnded { return true }
         if action.isPermitted(canPlayPause: canPlayPause, canSeek: canSeek) {
             onUserTransport?(action, snapshot.sourceTime, isPaused ?? !snapshot.isPlaying)
         }

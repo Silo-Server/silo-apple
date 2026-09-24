@@ -503,7 +503,7 @@ class PlayerViewModel {
     /// True after the active backend reports natural EOF. Used to keep the
     /// UI in a terminal paused state without letting tail-drain callbacks
     /// overwrite it or surface a false decode error.
-    private var hasReachedEndOfFile = false
+    var hasReachedEndOfFile = false
     let settings = PlayerSettings.shared
     /// Profile-wide skip intervals. Read at each skip, so a change made while
     /// the player is open applies to the next press.
@@ -3599,6 +3599,20 @@ class PlayerViewModel {
                 && progress < 0.985
         }()
 
+        // A Watch Party has no postroll to fall back on, and a member parked
+        // on a dead stream is one the room can no longer move. Remount at the
+        // position the connection dropped; the load mounts paused, and the
+        // room's attach and commands bring the member back in step.
+        if isPremature, isWatchPartyPlayback {
+            Self.logger.warning(
+                "[CMP] handleEndOfFile reloading Watch Party playback: premature EOF at \(observedPosition, privacy: .public)/\(safeDuration, privacy: .public)"
+            )
+            // Not a finish: the reload must not record the item as completed.
+            hasReachedEndOfFile = false
+            if remountWatchPartyPlayback(at: observedPosition) { return }
+            hasReachedEndOfFile = true
+        }
+
         if isPremature {
             Self.logger.warning(
                 "[CMP] handleEndOfFile suppressing autoplay: premature EOF at \(observedPosition, privacy: .public)/\(safeDuration, privacy: .public)"
@@ -4910,9 +4924,17 @@ class PlayerViewModel {
         seekIntervalPreferences.pair(for: .videoPlayer)
     }
 
+    /// Solo playback parks at end of file behind the postroll, so local seeks
+    /// stop there. A Watch Party has no postroll: its seeks are requests to
+    /// the room, and the room's seek remounts the ended stream (see
+    /// `applyWatchPartyTransport`).
+    private var refusesSeekAtEndOfFile: Bool {
+        hasReachedEndOfFile && !isWatchPartyPlayback
+    }
+
     /// Skips forward by `seconds`, or by the configured interval when nil.
     func skipForward(_ seconds: Double? = nil, revealingControls: Bool = true) {
-        guard !hasReachedEndOfFile else { return }
+        guard !refusesSeekAtEndOfFile else { return }
         let seconds = seconds ?? Double(skipIntervals.forward)
         Self.logger.info(
             "[CMP-SEEK] skip forward requested seconds=\(seconds, privacy: .public) current=\(self.currentTime, privacy: .public) preview=\(self.scrubPreviewTime, privacy: .public) isScrubbing=\(self.isScrubbing, privacy: .public)"
@@ -4925,7 +4947,7 @@ class PlayerViewModel {
 
     /// Skips backward by `seconds`, or by the configured interval when nil.
     func skipBackward(_ seconds: Double? = nil, revealingControls: Bool = true) {
-        guard !hasReachedEndOfFile else { return }
+        guard !refusesSeekAtEndOfFile else { return }
         let seconds = seconds ?? Double(skipIntervals.backward)
         Self.logger.info(
             "[CMP-SEEK] skip backward requested seconds=\(seconds, privacy: .public) current=\(self.currentTime, privacy: .public) preview=\(self.scrubPreviewTime, privacy: .public) isScrubbing=\(self.isScrubbing, privacy: .public)"
@@ -4983,7 +5005,7 @@ class PlayerViewModel {
     /// transport buttons.
     func beginHoldSeek(forward: Bool) {
         guard canRequestSeek else { return }
-        guard !hasReachedEndOfFile else { return }
+        guard !refusesSeekAtEndOfFile else { return }
         if isHoldSeeking { return } // already in a session
         Self.logger.info(
             "[CMP-SEEK] hold seek begin direction=\(forward ? "forward" : "backward", privacy: .public) current=\(self.currentTime, privacy: .public)"
@@ -5238,7 +5260,7 @@ class PlayerViewModel {
     }
 
     func seek(to fraction: Double) {
-        guard !hasReachedEndOfFile else { return }
+        guard !refusesSeekAtEndOfFile else { return }
         guard duration > 0 else { return }
         skipDebounceTask?.cancel()
         skipDebounceTask = nil
@@ -5252,7 +5274,7 @@ class PlayerViewModel {
     /// Seek to a specific timestamp. Used by the chapter sheet and the tvOS
     /// progress-bar scrubber.
     func seekTo(seconds: Double) {
-        guard !hasReachedEndOfFile else { return }
+        guard !refusesSeekAtEndOfFile else { return }
         skipDebounceTask?.cancel()
         skipDebounceTask = nil
         Self.logger.info(
@@ -5440,7 +5462,7 @@ class PlayerViewModel {
 
     func beginScrub(fraction: Double) {
         guard canRequestSeek else { return }
-        guard !hasReachedEndOfFile else { return }
+        guard !refusesSeekAtEndOfFile else { return }
         guard duration > 0 else { return }
         skipDebounceTask?.cancel()
         skipDebounceTask = nil
@@ -5451,14 +5473,14 @@ class PlayerViewModel {
     }
 
     func updateScrub(fraction: Double) {
-        guard !hasReachedEndOfFile else { return }
+        guard !refusesSeekAtEndOfFile else { return }
         guard duration > 0 else { return }
         scrubPreviewTime = max(0, min(fraction, 1)) * duration
         scrubPreviewProvider.request(atSourceTime: scrubPreviewTime)
     }
 
     func endScrub(resumePlayback: Bool = false, shouldSeek: Bool = true) {
-        guard !hasReachedEndOfFile else { return }
+        guard !refusesSeekAtEndOfFile else { return }
         guard isScrubbing else { return }
         skipDebounceTask?.cancel()
         skipDebounceTask = nil
@@ -8114,7 +8136,9 @@ extension PlayerViewModel {
     }
 
     func canSeekWatchPartyLocally(to position: Double) -> Bool {
-        guard let timeline = aetherPlaybackController.activeSpec?.timeline else { return false }
+        // Aether ignores seeks on an ended session; moving it means a remount.
+        guard !hasReachedEndOfFile,
+              let timeline = aetherPlaybackController.activeSpec?.timeline else { return false }
         if case .local = timeline.seekDisposition(forSourceTime: position) { return true }
         return false
     }
@@ -8133,6 +8157,25 @@ extension PlayerViewModel {
             origin: .recovery
         )
         publishWatchPartySnapshot()
+    }
+
+    /// Aether keeps an ended session terminal: it ignores seeks, and play does
+    /// not revive it. Moving a member off the end therefore takes a fresh
+    /// load at the target, mounted paused like any other party load.
+    @discardableResult
+    private func remountWatchPartyPlayback(at position: Double) -> Bool {
+        guard isWatchPartyPlayback, !isDisposed,
+              let request = lastLoadRequest,
+              position.isFinite, position >= 0 else { return false }
+        beginFreshLoad(
+            request: request,
+            progressPosition: nil,
+            resumePositionOverride: position,
+            allowNearEndResume: true,
+            origin: .recovery
+        )
+        publishWatchPartySnapshot()
+        return true
     }
 
     func cancelWatchPartyCorrection() {
@@ -8186,7 +8229,7 @@ extension PlayerViewModel {
         case .loading, .rebuffering, .stalled: waitingForMedia = true
         default: waitingForMedia = false
         }
-        let readyPhase = engine.playbackPhase == .playing || engine.playbackPhase == .paused
+        let readyPhase = Self.isWatchPartyReadyPhase(engine.playbackPhase)
         return WatchPartyPlaybackSnapshot(
             sessionId: committed ? activePlaybackSessionId : nil,
             fileId: committed ? currentSelectedVersion?.fileId : nil,
@@ -8198,8 +8241,21 @@ extension PlayerViewModel {
             isReady: committed && !isDisposed && engine.isSessionReady && readyPhase
                 && !transitioning && !seeking && !isBuffering && !watchPartyLocalPreparation
                 && !aetherPlaybackController.isTransportInterrupted,
-            isSeeking: seeking
+            isSeeking: seeking,
+            isEnded: hasReachedEndOfFile
         )
+    }
+
+    /// Phases in which a member reports to the room and takes its commands.
+    /// Aether parks a finished stream in `.ended`. To the room that member is
+    /// paused and still movable: a room seek remounts it. Leaving `.ended` out
+    /// stopped the member's reports and refused every command, so nothing
+    /// could move it again.
+    nonisolated static func isWatchPartyReadyPhase(_ phase: PlaybackPhase) -> Bool {
+        switch phase {
+        case .playing, .paused, .ended: return true
+        case .idle, .loading, .seeking, .rebuffering, .stalled, .error: return false
+        }
     }
 
     private func publishWatchPartySnapshot() {
@@ -8221,13 +8277,21 @@ extension PlayerViewModel {
             guard !watchPartyLocalPreparation, !aetherPlaybackController.isTransportInterrupted else {
                 throw WatchPartyPlaybackError.notReady
             }
+            // A room play without a seek would only prod a terminal stream,
+            // or revive a dead one at the position it dropped. Stay paused at
+            // the end; the room's next seek remounts this member.
+            if hasReachedEndOfFile { break }
             aetherPlaybackController.setSpeed(1)
             aetherPlaybackController.play()
         case .pause:
             aetherPlaybackController.pause()
         case .seek(let position):
             guard position.isFinite, position >= 0 else { throw WatchPartyPlaybackError.notReady }
-            commitSeek(to: position, source: "watchParty", roomCommand: true)
+            if hasReachedEndOfFile {
+                guard remountWatchPartyPlayback(at: position) else { throw WatchPartyPlaybackError.notReady }
+            } else {
+                commitSeek(to: position, source: "watchParty", roomCommand: true)
+            }
             // The UI position is optimistic. Wait for the existing seek/replan
             // machinery, then sample Aether's source clock for the room ack.
             for _ in 0..<600 {
