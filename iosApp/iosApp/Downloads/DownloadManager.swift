@@ -106,11 +106,11 @@ final class DownloadManager {
     /// `finishPause` (via `pendingResumeIds`) so the captured data isn't
     /// dropped and the transfer restarted from byte zero.
     private var pendingPauseIds: Set<String> = []
-    private var legacySessionDrainTask: Task<[Int: Data], Never>?
+    private var legacySessionDrainTask: Task<[String: Data], Never>?
     private var legacySessionDrained = false
     /// Resume data of transfers stopped in the pre-rename background session,
-    /// keyed by their task identifier there (unique across every scope).
-    private var legacySessionResumeData: [Int: Data] = [:]
+    /// keyed by the download id each one requested.
+    private var legacySessionResumeData: [String: Data] = [:]
     private var pendingResumeIds: Set<String> = []
     /// Serializes disk saves so a rapid burst of `persist()` calls can't land
     /// out of order and overwrite a newer snapshot with an older one.
@@ -535,12 +535,10 @@ final class DownloadManager {
     private func adoptLegacySessionTasksIfNeeded() {
         guard file.taskSessionIdentifier != DownloadSessionDelegate.sessionIdentifier else { return }
         for (id, record) in file.records {
-            guard let taskId = record.taskIdentifier else { continue }
+            guard record.taskIdentifier != nil else { continue }
             var record = record
-            // Only a transfer in flight owns a live task; any other id is
-            // stale and may equal a different download's id.
             if record.localStatus == .downloading,
-               let data = legacySessionResumeData.removeValue(forKey: taskId),
+               let data = legacySessionResumeData.removeValue(forKey: id),
                let url = absoluteFileURLForNewAsset(recordId: id, filename: "resume.bin"),
                (try? data.write(to: url, options: .atomic)) != nil {
                 record.resumeDataFilename = "resume.bin"

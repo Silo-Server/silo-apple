@@ -150,18 +150,20 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
     }
 
     /// Stops every transfer still running in the pre-rename session and
-    /// returns the resume data of those that can continue, keyed by their
-    /// task identifier in that session. Runs until one drain completes;
+    /// returns the resume data of those that can continue, keyed by the
+    /// download id their request names. Task identifiers aren't used: they
+    /// repeat across sessions and scopes. Runs until one drain completes;
     /// later calls return an empty map without touching the old session.
-    static func drainLegacySession(defaults: UserDefaults = .standard) async -> [Int: Data] {
+    static func drainLegacySession(defaults: UserDefaults = .standard) async -> [String: Data] {
         guard !defaults.bool(forKey: legacySessionDrainedKey) else { return [:] }
         let config = URLSessionConfiguration.background(withIdentifier: legacySessionIdentifier)
         let session = URLSession(configuration: config, delegate: LegacySessionDrain(), delegateQueue: nil)
-        var resumeData: [Int: Data] = [:]
+        var resumeData: [String: Data] = [:]
         for task in await session.allTasks {
             if let download = task as? URLSessionDownloadTask,
+               let id = APIv2Client.downloadFileID(task.originalRequest?.url ?? task.currentRequest?.url),
                let data = await download.cancelByProducingResumeData() {
-                resumeData[task.taskIdentifier] = data
+                resumeData[id] = data
             } else {
                 task.cancel()
             }

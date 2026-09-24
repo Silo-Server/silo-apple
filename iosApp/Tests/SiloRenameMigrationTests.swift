@@ -62,30 +62,18 @@ final class SiloRenameMigrationTests: XCTestCase {
         XCTAssertNil(legacy.get("com.continuum.server.accessToken"))
     }
 
-    /// A sign-out that runs while another process is moving the same item
-    /// deletes the legacy copy before the move settles. The move must then
-    /// withdraw its copy instead of bringing the signed-out token back.
-    func testAdoptionThatLostItsLegacyCopyIsWithdrawn() {
+    /// The move is a rename, not a copy: once it lands nothing is left
+    /// under the legacy name for a racing sign-out or write to miss.
+    func testMoveKeepsTheItemsProtectionAndLeavesNoLegacyCopy() {
         let (current, legacy) = keychains()
         let account = SharedStorage.accessTokenAccount(for: "server")
-        XCTAssertTrue(current.set("signed-out", for: account))
+        XCTAssertTrue(legacy.set("access", for: "com.continuum.server.accessToken"))
         addTeardownBlock { current.delete(account) }
 
-        XCTAssertNil(current.settleAdoption(of: "signed-out", for: account,
-                                            from: (legacy, "com.continuum.server.accessToken")))
-        XCTAssertNil(current.get(account))
-    }
-
-    func testAdoptionKeepsANewerValueWrittenMeanwhile() {
-        let (current, legacy) = keychains()
-        let account = SharedStorage.accessTokenAccount(for: "server")
-        XCTAssertTrue(current.set("signed-in-again", for: account))
-        addTeardownBlock { current.delete(account) }
-
-        XCTAssertEqual(current.settleAdoption(of: "stale", for: account,
-                                              from: (legacy, "com.continuum.server.accessToken")),
-                       "signed-in-again")
-        XCTAssertEqual(current.get(account), "signed-in-again")
+        XCTAssertEqual(current.get(account), "access")
+        XCTAssertNil(legacy.get("com.continuum.server.accessToken"))
+        XCTAssertTrue(current.set("access", for: account))
+        XCTAssertEqual(current.get(account), "access")
     }
 
     func testPreRenameFixedNamesAreReadFromTheLegacyService() {

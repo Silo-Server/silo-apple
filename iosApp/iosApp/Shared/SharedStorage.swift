@@ -359,11 +359,13 @@ struct SharedKeychain {
         if let value = try getCheckedUnderCurrentName(account) { return value }
         guard let legacy = legacyName(for: account),
               let value = try legacy.keychain.getCheckedUnderCurrentName(legacy.account) else { return nil }
-        switch adopt(value, for: account) {
-        case .added:
-            return settleAdoption(of: value, for: account, from: legacy)
-        case .alreadyPresent:
-            return try getCheckedUnderCurrentName(account) ?? value
+        switch move(legacy, to: account) {
+        case .moved:
+            return value
+        case .alreadyPresent, .vanished:
+            // Another process moved, wrote, or deleted the item meanwhile;
+            // the current name is authoritative, even when it is now empty.
+            return try getCheckedUnderCurrentName(account)
         case .failed:
             return value
         }
@@ -464,9 +466,9 @@ struct SharedKeychain {
     /// Removes the item under both its current and its pre-rename name, so a
     /// signed-out token can't come back through the legacy read path.
     ///
-    /// The legacy name goes first. Another process may be moving the item at
-    /// the same time; if its copy lands after this delete, it finds the
-    /// legacy copy already gone and `settleAdoption` removes the copy again.
+    /// The legacy name goes first: another process may be renaming the item
+    /// at the same time (`move`), and a rename either lands before this
+    /// delete reaches the current name or finds nothing left to rename.
     @discardableResult
     func delete(_ account: String) -> Bool {
         let legacyRemoved = legacyName(for: account).map { $0.keychain.deleteUnderCurrentName($0.account) } ?? true
@@ -500,7 +502,7 @@ struct SharedKeychain {
 
     // MARK: - Pre-rename names
 
-    private enum AdoptOutcome { case added, alreadyPresent, failed }
+    private enum MoveOutcome { case moved, alreadyPresent, vanished, failed }
 
     /// The keychain and account that held `account` before the rename.
     private func legacyName(for account: String) -> (keychain: SharedKeychain, account: String)? {
@@ -517,50 +519,25 @@ struct SharedKeychain {
         return (keychain, legacyAccount)
     }
 
-    /// Moves the value held under the pre-rename name, if any, to the current
-    /// name and returns it.
+    /// Moves the item held under the pre-rename name, if any, to the current
+    /// name and returns its value.
     private func adoptLegacyName(of account: String) -> String? {
         guard let legacy = legacyName(for: account),
               let value = legacy.keychain.get(legacy.account) else { return nil }
-        switch adopt(value, for: account) {
-        case .added:
-            return settleAdoption(of: value, for: account, from: legacy)
-        case .alreadyPresent:
+        switch move(legacy, to: account) {
+        case .moved:
+            return value
+        case .alreadyPresent, .vanished:
+            // Another process moved, wrote, or deleted the item meanwhile;
+            // the current name is authoritative, even when it is now empty.
             let current = readResult(account: account, accessGroup: accessGroup)
             if let found = current.value { return found }
-            guard shouldUseAppLocalFallback(for: current.status) else { return value }
-            return readResult(account: account, accessGroup: nil).value ?? value
+            guard shouldUseAppLocalFallback(for: current.status) else { return nil }
+            return readResult(account: account, accessGroup: nil).value
         case .failed:
             // Keep serving the legacy copy; the next read retries the move.
             return value
         }
-    }
-
-    /// Retires the legacy copy after `adopt` added `value` under the current
-    /// name. If the legacy copy is already gone, a concurrent `delete` removed
-    /// it — possibly after deleting the current name, and before this copy
-    /// landed — so the copy is withdrawn unless a newer write replaced it.
-    func settleAdoption(
-        of value: String,
-        for account: String,
-        from legacy: (keychain: SharedKeychain, account: String)
-    ) -> String? {
-        if legacy.keychain.removeExisting(legacy.account) { return value }
-        let current = readResult(account: account, accessGroup: accessGroup).value
-            ?? (allowsAppLocalFallback ? readResult(account: account, accessGroup: nil).value : nil)
-        guard current == value else { return current }
-        deleteUnderCurrentName(account)
-        return nil
-    }
-
-    /// Deletes `account` under this keychain's name and reports whether an
-    /// item was actually there.
-    private func removeExisting(_ account: String) -> Bool {
-        var removed = deleteStatus(account: account, accessGroup: accessGroup) == errSecSuccess
-        if allowsAppLocalFallback, accessGroup != nil {
-            removed = deleteStatus(account: account, accessGroup: nil) == errSecSuccess || removed
-        }
-        return removed
     }
 
     private func deleteLegacyName(of account: String) {
@@ -568,26 +545,40 @@ struct SharedKeychain {
         legacy.keychain.deleteUnderCurrentName(legacy.account)
     }
 
-    /// Copies a value found under the pre-rename name into the current name
-    /// without overwriting one that another process wrote in the meantime:
-    /// the app and its extensions can race through this on the first run
-    /// after an update, and a stale refresh token must never replace a
-    /// rotated one.
-    private func adopt(_ value: String, for account: String) -> AdoptOutcome {
-        guard let data = value.data(using: .utf8) else { return .failed }
-        var status = add(data, for: account, accessGroup: accessGroup)
+    /// Renames the item held under the pre-rename name to `account` in
+    /// place. A rename is atomic, so it can't race a sign-out or another
+    /// process's write into a stale or resurrected value: it either lands
+    /// before them or finds its source already gone. It never overwrites an
+    /// item already under the current name.
+    private func move(_ legacy: (keychain: SharedKeychain, account: String), to account: String) -> MoveOutcome {
+        var status = rename(legacy, to: account, accessGroup: accessGroup)
         if shouldUseAppLocalFallback(for: status) {
-            status = add(data, for: account, accessGroup: nil)
+            status = rename(legacy, to: account, accessGroup: nil)
         }
         switch status {
         case errSecSuccess:
-            return .added
+            return .moved
         case errSecDuplicateItem:
             return .alreadyPresent
+        case errSecItemNotFound:
+            return .vanished
         default:
             Self.logger.error("Keychain rename migration failed for account \(account, privacy: .public): status=\(status, privacy: .public)")
             return .failed
         }
+    }
+
+    private func rename(
+        _ legacy: (keychain: SharedKeychain, account: String),
+        to account: String,
+        accessGroup: String?
+    ) -> OSStatus {
+        let query = legacy.keychain.baseQuery(account: legacy.account, accessGroup: accessGroup)
+        let attributes: [String: Any] = [
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        return SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
     }
 
     // MARK: - Private
@@ -615,23 +606,15 @@ struct SharedKeychain {
     }
 
     private func write(_ data: Data, for account: String, accessGroup: String?) -> OSStatus {
-        let query = baseQuery(account: account, accessGroup: accessGroup)
-        let updateStatus = SecItemUpdate(query as CFDictionary, Self.valueAttributes(data) as CFDictionary)
-        guard updateStatus == errSecItemNotFound else { return updateStatus }
-        return add(data, for: account, accessGroup: accessGroup)
-    }
-
-    private func add(_ data: Data, for account: String, accessGroup: String?) -> OSStatus {
         var query = baseQuery(account: account, accessGroup: accessGroup)
-        query.merge(Self.valueAttributes(data)) { _, new in new }
-        return SecItemAdd(query as CFDictionary, nil)
-    }
-
-    private static func valueAttributes(_ data: Data) -> [String: Any] {
-        [
+        let attributes: [String: Any] = [
             kSecValueData as String: data,
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
         ]
+        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        guard updateStatus == errSecItemNotFound else { return updateStatus }
+        query.merge(attributes) { _, new in new }
+        return SecItemAdd(query as CFDictionary, nil)
     }
 
     private func deleteStatus(account: String, accessGroup: String?) -> OSStatus {
