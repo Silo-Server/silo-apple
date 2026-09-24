@@ -712,13 +712,15 @@ struct ContentView: View {
     }
     #endif
 
-    /// Resolves a `continuum://` URL to a navigation action. Supported
-    /// shapes:
-    /// - `continuum://item/{contentId}` — push the detail screen
-    /// - `continuum://play/{contentId}` — push the player (resume from
+    /// Resolves a `silo://` URL (or its legacy `continuum://` alias) to a
+    /// navigation action. Supported shapes:
+    /// - `silo://item/{contentId}` — push the detail screen
+    /// - `silo://play/{contentId}` — push the player (resume from
     ///   last known position)
-    /// - `continuum://downloads` — select the Downloads tab (local
+    /// - `silo://downloads` — select the Downloads tab (local
     ///   download notifications)
+    /// - `silo://watch-party?server=…&token=…` — join a Watch Party
+    ///   invitation (see `WatchPartyInvitation`)
     ///
     /// If the auth state isn't ready yet, the link is queued in
     /// `pendingDeepLink` until startup commits its initial route.
@@ -774,7 +776,7 @@ struct ContentView: View {
             return
         }
         #endif
-        guard url.scheme?.lowercased() == "continuum",
+        guard SiloURLScheme.isAppURL(url),
               let host = url.host?.lowercased() else { return }
 
         // A content link received while the app is returning must not race the

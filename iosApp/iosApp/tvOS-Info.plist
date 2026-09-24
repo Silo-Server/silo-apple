@@ -27,9 +27,10 @@
 	<array>
 		<dict>
 			<key>CFBundleURLName</key>
-			<string>org.siloserver.silo.continuum</string>
+			<string>org.siloserver.silo</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
+				<string>silo</string>
 				<string>continuum</string>
 			</array>
 		</dict>

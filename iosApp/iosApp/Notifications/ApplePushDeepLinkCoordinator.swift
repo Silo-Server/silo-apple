@@ -21,7 +21,7 @@ final class ApplePushDeepLinkCoordinator {
         let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
-        if let url = URL(string: trimmed), url.scheme == "continuum" {
+        if let url = URL(string: trimmed), SiloURLScheme.isAppURL(url) {
             return url
         }
 
@@ -40,7 +40,7 @@ final class ApplePushDeepLinkCoordinator {
         guard !contentID.isEmpty else { return nil }
 
         var deepLink = URLComponents()
-        deepLink.scheme = "continuum"
+        deepLink.scheme = SiloURLScheme.current
         deepLink.host = route
         deepLink.path = "/" + contentID
         return deepLink.url

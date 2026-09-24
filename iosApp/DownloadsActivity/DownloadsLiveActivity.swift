@@ -12,9 +12,9 @@ struct SiloDownloadsActivityBundle: WidgetBundle {
 /// Renders the downloads Live Activity started by the host app's
 /// `DownloadLiveActivityController`: a lock-screen card and the Dynamic
 /// Island treatments. Tapping anywhere deep-links to the Downloads tab via
-/// the `continuum://downloads` route the app already handles.
+/// the `silo://downloads` route the app already handles.
 struct DownloadsLiveActivity: Widget {
-    private static let deepLink = URL(string: "continuum://downloads")
+    private static let deepLink = URL(string: "silo://downloads")
 
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: DownloadActivityAttributes.self) { context in
