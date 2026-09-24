@@ -19,8 +19,10 @@ enum WatchPartyEntry {
             && session.capabilities?.connectionReplaced == true && session.supportsPlayback
     }
 
+    /// `preview` is what the caller already shows for the title; the lobby
+    /// lays out from it instead of passing through its empty and loading states.
     static func open(contentId: String, title: String, type: String, fileId: Int?,
-                     libraryId: Int?, router: AppRouter) {
+                     libraryId: Int?, preview: WatchPartySelectedItem? = nil, router: AppRouter) {
         let session = WatchPartySession.shared
         let selection = WatchPartySelection(contentId: contentId,
             fileId: fileId.map(String.init), libraryId: libraryId.map(String.init))
@@ -29,13 +31,13 @@ enum WatchPartyEntry {
         Task {
             if session.isEngaged {
                 if session.room?.selfCanManageRoom == true, session.room?.selectionMode == .hostPick {
-                    await session.select(selection)
+                    await session.select(selection, preview: preview)
                 } else {
                     await session.addSuggestion(WatchPartyNewSuggestion(
                         contentId: contentId, contentType: type, title: title))
                 }
             } else {
-                await session.create(selection: selection)
+                await session.create(selection: selection, preview: preview)
             }
         }
     }
@@ -46,16 +48,33 @@ struct WatchPartyMenuButton: View {
     let title: String
     let type: String
     var fileId: Int? = nil
+    var preview: WatchPartySelectedItem? = nil
+    /// Episode menus inherit a preview from the series page they sit on.
+    var episode: EpisodeListItem? = nil
     @Environment(\.browseLibraryId) private var libraryId
+    @Environment(\.watchPartyEpisodePreview) private var episodePreview
     @Environment(AppRouter.self) private var router
 
     var body: some View {
         if WatchPartyEntry.isAvailable {
             Button("Watch Party", systemImage: "person.3") {
                 WatchPartyEntry.open(contentId: contentId, title: title, type: type,
-                    fileId: fileId, libraryId: libraryId, router: router)
+                    fileId: fileId, libraryId: libraryId,
+                    preview: preview ?? episode.flatMap { episodePreview?($0) }, router: router)
             }
         }
+    }
+}
+
+private struct WatchPartyEpisodePreviewKey: EnvironmentKey {
+    static let defaultValue: ((EpisodeListItem) -> WatchPartySelectedItem)? = nil
+}
+
+extension EnvironmentValues {
+    /// Set by a series page so episode menus below it can hand the lobby a preview.
+    var watchPartyEpisodePreview: ((EpisodeListItem) -> WatchPartySelectedItem)? {
+        get { self[WatchPartyEpisodePreviewKey.self] }
+        set { self[WatchPartyEpisodePreviewKey.self] = newValue }
     }
 }
 #endif

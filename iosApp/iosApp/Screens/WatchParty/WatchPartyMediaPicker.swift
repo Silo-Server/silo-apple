@@ -5,11 +5,6 @@ enum WatchPartyPickerPurpose {
     case select, suggest
 }
 
-private enum WatchPartyPickerSource: String, CaseIterable, Identifiable {
-    case together = "Continue Together", watchlist = "Watchlists", search = "Search"
-    var id: Self { self }
-}
-
 private struct WatchPartyMediaChoice: Hashable {
     let contentId: String
     let type: String
@@ -21,6 +16,20 @@ private struct WatchPartyMediaChoice: Hashable {
     var backdropThumbhash: String?
     var overview: String?
     var facts: [String] = []
+    /// The lobby hero's wording differs from this page's: an episode leads
+    /// with its own title and puts the series and code underneath.
+    private var lobbyTitle: String?
+    private var lobbySubtitle: String?
+    private var year: Int?
+    private var runtimeMinutes: Int?
+
+    /// Handed to the session so the lobby lays out before the room confirms.
+    var lobbyPreview: WatchPartySelectedItem {
+        WatchPartySelectedItem(previewContentId: contentId, type: type, title: lobbyTitle ?? title,
+                               subtitle: lobbySubtitle, posterUrl: posterURL, posterThumbhash: posterThumbhash,
+                               backdropUrl: backdropURL, backdropThumbhash: backdropThumbhash,
+                               year: year, runtimeMinutes: runtimeMinutes, overview: overview)
+    }
 
     init(item: BrowseItem) {
         contentId = item.contentId
@@ -33,6 +42,8 @@ private struct WatchPartyMediaChoice: Hashable {
         backdropThumbhash = item.backdropThumbhash
         overview = item.overview
         facts = item.watchPartyFacts
+        year = item.year
+        runtimeMinutes = item.runtime
     }
 
     init(series: BrowseItem, episode: EpisodeListItem) {
@@ -46,6 +57,35 @@ private struct WatchPartyMediaChoice: Hashable {
         backdropThumbhash = episode.stillUrl != nil ? episode.stillThumbhash : series.backdropThumbhash
         overview = episode.overview
         if let runtime = episode.runtime, runtime > 0 { facts = [WatchPartyFacts.runtime(runtime)] }
+        lobbyTitle = episode.title ?? "Episode \(episode.episodeNumber)"
+        lobbySubtitle = "\(series.title) · S\(episode.seasonNumber):E\(episode.episodeNumber)"
+        runtimeMinutes = episode.runtime
+    }
+
+    /// A resume-row episode. Home rows carry the series poster and the
+    /// episode's backdrop, so the confirmation keeps portrait art.
+    init(episode item: SectionItem) {
+        contentId = item.contentId
+        type = "episode"
+        title = item.seriesTitle ?? item.title
+        if let season = item.seasonNumber, let episode = item.episodeNumber {
+            subtitle = "S\(season) · E\(episode)" + (item.seriesTitle != nil ? " · \(item.title)" : "")
+        } else {
+            subtitle = item.seriesTitle != nil ? item.title : nil
+        }
+        posterURL = item.posterUrl
+        posterThumbhash = item.posterThumbhash
+        backdropURL = item.backdropUrl
+        backdropThumbhash = item.backdropThumbhash
+        overview = item.overview
+        if let runtime = item.runtime, runtime > 0 { facts = [WatchPartyFacts.runtime(runtime)] }
+        lobbyTitle = item.title
+        if let seriesTitle = item.seriesTitle, let season = item.seasonNumber, let episode = item.episodeNumber {
+            lobbySubtitle = "\(seriesTitle) · S\(season):E\(episode)"
+        } else {
+            lobbySubtitle = item.seriesTitle
+        }
+        runtimeMinutes = item.runtime
     }
 
     init(series: BrowseItem, nextUp: WatchPartyPickerNextUp) {
@@ -57,6 +97,8 @@ private struct WatchPartyMediaChoice: Hashable {
         posterThumbhash = series.posterThumbhash
         backdropURL = series.backdropUrl
         backdropThumbhash = series.backdropThumbhash
+        lobbyTitle = nextUp.title ?? "Episode \(nextUp.episodeNumber)"
+        lobbySubtitle = "\(series.title) · S\(nextUp.seasonNumber):E\(nextUp.episodeNumber)"
     }
 }
 
@@ -88,16 +130,18 @@ struct WatchPartyMediaPicker: View {
     let session: WatchPartySession
     var purpose: WatchPartyPickerPurpose = .select
     @Environment(\.dismiss) private var dismiss
-    @State private var source: WatchPartyPickerSource = .search
-    @State private var query = ""
+    /// Recently added movies.
     @State private var items: [BrowseItem] = []
     @State private var continuation: APIv2CatalogContinuation?
     @State private var isLoading = false
     @State private var errorMessage: String?
-    @State private var didChooseInitialSource = false
-    @State private var didFallBackFromEmptySource = false
     @State private var loadID = UUID()
     @State private var destination: WatchPartyPickerDestination?
+    /// Watchlist fallback for servers without the picker capability.
+    @State private var watchlistItems: [BrowseItem] = []
+    /// Discovery rows borrowed from Home (trending, curated…), personal rows removed.
+    @State private var homeSections: [ResolvedSection] = []
+    @State private var recentSeries: [BrowseItem] = []
     #if os(tvOS)
     private enum ChromeFocus: Hashable { case search, close }
     /// Chrome-icon geometry copied from the top bar so the strip reads as
@@ -105,44 +149,18 @@ struct WatchPartyMediaPicker: View {
     private static let chromeIconSize: CGFloat = 27
     @FocusState private var chromeFocus: ChromeFocus?
     @State private var feedFocusRequest = 0
-    /// Watchlist fallback for servers without the picker capability.
-    @State private var watchlistItems: [BrowseItem] = []
-    /// Discovery rows borrowed from Home (trending, curated…), personal rows removed.
-    @State private var homeSections: [ResolvedSection] = []
-    @State private var recentSeries: [BrowseItem] = []
+    #else
+    /// The chooser's own Continue Watching row. The server's "together" row
+    /// needs two members with progress, so a party of one would otherwise
+    /// have nothing to resume.
+    @State private var resumeItems: [SectionItem] = []
+    @State private var search = SearchViewModel()
+    @State private var uiCustomization = UICustomizationPreferences.shared
+    @State private var searchGridWidth: CGFloat = 0
     #endif
 
-    private var sources: [WatchPartyPickerSource] {
-        session.capabilities?.picker == true ? WatchPartyPickerSource.allCases : [.watchlist, .search]
-    }
-
-    private var shownItems: [BrowseItem] {
-        switch source {
-        case .together: return session.picker?.continueTogether.map(\.item) ?? []
-        case .watchlist where session.capabilities?.picker == true:
-            return session.picker?.watchlistUnion.map(\.item) ?? []
-        default: return items
-        }
-    }
-
-    private var playableItems: [BrowseItem] {
-        shownItems.filter { SiloMediaType.isMovieLibrary($0.type) || SiloMediaType.isSeries($0.type) || $0.type == "episode" }
-    }
-
-    private var trimmedQuery: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
-    private var loading: Bool { isLoading || (source != .search && session.isLoadingPicker) }
-    private var requestKey: String {
-        #if os(tvOS)
-        // One stable key: the shelves load once per open. A changing key
-        // would cancel the in-flight picker read and the session's
-        // single-flight guard then drops the retry.
-        "shelves"
-        #else
-        source.rawValue + ":" + query + (didChooseInitialSource ? ":ready" : ":initial")
-        #endif
-    }
+    private var loading: Bool { isLoading || session.isLoadingPicker }
     private var title: String { purpose == .suggest ? "Suggest a title" : "Choose a title" }
-    private var subtitle: String { purpose == .suggest ? "Bring an idea to the party." : "Find something everyone will enjoy." }
 
     var body: some View {
         content
@@ -160,21 +178,10 @@ struct WatchPartyMediaPicker: View {
                     #endif
                 }
             }
-            .task {
-                guard !didChooseInitialSource else { return }
-                didChooseInitialSource = true
-                if session.capabilities?.picker == true { source = .together }
-            }
-            .task(id: requestKey) {
-                #if os(iOS)
-                guard didChooseInitialSource else { return }
-                #endif
-                if !query.isEmpty {
-                    try? await Task.sleep(for: .milliseconds(300))
-                    guard !Task.isCancelled else { return }
-                }
-                await load(reset: true)
-            }
+            // The shelves load once per open. A re-keyed task would cancel the
+            // in-flight picker read and the session's single-flight guard
+            // would then drop the retry.
+            .task { await loadShelves(reset: true) }
     }
 
     @ViewBuilder
@@ -186,10 +193,10 @@ struct WatchPartyMediaPicker: View {
         #endif
     }
 
-    // MARK: - tvOS
+    // MARK: - Shelves
 
-    #if os(tvOS)
     private static let togetherSectionID = "watchParty.together"
+    private static let resumeSectionID = "watchParty.resume"
     private static let watchlistSectionID = "watchParty.watchlist"
     private static let recentMoviesSectionID = "watchParty.recentMovies"
     private static let recentSeriesSectionID = "watchParty.recentSeries"
@@ -204,9 +211,9 @@ struct WatchPartyMediaPicker: View {
     private static let maxHomeSections = 4
 
     /// Home-style shelves: group picks first, then everyone's watchlists,
-    /// then the newest library additions. A search with results replaces the
-    /// recent shelf. Empty shelves are omitted, as on Home.
-    private var tvSections: [ResolvedSection] {
+    /// then discovery rows and the newest library additions. Empty shelves
+    /// are omitted, as on Home.
+    private var sections: [ResolvedSection] {
         var sections: [ResolvedSection] = []
         if session.capabilities?.picker == true, let picker = session.picker {
             let together = picker.continueTogether.filter { isPlayable($0.item) }.map { entry in
@@ -217,6 +224,13 @@ struct WatchPartyMediaPicker: View {
             if !together.isEmpty {
                 sections.append(section(Self.togetherSectionID, type: "watch_party_together", title: "Continue Together", items: together))
             }
+        }
+        #if !os(tvOS)
+        if !resumeItems.isEmpty {
+            sections.append(section(Self.resumeSectionID, type: "continue_watching", title: "Continue Watching", items: resumeItems))
+        }
+        #endif
+        if session.capabilities?.picker == true, let picker = session.picker {
             let watchlist = picker.watchlistUnion.filter { isPlayable($0.item) }.map { SectionItem(browseItem: $0.item) }
             if !watchlist.isEmpty {
                 sections.append(section(Self.watchlistSectionID, type: "watch_party_watchlist", title: "On Your Watchlists", items: watchlist))
@@ -246,17 +260,41 @@ struct WatchPartyMediaPicker: View {
         SiloMediaType.isMovieLibrary(item.type) || SiloMediaType.isSeries(item.type) || item.type == "episode"
     }
 
+    private func browseItem(for contentId: String) -> BrowseItem? {
+        if let hit = items.first(where: { $0.contentId == contentId }) { return hit }
+        if let hit = recentSeries.first(where: { $0.contentId == contentId }) { return hit }
+        if let hit = watchlistItems.first(where: { $0.contentId == contentId }) { return hit }
+        return session.picker?.continueTogether.first { $0.item.contentId == contentId }?.item
+            ?? session.picker?.watchlistUnion.first { $0.item.contentId == contentId }?.item
+    }
+
+    /// Home rows come as `SectionItem`; lift one back to a `BrowseItem` shape
+    /// through the shared decoder so the confirmation page has facts and art.
+    /// A resume episode goes straight to its confirmation.
+    private func openSection(_ item: SectionItem) {
+        if item.type == "episode" {
+            destination = .choice(WatchPartyMediaChoice(episode: item))
+        } else if let browse = browseItem(for: item.contentId) {
+            open(browse)
+        } else if let browse = BrowseItem(sectionItem: item) {
+            open(browse)
+        }
+    }
+
+    // MARK: - tvOS
+
+    #if os(tvOS)
     /// The Skyline feed owns the hero and the rows. A slim chrome strip on top
     /// carries the purpose, search, and Close; Up from the first row hands
     /// focus to it, exactly as Home hands focus to the top bar.
     private var tvBody: some View {
         ZStack(alignment: .top) {
             Color.siloBackground.ignoresSafeArea()
-            if tvSections.isEmpty {
+            if sections.isEmpty {
                 tvEmptyState
             } else {
                 TVSkylineSectionFeed(
-                    sections: tvSections,
+                    sections: sections,
                     focusRequest: feedFocusRequest,
                     isTopMenuFocused: chromeHasFocus,
                     onTopMenuFocusRequest: { chromeFocus = .search },
@@ -280,7 +318,7 @@ struct WatchPartyMediaPicker: View {
         .onChange(of: chromeFocus) { _, focus in
             if focus == nil { feedFocusRequest += 1 }
         }
-        .onChange(of: tvSections.map(\.id)) { _, ids in
+        .onChange(of: sections.map(\.id)) { _, ids in
             if !ids.isEmpty, chromeFocus == nil { feedFocusRequest += 1 }
         }
     }
@@ -336,104 +374,150 @@ struct WatchPartyMediaPicker: View {
         .padding(.horizontal, WatchPartyMetrics.pageInset)
         .onAppear { if chromeFocus == nil { chromeFocus = .search } }
     }
-
-    private func browseItem(for contentId: String) -> BrowseItem? {
-        if let hit = items.first(where: { $0.contentId == contentId }) { return hit }
-        if let hit = recentSeries.first(where: { $0.contentId == contentId }) { return hit }
-        if let hit = watchlistItems.first(where: { $0.contentId == contentId }) { return hit }
-        return session.picker?.continueTogether.first { $0.item.contentId == contentId }?.item
-            ?? session.picker?.watchlistUnion.first { $0.item.contentId == contentId }?.item
-    }
-
-    /// Home rows come as `SectionItem`; lift one back to a `BrowseItem` shape
-    /// through the shared decoder so the confirmation page has facts and art.
-    private func openSection(_ item: SectionItem) {
-        if let browse = browseItem(for: item.contentId) {
-            open(browse)
-        } else if let browse = BrowseItem(sectionItem: item) {
-            open(browse)
-        }
-    }
     #endif
 
     // MARK: - iOS
 
     #if os(iOS)
+    private var isSearching: Bool {
+        !search.query.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
     private var phoneBody: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: spacing) {
-                controls
-                if loading && shownItems.isEmpty {
-                    ProgressView("Loading titles…").frame(maxWidth: .infinity)
-                } else if shownItems.isEmpty {
-                    ContentUnavailableView(emptyTitle, systemImage: source == .search ? "magnifyingglass" : "film",
-                        description: Text(emptyDescription))
+            LazyVStack(alignment: .leading, spacing: HomeFeedMetrics.sectionSpacing) {
+                if isSearching {
+                    searchResults
+                } else if sections.isEmpty {
+                    phoneEmptyState
                 } else {
-                    mediaGrid
-                }
-                if let message = errorMessage ?? session.errorMessage {
-                    Label(message, systemImage: "exclamationmark.circle").foregroundStyle(.secondary)
-                    Button { Task { await load(reset: true) } } label: {
-                        Text("Try Again").watchPartyButtonLabel()
+                    ForEach(sections) { section in
+                        phoneRow(section)
                     }
-                }
-                if continuation != nil, source == .search || session.capabilities?.picker != true {
-                    Button { Task { await load(reset: false) } } label: {
-                        Text("Load More").watchPartyButtonLabel()
-                    }
-                        .disabled(isLoading)
                 }
             }
-            .padding(spacing)
+            .padding(.top, 8)
+            .padding(.bottom, 32)
         }
+        .scrollDismissesKeyboard(.immediately)
+        .siloPageBackground()
         .navigationTitle(title)
-    }
-
-    private var controls: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Text(subtitle).foregroundStyle(.secondary)
-                Spacer()
-                Button { dismiss() } label: { Text("Close").watchPartyButtonLabel() }
-            }
-            Picker("Browse", selection: $source) {
-                ForEach(sources) { source in Text(source.rawValue).tag(source) }
-            }
-            .pickerStyle(.segmented)
-            if source == .search {
-                TextField("Search movies and series", text: $query)
-                    .textFieldStyle(.roundedBorder)
-                    .autocorrectionDisabled()
-                    .accessibilityIdentifier("watchParty.search")
+        .navigationBarTitleDisplayMode(.large)
+        .siloSearchable(text: $search.query, prompt: "Search movies and series")
+        .onChange(of: search.query) { _, _ in search.onQueryChanged() }
+        .onAppear { search.audiobooksEnabled = false }
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button { dismiss() } label: { Image(systemName: "xmark") }
+                    .accessibilityLabel("Close")
             }
         }
     }
 
-    private var mediaGrid: some View {
-        LazyVGrid(columns: columns, alignment: .leading, spacing: spacing) {
-            ForEach(playableItems) { item in
-                VStack(alignment: .leading, spacing: 12) {
-                    MediaCard(title: item.title, posterUrl: item.posterUrl ?? "", thumbhash: item.posterThumbhash,
-                        year: item.year, action: { open(item) }, cardWidthOverride: cardWidth)
-                        .frame(maxWidth: .infinity)
-                    if let entry = entry(for: item.contentId) {
-                        Text(memberNames(entry.members)).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                        if let nextUp = entry.nextUp {
-                            Button {
-                                destination = .choice(WatchPartyMediaChoice(series: item, nextUp: nextUp))
-                            } label: {
-                                Text("Next: S\(nextUp.seasonNumber) · E\(nextUp.episodeNumber)").watchPartyButtonLabel()
-                            }
-                            .font(.caption)
+    private func phoneRow(_ section: ResolvedSection) -> some View {
+        let isResume = section.id == Self.resumeSectionID
+        let scale = uiCustomization.cardPresentation.posterSize.scale
+        return VStack(alignment: .leading, spacing: HomeFeedMetrics.headerGap) {
+            HomeSectionHeader(title: section.title, icon: isResume ? "play.circle.fill" : nil)
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(alignment: .top, spacing: HomeFeedMetrics.cardSpacing) {
+                    ForEach(section.items) { item in
+                        // Home's own cards, so art, overlays and captions match it.
+                        if isResume {
+                            HomeStillCard(item: item, width: HomeFeedMetrics.stillWidth * scale,
+                                          showsCaption: uiCustomization.cardPresentation.caption.showsTitle,
+                                          showsMetadata: uiCustomization.cardPresentation.caption.showsMetadata,
+                                          onTap: { openSection(item) })
+                        } else {
+                            HomePosterCard(item: item, width: HomeFeedMetrics.posterWidth * scale,
+                                           showsCaption: uiCustomization.cardPresentation.caption.showsTitle,
+                                           showsMetadata: uiCustomization.cardPresentation.caption.showsMetadata,
+                                           showsProgress: section.id == Self.togetherSectionID,
+                                           onTap: { openSection(item) },
+                                           secondLineOverride: caption(for: item, in: section))
                         }
                     }
                 }
+                .padding(.horizontal, HomeFeedMetrics.gutter)
             }
+            .scrollClipDisabled()
         }
     }
 
-    private var columns: [GridItem] {
-        [GridItem(.adaptive(minimum: cardWidth + 10), spacing: spacing, alignment: .top)]
+    /// Group rows say who the title belongs to; other rows keep the year.
+    private func caption(for item: SectionItem, in section: ResolvedSection) -> String? {
+        guard section.id == Self.togetherSectionID || section.id == Self.watchlistSectionID,
+              let entry = entry(for: item.contentId), !entry.members.isEmpty else { return nil }
+        if section.id == Self.togetherSectionID, let nextUp = entry.nextUp {
+            return "Next: S\(nextUp.seasonNumber) · E\(nextUp.episodeNumber)"
+        }
+        return memberNames(entry.members)
+    }
+
+    @ViewBuilder
+    private var phoneEmptyState: some View {
+        if loading {
+            ProgressView().tint(Color.siloSecondaryText)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 120)
+        } else {
+            VStack(spacing: 16) {
+                EmptyStateView(icon: "film.stack", title: "Nothing to pick from yet",
+                               subtitle: "Search for a title, or add something to a watchlist.")
+                if let message = errorMessage ?? session.errorMessage {
+                    WatchPartyBanner(message: message, tone: .warning)
+                    Button { Task { await loadShelves(reset: true) } } label: { Text("Try Again") }
+                        .buttonStyle(WatchPartyButtonStyle(kind: .secondary))
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, HomeFeedMetrics.gutter)
+            .padding(.top, 80)
+        }
+    }
+
+    private static let searchColumnCount = 3
+
+    private var searchColumns: [GridItem] {
+        Array(repeating: GridItem(.flexible(), spacing: HomeFeedMetrics.cardSpacing, alignment: .top),
+              count: Self.searchColumnCount)
+    }
+
+    private var searchCardWidth: CGFloat {
+        let gaps = HomeFeedMetrics.cardSpacing * CGFloat(Self.searchColumnCount - 1)
+        return max(0, (searchGridWidth - gaps) / CGFloat(Self.searchColumnCount)).rounded(.down)
+    }
+
+    @ViewBuilder
+    private var searchResults: some View {
+        let results = search.results.filter(isPlayable)
+        if let error = search.error {
+            ErrorView(state: error, onRetry: { Task { await search.performSearch() } })
+        } else if results.isEmpty {
+            if search.isSearching || !search.hasSearched {
+                ProgressView().tint(Color.siloSecondaryText)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 120)
+            } else {
+                EmptyStateView(icon: "magnifyingglass", title: "No results", subtitle: "Try a different search term.")
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 80)
+            }
+        } else {
+            LazyVGrid(columns: searchColumns, alignment: .leading, spacing: 18) {
+                ForEach(results) { item in
+                    HomePosterCard(item: SectionItem(browseItem: item), width: searchCardWidth,
+                                   showsCaption: uiCustomization.cardPresentation.caption.showsTitle,
+                                   showsMetadata: uiCustomization.cardPresentation.caption.showsMetadata,
+                                   onTap: { open(item) })
+                        .onAppear {
+                            if item.contentId == results.last?.contentId { Task { await search.loadMore() } }
+                        }
+                }
+            }
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { searchGridWidth = $0 }
+            .padding(.horizontal, HomeFeedMetrics.gutter)
+        }
     }
     #endif
 
@@ -454,11 +538,7 @@ struct WatchPartyMediaPicker: View {
     }
 
     private func entry(for contentId: String) -> WatchPartyPickerEntry? {
-        #if os(tvOS)
         let entries = (session.picker?.continueTogether ?? []) + (session.picker?.watchlistUnion ?? [])
-        #else
-        let entries = (source == .together ? session.picker?.continueTogether : source == .watchlist ? session.picker?.watchlistUnion : nil) ?? []
-        #endif
         return entries.first { $0.item.contentId == contentId }
     }
 
@@ -466,20 +546,10 @@ struct WatchPartyMediaPicker: View {
         members.map(\.displayName).joined(separator: ", ")
     }
 
-    private func load(reset: Bool) async {
-        #if os(tvOS)
-        await loadShelves(reset: reset)
-        #else
-        await loadSource(reset: reset)
-        #endif
-    }
-
-    #if os(tvOS)
     /// One pass fills every shelf: the server picker (group picks and
     /// watchlists), and the catalog for recent additions or search results.
     private func loadShelves(reset: Bool) async {
         let roomId = session.room?.roomId
-        let requestedKey = requestKey
         if !reset, isLoading { return }
         let requestID = UUID()
         loadID = requestID
@@ -494,7 +564,7 @@ struct WatchPartyMediaPicker: View {
             async let home: Void = loadHomeShelves(roomId: roomId)
             async let series: Void = loadRecentSeries(roomId: roomId)
             _ = await (picker, watchlist, home, series)
-            guard !Task.isCancelled, roomId == session.room?.roomId, requestedKey == requestKey, loadID == requestID else { return }
+            guard !Task.isCancelled, roomId == session.room?.roomId, loadID == requestID else { return }
         }
         do {
             let auth = try await session.catalogAuth()
@@ -504,7 +574,7 @@ struct WatchPartyMediaPicker: View {
             } else {
                 result = try await SiloAPI.shared.apiV2Client.catalogPage(query: Self.recentQuery(type: "movie"), auth: auth)
             }
-            guard !Task.isCancelled, roomId == session.room?.roomId, requestedKey == requestKey, loadID == requestID else { return }
+            guard !Task.isCancelled, roomId == session.room?.roomId, loadID == requestID else { return }
             if reset { items = result.value.items }
             else {
                 let existing = Set(items.map(\.contentId))
@@ -512,7 +582,7 @@ struct WatchPartyMediaPicker: View {
             }
             continuation = result.continuation
         } catch {
-            guard !Task.isCancelled, roomId == session.room?.roomId, requestedKey == requestKey, loadID == requestID else { return }
+            guard !Task.isCancelled, roomId == session.room?.roomId, loadID == requestID else { return }
             errorMessage = error.localizedDescription
         }
     }
@@ -547,6 +617,11 @@ struct WatchPartyMediaPicker: View {
             response = try? await StartupContentPrefetcher.fetchHomeSections()
         }
         guard let response, !Task.isCancelled, roomId == session.room?.roomId else { return }
+        #if !os(tvOS)
+        resumeItems = response.sections
+            .first(where: HomeFeed.isResume)?
+            .items.filter { SiloMediaType.isMovieLibrary($0.type) || $0.type == "episode" } ?? []
+        #endif
         homeSections = response.sections
             .filter { !Self.skippedHomeSectionTypes.contains($0.sectionType.lowercased()) }
             .compactMap { section in
@@ -573,100 +648,6 @@ struct WatchPartyMediaPicker: View {
         } catch {
             // The recent shelf still renders; the watchlist shelf is simply absent.
         }
-    }
-    #endif
-
-    #if os(iOS)
-    private func loadSource(reset: Bool) async {
-        let roomId = session.room?.roomId
-        let requestedKey = requestKey
-        if !reset, isLoading { return }
-        let requestID = UUID()
-        loadID = requestID
-        if source == .together || (source == .watchlist && session.capabilities?.picker == true) {
-            continuation = nil
-            isLoading = false
-            await session.refreshPicker()
-            fallBackIfEmpty()
-            return
-        }
-        isLoading = true
-        errorMessage = nil
-        if reset { continuation = nil; items = [] }
-        defer { if loadID == requestID { isLoading = false } }
-        do {
-            let auth = try await session.catalogAuth()
-            let result: APIv2CatalogResult
-            if !reset, let continuation {
-                result = try await SiloAPI.shared.apiV2Client.nextCatalogPage(continuation)
-            } else {
-                var catalogQuery = APIv2CatalogQuery()
-                catalogQuery.type = "video"
-                catalogQuery.limit = 60
-                if source == .watchlist { catalogQuery.source = "watchlist" }
-                if source == .search {
-                    if trimmedQuery.isEmpty {
-                        // No query: newest additions read better than an alphabetical dump.
-                        catalogQuery.sort = CatalogSortKey.addedAt.field
-                        catalogQuery.order = "desc"
-                    } else {
-                        catalogQuery.q = trimmedQuery
-                    }
-                }
-                result = try await SiloAPI.shared.apiV2Client.catalogPage(query: catalogQuery, auth: auth)
-            }
-            guard !Task.isCancelled, roomId == session.room?.roomId, requestedKey == requestKey, loadID == requestID else { return }
-            if reset { items = result.value.items }
-            else {
-                let existing = Set(items.map(\.contentId))
-                items.append(contentsOf: result.value.items.filter { !existing.contains($0.contentId) })
-            }
-            continuation = result.continuation
-        } catch {
-            guard !Task.isCancelled, roomId == session.room?.roomId, requestedKey == requestKey, loadID == requestID else { return }
-            errorMessage = error.localizedDescription
-        }
-    }
-
-    /// The first open lands on whichever group source has titles, so a new
-    /// party is not greeted by an empty "Continue Together" shelf.
-    private func fallBackIfEmpty() {
-        guard !didFallBackFromEmptySource, source == .together, let picker = session.picker,
-              picker.continueTogether.isEmpty else { return }
-        didFallBackFromEmptySource = true
-        source = picker.watchlistUnion.isEmpty ? .search : .watchlist
-    }
-    #endif
-
-    #if os(iOS)
-    private var emptyTitle: String {
-        switch source {
-        case .together: return "Nothing to continue together"
-        case .watchlist: return "No watchlist titles"
-        case .search: return "No matching titles"
-        }
-    }
-    private var emptyDescription: String {
-        switch source {
-        case .together: return "Titles the group has started show up here. Try Watchlists or Search."
-        case .watchlist: return "Nothing on anyone's watchlist yet. Try Search."
-        case .search: return "Try a different title."
-        }
-    }
-    #endif
-    private var spacing: CGFloat {
-        #if os(tvOS)
-        40
-        #else
-        20
-        #endif
-    }
-    private var cardWidth: CGFloat {
-        #if os(tvOS)
-        200
-        #else
-        140
-        #endif
     }
 }
 
@@ -863,39 +844,86 @@ private struct WatchPartyEpisodePicker: View {
 
     #if os(iOS)
     private var phoneBody: some View {
-        List {
-            if !seasons.isEmpty {
-                Picker("Season", selection: $seasonNumber) {
-                    ForEach(seasons) { season in
-                        Text(season.downloadDisplayName).tag(Optional(season.seasonNumber))
-                    }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                if !seasons.isEmpty {
+                    PhoneSeasonChips(seasons: seasons,
+                                     selected: seasons.first { $0.seasonNumber == seasonNumber },
+                                     onSelect: { seasonNumber = $0.seasonNumber })
                 }
-            }
-            if isLoading { ProgressView("Loading episodes…") }
-            ForEach(episodes) { episode in
-                Button {
-                    chosen = WatchPartyMediaChoice(series: series, episode: episode)
-                } label: {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("\(episode.episodeNumber). \(episode.title ?? "Episode \(episode.episodeNumber)")").font(.headline)
-                        if let overview = episode.overview, !overview.isEmpty {
-                            Text(overview).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
+                Group {
+                    if isLoading && episodes.isEmpty {
+                        ProgressView().tint(Color.siloSecondaryText)
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 80)
+                    } else if episodes.isEmpty {
+                        VStack(spacing: 16) {
+                            EmptyStateView(icon: "tv", title: "No episodes",
+                                           subtitle: errorMessage ?? "Nothing in this season is available to play.")
+                            Button { Task { await loadSeasons() } } label: { Text("Try Again") }
+                                .buttonStyle(WatchPartyButtonStyle(kind: .secondary))
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 60)
+                    } else {
+                        LazyVStack(alignment: .leading, spacing: 18) {
+                            ForEach(episodes) { episode in
+                                Button {
+                                    chosen = WatchPartyMediaChoice(series: series, episode: episode)
+                                } label: {
+                                    episodeRow(episode)
+                                }
+                                .buttonStyle(.plain)
+                            }
                         }
                     }
-                    .watchPartyButtonLabel()
+                }
+                .padding(.horizontal, SiloTheme.safePadding)
+            }
+            .padding(.top, 8)
+            .padding(.bottom, 32)
+        }
+        .siloPageBackground()
+        .navigationTitle(series.title)
+        .navigationBarTitleDisplayMode(.large)
+    }
+
+    private static let stillWidth: CGFloat = 136
+
+    private func episodeRow(_ episode: EpisodeListItem) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Group {
+                if let still = episode.stillUrl, !still.isEmpty {
+                    AsyncImageView(url: still, thumbhash: episode.stillThumbhash,
+                                   targetSize: CGSize(width: Self.stillWidth * 2, height: Self.stillWidth * 9 / 8))
+                } else {
+                    Rectangle().fill(Color.siloSurfaceElevated)
+                        .overlay { Image(systemName: "tv").foregroundStyle(Color.siloSecondaryText) }
                 }
             }
-            if !isLoading && episodes.isEmpty && errorMessage == nil {
-                Text("No episodes are available in this season.").foregroundStyle(.secondary)
+            .frame(width: Self.stillWidth, height: Self.stillWidth * 9 / 16)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            VStack(alignment: .leading, spacing: 4) {
+                Text("\(episode.episodeNumber). \(episode.title ?? "Episode \(episode.episodeNumber)")")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.siloOnSurface)
+                    .lineLimit(2)
+                if let runtime = episode.runtime, runtime > 0 {
+                    Text(WatchPartyFacts.runtime(runtime))
+                        .font(.caption)
+                        .foregroundStyle(Color.siloSecondaryText)
+                }
+                if let overview = episode.overview, !overview.isEmpty {
+                    Text(overview)
+                        .font(.caption)
+                        .foregroundStyle(Color.siloSecondaryText)
+                        .lineLimit(2)
+                }
             }
-            if let errorMessage {
-                Text(errorMessage).foregroundStyle(.secondary)
-            }
-            Button { Task { await loadSeasons() } } label: {
-                Text("Reload Episodes").watchPartyButtonLabel()
-            }
+            Spacer(minLength: 0)
         }
-        .navigationTitle(series.title)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
     }
     #endif
 
@@ -958,13 +986,9 @@ private struct WatchPartyMediaChoiceView: View {
 
     var body: some View {
         ZStack {
-            #if os(tvOS)
             WatchPartyBackdrop(url: choice.backdropURL ?? choice.posterURL,
                                thumbhash: choice.backdropURL != nil ? choice.backdropThumbhash : choice.posterThumbhash,
                                isPoster: choice.backdropURL == nil)
-            #else
-            Color.siloBackground.ignoresSafeArea()
-            #endif
             ScrollView {
                 VStack(alignment: .leading, spacing: WatchPartyMetrics.body * 1.4) {
                     HStack(alignment: .bottom, spacing: WatchPartyMetrics.body) {
@@ -1026,7 +1050,12 @@ private struct WatchPartyMediaChoiceView: View {
                     }
                 }
                 .padding(WatchPartyMetrics.pageInset)
+                #if os(iOS)
+                // Let the backdrop show above the poster, as in the lobby.
+                .padding(.top, 150)
+                #else
                 .padding(.top, 8)
+                #endif
             }
         }
         #if os(iOS)
@@ -1055,7 +1084,7 @@ private struct WatchPartyMediaChoiceView: View {
                 contentType: choice.type, title: choice.title, subtitle: choice.subtitle,
                 posterUrl: choice.posterURL, note: nil))
         } else {
-            succeeded = await session.select(WatchPartySelection(contentId: choice.contentId))
+            succeeded = await session.select(WatchPartySelection(contentId: choice.contentId), preview: choice.lobbyPreview)
         }
         if succeeded { onComplete() }
     }

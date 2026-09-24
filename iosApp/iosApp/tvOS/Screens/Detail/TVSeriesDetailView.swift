@@ -933,7 +933,9 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 case .watchParty:
                     if let episode = displayedEpisode {
                         WatchPartyEntry.open(contentId: episode.contentId, title: episode.title ?? "Episode", type: "episode",
-                            fileId: selectedFileId(for: episode), libraryId: partyLibraryId, router: partyRouter)
+                            fileId: selectedFileId(for: episode), libraryId: partyLibraryId,
+                            preview: WatchPartySelectedItem(previewing: episode, series: detail, seasons: seasons),
+                            router: partyRouter)
                     }
                 case .overview: showSeriesOverview()
                 case .favorite: onToggleFavorite()

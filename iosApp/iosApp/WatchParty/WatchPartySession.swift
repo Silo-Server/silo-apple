@@ -17,6 +17,9 @@ final class WatchPartySession {
     private(set) var recentRoom: WatchPartyRecentRoom?
     private(set) var wasReplaced = false
     private(set) var selectedItem: WatchPartySelectedItem?
+    /// Caller-supplied details for a host pick. The lobby shows it while the
+    /// selection request and catalog read run, so it lays out once.
+    private(set) var selectionPreview: WatchPartySelectedItem?
     /// The room's selected title is hidden from this profile (library or
     /// rating restriction). The member cannot ready up or play it.
     private(set) var selectedItemUnavailable = false
@@ -124,9 +127,16 @@ final class WatchPartySession {
     }
 
     @discardableResult
-    func create(selection: WatchPartySelection? = nil, mode: WatchPartySelectionMode = .hostPick) async -> Bool {
+    func create(selection: WatchPartySelection? = nil, mode: WatchPartySelectionMode = .hostPick,
+                preview: WatchPartySelectedItem? = nil) async -> Bool {
+        // `enter` refuses, with its own message, when a party is already open.
+        let ownsPreview = !isEngaged && !isBusy && selection != nil && mode == .hostPick
+        if ownsPreview { selectionPreview = preview }
         let entered = await enter { try await self.api.createWatchPartyRoom(selectionMode: mode, auth: $0) }
-        guard entered else { return false }
+        guard entered else {
+            if ownsPreview { selectionPreview = nil }
+            return false
+        }
         if let selection, mode == .hostPick { return await select(selection) }
         return true
     }
@@ -238,6 +248,7 @@ final class WatchPartySession {
         state = WatchPartyRoomState()
         votes = WatchPartyVotes()
         selectedItem = nil
+        selectionPreview = nil
         selectedItemUnavailable = false
         picker = nil
         memberState = nil
@@ -758,10 +769,20 @@ final class WatchPartySession {
     }
 
     @discardableResult
-    func select(_ selection: WatchPartySelection) async -> Bool {
-        guard isEngaged, room?.selectionMode == .hostPick else { return false }
-        if room?.phase == .lobby, capabilities?.stagedSelection == true { return await stage(selection) }
-        return await mutate { try await self.api.setWatchPartySelection(roomId: $0, token: $1, selection: selection, auth: $2) }
+    func select(_ selection: WatchPartySelection, preview: WatchPartySelectedItem? = nil) async -> Bool {
+        guard isEngaged, room?.selectionMode == .hostPick else {
+            if selectionPreview?.contentId == selection.contentId { selectionPreview = nil }
+            return false
+        }
+        if let preview, preview.contentId == selection.contentId { selectionPreview = preview }
+        let selected: Bool
+        if room?.phase == .lobby, capabilities?.stagedSelection == true {
+            selected = await stage(selection)
+        } else {
+            selected = await mutate { try await self.api.setWatchPartySelection(roomId: $0, token: $1, selection: selection, auth: $2) }
+        }
+        if !selected, selectionPreview?.contentId == selection.contentId { selectionPreview = nil }
+        return selected
     }
 
     @discardableResult
@@ -975,15 +996,26 @@ final class WatchPartySession {
         selectedItemTask?.cancel()
         selectedItem = nil
         selectedItemUnavailable = false
+        if let preview = selectionPreview, let contentId = room.selectedContentId, contentId != preview.contentId {
+            selectionPreview = nil
+        }
         guard let contentId = room.selectedContentId, !contentId.isEmpty, let auth else { return }
         let owner = engagement
         selectedItemTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let detail = try await self.api.catalogItem(id: contentId, libraryId: room.selectedLibraryId, imageSize: nil, auth: auth)
+                var item = WatchPartySelectedItem(detail)
+                if detail.type == "episode", let seriesId = detail.seriesId, !seriesId.isEmpty,
+                   let poster = await self.showPoster(seriesId: seriesId, seasonNumber: detail.seasonNumber,
+                                                      libraryId: room.selectedLibraryId, auth: auth) {
+                    item.posterUrl = poster.url
+                    item.posterThumbhash = poster.thumbhash
+                }
                 guard await self.validateIdentity(), owner == self.engagement, self.isEngaged, !Task.isCancelled,
                       self.room?.selectedContentId == contentId, self.room?.selectedLibraryId == room.selectedLibraryId else { return }
-                self.selectedItem = WatchPartySelectedItem(detail)
+                self.selectedItem = item
+                if self.selectionPreview?.contentId == contentId { self.selectionPreview = nil }
                 self.recentRoom?.selectedTitle = detail.title
                 self.persistRecentRoom()
             } catch {
@@ -992,8 +1024,25 @@ final class WatchPartySession {
                 guard !Task.isCancelled, owner == self.engagement, self.isEngaged,
                       self.room?.selectedContentId == contentId, Self.isAccessRefusal(error) else { return }
                 self.selectedItemUnavailable = true
+                if self.selectionPreview?.contentId == contentId { self.selectionPreview = nil }
             }
         }
+    }
+
+    /// Portrait art for an episode: its season's poster, else the series'.
+    /// Both reads are best effort; nil keeps the episode's own artwork.
+    private func showPoster(seriesId: String, seasonNumber: Int64?, libraryId: String?,
+                            auth: CapturedOrdinaryRequestAuth) async -> (url: String, thumbhash: String?)? {
+        if let seasonNumber,
+           let seasons = try? await api.catalogSeasons(seriesId: seriesId, libraryId: libraryId, imageSize: nil, auth: auth),
+           let season = seasons.first(where: { $0.seasonNumber == seasonNumber }),
+           let url = season.posterUrl, !url.isEmpty {
+            return (url, season.posterThumbhash)
+        }
+        guard !Task.isCancelled,
+              let series = try? await api.catalogItem(id: seriesId, libraryId: libraryId, imageSize: nil, auth: auth),
+              let url = series.posterUrl, !url.isEmpty else { return nil }
+        return (url, series.posterThumbhash)
     }
 
     nonisolated static func isConflict(_ error: Error) -> Bool {

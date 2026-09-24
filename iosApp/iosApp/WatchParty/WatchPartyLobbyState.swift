@@ -12,8 +12,10 @@ struct WatchPartySelectedItem: Equatable, Sendable {
     let type: String
     let title: String
     let subtitle: String?
-    let posterUrl: String?
-    let posterThumbhash: String?
+    /// Episodes arrive with their landscape still here; the session swaps in
+    /// the season or series poster so the lobby's 2:3 slot gets portrait art.
+    var posterUrl: String?
+    var posterThumbhash: String?
     let backdropUrl: String?
     let backdropThumbhash: String?
     let year: Int?
@@ -48,6 +50,26 @@ struct WatchPartySelectedItem: Equatable, Sendable {
         overview = item.overview
     }
 
+    /// What the caller already knows about a title it is about to select.
+    /// The lobby lays out from this while the room and catalog reads run.
+    init(previewContentId contentId: String, type: String, title: String, subtitle: String? = nil,
+         posterUrl: String?, posterThumbhash: String? = nil, backdropUrl: String?, backdropThumbhash: String? = nil,
+         year: Int? = nil, runtimeMinutes: Int? = nil, overview: String? = nil) {
+        self.contentId = contentId
+        self.type = type
+        self.title = title
+        self.subtitle = subtitle
+        self.posterUrl = posterUrl
+        self.posterThumbhash = posterThumbhash
+        self.backdropUrl = backdropUrl
+        self.backdropThumbhash = backdropThumbhash
+        self.year = year
+        self.runtimeMinutes = runtimeMinutes
+        contentRating = nil
+        qualityChips = []
+        self.overview = overview
+    }
+
     /// "2024 · 2h 46m" style facts for the hero.
     var factsLine: [String] {
         var facts: [String] = []
@@ -56,6 +78,29 @@ struct WatchPartySelectedItem: Equatable, Sendable {
             facts.append(runtimeMinutes >= 60 ? "\(runtimeMinutes / 60)h \(runtimeMinutes % 60)m" : "\(runtimeMinutes)m")
         }
         return facts
+    }
+}
+
+extension WatchPartySelectedItem {
+    init(previewing detail: ItemDetail) {
+        self.init(previewContentId: detail.contentId, type: detail.type, title: detail.title,
+                  posterUrl: detail.posterUrl, posterThumbhash: detail.posterThumbhash,
+                  backdropUrl: detail.backdropUrl, backdropThumbhash: detail.backdropThumbhash,
+                  year: detail.year, runtimeMinutes: detail.runtime, overview: detail.overview)
+    }
+
+    /// Shaped like the loaded episode: series and code as the subtitle, and
+    /// the season's poster (else the series') in the portrait slot.
+    init(previewing episode: EpisodeListItem, series: ItemDetail, seasons: [Season]) {
+        let season = seasons.first { $0.seasonNumber == episode.seasonNumber }
+        let seasonPoster = season?.posterUrl?.nilIfEmpty
+        self.init(previewContentId: episode.contentId, type: "episode",
+                  title: episode.title ?? "Episode \(episode.episodeNumber)",
+                  subtitle: "\(series.title) · S\(episode.seasonNumber):E\(episode.episodeNumber)",
+                  posterUrl: seasonPoster ?? series.posterUrl,
+                  posterThumbhash: seasonPoster != nil ? season?.posterThumbhash : series.posterThumbhash,
+                  backdropUrl: series.backdropUrl, backdropThumbhash: series.backdropThumbhash,
+                  runtimeMinutes: episode.runtime, overview: episode.overview)
     }
 }
 

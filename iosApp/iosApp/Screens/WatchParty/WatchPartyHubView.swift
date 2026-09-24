@@ -15,6 +15,16 @@ struct WatchPartyHubView: View {
         Group {
             if session.isEngaged {
                 WatchPartyLobbyView(session: session, sheet: $roomSheet, confirmsEnd: $confirmsEnd)
+            } else if let preview = session.selectionPreview, session.isBusy {
+                // Starting from a title: hold on its artwork, which the lobby
+                // keeps, rather than flashing the create-or-join page.
+                ZStack {
+                    WatchPartyBackdrop(url: preview.backdropUrl ?? preview.posterUrl,
+                                       thumbhash: preview.backdropUrl != nil ? preview.backdropThumbhash : preview.posterThumbhash,
+                                       isPoster: preview.backdropUrl == nil)
+                    ProgressView().tint(Color.siloSecondaryText)
+                        .accessibilityLabel("Starting your party")
+                }
             } else {
                 WatchPartyEntryView(session: session, isCheckingSupport: isCheckingSupport,
                     onCheckSupport: { Task { await checkSupport() } })
@@ -425,12 +435,12 @@ struct WatchPartyLobbyView: View {
     #endif
 
     var body: some View {
-        if let room = session.room {
+        if let room = displayRoom {
             ZStack {
                 WatchPartyBackdrop(
-                    url: session.selectedItem?.backdropUrl ?? session.selectedItem?.posterUrl ?? leadingSuggestionPoster,
-                    thumbhash: session.selectedItem?.backdropUrl != nil ? session.selectedItem?.backdropThumbhash : session.selectedItem?.posterThumbhash,
-                    isPoster: session.selectedItem?.backdropUrl == nil)
+                    url: displayedItem?.backdropUrl ?? displayedItem?.posterUrl ?? leadingSuggestionPoster,
+                    thumbhash: displayedItem?.backdropUrl != nil ? displayedItem?.backdropThumbhash : displayedItem?.posterThumbhash,
+                    isPoster: displayedItem?.backdropUrl == nil)
                 #if os(tvOS)
                 // The options overlay is the only focus owner while it is up;
                 // closing it returns focus to the Options button that opened it.
@@ -450,6 +460,24 @@ struct WatchPartyLobbyView: View {
         }
     }
 
+    /// The room as laid out. A host pick still in flight counts as chosen, so
+    /// a party started from a title doesn't pass through the empty lobby.
+    private var displayRoom: WatchPartyRoom? {
+        guard var room = session.room else { return nil }
+        if room.selectedContentId?.isEmpty ?? true, room.selectionMode == .hostPick,
+           let preview = session.selectionPreview {
+            room.selectedContentId = preview.contentId
+        }
+        return room
+    }
+
+    /// The loaded title, or the caller's preview of it until the catalog read lands.
+    private var displayedItem: WatchPartySelectedItem? {
+        if let item = session.selectedItem { return item }
+        guard let preview = session.selectionPreview, preview.contentId == displayRoom?.selectedContentId else { return nil }
+        return preview
+    }
+
     private var leadingSuggestionPoster: String? {
         guard session.room?.selectionMode == .vote else { return nil }
         let poster = (session.voteWinner ?? session.votes.rows.first)?.posterUrl
@@ -462,9 +490,11 @@ struct WatchPartyLobbyView: View {
     }
 
     private var primaryAction: WatchPartyPrimaryAction {
-        guard let room = session.room else { return .none }
+        guard let room = displayRoom else { return .none }
+        // A pending pick lays out as Start; the button stays disabled until the room confirms it.
+        let pendingPick = session.room?.selectedContentId != room.selectedContentId
         return WatchPartyLobbyPolicy.primaryAction(room: room, capabilities: session.capabilities,
-            canStart: session.canStartPlayback, winnerTitle: session.voteWinner?.title,
+            canStart: session.canStartPlayback || pendingPick, winnerTitle: session.voteWinner?.title,
             selectionUnavailable: session.selectedItemUnavailable)
     }
 
@@ -523,7 +553,7 @@ struct WatchPartyLobbyView: View {
                 Text(room.selfCanManageRoom ? "Everyone votes. You start the leader." : "Tap a title to vote. \(hostName(room)) starts the winner.")
                     .font(.system(size: WatchPartyMetrics.body))
                     .foregroundStyle(Color.siloSecondaryText)
-            } else if let item = session.selectedItem {
+            } else if let item = displayedItem {
                 WatchPartyEyebrow(text: room.phase == .playing ? "Now watching · together" : "Up next · together")
                 Text(item.title)
                     .font(.system(size: titleSize, weight: .bold))
@@ -540,6 +570,9 @@ struct WatchPartyLobbyView: View {
                 Text(session.selectedItemUnavailable ? "A title you can't see" : "Loading title…")
                     .font(.system(size: titleSize, weight: .bold))
                     .foregroundStyle(Color.siloSecondaryText)
+                Text(room.selfRole == .host ? "You chose this" : "\(hostName(room)) chose this")
+                    .font(.system(size: WatchPartyMetrics.caption))
+                    .foregroundStyle(Color.siloSecondaryText.opacity(0.7))
             } else {
                 WatchPartyEyebrow(text: "Your party is open")
                 Text(room.selfCanManageRoom ? "Pick something\nto watch" : "Waiting for\n\(hostName(room))")
@@ -715,10 +748,12 @@ struct WatchPartyLobbyView: View {
     }
 
     private func phoneHero(_ room: WatchPartyRoom) -> some View {
-        let showsPoster = session.selectedItem != nil && !(room.selectionMode == .vote && room.phase == .lobby)
+        // Keyed to the selection, not the loaded item, so the hero keeps its
+        // shape while the title loads.
+        let showsPoster = !(room.selectedContentId?.isEmpty ?? true) && !(room.selectionMode == .vote && room.phase == .lobby)
         return HStack(alignment: .bottom, spacing: 14) {
-            if showsPoster, let item = session.selectedItem {
-                WatchPartyPoster(url: item.posterUrl, thumbhash: item.posterThumbhash, width: 112)
+            if showsPoster {
+                WatchPartyPoster(url: displayedItem?.posterUrl, thumbhash: displayedItem?.posterThumbhash, width: 112)
                     .shadow(color: .black.opacity(0.6), radius: 16, y: 10)
             }
             heroText(room, titleSize: WatchPartyMetrics.heroTitle)
@@ -730,32 +765,44 @@ struct WatchPartyLobbyView: View {
     private func hostMenu(_ room: WatchPartyRoom) -> some View {
         Menu {
             if room.selfCanManageRoom {
+                // Settings are submenus that show their current value, so
+                // the top level reads as one aligned list.
                 if room.phase == .lobby, session.capabilities?.selectionModeSwitch == true {
-                    Picker("Who chooses", selection: Binding(get: { room.selectionMode }, set: { mode in
+                    Picker(selection: Binding(get: { room.selectionMode }, set: { mode in
                         Task { await session.setMode(mode) }
                     })) {
-                        Label("Host chooses", systemImage: "person.fill").tag(WatchPartySelectionMode.hostPick)
+                        Label("Host", systemImage: "person.fill").tag(WatchPartySelectionMode.hostPick)
                         Label("Everyone votes", systemImage: "hand.thumbsup").tag(WatchPartySelectionMode.vote)
+                    } label: {
+                        Label("Who chooses", systemImage: "hand.point.up.left")
+                        Text(room.selectionMode == .vote ? "Everyone votes" : "Host")
                     }
+                    .pickerStyle(.menu)
                 }
-                Picker("Playback controls", selection: Binding(get: { room.guestControlPolicy }, set: { policy in
+                Picker(selection: Binding(get: { room.guestControlPolicy }, set: { policy in
                     Task { await session.setPolicy(policy) }
                 })) {
-                    Text("Only the host can pause").tag(WatchPartyGuestControlPolicy.hostOnly)
-                    Text("Guests can play and pause").tag(WatchPartyGuestControlPolicy.guestPlayPause)
+                    Label("Host only", systemImage: "person.fill").tag(WatchPartyGuestControlPolicy.hostOnly)
+                    Label("Host and guests", systemImage: "person.2.fill").tag(WatchPartyGuestControlPolicy.guestPlayPause)
+                } label: {
+                    Label("Play & pause", systemImage: "playpause")
+                    Text(room.guestControlPolicy == .guestPlayPause ? "Host and guests" : "Host only")
                 }
+                .pickerStyle(.menu)
                 if room.phase == .playing, session.capabilities?.stopPlayback == true {
                     Button { Task { await session.stopPlayback() } } label: {
                         Label("Return everyone to lobby", systemImage: "arrow.uturn.backward")
                     }
                 }
                 Divider()
-                Button(role: .destructive) { confirmsEnd = true } label: {
-                    Label("End party for everyone", systemImage: "xmark.circle")
-                }
             }
-            Button(role: .destructive) { session.leaveRoom() } label: {
+            Button { session.leaveRoom() } label: {
                 Label("Leave party", systemImage: "rectangle.portrait.and.arrow.right")
+            }
+            if room.selfCanManageRoom {
+                Button(role: .destructive) { confirmsEnd = true } label: {
+                    Label("End party", systemImage: "xmark.circle")
+                }
             }
         } label: {
             Image(systemName: "ellipsis")
@@ -813,7 +860,7 @@ struct WatchPartyLobbyView: View {
             } else {
                 VStack(alignment: .leading, spacing: 30) {
                     heroText(room, titleSize: WatchPartyMetrics.heroTitle)
-                    if let overview = session.selectedItem?.overview, !overview.isEmpty {
+                    if let overview = displayedItem?.overview, !overview.isEmpty {
                         Text(overview)
                             .font(.system(size: 24))
                             .lineSpacing(6)

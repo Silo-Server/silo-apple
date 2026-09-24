@@ -225,7 +225,8 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                 switch MoreAction(rawValue: item.id) {
                 case .watchParty:
                     WatchPartyEntry.open(contentId: detail.contentId, title: detail.title, type: detail.type,
-                        fileId: selectedVersionFileId, libraryId: partyLibraryId, router: partyRouter)
+                        fileId: selectedVersionFileId, libraryId: partyLibraryId,
+                        preview: WatchPartySelectedItem(previewing: detail), router: partyRouter)
                 case .favorite:
                     onToggleFavorite()
                 case .watched:

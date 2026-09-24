@@ -162,7 +162,8 @@ private struct PhoneEpisodeCard: View {
         #endif
         .contextMenu {
             #if os(iOS)
-            WatchPartyMenuButton(contentId: episode.contentId, title: episode.title ?? "Episode", type: "episode")
+            WatchPartyMenuButton(contentId: episode.contentId, title: episode.title ?? "Episode", type: "episode",
+                episode: episode)
             #endif
             MediaStateMenuItems(
                 isWatched: episode.userData?.played == true,

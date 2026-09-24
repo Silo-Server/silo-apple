@@ -227,7 +227,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
     private var overflowMenuItems: some View {
         #if os(iOS)
         WatchPartyMenuButton(contentId: detail.contentId, title: detail.title, type: detail.type,
-            fileId: selectedVersionFileId)
+            fileId: selectedVersionFileId, preview: WatchPartySelectedItem(previewing: detail))
         #endif
         if showsDownloadButton {
             Button {

@@ -157,9 +157,11 @@ struct WatchPartySeat: View {
     let state: WatchPartySeatState
     var size: CGFloat = WatchPartyMetrics.seat
 
+    private var ringDiameter: CGFloat { size * 1.14 }
+
     var body: some View {
         VStack(spacing: size * 0.11) {
-            ZStack(alignment: .bottomTrailing) {
+            ZStack {
                 Circle()
                     .fill(Self.avatarGradient(for: member.id))
                     .overlay {
@@ -171,45 +173,34 @@ struct WatchPartySeat: View {
                     .opacity(state == .away ? 0.45 : 1)
                 Circle()
                     .strokeBorder(ringColor, style: ringStyle)
-                    .frame(width: size * 1.14, height: size * 1.14)
-                    .offset(x: size * 0.07, y: size * 0.07)
+            }
+            .frame(width: ringDiameter, height: ringDiameter)
+            .overlay {
                 if state == .ready || state == .watching {
+                    // Sits on the ring at 4:30, cutting into it.
                     Circle()
                         .fill(Color.siloOnSurface)
                         .overlay {
                             Image(systemName: "checkmark")
-                                .font(.system(size: size * 0.17, weight: .heavy))
+                                .font(.system(size: size * 0.15, weight: .heavy))
                                 .foregroundStyle(Color.black)
                         }
-                        .overlay(Circle().stroke(Color.black, lineWidth: size * 0.035))
-                        .frame(width: size * 0.32, height: size * 0.32)
-                        .offset(x: size * 0.1, y: size * 0.06)
-                }
-            }
-            .frame(width: size * 1.14, height: size * 1.14)
-            .overlay(alignment: .top) {
-                if member.isHost {
-                    Text("HOST")
-                        .font(.system(size: size * 0.13, weight: .bold))
-                        .tracking(size * 0.013)
-                        .foregroundStyle(Color.siloSecondaryText)
-                        .padding(.horizontal, size * 0.09)
-                        .padding(.vertical, size * 0.02)
-                        .background(Capsule().fill(Color.black))
-                        .overlay(Capsule().stroke(Color.siloChromeRestingBorder, lineWidth: 1))
-                        .offset(y: -size * 0.12)
+                        .padding(size * 0.03)
+                        .background(Circle().fill(Color.black))
+                        .frame(width: size * 0.34, height: size * 0.34)
+                        .offset(x: ringDiameter / 2 * 0.7071, y: ringDiameter / 2 * 0.7071)
                 }
             }
             .padding(.top, size * 0.1)
-            VStack(spacing: size * 0.03) {
-                (Text(member.displayName).font(.system(size: size * 0.19, weight: .medium))
-                    + Text(member.isSelf ? " · you" : "").font(.system(size: size * 0.19)).foregroundColor(.siloSecondaryText))
+            VStack(spacing: size * 0.02) {
+                Text(member.displayName)
+                    .font(.system(size: size * 0.19, weight: .medium))
                     .foregroundStyle(Color.siloOnSurface)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                if let statusText {
-                    Text(statusText)
-                        .font(.system(size: size * 0.15))
+                if let detailText {
+                    Text(detailText)
+                        .font(.system(size: size * 0.16))
                         .foregroundStyle(Color.siloSecondaryText)
                         .lineLimit(1)
                 }
@@ -218,6 +209,12 @@ struct WatchPartySeat: View {
         .frame(width: size * 1.4)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityText)
+    }
+
+    /// Role and state under the name: "Host · You", "not ready".
+    private var detailText: String? {
+        let parts = [member.isHost ? "Host" : nil, member.isSelf ? "You" : nil, statusText].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     private var initial: String {
