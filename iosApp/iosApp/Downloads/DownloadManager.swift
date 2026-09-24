@@ -106,6 +106,11 @@ final class DownloadManager {
     /// `finishPause` (via `pendingResumeIds`) so the captured data isn't
     /// dropped and the transfer restarted from byte zero.
     private var pendingPauseIds: Set<String> = []
+    private var legacySessionDrainTask: Task<[Int: Data], Never>?
+    private var legacySessionDrained = false
+    /// Resume data of transfers stopped in the pre-rename background session,
+    /// keyed by their task identifier there (unique across every scope).
+    private var legacySessionResumeData: [Int: Data] = [:]
     private var pendingResumeIds: Set<String> = []
     /// Serializes disk saves so a rapid burst of `persist()` calls can't land
     /// out of order and overwrite a newer snapshot with an older one.
@@ -443,6 +448,7 @@ final class DownloadManager {
     @discardableResult
     func activateScopeIfNeeded() async -> Bool {
         await removeLegacyDownloadsIfNeeded()
+        await drainLegacySessionIfNeeded()
         let serverId = ServerRegistry.shared.activeServerId ?? ""
         let profileId = await TokenStore.shared.getProfileId() ?? ""
         guard !serverId.isEmpty, !profileId.isEmpty else {
@@ -492,6 +498,7 @@ final class DownloadManager {
             file = loadedFile
             fileServerId = serverId
             fileProfileId = profileId
+            adoptLegacySessionTasksIfNeeded()
             if let released = releasedProgressClaims.removeValue(forKey: Self.progressClaimKey(serverId, profileId)),
                OfflineProgressQueue.releaseClaims(&file.progressQueue, ids: released) {
                 persist()
@@ -505,6 +512,44 @@ final class DownloadManager {
         refreshStorageUsage()
         await backfillEpisodeMetadataIfNeeded()
         return true
+    }
+
+    /// Stops the pre-rename background session before any scope can start a
+    /// transfer in the current one. Once per process; the session itself is
+    /// drained once per install.
+    private func drainLegacySessionIfNeeded() async {
+        let task = legacySessionDrainTask ?? Task { await DownloadSessionDelegate.drainLegacySession() }
+        legacySessionDrainTask = task
+        let drained = await task.value
+        if !legacySessionDrained {
+            legacySessionDrained = true
+            legacySessionResumeData = drained
+        }
+    }
+
+    /// Task identifiers are only unique within one session, so identifiers a
+    /// store recorded against the pre-rename session must never be matched
+    /// against the current one. Clear them when the store loads; a transfer
+    /// drained in this process continues from its resume data, like a paused
+    /// one, and any other restarts when reconnect re-queues it.
+    private func adoptLegacySessionTasksIfNeeded() {
+        guard file.taskSessionIdentifier != DownloadSessionDelegate.sessionIdentifier else { return }
+        for (id, record) in file.records {
+            guard let taskId = record.taskIdentifier else { continue }
+            var record = record
+            // Only a transfer in flight owns a live task; any other id is
+            // stale and may equal a different download's id.
+            if record.localStatus == .downloading,
+               let data = legacySessionResumeData.removeValue(forKey: taskId),
+               let url = absoluteFileURLForNewAsset(recordId: id, filename: "resume.bin"),
+               (try? data.write(to: url, options: .atomic)) != nil {
+                record.resumeDataFilename = "resume.bin"
+            }
+            record.taskIdentifier = nil
+            file.records[id] = record
+        }
+        file.taskSessionIdentifier = DownloadSessionDelegate.sessionIdentifier
+        persist()
     }
 
     private func removeLegacyDownloadsIfNeeded() async {

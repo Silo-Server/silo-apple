@@ -22,7 +22,13 @@ enum DownloadSessionEvent: Sendable {
 /// resumes via HTTP Range, so this is an `NSObject` delegate (background
 /// sessions cannot use the async `URLSession` data API).
 final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
-    static let sessionIdentifier = "com.continuum.play.downloads"
+    static let sessionIdentifier = "org.siloserver.silo.downloads"
+
+    /// Builds before the continuum → silo rename ran their transfers in a
+    /// session with this identifier. The system keeps that session's tasks
+    /// across an update, but nothing would ever collect their results.
+    static let legacySessionIdentifier = "com.continuum.play.downloads"
+    private static let legacySessionDrainedKey = "downloads.legacySessionDrained.v1"
 
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
@@ -143,6 +149,33 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
         }
     }
 
+    /// Stops every transfer still running in the pre-rename session and
+    /// returns the resume data of those that can continue, keyed by their
+    /// task identifier in that session. Runs once per install; later calls
+    /// return an empty map without touching the old session.
+    static func drainLegacySession(defaults: UserDefaults = .standard) async -> [Int: Data] {
+        guard !defaults.bool(forKey: legacySessionDrainedKey) else { return [:] }
+        // Marked before the first suspension so an overlapping reconnect
+        // can't open the same background session twice.
+        defaults.set(true, forKey: legacySessionDrainedKey)
+        let config = URLSessionConfiguration.background(withIdentifier: legacySessionIdentifier)
+        let session = URLSession(configuration: config, delegate: LegacySessionDrain(), delegateQueue: nil)
+        var resumeData: [Int: Data] = [:]
+        for task in await session.allTasks {
+            if let download = task as? URLSessionDownloadTask,
+               let data = await download.cancelByProducingResumeData() {
+                resumeData[task.taskIdentifier] = data
+            } else {
+                task.cancel()
+            }
+        }
+        session.invalidateAndCancel()
+        if !resumeData.isEmpty {
+            logger.notice("Moved \(resumeData.count, privacy: .public) transfers out of the pre-rename download session")
+        }
+        return resumeData
+    }
+
     // MARK: - URLSessionDownloadDelegate
 
     func urlSession(
@@ -246,4 +279,11 @@ enum DownloadAuthHeaders {
         AppleDeviceIdentity.current.applyHeaders(to: &request)
         return request
     }
+}
+
+/// Delegate for the pre-rename session while it is drained. A transfer that
+/// finished while the app wasn't running delivers its file here; that file
+/// has no record to land in, so it is dropped and the download restarts.
+private final class LegacySessionDrain: NSObject, URLSessionDownloadDelegate {
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {}
 }

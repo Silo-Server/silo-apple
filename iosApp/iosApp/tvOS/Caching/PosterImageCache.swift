@@ -131,6 +131,17 @@ enum PosterImageCache {
         ImagePipeline.shared.cache.removeAll(caches: .memory)
     }
 
+    /// Builds before the continuum → silo rename kept the disk cache under
+    /// this name. Nothing reads it any more; reclaim the space off the main
+    /// thread.
+    private static func removeLegacyDataCache() {
+        guard let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else { return }
+        let legacy = caches.appendingPathComponent("com.continuum.app.apple.posters", isDirectory: true)
+        DispatchQueue.global(qos: .utility).async {
+            try? FileManager.default.removeItem(at: legacy)
+        }
+    }
+
     private static func makePipeline() -> ImagePipeline {
         return ImagePipeline { config in
             // Nuke's default loader also routes every response through a
@@ -150,7 +161,8 @@ enum PosterImageCache {
             config.imageCache = memoryCache
 
             // On-disk cache for raw image data.
-            if let dataCache = try? DataCache(name: "com.continuum.app.apple.posters") {
+            removeLegacyDataCache()
+            if let dataCache = try? DataCache(name: "org.siloserver.silo.posters") {
                 dataCache.sizeLimit = 1_024 * 1024 * 1024  // 1 GB
                 config.dataCache = dataCache
             }

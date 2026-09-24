@@ -56,7 +56,7 @@ final class ServerIdentityMatchingTests: XCTestCase {
         let suite = try XCTUnwrap(UserDefaults(suiteName: name))
         addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
         let defaults = SharedDefaults(suite: suite, standard: suite)
-        defaults.set(true, forKey: "continuumServerRegistry.migrated.v1")
+        defaults.set(true, forKey: ServerRegistry.migratedKey)
         let registry = ServerRegistry(
             defaults: defaults,
             keychain: SharedKeychain(service: name, accessGroup: nil),

@@ -38,8 +38,8 @@ struct AccountSessionPersistence: Sendable {
         self.read = read; self.write = write; self.remove = remove
     }
 
-    static func recordKey(_ serverID: String) -> String { "com.continuum.\(serverID).accountSession" }
-    static func markerKey(_ serverID: String) -> String { "com.continuum.\(serverID).accountSessionAdopted" }
+    static func recordKey(_ serverID: String) -> String { SharedStorage.keychainAccountPrefix + "\(serverID).accountSession" }
+    static func markerKey(_ serverID: String) -> String { SharedStorage.keychainAccountPrefix + "\(serverID).accountSessionAdopted" }
 
     func load(_ serverID: String) throws -> State {
         let adopted = try read(Self.markerKey(serverID))

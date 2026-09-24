@@ -132,11 +132,11 @@ private final class ActiveServerIDSnapshot: @unchecked Sendable {
 /// active. Singleton via `.shared`; observed by SwiftUI via `@Observable`.
 ///
 /// Per-server persistence splits across two stores:
-/// - **UserDefaults** (`continuumServerRegistry.v1`): the server list and
+/// - **UserDefaults** (`siloServerRegistry.v1`): the server list and
 ///   active ID on iOS/macOS. tvOS stores the shared list in the
 ///   user-independent Keychain and the active ID in current-user defaults.
-/// - **Keychain** (`SharedKeychain` service `com.continuum.app`, account
-///   `com.continuum.<id>.{accessToken,refreshToken,profileToken}`): per-
+/// - **Keychain** (`SharedKeychain` service `org.siloserver.silo`, account
+///   `org.siloserver.silo.<id>.{accessToken,refreshToken,profileToken}`): per-
 ///   server tokens, activated by `TokenStore.switchActiveServer`.
 ///
 /// The registry is the single source of truth for URL + name.
@@ -157,9 +157,13 @@ final class ServerRegistry {
         shared.activeServerSnapshot.read()
     }
 
-    private static let defaultsKey = "continuumServerRegistry.v1"
-    private static let migratedKey = "continuumServerRegistry.migrated.v1"
-    private static let sharedTVRegistryAccount = "com.continuum.serverRegistry.v2"
+    static let defaultsKey = "siloServerRegistry.v1"
+    static let migratedKey = "siloServerRegistry.migrated.v1"
+    /// Pre-rename names of the two keys above; `adoptLegacyDefaultsKeys`
+    /// moves them once.
+    private static let legacyDefaultsKey = "continuumServerRegistry.v1"
+    private static let legacyMigratedKey = "continuumServerRegistry.migrated.v1"
+    private static let sharedTVRegistryAccount = SharedStorage.keychainAccountPrefix + "serverRegistry.v2"
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "ServerRegistry"
@@ -195,6 +199,7 @@ final class ServerRegistry {
         self.persistenceOverride = persistenceOverride
         self.tokenStore = tokenStore
         self.httpClient = httpClient
+        Self.adoptLegacyDefaultsKeys(defaults)
         load()
         migrateLegacyIfNeeded()
         migrateLegacyProfileMappingsIfNeeded()
@@ -1035,6 +1040,26 @@ final class ServerRegistry {
             if !persist() {
                 entries[index].legacyProfileId = profileID
             }
+        }
+    }
+
+    // MARK: - Migration from the continuum → silo rename
+
+    /// Moves the registry's UserDefaults keys to their post-rename names.
+    /// The legacy key is removed only once the current one reads back, and a
+    /// current value always wins over a legacy one.
+    static func adoptLegacyDefaultsKeys(_ defaults: SharedDefaults) {
+        if !defaults.containsObject(forKey: defaultsKey), let data = defaults.data(forKey: legacyDefaultsKey) {
+            defaults.set(data, forKey: defaultsKey)
+        }
+        if defaults.data(forKey: defaultsKey) != nil {
+            defaults.removeObject(forKey: legacyDefaultsKey)
+        }
+        if !defaults.containsObject(forKey: migratedKey), defaults.containsObject(forKey: legacyMigratedKey) {
+            defaults.set(defaults.bool(forKey: legacyMigratedKey), forKey: migratedKey)
+        }
+        if defaults.containsObject(forKey: migratedKey) {
+            defaults.removeObject(forKey: legacyMigratedKey)
         }
     }
 
