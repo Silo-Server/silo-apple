@@ -361,8 +361,7 @@ struct SharedKeychain {
               let value = try legacy.keychain.getCheckedUnderCurrentName(legacy.account) else { return nil }
         switch adopt(value, for: account) {
         case .added:
-            legacy.keychain.deleteUnderCurrentName(legacy.account)
-            return value
+            return settleAdoption(of: value, for: account, from: legacy)
         case .alreadyPresent:
             return try getCheckedUnderCurrentName(account) ?? value
         case .failed:
@@ -464,11 +463,14 @@ struct SharedKeychain {
 
     /// Removes the item under both its current and its pre-rename name, so a
     /// signed-out token can't come back through the legacy read path.
+    ///
+    /// The legacy name goes first. Another process may be moving the item at
+    /// the same time; if its copy lands after this delete, it finds the
+    /// legacy copy already gone and `settleAdoption` removes the copy again.
     @discardableResult
     func delete(_ account: String) -> Bool {
-        let removed = deleteUnderCurrentName(account)
-        guard let legacy = legacyName(for: account) else { return removed }
-        return legacy.keychain.deleteUnderCurrentName(legacy.account) && removed
+        let legacyRemoved = legacyName(for: account).map { $0.keychain.deleteUnderCurrentName($0.account) } ?? true
+        return deleteUnderCurrentName(account) && legacyRemoved
     }
 
     @discardableResult
@@ -522,8 +524,7 @@ struct SharedKeychain {
               let value = legacy.keychain.get(legacy.account) else { return nil }
         switch adopt(value, for: account) {
         case .added:
-            legacy.keychain.deleteUnderCurrentName(legacy.account)
-            return value
+            return settleAdoption(of: value, for: account, from: legacy)
         case .alreadyPresent:
             let current = readResult(account: account, accessGroup: accessGroup)
             if let found = current.value { return found }
@@ -533,6 +534,33 @@ struct SharedKeychain {
             // Keep serving the legacy copy; the next read retries the move.
             return value
         }
+    }
+
+    /// Retires the legacy copy after `adopt` added `value` under the current
+    /// name. If the legacy copy is already gone, a concurrent `delete` removed
+    /// it — possibly after deleting the current name, and before this copy
+    /// landed — so the copy is withdrawn unless a newer write replaced it.
+    func settleAdoption(
+        of value: String,
+        for account: String,
+        from legacy: (keychain: SharedKeychain, account: String)
+    ) -> String? {
+        if legacy.keychain.removeExisting(legacy.account) { return value }
+        let current = readResult(account: account, accessGroup: accessGroup).value
+            ?? (allowsAppLocalFallback ? readResult(account: account, accessGroup: nil).value : nil)
+        guard current == value else { return current }
+        deleteUnderCurrentName(account)
+        return nil
+    }
+
+    /// Deletes `account` under this keychain's name and reports whether an
+    /// item was actually there.
+    private func removeExisting(_ account: String) -> Bool {
+        var removed = deleteStatus(account: account, accessGroup: accessGroup) == errSecSuccess
+        if allowsAppLocalFallback, accessGroup != nil {
+            removed = deleteStatus(account: account, accessGroup: nil) == errSecSuccess || removed
+        }
+        return removed
     }
 
     private func deleteLegacyName(of account: String) {

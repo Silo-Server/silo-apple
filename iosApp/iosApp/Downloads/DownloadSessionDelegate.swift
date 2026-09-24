@@ -151,13 +151,10 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
 
     /// Stops every transfer still running in the pre-rename session and
     /// returns the resume data of those that can continue, keyed by their
-    /// task identifier in that session. Runs once per install; later calls
-    /// return an empty map without touching the old session.
+    /// task identifier in that session. Runs until one drain completes;
+    /// later calls return an empty map without touching the old session.
     static func drainLegacySession(defaults: UserDefaults = .standard) async -> [Int: Data] {
         guard !defaults.bool(forKey: legacySessionDrainedKey) else { return [:] }
-        // Marked before the first suspension so an overlapping reconnect
-        // can't open the same background session twice.
-        defaults.set(true, forKey: legacySessionDrainedKey)
         let config = URLSessionConfiguration.background(withIdentifier: legacySessionIdentifier)
         let session = URLSession(configuration: config, delegate: LegacySessionDrain(), delegateQueue: nil)
         var resumeData: [Int: Data] = [:]
@@ -170,6 +167,11 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
             }
         }
         session.invalidateAndCancel()
+        // Marked only once the session is fully drained: a process killed
+        // mid-drain retries on its next launch instead of leaving the old
+        // transfers running unobserved. `DownloadManager` shares one drain
+        // per process, so the session is never opened twice at once.
+        defaults.set(true, forKey: legacySessionDrainedKey)
         if !resumeData.isEmpty {
             logger.notice("Moved \(resumeData.count, privacy: .public) transfers out of the pre-rename download session")
         }
