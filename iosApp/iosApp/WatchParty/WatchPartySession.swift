@@ -132,7 +132,9 @@ final class WatchPartySession {
         // `enter` refuses, with its own message, when a party is already open.
         let ownsPreview = !isEngaged && !isBusy && selection != nil && mode == .hostPick
         if ownsPreview { selectionPreview = preview }
-        let entered = await enter { try await self.api.createWatchPartyRoom(selectionMode: mode, auth: $0) }
+        let entered = await enter(keepsSelectionPreview: ownsPreview) {
+            try await self.api.createWatchPartyRoom(selectionMode: mode, auth: $0)
+        }
         guard entered else {
             if ownsPreview { selectionPreview = nil }
             return false
@@ -178,7 +180,7 @@ final class WatchPartySession {
     }
 
     private func enter(invitationServer: String? = nil, expectedRoomID: String? = nil,
-                       expectedAuth: CapturedOrdinaryRequestAuth? = nil,
+                       expectedAuth: CapturedOrdinaryRequestAuth? = nil, keepsSelectionPreview: Bool = false,
                        _ operation: (CapturedOrdinaryRequestAuth) async throws -> WatchPartyRoomResponse) async -> Bool {
         guard !isBusy else { return false }
         guard !isEngaged else {
@@ -187,6 +189,8 @@ final class WatchPartySession {
         }
         let owner = engagement
         isBusy = true
+        // Only the create that set it may carry a preview into the new room.
+        if !keepsSelectionPreview { selectionPreview = nil }
         errorMessage = nil
         defer { if owner == engagement { isBusy = false } }
         guard let captured = await tokenStore.captureOrdinaryRequestAuth(), captured.profileId != nil,
@@ -356,6 +360,7 @@ final class WatchPartySession {
     private func terminate(_ message: String, replaced: Bool = false, canRejoin: Bool = true) {
         engagement = UUID()
         state.end()
+        selectionPreview = nil
         wasReplaced = replaced
         isBusy = false
         if !canRejoin { clearRecentRoom() }
