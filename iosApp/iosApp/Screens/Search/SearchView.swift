@@ -10,9 +10,16 @@ struct SearchView: View {
     @FocusState private var isSearchFieldFocused: Bool
     #endif
     private let usesTVTopMenuInset: Bool
+    /// A query handed over by Siri. Search replaces whatever the field held
+    /// with it, then clears it so no later Search picks it up again.
+    @Binding private var seededQuery: AppRouter.SearchRequest?
 
-    init(usesTVTopMenuInset: Bool = true) {
+    init(
+        usesTVTopMenuInset: Bool = true,
+        seededQuery: Binding<AppRouter.SearchRequest?> = .constant(nil)
+    ) {
         self.usesTVTopMenuInset = usesTVTopMenuInset
+        self._seededQuery = seededQuery
     }
 
     var body: some View {
@@ -63,12 +70,19 @@ struct SearchView: View {
         #if os(iOS)
         .searchFocused($isSearchFieldFocused)
         .task {
+            // A Siri search shows its results; the keyboard would cover them.
+            guard seededQuery == nil else { return }
             await focusSearchField()
         }
         #endif
         .onChange(of: viewModel.query) { _, _ in
             viewModel.onQueryChanged()
             requestsViewModel.onQueryChanged(viewModel.query)
+        }
+        .task(id: seededQuery?.id) {
+            guard let seed = seededQuery else { return }
+            viewModel.query = seed.query
+            seededQuery = nil
         }
         .onChange(of: viewModel.selectedMediaType) { _, _ in
             Task { await viewModel.applyMediaType() }

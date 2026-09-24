@@ -973,6 +973,11 @@ final class SiloControlClient {
         UserDefaults.standard.set(data, forKey: Self.persistedTargetKey)
     }
 
+    /// The TV this phone controlled most recently, this run or an earlier one.
+    var preferredTargetId: String? {
+        lastTarget?.id ?? Self.loadPersistedTarget()?.id
+    }
+
     private static func loadPersistedTarget() -> PersistedControlTarget? {
         guard let data = UserDefaults.standard.data(forKey: persistedTargetKey) else { return nil }
         return try? JSONDecoder().decode(PersistedControlTarget.self, from: data)

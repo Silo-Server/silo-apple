@@ -721,6 +721,8 @@ struct ContentView: View {
     ///   download notifications)
     /// - `silo://watch-party?server=…&token=…` — join a Watch Party
     ///   invitation (see `WatchPartyInvitation`)
+    /// - `silo://search?q={term}`, `silo://play?q={title}` — Siri requests
+    ///   (see `SiriLink`)
     ///
     /// If the auth state isn't ready yet, the link is queued in
     /// `pendingDeepLink` until startup commits its initial route.
@@ -808,6 +810,33 @@ struct ContentView: View {
             return
         }
 
+        #if os(iOS) || os(tvOS)
+        if let siriLink = SiriLink(url: url) {
+            guard router.authState == .authenticated else {
+                pendingDeepLink = url
+                return
+            }
+            switch siriLink {
+            case .search(let term):
+                router.requestSearch(query: term)
+            case .play(let title, let onTV):
+                let identity = currentDeepLinkIdentity
+                playDeepLinkTask = Task { @MainActor in
+                    await routeSiriPlayback(
+                        title: title,
+                        onTV: onTV,
+                        revision: revision,
+                        identity: identity
+                    )
+                    if deepLinkRevision == revision {
+                        playDeepLinkTask = nil
+                    }
+                }
+            }
+            return
+        }
+        #endif
+
         guard !url.pathComponents.isEmpty else { return }
         let contentId = url.pathComponents
             .dropFirst()
@@ -876,6 +905,88 @@ struct ContentView: View {
             && router.authState == .authenticated
             && identity == currentDeepLinkIdentity
     }
+
+    #if os(iOS) || os(tvOS)
+    /// Plays the title Siri heard, or opens Search for it when the match
+    /// isn't clear or the lookup fails.
+    @MainActor
+    private func routeSiriPlayback(
+        title: String,
+        onTV: Bool,
+        revision: UInt,
+        identity: DeepLinkIdentity
+    ) async {
+        let outcome: SiriPlaybackOutcome
+        do {
+            outcome = try await SiriPlaybackResolver.live.resolve(title)
+        } catch {
+            outcome = .search(term: title)
+        }
+        guard canCompletePlayDeepLink(revision: revision, identity: identity) else { return }
+
+        switch outcome {
+        case .search(let term):
+            router.requestSearch(query: term)
+        case .play(let contentId, let titleContentId):
+            #if os(iOS)
+            if onTV {
+                await playSiriRequestOnTV(contentId: contentId, revision: revision, identity: identity)
+                return
+            }
+            router.presentPlayer(contentId: contentId)
+            #else
+            // A player pushed from a detail page is a route, and must close
+            // before this one opens over it. Back from the new player lands on
+            // the title's page.
+            audioStore.dismissFullPlayer()
+            router.popToRoot()
+            router.presentPlayer(contentId: contentId, returnToContentId: titleContentId)
+            #endif
+        }
+    }
+    #endif
+
+    #if os(iOS)
+    /// Sends a Siri "play on TV" request to the engaged TV, else to the one
+    /// obvious TV on the network, else asks which TV.
+    @MainActor
+    private func playSiriRequestOnTV(
+        contentId: String,
+        revision: UInt,
+        identity: DeepLinkIdentity
+    ) async {
+        router.dismissItemDetail()
+        if siloControl.remotePlaybackEngaged {
+            // The routing interceptor sends it, asking first if the TV is
+            // playing something else.
+            router.presentPlayer(contentId: contentId)
+            return
+        }
+
+        let request = SiloControlPlaybackRequest(
+            contentId: contentId,
+            fileId: nil,
+            audioTrackIndex: nil,
+            subtitleTrackIndex: nil,
+            startFromBeginning: false,
+            resumePosition: nil
+        )
+        let preferredId = siloControl.preferredTargetId
+        let found = await SiriTVTarget.discover(preferredId: preferredId)
+        guard canCompletePlayDeepLink(revision: revision, identity: identity) else { return }
+
+        if let target = SiriTVTarget.choose(
+            from: found,
+            preferredId: preferredId,
+            isOnActiveServer: { $0.targetsActiveServer }
+        ) {
+            router.presentedPlayer = nil
+            await siloControl.play(on: target, request: request)
+        } else {
+            router.pendingTVPickerRequest = AppRouter.TVPickerRequest(request: request)
+        }
+    }
+    #endif
 
     @MainActor
     private func routePlayDeepLink(
@@ -2013,6 +2124,8 @@ struct MainTabView: View {
     /// shell level so the existing startup single-flight can fill it before
     /// the user taps the tab, making the destination paint immediately.
     @State private var recommendationsViewModel = RecommendationsViewModel()
+    /// The Siri request Search fills its field from; Search clears it.
+    @State private var siriSearchRequest: AppRouter.SearchRequest?
     #endif
     #if !os(macOS)
     @Environment(\.horizontalSizeClass) private var hSize
@@ -2092,6 +2205,12 @@ struct MainTabView: View {
             )
             router.requestedTab = nil
         }
+        #if os(iOS)
+        .onChange(of: router.requestedSearch) { _, _ in
+            openRequestedSearch()
+        }
+        .task { openRequestedSearch() }
+        #endif
         .onChange(of: uiCustomization.primaryMenu) { _, _ in
             selectedDestinationID = resolvedVisibleMainTabDestination(
                 selectedDestinationID,
@@ -2150,6 +2269,9 @@ struct MainTabView: View {
         ) { presentation in
             ItemDetailSheet(presentation: presentation, router: router)
         }
+        .sheet(item: $router.pendingTVPickerRequest) { box in
+            SiloControlTargetPickerView(request: box.request, controller: siloControl)
+        }
         .sheet(isPresented: Binding(
             get: { siloControl.isShowingRemoteControl },
             set: { if !$0 { siloControl.hideRemoteControl() } }
@@ -2164,6 +2286,24 @@ struct MainTabView: View {
         // it and traps when it's absent.
         .environment(router)
     }
+
+    #if os(iOS)
+    /// Opens Search for a Siri request: the Search tab when the menu shows
+    /// one, else Search pushed over the current tab. Either way Search comes
+    /// up with the spoken words filled in and its results showing.
+    private func openRequestedSearch() {
+        guard let request = router.requestedSearch else { return }
+        router.requestedSearch = nil
+        siriSearchRequest = request
+        router.dismissItemDetail()
+        router.popToRoot()
+        if visibleDestinations.contains(where: { $0.id == .app(.search) }) {
+            selectedDestinationID = .app(.search)
+        } else {
+            router.navigate(to: .search)
+        }
+    }
+    #endif
 
     private var prefersSidebarLayout: Bool {
         #if os(macOS)
@@ -2551,7 +2691,11 @@ struct MainTabView: View {
             )
 
         case .search:
+            #if os(iOS)
+            SearchView(seededQuery: $siriSearchRequest)
+            #else
             SearchView()
+            #endif
 
         case .recommendations:
             #if os(iOS)
@@ -2668,7 +2812,11 @@ struct MainTabView: View {
         case .myRequests:
             MyRequestsView()
         case .search:
+            #if os(iOS)
+            SearchView(seededQuery: $siriSearchRequest)
+            #else
             SearchView()
+            #endif
         case .settings:
             SettingsView()
         case .recommendations:

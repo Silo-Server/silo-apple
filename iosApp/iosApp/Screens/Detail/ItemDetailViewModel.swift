@@ -1053,26 +1053,7 @@ class ItemDetailViewModel {
            let requested = seasons.first(where: { $0.seasonNumber == initialResumeSeasonNumber }) {
             return requested
         }
-        if let inProgress = seasons.first(where: { ($0.userData?.inProgressCount ?? 0) > 0 }) {
-            return inProgress
-        }
-        if let partial = seasons.first(where: {
-            guard let ud = $0.userData else { return false }
-            let watched = ud.watchedCount ?? 0
-            return watched > 0 && watched < $0.episodeCount
-        }) {
-            return partial
-        }
-        // Specials sort first for display, but a fresh series should open on
-        // its first numbered season rather than the specials bucket. Once
-        // every numbered season is played, an unplayed Specials still wins
-        // over a fully watched one.
-        let regular = seasons.filter { !($0.isSpecials == true || $0.seasonNumber == 0) }
-        let isUnplayed: (Season) -> Bool = { !($0.userData?.played ?? false) }
-        if let firstUnplayed = regular.first(where: isUnplayed) ?? seasons.first(where: isUnplayed) {
-            return firstUnplayed
-        }
-        return regular.first ?? seasons.first
+        return SeriesNextUpPolicy.preferredSeason(in: seasons)
     }
 
     func selectSeason(

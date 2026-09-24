@@ -297,6 +297,14 @@ class AppRouter {
     }
     var pendingReplaceRemotePlayback: ReplaceRemotePlaybackChoice?
 
+    /// A Siri "play on TV" request that found no TV to pick on its own (none
+    /// or several on the network). The main tab view shows the TV picker.
+    struct TVPickerRequest: Identifiable {
+        let id = UUID()
+        let request: SiloControlPlaybackRequest
+    }
+    var pendingTVPickerRequest: TVPickerRequest?
+
     /// Installed by the root view: the title the engaged TV is playing right
     /// now, or nil when it is idle, so the router knows whether a play
     /// would replace something.
@@ -341,6 +349,26 @@ class AppRouter {
     func switchTab(to tab: AppTab) {
         requestedTab = tab
     }
+
+    // MARK: - Search Requests
+
+    /// Search opened with `query` filled in. A fresh `id` makes a repeated
+    /// query a new request.
+    struct SearchRequest: Equatable {
+        let id = UUID()
+        let query: String
+    }
+
+    #if os(iOS) || os(tvOS)
+    /// One-shot Search request from Siri, consumed (and cleared) by the main
+    /// tab view (`TVMainTabView` on tvOS), which owns tab selection and the
+    /// navigation stack.
+    var requestedSearch: SearchRequest?
+
+    func requestSearch(query: String) {
+        requestedSearch = SearchRequest(query: query)
+    }
+    #endif
 
     /// Present the player using the platform-appropriate path. iOS/iPadOS use
     /// a full-window cover; macOS pushes into the main navigation content so
