@@ -1365,6 +1365,9 @@ struct TVMainTabView: View {
             CollectionDetailView(collectionId: id)
         case .browse(let libraryId):
             BrowseView(libraryId: libraryId)
+        case .mediaBrowse, .libraryCollections, .calendar:
+            // The Watch tab is iOS-only; tvOS never pushes these routes.
+            EmptyView()
         case .watchParty:
             #if os(iOS) || os(tvOS)
             WatchPartyHubView(session: .shared)

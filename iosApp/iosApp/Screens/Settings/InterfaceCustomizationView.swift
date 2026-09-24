@@ -135,6 +135,7 @@ struct InterfaceCustomizationView: View {
     @State private var preferences = UICustomizationPreferences.shared
     @State private var registry = ServerRegistry.shared
     @State private var librarySnapshot = MainTabLibrarySnapshot.cachedForCurrentAuthority()
+    @State private var navPrefs = AppNavPreferences.shared
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -211,6 +212,9 @@ struct InterfaceCustomizationView: View {
                 Text("Choose which Home rows are visible and the order they appear in.")
             }
 
+            #if os(iOS)
+            tabBarSection
+            #else
             Section {
                 ForEach(visibleRows) { row in
                     let item = row.item
@@ -306,6 +310,7 @@ struct InterfaceCustomizationView: View {
                     }
                 }
             }
+            #endif
 
             if let message = preferences.syncErrorMessage,
                message != preferences.capabilityMessage,
@@ -383,6 +388,42 @@ struct InterfaceCustomizationView: View {
             profileId: registry.activeProfileId
         )
     }
+
+    #if os(iOS)
+    /// iOS has a fixed tab bar (`appleFixedTabDestinations`); only the last
+    /// slot is a choice. The synced primary menu still drives other clients.
+    private var tabBarSection: some View {
+        Section {
+            Picker(
+                "Last Tab",
+                selection: Binding(
+                    get: { navPrefs.lastTab },
+                    set: { navPrefs.setLastTab($0) }
+                )
+            ) {
+                Label("Downloads", systemImage: "arrow.down.circle").tag(LastTabChoice.downloads)
+                Label("Favorites", systemImage: "heart").tag(LastTabChoice.favorites)
+                Label("Calendar", systemImage: "calendar").tag(LastTabChoice.calendar)
+                let tabLibraries = navPrefs.showAudiobooks
+                    ? libraries
+                    : libraries.filter { !$0.isAudiobookLibrary }
+                if !tabLibraries.isEmpty {
+                    Section("Libraries") {
+                        ForEach(tabLibraries) { library in
+                            Label(library.name, systemImage: library.navigationIcon)
+                                .tag(LastTabChoice.library(library.id))
+                        }
+                    }
+                }
+            }
+            .pickerStyle(.navigationLink)
+        } header: {
+            Text("Tab Bar")
+        } footer: {
+            Text("Home, Watch, Listen and For You are always in the tab bar. Listen appears when Show Audiobooks is on and this profile has an audiobook library. The last tab is saved for this profile on this device.")
+        }
+    }
+    #endif
 
     private var libraries: [Library] {
         librarySnapshot.availableLibraries(for: currentLibraryAuthority)

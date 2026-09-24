@@ -219,7 +219,7 @@ struct IOSSettingsOverview: View {
         SettingsOverviewSection("Library & Data") {
             SettingsOverviewToggleRow(
                 title: "Show Audiobooks",
-                subtitle: "Add Audiobooks to the main navigation",
+                subtitle: "Show the Listen tab and audiobooks in Search",
                 systemImage: "book.closed.fill",
                 tint: .indigo,
                 isOn: Binding(

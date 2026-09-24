@@ -599,10 +599,15 @@ enum StartupContentPrefetcher {
     /// uses for page 2, so the prefetch and the live grid share one query.
     static func fetchBrowseFirstPage(
         libraryId: Int?,
-        state: CatalogFilterState = .none
+        state: CatalogFilterState = .none,
+        scope: BrowseMediaType? = nil
     ) async throws -> CatalogListPage {
         let generation = profileScopedGeneration
-        let key = CacheKey.browse(libraryId: libraryId, filterKey: state.cacheKeyFragment)
+        let key = CacheKey.browse(
+            libraryId: libraryId,
+            filterKey: state.cacheKeyFragment,
+            scope: scope?.crossLibraryTypeParam
+        )
         // Verbose for the same reason as `library_sections`, and the cache key
         // (library id plus the user's filter selections) is never logged.
         #if os(iOS) || os(tvOS)
@@ -617,16 +622,21 @@ enum StartupContentPrefetcher {
             task = existing
         } else {
             task = Task {
-                // iOS omits `type` (library_id already scopes the page); the
-                // builder is the single source of the wire format, and later
-                // pages follow this page's continuation.
-                let query = CatalogQueryBuilder.build(
+                // iOS omits `type` when library_id already scopes the page;
+                // the Watch tab's cross-library grids pass an explicit scope
+                // instead. The builder is the single source of the wire
+                // format, and later pages follow this page's continuation.
+                var query = CatalogQueryBuilder.build(
                     state,
                     libraryId: libraryId,
-                    mediaType: .movie,
+                    mediaType: scope ?? .movie,
                     limit: browsePageSize,
-                    includeType: false
+                    includeType: scope != nil
                 )
+                // Browse grids page by cursor and never show a count; the
+                // exact total is the slowest part of the query. Later pages
+                // reuse this query through the continuation.
+                query.skipTotal = true
                 return try await SiloAPI.shared.catalogPage(query)
             }
             browseFirstPageTasks[key] = task

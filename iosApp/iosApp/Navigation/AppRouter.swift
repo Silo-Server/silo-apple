@@ -882,6 +882,10 @@ private extension Route {
             return "search"
         case .browse:
             return "browse"
+        case .mediaBrowse:
+            return "mediaBrowse"
+        case .libraryCollections:
+            return "libraryCollections"
         case .library:
             return "library"
         case .libraryCollection:
@@ -912,6 +916,8 @@ private extension Route {
             return "serverList"
         case .downloads:
             return "downloads"
+        case .calendar:
+            return "calendar"
         case .watchParty:
             return "watchParty"
         case .requestsHub:

@@ -18,6 +18,9 @@ struct TabTopBarActions: View {
     let onSwitchProfile: () -> Void
     let onSwitchServer: () -> Void
     let onSignOut: () -> Void
+    /// iOS 26: group Search and Remote in one Liquid Glass capsule, the way
+    /// native toolbars group related items. The avatar stays separate.
+    var groupsInGlass = false
 
     /// Shared session cache so switching pages never refetches or flashes
     /// the avatar fallback.
@@ -30,17 +33,9 @@ struct TabTopBarActions: View {
     var body: some View {
         // Icons spaced evenly, matching the clean top-right cluster used by
         // Plex. Order is fixed: Search, Remote (iOS), Profile.
-        HStack(spacing: SiloTheme.topBarIconSpacing) {
-            TopBarIconButton(
-                systemImage: "magnifyingglass",
-                accessibilityLabel: "Search",
-                action: onSearch
-            )
-            #if os(iOS)
-            SiloControlModeButton(controller: siloControl) {
-                isShowingControlPicker = true
-            }
-            #endif
+        HStack(spacing: groupsInGlass ? 10 : SiloTheme.topBarIconSpacing) {
+            utilityButtons
+                .modifier(TopBarGlassGroup(isEnabled: groupsInGlass))
             ProfileAvatarMenu(
                 profile: profileStore.profile,
                 onOpenSettings: onOpenSettings,
@@ -58,6 +53,37 @@ struct TabTopBarActions: View {
         // No-op once cached; covers a page shown before the session-level
         // load finished.
         .task { await profileStore.refresh() }
+    }
+}
+
+extension TabTopBarActions {
+    fileprivate var utilityButtons: some View {
+        HStack(spacing: SiloTheme.topBarIconSpacing) {
+            TopBarIconButton(
+                systemImage: "magnifyingglass",
+                accessibilityLabel: "Search",
+                action: onSearch
+            )
+            #if os(iOS)
+            SiloControlModeButton(controller: siloControl) {
+                isShowingControlPicker = true
+            }
+            #endif
+        }
+    }
+}
+
+private struct TopBarGlassGroup: ViewModifier {
+    let isEnabled: Bool
+
+    func body(content: Content) -> some View {
+        if isEnabled, #available(iOS 26.0, macOS 26.0, *) {
+            content
+                .padding(.horizontal, 2)
+                .siloGlass(in: Capsule(), interactive: true)
+        } else {
+            content
+        }
     }
 }
 

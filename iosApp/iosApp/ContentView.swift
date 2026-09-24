@@ -1767,6 +1767,12 @@ enum MainTabDestinationID: Hashable {
     case app(AppTab)
     case libraryCategory(PrimaryMenuBuiltin)
     case library(Int)
+    /// iOS-only hubs (`MediaHubView`): every movie and series library, and
+    /// every audiobook library.
+    case watch
+    case listen
+    /// iOS last-slot choice (`LastTabChoice.favorites`).
+    case favorites
 }
 
 struct MainTabDestination: Identifiable, Equatable {
@@ -1935,9 +1941,9 @@ func resolvedRequestedMainTabDestination(
        !visibleDestinations.contains(where: { $0.id == .app(.libraries) }),
        let authoredLibraryRoot = visibleDestinations.first(where: {
            switch $0.id {
-           case .libraryCategory, .library:
+           case .libraryCategory, .library, .watch, .listen:
                return true
-           case .app:
+           case .app, .favorites:
                return false
            }
        }) {
@@ -2071,7 +2077,11 @@ struct MainTabView: View {
                   // selected while this task was waiting.
                   selectedDestinationID == .app(.home), router.requestedTab == nil
             else { return }
-            selectedDestinationID = .app(.downloads)
+            if visibleDestinations.contains(where: { $0.id == .app(.downloads) }) {
+                selectedDestinationID = .app(.downloads)
+            } else {
+                router.navigate(to: .downloads)
+            }
         }
         #endif
         #if os(iOS)
@@ -2086,11 +2096,39 @@ struct MainTabView: View {
         #endif
         .onChange(of: router.requestedTab) { _, tab in
             guard let tab else { return }
+            router.requestedTab = nil
+            // Downloads and Calendar can be off the iOS bar (last-slot
+            // choice); open them as pages instead of silently landing on Home.
+            #if !os(tvOS)
+            if !visibleDestinations.contains(where: { $0.id == .app(tab) }) {
+                switch tab {
+                case .downloads:
+                    router.navigate(to: .downloads)
+                    return
+                case .calendar:
+                    router.navigate(to: .calendar)
+                    return
+                default:
+                    break
+                }
+            }
+            #endif
             selectedDestinationID = resolvedRequestedMainTabDestination(
                 tab,
                 visibleDestinations: visibleDestinations
             )
-            router.requestedTab = nil
+        }
+        .onChange(of: navPrefs.lastTab) { _, _ in
+            selectedDestinationID = resolvedVisibleMainTabDestination(
+                selectedDestinationID,
+                visibleDestinations: visibleDestinations
+            )
+        }
+        .onChange(of: DownloadManager.shared.downloadsEnabled) { _, _ in
+            selectedDestinationID = resolvedVisibleMainTabDestination(
+                selectedDestinationID,
+                visibleDestinations: visibleDestinations
+            )
         }
         .onChange(of: uiCustomization.primaryMenu) { _, _ in
             selectedDestinationID = resolvedVisibleMainTabDestination(
@@ -2191,6 +2229,15 @@ struct MainTabView: View {
     /// `DownloadManager.shared.downloadsEnabled` here registers the tab bar
     /// as an observer, so the tab appears as soon as capability loads.
     private var visibleDestinations: [MainTabDestination] {
+        #if os(iOS)
+        // iOS uses a fixed bar; the synced primary menu drives other clients.
+        return appleFixedTabDestinations(
+            libraries: librarySnapshot.availableLibraries(for: currentLibraryAuthority),
+            showAudiobooks: navPrefs.showAudiobooks,
+            downloadsEnabled: DownloadManager.shared.downloadsEnabled,
+            lastTab: navPrefs.lastTab
+        )
+        #else
         var destinations = projectedMainTabDestinations(
             primaryMenu: uiCustomization.primaryMenu,
             availableLibraries: librarySnapshot.availableLibraries(
@@ -2205,6 +2252,7 @@ struct MainTabView: View {
         }
         #endif
         return destinations
+        #endif
     }
 
     private var currentLibraryAuthority: MainTabLibraryAuthority? {
@@ -2527,6 +2575,18 @@ struct MainTabView: View {
                 libraryAuthority: currentLibraryAuthority,
                 onLibrariesLoaded: acceptLoadedLibraries
             )
+        case .watch, .listen:
+            #if os(tvOS)
+            EmptyView()
+            #else
+            MediaHubView(
+                hub: destination.id == .listen ? .listen : .watch,
+                libraryAuthority: currentLibraryAuthority,
+                onLibrariesLoaded: acceptLoadedLibraries
+            )
+            #endif
+        case .favorites:
+            FavoritesView()
         }
     }
 
@@ -2655,6 +2715,17 @@ struct MainTabView: View {
             CollectionDetailView(collectionId: id)
         case .browse(let libraryId):
             BrowseView(libraryId: libraryId)
+        case .mediaBrowse(let kind, let libraryId):
+            #if os(tvOS)
+            EmptyView()
+            #else
+            MediaBrowseView(kind: kind, initialLibraryId: libraryId)
+            #endif
+        case .libraryCollections(let libraryId, let title):
+            LibraryCollectionsView(libraryId: libraryId)
+                .navigationTitle(title ?? "Collections")
+                .siloNavigationTitleDisplayMode(.large)
+                .siloPageBackground()
         case .watchParty:
             #if os(iOS) || os(tvOS)
             WatchPartyHubView(session: .shared)
@@ -2681,6 +2752,13 @@ struct MainTabView: View {
                 .siloPageBackground()
             #else
             DownloadsView()
+            #endif
+        case .calendar:
+            #if os(tvOS)
+            EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
+                .siloPageBackground()
+            #else
+            CalendarView()
             #endif
         case .offlinePlayer(let downloadId, let contentId, let startFromBeginning, let resumePosition):
             #if os(macOS)
@@ -2718,7 +2796,7 @@ struct MainTabView: View {
     #if os(iOS)
     private func routeNeedsSidebarToggle(_ route: Route) -> Bool {
         switch route {
-        case .downloads, .recommendations:
+        case .downloads, .recommendations, .calendar:
             false
         default:
             true
