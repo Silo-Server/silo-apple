@@ -26,6 +26,15 @@ enum WatchPartyEntry {
             && session.capabilities?.connectionReplaced == true && session.supportsPlayback
     }
 
+    /// Inside a party, only a host-pick room's manager picks directly; everyone
+    /// else adds a suggestion, so the entry point says so.
+    static var actionTitle: String {
+        let session = WatchPartySession.shared
+        guard session.isEngaged else { return "Watch Party" }
+        return session.room?.selfCanManageRoom == true && session.room?.selectionMode == .hostPick
+            ? "Watch Party" : "Suggest to Party"
+    }
+
     /// `preview` is what the caller already shows for the title; the lobby
     /// lays out from it instead of passing through its empty and loading states.
     static func open(contentId: String, title: String, type: String, fileId: Int?,
@@ -64,7 +73,7 @@ struct WatchPartyMenuButton: View {
 
     var body: some View {
         if WatchPartyEntry.isAvailable {
-            Button("Watch Party", systemImage: "person.3") {
+            Button(WatchPartyEntry.actionTitle, systemImage: "person.3") {
                 WatchPartyEntry.open(contentId: contentId, title: title, type: type,
                     fileId: fileId, libraryId: libraryId,
                     preview: preview ?? episode.flatMap { episodePreview?($0) }, router: router)

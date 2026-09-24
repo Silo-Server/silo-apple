@@ -924,7 +924,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 }
                 if WatchPartyEntry.isAvailable && displayedEpisode != nil {
                     items.append(TVActionPopoverItem(id: MoreAction.watchParty.rawValue,
-                        title: "Watch Party", systemImage: "person.3"))
+                        title: WatchPartyEntry.actionTitle, systemImage: "person.3"))
                 }
                 return items
             },

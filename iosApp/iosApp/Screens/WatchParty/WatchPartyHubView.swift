@@ -22,8 +22,16 @@ struct WatchPartyHubView: View {
                     WatchPartyBackdrop(url: preview.backdropUrl ?? preview.posterUrl,
                                        thumbhash: preview.backdropUrl != nil ? preview.backdropThumbhash : preview.posterThumbhash,
                                        isPoster: preview.backdropUrl == nil)
+                    #if os(tvOS)
+                    // Nothing else here can hold focus while the party starts;
+                    // without an owner Menu cannot leave a slow request.
+                    ProgressView().tint(Color.siloSecondaryText)
+                        .tvPageFocusOwner(focusRequest: 0, isTopMenuFocused: false,
+                                          accessibilityLabel: "Starting your party", onMoveUp: nil)
+                    #else
                     ProgressView().tint(Color.siloSecondaryText)
                         .accessibilityLabel("Starting your party")
+                    #endif
                 }
             } else {
                 WatchPartyEntryView(session: session, isCheckingSupport: isCheckingSupport,
@@ -728,6 +736,8 @@ struct WatchPartyLobbyView: View {
                     statusBanner(room)
                     if room.phase == .lobby, room.selectionMode == .vote {
                         WatchPartyBallot(session: session, room: room, onSuggest: { openSheet(.suggest) })
+                    } else if room.phase == .lobby, !session.votes.rows.isEmpty {
+                        WatchPartyLobbySuggestions(session: session, room: room)
                     }
                     WatchPartySeatsRow(members: room.members, phase: room.phase, onInvite: { openSheet(.invite) })
                 }
@@ -865,9 +875,12 @@ struct WatchPartyLobbyView: View {
                             .font(.system(size: 24))
                             .lineSpacing(6)
                             .foregroundStyle(Color.siloSecondaryText)
-                            .lineLimit(3)
+                            .lineLimit(hostPickSuggestionsShown(room) ? 2 : 3)
                     }
                     statusBanner(room)
+                    if hostPickSuggestionsShown(room) {
+                        WatchPartyLobbySuggestions(session: session, room: room)
+                    }
                 }
                 .frame(width: 760, alignment: .leading)
                 .padding(.top, 90)
@@ -894,11 +907,145 @@ struct WatchPartyLobbyView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .defaultFocus($focused, .primary, priority: .userInitiated)
         .onPlayPauseCommand {
-            if case .start = primaryAction, session.canStartPlayback { Task { await session.startPlayback() } }
+            // Same predicate as the Start button, so the remote cannot start
+            // playback the focused button refuses.
+            if case .start = primaryAction, session.canStartPlayback, !session.locksControls, isConnected {
+                Task { await session.startPlayback() }
+            }
         }
+    }
+
+    private func hostPickSuggestionsShown(_ room: WatchPartyRoom) -> Bool {
+        room.phase == .lobby && room.selectionMode == .hostPick && !session.votes.rows.isEmpty
     }
     #endif
 }
+
+// MARK: - Suggestions (host-pick mode)
+
+/// Guests' suggestions in a host-pick lobby. The host still decides, so the
+/// action stages a suggestion as the pick rather than starting it; everyone
+/// else sees what has been put forward and can pull their own.
+struct WatchPartyLobbySuggestions: View {
+    let session: WatchPartySession
+    let room: WatchPartyRoom
+
+    private var canQueue: Bool {
+        room.selfCanManageRoom && !session.locksControls && session.connection == .connected
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: WatchPartyMetrics.caption * 0.6) {
+            HStack(alignment: .firstTextBaseline) {
+                WatchPartyEyebrow(text: "Suggestions · \(session.votes.rows.count)")
+                Spacer(minLength: 12)
+                Text(room.selfCanManageRoom ? "Queue one to put it up next." : "The host decides what plays.")
+                    .font(.system(size: WatchPartyMetrics.caption))
+                    .foregroundStyle(Color.siloSecondaryText)
+                    .lineLimit(1)
+            }
+            #if os(tvOS)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(alignment: .top, spacing: 24) {
+                    ForEach(session.votes.rows) { suggestion in
+                        WatchPartySuggestionCard(session: session, suggestion: suggestion, canQueue: canQueue)
+                    }
+                }
+                .padding(.vertical, 14)
+            }
+            .scrollClipDisabled()
+            .focusSection()
+            #else
+            VStack(spacing: 8) {
+                ForEach(session.votes.rows) { suggestion in
+                    WatchPartySuggestionRow(session: session, suggestion: suggestion, canQueue: canQueue)
+                }
+            }
+            #endif
+        }
+    }
+}
+
+#if os(iOS)
+private struct WatchPartySuggestionRow: View {
+    let session: WatchPartySession
+    let suggestion: WatchPartySuggestion
+    let canQueue: Bool
+
+    var body: some View {
+        HStack(spacing: 12) {
+            WatchPartyPoster(url: suggestion.posterUrl, width: WatchPartyMetrics.ballotPoster.width, cornerRadius: 6)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(suggestion.title).font(.system(size: 15, weight: .semibold)).lineLimit(1)
+                    .foregroundStyle(Color.siloOnSurface)
+                Text([suggestion.subtitle, suggestion.note.isEmpty ? nil : "“\(suggestion.note)”"].compactMap { $0 }
+                    .filter { !$0.isEmpty }.joined(separator: " · "))
+                    .font(.system(size: 12)).foregroundStyle(Color.siloSecondaryText).lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            if canQueue {
+                Button("Queue") { Task { await session.promoteSuggestion(id: suggestion.id) } }
+                    .buttonStyle(WatchPartyButtonStyle(kind: .secondary))
+                    .fixedSize()
+                    .accessibilityLabel("Queue \(suggestion.title)")
+            }
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.siloChromeRestingFill))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.siloChromeRestingBorder, lineWidth: 1))
+        .contextMenu {
+            if session.canRemoveSuggestion(suggestion) {
+                Button(role: .destructive) { Task { await session.deleteSuggestion(id: suggestion.id) } } label: {
+                    Label("Remove suggestion", systemImage: "trash")
+                }
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(suggestion.title)
+    }
+}
+#endif
+
+#if os(tvOS)
+private struct WatchPartySuggestionCard: View {
+    let session: WatchPartySession
+    let suggestion: WatchPartySuggestion
+    let canQueue: Bool
+    @FocusState private var isFocused: Bool
+
+    private static let poster = CGSize(width: 120, height: 180)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            // Hosts press to queue. A guest's own suggestion stays focusable
+            // so the context menu can remove it; other guests' cards are
+            // display-only.
+            Button {
+                if canQueue { Task { await session.promoteSuggestion(id: suggestion.id) } }
+            } label: {
+                WatchPartyPoster(url: suggestion.posterUrl, width: Self.poster.width, cornerRadius: 10)
+                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(isFocused ? Color.siloOnSurface : Color.siloChromeRestingBorder, lineWidth: isFocused ? 5 : 1)
+                        .padding(isFocused ? -8 : 0))
+                    .scaleEffect(isFocused ? 1.05 : 1)
+                    .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+            }
+            .buttonStyle(.siloFlat)
+            .focused($isFocused)
+            .disabled(!canQueue && !session.canRemoveSuggestion(suggestion))
+            .accessibilityLabel(canQueue ? "Queue \(suggestion.title)" : suggestion.title)
+            .contextMenu {
+                if session.canRemoveSuggestion(suggestion) {
+                    Button(role: .destructive) { Task { await session.deleteSuggestion(id: suggestion.id) } } label: { Text("Remove suggestion") }
+                }
+            }
+            Text(suggestion.title).font(.system(size: 20, weight: .semibold)).lineLimit(1)
+                .foregroundStyle(Color.siloOnSurface)
+                .frame(width: Self.poster.width, alignment: .leading)
+        }
+    }
+}
+#endif
 
 // MARK: - Ballot (vote mode)
 
