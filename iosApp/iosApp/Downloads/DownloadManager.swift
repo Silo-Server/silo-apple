@@ -109,7 +109,8 @@ final class DownloadManager {
     private var legacySessionDrainTask: Task<[String: Data], Never>?
     private var legacySessionDrained = false
     /// Resume data of transfers stopped in the pre-rename background session,
-    /// keyed by the download id each one requested.
+    /// keyed by `DownloadSessionDelegate.legacyTransferKey` of the file each
+    /// one requested.
     private var legacySessionResumeData: [String: Data] = [:]
     private var pendingResumeIds: Set<String> = []
     /// Serializes disk saves so a rapid burst of `persist()` calls can't land
@@ -534,11 +535,14 @@ final class DownloadManager {
     /// one, and any other restarts when reconnect re-queues it.
     private func adoptLegacySessionTasksIfNeeded() {
         guard file.taskSessionIdentifier != DownloadSessionDelegate.sessionIdentifier else { return }
+        let serverURL = ServerRegistry.shared.entry(with: fileServerId)?.url
         for (id, record) in file.records {
             guard record.taskIdentifier != nil else { continue }
             var record = record
             if record.localStatus == .downloading,
-               let data = legacySessionResumeData.removeValue(forKey: id),
+               let serverURL,
+               let key = DownloadSessionDelegate.legacyTransferKey(APIv2Client.downloadFileURL(id: id, serverURL: serverURL)),
+               let data = legacySessionResumeData.removeValue(forKey: key),
                let url = absoluteFileURLForNewAsset(recordId: id, filename: "resume.bin"),
                (try? data.write(to: url, options: .atomic)) != nil {
                 record.resumeDataFilename = "resume.bin"

@@ -150,9 +150,9 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
     }
 
     /// Stops every transfer still running in the pre-rename session and
-    /// returns the resume data of those that can continue, keyed by the
-    /// download id their request names. Task identifiers aren't used: they
-    /// repeat across sessions and scopes. Runs until one drain completes;
+    /// returns the resume data of those that can continue, keyed by
+    /// `legacyTransferKey` of the file they request. Task identifiers aren't
+    /// used: they repeat across sessions and scopes. Runs until one drain completes;
     /// later calls return an empty map without touching the old session.
     static func drainLegacySession(defaults: UserDefaults = .standard) async -> [String: Data] {
         guard !defaults.bool(forKey: legacySessionDrainedKey) else { return [:] }
@@ -161,9 +161,9 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
         var resumeData: [String: Data] = [:]
         for task in await session.allTasks {
             if let download = task as? URLSessionDownloadTask,
-               let id = APIv2Client.downloadFileID(task.originalRequest?.url ?? task.currentRequest?.url),
+               let key = legacyTransferKey(task.originalRequest?.url ?? task.currentRequest?.url),
                let data = await download.cancelByProducingResumeData() {
-                resumeData[id] = data
+                resumeData[key] = data
             } else {
                 task.cancel()
             }
@@ -178,6 +178,17 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
             logger.notice("Moved \(resumeData.count, privacy: .public) transfers out of the pre-rename download session")
         }
         return resumeData
+    }
+
+    /// Identifies a download file request by server and download id, so a
+    /// drained transfer can only be matched to the record on the server it
+    /// came from. Nil for anything but a v2 download file URL.
+    static func legacyTransferKey(_ url: URL?) -> String? {
+        guard APIv2Client.isDownloadFileURL(url), let url,
+              let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let scheme = parts.scheme?.lowercased(), let host = parts.host?.lowercased() else { return nil }
+        let port = parts.port ?? (scheme == "https" ? 443 : 80)
+        return "\(scheme)://\(host):\(port)\(parts.percentEncodedPath)"
     }
 
     // MARK: - URLSessionDownloadDelegate

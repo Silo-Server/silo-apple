@@ -117,6 +117,18 @@ final class SiloRenameMigrationTests: XCTestCase {
         XCTAssertNil(SharedKeychain(service: "isolated", accessGroup: nil).legacyService)
     }
 
+    /// Download ids are only unique per server, so a drained transfer is
+    /// matched by server and id together.
+    func testLegacyTransfersAreKeyedByServerAndDownload() throws {
+        let request = URL(string: "https://Silo.Example/base/api/v2/downloads/d1/file")
+        let key = try XCTUnwrap(DownloadSessionDelegate.legacyTransferKey(request))
+        XCTAssertEqual(key, DownloadSessionDelegate.legacyTransferKey(
+            APIv2Client.downloadFileURL(id: "d1", serverURL: "https://silo.example:443/base")))
+        XCTAssertNotEqual(key, DownloadSessionDelegate.legacyTransferKey(
+            APIv2Client.downloadFileURL(id: "d1", serverURL: "https://other.example/base")))
+        XCTAssertNil(DownloadSessionDelegate.legacyTransferKey(URL(string: "https://silo.example/api/v2/items/d1")))
+    }
+
     func testRegistryDefaultsMoveToTheirCurrentKeys() throws {
         let name = "SiloRenameMigrationTests.\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: name))
