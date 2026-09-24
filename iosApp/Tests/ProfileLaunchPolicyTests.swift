@@ -296,6 +296,38 @@ final class ProfileLaunchPolicyTests: XCTestCase {
         XCTAssertEqual(preferences.behavior, .automatic)
     }
 
+    /// The profile picker reads remembered profiles on the main thread while
+    /// `AuthService` records a selection from a profile-switch task.
+    func testConcurrentRememberAndReadKeepEveryServer() throws {
+        let suiteName = "ProfileLaunchPolicyTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let defaults = SharedDefaults(suite: suite, standard: suite)
+        defer { suite.removePersistentDomain(forName: suiteName) }
+        let preferences = ProfileLaunchPreferences(defaults: defaults)
+        let serverCount = 64
+        let accountEpoch = accountEpoch
+
+        DispatchQueue.concurrentPerform(iterations: serverCount * 16) { index in
+            let serverID = "server-\((index / 2) % serverCount)"
+            if index.isMultiple(of: 2) {
+                preferences.remember(
+                    profileID: "profile-\(index)",
+                    requiresPIN: false,
+                    accountEpoch: accountEpoch,
+                    for: serverID
+                )
+            } else {
+                _ = preferences.rememberedProfile(for: serverID)
+            }
+        }
+
+        XCTAssertEqual(preferences.state.rememberedByServerID.count, serverCount)
+        XCTAssertEqual(
+            ProfileLaunchPreferences(defaults: defaults).state,
+            preferences.state
+        )
+    }
+
     func testInvalidProfileNotificationCannotReplaceAnActiveProfile() {
         XCTAssertTrue(shouldPresentProfileSelectionAfterRecovery(
             isLoggedIn: true,
