@@ -71,6 +71,10 @@ public enum SettingKey: String, CaseIterable, Sendable {
     case playbackSubtitleMode = "playback.subtitle_mode"
     /// Audio sync offset
     case playerAudioSyncMs = "player.audio_sync_ms"
+    /// Audiobook rewind interval
+    case playerAudiobookSkipBackSeconds = "player.audiobook_skip_back_seconds"
+    /// Audiobook fast-forward interval
+    case playerAudiobookSkipForwardSeconds = "player.audiobook_skip_forward_seconds"
     /// Dolby Vision
     case playerDolbyVisionEnabled = "player.dolby_vision_enabled"
     /// Dolby Vision Profile 7 fallback
@@ -97,6 +101,10 @@ public enum SettingKey: String, CaseIterable, Sendable {
     case playerSubtitleSyncMs = "player.subtitle_sync_ms"
     /// Video sizing
     case playerVideoGravity = "player.video_gravity"
+    /// Video rewind interval
+    case playerVideoSkipBackSeconds = "player.video_skip_back_seconds"
+    /// Video fast-forward interval
+    case playerVideoSkipForwardSeconds = "player.video_skip_forward_seconds"
     /// Search scope
     case searchMediaScope = "search.media_scope"
     /// Match device caption settings
@@ -142,7 +150,7 @@ public enum SettingKey: String, CaseIterable, Sendable {
 }
 
 public extension SettingKey {
-    static let revision = 8
+    static let revision = 9
 
     /// Keys the server stores. The rest never leave the device.
     static let remote: [SettingKey] = [
@@ -165,6 +173,8 @@ public extension SettingKey {
         .playbackSubtitleLanguage,
         .playbackSubtitleMode,
         .playerAudioSyncMs,
+        .playerAudiobookSkipBackSeconds,
+        .playerAudiobookSkipForwardSeconds,
         .playerDolbyVisionEnabled,
         .playerDvProfile7Hdr10Fallback,
         .playerHdrEnabled,
@@ -175,6 +185,8 @@ public extension SettingKey {
         .playerSleepTimerDefaultMinutes,
         .playerSubtitleSyncMs,
         .playerVideoGravity,
+        .playerVideoSkipBackSeconds,
+        .playerVideoSkipForwardSeconds,
         .searchMediaScope,
         .uiCardOverlays,
         .uiCardOverlaysEnabled,

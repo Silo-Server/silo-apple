@@ -142,7 +142,7 @@ struct IOSSettingsOverview: View {
     private var playbackSection: some View {
         if matchesPlaybackSection {
             SettingsOverviewSection("Playback") {
-                if matches("playback", "quality", "audio", "dolby vision", "episodes", "skipping") {
+                if matches("playback", "quality", "audio", "dolby vision", "episodes", "skipping", "skip interval", "rewind", "fast forward", "audiobooks") {
                     NavigationLink {
                         PlaybackSettingsView(viewModel: viewModel)
                     } label: {
@@ -384,7 +384,7 @@ struct IOSSettingsOverview: View {
     }
 
     private var matchesPlayback: Bool {
-        matches("playback", "quality", "audio", "dolby vision", "episodes", "skipping")
+        matches("playback", "quality", "audio", "dolby vision", "episodes", "skipping", "skip interval", "rewind", "fast forward", "audiobooks")
     }
 
     private var matchesInterface: Bool {

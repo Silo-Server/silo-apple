@@ -174,9 +174,9 @@ struct PlayerView: View {
         case .playPause:
             viewModel.togglePlayPause()
         case .skipBackward:
-            viewModel.skipBackward(15)
+            viewModel.skipBackward()
         case .skipForward:
-            viewModel.skipForward(15)
+            viewModel.skipForward()
         case .previousChapter:
             viewModel.seekToAdjacentChapter(forward: false)
         case .nextChapter:

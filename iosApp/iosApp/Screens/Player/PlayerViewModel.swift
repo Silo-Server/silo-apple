@@ -505,8 +505,12 @@ class PlayerViewModel {
     /// overwrite it or surface a false decode error.
     private var hasReachedEndOfFile = false
     let settings = PlayerSettings.shared
+    /// Profile-wide skip intervals. Read at each skip, so a change made while
+    /// the player is open applies to the next press.
+    let seekIntervalPreferences = SeekIntervalPreferences.shared
     let sleepTimer = SleepTimer()
     private let nowPlaying = AetherVideoNowPlayingCoordinator()
+    private var isObservingSeekIntervals = false
     /// Optional poster / backdrop URLs supplied by the presenter so the
     /// now-playing widget can publish artwork without re-fetching the
     /// catalog item just for poster URLs. Populated via
@@ -3396,8 +3400,10 @@ class PlayerViewModel {
 
     @MainActor
     func refreshSettingsFromServer() async {
+        async let seekIntervals: Void = seekIntervalPreferences.refresh()
         await settings.refreshFromServer()
         applySettingsToPlayer()
+        await seekIntervals
     }
 
     @MainActor
@@ -3718,6 +3724,13 @@ class PlayerViewModel {
             nowPlaying.detach()
             return
         }
+        if !isObservingSeekIntervals {
+            isObservingSeekIntervals = true
+            seekIntervalPreferences.observe(self) { [weak self] in
+                self?.syncNowPlayingSkipIntervals()
+            }
+        }
+        syncNowPlayingSkipIntervals()
         let handlers = AetherVideoNowPlayingCoordinator.Handlers(
             // On tvOS the physical Play/Pause button can arrive through the
             // player-scoped media command center instead of SwiftUI's
@@ -3729,7 +3742,13 @@ class PlayerViewModel {
                 guard let self else { return true }
                 return self.hasReachedEndOfFile || self.aetherPlaybackController.isPaused
             },
-            currentTime: { [weak self] in self?.currentTime ?? 0 },
+            // System skip commands add to this. While an on-screen skip is
+            // still debouncing, its target is the playhead the user expects
+            // the next press to build on.
+            currentTime: { [weak self] in
+                guard let self else { return 0 }
+                return self.skipDebounceTask != nil ? self.scrubPreviewTime : self.currentTime
+            },
             // Remote-position events use the source axis published above and
             // must pass through the VM so a bounded V3 transport can replan.
             seek:        { [weak self] t in self?.seekTo(seconds: t) },
@@ -3751,6 +3770,18 @@ class PlayerViewModel {
             handlers: handlers
         )
         #endif
+    }
+
+    /// Lock screen, Control Center, and headphone skip buttons label
+    /// themselves from these, so they are pushed again whenever the profile's
+    /// intervals change mid-playback.
+    private func syncNowPlayingSkipIntervals() {
+        guard !isDisposed else { return }
+        let pair = seekIntervalPreferences.pair(for: .videoSystemControls)
+        nowPlaying.setPreferredSkipIntervals(
+            backward: Double(pair.backward),
+            forward: Double(pair.forward)
+        )
     }
 
     private func handleNowPlayingPlay() {
@@ -4872,8 +4903,17 @@ class PlayerViewModel {
     }
     #endif
 
-    func skipForward(_ seconds: Double = 30, revealingControls: Bool = true) {
+    /// The interval on-screen controls, keyboard, gestures, and remote clicks
+    /// use right now: the profile's setting on a revision-9 server, otherwise
+    /// this platform's fixed interval.
+    var skipIntervals: SeekIntervalPair {
+        seekIntervalPreferences.pair(for: .videoPlayer)
+    }
+
+    /// Skips forward by `seconds`, or by the configured interval when nil.
+    func skipForward(_ seconds: Double? = nil, revealingControls: Bool = true) {
         guard !hasReachedEndOfFile else { return }
+        let seconds = seconds ?? Double(skipIntervals.forward)
         Self.logger.info(
             "[CMP-SEEK] skip forward requested seconds=\(seconds, privacy: .public) current=\(self.currentTime, privacy: .public) preview=\(self.scrubPreviewTime, privacy: .public) isScrubbing=\(self.isScrubbing, privacy: .public)"
         )
@@ -4883,8 +4923,10 @@ class PlayerViewModel {
         }
     }
 
-    func skipBackward(_ seconds: Double = 10, revealingControls: Bool = true) {
+    /// Skips backward by `seconds`, or by the configured interval when nil.
+    func skipBackward(_ seconds: Double? = nil, revealingControls: Bool = true) {
         guard !hasReachedEndOfFile else { return }
+        let seconds = seconds ?? Double(skipIntervals.backward)
         Self.logger.info(
             "[CMP-SEEK] skip backward requested seconds=\(seconds, privacy: .public) current=\(self.currentTime, privacy: .public) preview=\(self.scrubPreviewTime, privacy: .public) isScrubbing=\(self.isScrubbing, privacy: .public)"
         )
@@ -5042,8 +5084,12 @@ class PlayerViewModel {
     private func queueSkipDebounce(delta: Double) {
         let wasScrubbing = isScrubbing
         let base = isScrubbing ? scrubPreviewTime : currentTime
-        let cap = duration > 0 ? duration : base + abs(delta)
-        let target = max(0, min(base + delta, cap))
+        let target = RelativeSeek.target(
+            current: currentTime,
+            pending: isScrubbing ? scrubPreviewTime : nil,
+            delta: delta,
+            duration: duration
+        )
 
         isScrubbing = true
         scrubPreviewTime = target

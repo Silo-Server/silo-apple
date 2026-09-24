@@ -58,6 +58,13 @@ final class SiloControlClient {
 
     let clock = RemotePlaybackClock()
 
+    /// Skip intervals for the remote's buttons and this phone's system media
+    /// controls while it drives another device.
+    var skipIntervals: SeekIntervalPair {
+        SeekIntervalPreferences.shared.pair(for: .videoRemoteControl)
+    }
+    @ObservationIgnored private var isObservingSeekIntervals = false
+
     private var volumeReconciler = RemoteVolumeReconciler()
 
     private let nowPlaying = NowPlayingController()
@@ -1027,7 +1034,21 @@ final class SiloControlClient {
             next: { [weak self] in self?.playNext() },
             isNextEnabled: { [weak self] in self?.state?.hasNextEpisode == true }
         ))
-        nowPlaying.setPreferredSkipIntervals(backward: 10, forward: 30)
+        if !isObservingSeekIntervals {
+            isObservingSeekIntervals = true
+            SeekIntervalPreferences.shared.observe(self) { [weak self] in
+                self?.syncNowPlayingSkipIntervals()
+            }
+        }
+        syncNowPlayingSkipIntervals()
+    }
+
+    private func syncNowPlayingSkipIntervals() {
+        let pair = skipIntervals
+        nowPlaying.setPreferredSkipIntervals(
+            backward: Double(pair.backward),
+            forward: Double(pair.forward)
+        )
     }
 
     private func updateNowPlayingArtwork(contentId: String) {

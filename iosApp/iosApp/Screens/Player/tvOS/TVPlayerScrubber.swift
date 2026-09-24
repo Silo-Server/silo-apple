@@ -32,8 +32,10 @@ struct TVPlayerScrubber: View {
     /// the focus-lost path doesn't turn into an accidental seek.
     var cancelOnBlur: Bool = false
 
-    private static let scrubBackwardStep: Double = 10
-    private static let scrubForwardStep: Double = 30
+    /// Click and swipe steps follow the profile's video intervals (10/30 on
+    /// servers without them). Hold-to-scrub keeps its own ramp.
+    private var scrubBackwardStep: Double { Double(viewModel.skipIntervals.backward) }
+    private var scrubForwardStep: Double { Double(viewModel.skipIntervals.forward) }
     private static let timelineAutoSeekTickNanos: UInt64 = 100_000_000
     private static let timelineAutoSeekBaseStep: Double = 2
     private static let timelineAutoSeekRates = [-32, -16, -8, -4, -2, -1, 1, 2, 4, 8, 16, 32]
@@ -117,7 +119,7 @@ struct TVPlayerScrubber: View {
                     )
                     // Continuous trackpad drag while the puck is selected —
                     // Select enters timeline-scrub mode, then swipes stream
-                    // through here instead of stepping ±10s/30s per move
+                    // through here instead of stepping by the skip interval per move
                     // command.
                     TVPanCaptureView(
                         isActive: isFocused && isTimelineScrubbing && !isTimelineAutoSeeking,
@@ -311,15 +313,15 @@ struct TVPlayerScrubber: View {
         switch direction {
         case .left:
             if isTimelineScrubbing {
-                stepTimeline(by: -Self.scrubBackwardStep)
+                stepTimeline(by: -scrubBackwardStep)
             } else {
-                viewModel.skipBackward(Self.scrubBackwardStep)
+                viewModel.skipBackward(scrubBackwardStep)
             }
         case .right:
             if isTimelineScrubbing {
-                stepTimeline(by: Self.scrubForwardStep)
+                stepTimeline(by: scrubForwardStep)
             } else {
-                viewModel.skipForward(Self.scrubForwardStep)
+                viewModel.skipForward(scrubForwardStep)
             }
         case .up, .down:
             break
@@ -436,14 +438,14 @@ struct TVPlayerScrubber: View {
             if isTimelineAutoSeeking {
                 adjustTimelineAutoSeekRate(delta: -1)
             } else if isTimelineScrubbing, !panOwnsTimeline {
-                stepTimeline(by: -Self.scrubBackwardStep)
+                stepTimeline(by: -scrubBackwardStep)
             }
         case .right:
             guard viewModel.duration > 0 else { return }
             if isTimelineAutoSeeking {
                 adjustTimelineAutoSeekRate(delta: 1)
             } else if isTimelineScrubbing, !panOwnsTimeline {
-                stepTimeline(by: Self.scrubForwardStep)
+                stepTimeline(by: scrubForwardStep)
             }
         case .up:
             break
