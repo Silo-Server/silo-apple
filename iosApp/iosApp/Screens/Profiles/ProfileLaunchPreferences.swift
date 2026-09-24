@@ -12,7 +12,17 @@ final class ProfileLaunchPreferences {
 
     private let defaults: SharedDefaults
     private let persistenceOverride: ((ProfileLaunchState) -> Bool)?
-    private(set) var state: ProfileLaunchState
+    /// SwiftUI reads this state on the main thread while `AuthService`
+    /// updates it from profile-switch tasks, so every access holds `lock`.
+    @ObservationIgnored private let lock = NSLock()
+    @ObservationIgnored private var storedState: ProfileLaunchState
+
+    var state: ProfileLaunchState {
+        access(keyPath: \.state)
+        lock.lock()
+        defer { lock.unlock() }
+        return storedState
+    }
 
     init(
         defaults: SharedDefaults = .shared,
@@ -20,22 +30,25 @@ final class ProfileLaunchPreferences {
     ) {
         self.defaults = defaults
         self.persistenceOverride = persistenceOverride
-        self.state = ProfileLaunchState.load(from: defaults)
-        _ = persist()
+        let state = ProfileLaunchState.load(from: defaults)
+        self.storedState = state
+        _ = persist(state)
     }
 
     var behavior: ProfileLaunchBehavior {
         get { state.behavior }
         set {
-            guard state.behavior != newValue else { return }
-            let previousState = state
-            state.behavior = newValue
-            if newValue == .automatic {
-                state.backgroundedAt = nil
-            }
-            if !persist() {
-                state = previousState
-                _ = persist()
+            update { state in
+                guard state.behavior != newValue else { return }
+                let previousState = state
+                state.behavior = newValue
+                if newValue == .automatic {
+                    state.backgroundedAt = nil
+                }
+                if !persist(state) {
+                    state = previousState
+                    _ = persist(state)
+                }
             }
         }
     }
@@ -80,19 +93,21 @@ final class ProfileLaunchPreferences {
         accountEpoch: String,
         for serverID: String
     ) -> Bool {
-        let previousState = state
-        state.rememberedByServerID[serverID] = RememberedProfile(
-            profileID: profileID,
-            requiredPINAtSelection: requiresPIN,
-            accountEpoch: accountEpoch
-        )
-        state.selectionRequiredServerIDs.remove(serverID)
-        state.backgroundedAt = nil
-        guard persist() else {
-            state = previousState
-            return false
+        update { state in
+            let previousState = state
+            state.rememberedByServerID[serverID] = RememberedProfile(
+                profileID: profileID,
+                requiredPINAtSelection: requiresPIN,
+                accountEpoch: accountEpoch
+            )
+            state.selectionRequiredServerIDs.remove(serverID)
+            state.backgroundedAt = nil
+            guard persist(state) else {
+                state = previousState
+                return false
+            }
+            return true
         }
-        return true
     }
 
     /// Persist the start of a real background interval. Inactive transitions
@@ -102,57 +117,67 @@ final class ProfileLaunchPreferences {
         guard behavior != .automatic else {
             return clearBackgroundedAt()
         }
-        let previousState = state
-        state.backgroundedAt = date
-        guard persist() else {
-            state = previousState
-            return false
+        return update { state in
+            let previousState = state
+            state.backgroundedAt = date
+            guard persist(state) else {
+                state = previousState
+                return false
+            }
+            return true
         }
-        return true
     }
 
     /// End the current away interval after a non-expired foreground return or
     /// when background playback means the profile is still actively in use.
     @discardableResult
     func clearBackgroundedAt() -> Bool {
-        guard state.backgroundedAt != nil else { return true }
-        let previousState = state
-        state.backgroundedAt = nil
-        guard persist() else {
-            state = previousState
-            return false
+        update { state in
+            guard state.backgroundedAt != nil else { return true }
+            let previousState = state
+            state.backgroundedAt = nil
+            guard persist(state) else {
+                state = previousState
+                return false
+            }
+            return true
         }
-        return true
     }
 
     @discardableResult
     func markSelectionRequired(for serverID: String) -> Bool {
-        guard !state.selectionRequiredServerIDs.contains(serverID) else { return true }
-        let previousState = state
-        state.selectionRequiredServerIDs.insert(serverID)
-        guard persist() else {
-            state = previousState
-            return false
+        update { state in
+            guard !state.selectionRequiredServerIDs.contains(serverID) else { return true }
+            let previousState = state
+            state.selectionRequiredServerIDs.insert(serverID)
+            guard persist(state) else {
+                state = previousState
+                return false
+            }
+            return true
         }
-        return true
     }
 
     func clearSelectionRequired(for serverID: String) {
-        guard state.selectionRequiredServerIDs.remove(serverID) != nil else { return }
-        _ = persist()
+        update { state in
+            guard state.selectionRequiredServerIDs.remove(serverID) != nil else { return }
+            _ = persist(state)
+        }
     }
 
     @discardableResult
     func clearRememberedProfile(for serverID: String) -> Bool {
-        let previousState = state
-        let removedProfile = state.rememberedByServerID.removeValue(forKey: serverID) != nil
-        let removedPending = state.selectionRequiredServerIDs.remove(serverID) != nil
-        guard removedProfile || removedPending else { return true }
-        guard persist() else {
-            state = previousState
-            return false
+        update { state in
+            let previousState = state
+            let removedProfile = state.rememberedByServerID.removeValue(forKey: serverID) != nil
+            let removedPending = state.selectionRequiredServerIDs.remove(serverID) != nil
+            guard removedProfile || removedPending else { return true }
+            guard persist(state) else {
+                state = previousState
+                return false
+            }
+            return true
         }
-        return true
     }
 
     @discardableResult
@@ -162,11 +187,10 @@ final class ProfileLaunchPreferences {
         accountEpoch: String?,
         for serverID: String
     ) -> Bool {
-        if let existing = state.rememberedByServerID[serverID] {
+        if let existing = rememberedProfile(for: serverID) {
             return existing.profileID == profileID && existing.accountEpoch == accountEpoch
         }
-        guard state.rememberedByServerID[serverID] == nil,
-              let profileID,
+        guard let profileID,
               !profileID.isEmpty,
               let accountEpoch,
               !accountEpoch.isEmpty else {
@@ -180,7 +204,23 @@ final class ProfileLaunchPreferences {
         )
     }
 
-    private func persist() -> Bool {
+    /// Applies `change` to a copy of the state under `lock`, so each
+    /// mutation, its persistence, and any rollback happen as one step.
+    /// Observers are notified after unlocking so they can read `state`.
+    private func update<Result>(_ change: (inout ProfileLaunchState) -> Result) -> Result {
+        lock.lock()
+        let previousState = storedState
+        var state = previousState
+        let result = change(&state)
+        storedState = state
+        lock.unlock()
+        if state != previousState {
+            withMutation(keyPath: \.state) {}
+        }
+        return result
+    }
+
+    private func persist(_ state: ProfileLaunchState) -> Bool {
         if let persistenceOverride, !persistenceOverride(state) {
             return false
         }
