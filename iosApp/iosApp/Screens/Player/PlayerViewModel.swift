@@ -6641,7 +6641,6 @@ class PlayerViewModel {
             case .unpause:
                 if isAdminIssued(command) {
                     resumeAfterLocalPreparation()
-                    watchPartyAdapter?.onResyncRequired?()
                     return
                 }
                 guard canRequestPlayPause else { throw PlaybackRealtimeCommandExecutionError.unsupportedCommand }
@@ -6650,10 +6649,7 @@ class PlayerViewModel {
             case .playPause:
                 if isAdminIssued(command) {
                     if isPlaying { pauseForLocalPreparation() }
-                    else {
-                        resumeAfterLocalPreparation()
-                        watchPartyAdapter?.onResyncRequired?()
-                    }
+                    else { resumeAfterLocalPreparation() }
                     return
                 }
                 guard canRequestPlayPause else { throw PlaybackRealtimeCommandExecutionError.unsupportedCommand }
@@ -8264,6 +8260,9 @@ extension PlayerViewModel {
         watchPartyLocalPreparation = false
         if !isWatchPartyPlayback { aetherPlaybackController.play() }
         publishWatchPartySnapshot()
+        // A party member does not resume locally; the room brings it back to
+        // the shared position and play state.
+        if isWatchPartyPlayback { watchPartyAdapter?.onResyncRequired?() }
     }
 }
 
