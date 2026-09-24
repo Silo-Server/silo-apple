@@ -22,6 +22,11 @@ private struct WatchPartyMediaChoice: Hashable {
     private var lobbySubtitle: String?
     private var year: Int?
     private var runtimeMinutes: Int?
+    /// The series to browse from here. Nil when the choice came from the
+    /// series' own episode list, where Back already returns to it.
+    private(set) var seriesLink: BrowseItem?
+    /// Opens the series page on this episode's season.
+    private(set) var seasonNumber: Int?
 
     /// Handed to the session so the lobby lays out before the room confirms.
     var lobbyPreview: WatchPartySelectedItem {
@@ -80,6 +85,12 @@ private struct WatchPartyMediaChoice: Hashable {
         overview = item.overview
         if let runtime = item.runtime, runtime > 0 { facts = [WatchPartyFacts.runtime(runtime)] }
         lobbyTitle = item.title
+        seasonNumber = item.seasonNumber
+        if let seriesId = item.seriesId, !seriesId.isEmpty {
+            seriesLink = BrowseItem(seriesId: seriesId, title: item.seriesTitle ?? item.title,
+                                    posterUrl: item.posterUrl, posterThumbhash: item.posterThumbhash,
+                                    backdropUrl: item.backdropUrl, backdropThumbhash: item.backdropThumbhash)
+        }
         if let seriesTitle = item.seriesTitle, let season = item.seasonNumber, let episode = item.episodeNumber {
             lobbySubtitle = "\(seriesTitle) · S\(season):E\(episode)"
         } else {
@@ -99,6 +110,24 @@ private struct WatchPartyMediaChoice: Hashable {
         backdropThumbhash = series.backdropThumbhash
         lobbyTitle = nextUp.title ?? "Episode \(nextUp.episodeNumber)"
         lobbySubtitle = "\(series.title) · S\(nextUp.seasonNumber):E\(nextUp.episodeNumber)"
+        seriesLink = series
+        seasonNumber = nextUp.seasonNumber
+    }
+}
+
+private extension BrowseItem {
+    /// A series row built from what an episode card already carries, enough
+    /// for the episode picker, which loads the seasons itself.
+    init?(seriesId: String, title: String, posterUrl: String?, posterThumbhash: String?,
+          backdropUrl: String?, backdropThumbhash: String?) {
+        var fields = ["contentId": seriesId, "type": "series", "title": title]
+        fields["posterUrl"] = posterUrl
+        fields["posterThumbhash"] = posterThumbhash
+        fields["backdropUrl"] = backdropUrl
+        fields["backdropThumbhash"] = backdropThumbhash
+        guard let data = try? JSONEncoder().encode(fields),
+              let item = try? JSONDecoder().decode(BrowseItem.self, from: data) else { return nil }
+        self = item
     }
 }
 
@@ -710,6 +739,7 @@ private struct WatchPartyEpisodePicker: View {
     let session: WatchPartySession
     let purpose: WatchPartyPickerPurpose
     let series: BrowseItem
+    var initialSeasonNumber: Int? = nil
     let onComplete: () -> Void
     @State private var seasons: [Season] = []
     @State private var episodes: [EpisodeListItem] = []
@@ -936,7 +966,8 @@ private struct WatchPartyEpisodePicker: View {
             let values = try await SiloAPI.shared.apiV2Client.catalogSeasons(seriesId: series.contentId, imageSize: nil, auth: auth)
             guard !Task.isCancelled, roomId == session.room?.roomId else { return }
             seasons = try values.map { try Season(catalog: $0) }.sortedForDisplay()
-            let target = seasons.first(where: { $0.seasonNumber > 0 }) ?? seasons.first
+            let target = seasons.first(where: { $0.seasonNumber == initialSeasonNumber })
+                ?? seasons.first(where: { $0.seasonNumber > 0 }) ?? seasons.first
             if seasonNumber == target?.seasonNumber { await loadEpisodes() }
             else { seasonNumber = target?.seasonNumber }
             if seasons.isEmpty { isLoading = false }
@@ -972,6 +1003,7 @@ private struct WatchPartyMediaChoiceView: View {
     let purpose: WatchPartyPickerPurpose
     let choice: WatchPartyMediaChoice
     let onComplete: () -> Void
+    @State private var browsedSeries: BrowseItem?
     #if os(tvOS)
     @FocusState private var confirmFocused: Bool
     #endif
@@ -1025,6 +1057,13 @@ private struct WatchPartyMediaChoiceView: View {
                     #if os(tvOS)
                     .focused($confirmFocused)
                     #endif
+                    if let series = choice.seriesLink {
+                        Button { browsedSeries = series } label: {
+                            Label("See all episodes", systemImage: "list.bullet")
+                        }
+                        .buttonStyle(WatchPartyButtonStyle(kind: .secondary))
+                        .accessibilityIdentifier("watchParty.browseSeries")
+                    }
                     if session.capabilities?.memberState == true {
                         VStack(alignment: .leading, spacing: 10) {
                             WatchPartyEyebrow(text: "Who's seen it")
@@ -1065,6 +1104,10 @@ private struct WatchPartyMediaChoiceView: View {
         .toolbar(.hidden, for: .navigationBar)
         .defaultFocus($confirmFocused, true, priority: .userInitiated)
         #endif
+        .navigationDestination(item: $browsedSeries) { series in
+            WatchPartyEpisodePicker(session: session, purpose: purpose, series: series,
+                                    initialSeasonNumber: choice.seasonNumber, onComplete: onComplete)
+        }
         .task(id: choice.contentId) {
             if session.capabilities?.memberState == true {
                 await session.refreshMemberState(contentIds: [choice.contentId])
