@@ -106,6 +106,9 @@ final class SiloControlClient {
     /// title. Keeps the remote on "Starting playback…" instead of the idle
     /// screen until the TV reports content or the launch fails.
     private(set) var isLaunching = false
+    /// The title the launch in flight sent. Only the TV's state for it ends
+    /// the launch: while replacing, the outgoing title keeps reporting.
+    private var launchingContentId: String?
     private var negotiatedVersion: Int?
     private var pendingHandoffRequestId: String?
     private var handoffChallenge: SiloControlHandoffChallenge?
@@ -285,6 +288,7 @@ final class SiloControlClient {
         defer { launchInFlight = false }
 
         isLaunching = true
+        launchingContentId = request.contentId
         isConnecting = true
         errorMessage = nil
         isShowingRemoteControl = true
@@ -767,7 +771,7 @@ final class SiloControlClient {
                 quietDisconnect()
                 return
             }
-            if !isIdle {
+            if !isIdle, state.contentId == launchingContentId {
                 isLaunching = false
             }
             if isAutoResuming, !isIdle {
