@@ -656,15 +656,15 @@ final class TVControlReceiver {
             if self.launchReadyGeneration == generation { self.launchReadyGeneration = nil }
             guard self.playerViewModel == nil,
                   RemotePlaybackIdentityManager.shared.activeIdentity?.generationID == generation else { return }
-            self.endingGenerations.insert(generation)
-            defer { self.endingGenerations.remove(generation) }
-            guard await RemotePlaybackIdentityManager.shared.end(expectedGenerationID: generation) else { return }
-            self.pendingPlayerHandoffGeneration = nil
-            self.refreshAdvertisement()
-            guard self.activeConnectionId == connectionId else {
-                self.reconcileAuthorizationAfterRestore()
-                return
+            // A launch whose player never registered gives the generation up.
+            if self.pendingPlayerHandoffGeneration == generation {
+                self.pendingPlayerHandoffGeneration = nil
             }
+            // Through endIdentity, so a handoff arriving meanwhile waits for this end.
+            await self.endIdentity(generation).value
+            // Still active: a launch took the identity over, or the end failed.
+            guard RemotePlaybackIdentityManager.shared.activeIdentity?.generationID != generation,
+                  self.activeConnectionId == connectionId else { return }
             self.remoteLaunchReady = false
             self.launchReadyGeneration = nil
             self.isAuthorized = false
