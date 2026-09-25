@@ -620,6 +620,7 @@ private struct ItemDetailPhoneContent: View {
                 },
                 onPlayEpisode: { id, fileId, startFromBeginning in
                     awaitsPlaybackReturn = true
+                    SeriesPlaybackReturnInbox.discardPending()
                     let usesSelectedEpisodeControls = id == playbackEpisode(for: detail)?.contentId
                     let episode = viewModel.episodes.first(where: { $0.contentId == id })
                     let resumePosition = startFromBeginning

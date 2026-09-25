@@ -131,6 +131,13 @@ final class SeriesPlaybackReturnTests: XCTestCase {
         XCTAssertNil(SeriesPlaybackReturnInbox.take(seriesContentId: seriesId))
     }
 
+    func testStartingPlaybackDiscardsAnEarlierReturn() {
+        // A player no page was waiting for, such as one started from Home.
+        SeriesPlaybackReturnInbox.publish(playback("s1e1", completed: false))
+        SeriesPlaybackReturnInbox.discardPending()
+        XCTAssertNil(SeriesPlaybackReturnInbox.take(seriesContentId: seriesId))
+    }
+
     // MARK: - Fixtures
 
     /// A Series page showing `season`. Regular seasons have two episodes each.

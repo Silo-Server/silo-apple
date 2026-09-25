@@ -48,6 +48,12 @@ enum SeriesPlaybackReturnInbox {
         NotificationCenter.default.post(name: .seriesPlaybackDidReturn, object: playback)
     }
 
+    /// Drop a return from an earlier player. A Series page calls this when it
+    /// starts playback, so it only takes the return that playback produces.
+    static func discardPending() {
+        pending = nil
+    }
+
     /// Consume the pending return when it belongs to `seriesContentId`.
     static func take(seriesContentId: String) -> SeriesPlaybackReturn? {
         guard let playback = pending, playback.seriesContentId == seriesContentId else { return nil }

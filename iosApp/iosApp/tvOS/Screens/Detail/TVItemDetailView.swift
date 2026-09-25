@@ -331,6 +331,7 @@ struct TVItemDetailView: View {
                 },
                 onPlayEpisode: { id, fileId, startFromBeginning in
                     awaitsPlaybackReturn = true
+                    SeriesPlaybackReturnInbox.discardPending()
                     let episode = viewModel.seriesEpisodeWindow.episodes.first(where: { $0.contentId == id })
                     let resumePosition = startFromBeginning
                         ? nil
