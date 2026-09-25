@@ -44,10 +44,14 @@ struct SiloControlRemoteView: View {
                         } label: {
                             Label("Choose a Different TV", systemImage: "tv")
                         }
-                        Button {
-                            controller.send(.stop)
-                        } label: {
-                            Label("Stop Playback", systemImage: "stop.fill")
+                        // Controls wait while a launch is in flight, and a Stop
+                        // can't cancel one mid-handoff, so it isn't offered then.
+                        if !controller.isLaunching {
+                            Button {
+                                controller.send(.stop)
+                            } label: {
+                                Label("Stop Playback", systemImage: "stop.fill")
+                            }
                         }
                         if controller.state?.supportsVideoGravity == true {
                             Menu {
