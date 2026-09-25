@@ -35,8 +35,11 @@ final class TVControlReceiver {
         let session: SiloControlSession
         var readTask: Task<Void, Never>?
         var authWatchdogTask: Task<Void, Never>?
+        let acceptedAt = ContinuousClock.now
     }
     private var pendingConnections: [UUID: PendingConnection] = [:]
+    /// A burst of connections that never say hello can't pile up past this.
+    private static let maxPendingConnections = 4
     private(set) var standbyState: TVControlStandbyState?
     private var readTask: Task<Void, Never>?
     private var stateTask: Task<Void, Never>?
@@ -345,6 +348,10 @@ final class TVControlReceiver {
     private func accept(_ connection: NWConnection) async {
         // Newest controller wins (matches AirPlay/Cast), but only once it has
         // said hello: until then the phone in use keeps the session.
+        if pendingConnections.count >= Self.maxPendingConnections,
+           let oldest = pendingConnections.min(by: { $0.value.acceptedAt < $1.value.acceptedAt })?.key {
+            dropPendingConnection(oldest, sendClose: false)
+        }
         let session = SiloControlSession(connection: connection)
         let connectionId = UUID()
         pendingConnections[connectionId] = PendingConnection(session: session)

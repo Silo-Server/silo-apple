@@ -758,19 +758,25 @@ final class SiloControlClient {
                 isAutoResuming = false  // playback confirmed — reveal the mini-bar
             }
         case .error(let error):
-            if isAutoResuming {
-                quietDisconnect()
-                return
-            }
             if error.code == SiloControlProtocol.controllerActiveErrorCode {
-                // Another phone took the TV while ours was away; a reconnect
-                // must not take it back. The TV closes the session next.
+                // Another phone took the TV while ours was away; neither a
+                // reconnect nor a later auto-resume may take it back. The TV
+                // closes the session next.
                 Self.logger.info("control: TV is in use by another controller")
                 forgetPersistedTarget()
+                if isAutoResuming {
+                    // Nothing on screen to explain it to; let go quietly.
+                    quietDisconnect()
+                    return
+                }
                 let keepCoverVisible = isShowingRemoteControl
                 clearSession()
                 errorMessage = error.message
                 isShowingRemoteControl = keepCoverVisible
+                return
+            }
+            if isAutoResuming {
+                quietDisconnect()
                 return
             }
             errorMessage = error.message
