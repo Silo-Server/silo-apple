@@ -530,9 +530,12 @@ final class TVControlReceiver {
                 sendError(code: "unauthorized", message: "Connect with a matching Silo account first.")
                 return
             }
-            // An identity already being ended can't take a new title.
+            // An identity already being ended, or whose session expired, can't
+            // take a new title.
             let identity = RemotePlaybackIdentityManager.shared.activeIdentity?.generationID
-            let identityUsable = identity.map { !endingGenerations.contains($0) } ?? false
+            let identityUsable = identity.map {
+                !endingGenerations.contains($0) && $0 != rejectedPlayerHandoffGeneration
+            } ?? false
             if negotiatedVersion == 2, !remoteLaunchReady || !identityUsable {
                 sendError(code: "handoff_required", message: "Prepare the phone profile before playing.")
                 return
@@ -575,10 +578,6 @@ final class TVControlReceiver {
         pendingHandoffRequestId = offer.requestId
         remoteLaunchReady = false
         launchReadyGeneration = nil
-        // The previous handoff's timer would close this session under the new
-        // one; a successful handoff arms its own.
-        readyTimeoutTask?.cancel()
-        readyTimeoutTask = nil
 
         handoffTask = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -590,8 +589,10 @@ final class TVControlReceiver {
                    let ending = self.identityEnds[active] {
                     await ending.value
                 }
+                // An expired identity is never reused, even for the same phone.
                 if let outgoing = manager.activeIdentity?.generationID,
-                   !manager.matches(offer, controllerDeviceId: controllerDeviceId) {
+                   outgoing == self.rejectedPlayerHandoffGeneration ||
+                    !manager.matches(offer, controllerDeviceId: controllerDeviceId) {
                     let previousPlayer = self.playerViewModel
                     // Another phone or profile: this handoff ends the outgoing
                     // identity once its title's final stop is in. Take the
@@ -660,6 +661,13 @@ final class TVControlReceiver {
             // between handoff_ready and launch must not leave its profile
             // installed on this TV.
             guard let self, !Task.isCancelled, let generation else { return }
+            // A newer handoff decides what happens to the identity: it re-arms
+            // this timer when it commits. Until then, check again later, so a
+            // handoff that is cancelled still leaves the identity retired.
+            if self.pendingHandoffRequestId != nil {
+                self.armReadyTimeout(connectionId: connectionId)
+                return
+            }
             if self.launchReadyGeneration == generation { self.launchReadyGeneration = nil }
             guard self.playerViewModel == nil,
                   RemotePlaybackIdentityManager.shared.activeIdentity?.generationID == generation else { return }
@@ -671,7 +679,8 @@ final class TVControlReceiver {
             await self.endIdentity(generation).value
             // Still active: a launch took the identity over, or the end failed.
             guard RemotePlaybackIdentityManager.shared.activeIdentity?.generationID != generation,
-                  self.activeConnectionId == connectionId else { return }
+                  self.activeConnectionId == connectionId,
+                  self.pendingHandoffRequestId == nil else { return }
             self.remoteLaunchReady = false
             self.launchReadyGeneration = nil
             self.isAuthorized = false
