@@ -72,6 +72,9 @@ final class WatchPartySession {
     @ObservationIgnored private var lastReport: Date = .distantPast
     @ObservationIgnored private var lastPing: Date = .distantPast
     @ObservationIgnored private var lastReady: Date = .distantPast
+    /// The playback session whose media has been playable at least once. Its
+    /// position is real from then on, including while it rebuffers.
+    @ObservationIgnored private var playableSession: String?
     @ObservationIgnored private var bufferBegan: Date?
     @ObservationIgnored private var reportedBuffering = false
     @ObservationIgnored private var serverOffset: TimeInterval = 0
@@ -624,11 +627,15 @@ final class WatchPartySession {
               action.isPermitted(canPlayPause: room.selfCanControlTransport, canSeek: room.selfRole == .host) else { return }
         // A session now attaches while its media is still loading. Play and
         // pause carry the local position, which the room adopts as its
-        // anchor; before the media is playable that is not a real position.
-        // A seek carries its own target.
+        // anchor; before the media has first become playable that is not a
+        // real position. Such a press is dropped, as it was when the session
+        // could not attach before then (#410 tracks queueing it). A seek
+        // carries its own target.
         switch action {
         case .seek: break
-        case .play, .pause: guard adapter?.snapshot.isReady == true else { return }
+        case .play, .pause:
+            guard let snapshot = adapter?.snapshot, let session = snapshot.sessionId,
+                  snapshot.isReady || playableSession == session else { return }
         }
         let wire: WatchPartyTransportAction
         let target: Double
@@ -716,6 +723,7 @@ final class WatchPartySession {
                   let adapter, let room, let session = adapter.snapshot.sessionId,
                   adapter.context == playbackContext else { return }
             let snapshot = adapter.snapshot
+            if snapshot.isReady { playableSession = session }
             if !attachmentConfirmed {
                 // Attach as soon as the stream has a committed session, as the
                 // web client does. The start barrier only waits for attached
