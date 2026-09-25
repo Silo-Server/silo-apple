@@ -112,9 +112,14 @@ final class TVControlReceiver {
         // the phone reconnects into a session the new server never
         // authorizes. A rename or a listener the system cancelled only needs
         // a fresh advertisement, so the session keeps running through those.
+        // Phones still in their hello go too: cancelling the listener leaves
+        // accepted connections open.
         if let listenerRegistryServerId,
            !ServerRegistry.serverIdsMatch(listenerRegistryServerId, server.id) {
             closeActiveSession(sendClose: true)
+            for connectionId in Array(pendingConnections.keys) {
+                dropPendingConnection(connectionId, sendClose: true)
+            }
         }
         listenerRegistryServerId = server.id
         stopListener()
@@ -682,15 +687,15 @@ final class TVControlReceiver {
             if self.launchReadyGeneration == generation { self.launchReadyGeneration = nil }
             guard self.playerViewModel == nil,
                   RemotePlaybackIdentityManager.shared.activeIdentity?.generationID == generation else { return }
-            self.endingGenerations.insert(generation)
-            defer { self.endingGenerations.remove(generation) }
-            guard await RemotePlaybackIdentityManager.shared.end(expectedGenerationID: generation) else { return }
-            self.pendingPlayerHandoffGeneration = nil
-            self.refreshAdvertisement()
-            guard self.activeConnectionId == connectionId else {
-                self.reconcileAuthorizationAfterRestore()
-                return
+            // A launch whose player never registered gives the generation up.
+            if self.pendingPlayerHandoffGeneration == generation {
+                self.pendingPlayerHandoffGeneration = nil
             }
+            // Through endIdentity, so a handoff arriving meanwhile waits for this end.
+            await self.endIdentity(generation).value
+            // Still active: a launch took the identity over, or the end failed.
+            guard RemotePlaybackIdentityManager.shared.activeIdentity?.generationID != generation,
+                  self.activeConnectionId == connectionId else { return }
             self.remoteLaunchReady = false
             self.launchReadyGeneration = nil
             self.isAuthorized = false
