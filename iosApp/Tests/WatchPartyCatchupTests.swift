@@ -22,6 +22,18 @@ final class WatchPartyCatchupTests: XCTestCase {
         XCTAssertTrue(WatchPartyCorrection.converged(target: 100, elapsed: 2.5, local: 102.8))
     }
 
+    func testOnlyATargetReachableInPlaceCountsAsBuffered() {
+        // Server HLS reports no forward buffer. A target outside the seek
+        // window rebuilds the stream, so it goes through the load budget.
+        XCTAssertFalse(WatchPartyCorrection.targetBuffered(105, local: 100, locallySeekable: false, forwardBuffer: nil))
+        XCTAssertFalse(WatchPartyCorrection.targetBuffered(105, local: 100, locallySeekable: false, forwardBuffer: 30))
+        XCTAssertFalse(WatchPartyCorrection.targetBuffered(95, local: 100, locallySeekable: false, forwardBuffer: 30))
+        XCTAssertTrue(WatchPartyCorrection.targetBuffered(105, local: 100, locallySeekable: true, forwardBuffer: nil))
+        XCTAssertTrue(WatchPartyCorrection.targetBuffered(105, local: 100, locallySeekable: true, forwardBuffer: 5))
+        XCTAssertFalse(WatchPartyCorrection.targetBuffered(105, local: 100, locallySeekable: true, forwardBuffer: 4))
+        XCTAssertTrue(WatchPartyCorrection.targetBuffered(95, local: 100, locallySeekable: true, forwardBuffer: 0))
+    }
+
     func testOneLoadAtATimeAimsTheNextAheadByTheMeasuredLoadTime() {
         var budget = WatchPartyReloadBudget()
         XCTAssertTrue(budget.allowed(at: at(0)))

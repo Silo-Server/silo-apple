@@ -77,6 +77,18 @@ enum WatchPartyCorrection: Equatable {
     static func converged(target: Double, elapsed: TimeInterval, local: Double) -> Bool {
         abs(expectedPosition(target, elapsed: elapsed) - local) <= deadband
     }
+
+    /// Whether a correction can seek at once instead of loading new media.
+    /// Only a target the stream reaches in place can be buffered; any other
+    /// seek rebuilds the stream. Aether reports only the buffer ahead of
+    /// playback, and a target behind it is media just played, which a browser
+    /// keeps buffered too. Without buffer data, which server HLS never
+    /// reports, seek at once as before rather than rate-limit every correction.
+    static func targetBuffered(_ target: Double, local: Double, locallySeekable: Bool, forwardBuffer: Double?) -> Bool {
+        guard locallySeekable else { return false }
+        guard target > local, let forwardBuffer, forwardBuffer.isFinite else { return true }
+        return target <= local + max(0, forwardBuffer)
+    }
 }
 
 /// Why a party member seeks, which decides what the seek does to a correction

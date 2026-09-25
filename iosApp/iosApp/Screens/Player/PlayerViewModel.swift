@@ -8200,14 +8200,18 @@ extension PlayerViewModel {
         guard position.isFinite, position >= 0, !isDisposed,
               watchPartyAdapter?.context == context else { throw WatchPartyPlaybackError.invalidated }
         let local = watchPartyPlaybackSnapshot.sourceTime
-        switch WatchPartyCorrection.resolve(drift: position - local, locallySeekable: canSeekWatchPartyLocally(to: position)) {
+        let locallySeekable = canSeekWatchPartyLocally(to: position)
+        switch WatchPartyCorrection.resolve(drift: position - local, locallySeekable: locallySeekable) {
         case .none:
             // Already at the room position; drop any stale catch-up.
             cancelWatchPartyCorrection()
             watchPartyReloadBudget.settle()
             return watchPartyPlaybackSnapshot
         case .seek:
-            if isWatchPartyTargetBuffered(position, from: local, locallySeekable: canSeekWatchPartyLocally(to: position)) {
+            if WatchPartyCorrection.targetBuffered(
+                position, local: local, locallySeekable: locallySeekable,
+                forwardBuffer: aetherPlaybackController.engine.liveTelemetry?.forwardBufferSeconds
+            ) {
                 return try await applyWatchPartyTransport(.seek(position), context: context, origin: .realign)
             }
             return try await loadWatchPartyCorrection(to: position, context: context)
@@ -8219,18 +8223,6 @@ extension PlayerViewModel {
             aetherPlaybackController.setSpeed(rate)
             return watchPartyPlaybackSnapshot
         }
-    }
-
-    /// Whether a correction can seek at once instead of loading new media.
-    /// Aether reports only the buffer ahead of playback. A target behind it
-    /// that the stream reaches in place is media just played, which a
-    /// browser keeps buffered too. Without buffer data, seek at once as
-    /// before rather than rate-limit every correction.
-    private func isWatchPartyTargetBuffered(_ target: Double, from local: Double, locallySeekable: Bool) -> Bool {
-        if target < local { return locallySeekable }
-        guard let ahead = aetherPlaybackController.engine.liveTelemetry?.forwardBufferSeconds,
-              ahead.isFinite else { return true }
-        return target <= local + max(0, ahead)
     }
 
     /// A correction to media that is not buffered loads it and lands late by
