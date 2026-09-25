@@ -62,6 +62,19 @@ struct WatchPartyCommandState {
         guard roomPlaybackState == .waiting, completed.action == .seek else { return true }
         return abs(sourceTime - completed.positionSeconds) <= (isHost ? 15 : 1)
     }
+
+    /// The room waits for this member's `ready` only at a barrier, or while the
+    /// member catches up after the room resumed without it. The server answers
+    /// a `ready` in a playing room with a fresh sync command, which is another
+    /// seek; a late joiner is marked ready by its first report that matches the
+    /// room instead. Mirrors the web client's readiness gate.
+    static func awaitsReadiness(_ room: WatchPartyRoom) -> Bool {
+        let member = room.members.first(where: \.isSelf)
+        guard member?.isReady != true else { return false }
+        if room.playbackState == .waiting { return true }
+        return room.phase == .playing && (room.playbackState == .playing || room.playbackState == .paused)
+            && (room.selfIgnoreWait || member?.isBuffering == true)
+    }
 }
 
 /// Only HTTP determines personal votes; every socket path carries common rows.
