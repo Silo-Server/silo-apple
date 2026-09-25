@@ -508,6 +508,11 @@ final class SiloControlClient {
     }
 
     func send(_ command: SiloControlCommand) {
+        // While a launch is in flight the controls belong to a title on its way
+        // out, and the TV answers them with errors (`unauthorized` mid-handoff)
+        // that would read as the launch being refused. The remote shows only
+        // the launch status then; hardware volume and lock-screen presses wait.
+        guard !isLaunching else { return }
         // Any outbound command counts as user engagement — the session is no
         // longer a passive auto-resume attachment after this.
         sessionIsAutoResumed = false
@@ -515,11 +520,13 @@ final class SiloControlClient {
     }
 
     func togglePlayPauseOptimistic() {
+        guard !isLaunching else { return }
         clock.setOptimisticPlaying(!clock.isPlaying())
         send(.playPause)
     }
 
     func seekOptimistic(to seconds: Double) {
+        guard !isLaunching else { return }
         clock.setOptimisticTime(seconds)
         send(.seek(seconds: seconds))
     }
@@ -530,6 +537,7 @@ final class SiloControlClient {
     /// it — see ``RemoteVolumeReconciler`` for why absolute volume commands need
     /// that hold.
     func setVolume(_ v: Double) {
+        guard !isLaunching else { return }
         let clamped = min(max(v, 0), 1)
         volumeReconciler.requested(clamped)
         if var s = state {
@@ -540,6 +548,7 @@ final class SiloControlClient {
     }
 
     func setMuted(_ m: Bool) {
+        guard !isLaunching else { return }
         // A held level describes an unmuted volume; an explicit mute supersedes it.
         volumeReconciler.clear()
         if var s = state {
