@@ -771,7 +771,10 @@ final class SiloControlClient {
                 quietDisconnect()
                 return
             }
-            if !isIdle, state.contentId == launchingContentId {
+            // The TV acknowledges a launch at once with a loading placeholder
+            // for the title; the launch is done only once its player reports in.
+            if !isIdle, state.contentId == launchingContentId,
+               state.sessionId != nil || !state.isLoading || state.error != nil {
                 isLaunching = false
             }
             if isAutoResuming, !isIdle {

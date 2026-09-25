@@ -115,7 +115,8 @@ struct SiloControlRemoteView: View {
     private var content: some View {
         if controller.isReconnecting {
             reconnectingView
-        } else if controller.isLaunching, (controller.state?.contentId ?? "").isEmpty {
+        } else if controller.isLaunching {
+            // Also while replacing a title: the outgoing one's controls are moot.
             launchingView
         } else if let state = controller.state, state.contentId == nil {
             idleConnectedView(state: state)
