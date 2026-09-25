@@ -342,6 +342,26 @@ class AppRouter {
         requestedTab = tab
     }
 
+    // MARK: - Search Requests
+
+    /// Search opened with `query` filled in. A fresh `id` makes a repeated
+    /// query a new request.
+    struct SearchRequest: Equatable {
+        let id = UUID()
+        let query: String
+    }
+
+    #if os(iOS) || os(tvOS)
+    /// One-shot Search request from Siri, consumed (and cleared) by the main
+    /// tab view (`TVMainTabView` on tvOS), which owns tab selection and the
+    /// navigation stack.
+    var requestedSearch: SearchRequest?
+
+    func requestSearch(query: String) {
+        requestedSearch = SearchRequest(query: query)
+    }
+    #endif
+
     /// Present the player using the platform-appropriate path. iOS/iPadOS use
     /// a full-window cover; macOS pushes into the main navigation content so
     /// playback replaces the detail pane instead of opening in a sheet.

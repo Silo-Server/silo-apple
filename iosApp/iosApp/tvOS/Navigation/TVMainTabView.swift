@@ -103,6 +103,9 @@ struct TVMainTabView: View {
     /// their pops emit `detailReturnFocusRequest` so the exact launch row/card
     /// explicitly reclaims focus.
     @State private var barOwnsFocusOnPopToRoot = false
+    /// The Siri request the pushed Search screen fills its field from;
+    /// Search clears it.
+    @State private var siriSearchRequest: AppRouter.SearchRequest?
     @State private var topMenuFocusRequest = 0
     /// Bumped by the focus watchdog to drop the bar's `@FocusState` when the
     /// engine has already dropped focus without telling it. Re-suppressing is
@@ -226,6 +229,11 @@ struct TVMainTabView: View {
             // Re-read tab-visibility prefs for the now-known profile (the
             // singleton may hold the previous profile's value after a switch).
             navPrefs.refresh()
+            // A cold-launch Siri search can be requested before this view
+            // exists to observe the change. Open it before the network
+            // refresh below so a slow server can't hold it back; a later
+            // menu change leaves the pushed Search in place.
+            openRequestedSearch()
             await uiCustomization.refresh()
             controlReceiver.start(router: router)
             await loadCurrentProfile()
@@ -268,6 +276,9 @@ struct TVMainTabView: View {
             if requestedTab == .home {
                 selectRoot(.home)
             }
+        }
+        .onChange(of: router.requestedSearch) { _, _ in
+            openRequestedSearch()
         }
         .onChange(of: visibleRoots) { _, _ in
             reconcileVisibleRootsChange()
@@ -1277,6 +1288,39 @@ struct TVMainTabView: View {
         router.navigate(to: route)
     }
 
+    /// Opens Search for a Siri request as if the bar's Search button had been
+    /// picked: Search replaces the stack (including a Search already open)
+    /// and Back returns focus to the bar.
+    ///
+    /// Video playback closes the way Menu closes it. A player started from a
+    /// detail page is a route and leaves with the pop; one started from a
+    /// card is a cover and is dismissed here. An audiobook's full player
+    /// steps aside while the audiobook keeps playing in the mini player. An
+    /// open sign-out confirmation is cancelled; Search takes focus instead of
+    /// the profile button.
+    ///
+    /// A Siri press on this TV's remote means someone here is taking over, so
+    /// an idle phone remote-control session ends the way the standby screen's
+    /// Disconnect Remote button ends it. Standby would otherwise cover Search.
+    private func openRequestedSearch() {
+        guard let request = router.requestedSearch else { return }
+        router.requestedSearch = nil
+        siriSearchRequest = request
+        if controlReceiver.standbyState != nil {
+            controlReceiver.disconnectRemoteControl()
+        }
+        router.presentedPlayer = nil
+        if audioStore.isShowingFullPlayer {
+            audioStore.dismissFullPlayer()
+        }
+        showSignOutConfirm = false
+        closePanelForContentHandoff()
+        if !router.path.isEmpty {
+            router.popToRoot()
+        }
+        navigateFromBar(.search)
+    }
+
     private func showPersonalRoot(_ destination: TVPersonalRootDestination) {
         router.popToRoot()
         barOwnsFocusOnPopToRoot = false
@@ -1378,7 +1422,7 @@ struct TVMainTabView: View {
         case .myRequests:
             MyRequestsView()
         case .search:
-            SearchView(usesTVTopMenuInset: false)
+            SearchView(usesTVTopMenuInset: false, seededQuery: $siriSearchRequest)
         case .settings:
             TVSettingsView()
         case .recommendations:

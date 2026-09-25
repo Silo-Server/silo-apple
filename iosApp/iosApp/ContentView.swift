@@ -721,6 +721,8 @@ struct ContentView: View {
     ///   download notifications)
     /// - `silo://watch-party?server=…&token=…` — join a Watch Party
     ///   invitation (see `WatchPartyInvitation`)
+    /// - `silo://search?q={term}` — open Search with `term` filled in
+    ///   (Siri's in-app search; see `SiriSearchLink`)
     ///
     /// If the auth state isn't ready yet, the link is queued in
     /// `pendingDeepLink` until startup commits its initial route.
@@ -807,6 +809,17 @@ struct ContentView: View {
             router.switchTab(to: .downloads)
             return
         }
+
+        #if os(iOS) || os(tvOS)
+        if let term = SiriSearchLink.term(from: url) {
+            guard router.authState == .authenticated else {
+                pendingDeepLink = url
+                return
+            }
+            router.requestSearch(query: term)
+            return
+        }
+        #endif
 
         guard !url.pathComponents.isEmpty else { return }
         let contentId = url.pathComponents
@@ -2013,6 +2026,8 @@ struct MainTabView: View {
     /// shell level so the existing startup single-flight can fill it before
     /// the user taps the tab, making the destination paint immediately.
     @State private var recommendationsViewModel = RecommendationsViewModel()
+    /// The Siri request Search fills its field from; Search clears it.
+    @State private var siriSearchRequest: AppRouter.SearchRequest?
     #endif
     #if !os(macOS)
     @Environment(\.horizontalSizeClass) private var hSize
@@ -2092,6 +2107,12 @@ struct MainTabView: View {
             )
             router.requestedTab = nil
         }
+        #if os(iOS)
+        .onChange(of: router.requestedSearch) { _, _ in
+            openRequestedSearch()
+        }
+        .task { openRequestedSearch() }
+        #endif
         .onChange(of: uiCustomization.primaryMenu) { _, _ in
             selectedDestinationID = resolvedVisibleMainTabDestination(
                 selectedDestinationID,
@@ -2164,6 +2185,35 @@ struct MainTabView: View {
         // it and traps when it's absent.
         .environment(router)
     }
+
+    #if os(iOS)
+    /// Opens Search for a Siri request: the Search tab when the menu shows
+    /// one, else Search pushed over the current tab. Either way Search comes
+    /// up with the spoken words filled in and its results showing.
+    ///
+    /// Anything presented over the tabs would cover Search, so video
+    /// playback closes, an audiobook's full player steps aside for the mini
+    /// player (as on tvOS), and the TV remote and item detail sheets close.
+    /// A pending remote-playback confirmation is cancelled so accepting it
+    /// later can't start the stale request.
+    private func openRequestedSearch() {
+        guard let request = router.requestedSearch else { return }
+        router.requestedSearch = nil
+        siriSearchRequest = request
+        router.pendingReplaceRemotePlayback = nil
+        router.pendingOfflinePlayChoice = nil
+        router.presentedPlayer = nil
+        audioStore.dismissFullPlayer()
+        siloControl.hideRemoteControl()
+        router.dismissItemDetail()
+        router.popToRoot()
+        if visibleDestinations.contains(where: { $0.id == .app(.search) }) {
+            selectedDestinationID = .app(.search)
+        } else {
+            router.navigate(to: .search)
+        }
+    }
+    #endif
 
     private var prefersSidebarLayout: Bool {
         #if os(macOS)
@@ -2551,7 +2601,11 @@ struct MainTabView: View {
             )
 
         case .search:
+            #if os(iOS)
+            SearchView(seededQuery: $siriSearchRequest)
+            #else
             SearchView()
+            #endif
 
         case .recommendations:
             #if os(iOS)
@@ -2668,7 +2722,11 @@ struct MainTabView: View {
         case .myRequests:
             MyRequestsView()
         case .search:
+            #if os(iOS)
+            SearchView(seededQuery: $siriSearchRequest)
+            #else
             SearchView()
+            #endif
         case .settings:
             SettingsView()
         case .recommendations:
