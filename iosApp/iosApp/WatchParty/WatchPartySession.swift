@@ -725,7 +725,12 @@ final class WatchPartySession {
             applyPendingCommand()
             guard !snapshot.isSeeking, commands.pending == nil,
                   now.timeIntervalSince(lastCommandCompleted) >= 0.25,
-                  snapshot.fileId == playbackContext?.fileId else { return }
+                  snapshot.fileId == playbackContext?.fileId else {
+                // A stall timed before a seek or command is not the stall
+                // that follows it; the grace restarts once they settle.
+                bufferBegan = nil
+                return
+            }
             if snapshot.isBuffering {
                 if bufferBegan == nil { bufferBegan = now }
                 if !reportedBuffering, now.timeIntervalSince(bufferBegan!) >= Self.bufferingGrace {
