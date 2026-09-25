@@ -13,7 +13,14 @@ final class SiriIntentTests: XCTestCase {
 
     func testWordsSurviveLinkRoundTrip() throws {
         for words in ["The Office", "Tom & Jerry", "50% off?", "Amélie", "a+b=c #1"] {
-            for link in [SiriLink.search(term: words), .play(title: words, onTV: false), .play(title: words, onTV: true)] {
+            let links: [SiriLink] = [
+                .search(term: words),
+                .play(title: words, onTV: false),
+                .play(title: words, onTV: true),
+                .playTitle(contentId: "series-tvdb-1", title: words, isSeries: true, onTV: false),
+                .playTitle(contentId: "movie-tmdb-2", title: words, isSeries: false, onTV: true),
+            ]
+            for link in links {
                 let url = try XCTUnwrap(link.url)
                 XCTAssertEqual(url.scheme, "silo")
                 XCTAssertEqual(SiriLink(url: url), link, "\(url)")
@@ -27,6 +34,10 @@ final class SiriIntentTests: XCTestCase {
         XCTAssertEqual(SiriLink(url: try XCTUnwrap(URL(string: "continuum://play?q=Dune"))), .play(title: "Dune", onTV: false))
         // A play link needs a title; the exact-item link is not a Siri link.
         XCTAssertNil(SiriLink(url: try XCTUnwrap(URL(string: "silo://play?q=%20"))))
+        XCTAssertEqual(
+            SiriLink(url: try XCTUnwrap(URL(string: "silo://play?id=abc&kind=series&device=tv"))),
+            .playTitle(contentId: "abc", title: "", isSeries: true, onTV: true)
+        )
         XCTAssertNil(SiriLink(url: try XCTUnwrap(URL(string: "silo://play/abc123"))))
         XCTAssertNil(SiriLink(url: try XCTUnwrap(URL(string: "silo://item/abc?q=Dune"))))
         XCTAssertNil(SiriLink(url: try XCTUnwrap(URL(string: "https://search?q=Dune"))))
@@ -37,7 +48,7 @@ final class SiriIntentTests: XCTestCase {
         _ = coordinator.consumePendingURL()
         defer { _ = coordinator.consumePendingURL() }
 
-        var search = SearchInSiloIntent()
+        let search = SearchInSiloIntent()
         search.criteria = StringSearchCriteria(term: "Blade Runner")
         _ = try await search.perform()
         XCTAssertEqual(SiriLink(url: try XCTUnwrap(coordinator.consumePendingURL())), .search(term: "Blade Runner"))
@@ -47,11 +58,25 @@ final class SiriIntentTests: XCTestCase {
         _ = try await play.perform()
         XCTAssertEqual(SiriLink(url: try XCTUnwrap(coordinator.consumePendingURL())), .play(title: "Dune", onTV: false))
 
+        let oakStreet = SiloTitleEntity(SiriTitleCatalog.Title(
+            contentId: "movie-tmdb-1101383", title: "The End of Oak Street", year: 2026, isSeries: false
+        ))
+        var named = PlayTitleIntent()
+        named.title = oakStreet
+        _ = try await named.perform()
+        XCTAssertEqual(
+            SiriLink(url: try XCTUnwrap(coordinator.consumePendingURL())),
+            .playTitle(contentId: "movie-tmdb-1101383", title: "The End of Oak Street", isSeries: false, onTV: false)
+        )
+
         #if os(iOS)
         var onTV = PlayOnTVIntent()
-        onTV.term = "Dune"
+        onTV.title = oakStreet
         _ = try await onTV.perform()
-        XCTAssertEqual(SiriLink(url: try XCTUnwrap(coordinator.consumePendingURL())), .play(title: "Dune", onTV: true))
+        XCTAssertEqual(
+            SiriLink(url: try XCTUnwrap(coordinator.consumePendingURL())),
+            .playTitle(contentId: "movie-tmdb-1101383", title: "The End of Oak Street", isSeries: false, onTV: true)
+        )
         #endif
     }
 
@@ -148,6 +173,54 @@ final class SiriIntentTests: XCTestCase {
             home: [section("next_up", items), section("continue_watching", inProgress)]
         ).resolve("Severance")
         XCTAssertEqual(both, .play(contentId: "sev-s1e9", titleContentId: "severance"))
+    }
+
+    func testNamedSeriesSkipsMatchingAndPlaysResumeEpisode() async throws {
+        let items = try decode([SectionItem].self, """
+        [{"contentId": "sev-s2e4", "type": "episode", "title": "Woe's Hollow", "seriesId": "severance"}]
+        """)
+        let home = [ResolvedSection(id: "cw", sectionType: "continue_watching", title: "", featured: nil,
+                                    itemLimit: nil, totalCount: nil, isCustom: nil, customized: nil, items: items)]
+        var resolver = resolver(home: home)
+        resolver.search = { _ in XCTFail("a named title must not search"); return [] }
+        let outcome = try await resolver.resolve(contentId: "severance", title: "Severance", isSeries: true)
+        XCTAssertEqual(outcome, .play(contentId: "sev-s2e4", titleContentId: "severance"))
+        let movie = try await resolver.resolve(contentId: "dune-1984", title: "Dune", isSeries: false)
+        XCTAssertEqual(movie, .play(contentId: "dune-1984", titleContentId: "dune-1984"))
+    }
+
+    // MARK: - Title catalog
+
+    func testCatalogOrdersResumeRowsFirstAndMapsEpisodesToSeries() throws {
+        func section(_ type: String, _ json: String) throws -> ResolvedSection {
+            ResolvedSection(id: type, sectionType: type, title: type, featured: nil, itemLimit: nil,
+                            totalCount: nil, isCustom: nil, customized: nil,
+                            items: try decode([SectionItem].self, json))
+        }
+        let sections = [
+            try section("trending_on_server", #"[{"contentId": "trend", "type": "movie", "title": "Trending"}]"#),
+            try section("recently_added", #"[{"contentId": "new", "type": "movie", "title": "New", "year": 2026}, {"contentId": "book", "type": "audiobook", "title": "Book"}]"#),
+            try section("next_up", #"[{"contentId": "e9", "type": "episode", "title": "Ep", "seriesId": "sev", "seriesTitle": "Severance"}]"#),
+            try section("continue_watching", #"[{"contentId": "oak", "type": "movie", "title": "The End of Oak Street", "year": 2026}, {"contentId": "e1", "type": "episode", "title": "Ep", "seriesId": "sev", "seriesTitle": "Severance"}]"#),
+        ]
+        let titles = SiriTitleCatalog.titles(from: sections)
+        XCTAssertEqual(titles.map(\.contentId), ["oak", "sev", "new"])
+        XCTAssertEqual(titles[1], SiriTitleCatalog.Title(contentId: "sev", title: "Severance", year: nil, isSeries: true))
+    }
+
+    func testCatalogBelongsToOneProfile() throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "SiriIntentTests.catalog"))
+        defer { defaults.removePersistentDomain(forName: "SiriIntentTests.catalog") }
+        let sections = [ResolvedSection(
+            id: "cw", sectionType: "continue_watching", title: "", featured: nil, itemLimit: nil,
+            totalCount: nil, isCustom: nil, customized: nil,
+            items: try decode([SectionItem].self, #"[{"contentId": "oak", "type": "movie", "title": "Oak"}]"#)
+        )]
+        XCTAssertTrue(SiriTitleCatalog.update(from: sections, profileId: "a", defaults: defaults))
+        XCTAssertFalse(SiriTitleCatalog.update(from: sections, profileId: "a", defaults: defaults))
+        XCTAssertEqual(SiriTitleCatalog.titles(defaults: defaults, profileId: "a").map(\.contentId), ["oak"])
+        XCTAssertEqual(SiriTitleCatalog.titles(defaults: defaults, profileId: "b"), [])
+        XCTAssertEqual(SiriTitleCatalog.titles(defaults: defaults, profileId: nil), [])
     }
 
     func testSeriesWithoutEpisodesOpensSearch() async throws {

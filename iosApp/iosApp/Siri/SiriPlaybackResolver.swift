@@ -54,7 +54,17 @@ struct SiriPlaybackResolver {
             match = Self.singleMatch(in: try await search(title), title: title, year: year)
         }
         guard let match else { return .search(term: term) }
+        return try await outcome(for: match, fallbackTerm: term)
+    }
 
+    /// A title Siri already identified by name. `title` is the Search
+    /// fallback when a series has nothing to play.
+    func resolve(contentId: String, title: String, isSeries: Bool) async throws -> SiriPlaybackOutcome {
+        let candidate = Candidate(contentId: contentId, title: title, type: isSeries ? "series" : "movie", year: nil)
+        return try await outcome(for: candidate, fallbackTerm: title)
+    }
+
+    private func outcome(for match: Candidate, fallbackTerm term: String) async throws -> SiriPlaybackOutcome {
         guard SiloMediaType.isSeries(match.type) else {
             return .play(contentId: match.contentId, titleContentId: match.contentId)
         }

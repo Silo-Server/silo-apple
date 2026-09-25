@@ -820,17 +820,16 @@ struct ContentView: View {
             case .search(let term):
                 router.requestSearch(query: term)
             case .play(let title, let onTV):
-                let identity = currentDeepLinkIdentity
-                playDeepLinkTask = Task { @MainActor in
-                    await routeSiriPlayback(
+                startSiriPlayback(fallbackTerm: title, onTV: onTV, revision: revision) {
+                    try await SiriPlaybackResolver.live.resolve(title)
+                }
+            case .playTitle(let contentId, let title, let isSeries, let onTV):
+                startSiriPlayback(fallbackTerm: title, onTV: onTV, revision: revision) {
+                    try await SiriPlaybackResolver.live.resolve(
+                        contentId: contentId,
                         title: title,
-                        onTV: onTV,
-                        revision: revision,
-                        identity: identity
+                        isSeries: isSeries
                     )
-                    if deepLinkRevision == revision {
-                        playDeepLinkTask = nil
-                    }
                 }
             }
             return
@@ -907,20 +906,42 @@ struct ContentView: View {
     }
 
     #if os(iOS) || os(tvOS)
-    /// Plays the title Siri heard, or opens Search for it when the match
+    private func startSiriPlayback(
+        fallbackTerm: String,
+        onTV: Bool,
+        revision: UInt,
+        resolve: @escaping @MainActor () async throws -> SiriPlaybackOutcome
+    ) {
+        let identity = currentDeepLinkIdentity
+        playDeepLinkTask = Task { @MainActor in
+            await routeSiriPlayback(
+                fallbackTerm: fallbackTerm,
+                onTV: onTV,
+                revision: revision,
+                identity: identity,
+                resolve: resolve
+            )
+            if deepLinkRevision == revision {
+                playDeepLinkTask = nil
+            }
+        }
+    }
+
+    /// Plays what Siri asked for, or opens Search for it when the match
     /// isn't clear or the lookup fails.
     @MainActor
     private func routeSiriPlayback(
-        title: String,
+        fallbackTerm: String,
         onTV: Bool,
         revision: UInt,
-        identity: DeepLinkIdentity
+        identity: DeepLinkIdentity,
+        resolve: @MainActor () async throws -> SiriPlaybackOutcome
     ) async {
         let outcome: SiriPlaybackOutcome
         do {
-            outcome = try await SiriPlaybackResolver.live.resolve(title)
+            outcome = try await resolve()
         } catch {
-            outcome = .search(term: title)
+            outcome = .search(term: fallbackTerm)
         }
         guard canCompletePlayDeepLink(revision: revision, identity: identity) else { return }
 
