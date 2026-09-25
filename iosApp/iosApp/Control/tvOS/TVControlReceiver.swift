@@ -155,7 +155,7 @@ final class TVControlReceiver {
             )
             listener.newConnectionHandler = { [weak self] connection in
                 Task { @MainActor in
-                    await self?.accept(connection)
+                    await self?.accept(connection, listenerGeneration: generation)
                 }
             }
             listener.stateUpdateHandler = { [weak self] state in
@@ -364,7 +364,13 @@ final class TVControlReceiver {
         }
     }
 
-    private func accept(_ connection: NWConnection) async {
+    private func accept(_ connection: NWConnection, listenerGeneration generation: Int) async {
+        // Accepted by a listener that has since been replaced (a server switch
+        // closed its connections already): this one was queued behind it.
+        guard generation == listenerGeneration else {
+            connection.cancel()
+            return
+        }
         // Newest controller wins (matches AirPlay/Cast), but only once it has
         // said hello: until then the phone in use keeps the session.
         if pendingConnections.count >= Self.maxPendingConnections,
