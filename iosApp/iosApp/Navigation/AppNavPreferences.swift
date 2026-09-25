@@ -13,10 +13,6 @@ final class AppNavPreferences {
     /// Whether audiobook library/search surfaces are shown for this platform.
     private(set) var showAudiobooks: Bool
 
-    /// What the iOS tab bar's last slot opens. Device-local and per profile,
-    /// like `showAudiobooks`.
-    private(set) var lastTab: LastTabChoice
-
     @ObservationIgnored private let defaults: SharedDefaults
     @ObservationIgnored private let storageKey: () -> String?
 
@@ -27,7 +23,6 @@ final class AppNavPreferences {
         self.defaults = defaults
         self.storageKey = storageKey
         self.showAudiobooks = Self.readShowAudiobooks(from: defaults, key: storageKey())
-        self.lastTab = Self.readLastTab(from: defaults, key: storageKey())
     }
 
     /// Persist the choice for the active profile and update the observed
@@ -42,13 +37,6 @@ final class AppNavPreferences {
     /// known or after switching servers in place.
     func refresh() {
         showAudiobooks = Self.readShowAudiobooks(from: defaults, key: storageKey())
-        lastTab = Self.readLastTab(from: defaults, key: storageKey())
-    }
-
-    func setLastTab(_ choice: LastTabChoice) {
-        lastTab = choice
-        guard let key = storageKey() else { return }
-        defaults.set(choice.storageValue, forKey: Self.lastTabKey(key))
     }
 
     // MARK: - Storage
@@ -59,19 +47,6 @@ final class AppNavPreferences {
             return defaultShowAudiobooks
         }
         return defaults.bool(forKey: key)
-    }
-
-    private static func readLastTab(from defaults: SharedDefaults, key: String?) -> LastTabChoice {
-        guard let key,
-              let raw = defaults.string(forKey: lastTabKey(key)),
-              let choice = LastTabChoice(storageValue: raw)
-        else { return .downloads }
-        return choice
-    }
-
-    /// Shares the audiobook key's server/profile scope.
-    private static func lastTabKey(_ scopedKey: String) -> String {
-        "\(scopedKey).lastTab"
     }
 
     private static func showAudiobooksKey() -> String? {

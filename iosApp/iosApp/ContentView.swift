@@ -1771,8 +1771,6 @@ enum MainTabDestinationID: Hashable {
     /// every audiobook library.
     case watch
     case listen
-    /// iOS last-slot choice (`LastTabChoice.favorites`).
-    case favorites
 }
 
 struct MainTabDestination: Identifiable, Equatable {
@@ -1943,7 +1941,7 @@ func resolvedRequestedMainTabDestination(
            switch $0.id {
            case .libraryCategory, .library, .watch, .listen:
                return true
-           case .app, .favorites:
+           case .app:
                return false
            }
        }) {
@@ -2097,8 +2095,8 @@ struct MainTabView: View {
         .onChange(of: router.requestedTab) { _, tab in
             guard let tab else { return }
             router.requestedTab = nil
-            // Downloads and Calendar can be off the iOS bar (last-slot
-            // choice); open them as pages instead of silently landing on Home.
+            // Downloads and Calendar are off the iOS bar; open them as pages
+            // instead of silently landing on Home.
             #if !os(tvOS)
             if !visibleDestinations.contains(where: { $0.id == .app(tab) }) {
                 switch tab {
@@ -2115,12 +2113,6 @@ struct MainTabView: View {
             #endif
             selectedDestinationID = resolvedRequestedMainTabDestination(
                 tab,
-                visibleDestinations: visibleDestinations
-            )
-        }
-        .onChange(of: navPrefs.lastTab) { _, _ in
-            selectedDestinationID = resolvedVisibleMainTabDestination(
-                selectedDestinationID,
                 visibleDestinations: visibleDestinations
             )
         }
@@ -2230,12 +2222,11 @@ struct MainTabView: View {
     /// as an observer, so the tab appears as soon as capability loads.
     private var visibleDestinations: [MainTabDestination] {
         #if os(iOS)
-        // iOS uses a fixed bar; the synced primary menu drives other clients.
+        // iOS derives its bar from the profile's libraries; the synced
+        // primary menu drives other clients.
         return appleFixedTabDestinations(
             libraries: librarySnapshot.availableLibraries(for: currentLibraryAuthority),
-            showAudiobooks: navPrefs.showAudiobooks,
-            downloadsEnabled: DownloadManager.shared.downloadsEnabled,
-            lastTab: navPrefs.lastTab
+            showAudiobooks: navPrefs.showAudiobooks
         )
         #else
         var destinations = projectedMainTabDestinations(
@@ -2564,11 +2555,21 @@ struct MainTabView: View {
         case .app(let tab):
             tabContent(for: tab)
         case .libraryCategory(let category):
+            #if os(iOS)
+            if let hub = MediaHub(destination: .libraryCategory(category)) {
+                MediaHubView(
+                    hub: hub,
+                    libraryAuthority: currentLibraryAuthority,
+                    onLibrariesLoaded: acceptLoadedLibraries
+                )
+            }
+            #else
             LibrariesTabView(
                 category: category,
                 libraryAuthority: currentLibraryAuthority,
                 onLibrariesLoaded: acceptLoadedLibraries
             )
+            #endif
         case .library(let libraryId):
             LibrariesTabView(
                 fixedLibraryId: libraryId,
@@ -2585,8 +2586,6 @@ struct MainTabView: View {
                 onLibrariesLoaded: acceptLoadedLibraries
             )
             #endif
-        case .favorites:
-            FavoritesView()
         }
     }
 
@@ -2605,10 +2604,17 @@ struct MainTabView: View {
             HomeView()
 
         case .libraries:
+            #if os(iOS)
+            LibrariesHubView(
+                libraryAuthority: currentLibraryAuthority,
+                onLibrariesLoaded: acceptLoadedLibraries
+            )
+            #else
             LibrariesTabView(
                 libraryAuthority: currentLibraryAuthority,
                 onLibrariesLoaded: acceptLoadedLibraries
             )
+            #endif
 
         case .search:
             SearchView()

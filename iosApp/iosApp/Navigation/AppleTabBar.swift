@@ -1,35 +1,5 @@
 import Foundation
 
-/// What the last slot of the iOS tab bar opens.
-enum LastTabChoice: Hashable, Sendable {
-    case downloads
-    case favorites
-    case calendar
-    case library(Int)
-
-    init?(storageValue: String) {
-        switch storageValue {
-        case "downloads": self = .downloads
-        case "favorites": self = .favorites
-        case "calendar": self = .calendar
-        default:
-            guard storageValue.hasPrefix("library:"),
-                  let id = Int(storageValue.dropFirst("library:".count))
-            else { return nil }
-            self = .library(id)
-        }
-    }
-
-    var storageValue: String {
-        switch self {
-        case .downloads: return "downloads"
-        case .favorites: return "favorites"
-        case .calendar: return "calendar"
-        case .library(let id): return "library:\(id)"
-        }
-    }
-}
-
 extension MainTabDestination {
     /// Every movie and series library (`MediaHubView`).
     static let watch = MainTabDestination(
@@ -46,67 +16,62 @@ extension MainTabDestination {
         icon: "headphones",
         selectedIcon: "headphones"
     )
-
-    static let favorites = MainTabDestination(
-        id: .favorites,
-        title: "Favorites",
-        icon: "heart",
-        selectedIcon: "heart.fill"
-    )
 }
 
-/// The iOS tab bar: Home | Watch | Listen | For You | one chosen slot.
+/// The iOS tab bar, derived only from the profile's accessible libraries:
 ///
-/// The bar is fixed rather than projected from the synced
-/// `nav.primary_menu`, which other clients still use unchanged. Watch needs
-/// a movie, series or mixed library; Listen needs the audiobook opt-in and an
-/// audiobook library. An unavailable last-slot choice, including an
-/// audiobook library while the opt-in is off, falls back to Downloads, then
-/// Calendar.
+/// | Libraries             | Tab bar                                        |
+/// | --------------------- | ---------------------------------------------- |
+/// | Watch and Listen      | Home, Watch, Listen, Libraries, For You        |
+/// | Movies and Series     | Home, Movies, Series, Libraries, For You       |
+/// | One library type      | Home, [type], For You                          |
+///
+/// Libraries also needs more than one library. Search stays in the top bar,
+/// and Downloads, Favorites and Calendar are in the profile menu. The synced
+/// `nav.primary_menu`, which other clients still use, is not read here.
+/// Audiobook libraries count only while Show Audiobooks is on.
 func appleFixedTabDestinations(
     libraries: [Library],
-    showAudiobooks: Bool,
-    downloadsEnabled: Bool,
-    lastTab: LastTabChoice
+    showAudiobooks: Bool
 ) -> [MainTabDestination] {
-    var destinations: [MainTabDestination] = [.app(.home)]
-    if !MediaHubScope.availableKinds(for: .watch, in: libraries).isEmpty {
-        destinations.append(.watch)
+    let visible = showAudiobooks ? libraries : libraries.filter { !$0.isAudiobookLibrary }
+    let kinds = MediaKind.allCases.filter { !MediaHubScope.libraries(for: $0, in: visible).isEmpty }
+    let capabilities = MediaCapability.allCases.filter { capability in
+        capability.kinds.contains(where: kinds.contains)
     }
-    if showAudiobooks, libraries.contains(where: \.isAudiobookLibrary) {
-        destinations.append(.listen)
+
+    var destinations: [MainTabDestination] = [.app(.home)]
+    if capabilities.count > 1 {
+        destinations += capabilities.map(\.tabDestination)
+    } else {
+        destinations += kinds.map { .libraryCategory($0.menuBuiltin) }
+    }
+    if kinds.count > 1, visible.count > 1 {
+        destinations.append(.app(.libraries))
     }
     destinations.append(.app(.recommendations))
-    destinations.append(
-        resolvedLastTabDestination(
-            lastTab,
-            libraries: showAudiobooks ? libraries : libraries.filter { !$0.isAudiobookLibrary },
-            downloadsEnabled: downloadsEnabled
-        )
-    )
     return destinations
 }
 
-func resolvedLastTabDestination(
-    _ choice: LastTabChoice,
-    libraries: [Library],
-    downloadsEnabled: Bool
-) -> MainTabDestination {
-    let fallback: MainTabDestination = downloadsEnabled ? .app(.downloads) : .app(.calendar)
-    switch choice {
-    case .downloads:
-        return fallback
-    case .favorites:
-        return .favorites
-    case .calendar:
-        return .app(.calendar)
-    case .library(let libraryId):
-        guard let library = libraries.first(where: { $0.id == libraryId }) else { return fallback }
-        return .library(
-            id: library.id,
-            label: library.name,
-            icon: library.navigationIcon,
-            selectedIcon: library.selectedNavigationIcon
-        )
+extension MediaCapability {
+    var tabDestination: MainTabDestination {
+        switch self {
+        case .watch: return .watch
+        case .listen: return .listen
+        }
+    }
+}
+
+extension MediaHub {
+    /// The hub a tab-bar destination opens, if it is one.
+    init?(destination: MainTabDestinationID) {
+        switch destination {
+        case .watch: self = .watch
+        case .listen: self = .listen
+        case .libraryCategory(.movies): self = .movies
+        case .libraryCategory(.series): self = .series
+        case .libraryCategory(.audiobooks): self = .audiobooks
+        default: return nil
+        }
     }
 }

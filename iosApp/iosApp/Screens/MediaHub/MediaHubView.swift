@@ -1,14 +1,14 @@
 #if !os(tvOS)
 import SwiftUI
 
-/// The iOS Watch and Listen tabs: one root for every library of a hub.
+/// The iOS Watch, Listen and single-type tabs: one root for every library of
+/// a hub.
 ///
 /// The large title is a menu (`MediaScopeTitleMenu`) that scopes the page to
-/// Movies & Shows, one kind, or one library, and holds Browse and Collections.
-/// A single library shows its server-built rows, led by Home's resume row
-/// when the library has none. A whole kind composes resume rows from Home, a
-/// cross-library Recently Added row, and one row per library. Movies & Shows
-/// is Home's rows without non-video items.
+/// one kind or one library, and holds Browse and Collections. A single
+/// library shows its server-built rows, led by Home's resume row when the
+/// library has none. A whole kind composes resume rows from Home, a
+/// cross-library Recently Added row, and one row per library.
 struct MediaHubView: View {
     let hub: MediaHub
     let libraryAuthority: MainTabLibraryAuthority?
@@ -25,8 +25,8 @@ struct MediaHubView: View {
 
     @Environment(AppRouter.self) private var router
 
-    private var store: MediaHubSelectionStore {
-        MediaHubSelectionStore(hub: hub, authority: libraryAuthority)
+    private var memory: MediaHubMemory {
+        MediaHubMemory(authority: libraryAuthority)
     }
     private var availableKinds: [MediaKind] { MediaHubScope.availableKinds(for: hub, in: libraries) }
     private var kindLibraries: [Library] { MediaHubScope.libraries(for: kind, in: libraries) }
@@ -44,9 +44,9 @@ struct MediaHubView: View {
                 Color.clear
             } else {
                 EmptyStateView(
-                    icon: hub == .listen ? "headphones" : "play.tv",
-                    title: hub == .listen ? "Nothing to listen to yet" : "Nothing to watch yet",
-                    subtitle: hub == .listen
+                    icon: hub.capability == .listen ? "headphones" : "play.tv",
+                    title: hub.capability == .listen ? "Nothing to listen to yet" : "Nothing to watch yet",
+                    subtitle: hub.capability == .listen
                         ? "Audiobook libraries visible to this profile will appear here."
                         : "Movie and TV libraries visible to this profile will appear here."
                 )
@@ -66,6 +66,12 @@ struct MediaHubView: View {
             guard let response = notification.object as? LibrariesResponse else { return }
             accept(response.libraries)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .mediaHubSelectionDidChange)) { _ in
+            // The Libraries page chose a library for this hub's capability.
+            guard hasResolvedSelection else { return }
+            hasResolvedSelection = false
+            accept(libraries)
+        }
     }
 
     // MARK: - Layout
@@ -81,7 +87,6 @@ struct MediaHubView: View {
 
     private var header: MediaScopeHeader {
         MediaHubScope.header(
-            hub: hub,
             kind: kind,
             library: selectedLibrary,
             kindLibraries: kindLibraries
@@ -100,9 +105,9 @@ struct MediaHubView: View {
                     libraryId: selectedLibraryId,
                     kindLibraries: kindLibraries
                 ),
-                onSelectKind: { select(.init(kind: $0, libraryId: store.storedLibraryId(for: $0))) },
+                onSelectKind: { select(.init(kind: $0, libraryId: memory.libraryId(for: $0))) },
                 onSelect: select,
-                onBrowse: kind == .allVideo ? nil : {
+                onBrowse: {
                     router.navigate(to: .mediaBrowse(kind: kind, libraryId: selectedLibraryId))
                 },
                 onCollections: selectedLibrary.map { library in
@@ -146,11 +151,9 @@ struct MediaHubView: View {
                 }
 
                 ForEach(landing.sections) { section in
-                    if kind == .allVideo
-                        || HomeFeed.isResume(section)
+                    if HomeFeed.isResume(section)
                         || section.sectionType.lowercased().contains("next") {
-                        // Home's own row: the combined view mirrors Home, and
-                        // resume rows keep Home's 16:9 stills.
+                        // Home's own row: resume rows keep Home's 16:9 stills.
                         HomeFeedRow(section: section)
                     } else {
                         sectionRow(section)
@@ -194,9 +197,9 @@ struct MediaHubView: View {
 
     private func select(_ selection: MediaScopeSelection) {
         let kindLibraries = MediaHubScope.libraries(for: selection.kind, in: libraries)
-        store.setKind(selection.kind)
-        if selection.kind != .allVideo, kindLibraries.count > 1 {
-            store.setLibraryId(selection.libraryId, for: selection.kind)
+        memory.setKind(selection.kind, for: hub)
+        if kindLibraries.count > 1 {
+            memory.setLibraryId(selection.libraryId, for: selection.kind)
         }
         withAnimation(.easeInOut(duration: SiloTheme.normalDuration)) {
             kind = selection.kind
@@ -207,6 +210,7 @@ struct MediaHubView: View {
             )
         }
         if let selectedLibraryId {
+            memory.setLastUsedLibraryId(selectedLibraryId, for: hub.capability)
             StartupContentPrefetcher.prefetchLibraryLanding(libraryId: selectedLibraryId)
         }
     }
@@ -239,14 +243,23 @@ struct MediaHubView: View {
         onLibrariesLoaded?(libraryAuthority, newLibraries)
         let kinds = MediaHubScope.availableKinds(for: hub, in: newLibraries)
         guard let fallbackKind = kinds.first else { return }
+        let previousKind = kind
         if !hasResolvedSelection || !kinds.contains(kind) {
-            kind = store.storedKind().flatMap { kinds.contains($0) ? $0 : nil } ?? fallbackKind
+            kind = memory.kind(for: hub).flatMap { kinds.contains($0) ? $0 : nil } ?? fallbackKind
         }
-        let stored = hasResolvedSelection ? selectedLibraryId : store.storedLibraryId(for: kind)
+        let kindLibraries = MediaHubScope.libraries(for: kind, in: newLibraries)
+        var remembered = memory.libraryId(for: kind)
+        // A remembered library that was removed or lost falls back to every
+        // library of the kind, and that becomes the saved selection.
+        if let id = remembered, !kindLibraries.contains(where: { $0.id == id }) {
+            memory.setLibraryId(nil, for: kind)
+            remembered = nil
+        }
+        let keepsCurrent = hasResolvedSelection && kind == previousKind
         selectedLibraryId = MediaHubScope.resolvedLibraryId(
             kind: kind,
-            storedLibraryId: stored,
-            kindLibraries: MediaHubScope.libraries(for: kind, in: newLibraries)
+            storedLibraryId: keepsCurrent ? selectedLibraryId : remembered,
+            kindLibraries: kindLibraries
         )
         hasResolvedSelection = true
     }
@@ -408,27 +421,19 @@ private struct MediaScopePanel: View {
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
     }
 
-    private var hasBody: Bool { !menu.isEmpty || kind == .allVideo }
+    private var hasBody: Bool { !menu.isEmpty }
 
     private var content: some View {
         VStack(alignment: .leading, spacing: 0) {
             if !menu.kinds.isEmpty {
                 Picker("Show", selection: Binding(get: { kind }, set: onSelectKind)) {
                     ForEach(menu.kinds, id: \.self) { segment in
-                        Text(segment.segmentTitle).tag(segment)
+                        Text(segment.title).tag(segment)
                     }
                 }
                 .pickerStyle(.segmented)
                 .padding(.horizontal, Self.inset)
                 .padding(.bottom, 6)
-            }
-            if kind == .allVideo {
-                Text("Movies and shows from every library. Choose Movies or Shows to pick a library.")
-                    .font(.subheadline)
-                    .foregroundStyle(Color.siloSecondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, Self.textInset)
-                    .padding(.vertical, 8)
             }
             ForEach(menu.options) { option in
                 MediaScopeRow(title: option.title, isSelected: option.selection == selection) {
@@ -694,9 +699,7 @@ final class MediaLandingViewModel {
 
         do {
             let result: [ResolvedSection]
-            if kind == .allVideo {
-                result = await Self.homeVideoSections(fresh: force)
-            } else if let library {
+            if let library {
                 result = try await Self.librarySections(kind: kind, library: library, fresh: force)
             } else {
                 result = try await Self.mergedSections(kind: kind, libraries: kindLibraries, fresh: force)
@@ -786,14 +789,6 @@ final class MediaLandingViewModel {
         return sections
     }
 
-    /// Movies and shows together: Home's rows with non-video cards removed.
-    private static func homeVideoSections(fresh: Bool) async -> [ResolvedSection] {
-        let sections = await homeSections(fresh: fresh)
-            .filter { !$0.isFeatured }
-            .compactMap { filtered($0, to: .allVideo) }
-        return sections
-    }
-
     /// Home's cached rows, or a fresh fetch (falling back to the cache) on
     /// pull-to-refresh, since the cache has no expiry.
     private static func homeSections(fresh: Bool) async -> [ResolvedSection] {
@@ -808,7 +803,7 @@ final class MediaLandingViewModel {
             .filter { section in
                 let type = section.sectionType.lowercased()
                 if section.isContinueWatchingSection { return true }
-                return kind == .shows && type.contains("next")
+                return kind == .series && type.contains("next")
             }
             .compactMap { section in
                 filtered(section, to: kind, title: section.isContinueWatchingSection ? kind.resumeTitle : nil)

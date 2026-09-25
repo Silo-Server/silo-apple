@@ -7,101 +7,84 @@ final class MediaHubScopeTests: XCTestCase {
         Library(id: id, name: name ?? "Library \(id)", type: type, sortOrder: id, posterUrl: nil)
     }
 
-    func testFixedTabBarShowsWatchListenAndTheChosenLastTab() {
+    private func bar(_ libraries: [Library], showAudiobooks: Bool = true) -> [MainTabDestinationID] {
+        appleFixedTabDestinations(libraries: libraries, showAudiobooks: showAudiobooks).map(\.id)
+    }
+
+    func testWatchAndListenProfile() {
         let libraries = [library(1, "movies"), library(2, "series"), library(3, "audiobooks", "Books")]
-
-        let bar = appleFixedTabDestinations(
-            libraries: libraries,
-            showAudiobooks: true,
-            downloadsEnabled: true,
-            lastTab: .downloads
-        )
-
         XCTAssertEqual(
-            bar.map(\.id),
-            [.app(.home), .watch, .listen, .app(.recommendations), .app(.downloads)]
+            bar(libraries),
+            [.app(.home), .watch, .listen, .app(.libraries), .app(.recommendations)]
         )
-        XCTAssertEqual(bar[2].title, "Listen")
+        XCTAssertEqual(appleFixedTabDestinations(libraries: libraries, showAudiobooks: true)[2].title, "Listen")
     }
 
-    func testListenNeedsTheOptInAndAnAudiobookLibrary() {
-        let video = [library(1, "movies")]
-        let withBooks = video + [library(3, "audiobooks")]
-
-        let optedOut = appleFixedTabDestinations(
-            libraries: withBooks, showAudiobooks: false, downloadsEnabled: true, lastTab: .downloads
-        )
-        let noBooks = appleFixedTabDestinations(
-            libraries: video, showAudiobooks: true, downloadsEnabled: true, lastTab: .downloads
-        )
-
-        XCTAssertFalse(optedOut.contains { $0.id == .listen })
-        XCTAssertFalse(noBooks.contains { $0.id == .listen })
-    }
-
-    func testWatchNeedsAVideoLibrary() {
-        let bar = appleFixedTabDestinations(
-            libraries: [library(3, "audiobooks")], showAudiobooks: true, downloadsEnabled: true, lastTab: .favorites
-        )
-        XCTAssertEqual(bar.map(\.id), [.app(.home), .listen, .app(.recommendations), .favorites])
-    }
-
-    func testUnavailableLastTabFallsBackToDownloadsThenCalendar() {
-        let libraries = [library(1, "movies", "Anime")]
-
+    func testWatchOnlyProfileSplitsIntoMoviesAndSeries() {
         XCTAssertEqual(
-            resolvedLastTabDestination(.library(1), libraries: libraries, downloadsEnabled: true).id,
-            .library(1)
+            bar([library(1, "movies"), library(2, "series")]),
+            [.app(.home), .libraryCategory(.movies), .libraryCategory(.series), .app(.libraries), .app(.recommendations)]
+        )
+        let titles = appleFixedTabDestinations(
+            libraries: [library(1, "movies"), library(2, "series")], showAudiobooks: true
+        ).map(\.title)
+        XCTAssertEqual(titles, ["Home", "Movies", "Series", "Libraries", "For You"])
+    }
+
+    func testOneLibraryTypeGetsOneDestinationAndNoLibraries() {
+        XCTAssertEqual(
+            bar([library(1, "movies"), library(2, "movies")]),
+            [.app(.home), .libraryCategory(.movies), .app(.recommendations)]
         )
         XCTAssertEqual(
-            resolvedLastTabDestination(.library(99), libraries: libraries, downloadsEnabled: true).id,
-            .app(.downloads)
+            bar([library(3, "audiobooks"), library(4, "audiobooks")]),
+            [.app(.home), .libraryCategory(.audiobooks), .app(.recommendations)]
         )
+    }
+
+    func testASingleMixedLibraryNeedsNoLibrariesDestination() {
         XCTAssertEqual(
-            resolvedLastTabDestination(.downloads, libraries: libraries, downloadsEnabled: false).id,
-            .app(.calendar)
+            bar([library(5, "mixed")]),
+            [.app(.home), .libraryCategory(.movies), .libraryCategory(.series), .app(.recommendations)]
         )
     }
 
-    func testAudiobookLastTabNeedsTheOptIn() {
-        let libraries = [library(1, "movies"), library(4, "audiobooks")]
-
-        let optedIn = appleFixedTabDestinations(
-            libraries: libraries, showAudiobooks: true, downloadsEnabled: true, lastTab: .library(4)
+    func testAudiobooksCountOnlyWithTheOptIn() {
+        let libraries = [library(1, "movies"), library(3, "audiobooks")]
+        XCTAssertEqual(
+            bar(libraries, showAudiobooks: false),
+            [.app(.home), .libraryCategory(.movies), .app(.recommendations)]
         )
-        XCTAssertEqual(optedIn.last?.id, .library(4))
-        let optedOut = appleFixedTabDestinations(
-            libraries: libraries, showAudiobooks: false, downloadsEnabled: true, lastTab: .library(4)
-        )
-        XCTAssertEqual(optedOut.last?.id, .app(.downloads))
     }
 
-    func testLastTabChoiceRoundTripsThroughStorage() {
-        for choice in [LastTabChoice.downloads, .favorites, .calendar, .library(42)] {
-            XCTAssertEqual(LastTabChoice(storageValue: choice.storageValue), choice)
-        }
-        XCTAssertNil(LastTabChoice(storageValue: "library:abc"))
-        XCTAssertNil(LastTabChoice(storageValue: "search"))
+    func testNoLibrariesKeepsHomeAndForYou() {
+        XCTAssertEqual(bar([]), [.app(.home), .app(.recommendations)])
     }
 
-    func testLibraryTabRequestResolvesToWatch() {
-        let visible = appleFixedTabDestinations(
-            libraries: [library(1, "movies")], showAudiobooks: false, downloadsEnabled: true, lastTab: .downloads
+    func testTabDestinationsMapToHubs() {
+        XCTAssertEqual(MediaHub(destination: .watch), .watch)
+        XCTAssertEqual(MediaHub(destination: .listen), .listen)
+        XCTAssertEqual(MediaHub(destination: .libraryCategory(.series)), .series)
+        XCTAssertEqual(MediaHub(destination: .libraryCategory(.audiobooks)), .audiobooks)
+        XCTAssertNil(MediaHub(destination: .app(.libraries)))
+    }
+
+    func testLibraryTabRequestResolvesToTheFirstLibraryRootWithoutLibraries() {
+        let visible = appleFixedTabDestinations(libraries: [library(1, "movies")], showAudiobooks: false)
+        XCTAssertEqual(
+            resolvedRequestedMainTabDestination(.libraries, visibleDestinations: visible),
+            .libraryCategory(.movies)
         )
-        XCTAssertEqual(resolvedRequestedMainTabDestination(.libraries, visibleDestinations: visible), .watch)
     }
 
     func testMixedLibrariesAppearUnderBothKinds() {
         let libraries = [library(1, "movies"), library(2, "series"), library(3, "mixed"), library(4, "audiobooks")]
 
         XCTAssertEqual(MediaHubScope.libraries(for: .movies, in: libraries).map(\.id), [1, 3])
-        XCTAssertEqual(MediaHubScope.libraries(for: .shows, in: libraries).map(\.id), [2, 3])
-        XCTAssertEqual(MediaHubScope.availableKinds(for: .watch, in: libraries), [.allVideo, .movies, .shows])
-        XCTAssertEqual(
-            MediaHubScope.availableKinds(for: .watch, in: [library(1, "movies")]),
-            [.movies],
-            "All is only offered when there is something to combine"
-        )
+        XCTAssertEqual(MediaHubScope.libraries(for: .series, in: libraries).map(\.id), [2, 3])
+        XCTAssertEqual(MediaHubScope.availableKinds(for: .watch, in: libraries), [.movies, .series])
+        XCTAssertEqual(MediaHubScope.availableKinds(for: .watch, in: [library(1, "movies")]), [.movies])
+        XCTAssertEqual(MediaHubScope.availableKinds(for: .series, in: libraries), [.series])
     }
 
     func testSingleLibraryAlwaysSelectedAndStaleSelectionFallsBackToAll() {
@@ -123,17 +106,19 @@ final class MediaHubScopeTests: XCTestCase {
         ]
 
         let movies = MediaHubScope.menu(for: .watch, kind: .movies, in: libraries)
-        XCTAssertEqual(movies.kinds, [.allVideo, .movies, .shows])
-        XCTAssertEqual(movies.kinds.map(\.segmentTitle), ["All", "Movies", "Shows"])
+        XCTAssertEqual(movies.kinds, [.movies, .series])
+        XCTAssertEqual(movies.kinds.map(\.title), ["Movies", "Series"])
         XCTAssertEqual(movies.options.map(\.title), ["All Movies", "Movies", "Movies - Anime"])
         XCTAssertEqual(movies.options[0].selection, .init(kind: .movies, libraryId: nil))
         XCTAssertEqual(movies.options[2].selection, .init(kind: .movies, libraryId: 2))
 
-        let shows = MediaHubScope.menu(for: .watch, kind: .shows, in: libraries)
-        XCTAssertEqual(shows.options.map(\.title), ["TV Shows"], "a one-library kind names its library")
-        XCTAssertEqual(shows.options[0].selection, .init(kind: .shows, libraryId: nil))
+        let series = MediaHubScope.menu(for: .watch, kind: .series, in: libraries)
+        XCTAssertEqual(series.options.map(\.title), ["TV Shows"], "a one-library kind names its library")
+        XCTAssertEqual(series.options[0].selection, .init(kind: .series, libraryId: nil))
 
-        XCTAssertTrue(MediaHubScope.menu(for: .watch, kind: .allVideo, in: libraries).options.isEmpty)
+        let moviesTab = MediaHubScope.menu(for: .movies, kind: .movies, in: libraries)
+        XCTAssertTrue(moviesTab.kinds.isEmpty, "a single-type tab has no segments")
+        XCTAssertEqual(moviesTab.options.map(\.title), ["All Movies", "Movies", "Movies - Anime"])
     }
 
     func testTitleMenuIsEmptyWhenThereIsNothingToPick() {
@@ -150,20 +135,16 @@ final class MediaHubScopeTests: XCTestCase {
         let books = [library(4, "audiobooks", "Audiobooks English")]
 
         XCTAssertEqual(
-            MediaHubScope.header(hub: .watch, kind: .allVideo, library: nil, kindLibraries: movies),
-            .init(title: "Watch", subtitle: "Movies & Shows")
-        )
-        XCTAssertEqual(
-            MediaHubScope.header(hub: .watch, kind: .movies, library: nil, kindLibraries: movies),
+            MediaHubScope.header(kind: .movies, library: nil, kindLibraries: movies),
             .init(title: "Movies", subtitle: "All libraries")
         )
         XCTAssertEqual(
-            MediaHubScope.header(hub: .watch, kind: .movies, library: movies[1], kindLibraries: movies),
+            MediaHubScope.header(kind: .movies, library: movies[1], kindLibraries: movies),
             .init(title: "Movies - Anime", subtitle: "Movies library"),
             "library names are shown exactly as the server has them"
         )
         XCTAssertEqual(
-            MediaHubScope.header(hub: .listen, kind: .audiobooks, library: books[0], kindLibraries: books),
+            MediaHubScope.header(kind: .audiobooks, library: books[0], kindLibraries: books),
             .init(title: "Audiobooks", subtitle: "Audiobooks English")
         )
     }
@@ -172,8 +153,8 @@ final class MediaHubScopeTests: XCTestCase {
         let one = [library(3, "series")]
         let two = [library(1, "movies"), library(2, "movies")]
         XCTAssertEqual(
-            MediaHubScope.currentSelection(kind: .shows, libraryId: 3, kindLibraries: one),
-            .init(kind: .shows, libraryId: nil)
+            MediaHubScope.currentSelection(kind: .series, libraryId: 3, kindLibraries: one),
+            .init(kind: .series, libraryId: nil)
         )
         XCTAssertEqual(
             MediaHubScope.currentSelection(kind: .movies, libraryId: 2, kindLibraries: two),
@@ -181,47 +162,94 @@ final class MediaHubScopeTests: XCTestCase {
         )
     }
 
-    func testSelectionMemoryIsScopedPerProfileAndKind() throws {
+    private func makeDefaults() throws -> (UserDefaults, () -> Void) {
         let suite = "MediaHubScopeTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-
-        let alice = MediaHubSelectionStore(
-            hub: .watch,
-            authority: MainTabLibraryAuthority(serverId: "s", profileId: "alice"),
-            defaults: defaults
-        )
-        let bob = MediaHubSelectionStore(
-            hub: .watch,
-            authority: MainTabLibraryAuthority(serverId: "s", profileId: "bob"),
-            defaults: defaults
-        )
-
-        alice.setKind(.shows)
-        alice.setLibraryId(3, for: .movies)
-        XCTAssertEqual(alice.storedKind(), .shows)
-        XCTAssertEqual(alice.storedLibraryId(for: .movies), 3)
-        XCTAssertNil(alice.storedLibraryId(for: .shows))
-        XCTAssertNil(bob.storedKind())
-        XCTAssertNil(bob.storedLibraryId(for: .movies))
-
-        alice.setLibraryId(nil, for: .movies)
-        XCTAssertNil(alice.storedLibraryId(for: .movies), "clearing returns to All")
+        return (defaults, { defaults.removePersistentDomain(forName: suite) })
     }
 
-    func testListenHubCoversAudiobookLibrariesAndKeepsItsOwnMemory() throws {
-        let libraries = [library(1, "movies"), library(3, "audiobooks"), library(4, "audiobooks")]
-        XCTAssertEqual(MediaHubScope.availableKinds(for: .listen, in: libraries), [.audiobooks])
-        XCTAssertEqual(MediaHubScope.libraries(for: .audiobooks, in: libraries).map(\.id), [3, 4])
+    func testSelectionMemoryIsScopedPerProfileAndKind() throws {
+        let (defaults, cleanup) = try makeDefaults()
+        defer { cleanup() }
 
-        let suite = "MediaHubScopeTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let authority = MainTabLibraryAuthority(serverId: "s", profileId: "p")
-        let watch = MediaHubSelectionStore(hub: .watch, authority: authority, defaults: defaults)
-        let listen = MediaHubSelectionStore(hub: .listen, authority: authority, defaults: defaults)
-        watch.setKind(.shows)
-        XCTAssertNil(listen.storedKind(), "each hub remembers its own kind")
+        let alice = MediaHubMemory(authority: MainTabLibraryAuthority(serverId: "s", profileId: "alice"), defaults: defaults)
+        let bob = MediaHubMemory(authority: MainTabLibraryAuthority(serverId: "s", profileId: "bob"), defaults: defaults)
+
+        alice.setKind(.series, for: .watch)
+        alice.setLibraryId(3, for: .movies)
+        XCTAssertEqual(alice.kind(for: .watch), .series)
+        XCTAssertNil(alice.kind(for: .listen), "each hub remembers its own kind")
+        XCTAssertEqual(alice.libraryId(for: .movies), 3)
+        XCTAssertNil(alice.libraryId(for: .series))
+        XCTAssertNil(bob.kind(for: .watch))
+        XCTAssertNil(bob.libraryId(for: .movies))
+
+        alice.setLibraryId(nil, for: .movies)
+        XCTAssertNil(alice.libraryId(for: .movies), "clearing returns to every library of the kind")
+    }
+
+    func testOpeningALibraryFromLibrariesBecomesItsCapabilitysSelection() throws {
+        let (defaults, cleanup) = try makeDefaults()
+        defer { cleanup() }
+        let memory = MediaHubMemory(authority: MainTabLibraryAuthority(serverId: "s", profileId: "p"), defaults: defaults)
+
+        memory.remember(library(2, "series", "Anime"))
+        XCTAssertEqual(memory.kind(for: .watch), .series)
+        XCTAssertEqual(memory.libraryId(for: .series), 2)
+        XCTAssertEqual(memory.lastUsedLibraryId(for: .watch), 2)
+        XCTAssertNil(memory.lastUsedLibraryId(for: .listen))
+
+        memory.remember(library(5, "mixed", "Kids"))
+        XCTAssertEqual(memory.kind(for: .watch), .series, "a mixed library keeps Watch on its kind")
+        XCTAssertEqual(memory.libraryId(for: .movies), 5)
+        XCTAssertEqual(memory.libraryId(for: .series), 5)
+
+        memory.remember(library(7, "audiobooks"))
+        XCTAssertEqual(memory.kind(for: .listen), .audiobooks)
+        XCTAssertEqual(memory.lastUsedLibraryId(for: .listen), 7)
+        XCTAssertEqual(memory.lastUsedLibraryId(for: .watch), 5)
+    }
+
+    func testPinsAreScopedPerProfile() throws {
+        let (defaults, cleanup) = try makeDefaults()
+        defer { cleanup() }
+        let alice = MediaHubMemory(authority: MainTabLibraryAuthority(serverId: "s", profileId: "alice"), defaults: defaults)
+        let bob = MediaHubMemory(authority: MainTabLibraryAuthority(serverId: "s", profileId: "bob"), defaults: defaults)
+
+        alice.setPinnedLibraryIds([4, 1])
+        XCTAssertEqual(alice.pinnedLibraryIds(), [4, 1])
+        XCTAssertEqual(bob.pinnedLibraryIds(), [])
+    }
+
+    func testLibrariesPageGroupsByCapabilityWithPinsFirst() {
+        let libraries = [
+            library(1, "movies", "Movies"),
+            library(2, "movies", "Movies - Anime"),
+            library(3, "series", "TV"),
+            library(4, "audiobooks", "Books"),
+            library(5, "mixed", "Kids"),
+            library(6, "audiobooks", "Podcasts"),
+        ]
+
+        let unpinned = LibrariesPage.sections(libraries: libraries, pinnedIds: [])
+        XCTAssertEqual(unpinned.map(\.capability), [.watch, .listen])
+        XCTAssertEqual(unpinned[0].libraries.map(\.id), [1, 2, 3, 5], "server order, every library its own card")
+        XCTAssertEqual(unpinned[1].libraries.map(\.id), [4, 6])
+
+        let pinned = LibrariesPage.sections(libraries: libraries, pinnedIds: [6, 5, 2])
+        XCTAssertEqual(pinned[0].libraries.map(\.id), [5, 2, 1, 3], "pins lead their section in pin order")
+        XCTAssertEqual(pinned[1].libraries.map(\.id), [6, 4])
+
+        XCTAssertEqual(
+            LibrariesPage.sections(libraries: [library(1, "movies")], pinnedIds: []).map(\.capability),
+            [.watch],
+            "empty capabilities are left out"
+        )
+    }
+
+    func testPinsForLostLibrariesAreDropped() {
+        let libraries = [library(1, "movies"), library(2, "series")]
+        XCTAssertEqual(LibrariesPage.prunedPins([2, 9, 1], libraries: libraries), [2, 1])
     }
 
     func testAudiobookQueriesOnlySendTypeWhenNoLibraryScopesThem() {
@@ -235,32 +263,21 @@ final class MediaHubScopeTests: XCTestCase {
         XCTAssertNil(oneLibrary.type)
     }
 
-    func testCombinedAllMirrorsHomeAcrossEveryVideoLibrary() {
-        let libraries = [library(1, "movies"), library(2, "movies"), library(3, "series")]
-        let allVideoLibraries = MediaHubScope.libraries(for: .allVideo, in: libraries)
-
-        XCTAssertEqual(allVideoLibraries.map(\.id), [1, 2, 3])
-        XCTAssertNil(MediaHubScope.resolvedLibraryId(kind: .allVideo, storedLibraryId: 1, kindLibraries: allVideoLibraries))
-        XCTAssertTrue(MediaKind.allVideo.includes(itemType: "episode"))
-        XCTAssertTrue(MediaKind.allVideo.includes(itemType: "movie"))
-        XCTAssertFalse(MediaKind.allVideo.includes(itemType: "audiobook"))
-    }
-
     func testKindFiltersResumeCardsByItemType() {
         XCTAssertTrue(MediaKind.movies.includes(itemType: "movie"))
         XCTAssertFalse(MediaKind.movies.includes(itemType: "episode"))
-        XCTAssertTrue(MediaKind.shows.includes(itemType: "episode"))
-        XCTAssertTrue(MediaKind.shows.includes(itemType: "series"))
-        XCTAssertFalse(MediaKind.shows.includes(itemType: "audiobook"))
+        XCTAssertTrue(MediaKind.series.includes(itemType: "episode"))
+        XCTAssertTrue(MediaKind.series.includes(itemType: "series"))
+        XCTAssertFalse(MediaKind.series.includes(itemType: "audiobook"))
         XCTAssertTrue(MediaKind.audiobooks.includes(itemType: "audiobook"))
         XCTAssertFalse(MediaKind.audiobooks.includes(itemType: "movie"))
     }
 
     func testCrossLibraryBrowseCacheKeysDoNotCollide() {
         let movies = CacheKey.browse(libraryId: nil, filterKey: "f", scope: "movie")
-        let shows = CacheKey.browse(libraryId: nil, filterKey: "f", scope: "series")
+        let series = CacheKey.browse(libraryId: nil, filterKey: "f", scope: "series")
         let unscoped = CacheKey.browse(libraryId: nil, filterKey: "f")
-        XCTAssertEqual(Set([movies, shows, unscoped]).count, 3)
+        XCTAssertEqual(Set([movies, series, unscoped]).count, 3)
         XCTAssertEqual(unscoped, "browse:v2:all:f", "existing unscoped keys keep their format")
     }
 }
