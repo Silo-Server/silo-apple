@@ -66,6 +66,25 @@ final class SeriesPlaybackReturnTests: XCTestCase {
         XCTAssertEqual(model.selectedSeason?.seasonNumber, 2)
     }
 
+    func testSeasonChosenDuringTheFetchWins() async throws {
+        let model = try seriesModel(showing: 1, seasons: [1, 2, 3])
+        defer { clearCache() }
+        let chosen = try XCTUnwrap(model.seasons.first { $0.seasonNumber == 3 })
+        model.episodesBySeason[3] = try page(3, count: 2).episodes
+
+        let selected = await model.prepareSeriesPlaybackReturn(
+            playback("s1e2", completed: true),
+            fetchEpisodes: { _, season in
+                // The user picks Season 3 while the return loads Season 2.
+                await model.selectSeason(chosen)
+                return try self.page(season, count: 2)
+            }
+        )
+
+        XCTAssertNil(selected)
+        XCTAssertEqual(model.selectedSeason?.seasonNumber, 3)
+    }
+
     func testFinishedSeasonFinaleContinuesWithTheNextSeason() async throws {
         let model = try seriesModel(showing: 1)
         defer { clearCache() }

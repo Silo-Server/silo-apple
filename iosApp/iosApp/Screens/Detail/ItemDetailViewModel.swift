@@ -137,6 +137,9 @@ class ItemDetailViewModel {
     /// Season whose episodes are actually painted. Used to roll back an
     /// optimistic chip/page selection if its request fails.
     private var loadedSeasonNumber: Int?
+    /// Bumped by explicit season choices, not by automatic refreshes. A
+    /// playback return that finishes loading after one leaves it alone.
+    @ObservationIgnored private var seasonChoiceGeneration = 0
 
     /// Bumped by every writer of `detail` + `CacheKey.itemDetail`, so a load
     /// that started earlier but finishes later cannot publish over a newer
@@ -1084,7 +1087,10 @@ class ItemDetailViewModel {
         guard !Task.isCancelled else { return }
         // An explicit chip/page selection supersedes the one-shot resume intent.
         // Automatic hierarchy refreshes must retain it until the catalog succeeds.
-        if !forceRefresh { initialResumeSeasonNumber = nil }
+        if !forceRefresh {
+            initialResumeSeasonNumber = nil
+            seasonChoiceGeneration += 1
+        }
         let fallbackSeasonNumber = loadedSeasonNumber ?? selectedSeason?.seasonNumber
         selectedSeason = season
         guard let seriesId = seriesContentId else { return }
@@ -1157,6 +1163,7 @@ class ItemDetailViewModel {
         fetchEpisodes: (@Sendable (String, Int) async throws -> EpisodesResponse)?
     ) async -> Bool {
         guard let seriesId = seriesContentId else { return false }
+        let choiceGeneration = seasonChoiceGeneration
         if episodesBySeason[season.seasonNumber] == nil {
             let response: EpisodesResponse
             do {
@@ -1178,6 +1185,8 @@ class ItemDetailViewModel {
             if episodesBySeason[season.seasonNumber] == nil {
                 episodesBySeason[season.seasonNumber] = response.episodes.sorted { $0.episodeNumber < $1.episodeNumber }
             }
+            // The user chose a season while this page loaded; keep their choice.
+            guard choiceGeneration == seasonChoiceGeneration else { return false }
         }
         // The page is in memory, so this publishes it synchronously.
         await selectSeason(season)
@@ -1234,6 +1243,7 @@ class ItemDetailViewModel {
               let season = seasons.first(where: { $0.seasonNumber == episode.seasonNumber }),
               let page = episodesBySeason[episode.seasonNumber] else { return }
         episodeLoadGeneration += 1
+        seasonChoiceGeneration += 1
         cancelDeferredEpisodePersonalListStateRefresh()
         selectedSeason = season
         episodes = page
