@@ -74,6 +74,13 @@ final class TVControlReceiver {
     /// it and no second `end()` runs beside it: a late second end cancels
     /// whatever the next handoff has in flight.
     private var identityEnds: [UUID: Task<Void, Never>] = [:]
+    /// The identity a finished handoff readied for the phone's next launch.
+    /// Until that launch arrives or the ready timeout lapses, ending it would
+    /// revoke the credentials the launch is about to play under.
+    private var launchReadyGeneration: UUID?
+    /// Identities whose end is past the point of no return: its logout
+    /// revokes their credentials, so no launch may adopt them.
+    private var endingGenerations: Set<UUID> = []
     private var remoteControllerName: String?
     private var remoteControllerDeviceId: String?
     private var remoteControllerServerId: String?
@@ -270,7 +277,10 @@ final class TVControlReceiver {
             defer { self.identityEnds[generation] = nil }
             // A title launched meanwhile took the identity over.
             guard self.playerHandoffGeneration != generation,
-                  self.pendingPlayerHandoffGeneration != generation else { return }
+                  self.pendingPlayerHandoffGeneration != generation,
+                  self.launchReadyGeneration != generation else { return }
+            self.endingGenerations.insert(generation)
+            defer { self.endingGenerations.remove(generation) }
             let notifyServer = self.rejectedPlayerHandoffGeneration != generation
             guard await RemotePlaybackIdentityManager.shared.end(
                 expectedGenerationID: generation,
@@ -298,6 +308,7 @@ final class TVControlReceiver {
         playerContentId = contentId
         playerHandoffGeneration = pendingPlayerHandoffGeneration ?? inherited
         pendingPlayerHandoffGeneration = nil
+        launchReadyGeneration = nil
         standbyState = nil
         startStateUpdates()
         sendState()
@@ -463,6 +474,7 @@ final class TVControlReceiver {
         didReceiveHello = false
         negotiatedVersion = nil
         remoteLaunchReady = false
+        launchReadyGeneration = nil
         remoteControllerName = nil
         remoteControllerDeviceId = nil
         remoteControllerServerId = nil
@@ -541,8 +553,10 @@ final class TVControlReceiver {
                 sendError(code: "unauthorized", message: "Connect with a matching Silo account first.")
                 return
             }
-            if negotiatedVersion == 2,
-               (!remoteLaunchReady || RemotePlaybackIdentityManager.shared.activeIdentity == nil) {
+            // An identity already being ended can't take a new title.
+            let usableIdentity = RemotePlaybackIdentityManager.shared.activeIdentity?.generationID
+                .flatMap { endingGenerations.contains($0) ? nil : $0 }
+            if negotiatedVersion == 2, !remoteLaunchReady || usableIdentity == nil {
                 sendError(code: "handoff_required", message: "Prepare the phone profile before playing.")
                 return
             }
@@ -583,6 +597,7 @@ final class TVControlReceiver {
         cancelPendingHandoff()
         pendingHandoffRequestId = offer.requestId
         remoteLaunchReady = false
+        launchReadyGeneration = nil
 
         handoffTask = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -635,6 +650,7 @@ final class TVControlReceiver {
                 self.handoffTask = nil
                 self.isAuthorized = true
                 self.remoteLaunchReady = true
+                self.launchReadyGeneration = manager.activeIdentity?.generationID
                 self.refreshAdvertisement()
                 self.activeSession?.enqueue(.handoffReady(ready))
                 self.armReadyTimeout(connectionId: connectionId)
@@ -662,9 +678,12 @@ final class TVControlReceiver {
             // Deliberately not tied to the connection: a phone that drops
             // between handoff_ready and launch must not leave its profile
             // installed on this TV.
-            guard let self, !Task.isCancelled, let generation,
-                  self.playerViewModel == nil,
+            guard let self, !Task.isCancelled, let generation else { return }
+            if self.launchReadyGeneration == generation { self.launchReadyGeneration = nil }
+            guard self.playerViewModel == nil,
                   RemotePlaybackIdentityManager.shared.activeIdentity?.generationID == generation else { return }
+            self.endingGenerations.insert(generation)
+            defer { self.endingGenerations.remove(generation) }
             guard await RemotePlaybackIdentityManager.shared.end(expectedGenerationID: generation) else { return }
             self.pendingPlayerHandoffGeneration = nil
             self.refreshAdvertisement()
@@ -673,6 +692,7 @@ final class TVControlReceiver {
                 return
             }
             self.remoteLaunchReady = false
+            self.launchReadyGeneration = nil
             self.isAuthorized = false
             self.sendError(code: "launch_timeout", message: "Playback didn't start, so the TV restored its own profile.")
             self.closeActiveSession(sendClose: true)
@@ -718,6 +738,7 @@ final class TVControlReceiver {
             playerHandoffGeneration = nil
         }
         pendingPlayerHandoffGeneration = generation
+        launchReadyGeneration = nil
         router?.presentPlayer(
             contentId: playback.contentId,
             fileId: playback.fileId,
@@ -778,6 +799,7 @@ final class TVControlReceiver {
         didReceiveHello = false
         negotiatedVersion = nil
         remoteLaunchReady = false
+        launchReadyGeneration = nil
         remoteControllerDeviceId = nil
         remoteControllerServerId = nil
         remoteControllerServerIdentity = nil
@@ -800,6 +822,7 @@ final class TVControlReceiver {
         didReceiveHello = false
         negotiatedVersion = nil
         remoteLaunchReady = false
+        launchReadyGeneration = nil
         remoteControllerDeviceId = nil
         remoteControllerServerId = nil
         remoteControllerServerIdentity = nil
@@ -851,6 +874,7 @@ final class TVControlReceiver {
 
     private func reconcileAuthorizationAfterRestore() {
         remoteLaunchReady = false
+        launchReadyGeneration = nil
         isAuthorized = RemotePlaybackIdentityManager.shared.controllerMatchesEffectiveServer(
             serverId: remoteControllerServerId,
             serverIdentity: remoteControllerServerIdentity
