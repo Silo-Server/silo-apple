@@ -157,11 +157,15 @@ final class AetherAudioPlaybackController {
         activeLoadEpoch = nil
         guard let engine else { return }
         // AVAudioSession is process-global and Silo runs a second AetherEngine for video.
-        // Only let this teardown release the session when no other engine is alive,
-        // otherwise a stopped audiobook would cut the session out from under playing
-        // video. Decided per stop because the video engine comes and goes with the
-        // player screen.
-        engine.deactivatesAudioSessionOnStop = AetherAudioSessionOwnership.isSoleLiveEngine
+        // Let this teardown release the session only when no *other* claim is actually
+        // holding audio: a playing or paused video engine, or an open remote, keeps it;
+        // an idle or ended video engine does not, so whatever Silo interrupted (another
+        // app's audio) can resume. Decided per stop because the other claims come and
+        // go with the player screen and the remote. `sessionClaim` is set alongside
+        // `engine`; should it ever be missing, keep the session (the conservative side).
+        engine.deactivatesAudioSessionOnStop = sessionClaim.map {
+            AetherAudioSessionOwnership.canReleaseSharedSession(excluding: $0)
+        } ?? false
         engine.stop(finalTeardown: true)
     }
 

@@ -62,22 +62,6 @@ enum AetherAudioSessionOwnership {
         }
     }
 
-    /// Number of live engine claims in this process.
-    static var liveEngineCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return registrations.count
-    }
-
-    /// True when the caller's own engine is the only one alive.
-    ///
-    /// Read this from a caller that is itself holding a ``Claim``; it counts that claim.
-    /// Prefer ``canReleaseSharedSession(excluding:)``, which also tolerates another
-    /// engine that exists but is idle.
-    static var isSoleLiveEngine: Bool {
-        liveEngineCount <= 1
-    }
-
     /// Whether the claim's owner may let its final teardown release the shared
     /// `AVAudioSession` — i.e. no *other* live engine is holding audio.
     ///
