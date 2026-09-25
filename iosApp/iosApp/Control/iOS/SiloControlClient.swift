@@ -288,7 +288,7 @@ final class SiloControlClient {
         defer { launchInFlight = false }
 
         isLaunching = true
-        launchingContentId = request.contentId
+        launchingContentId = nil
         isConnecting = true
         errorMessage = nil
         isShowingRemoteControl = true
@@ -309,6 +309,10 @@ final class SiloControlClient {
                 throw SiloControlHandoffError.invalidResponse
             }
             adoptEffectiveTarget(server: activeServer)
+            // Only the TV's state for this title ends the launch, and only once
+            // it is sent: until then the outgoing player keeps reporting, and a
+            // Resume of what is on names the same title.
+            launchingContentId = request.contentId
             try await session.send(.launch(SiloControlLaunchRequest(serverId: activeServer.id, playback: request)))
             isConnecting = false
         } catch {
