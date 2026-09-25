@@ -227,7 +227,8 @@ final class SiloControlClient {
         startReadLoop(stream: stream, connectionId: connectionId)
         startHeartbeat(connectionId: connectionId)
 
-        let hello = makeHello()
+        // Only a person picking the TV may take it from another phone.
+        let hello = makeHello(resume: origin != .user)
         do {
             try await Self.withDeadline(
                 Self.connectTimeout,
@@ -761,6 +762,17 @@ final class SiloControlClient {
                 quietDisconnect()
                 return
             }
+            if error.code == SiloControlProtocol.controllerActiveErrorCode {
+                // Another phone took the TV while ours was away; a reconnect
+                // must not take it back. The TV closes the session next.
+                Self.logger.info("control: TV is in use by another controller")
+                forgetPersistedTarget()
+                let keepCoverVisible = isShowingRemoteControl
+                clearSession()
+                errorMessage = error.message
+                isShowingRemoteControl = keepCoverVisible
+                return
+            }
             errorMessage = error.message
             isConnecting = false
         case .close:
@@ -985,7 +997,7 @@ final class SiloControlClient {
         UserDefaults.standard.removeObject(forKey: Self.persistedTargetKey)
     }
 
-    private func makeHello() -> SiloControlMessage {
+    private func makeHello(resume: Bool) -> SiloControlMessage {
         let device = AppleDeviceIdentity.current
         let server = ServerRegistry.shared.activeServer
         return .hello(SiloControlHello(
@@ -995,7 +1007,8 @@ final class SiloControlClient {
             serverId: server?.id,
             serverName: server?.displayName,
             supportedVersions: SiloControlProtocol.supportedVersions,
-            serverIdentity: server?.verifiedServerId
+            serverIdentity: server?.verifiedServerId,
+            resume: resume ? true : nil
         ))
     }
 

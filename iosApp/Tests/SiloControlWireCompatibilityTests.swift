@@ -126,6 +126,28 @@ final class SiloControlWireCompatibilityTests: XCTestCase {
         XCTAssertEqual(message, .unsupported(type: "future_thing"))
     }
 
+    /// `resume` is optional both ways: a hello without it (an older phone) is
+    /// a person picking the TV, and a person's hello leaves the key off.
+    func testHelloResumeIsOptionalOnTheWire() throws {
+        let legacy = Data(
+            #"{"type":"hello","v":2,"hello":{"role":"phone","deviceName":"Phone","deviceId":"p1","supportedVersions":[1,2]}}"#.utf8
+        )
+        guard case .hello(let decoded) = try JSONDecoder().decode(SiloControlMessage.self, from: legacy) else {
+            return XCTFail("expected a hello")
+        }
+        XCTAssertNil(decoded.resume)
+
+        let picked = SiloControlHello(role: .phone, deviceName: "Phone", deviceId: "p1",
+                                      serverId: nil, serverName: nil, supportedVersions: [1, 2])
+        let pickedJSON = String(decoding: try JSONEncoder().encode(SiloControlMessage.hello(picked)), as: UTF8.self)
+        XCTAssertFalse(pickedJSON.contains("resume"))
+
+        let resuming = SiloControlHello(role: .phone, deviceName: "Phone", deviceId: "p1",
+                                        serverId: nil, serverName: nil, supportedVersions: [1, 2], resume: true)
+        let data = try JSONEncoder().encode(SiloControlMessage.hello(resuming))
+        XCTAssertEqual(try JSONDecoder().decode(SiloControlMessage.self, from: data), .hello(resuming))
+    }
+
     // MARK: - Commands: no regression from the hand-written decoder
 
     /// `SiloControlCommand` now decodes by hand, so every argument field has
