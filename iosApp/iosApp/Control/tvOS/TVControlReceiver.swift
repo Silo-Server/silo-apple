@@ -60,6 +60,23 @@ final class TVControlReceiver {
     /// `unregisterPlayer` so a replacement handoff is never treated as the
     /// rejected one.
     private var rejectedPlayerHandoffGeneration: UUID?
+    /// Final-stop work of every player that played under the current
+    /// temporary identity, removed as each finishes. The identity ends only
+    /// after all of it: ending it first fails those stops (the logout revokes
+    /// the credentials they carry) and leaves the server sessions running.
+    private var retiringPlayerCleanups: [UUID: Task<Void, Never>] = [:]
+    /// The end of each retiring temporary identity, one per generation. Owned
+    /// here rather than by a handoff or session so that no cancellation skips
+    /// it and no second `end()` runs beside it: a late second end cancels
+    /// whatever the next handoff has in flight.
+    private var identityEnds: [UUID: Task<Void, Never>] = [:]
+    /// The identity a finished handoff readied for the phone's next launch.
+    /// Until that launch arrives or the ready timeout lapses, ending it would
+    /// revoke the credentials the launch is about to play under.
+    private var launchReadyGeneration: UUID?
+    /// Identities whose end is past the point of no return: its logout
+    /// revokes their credentials, so no launch may adopt them.
+    private var endingGenerations: Set<UUID> = []
     private var remoteControllerName: String?
     private var remoteControllerDeviceId: String?
     private var remoteControllerServerId: String?
@@ -209,30 +226,64 @@ final class TVControlReceiver {
         }
         rejectedPlayerHandoffGeneration = expectedGenerationID
         sendError(code: "temporary_session_expired", message: "The phone profile session expired.")
-        let hadPlayer = playerViewModel != nil
-        stopRemotePlayback()
-        if !hadPlayer {
-            Task { @MainActor [weak self] in
-                guard await RemotePlaybackIdentityManager.shared.end(
-                    expectedGenerationID: expectedGenerationID,
-                    notifyServer: false
-                ) else { return }
-                if self?.rejectedPlayerHandoffGeneration == expectedGenerationID {
-                    self?.rejectedPlayerHandoffGeneration = nil
-                }
-                self?.refreshAdvertisement()
-                self?.reconcileAuthorizationAfterRestore()
-            }
+        let outgoing = playerViewModel
+        // A launch still waiting for its player won't get one now.
+        if pendingPlayerHandoffGeneration == expectedGenerationID {
+            pendingPlayerHandoffGeneration = nil
         }
+        stopRemotePlayback()
+        // Tracked from now, after the outgoing player's final stop, so a
+        // handoff arriving meanwhile waits for it rather than racing the
+        // player's unregister (which joins this same end).
+        endIdentity(expectedGenerationID, after: outgoing)
+    }
+
+    /// Ends the temporary identity `generation` once `player` and every other
+    /// retiring player have sent their final stops, unless a new title took
+    /// the identity over first. Awaiting the returned task doesn't pass the
+    /// caller's cancellation on.
+    @discardableResult
+    private func endIdentity(_ generation: UUID, after player: PlayerViewModel? = nil) -> Task<Void, Never> {
+        if let running = identityEnds[generation] { return running }
+        let task = Task { @MainActor [weak self] in
+            await player?.waitForCleanupCompletion()
+            guard let self else { return }
+            await self.awaitRetiringPlayerCleanups()
+            defer { self.identityEnds[generation] = nil }
+            // A title launched meanwhile took the identity over.
+            guard self.playerHandoffGeneration != generation,
+                  self.pendingPlayerHandoffGeneration != generation,
+                  self.launchReadyGeneration != generation else { return }
+            self.endingGenerations.insert(generation)
+            defer { self.endingGenerations.remove(generation) }
+            let notifyServer = self.rejectedPlayerHandoffGeneration != generation
+            guard await RemotePlaybackIdentityManager.shared.end(
+                expectedGenerationID: generation,
+                notifyServer: notifyServer
+            ) else { return }
+            if self.rejectedPlayerHandoffGeneration == generation {
+                self.rejectedPlayerHandoffGeneration = nil
+            }
+            self.refreshAdvertisement()
+            self.reconcileAuthorizationAfterRestore()
+            self.refreshStandbyState()
+        }
+        identityEnds[generation] = task
+        return task
     }
 
     func registerPlayer(_ viewModel: PlayerViewModel, contentId: String) {
         readyTimeoutTask?.cancel()
         readyTimeoutTask = nil
+        // A launch hands its generation over through `pending`. Swapping the
+        // cover's item can also mount an interim player while another is
+        // still registered; that one inherits the live player's generation.
+        let inherited = playerViewModel != nil ? playerHandoffGeneration : nil
         playerViewModel = viewModel
         playerContentId = contentId
-        playerHandoffGeneration = pendingPlayerHandoffGeneration
+        playerHandoffGeneration = pendingPlayerHandoffGeneration ?? inherited
         pendingPlayerHandoffGeneration = nil
+        launchReadyGeneration = nil
         standbyState = nil
         startStateUpdates()
         sendState()
@@ -240,6 +291,13 @@ final class TVControlReceiver {
     }
 
     func unregisterPlayer(_ viewModel: PlayerViewModel) {
+        if RemotePlaybackIdentityManager.shared.activeIdentity != nil {
+            let id = UUID()
+            retiringPlayerCleanups[id] = Task { @MainActor [weak self] in
+                await viewModel.waitForCleanupCompletion()
+                self?.retiringPlayerCleanups[id] = nil
+            }
+        }
         guard playerViewModel == nil || playerViewModel === viewModel else { return }
         let endingGeneration = playerHandoffGeneration
         playerViewModel = nil
@@ -247,25 +305,29 @@ final class TVControlReceiver {
         playerHandoffGeneration = nil
         stateTask?.cancel()
         stateTask = nil
+        // The cover still shows a player, so this is the outgoing (or an
+        // interim) player of a same-phone replacement. SwiftUI mounts and
+        // unmounts around an item swap in no fixed order: hand the identity
+        // to whichever player registers next instead of ending it, which
+        // would log the phone out and start the new title as the TV's owner.
+        if let endingGeneration, router?.presentedPlayer != nil {
+            pendingPlayerHandoffGeneration = pendingPlayerHandoffGeneration ?? endingGeneration
+            return
+        }
         refreshStandbyState()
         sendState()
         setPlaybackAdvertised(false)
         if let endingGeneration,
            RemotePlaybackIdentityManager.shared.activeIdentity?.generationID == endingGeneration {
-            Task { @MainActor [weak self, weak viewModel] in
-                await viewModel?.waitForCleanupCompletion()
-                let notifyServer = self?.rejectedPlayerHandoffGeneration != endingGeneration
-                guard await RemotePlaybackIdentityManager.shared.end(
-                    expectedGenerationID: endingGeneration,
-                    notifyServer: notifyServer
-                ) else { return }
-                if self?.rejectedPlayerHandoffGeneration == endingGeneration {
-                    self?.rejectedPlayerHandoffGeneration = nil
-                }
-                self?.refreshAdvertisement()
-                self?.reconcileAuthorizationAfterRestore()
-                self?.refreshStandbyState()
-            }
+            endIdentity(endingGeneration)
+        }
+    }
+
+    /// Waits until every player that played under the temporary identity has
+    /// finished its final stop. Each entry removes itself when done.
+    private func awaitRetiringPlayerCleanups() async {
+        while let next = retiringPlayerCleanups.values.first {
+            await next.value
         }
     }
 
@@ -387,6 +449,7 @@ final class TVControlReceiver {
         didReceiveHello = false
         negotiatedVersion = nil
         remoteLaunchReady = false
+        launchReadyGeneration = nil
         remoteControllerName = nil
         remoteControllerDeviceId = nil
         remoteControllerServerId = nil
@@ -465,8 +528,13 @@ final class TVControlReceiver {
                 sendError(code: "unauthorized", message: "Connect with a matching Silo account first.")
                 return
             }
-            if negotiatedVersion == 2,
-               (!remoteLaunchReady || RemotePlaybackIdentityManager.shared.activeIdentity == nil) {
+            // An identity already being ended, or whose session expired, can't
+            // take a new title.
+            let identity = RemotePlaybackIdentityManager.shared.activeIdentity?.generationID
+            let identityUsable = identity.map {
+                !endingGenerations.contains($0) && $0 != rejectedPlayerHandoffGeneration
+            } ?? false
+            if negotiatedVersion == 2, !remoteLaunchReady || !identityUsable {
                 sendError(code: "handoff_required", message: "Prepare the phone profile before playing.")
                 return
             }
@@ -507,18 +575,33 @@ final class TVControlReceiver {
         cancelPendingHandoff()
         pendingHandoffRequestId = offer.requestId
         remoteLaunchReady = false
+        launchReadyGeneration = nil
 
         handoffTask = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
                 let manager = RemotePlaybackIdentityManager.shared
-                if manager.activeIdentity != nil,
-                   !manager.matches(offer, controllerDeviceId: controllerDeviceId) {
-                    let previousPlayer = self.playerViewModel
-                    self.stopRemotePlayback()
-                    await previousPlayer?.waitForCleanupCompletion()
-                    await manager.end()
+                // An identity already on its way out can't be reused: let
+                // that end finish, then prepare afresh.
+                if let active = manager.activeIdentity?.generationID,
+                   let ending = self.identityEnds[active] {
+                    await ending.value
                 }
+                // An expired identity is never reused, even for the same phone.
+                if let outgoing = manager.activeIdentity?.generationID,
+                   outgoing == self.rejectedPlayerHandoffGeneration ||
+                    !manager.matches(offer, controllerDeviceId: controllerDeviceId) {
+                    let previousPlayer = self.playerViewModel
+                    // Another phone or profile: this handoff ends the outgoing
+                    // identity once its title's final stop is in. Take the
+                    // identity off the player first, so the player's unregister
+                    // doesn't start a second end beside this one.
+                    self.playerHandoffGeneration = nil
+                    self.pendingPlayerHandoffGeneration = nil
+                    self.stopRemotePlayback()
+                    await self.endIdentity(outgoing, after: previousPlayer).value
+                }
+                try Task.checkCancellation()
 
                 let ready = try await manager.prepare(
                     offer: offer,
@@ -536,13 +619,18 @@ final class TVControlReceiver {
 
                 guard self.activeConnectionId == connectionId,
                       self.pendingHandoffRequestId == offer.requestId else {
-                    await manager.end()
+                    // The phone left. Unless a playing title holds it, the
+                    // identity just prepared is unused.
+                    if let installed = manager.activeIdentity?.generationID {
+                        self.endIdentity(installed)
+                    }
                     return
                 }
                 self.pendingHandoffRequestId = nil
                 self.handoffTask = nil
                 self.isAuthorized = true
                 self.remoteLaunchReady = true
+                self.launchReadyGeneration = manager.activeIdentity?.generationID
                 self.refreshAdvertisement()
                 self.activeSession?.enqueue(.handoffReady(ready))
                 self.armReadyTimeout(connectionId: connectionId)
@@ -564,18 +652,37 @@ final class TVControlReceiver {
 
     private func armReadyTimeout(connectionId: UUID) {
         readyTimeoutTask?.cancel()
+        let generation = RemotePlaybackIdentityManager.shared.activeIdentity?.generationID
         readyTimeoutTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(60))
-            guard let self,
+            // Deliberately not tied to the connection: a phone that drops
+            // between handoff_ready and launch must not leave its profile
+            // installed on this TV.
+            guard let self, !Task.isCancelled, let generation else { return }
+            // A newer handoff decides what happens to the identity: it re-arms
+            // this timer when it commits. Until then, check again later, so a
+            // handoff that is cancelled still leaves the identity retired.
+            if self.pendingHandoffRequestId != nil {
+                self.armReadyTimeout(connectionId: connectionId)
+                return
+            }
+            if self.launchReadyGeneration == generation { self.launchReadyGeneration = nil }
+            guard self.playerViewModel == nil,
+                  RemotePlaybackIdentityManager.shared.activeIdentity?.generationID == generation else { return }
+            // A launch whose player never registered gives the generation up.
+            if self.pendingPlayerHandoffGeneration == generation {
+                self.pendingPlayerHandoffGeneration = nil
+            }
+            // Through endIdentity, so a handoff arriving meanwhile waits for this end.
+            await self.endIdentity(generation).value
+            // Still active: a launch took the identity over, or the end failed.
+            guard RemotePlaybackIdentityManager.shared.activeIdentity?.generationID != generation,
                   self.activeConnectionId == connectionId,
-                  self.remoteLaunchReady,
-                  self.playerViewModel == nil else { return }
-            await RemotePlaybackIdentityManager.shared.end()
+                  self.pendingHandoffRequestId == nil else { return }
             self.remoteLaunchReady = false
-            self.pendingPlayerHandoffGeneration = nil
+            self.launchReadyGeneration = nil
             self.isAuthorized = false
-            self.refreshAdvertisement()
-            self.sendError(code: "launch_timeout", message: "No content was launched, so the temporary profile was restored.")
+            self.sendError(code: "launch_timeout", message: "Playback didn't start, so the TV restored its own profile.")
             self.closeActiveSession(sendClose: true)
         }
     }
@@ -619,6 +726,7 @@ final class TVControlReceiver {
             playerHandoffGeneration = nil
         }
         pendingPlayerHandoffGeneration = generation
+        launchReadyGeneration = nil
         router?.presentPlayer(
             contentId: playback.contentId,
             fileId: playback.fileId,
@@ -632,7 +740,16 @@ final class TVControlReceiver {
 
     private func handleControl(_ command: SiloControlCommand) {
         if command.name == .stop {
+            // A title still swapping in holds the identity for a player that
+            // now never registers; end it after the outgoing player's stop.
+            let orphaned = pendingPlayerHandoffGeneration
+            let outgoing = playerViewModel
+            pendingPlayerHandoffGeneration = nil
             stopRemotePlayback()
+            if let orphaned,
+               RemotePlaybackIdentityManager.shared.activeIdentity?.generationID == orphaned {
+                endIdentity(orphaned, after: outgoing)
+            }
             return
         }
 
@@ -670,6 +787,7 @@ final class TVControlReceiver {
         didReceiveHello = false
         negotiatedVersion = nil
         remoteLaunchReady = false
+        launchReadyGeneration = nil
         remoteControllerDeviceId = nil
         remoteControllerServerId = nil
         remoteControllerServerIdentity = nil
@@ -692,6 +810,7 @@ final class TVControlReceiver {
         didReceiveHello = false
         negotiatedVersion = nil
         remoteLaunchReady = false
+        launchReadyGeneration = nil
         remoteControllerDeviceId = nil
         remoteControllerServerId = nil
         remoteControllerServerIdentity = nil
@@ -743,6 +862,7 @@ final class TVControlReceiver {
 
     private func reconcileAuthorizationAfterRestore() {
         remoteLaunchReady = false
+        launchReadyGeneration = nil
         isAuthorized = RemotePlaybackIdentityManager.shared.controllerMatchesEffectiveServer(
             serverId: remoteControllerServerId,
             serverIdentity: remoteControllerServerIdentity
