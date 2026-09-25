@@ -31,6 +31,19 @@ final class CollectionsV2Tests: XCTestCase {
         return (APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false }), tokens, try XCTUnwrap(captured))
     }
 
+    /// Saves a refreshable session, then answers every request with 401 except
+    /// a token refresh, which would succeed, so only the transport's
+    /// retry-safety allowlist can stop a refresh and a second dispatch.
+    /// Returns the owner captured under the saved session.
+    private func expireSessionWithRefreshAvailable(_ tokens: TokenStore) async throws -> CapturedOrdinaryRequestAuth {
+        _ = await tokens.saveTokens(accessToken: "old-access", refreshToken: "old-refresh")
+        stub.reply(path: "/api/v2/auth/refresh", 200,
+                   #"{"access_token":"new-access","refresh_token":"new-refresh","expires_in":900}"#)
+        stub.reply(401, "{}")
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        return try XCTUnwrap(captured)
+    }
+
     private func page(_ items: String, hasMore: Bool, next: String? = nil) -> String {
         let page = next.map { #"{"has_more":\#(hasMore),"next_cursor":"\#($0)"}"# } ?? #"{"has_more":\#(hasMore)}"#
         return #"{"items":[\#(items)],"page":\#(page),"total":1,"total_exact":true,"window_cursor":"w"}"#
@@ -120,7 +133,34 @@ final class CollectionsV2Tests: XCTestCase {
         XCTAssertEqual(try jsonBody(sent).keys.sorted(), ["name"])
     }
 
+    func testCreate401IsNotRefreshedOrReplayed() async throws {
+        let (api, tokens, _) = try await client()
+        let auth = try await expireSessionWithRefreshAvailable(tokens)
+        do {
+            _ = try await api.createCollection(name: "Saved", auth: auth)
+            XCTFail("the 401 is the answer")
+        } catch {}
+        XCTAssertEqual(stub.requestedPaths, ["/api/v2/collections"], "no token refresh and no second dispatch")
+        let accessToken = await tokens.getAccessToken()
+        XCTAssertEqual(accessToken, "old-access")
+    }
+
     // MARK: Editors
+
+    func testEdit401IsNotRefreshedOrReplayed() async throws {
+        let (api, tokens, _) = try await client()
+        let auth = try await expireSessionWithRefreshAvailable(tokens)
+        stub.sequence([.json(200, collection, headers: ["ETag": #""observed""#])])
+        let editor = try await api.collectionEditor(id: "c1", auth: auth)
+        do {
+            _ = try await api.moveCollection(editor.version, toGroupId: nil)
+            XCTFail("the 401 is the answer")
+        } catch {}
+        XCTAssertEqual(stub.requests.dropFirst().map { "\($0.method) \($0.path)" }, ["PATCH /api/v2/collections/c1"],
+                       "no token refresh and no second dispatch")
+        let accessToken = await tokens.getAccessToken()
+        XCTAssertEqual(accessToken, "old-access")
+    }
 
     func testMoveUsesObservedETagAndExplicitNull() async throws {
         stub.reply(200, collection, headers: ["ETag": #""observed""#])

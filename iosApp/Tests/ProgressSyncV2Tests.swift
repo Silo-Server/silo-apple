@@ -158,16 +158,14 @@ final class ProgressSyncV2Tests: XCTestCase {
         }
     }
 
-    /// An expired session whose refresh fails surfaces the original 401. The
-    /// server wrote nothing, so the batch goes back to pending for the flush
-    /// after re-authentication instead of being dropped.
-    func testExpiredSessionWithFailedRefreshLeavesTheBatchPending() async throws {
+    /// `non_retryable`: a 401 is neither refreshed nor replayed, even with a
+    /// refresh token on hand. The server wrote nothing, so the batch goes back
+    /// to pending for the flush after re-authentication instead of being
+    /// dropped.
+    func testSyncProgress401IsNotRefreshedOrReplayedAndLeavesTheBatchPending() async throws {
         let (api, tokens) = try await client()
         await tokens.saveTokens(accessToken: "expired-access", refreshToken: "revoked-refresh")
-        stub.sequence([
-            .json(401, problem(401, "unauthorized")),
-            .json(401, problem(401, "invalid_refresh_token")),
-        ])
+        stub.sequence([.json(401, problem(401, "unauthorized"))])
         var queue = queued(["movie-1", "episode-2"])
         let batch = OfflineProgressQueue.nextBatch(queue)
         OfflineProgressQueue.claim(&queue, ids: Set(batch.map(\.id)))
@@ -176,8 +174,8 @@ final class ProgressSyncV2Tests: XCTestCase {
         OfflineProgressQueue.resolve(&queue, batch: batch, outcome: outcome)
 
         guard case .deferred = outcome else { return XCTFail("expected deferred, got \(outcome)") }
-        XCTAssertEqual(stub.requests.map(\.path), ["/api/v2/sync/progress", "/api/v2/auth/refresh"],
-            "the batch is sent once and never replayed")
+        XCTAssertEqual(stub.requests.map(\.path), ["/api/v2/sync/progress"],
+            "the batch is sent once, with no token refresh and no replay")
         XCTAssertEqual(OfflineProgressQueue.nextBatch(queue).map(\.id), batch.map(\.id))
         XCTAssertTrue(OfflineProgressQueue.held(queue, inFlight: []).isEmpty)
     }
