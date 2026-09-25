@@ -103,9 +103,32 @@ So the target for TrueHD is not "TrueHD passthrough". It is:
 - preserve the 5.1/7.1 bed as PCM
 - let Apple TV output multichannel LPCM
 
-TrueHD Atmos object metadata is out of scope for this target. Atmos may only be
-claimed when the source is already Apple-compatible E-AC-3/JOC and that track is
-preserved end to end.
+TrueHD Atmos object metadata is out of scope for this lossless target. Atmos may
+only be claimed when the source is already Apple-compatible E-AC-3/JOC and that
+track is preserved end to end, or when the TrueHD Atmos object path (3.3) is
+engaged and validated.
+
+### 3.3 TrueHD Atmos object path
+
+The Playback setting "TrueHD Atmos" (device-local, default On) selects Aether's
+`LoadOptions.objectAudioRendering = .apac(.l714)` when the Apple TV's output
+reports Dolby Atmos (`AVAudioSession.renderingMode == .dolbyAtmos`) or does not
+report a mode. An output reporting stereo, multichannel PCM or Dolby Digital
+keeps the lossless channel path, since there the heights would only be folded
+back into channels. For a TrueHD track FFmpeg marks as Atmos, Aether then:
+
+- decodes the TrueHD object presentation (beds, objects, object positions)
+- renders it into a 7.1.4 bed; the receiver or soundbar re-renders the Dolby
+  Atmos it receives onto its own speakers, so one bed serves every system
+- encodes the bed as Apple Positional Audio (APAC), `CODECS="apac.31.LL"`
+- lets tvOS decode APAC and send it to the receiver as Dolby MAT
+
+This keeps heights and object motion, but the audio is lossy (about 320 kbps per
+bed channel) instead of lossless 7.1, and the object-to-speaker rendering happens
+once in the app into 7.1.4 before the receiver maps it onto its speakers. The
+receiver should show Dolby Atmos (MAT or PCM + Atmos), never TrueHD. A TrueHD
+track without Atmos, an older OS, or a start-up failure keeps the lossless
+channel path above.
 
 ## 4. Product contract
 
@@ -136,10 +159,11 @@ The route may claim Dolby Vision only when:
 
 The route may claim Atmos only when:
 
-- selected source audio is E-AC-3/JOC
-- the output path preserves E-AC-3/JOC by copy or another validated
-  Apple-native Atmos path
-- an AVR/soundbar validation run confirms the Atmos indicator
+- selected source audio is E-AC-3/JOC and the output path preserves
+  E-AC-3/JOC by copy or another validated Apple-native Atmos path, or
+- selected source audio is TrueHD Atmos, the object path (3.3) is engaged
+  (pipeline label `TRUEHD Atmos → APAC 7.1.4`), and
+- in either case, an AVR/soundbar validation run confirms the Atmos indicator
 
 The route must not claim Atmos for TrueHD-derived PCM output.
 

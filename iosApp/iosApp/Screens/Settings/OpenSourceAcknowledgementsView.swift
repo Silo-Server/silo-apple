@@ -20,6 +20,7 @@ enum OpenSourceAcknowledgements {
         Resource(title: "libzvbi ure.c — MIT", name: "libzvbi-ure-MIT"),
         Resource(title: "LibDovi packaging — MIT", name: "LibDovi-Packaging-MIT"),
         Resource(title: "libdovi — MIT", name: "libdovi-MIT"),
+        Resource(title: "SiloObjectAudio and truehd — Apache 2.0", name: "SiloObjectAudio-Apache-2.0"),
         Resource(title: "Nuke and NukeUI — MIT", name: "Nuke-MIT"),
         Resource(title: "SwiftAssRenderer — MIT", name: "SwiftAssRenderer-MIT"),
         Resource(title: "SwiftLibass — MIT", name: "SwiftLibass-MIT"),

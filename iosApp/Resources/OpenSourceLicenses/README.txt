@@ -6,12 +6,13 @@ texts are bundled beside this file and are available from Settings > About >
 Open Source Licenses.
 
 AetherEngine
-  Revision: ec969b734548d09f8324dc18645050cdc94d3018 (upstream release
+  Revision: 9f5639cebe065f440d5a8d0495e1c90bb3b696f7 (upstream release
   7.13.0 plus Silo patches for subtitle renditions,
   source timing, primary ASS routing with normalized secondary/PiP text,
-  and refreshable authorization for native HLS, sidecar subtitles and fonts)
+  refreshable authorization for native HLS, sidecar subtitles and fonts,
+  and TrueHD Atmos object rendering to Apple Positional Audio)
   License: GNU LGPL version 3 with the upstream Apple Store / DRM exception
-  Source (modified, as built): https://github.com/Silo-Server/AetherEngine/tree/ec969b734548d09f8324dc18645050cdc94d3018
+  Source (modified, as built): https://github.com/Silo-Server/AetherEngine/tree/9f5639cebe065f440d5a8d0495e1c90bb3b696f7
   Upstream base: https://github.com/superuser404notfound/AetherEngine/tree/7.13.0
   Rebuild: the Package.swift and source tree at that revision
 
@@ -43,6 +44,14 @@ FFmpegBuild and embedded media frameworks
   FFmpegBuild's script records tag names rather than immutable upstream
   commit IDs; the dereferenced commits recorded here pin the exact sources if
   those tags ever move.
+
+SiloObjectAudio / truehd
+  Revision: 645b91c072fafb60146151fd5127f8ff0ca38b6f (release 1.0.0)
+  License: Apache License 2.0 (SiloObjectAudio-Apache-2.0.txt, with its NOTICE)
+  Source and rebuild script: https://github.com/Silo-Server/SiloObjectAudio/tree/645b91c072fafb60146151fd5127f8ff0ca38b6f
+  Embeds the truehd and oamd crates from https://github.com/truehdd/truehdd
+  (Apache-2.0), commit 45eff984e3e5ab0cf36a47d12148b1628c38bda4, and the Rust
+  standard library and crates listed in its NOTICE (MIT or Apache-2.0).
 
 LibDovi / libdovi
   Packaging revision: 0d7cce1d6836a30d13a3a2326e50a153af53f014

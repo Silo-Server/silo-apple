@@ -60,6 +60,8 @@ final class SettingsViewModel {
     /// Local, for the same reason as ``deinterlaceMode``.
     var deinterlaceFieldRate: DeinterlaceFieldRatePreference =
         PlayerSettings.shared.deinterlaceFieldRate
+    /// Local — what this device plays into is a fact about its room.
+    var trueHDAtmosEnabled: Bool = PlayerSettings.shared.trueHDAtmosEnabled
 
     // Subtitle styling (local — applies to renderer overrides, not the
     // language/behavior selection that lives server-side).
@@ -150,6 +152,7 @@ final class SettingsViewModel {
         bufferAhead = PlayerSettings.shared.bufferAhead
         deinterlaceMode = PlayerSettings.shared.deinterlaceMode
         deinterlaceFieldRate = PlayerSettings.shared.deinterlaceFieldRate
+        trueHDAtmosEnabled = PlayerSettings.shared.trueHDAtmosEnabled
         subtitleAppearance = PlayerSettings.shared.subtitleAppearance
         subtitleUsesDeviceAppearanceOverride = PlayerSettings.shared.subtitleUsesDeviceAppearanceOverride
         subtitleMatchesSystemAppearance = PlayerSettings.shared.subtitleMatchesSystemAppearance
@@ -262,6 +265,12 @@ final class SettingsViewModel {
         deinterlaceFieldRate = PlayerSettings.shared.deinterlaceFieldRate
     }
 
+    @MainActor
+    func setTrueHDAtmosEnabled(_ enabled: Bool) async {
+        PlayerSettings.shared.setTrueHDAtmosEnabled(enabled)
+        trueHDAtmosEnabled = PlayerSettings.shared.trueHDAtmosEnabled
+    }
+
     // MARK: Held and refused playback changes
 
     /// A device playback change ran out of automatic retries and is held on
@@ -337,6 +346,7 @@ final class SettingsViewModel {
         bufferAhead = PlayerSettings.shared.bufferAhead
         deinterlaceMode = PlayerSettings.shared.deinterlaceMode
         deinterlaceFieldRate = PlayerSettings.shared.deinterlaceFieldRate
+        trueHDAtmosEnabled = PlayerSettings.shared.trueHDAtmosEnabled
         subtitleAppearance = PlayerSettings.shared.subtitleAppearance
         subtitleUsesDeviceAppearanceOverride = PlayerSettings.shared.subtitleUsesDeviceAppearanceOverride
     }

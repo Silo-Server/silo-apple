@@ -15,6 +15,25 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         let streams: [LiveStreamFixture]
     }
 
+    func testTrueHDAtmosRendersOnlyWhenAskedAndTheOutputCanCarryIt() {
+        XCTAssertEqual(AetherObjectAudioPolicy.rendering(enabled: true, output: .atmos), .apac(.l714))
+        XCTAssertEqual(AetherObjectAudioPolicy.rendering(enabled: true, output: .unknown), .apac(.l714),
+                       "an unreported output keeps the setting the user asked for")
+        XCTAssertEqual(AetherObjectAudioPolicy.rendering(enabled: true, output: .channelsOnly), .off,
+                       "without Atmos downstream the lossless 7.1 bridge is the better stream")
+        XCTAssertEqual(AetherObjectAudioPolicy.rendering(enabled: false, output: .atmos), .off)
+    }
+
+    #if os(tvOS)
+    func testAppleTVOutputModesMapToAtmosCapability() {
+        XCTAssertEqual(AetherObjectAudioPolicy.currentOutput(.dolbyAtmos), .atmos)
+        XCTAssertEqual(AetherObjectAudioPolicy.currentOutput(.surround), .channelsOnly)
+        XCTAssertEqual(AetherObjectAudioPolicy.currentOutput(.dolbyAudio), .channelsOnly)
+        XCTAssertEqual(AetherObjectAudioPolicy.currentOutput(.monoStereo), .channelsOnly)
+        XCTAssertEqual(AetherObjectAudioPolicy.currentOutput(.notApplicable), .unknown)
+    }
+    #endif
+
     func testExplicitV3AudioSelectionOverridesProfileLanguageForInitialLoad() {
         let languages = AetherInitialAudioPreference.languages(
             selectedOrdinal: 0,
