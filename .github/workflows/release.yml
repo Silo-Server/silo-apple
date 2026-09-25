@@ -38,7 +38,17 @@ env:
   TESTFLIGHT_NOTIFY_EXTERNAL_TESTERS: "true"
 
 jobs:
+  # Run the full Apple regression suite on this commit first. Nothing with side
+  # effects (source release, build-number reservation, uploads) runs until it passes.
+  tests:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/player-regression.yml
+    with:
+      release_gate: true
+
   source:
+    needs: tests
     permissions:
       contents: write
     uses: ./.github/workflows/release-source.yml
@@ -70,7 +80,7 @@ jobs:
   # parallel with no build-number race. Query-only, so it runs on Linux with just
   # the ASC API key (no signing/match/team secrets).
   build-numbers:
-    needs: setup
+    needs: [setup, tests]
     runs-on: ubuntu-latest
     outputs:
       ios_build: ${{ steps.bn.outputs.ios_build }}
@@ -91,10 +101,10 @@ jobs:
           BUILD_NUMBERS_FILE="$GITHUB_OUTPUT" bundle exec fastlane ios reserve_build_numbers
 
   ios:
-    needs: [setup, build-numbers, source]
+    needs: [tests, setup, build-numbers, source]
     # Skip only when the selection is tvOS-only. 'both' and 'ios' both run iOS.
     # No status function in the if -> implicit success() gate on needs, so a
-    # failed build-numbers job skips this build.
+    # failed tests or build-numbers job skips this build.
     if: ${{ needs.setup.outputs.platform != 'tvos' }}
     runs-on: macos-15
     steps:
@@ -153,7 +163,7 @@ jobs:
     # parallel with iOS rather than after it. (Trade-off: on a both run, tvOS now
     # releases even if iOS fails; the platforms' build-number sequences are
     # independent, so a gap is harmless.)
-    needs: [setup, build-numbers, source]
+    needs: [tests, setup, build-numbers, source]
     # Skip only when the selection is iOS-only. Implicit success() gate on needs.
     if: ${{ needs.setup.outputs.platform != 'ios' }}
     runs-on: macos-15
