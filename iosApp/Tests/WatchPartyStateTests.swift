@@ -133,6 +133,28 @@ final class WatchPartyStateTests: XCTestCase {
             sourceTime: 100, isHost: false), "An unapplied command cannot satisfy readiness")
     }
 
+    func testStallsReachTheRoomOnlyAfterTheGraceAndRestartAfterASeek() {
+        var stall = WatchPartyStallTimer()
+        XCTAssertFalse(stall.observe(buffering: true, at: now))
+        XCTAssertFalse(stall.observe(buffering: true, at: now.addingTimeInterval(1.9)),
+            "A stall under two seconds stays local")
+        XCTAssertTrue(stall.observe(buffering: true, at: now.addingTimeInterval(2)))
+        XCTAssertFalse(stall.observe(buffering: true, at: now.addingTimeInterval(5)), "A stall is reported once")
+        XCTAssertFalse(stall.observe(buffering: false, at: now.addingTimeInterval(6)))
+        XCTAssertFalse(stall.observe(buffering: true, at: now.addingTimeInterval(7)))
+        XCTAssertTrue(stall.observe(buffering: true, at: now.addingTimeInterval(9)), "A new stall is reported again")
+
+        // A stall first seen before a seek must not count toward the rebuffer
+        // that follows the seek.
+        var seek = WatchPartyStallTimer()
+        XCTAssertFalse(seek.observe(buffering: true, at: now))
+        seek.interrupt()
+        XCTAssertFalse(seek.observe(buffering: true, at: now.addingTimeInterval(1.5)))
+        XCTAssertFalse(seek.observe(buffering: true, at: now.addingTimeInterval(3)),
+            "The grace restarts when the seek settles")
+        XCTAssertTrue(seek.observe(buffering: true, at: now.addingTimeInterval(3.5)))
+    }
+
     func testOutboundPingPreservesFractionalTimeForClockSynchronization() throws {
         let sentAt = now.addingTimeInterval(0.875)
         let wire = try WatchPartyClientMessage(type: "ping", clientSentAt: sentAt).encoded()

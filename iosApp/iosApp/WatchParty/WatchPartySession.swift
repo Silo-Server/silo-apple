@@ -72,13 +72,7 @@ final class WatchPartySession {
     @ObservationIgnored private var lastReport: Date = .distantPast
     @ObservationIgnored private var lastPing: Date = .distantPast
     @ObservationIgnored private var lastReady: Date = .distantPast
-    /// Stalls shorter than this stay local, as on the web client: the room
-    /// pauses only for a stall that outlasts the catch-up band, and a short
-    /// rebuffer after a correction seek is not a stall. See the server's
-    /// Watch Party buffering policy.
-    static let bufferingGrace: TimeInterval = 2
-    @ObservationIgnored private var bufferBegan: Date?
-    @ObservationIgnored private var reportedBuffering = false
+    @ObservationIgnored private var stall = WatchPartyStallTimer()
     @ObservationIgnored private var serverOffset: TimeInterval = 0
     /// Local receipt time of the current room snapshot. Its anchor position is
     /// already projected to the server's build time, so only this age remains.
@@ -411,8 +405,7 @@ final class WatchPartySession {
                 self.socket = socket
                 self.attachmentConfirmed = false
                 self.issuedAttachSession = nil
-                self.bufferBegan = nil
-                self.reportedBuffering = false
+                self.stall.reset()
                 self.commandTask?.cancel()
                 self.commandTask = nil
                 self.applyingCommand = nil
@@ -550,8 +543,7 @@ final class WatchPartySession {
             commands = WatchPartyCommandState()
             attachmentConfirmed = false
             issuedAttachSession = nil
-            bufferBegan = nil
-            reportedBuffering = false
+            stall.reset()
             adapter?.stop()
             adapter = nil
             playbackContext = Self.playbackContext(for: incoming)
@@ -590,8 +582,7 @@ final class WatchPartySession {
             guard let self, self.adapter === adapter else { return }
             self.attachmentConfirmed = false
             self.issuedAttachSession = nil
-            self.bufferBegan = nil
-            self.reportedBuffering = false
+            self.stall.reset()
             self.lastAttach = .distantPast
         }
         adapter.onResyncRequired = { [weak self, weak adapter] in
@@ -726,22 +717,14 @@ final class WatchPartySession {
             guard !snapshot.isSeeking, commands.pending == nil,
                   now.timeIntervalSince(lastCommandCompleted) >= 0.25,
                   snapshot.fileId == playbackContext?.fileId else {
-                // A stall timed before a seek or command is not the stall
-                // that follows it; the grace restarts once they settle.
-                bufferBegan = nil
+                stall.interrupt()
                 return
             }
-            if snapshot.isBuffering {
-                if bufferBegan == nil { bufferBegan = now }
-                if !reportedBuffering, now.timeIntervalSince(bufferBegan!) >= Self.bufferingGrace {
-                    reportedBuffering = true
-                    try await socket.send(WatchPartyClientMessage(type: "buffering", sessionId: session,
-                        positionSeconds: snapshot.sourceTime, isPaused: !snapshot.isPlaying))
-                }
-                return
+            if stall.observe(buffering: snapshot.isBuffering, at: now) {
+                try await socket.send(WatchPartyClientMessage(type: "buffering", sessionId: session,
+                    positionSeconds: snapshot.sourceTime, isPaused: !snapshot.isPlaying))
             }
-            bufferBegan = nil
-            reportedBuffering = false
+            if snapshot.isBuffering { return }
             guard snapshot.isReady else { return }
             let completed = commands.completed
             let ready = WatchPartyCommandState.canAcknowledge(completed, roomPlaybackState: room.playbackState,
