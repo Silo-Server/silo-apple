@@ -85,6 +85,15 @@ struct TVPlaybackSettingsPane: View {
             Task { await viewModel.setLosslessAudioEnabled(value) }
         }
 
+        TVSettingsToggleRow(
+            title: "TrueHD Atmos",
+            isOn: viewModel.trueHDAtmosEnabled
+        ) {
+            let value = !viewModel.trueHDAtmosEnabled
+            viewModel.trueHDAtmosEnabled = value
+            Task { await viewModel.setTrueHDAtmosEnabled(value) }
+        }
+
         TVSettingsPickerRow(
             title: "Deinterlacing",
             value: viewModel.deinterlaceMode.label
@@ -111,6 +120,7 @@ struct TVPlaybackSettingsPane: View {
         text += " Seek Cache keeps recently streamed video in temporary storage during playback so skipping forward and back is instant."
         text += " Buffer Ahead controls how much video is downloaded ahead of the playhead; longer windows ride out network dropouts, and Unlimited buffers as much as fits in temporary storage, which is cleared when playback ends."
         text += " Lossless Multichannel Audio delivers TrueHD and DTS-HD audio as lossless multichannel PCM, and needs a receiver or soundbar that accepts multichannel PCM over eARC. If surround plays as stereo, turn it off to use a surround-compatible Dolby Digital Plus bridge instead."
+        text += " TrueHD Atmos keeps the height channels and moving sounds of TrueHD Atmos tracks when this Apple TV is connected to a Dolby Atmos receiver or soundbar: Silo renders the Atmos mix and the Apple TV sends it as Dolby Atmos. That stream is compressed rather than lossless; with it off, or on a system without Atmos, these tracks play as lossless 7.1 without heights."
         text += " Deinterlacing applies to interlaced sources such as DVDs and broadcast recordings; Automatic uses this Apple TV's hardware deinterlacer and falls back to software, while Software always deinterlaces on the CPU. Field Rate applies to the hardware deinterlacer only: Full Motion doubles the frame rate (50/60 fps), and Film keeps one frame per field pair."
         return text
     }

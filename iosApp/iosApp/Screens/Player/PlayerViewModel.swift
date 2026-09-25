@@ -2895,6 +2895,19 @@ class PlayerViewModel {
         let audioBridgeMode: AudioBridgeMode = settings.losslessAudioEnabled
             ? .lossless
             : .surroundCompat
+        // TrueHD Atmos keeps its heights when the setting is on and, on Apple TV, the output reports
+        // Atmos; Aether applies it to Atmos TrueHD alone and keeps `audioBridgeMode` for the rest.
+        #if os(tvOS)
+        let atmosOutput = AetherObjectAudioPolicy.currentOutput()
+        #else
+        let atmosOutput = AetherObjectAudioPolicy.Output.unknown
+        #endif
+        let trueHDAtmosEnabled = settings.trueHDAtmosEnabled
+        let objectAudioRendering = AetherObjectAudioPolicy.rendering(
+            enabled: trueHDAtmosEnabled, output: atmosOutput)
+        Self.logger.info(
+            "TrueHD Atmos: setting=\(trueHDAtmosEnabled, privacy: .public) output=\(String(describing: atmosOutput), privacy: .public) rendering=\(String(describing: objectAudioRendering), privacy: .public)"
+        )
         let deinterlaceMode: DeinterlaceMode = settings.deinterlaceMode == .software
             ? .software
             : .auto
@@ -2989,6 +3002,7 @@ class PlayerViewModel {
                 preferredAudioLanguages: preferredAudio,
                 forwardBufferSegments: forwardBufferSegments,
                 audioBridgeMode: audioBridgeMode,
+                objectAudioRendering: objectAudioRendering,
                 deinterlaceMode: deinterlaceMode,
                 deinterlaceFieldRate: deinterlaceFieldRate,
                 resumeSourcePosition: resumeSourcePosition
@@ -3018,6 +3032,7 @@ class PlayerViewModel {
                 preferredSubtitleLanguages: preferredSubtitles,
                 forwardBufferSegments: forwardBufferSegments,
                 audioBridgeMode: audioBridgeMode,
+                objectAudioRendering: objectAudioRendering,
                 deinterlaceMode: deinterlaceMode,
                 deinterlaceFieldRate: deinterlaceFieldRate
             )
@@ -3032,6 +3047,7 @@ class PlayerViewModel {
                 preferredSubtitleLanguages: preferredSubtitles,
                 forwardBufferSegments: forwardBufferSegments,
                 audioBridgeMode: audioBridgeMode,
+                objectAudioRendering: objectAudioRendering,
                 deinterlaceMode: deinterlaceMode,
                 deinterlaceFieldRate: deinterlaceFieldRate
             )

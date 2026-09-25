@@ -15,8 +15,9 @@ The authoritative dependency lock is
 
 | Component | Exact revision | Shipped form | License |
 | --- | --- | --- | --- |
-| AetherEngine 7.13.0 + Silo subtitle and HLS authorization patches | `ec969b734548d09f8324dc18645050cdc94d3018` | Swift package target linked into each host app | LGPL-3.0-only with AetherEngine's Apple Store / DRM exception |
+| AetherEngine 7.13.0 + Silo subtitle, HLS authorization and TrueHD Atmos patches | `d903760fcc94604c3fed171a0a6b866f6a0b84f6` | Swift package target linked into each host app | LGPL-3.0-only with AetherEngine's Apple Store / DRM exception |
 | FFmpegBuild 3.4.0 | `9ee46ba4fb533e35efa6492eb1a903ca4f8058fc` | Nine separately embedded dynamic frameworks | See the component table below |
+| SiloObjectAudio 1.0.0 | `645b91c072fafb60146151fd5127f8ff0ca38b6f` | Static `SiloObjectAudio.xcframework` linked through AetherEngine | Apache-2.0; embedded `truehd` and `oamd` crates are Apache-2.0 |
 | LibDovi 2.1.0 | `0d7cce1d6836a30d13a3a2326e50a153af53f014` | Static `Dovi.xcframework` linked through AetherEngine | MIT packaging; embedded libdovi is MIT |
 | Nuke and NukeUI 13.2.0 | `30f7a7e72e0607d304fbf69c799474bd5fb6d1ce` | Swift package targets linked into each host app | MIT |
 
@@ -34,7 +35,8 @@ AetherEngine is licensed under GNU LGPL version 3 with its upstream Apple
 Store / DRM exception. Silo builds a published fork revision: upstream release
 `7.13.0` plus Silo patches for complete native subtitle renditions, source
 timing after a media reanchor, ASS subtitle routing, and refreshable authorization
-for native HLS, sidecar subtitles and font bundles. Raw ASS events stay on the
+for native HLS, sidecar subtitles and font bundles, and TrueHD Atmos object
+rendering to Apple Positional Audio. Raw ASS events stay on the
 primary local overlay; secondary subtitles and software PiP receive normalized
 text, and packaged HLS retains
 its native text rendition for PiP and AirPlay. These modifications are
@@ -42,8 +44,9 @@ published under the LGPL at the exact source revision below. The bundled
 acknowledgements include AetherEngine's complete license and exception plus
 the GNU GPL version 3 text incorporated by LGPLv3.
 
-- Exact source: <https://github.com/Silo-Server/AetherEngine/tree/ec969b734548d09f8324dc18645050cdc94d3018>
-  (engine pull request: <https://github.com/Silo-Server/AetherEngine/pull/2>)
+- Exact source: <https://github.com/Silo-Server/AetherEngine/tree/d903760fcc94604c3fed171a0a6b866f6a0b84f6>
+  (engine pull requests: <https://github.com/Silo-Server/AetherEngine/pull/2>,
+  <https://github.com/Silo-Server/AetherEngine/pull/6>)
 - Upstream base: <https://github.com/superuser404notfound/AetherEngine/tree/7.13.0>
 - Rebuild input: `Package.swift` and the source tree at that revision
 - Bundled texts: `AetherEngine-LGPL-3.0-App-Store-Exception.txt`,
@@ -138,6 +141,22 @@ embedded crate.
 - Exact embedded crate source:
   <https://github.com/quietvoid/dovi_tool/tree/d1abe0e27ff2c7ab3339614d06db9f8a058af6b2/dolby_vision>
 - Bundled texts: `LibDovi-Packaging-MIT.txt`, `libdovi-MIT.txt`
+
+## SiloObjectAudio and truehd
+
+SiloObjectAudio is Silo's object-audio decoder library, licensed under the Apache License
+2.0. Its static `SiloObjectAudio.xcframework` contains the `truehd` crate (TrueHD/MLP
+decoder) and the `oamd` crate (object audio metadata) from the truehdd project,
+Copyright Rainbaby and the truehdd contributors, under the Apache License 2.0, at
+the exact commit `45eff984e3e5ab0cf36a47d12148b1628c38bda4`. It also compiles in
+the Rust standard library and the crates its NOTICE lists, each under the MIT
+license or the Apache License 2.0. The bundled text reproduces the NOTICE and the
+Apache License.
+
+- Exact source and rebuild script:
+  <https://github.com/Silo-Server/SiloObjectAudio/tree/645b91c072fafb60146151fd5127f8ff0ca38b6f>
+- Embedded decoder source: <https://github.com/truehdd/truehdd/tree/45eff984e3e5ab0cf36a47d12148b1628c38bda4>
+- Bundled text: `SiloObjectAudio-Apache-2.0.txt`
 
 ## Nuke and NukeUI
 

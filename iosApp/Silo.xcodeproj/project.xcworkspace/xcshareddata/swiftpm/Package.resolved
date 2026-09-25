@@ -6,7 +6,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/Silo-Server/AetherEngine",
       "state" : {
-        "revision" : "ec969b734548d09f8324dc18645050cdc94d3018"
+        "revision" : "d903760fcc94604c3fed171a0a6b866f6a0b84f6"
       }
     },
     {
@@ -43,6 +43,15 @@
       "state" : {
         "revision" : "30f7a7e72e0607d304fbf69c799474bd5fb6d1ce",
         "version" : "13.2.0"
+      }
+    },
+    {
+      "identity" : "siloobjectaudio",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Silo-Server/SiloObjectAudio",
+      "state" : {
+        "revision" : "645b91c072fafb60146151fd5127f8ff0ca38b6f",
+        "version" : "1.0.0"
       }
     },
     {

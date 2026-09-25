@@ -137,6 +137,16 @@ struct PlaybackSettingsView: View {
             .foregroundStyle(Color.siloOnSurface)
             .tint(.siloAccent)
 
+            Toggle("TrueHD Atmos", isOn: Binding(
+                get: { viewModel.trueHDAtmosEnabled },
+                set: { enabled in
+                    viewModel.trueHDAtmosEnabled = enabled
+                    Task { await viewModel.setTrueHDAtmosEnabled(enabled) }
+                }
+            ))
+            .foregroundStyle(Color.siloOnSurface)
+            .tint(.siloAccent)
+
             Picker("Deinterlacing", selection: Binding(
                 get: { viewModel.deinterlaceMode },
                 set: { newValue in
@@ -208,6 +218,7 @@ struct PlaybackSettingsView: View {
         text += " Seek Cache keeps recently streamed video in temporary storage during playback so skipping forward and back is instant; it is cleared when playback ends."
         text += " Buffer Ahead controls how much video is downloaded ahead of the playhead; longer windows ride out network dropouts, and Unlimited buffers as much as fits in temporary storage, which is cleared when playback ends."
         text += " Lossless Multichannel Audio delivers TrueHD and DTS-HD audio as lossless multichannel PCM, and needs a receiver or soundbar that accepts multichannel PCM over eARC. If surround plays as stereo, turn it off to use a surround-compatible Dolby Digital Plus bridge instead."
+        text += " TrueHD Atmos keeps the height channels and moving sounds of TrueHD Atmos tracks: Silo renders the Atmos mix so AirPods and the built-in speakers play it as Spatial Audio. That stream is compressed rather than lossless; turn it off to play these tracks as lossless 7.1 without heights."
         text += " Deinterlacing applies to interlaced sources such as DVDs and broadcast recordings; Automatic uses this device's hardware deinterlacer and falls back to software, while Software always deinterlaces on the CPU. Field Rate applies to the hardware deinterlacer only: Full Motion doubles the frame rate (50/60 fps), and Film keeps one frame per field pair."
         #if os(iOS)
         text += " Background Playback continues audio when the app moves to the background, including Picture in Picture; turning it off stops playback when you leave the app. Audiobooks always keep playing in the background."
