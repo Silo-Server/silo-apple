@@ -32,6 +32,8 @@ struct TVItemDetailView: View {
     /// after the player closes, including when the row holds focus.
     @State private var seriesEpisodeSelectionRequest = 0
     @State private var isPageVisible = false
+    /// Set when this page starts playback, so it only acts on its own return.
+    @State private var awaitsPlaybackReturn = false
     @State private var isLoadingNextUpPlaybackDetail = false
     @State private var didLoadNextUpPlaybackDetail = false
     @State private var carouselLoadFailed = false
@@ -137,8 +139,6 @@ struct TVItemDetailView: View {
             nextUpPlaybackDetail = nil
             if !isReturning {
                 activeSeriesEpisodeContentId = entryContext?.episodeContentId
-                // A player closed before this visit belongs to another page.
-                _ = SeriesPlaybackReturnInbox.take(seriesContentId: contentId)
             }
             isLoadingNextUpPlaybackDetail = false
             didLoadNextUpPlaybackDetail = false
@@ -147,11 +147,11 @@ struct TVItemDetailView: View {
                     seasonNumber, seriesId: contentId
                 )
             } else {
-                if isReturning,
-                   let playback = SeriesPlaybackReturnInbox.take(seriesContentId: contentId) {
+                if isReturning, let playback = takePlaybackReturn() {
                     await applySeriesPlaybackReturn(playback)
                 }
                 viewModel.initialResumeSeasonNumber = viewModel.selectedSeason?.seasonNumber
+                    ?? viewModel.initialResumeSeasonNumber
             }
             hasStartedDetailLoad = true
             await viewModel.loadDetail(contentId: contentId)
@@ -160,8 +160,7 @@ struct TVItemDetailView: View {
         .onReceive(NotificationCenter.default.publisher(for: .seriesPlaybackDidReturn)) { _ in
             // The player can finish tearing down after this page reappears.
             // While the page is hidden, its reappearing task applies the return.
-            guard hasStartedDetailLoad, isPageVisible,
-                  let playback = SeriesPlaybackReturnInbox.take(seriesContentId: contentId) else { return }
+            guard hasStartedDetailLoad, isPageVisible, let playback = takePlaybackReturn() else { return }
             Task { await applySeriesPlaybackReturn(playback) }
         }
     }
@@ -172,6 +171,13 @@ struct TVItemDetailView: View {
     private var preferredVersionFileId: Int? {
         get { viewModel.preferredVersionFileId }
         nonmutating set { viewModel.preferredVersionFileId = newValue }
+    }
+
+    private func takePlaybackReturn() -> SeriesPlaybackReturn? {
+        guard awaitsPlaybackReturn,
+              let playback = SeriesPlaybackReturnInbox.take(seriesContentId: contentId) else { return nil }
+        awaitsPlaybackReturn = false
+        return playback
     }
 
     /// Land on the episode after a finished one, or on the same episode after
@@ -324,6 +330,7 @@ struct TVItemDetailView: View {
                     activeSeriesEpisodeContentId = id
                 },
                 onPlayEpisode: { id, fileId, startFromBeginning in
+                    awaitsPlaybackReturn = true
                     let episode = viewModel.seriesEpisodeWindow.episodes.first(where: { $0.contentId == id })
                     let resumePosition = startFromBeginning
                         ? nil

@@ -295,6 +295,8 @@ private struct ItemDetailPhoneContent: View {
     @State private var selectedSeriesEpisodeId: String?
     @State private var hasStartedDetailLoad = false
     @State private var isPageVisible = false
+    /// Set when this page starts playback, so it only acts on its own return.
+    @State private var awaitsPlaybackReturn = false
     @State private var refreshOnPlayerDismiss = false
     @State private var offlinePlayChoice: OfflinePlayChoice?
     @State private var unreachablePlayRequest: UnreachablePlayRequest?
@@ -341,15 +343,14 @@ private struct ItemDetailPhoneContent: View {
             nextUpWatchDetail = nil
             isLoadingNextUpWatchDetail = false
             if isReturning {
-                if let playback = SeriesPlaybackReturnInbox.take(seriesContentId: contentId) {
+                if let playback = takePlaybackReturn() {
                     await applySeriesPlaybackReturn(playback)
                 }
                 viewModel.initialResumeSeasonNumber = viewModel.selectedSeason?.seasonNumber
+                    ?? viewModel.initialResumeSeasonNumber
             } else {
                 selectedSeriesEpisodeId = resumeContext?.episodeContentId
                 viewModel.initialResumeSeasonNumber = resumeContext?.seasonNumber
-                // A player closed before this visit belongs to another page.
-                _ = SeriesPlaybackReturnInbox.take(seriesContentId: contentId)
             }
             refreshOnPlayerDismiss = false
             detailScrollState.reset()
@@ -379,6 +380,7 @@ private struct ItemDetailPhoneContent: View {
             refreshOnPlayerDismiss = false
             Task {
                 viewModel.initialResumeSeasonNumber = viewModel.selectedSeason?.seasonNumber
+                    ?? viewModel.initialResumeSeasonNumber
                 await viewModel.loadDetail(contentId: contentId)
                 // A track picked inside the player persisted server-side;
                 // drop the pre-play selector state so the reloaded pref
@@ -391,8 +393,7 @@ private struct ItemDetailPhoneContent: View {
         .onReceive(NotificationCenter.default.publisher(for: .seriesPlaybackDidReturn)) { _ in
             // The player can finish tearing down after this page reappears.
             // While the page is hidden, its reappearing task applies the return.
-            guard hasStartedDetailLoad, isPageVisible,
-                  let playback = SeriesPlaybackReturnInbox.take(seriesContentId: contentId) else { return }
+            guard hasStartedDetailLoad, isPageVisible, let playback = takePlaybackReturn() else { return }
             Task { await applySeriesPlaybackReturn(playback) }
         }
         .alert(
@@ -618,6 +619,7 @@ private struct ItemDetailPhoneContent: View {
                     Task { await viewModel.selectSeason(season) }
                 },
                 onPlayEpisode: { id, fileId, startFromBeginning in
+                    awaitsPlaybackReturn = true
                     let usesSelectedEpisodeControls = id == playbackEpisode(for: detail)?.contentId
                     let episode = viewModel.episodes.first(where: { $0.contentId == id })
                     let resumePosition = startFromBeginning
@@ -1075,6 +1077,13 @@ private struct ItemDetailPhoneContent: View {
             return unwatched
         }
         return viewModel.episodes.first
+    }
+
+    private func takePlaybackReturn() -> SeriesPlaybackReturn? {
+        guard awaitsPlaybackReturn,
+              let playback = SeriesPlaybackReturnInbox.take(seriesContentId: contentId) else { return nil }
+        awaitsPlaybackReturn = false
+        return playback
     }
 
     /// Land on the episode after a finished one, or on the same episode after

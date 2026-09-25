@@ -959,6 +959,9 @@ class PlayerViewModel {
     /// apply to the end-of-playback screen.
     private var nextUpPromptDismissed = false
     private(set) var contentIdsNeedingDetailRefresh: Set<String> = []
+    /// Series of the last episode whose watch detail loaded. Covers the gap
+    /// while a replacement episode loads and `currentWatchDetail` is empty.
+    private var lastSeriesPlayback: (seriesId: String, seasonNumber: Int?)?
     #if os(iOS)
     @ObservationIgnored
     private var refreshHomeAfterPlaybackWrite: (@MainActor () -> Void)?
@@ -2832,6 +2835,7 @@ class PlayerViewModel {
               let rawSeriesId = detail.seriesId else { return }
         let seriesId = rawSeriesId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !seriesId.isEmpty else { return }
+        lastSeriesPlayback = (seriesId, detail.seasonNumber)
         contentIdsNeedingDetailRefresh.insert(seriesId)
         if let seasonNumber = detail.seasonNumber {
             contentIdsNeedingDetailRefresh.insert("\(seriesId)-S\(seasonNumber)")
@@ -2841,14 +2845,26 @@ class PlayerViewModel {
     /// The Series episode on screen as the player closes, so its Series page
     /// can land on it or on the episode after it. See `SeriesPlaybackReturn`.
     private func seriesPlaybackReturn(completed: Bool) -> SeriesPlaybackReturn? {
-        guard let detail = currentWatchDetail,
-              let seriesId = detail.seriesId?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !seriesId.isEmpty else { return nil }
+        if let detail = currentWatchDetail {
+            guard let seriesId = detail.seriesId?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !seriesId.isEmpty else { return nil }
+            return SeriesPlaybackReturn(
+                episodeContentId: detail.contentId,
+                seriesContentId: seriesId,
+                seasonNumber: detail.seasonNumber,
+                completed: completed
+            )
+        }
+        // The player closed while the next episode was still loading. Autoplay
+        // keeps that episode's season in `nextUpEpisode`; otherwise assume the
+        // previous episode's season.
+        guard let loadingId = lastLoadRequest?.contentId, let lastSeriesPlayback else { return nil }
+        let queued = nextUpEpisode?.contentId == loadingId ? nextUpEpisode : nil
         return SeriesPlaybackReturn(
-            episodeContentId: detail.contentId,
-            seriesContentId: seriesId,
-            seasonNumber: detail.seasonNumber,
-            completed: completed
+            episodeContentId: loadingId,
+            seriesContentId: lastSeriesPlayback.seriesId,
+            seasonNumber: queued?.seasonNumber ?? lastSeriesPlayback.seasonNumber,
+            completed: false
         )
     }
 
