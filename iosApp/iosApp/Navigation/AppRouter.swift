@@ -302,6 +302,26 @@ class AppRouter {
     /// would replace something.
     var remotePlaybackCurrentTitle: (() -> (title: String, contentId: String?, targetName: String)?)?
 
+    /// Sends a streaming request to the engaged TV (the detail page's remote
+    /// button), asking first when the TV is showing a different title, the
+    /// same check `presentPlayer` makes for every other Play.
+    func playOnEngagedTV(_ request: SiloControlPlaybackRequest) {
+        guard let remotePlaybackInterceptor, !isRoutingRemotePlayback else { return }
+        if let now = remotePlaybackCurrentTitle?(), now.contentId != request.contentId {
+            pendingReplaceRemotePlayback = ReplaceRemotePlaybackChoice(
+                request: request,
+                currentTitle: now.title,
+                targetName: now.targetName
+            )
+            return
+        }
+        isRoutingRemotePlayback = true
+        Task { @MainActor in
+            defer { isRoutingRemotePlayback = false }
+            _ = await remotePlaybackInterceptor(request)
+        }
+    }
+
     func confirmReplaceRemotePlayback() {
         guard let choice = pendingReplaceRemotePlayback else { return }
         pendingReplaceRemotePlayback = nil
