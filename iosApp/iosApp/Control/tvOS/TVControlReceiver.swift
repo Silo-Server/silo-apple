@@ -112,9 +112,14 @@ final class TVControlReceiver {
         // the phone reconnects into a session the new server never
         // authorizes. A rename or a listener the system cancelled only needs
         // a fresh advertisement, so the session keeps running through those.
+        // Phones still in their hello go too: cancelling the listener leaves
+        // accepted connections open.
         if let listenerRegistryServerId,
            !ServerRegistry.serverIdsMatch(listenerRegistryServerId, server.id) {
             closeActiveSession(sendClose: true)
+            for connectionId in Array(pendingConnections.keys) {
+                dropPendingConnection(connectionId, sendClose: true)
+            }
         }
         listenerRegistryServerId = server.id
         stopListener()
