@@ -167,6 +167,11 @@ The route may claim Atmos only when:
 
 The route must not claim Atmos for TrueHD-derived PCM output.
 
+The object path (3.3) must not be described as TrueHD passthrough, as lossless,
+or as Dolby's own decoding. The accurate description is that Silo decodes the
+Atmos objects, mixes them into a 7.1.4 layout and delivers that as compressed
+audio, which tvOS sends to the receiver as Dolby Atmos (MAT).
+
 The route must not describe TrueHD-derived PCM as TrueHD passthrough. The honest
 label is "lossless multichannel PCM" or "multichannel LPCM".
 
