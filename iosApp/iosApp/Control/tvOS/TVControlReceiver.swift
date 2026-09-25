@@ -226,14 +226,17 @@ final class TVControlReceiver {
         }
         rejectedPlayerHandoffGeneration = expectedGenerationID
         sendError(code: "temporary_session_expired", message: "The phone profile session expired.")
-        let hadPlayer = playerViewModel != nil
+        let outgoing = playerViewModel
+        // The player ends the identity on its way out only while it owns the
+        // generation; a launch swapping titles has already detached it.
+        let playerEndsIt = outgoing != nil && playerHandoffGeneration == expectedGenerationID
         // A launch still waiting for its player won't get one now.
         if pendingPlayerHandoffGeneration == expectedGenerationID {
             pendingPlayerHandoffGeneration = nil
         }
         stopRemotePlayback()
-        if !hadPlayer {
-            endIdentity(expectedGenerationID)
+        if !playerEndsIt {
+            endIdentity(expectedGenerationID, after: outgoing)
         }
     }
 
@@ -572,6 +575,10 @@ final class TVControlReceiver {
         pendingHandoffRequestId = offer.requestId
         remoteLaunchReady = false
         launchReadyGeneration = nil
+        // The previous handoff's timer would close this session under the new
+        // one; a successful handoff arms its own.
+        readyTimeoutTask?.cancel()
+        readyTimeoutTask = nil
 
         handoffTask = Task { @MainActor [weak self] in
             guard let self else { return }
