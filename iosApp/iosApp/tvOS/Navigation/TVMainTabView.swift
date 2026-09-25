@@ -1298,10 +1298,17 @@ struct TVMainTabView: View {
     /// steps aside while the audiobook keeps playing in the mini player. An
     /// open sign-out confirmation is cancelled; Search takes focus instead of
     /// the profile button.
+    ///
+    /// A Siri press on this TV's remote means someone here is taking over, so
+    /// an idle phone remote-control session ends the way the standby screen's
+    /// Disconnect Remote button ends it. Standby would otherwise cover Search.
     private func openRequestedSearch() {
         guard let request = router.requestedSearch else { return }
         router.requestedSearch = nil
         siriSearchRequest = request
+        if controlReceiver.standbyState != nil {
+            controlReceiver.disconnectRemoteControl()
+        }
         router.presentedPlayer = nil
         if audioStore.isShowingFullPlayer {
             audioStore.dismissFullPlayer()
