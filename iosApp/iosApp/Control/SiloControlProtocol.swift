@@ -340,6 +340,9 @@ enum SiloControlMessage: Equatable, Sendable {
     case ping
     case pong
     case close
+    /// A frame whose `type` this build doesn't know — a kind added by a newer
+    /// peer. Both ends ignore it; the connection survives.
+    case unsupported(type: String)
 }
 
 extension SiloControlMessage: Codable {
@@ -409,12 +412,21 @@ extension SiloControlMessage: Codable {
             try c.encode(Kind.pong, forKey: .type)
         case .close:
             try c.encode(Kind.close, forKey: .type)
+        case .unsupported(let type):
+            try c.encode(type, forKey: .type)
         }
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        let kind = try c.decode(Kind.self, forKey: .type)
+        // Read the raw string: the synthesized enum decoder would throw on a
+        // kind added after this build, and `FramedJSONSession` tears the
+        // connection down on any decode error.
+        let rawKind = try c.decode(String.self, forKey: .type)
+        guard let kind = Kind(rawValue: rawKind) else {
+            self = .unsupported(type: rawKind)
+            return
+        }
         switch kind {
         case .hello:
             self = .hello(try c.decode(SiloControlHello.self, forKey: .hello))

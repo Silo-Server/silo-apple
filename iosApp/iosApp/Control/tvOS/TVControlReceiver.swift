@@ -394,6 +394,9 @@ final class TVControlReceiver {
             missedHeartbeats = 0
         case .state, .error, .handoffChallenge, .handoffReady:
             break
+        case .unsupported(let type):
+            // A kind added by a newer phone. Ignoring it keeps the session.
+            Self.logger.info("control: ignoring unsupported message \(type, privacy: .public)")
         case .close:
             closeActiveSession(sendClose: false)
         }

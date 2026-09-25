@@ -777,6 +777,9 @@ final class SiloControlClient {
             missedHeartbeats = 0
         case .launch, .control, .unsupportedControl, .handoffOffer:
             break
+        case .unsupported(let type):
+            // A kind added by a newer TV. Ignoring it keeps the session.
+            Self.logger.info("control: ignoring unsupported message \(type, privacy: .public)")
         }
     }
 
