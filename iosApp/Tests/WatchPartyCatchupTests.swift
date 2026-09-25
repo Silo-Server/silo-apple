@@ -96,6 +96,23 @@ final class WatchPartyCatchupTests: XCTestCase {
         XCTAssertEqual(budget.nextAllowedAt.timeIntervalSince(now), WatchPartyReloadBudget.minInterval)
     }
 
+    func testASupersededLoadIsRetiredInsteadOfBlockingUntilStale() {
+        var budget = WatchPartyReloadBudget()
+        budget.retire(at: at(0))
+        XCTAssertTrue(budget.allowed(at: at(0)), "Retiring with no load in flight changes nothing")
+
+        _ = budget.begin(roomPosition: 100, at: at(0), duration: 0)
+        budget.noteLoading()
+        let generation = budget.generation
+        budget.retire(at: at(2))
+        XCTAssertNil(budget.target)
+        XCTAssertNotEqual(budget.generation, generation, "A late completion of the retired load cannot act")
+        XCTAssertFalse(budget.landed(at: 100))
+        XCTAssertFalse(budget.allowed(at: at(2 + WatchPartyReloadBudget.minInterval - 0.001)))
+        XCTAssertTrue(budget.allowed(at: at(2 + WatchPartyReloadBudget.minInterval)),
+            "The next load waits the backoff, not the 30-second stale window")
+    }
+
     func testLeadIsBoundedAndAnUnlandedLoadStopsBlocking() {
         var budget = WatchPartyReloadBudget()
         _ = budget.begin(roomPosition: 100, at: at(0), duration: 0)

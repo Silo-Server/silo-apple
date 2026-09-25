@@ -8208,7 +8208,7 @@ extension PlayerViewModel {
             return watchPartyPlaybackSnapshot
         case .seek:
             if isWatchPartyTargetBuffered(position, from: local, locallySeekable: canSeekWatchPartyLocally(to: position)) {
-                return try await applyWatchPartyTransport(.seek(position), context: context, correction: true)
+                return try await applyWatchPartyTransport(.seek(position), context: context, origin: .realign)
             }
             return try await loadWatchPartyCorrection(to: position, context: context)
         case .rate(let rate):
@@ -8245,7 +8245,7 @@ extension PlayerViewModel {
         let aim = watchPartyReloadBudget.begin(roomPosition: position, at: now, duration: duration)
         let generation = watchPartyReloadBudget.generation
         do {
-            let snapshot = try await applyWatchPartyTransport(.seek(aim), context: context, correction: true)
+            let snapshot = try await applyWatchPartyTransport(.seek(aim), context: context, origin: .correctionLoad)
             if watchPartyReloadBudget.generation == generation { watchPartyReloadBudget.noteLoading() }
             return snapshot
         } catch is CancellationError {
@@ -8327,13 +8327,12 @@ extension PlayerViewModel {
         watchPartyAdapter?.update(watchPartyPlaybackSnapshot)
     }
 
-    /// `correction` marks a seek that is not an explicit room seek. Only an
-    /// explicit room seek supersedes a correction load in flight, as on the
-    /// web client.
+    /// `origin` says why a seek happens and what it does to a correction
+    /// load in flight; see `WatchPartySeekOrigin`.
     func applyWatchPartyTransport(
         _ action: WatchPartyPlaybackAction,
         context: WatchPartyPlaybackContext,
-        correction: Bool = false
+        origin: WatchPartySeekOrigin = .room
     ) async throws -> WatchPartyPlaybackSnapshot {
         guard !isDisposed, watchPartyAdapter?.context == context,
               watchPartyPlaybackSnapshot.sessionId != nil else {
@@ -8357,9 +8356,14 @@ extension PlayerViewModel {
             aetherPlaybackController.pause()
         case .seek(let position):
             cancelWatchPartyCorrection()
-            if !correction {
+            switch origin {
+            case .room:
                 watchPartyReloadBudget.abandon(at: Date())
                 watchPartyReloadBudget.settle()
+            case .realign:
+                watchPartyReloadBudget.retire(at: Date())
+            case .correctionLoad:
+                break
             }
             guard position.isFinite, position >= 0 else { throw WatchPartyPlaybackError.notReady }
             if hasReachedEndOfFile {

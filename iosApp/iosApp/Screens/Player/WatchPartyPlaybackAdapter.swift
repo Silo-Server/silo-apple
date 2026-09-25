@@ -79,6 +79,21 @@ enum WatchPartyCorrection: Equatable {
     }
 }
 
+/// Why a party member seeks, which decides what the seek does to a correction
+/// load in flight.
+enum WatchPartySeekOrigin: Equatable {
+    /// An explicit room seek. It supersedes any correction load and ends the
+    /// backoff, as on the web client.
+    case room
+    /// A seek that realigns this member with the room: a correction to
+    /// buffered media, or a command applied to a member that is not playing.
+    /// It replaces the seek of any correction load in flight, which would
+    /// otherwise never land and block the next load until it went stale.
+    case realign
+    /// The seek of a correction load, tracked by the load budget itself.
+    case correctionLoad
+}
+
 /// Correction-driven media loads, matching the web client. A correction whose
 /// target is not buffered has to load media and lands late by its load time;
 /// with a load on every correction a slow viewer chases the advancing room
@@ -147,6 +162,14 @@ struct WatchPartyReloadBudget: Equatable {
         nextAllowedAt = now.addingTimeInterval(backoff)
     }
 
+    /// Another seek replaced the in-flight load's seek, so it will never
+    /// land. Space the next load as for any attempt; with no load in flight
+    /// this does nothing.
+    mutating func retire(at now: Date) {
+        guard target != nil else { return }
+        abandon(at: now)
+    }
+
     /// The load was refused or superseded; space the next one.
     mutating func abandon(at now: Date) {
         generation &+= 1
@@ -190,12 +213,11 @@ final class WatchPartyPlaybackAdapter {
         player?.prepareWatchParty(context, adapter: self)
     }
 
-    /// `correction` marks a seek that realigns this member rather than an
-    /// explicit room seek, so it leaves the correction load budget alone.
+    /// `origin` says why a seek happens; see `WatchPartySeekOrigin`.
     @discardableResult
-    func apply(_ action: WatchPartyPlaybackAction, correction: Bool = false) async throws -> WatchPartyPlaybackSnapshot {
+    func apply(_ action: WatchPartyPlaybackAction, origin: WatchPartySeekOrigin = .room) async throws -> WatchPartyPlaybackSnapshot {
         guard let player, let context else { throw WatchPartyPlaybackError.invalidated }
-        return try await player.applyWatchPartyTransport(action, context: context, correction: correction)
+        return try await player.applyWatchPartyTransport(action, context: context, origin: origin)
     }
 
     func canSeekLocally(to position: Double) -> Bool {

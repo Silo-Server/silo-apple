@@ -667,7 +667,7 @@ final class WatchPartySession {
                     let smallPausedCorrection = command.action == .pause
                         && abs(adapter.snapshot.sourceTime - target) <= 2 && !adapter.canSeekLocally(to: target)
                     if !smallPausedCorrection {
-                        _ = try await adapter.apply(.seek(target), correction: command.action != .seek)
+                        _ = try await adapter.apply(.seek(target), origin: command.action == .seek ? .room : .realign)
                     }
                 }
                 try Task.checkCancellation()
