@@ -1,19 +1,6 @@
 import AetherEngine
 import SwiftUI
 
-#if os(tvOS)
-/// Published only after final playback progress is committed and every
-/// resident detail model affected by that playback has refreshed.
-struct TVPlaybackStateRefreshEvent {
-    let refreshedContentIds: Set<String>
-    let completedContentIds: Set<String>
-}
-
-extension Notification.Name {
-    static let tvPlaybackStateDidRefresh = Notification.Name("tvPlaybackStateDidRefresh")
-}
-#endif
-
 /// Full-screen video player. Thin shell around `PlayerViewModel` that picks
 /// the platform-appropriate controls overlay. iOS gets touch-driven controls
 /// with bottom sheets; tvOS gets a focus-driven transport bar plus the
@@ -503,7 +490,6 @@ struct PlayerView: View {
             let touchedContentIds = viewModel.contentIdsNeedingDetailRefresh.isEmpty
                 ? Set([contentId])
                 : viewModel.contentIdsNeedingDetailRefresh
-            let completedContentIds = viewModel.completedContentIdsNeedingDetailAdvance
             Task { @MainActor in
                 await viewModel.waitForCleanupCompletion()
 
@@ -517,16 +503,7 @@ struct PlayerView: View {
                     object: nil
                 )
 
-                let refreshedContentIds = await ItemDetailCache.shared.refreshAfterPlayback(
-                    contentIds: touchedContentIds
-                )
-                NotificationCenter.default.post(
-                    name: .tvPlaybackStateDidRefresh,
-                    object: TVPlaybackStateRefreshEvent(
-                        refreshedContentIds: refreshedContentIds,
-                        completedContentIds: completedContentIds
-                    )
-                )
+                await ItemDetailCache.shared.refreshAfterPlayback(contentIds: touchedContentIds)
             }
             #endif
         }

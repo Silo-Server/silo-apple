@@ -963,11 +963,6 @@ class PlayerViewModel {
     @ObservationIgnored
     private var refreshHomeAfterPlaybackWrite: (@MainActor () -> Void)?
     #endif
-    /// Items that crossed the same completion boundary used by the final
-    /// server progress report. The tvOS detail page consumes this only after
-    /// that report has finished so it can move its editorial selection to the
-    /// next unwatched episode without racing stale catalog data.
-    private(set) var completedContentIdsNeedingDetailAdvance: Set<String> = []
     var nextUpCarouselItems: [PlayerOnDeckItem] {
         let hiddenIds = Set([lastLoadRequest?.contentId, nextUpEpisode?.contentId].compactMap { $0 })
         return nextUpOnDeckItems.filter { !hiddenIds.contains($0.contentId) }
@@ -2827,13 +2822,10 @@ class PlayerViewModel {
     /// before a replacement load or teardown clears `currentWatchDetail`.
     /// Series and synthetic season ids are included because tvOS keeps the
     /// combined Series page resident while its episode player is pushed.
-    private func recordCurrentPlaybackMutation(markedCompleted: Bool) {
+    private func recordCurrentPlaybackMutation() {
         let currentContentId = currentWatchDetail?.contentId ?? lastLoadRequest?.contentId
         if let currentContentId, !currentContentId.isEmpty {
             contentIdsNeedingDetailRefresh.insert(currentContentId)
-            if markedCompleted {
-                completedContentIdsNeedingDetailAdvance.insert(currentContentId)
-            }
         }
 
         guard let detail = currentWatchDetail,
@@ -2844,6 +2836,20 @@ class PlayerViewModel {
         if let seasonNumber = detail.seasonNumber {
             contentIdsNeedingDetailRefresh.insert("\(seriesId)-S\(seasonNumber)")
         }
+    }
+
+    /// The Series episode on screen as the player closes, so its Series page
+    /// can land on it or on the episode after it. See `SeriesPlaybackReturn`.
+    private func seriesPlaybackReturn(completed: Bool) -> SeriesPlaybackReturn? {
+        guard let detail = currentWatchDetail,
+              let seriesId = detail.seriesId?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !seriesId.isEmpty else { return nil }
+        return SeriesPlaybackReturn(
+            episodeContentId: detail.contentId,
+            seriesContentId: seriesId,
+            seasonNumber: detail.seasonNumber,
+            completed: completed
+        )
     }
 
     private func loadAether(
@@ -3683,7 +3689,7 @@ class PlayerViewModel {
         )
 
         if !isPremature {
-            recordCurrentPlaybackMutation(markedCompleted: true)
+            recordCurrentPlaybackMutation()
 
             // Aether has already delivered the native terminal event, so
             // publish the terminal position now rather than waiting for the
@@ -4074,14 +4080,7 @@ class PlayerViewModel {
         PosterImageCache.trimDecodedMemory()
         #endif
         isNextUpTransitioning = origin == .autoplay && showNextUpScreen
-        let currentItemCompleted = PlayerNextUpCompletionPolicy.shouldFinalizeAsCompleted(
-            isNextUpPresented: showNextUpScreen,
-            hasReachedEndOfFile: hasReachedEndOfFile,
-            currentTime: currentTime,
-            duration: duration,
-            promptSeconds: settings.nextUpPromptSeconds
-        )
-        recordCurrentPlaybackMutation(markedCompleted: currentItemCompleted)
+        recordCurrentPlaybackMutation()
         let pendingNaturalEndProgressTask = naturalEndProgressTask
         naturalEndProgressTask = nil
         // Intro decisions belong to the content, not to one stream of it. A
@@ -6408,7 +6407,8 @@ class PlayerViewModel {
             duration: duration,
             promptSeconds: settings.nextUpPromptSeconds
         )
-        recordCurrentPlaybackMutation(markedCompleted: currentItemCompleted)
+        recordCurrentPlaybackMutation()
+        SeriesPlaybackReturnInbox.publish(seriesPlaybackReturn(completed: currentItemCompleted))
         let pendingNaturalEndProgressTask = naturalEndProgressTask
         naturalEndProgressTask = nil
         isDisposed = true

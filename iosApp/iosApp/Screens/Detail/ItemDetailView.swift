@@ -293,6 +293,8 @@ private struct ItemDetailPhoneContent: View {
     /// episode is active; tapping a card pins that episode without pushing a
     /// second detail route.
     @State private var selectedSeriesEpisodeId: String?
+    @State private var hasStartedDetailLoad = false
+    @State private var isPageVisible = false
     @State private var refreshOnPlayerDismiss = false
     @State private var offlinePlayChoice: OfflinePlayChoice?
     @State private var unreachablePlayRequest: UnreachablePlayRequest?
@@ -325,6 +327,10 @@ private struct ItemDetailPhoneContent: View {
         .siloNavigationTitleDisplayMode(.inline)
         .siloNavigationBarBackgroundHidden()
         .task(id: contentId) {
+            // Returning from the player restarts this task. Keep the episode
+            // and season the page was showing instead of the entry context.
+            let isReturning = hasStartedDetailLoad
+            hasStartedDetailLoad = true
             preferredVersionFileId = nil
             preferredAudioTrackIndex = nil
             preferredSubtitleTrackIndex = nil
@@ -334,14 +340,24 @@ private struct ItemDetailPhoneContent: View {
             preferredNextUpSubtitleTrackIndex = nil
             nextUpWatchDetail = nil
             isLoadingNextUpWatchDetail = false
-            selectedSeriesEpisodeId = resumeContext?.episodeContentId
-            viewModel.initialResumeSeasonNumber = resumeContext?.seasonNumber
+            if isReturning {
+                if let playback = SeriesPlaybackReturnInbox.take(seriesContentId: contentId) {
+                    await applySeriesPlaybackReturn(playback)
+                }
+                viewModel.initialResumeSeasonNumber = viewModel.selectedSeason?.seasonNumber
+            } else {
+                selectedSeriesEpisodeId = resumeContext?.episodeContentId
+                viewModel.initialResumeSeasonNumber = resumeContext?.seasonNumber
+                // A player closed before this visit belongs to another page.
+                _ = SeriesPlaybackReturnInbox.take(seriesContentId: contentId)
+            }
             refreshOnPlayerDismiss = false
             detailScrollState.reset()
             await viewModel.loadDetail(contentId: contentId)
             seedSubtitleOverrideIfNeeded()
         }
         .onAppear {
+            isPageVisible = true
             // Coming back from the player (or an extra) resumes a poll that
             // `onDisappear` cancelled — without re-POSTing, since the server
             // already spent the item's weekly slot. Precedent:
@@ -350,6 +366,7 @@ private struct ItemDetailPhoneContent: View {
             seedSubtitleOverrideIfNeeded()
         }
         .onDisappear {
+            isPageVisible = false
             viewModel.cancelDetailLoading()
             // The trailer poll isn't owned by `.task`, so it would otherwise
             // keep running (and retaining the view model) after the route
@@ -361,6 +378,7 @@ private struct ItemDetailPhoneContent: View {
             guard oldValue != nil, newValue == nil, refreshOnPlayerDismiss else { return }
             refreshOnPlayerDismiss = false
             Task {
+                viewModel.initialResumeSeasonNumber = viewModel.selectedSeason?.seasonNumber
                 await viewModel.loadDetail(contentId: contentId)
                 // A track picked inside the player persisted server-side;
                 // drop the pre-play selector state so the reloaded pref
@@ -369,6 +387,13 @@ private struct ItemDetailPhoneContent: View {
                 preferredSubtitleTrackWasManuallySelected = false
                 seedSubtitleOverrideIfNeeded()
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .seriesPlaybackDidReturn)) { _ in
+            // The player can finish tearing down after this page reappears.
+            // While the page is hidden, its reappearing task applies the return.
+            guard hasStartedDetailLoad, isPageVisible,
+                  let playback = SeriesPlaybackReturnInbox.take(seriesContentId: contentId) else { return }
+            Task { await applySeriesPlaybackReturn(playback) }
         }
         .alert(
             "Downloaded on This Device",
@@ -1050,6 +1075,14 @@ private struct ItemDetailPhoneContent: View {
             return unwatched
         }
         return viewModel.episodes.first
+    }
+
+    /// Land on the episode after a finished one, or on the same episode after
+    /// a partial watch.
+    private func applySeriesPlaybackReturn(_ playback: SeriesPlaybackReturn) async {
+        guard let episodeId = await viewModel.prepareSeriesPlaybackReturn(playback),
+              !Task.isCancelled else { return }
+        selectedSeriesEpisodeId = episodeId
     }
 
     /// Series detail keeps one active episode on the main page. The user's

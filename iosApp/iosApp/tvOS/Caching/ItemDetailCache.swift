@@ -110,6 +110,9 @@ final class ItemDetailCache {
         let residentTargets = order.reversed().filter { targets.contains($0.contentId) }
         for key in residentTargets {
             guard let viewModel = entries[key] else { continue }
+            // Refresh the season the page shows rather than re-running the
+            // initial pick, which could move it to an earlier season.
+            viewModel.initialResumeSeasonNumber = viewModel.selectedSeason?.seasonNumber
             await viewModel.loadDetail(
                 contentId: key.contentId,
                 coalescesMetadataRequests: false

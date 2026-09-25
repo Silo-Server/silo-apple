@@ -189,6 +189,9 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     let carouselLoadFailed: Bool
     let onLoadMoreEpisodes: (Int) -> Void
     let activeEpisodeContentId: String?
+    /// Non-zero changes move the episode row to `activeEpisodeContentId`,
+    /// even while the row holds focus.
+    var episodeSelectionRequest = 0
     let episodeFavoriteStates: [String: Bool]
     let episodeWatchlistStates: [String: Bool]
     let isLoadingEpisodes: Bool
@@ -801,6 +804,8 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 focusTargetContentId: episodeRailFocusTarget,
                 scrollRequest: episodeScrollRequest,
                 scrollTargetContentId: episodeScrollTarget,
+                selectionRequest: episodeSelectionRequest,
+                selectionTargetContentId: activeEpisodeContentId,
                 isSelectingSeason: primaryFocusRegion == .mode,
                 onRequestPrevious: episodeWindow.previousSeason == nil ? nil : { onLoadMoreEpisodes(-1) },
                 onRequestNext: episodeWindow.nextSeason == nil ? nil : { onLoadMoreEpisodes(1) }

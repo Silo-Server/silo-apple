@@ -1113,6 +1113,47 @@ class ItemDetailViewModel {
         )
     }
 
+    /// Select the season that holds the episode to land on after the player
+    /// closes, and return that episode. `nil` keeps the page's selection.
+    func prepareSeriesPlaybackReturn(
+        _ playback: SeriesPlaybackReturn,
+        fetchEpisodes: (@Sendable (String, Int) async throws -> EpisodesResponse)? = nil
+    ) async -> String? {
+        guard detail?.type == "series", detail?.contentId == playback.seriesContentId else { return nil }
+        if let contentId = playback.episodeToSelect(in: loadedSeriesEpisodes) { return contentId }
+
+        let ordered = SeriesEpisodeWindow.orderedSeasons(seasons)
+        guard let playedIndex = ordered.firstIndex(where: { $0.seasonNumber == playback.seasonNumber }) else {
+            return nil
+        }
+        if !loadedSeriesEpisodes.contains(where: { $0.contentId == playback.episodeContentId }) {
+            // Autoplay can carry playback into a season the page is not showing.
+            await selectSeason(ordered[playedIndex], forceRefresh: true, fetchEpisodes: fetchEpisodes)
+            guard !Task.isCancelled else { return nil }
+            if let contentId = playback.episodeToSelect(in: loadedSeriesEpisodes) { return contentId }
+        }
+
+        // A finished season finale continues with the next regular season.
+        guard playback.completed,
+              let next = ordered[(playedIndex + 1)...].first(where: {
+                  $0.episodeCount > 0 && !($0.isSpecials == true || $0.seasonNumber == 0)
+              }) else { return nil }
+        await selectSeason(next, forceRefresh: true, fetchEpisodes: fetchEpisodes)
+        guard !Task.isCancelled,
+              let first = episodes.first,
+              first.seasonNumber == next.seasonNumber else { return nil }
+        return first.contentId
+    }
+
+    /// Episodes the Series page can select without loading another season.
+    private var loadedSeriesEpisodes: [EpisodeListItem] {
+        #if os(tvOS)
+        seriesEpisodeWindow.episodes
+        #else
+        episodes
+        #endif
+    }
+
     #if os(tvOS)
     /// Apply a known episode route before the first Series render or fetch.
     /// A cold visit then requests this season directly; a warm visit paints it.

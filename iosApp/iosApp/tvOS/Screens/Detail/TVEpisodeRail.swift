@@ -55,6 +55,10 @@ struct TVEpisodeRail: View {
     /// taking focus from the chip. Loaded edges extend the same episode row.
     var scrollRequest = 0
     var scrollTargetContentId: String? = nil
+    /// Non-zero changes move the selected card to `selectionTargetContentId`
+    /// without moving focus into or out of the row.
+    var selectionRequest = 0
+    var selectionTargetContentId: String? = nil
     var isSelectingSeason = false
     var onRequestPrevious: (() -> Void)? = nil
     var onRequestNext: (() -> Void)? = nil
@@ -275,6 +279,20 @@ struct TVEpisodeRail: View {
                     // before that request gets a chance to run.
                     guard anchoredFocusedContentId == nil, !isSelectingSeason else { return }
                     seedAnchoredSelection(viewportWidth: geometry.size.width)
+                }
+                .onChange(of: selectionRequest) { _, request in
+                    guard request > 0, let selectionTargetContentId,
+                          episodes.contains(where: { $0.contentId == selectionTargetContentId }) else { return }
+                    pendingEdge = nil
+                    if railHasFocus {
+                        // Moving the focused card also reports it as the active episode.
+                        anchoredFocusedContentId = selectionTargetContentId
+                    } else {
+                        seedAnchoredSelection(
+                            viewportWidth: geometry.size.width,
+                            targetContentId: selectionTargetContentId
+                        )
+                    }
                 }
                 .onChange(of: focusRequest) { _, request in
                     guard request > 0 else { return }
