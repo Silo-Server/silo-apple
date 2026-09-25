@@ -528,9 +528,9 @@ final class TVControlReceiver {
                 return
             }
             // An identity already being ended can't take a new title.
-            let usableIdentity = RemotePlaybackIdentityManager.shared.activeIdentity?.generationID
-                .flatMap { endingGenerations.contains($0) ? nil : $0 }
-            if negotiatedVersion == 2, !remoteLaunchReady || usableIdentity == nil {
+            let identity = RemotePlaybackIdentityManager.shared.activeIdentity?.generationID
+            let identityUsable = identity.map { !endingGenerations.contains($0) } ?? false
+            if negotiatedVersion == 2, !remoteLaunchReady || !identityUsable {
                 sendError(code: "handoff_required", message: "Prepare the phone profile before playing.")
                 return
             }
