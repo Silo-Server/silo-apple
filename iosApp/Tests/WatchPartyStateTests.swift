@@ -133,6 +133,30 @@ final class WatchPartyStateTests: XCTestCase {
             sourceTime: 100, isHost: false), "An unapplied command cannot satisfy readiness")
     }
 
+    func testReadinessIsSentOnlyAtABarrierOrWhileCatchingUp() {
+        let me = WatchPartyMember(userId: "1", profileId: "p", displayName: "Me", isSelf: true, connected: true)
+        var waiting = room()
+        waiting.playbackState = .waiting
+        waiting.members = [me]
+        XCTAssertTrue(WatchPartyCommandState.awaitsReadiness(waiting))
+        waiting.members[0].isReady = true
+        XCTAssertFalse(WatchPartyCommandState.awaitsReadiness(waiting), "An acknowledged member does not repeat ready")
+
+        var playing = room()
+        playing.members = [me]
+        XCTAssertFalse(WatchPartyCommandState.awaitsReadiness(playing),
+            "A late joiner in a playing room is marked ready by a matching report; a ready would resync it again")
+        playing.selfIgnoreWait = true
+        XCTAssertTrue(WatchPartyCommandState.awaitsReadiness(playing), "A member the room resumed without acknowledges recovery")
+        playing.selfIgnoreWait = false
+        playing.members[0].isBuffering = true
+        XCTAssertTrue(WatchPartyCommandState.awaitsReadiness(playing), "A member reported buffering acknowledges recovery")
+        playing.playbackState = .paused
+        XCTAssertTrue(WatchPartyCommandState.awaitsReadiness(playing))
+        playing.phase = .lobby
+        XCTAssertFalse(WatchPartyCommandState.awaitsReadiness(playing))
+    }
+
     func testOutboundPingPreservesFractionalTimeForClockSynchronization() throws {
         let sentAt = now.addingTimeInterval(0.875)
         let wire = try WatchPartyClientMessage(type: "ping", clientSentAt: sentAt).encoded()

@@ -709,7 +709,12 @@ final class WatchPartySession {
                   adapter.context == playbackContext else { return }
             let snapshot = adapter.snapshot
             if !attachmentConfirmed {
-                if now.timeIntervalSince(lastAttach) >= 1.5, snapshot.isReady {
+                // Attach as soon as the stream has a committed session, as the
+                // web client does. The start barrier only waits for attached
+                // members, so waiting for playable media here let a member that
+                // loaded faster release the room without this one. Commands
+                // that arrive before the media is ready stay pending until it is.
+                if now.timeIntervalSince(lastAttach) >= 1.5 {
                     lastAttach = now
                     issuedAttachSession = session
                     trace("attach ready=\(snapshot.isReady) file=\(snapshot.fileId ?? 0)")
@@ -736,7 +741,7 @@ final class WatchPartySession {
             let completed = commands.completed
             let ready = WatchPartyCommandState.canAcknowledge(completed, roomPlaybackState: room.playbackState,
                 sourceTime: snapshot.sourceTime, isHost: room.selfRole == .host)
-            if ready, room.members.first(where: \.isSelf)?.isReady != true, now.timeIntervalSince(lastReady) >= 0.5 {
+            if ready, WatchPartyCommandState.awaitsReadiness(room), now.timeIntervalSince(lastReady) >= 0.5 {
                 lastReady = now
                 try await socket.send(WatchPartyClientMessage(type: "ready", sessionId: session, commandId: completed?.commandId,
                     positionSeconds: snapshot.sourceTime, isPaused: !snapshot.isPlaying))
