@@ -102,6 +102,13 @@ final class SiloControlClient {
     /// frames (and presenting the player twice) for the same in-flight
     /// connection.
     private var launchInFlight = false
+    /// A launch is under way: the profile handoff, then the TV opening the
+    /// title. Keeps the remote on "Starting playback…" instead of the idle
+    /// screen until the TV reports content or the launch fails.
+    private(set) var isLaunching = false
+    /// The title the launch in flight sent. Only the TV's state for it ends
+    /// the launch: while replacing, the outgoing title keeps reporting.
+    private var launchingContentId: String?
     private var negotiatedVersion: Int?
     private var pendingHandoffRequestId: String?
     private var handoffChallenge: SiloControlHandoffChallenge?
@@ -120,6 +127,8 @@ final class SiloControlClient {
     /// attempt — and the "Reconnecting…" bar — would never finish.
     private static let connectTimeout: Duration = .seconds(6)
     private static let persistedTargetKey = "silocontrol.lastTarget"
+    /// Errors both TVs send in reply to a control command, never to a launch.
+    private static let controlErrorCodes: Set<String> = ["player_not_ready", "command_failed"]
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "control.client"
@@ -278,6 +287,8 @@ final class SiloControlClient {
         launchInFlight = true
         defer { launchInFlight = false }
 
+        isLaunching = true
+        launchingContentId = nil
         isConnecting = true
         errorMessage = nil
         isShowingRemoteControl = true
@@ -298,6 +309,10 @@ final class SiloControlClient {
                 throw SiloControlHandoffError.invalidResponse
             }
             adoptEffectiveTarget(server: activeServer)
+            // Only the TV's state for this title ends the launch, and only once
+            // it is sent: until then the outgoing player keeps reporting, and a
+            // Resume of what is on names the same title.
+            launchingContentId = request.contentId
             try await session.send(.launch(SiloControlLaunchRequest(serverId: activeServer.id, playback: request)))
             isConnecting = false
         } catch {
@@ -419,6 +434,9 @@ final class SiloControlClient {
     /// longer than the old challenge-only wait did.
     private func waitForHandoffChallengeOrReady(requestId: String) async throws -> HandoffFirstReply {
         for _ in 0..<600 {
+            // The session ended under us (dropped, failed, or replaced):
+            // stop waiting, so launchInFlight doesn't swallow a retry.
+            guard pendingHandoffRequestId == requestId else { throw CancellationError() }
             if let cancellation = handoffCancellation, cancellation.requestId == requestId {
                 throw SiloControlHandoffError.cancelled(cancellation.message ?? "The TV cancelled profile setup.")
             }
@@ -435,6 +453,9 @@ final class SiloControlClient {
 
     private func waitForHandoffReady(requestId: String) async throws -> SiloControlHandoffReady {
         for _ in 0..<600 {
+            // The session ended under us (dropped, failed, or replaced):
+            // stop waiting, so launchInFlight doesn't swallow a retry.
+            guard pendingHandoffRequestId == requestId else { throw CancellationError() }
             if let cancellation = handoffCancellation, cancellation.requestId == requestId {
                 throw SiloControlHandoffError.cancelled(cancellation.message ?? "The TV cancelled profile setup.")
             }
@@ -487,6 +508,11 @@ final class SiloControlClient {
     }
 
     func send(_ command: SiloControlCommand) {
+        // While a launch is in flight the controls belong to a title on its way
+        // out, and the TV answers them with errors (`unauthorized` mid-handoff)
+        // that would read as the launch being refused. The remote shows only
+        // the launch status then; hardware volume and lock-screen presses wait.
+        guard !isLaunching else { return }
         // Any outbound command counts as user engagement — the session is no
         // longer a passive auto-resume attachment after this.
         sessionIsAutoResumed = false
@@ -494,11 +520,13 @@ final class SiloControlClient {
     }
 
     func togglePlayPauseOptimistic() {
+        guard !isLaunching else { return }
         clock.setOptimisticPlaying(!clock.isPlaying())
         send(.playPause)
     }
 
     func seekOptimistic(to seconds: Double) {
+        guard !isLaunching else { return }
         clock.setOptimisticTime(seconds)
         send(.seek(seconds: seconds))
     }
@@ -509,6 +537,7 @@ final class SiloControlClient {
     /// it — see ``RemoteVolumeReconciler`` for why absolute volume commands need
     /// that hold.
     func setVolume(_ v: Double) {
+        guard !isLaunching else { return }
         let clamped = min(max(v, 0), 1)
         volumeReconciler.requested(clamped)
         if var s = state {
@@ -519,6 +548,7 @@ final class SiloControlClient {
     }
 
     func setMuted(_ m: Bool) {
+        guard !isLaunching else { return }
         // A held level describes an unmuted volume; an explicit mute supersedes it.
         volumeReconciler.clear()
         if var s = state {
@@ -754,6 +784,12 @@ final class SiloControlClient {
                 quietDisconnect()
                 return
             }
+            // The TV acknowledges a launch at once with a loading placeholder
+            // for the title; the launch is done only once its player reports in.
+            if !isIdle, state.contentId == launchingContentId,
+               state.sessionId != nil || !state.isLoading || state.error != nil {
+                isLaunching = false
+            }
             if isAutoResuming, !isIdle {
                 isAutoResuming = false  // playback confirmed — reveal the mini-bar
             }
@@ -777,6 +813,12 @@ final class SiloControlClient {
             }
             if isAutoResuming {
                 quietDisconnect()
+                return
+            }
+            if isLaunching, !Self.controlErrorCodes.contains(error.code) {
+                // The TV refused or couldn't open the title just sent. A
+                // control pressed mid-launch (player_not_ready) isn't that.
+                fail(error.message, connectionId: connectionId)
                 return
             }
             errorMessage = error.message
@@ -845,6 +887,10 @@ final class SiloControlClient {
         connectionId = nil
         if old != nil { Task { await old?.close() } }
         isReconnecting = true
+        // A launch in flight died with the link; after reconnecting, the
+        // TV's state says whether the title started.
+        isLaunching = false
+        resetPendingHandoff()
         errorMessage = nil
 
         // While backgrounded, sockets are suspended and every attempt would
@@ -897,12 +943,17 @@ final class SiloControlClient {
             isShowingRemoteControl = true
         }
         isConnecting = false
+        isLaunching = false
         isAutoResuming = false
         sessionIsAutoResumed = false
         negotiatedVersion = nil
         resetPendingHandoff()
         detachNowPlaying()
         session = nil
+        // Drop the last TV state with the session: a stale idle snapshot
+        // would render "Connected to…" over a session that no longer exists
+        // and hide the error the remote should be showing.
+        state = nil
         readTask?.cancel()
         readTask = nil
         self.connectionId = nil
@@ -930,6 +981,7 @@ final class SiloControlClient {
         state = nil
         detachNowPlaying()
         isConnecting = false
+        isLaunching = false
         isShowingRemoteControl = false
         endBackgroundRemoteControlGracePeriod()
         wasBackgroundedWithActiveSession = false
@@ -957,6 +1009,7 @@ final class SiloControlClient {
         read?.cancel()
         state = nil
         activeTarget = nil
+        isLaunching = false
         negotiatedVersion = nil
         resetPendingHandoff()
         detachNowPlaying()

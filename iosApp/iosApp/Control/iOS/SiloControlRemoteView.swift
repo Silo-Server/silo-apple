@@ -44,10 +44,14 @@ struct SiloControlRemoteView: View {
                         } label: {
                             Label("Choose a Different TV", systemImage: "tv")
                         }
-                        Button {
-                            controller.send(.stop)
-                        } label: {
-                            Label("Stop Playback", systemImage: "stop.fill")
+                        // Controls wait while a launch is in flight, and a Stop
+                        // can't cancel one mid-handoff, so it isn't offered then.
+                        if !controller.isLaunching {
+                            Button {
+                                controller.send(.stop)
+                            } label: {
+                                Label("Stop Playback", systemImage: "stop.fill")
+                            }
                         }
                         if controller.state?.supportsVideoGravity == true {
                             Menu {
@@ -115,6 +119,9 @@ struct SiloControlRemoteView: View {
     private var content: some View {
         if controller.isReconnecting {
             reconnectingView
+        } else if controller.isLaunching {
+            // Also while replacing a title: the outgoing one's controls are moot.
+            launchingView
         } else if let state = controller.state, state.contentId == nil {
             idleConnectedView(state: state)
         } else if let state = controller.state {
@@ -146,6 +153,17 @@ struct SiloControlRemoteView: View {
                 .foregroundStyle(Color.siloOnSurface)
             Text("Pick something from your library to start playing.")
                 .font(.subheadline)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(Color.siloSecondaryText)
+        }
+        .padding(32)
+    }
+
+    private var launchingView: some View {
+        VStack(spacing: 18) {
+            ProgressView()
+            Text("Starting playback on \(controller.activeTarget?.name ?? "Silo TV")…")
+                .font(.headline)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(Color.siloSecondaryText)
         }
