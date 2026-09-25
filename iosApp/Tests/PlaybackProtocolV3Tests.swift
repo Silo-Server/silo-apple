@@ -1653,8 +1653,9 @@ final class PlaybackProtocolV3Tests: XCTestCase {
     func testWatchPartySmallCorrectionOutsideWindowDoesNotReplan() {
         XCTAssertEqual(WatchPartyCorrection.resolve(drift: 0.3, locallySeekable: true), .none)
         XCTAssertEqual(WatchPartyCorrection.resolve(drift: 1.2, locallySeekable: true), .seek)
-        XCTAssertEqual(WatchPartyCorrection.resolve(drift: 1.2, locallySeekable: false), .temporaryRate(1.05))
-        XCTAssertEqual(WatchPartyCorrection.resolve(drift: -1.2, locallySeekable: false), .temporaryRate(0.95))
+        XCTAssertEqual(WatchPartyCorrection.resolve(drift: 1, locallySeekable: false), .rate(1.125))
+        XCTAssertEqual(WatchPartyCorrection.resolve(drift: 2, locallySeekable: false), .rate(WatchPartyCorrection.maxRate))
+        XCTAssertEqual(WatchPartyCorrection.resolve(drift: -1.2, locallySeekable: false), .rate(WatchPartyCorrection.minRate))
         XCTAssertEqual(WatchPartyCorrection.resolve(drift: 3, locallySeekable: false), .seek)
         XCTAssertEqual(WatchPartyCorrection.resolve(drift: .nan, locallySeekable: false), .none)
     }
