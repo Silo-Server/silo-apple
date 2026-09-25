@@ -102,6 +102,10 @@ final class SiloControlClient {
     /// frames (and presenting the player twice) for the same in-flight
     /// connection.
     private var launchInFlight = false
+    /// A launch is under way: the profile handoff, then the TV opening the
+    /// title. Keeps the remote on "Starting playback…" instead of the idle
+    /// screen until the TV reports content or the launch fails.
+    private(set) var isLaunching = false
     private var negotiatedVersion: Int?
     private var pendingHandoffRequestId: String?
     private var handoffChallenge: SiloControlHandoffChallenge?
@@ -120,6 +124,8 @@ final class SiloControlClient {
     /// attempt — and the "Reconnecting…" bar — would never finish.
     private static let connectTimeout: Duration = .seconds(6)
     private static let persistedTargetKey = "silocontrol.lastTarget"
+    /// Errors both TVs send in reply to a control command, never to a launch.
+    private static let controlErrorCodes: Set<String> = ["player_not_ready", "command_failed"]
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "control.client"
@@ -278,6 +284,7 @@ final class SiloControlClient {
         launchInFlight = true
         defer { launchInFlight = false }
 
+        isLaunching = true
         isConnecting = true
         errorMessage = nil
         isShowingRemoteControl = true
@@ -419,6 +426,9 @@ final class SiloControlClient {
     /// longer than the old challenge-only wait did.
     private func waitForHandoffChallengeOrReady(requestId: String) async throws -> HandoffFirstReply {
         for _ in 0..<600 {
+            // The session ended under us (dropped, failed, or replaced):
+            // stop waiting, so launchInFlight doesn't swallow a retry.
+            guard pendingHandoffRequestId == requestId else { throw CancellationError() }
             if let cancellation = handoffCancellation, cancellation.requestId == requestId {
                 throw SiloControlHandoffError.cancelled(cancellation.message ?? "The TV cancelled profile setup.")
             }
@@ -435,6 +445,9 @@ final class SiloControlClient {
 
     private func waitForHandoffReady(requestId: String) async throws -> SiloControlHandoffReady {
         for _ in 0..<600 {
+            // The session ended under us (dropped, failed, or replaced):
+            // stop waiting, so launchInFlight doesn't swallow a retry.
+            guard pendingHandoffRequestId == requestId else { throw CancellationError() }
             if let cancellation = handoffCancellation, cancellation.requestId == requestId {
                 throw SiloControlHandoffError.cancelled(cancellation.message ?? "The TV cancelled profile setup.")
             }
@@ -754,6 +767,9 @@ final class SiloControlClient {
                 quietDisconnect()
                 return
             }
+            if !isIdle {
+                isLaunching = false
+            }
             if isAutoResuming, !isIdle {
                 isAutoResuming = false  // playback confirmed — reveal the mini-bar
             }
@@ -771,6 +787,12 @@ final class SiloControlClient {
                 clearSession()
                 errorMessage = error.message
                 isShowingRemoteControl = keepCoverVisible
+                return
+            }
+            if isLaunching, !Self.controlErrorCodes.contains(error.code) {
+                // The TV refused or couldn't open the title just sent. A
+                // control pressed mid-launch (player_not_ready) isn't that.
+                fail(error.message, connectionId: connectionId)
                 return
             }
             errorMessage = error.message
@@ -839,6 +861,10 @@ final class SiloControlClient {
         connectionId = nil
         if old != nil { Task { await old?.close() } }
         isReconnecting = true
+        // A launch in flight died with the link; after reconnecting, the
+        // TV's state says whether the title started.
+        isLaunching = false
+        resetPendingHandoff()
         errorMessage = nil
 
         // While backgrounded, sockets are suspended and every attempt would
@@ -891,12 +917,17 @@ final class SiloControlClient {
             isShowingRemoteControl = true
         }
         isConnecting = false
+        isLaunching = false
         isAutoResuming = false
         sessionIsAutoResumed = false
         negotiatedVersion = nil
         resetPendingHandoff()
         detachNowPlaying()
         session = nil
+        // Drop the last TV state with the session: a stale idle snapshot
+        // would render "Connected to…" over a session that no longer exists
+        // and hide the error the remote should be showing.
+        state = nil
         readTask?.cancel()
         readTask = nil
         self.connectionId = nil
@@ -924,6 +955,7 @@ final class SiloControlClient {
         state = nil
         detachNowPlaying()
         isConnecting = false
+        isLaunching = false
         isShowingRemoteControl = false
         endBackgroundRemoteControlGracePeriod()
         wasBackgroundedWithActiveSession = false
@@ -951,6 +983,7 @@ final class SiloControlClient {
         read?.cancel()
         state = nil
         activeTarget = nil
+        isLaunching = false
         negotiatedVersion = nil
         resetPendingHandoff()
         detachNowPlaying()
