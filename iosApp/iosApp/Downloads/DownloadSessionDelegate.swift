@@ -1,17 +1,47 @@
 import Foundation
 import OSLog
 
+/// The task an event came from: its session-local identifier, the owner tag
+/// it was started with, and the request the manager attributes an untagged
+/// task by (see `DownloadTaskTag.attributing`).
+struct DownloadTaskRef: Sendable, Equatable {
+    let taskId: Int
+    let tag: DownloadTaskTag?
+    let requestURL: URL?
+    let requestProfileId: String?
+
+    init(taskId: Int, tag: DownloadTaskTag?, requestURL: URL?, requestProfileId: String?) {
+        self.taskId = taskId
+        self.tag = tag
+        self.requestURL = requestURL
+        self.requestProfileId = requestProfileId
+    }
+
+    /// A task created from resume data rebuilds its original request,
+    /// headers included, so this reads the same for either kind of task.
+    init(_ task: URLSessionTask) {
+        let request = task.originalRequest ?? task.currentRequest
+        self.init(
+            taskId: task.taskIdentifier,
+            tag: DownloadTaskTag(taskDescription: task.taskDescription),
+            requestURL: request?.url,
+            requestProfileId: request?.value(forHTTPHeaderField: "X-Profile-Id")
+        )
+    }
+}
+
 /// Events surfaced by the background download session, consumed by
 /// `DownloadManager` on the MainActor via an `AsyncStream`.
 enum DownloadSessionEvent: Sendable {
-    case progress(taskId: Int, bytesWritten: Int64, totalExpected: Int64)
-    /// Media transfer succeeded (HTTP 2xx). `stagedURL` is a stable file in
-    /// the staging directory — the volatile temp file has already been
-    /// moved there synchronously inside the delegate callback.
-    case finished(taskId: Int, stagedURL: URL, statusCode: Int)
+    case progress(DownloadTaskRef, bytesWritten: Int64, totalExpected: Int64)
+    /// Media transfer succeeded (HTTP 2xx). The volatile temp file has
+    /// already been moved to `fileURL` synchronously inside the delegate
+    /// callback: the owner's `DownloadFilePaths.finishedTransferURL(for:)`
+    /// for a tagged task, the staging directory for an untagged one.
+    case finished(DownloadTaskRef, fileURL: URL)
     /// Transfer ended without a usable file: a network error, a
     /// cancellation, or a non-2xx server response (e.g. 409 revoked).
-    case failed(taskId: Int, statusCode: Int?, resumeData: Data?, message: String)
+    case failed(DownloadTaskRef, statusCode: Int?, resumeData: Data?, message: String)
     /// All background events for this launch have been delivered; the app
     /// may call the system-provided completion handler.
     case allEventsDelivered
@@ -61,10 +91,11 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
 
     // MARK: - Task control
 
-    /// Start a fresh media download. Returns the task identifier to persist
-    /// on the record for relaunch reconnection.
-    func start(request: URLRequest) -> Int {
+    /// Start a fresh media download owned by `tag`. Returns the task
+    /// identifier the record keeps to cancel or pause it.
+    func start(request: URLRequest, tag: DownloadTaskTag) -> Int {
         let task = session.downloadTask(with: request)
+        task.taskDescription = tag.taskDescription
         task.resume()
         return task.taskIdentifier
     }
@@ -73,13 +104,14 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
     /// Returns nil, without sending anything, when the data resumes a
     /// request other than a v2 download file route (for example one saved
     /// before the file route moved); the caller restarts from the manifest.
-    func resume(data: Data) -> Int? {
+    func resume(data: Data, tag: DownloadTaskTag) -> Int? {
         let task = session.downloadTask(withResumeData: data)
         guard !Self.isRetired(task) else {
             Self.logger.notice("Discarding resume data for a retired download URL")
             task.cancel()
             return nil
         }
+        task.taskDescription = tag.taskDescription
         task.resume()
         return task.taskIdentifier
     }
@@ -92,9 +124,21 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
         return !APIv2Client.isDownloadFileURL(url)
     }
 
-    func cancel(taskId: Int) {
+    /// Whether a task may be controlled by a caller that expects `expected`
+    /// to own it. Identifiers repeat across session instances, so a task
+    /// whose tag names another owner is never touched. An untagged task
+    /// (from an earlier build) matches by identifier alone, and a nil
+    /// `expected` skips the check.
+    private static func isOwned(_ task: URLSessionTask, by expected: DownloadTaskTag?) -> Bool {
+        guard let expected, let tag = DownloadTaskTag(taskDescription: task.taskDescription) else { return true }
+        return tag == expected
+    }
+
+    func cancel(taskId: Int, expecting expected: DownloadTaskTag?) {
         session.getAllTasks { tasks in
-            tasks.first(where: { $0.taskIdentifier == taskId })?.cancel()
+            guard let task = tasks.first(where: { $0.taskIdentifier == taskId }),
+                  Self.isOwned(task, by: expected) else { return }
+            task.cancel()
         }
     }
 
@@ -112,12 +156,13 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
 
     /// Suspend a transfer by cancelling it with resume data. Returns `nil`
     /// when the server/transfer doesn't support ranged resume or the task is
-    /// no longer live — callers must treat that as "restart from zero".
-    func pause(taskId: Int) async -> Data? {
+    /// no longer live — callers must treat that as "restart from zero". A
+    /// task owned by someone other than `expected` is left running.
+    func pause(taskId: Int, expecting expected: DownloadTaskTag?) async -> Data? {
         await withCheckedContinuation { cont in
             session.getAllTasks { tasks in
                 guard let task = tasks.first(where: { $0.taskIdentifier == taskId })
-                    as? URLSessionDownloadTask else {
+                    as? URLSessionDownloadTask, Self.isOwned(task, by: expected) else {
                     cont.resume(returning: nil)
                     return
                 }
@@ -128,20 +173,20 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
         }
     }
 
-    /// Identifiers of tasks still live in the (possibly relaunched) session.
-    /// `retired` holds the live tasks that request anything other than a v2
-    /// download file route; the caller cancels them and restarts their
-    /// downloads.
-    func liveTasks() async -> (current: Set<Int>, retired: Set<Int>) {
+    /// Tasks still live in the (possibly relaunched) session, of every
+    /// scope. `retired` holds the live tasks that request anything other
+    /// than a v2 download file route; the caller cancels them and restarts
+    /// their downloads.
+    func liveTasks() async -> (current: [DownloadTaskRef], retired: [DownloadTaskRef]) {
         await withCheckedContinuation { cont in
             session.getAllTasks { tasks in
-                var current: Set<Int> = []
-                var retired: Set<Int> = []
+                var current: [DownloadTaskRef] = []
+                var retired: [DownloadTaskRef] = []
                 for task in tasks {
                     if Self.isRetired(task) {
-                        retired.insert(task.taskIdentifier)
+                        retired.append(DownloadTaskRef(task))
                     } else {
-                        current.insert(task.taskIdentifier)
+                        current.append(DownloadTaskRef(task))
                     }
                 }
                 cont.resume(returning: (current, retired))
@@ -201,7 +246,7 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
         totalBytesExpectedToWrite: Int64
     ) {
         continuation.yield(.progress(
-            taskId: downloadTask.taskIdentifier,
+            DownloadTaskRef(downloadTask),
             bytesWritten: totalBytesWritten,
             totalExpected: totalBytesExpectedToWrite
         ))
@@ -212,14 +257,15 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
         downloadTask: URLSessionDownloadTask,
         didFinishDownloadingTo location: URL
     ) {
-        let taskId = downloadTask.taskIdentifier
+        let ref = DownloadTaskRef(downloadTask)
+        let taskId = ref.taskId
         let statusCode = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? 0
 
         // A non-2xx "success" means the body is an error envelope, not media.
         guard (200..<300).contains(statusCode) else {
             Self.logger.error("Download task \(taskId) finished with HTTP \(statusCode); treating as failure")
             continuation.yield(.failed(
-                taskId: taskId,
+                ref,
                 statusCode: statusCode,
                 resumeData: nil,
                 message: "HTTP \(statusCode)"
@@ -227,17 +273,20 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
             return
         }
 
-        // The temp file is only valid during this callback — move it to a
-        // stable staging location synchronously, then hand off the path.
-        let staged = DownloadFilePaths.stagingFileURL(taskIdentifier: taskId)
-        try? FileManager.default.removeItem(at: staged)
+        // The temp file is only valid during this callback — move it
+        // synchronously, then hand off the path. A tagged task's file goes
+        // straight into its owner's download directory, so it survives
+        // whichever scope is loaded and the process itself.
+        let destination = ref.tag.map(DownloadFilePaths.finishedTransferURL(for:))
+            ?? DownloadFilePaths.stagingFileURL(taskIdentifier: taskId)
+        try? FileManager.default.removeItem(at: destination)
         do {
-            try FileManager.default.moveItem(at: location, to: staged)
-            continuation.yield(.finished(taskId: taskId, stagedURL: staged, statusCode: statusCode))
+            try FileManager.default.moveItem(at: location, to: destination)
+            continuation.yield(.finished(ref, fileURL: destination))
         } catch {
             Self.logger.error("Failed to stage finished download \(taskId): \(String(describing: error), privacy: .public)")
             continuation.yield(.failed(
-                taskId: taskId,
+                ref,
                 statusCode: statusCode,
                 resumeData: nil,
                 message: "stage_failed"
@@ -259,7 +308,7 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
         // A user-initiated cancel still surfaces here; the manager checks
         // its own intent and ignores cancellations it requested.
         continuation.yield(.failed(
-            taskId: task.taskIdentifier,
+            DownloadTaskRef(task),
             statusCode: statusCode,
             resumeData: resumeData,
             message: error.localizedDescription
