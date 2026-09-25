@@ -72,6 +72,11 @@ final class WatchPartySession {
     @ObservationIgnored private var lastReport: Date = .distantPast
     @ObservationIgnored private var lastPing: Date = .distantPast
     @ObservationIgnored private var lastReady: Date = .distantPast
+    /// Stalls shorter than this stay local, as on the web client: the room
+    /// pauses only for a stall that outlasts the catch-up band, and a short
+    /// rebuffer after a correction seek is not a stall. See the server's
+    /// Watch Party buffering policy.
+    static let bufferingGrace: TimeInterval = 2
     @ObservationIgnored private var bufferBegan: Date?
     @ObservationIgnored private var reportedBuffering = false
     @ObservationIgnored private var serverOffset: TimeInterval = 0
@@ -723,7 +728,7 @@ final class WatchPartySession {
                   snapshot.fileId == playbackContext?.fileId else { return }
             if snapshot.isBuffering {
                 if bufferBegan == nil { bufferBegan = now }
-                if !reportedBuffering, now.timeIntervalSince(bufferBegan!) >= 0.5 {
+                if !reportedBuffering, now.timeIntervalSince(bufferBegan!) >= Self.bufferingGrace {
                     reportedBuffering = true
                     try await socket.send(WatchPartyClientMessage(type: "buffering", sessionId: session,
                         positionSeconds: snapshot.sourceTime, isPaused: !snapshot.isPlaying))
