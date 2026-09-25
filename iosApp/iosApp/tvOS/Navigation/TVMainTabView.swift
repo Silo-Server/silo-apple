@@ -229,11 +229,13 @@ struct TVMainTabView: View {
             // Re-read tab-visibility prefs for the now-known profile (the
             // singleton may hold the previous profile's value after a switch).
             navPrefs.refresh()
+            // A cold-launch Siri search can be requested before this view
+            // exists to observe the change. Open it before the network
+            // refresh below so a slow server can't hold it back; a later
+            // menu change leaves the pushed Search in place.
+            openRequestedSearch()
             await uiCustomization.refresh()
             controlReceiver.start(router: router)
-            // A cold-launch Siri search can be requested before this view
-            // exists to observe the change.
-            openRequestedSearch()
             await loadCurrentProfile()
         }
         .task(id: currentLibraryAuthority) {
