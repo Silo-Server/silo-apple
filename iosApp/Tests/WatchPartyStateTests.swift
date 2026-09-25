@@ -148,11 +148,20 @@ final class WatchPartyStateTests: XCTestCase {
         // that follows the seek.
         var seek = WatchPartyStallTimer()
         XCTAssertFalse(seek.observe(buffering: true, at: now))
-        seek.interrupt()
+        seek.interrupt(buffering: true)
         XCTAssertFalse(seek.observe(buffering: true, at: now.addingTimeInterval(1.5)))
         XCTAssertFalse(seek.observe(buffering: true, at: now.addingTimeInterval(3)),
             "The grace restarts when the seek settles")
         XCTAssertTrue(seek.observe(buffering: true, at: now.addingTimeInterval(3.5)))
+
+        // A reported stall that recovers during a seek ends there, so a new
+        // stall after the seek is reported as well.
+        seek.interrupt(buffering: true)
+        XCTAssertTrue(seek.reported, "A stall still in progress stays reported")
+        seek.interrupt(buffering: false)
+        XCTAssertFalse(seek.reported)
+        XCTAssertFalse(seek.observe(buffering: true, at: now.addingTimeInterval(4)))
+        XCTAssertTrue(seek.observe(buffering: true, at: now.addingTimeInterval(6)))
     }
 
     func testOutboundPingPreservesFractionalTimeForClockSynchronization() throws {

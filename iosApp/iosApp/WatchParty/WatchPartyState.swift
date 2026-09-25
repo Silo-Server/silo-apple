@@ -75,10 +75,14 @@ struct WatchPartyStallTimer {
     private(set) var began: Date?
     private(set) var reported = false
 
-    /// A seek or room command is in progress. A stall timed before it is not
-    /// the stall that follows it, so the grace restarts once it settles. A
-    /// stall already reported stays reported until media recovers.
-    mutating func interrupt() { began = nil }
+    /// A seek or room command is in progress, so this tick cannot report. A
+    /// stall timed before it is not the stall that follows it, so the grace
+    /// restarts once it settles. A stall already reported stays reported
+    /// while media is still stalled; media that recovered ends it, so the
+    /// next stall is reported too.
+    mutating func interrupt(buffering: Bool) {
+        if buffering { began = nil } else { reset() }
+    }
 
     /// Returns true once per stall, when it has lasted the grace period.
     mutating func observe(buffering: Bool, at now: Date) -> Bool {

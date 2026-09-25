@@ -717,7 +717,7 @@ final class WatchPartySession {
             guard !snapshot.isSeeking, commands.pending == nil,
                   now.timeIntervalSince(lastCommandCompleted) >= 0.25,
                   snapshot.fileId == playbackContext?.fileId else {
-                stall.interrupt()
+                stall.interrupt(buffering: snapshot.isBuffering)
                 return
             }
             if stall.observe(buffering: snapshot.isBuffering, at: now) {
