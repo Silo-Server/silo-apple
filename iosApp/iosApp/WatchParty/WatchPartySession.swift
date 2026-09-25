@@ -622,6 +622,14 @@ final class WatchPartySession {
     private func requestTransport(_ action: WatchPartyPlaybackAction, position: Double, paused: Bool) {
         guard connection == .connected, attachmentConfirmed, let room,
               action.isPermitted(canPlayPause: room.selfCanControlTransport, canSeek: room.selfRole == .host) else { return }
+        // A session now attaches while its media is still loading. Play and
+        // pause carry the local position, which the room adopts as its
+        // anchor; before the media is playable that is not a real position.
+        // A seek carries its own target.
+        switch action {
+        case .seek: break
+        case .play, .pause: guard adapter?.snapshot.isReady == true else { return }
+        }
         let wire: WatchPartyTransportAction
         let target: Double
         switch action {
