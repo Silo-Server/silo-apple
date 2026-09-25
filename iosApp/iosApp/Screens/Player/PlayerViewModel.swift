@@ -706,8 +706,9 @@ class PlayerViewModel {
     private var offlinePlaybackContext: OfflinePlaybackContext?
     /// Mirrors the server's default watched threshold (90%) so an offline
     /// watch latches `completed` — and with it delete-watched retention and
-    /// the reclaim sheet — the same way an online session would.
-    private static let offlineWatchedFraction: Double = 0.9
+    /// the reclaim sheet — the same way an online session would, and so a
+    /// Series page moves past an episode the server now counts as watched.
+    private static let defaultWatchedFraction: Double = 0.9
 
     /// Cached external subtitle URLs returned by the server; added to the
     /// player once the file has loaded.
@@ -959,15 +960,15 @@ class PlayerViewModel {
     /// apply to the end-of-playback screen.
     private var nextUpPromptDismissed = false
     private(set) var contentIdsNeedingDetailRefresh: Set<String> = []
+    /// Series of the last episode whose watch detail loaded. Covers the gap
+    /// while a replacement episode loads and `currentWatchDetail` is empty.
+    private var lastSeriesPlayback: (seriesId: String, seasonNumber: Int?)?
+    /// `SeriesPlaybackReturnInbox` generation when this player was created.
+    private let seriesReturnGeneration: Int
     #if os(iOS)
     @ObservationIgnored
     private var refreshHomeAfterPlaybackWrite: (@MainActor () -> Void)?
     #endif
-    /// Items that crossed the same completion boundary used by the final
-    /// server progress report. The tvOS detail page consumes this only after
-    /// that report has finished so it can move its editorial selection to the
-    /// next unwatched episode without racing stale catalog data.
-    private(set) var completedContentIdsNeedingDetailAdvance: Set<String> = []
     var nextUpCarouselItems: [PlayerOnDeckItem] {
         let hiddenIds = Set([lastLoadRequest?.contentId, nextUpEpisode?.contentId].compactMap { $0 })
         return nextUpOnDeckItems.filter { !hiddenIds.contains($0.contentId) }
@@ -995,6 +996,7 @@ class PlayerViewModel {
 
     init(libraryId: Int? = nil) {
         self.initialLibraryId = libraryId
+        self.seriesReturnGeneration = SeriesPlaybackReturnInbox.generation
         do {
             aetherPlaybackController = try AetherPlaybackController()
         } catch {
@@ -2827,23 +2829,47 @@ class PlayerViewModel {
     /// before a replacement load or teardown clears `currentWatchDetail`.
     /// Series and synthetic season ids are included because tvOS keeps the
     /// combined Series page resident while its episode player is pushed.
-    private func recordCurrentPlaybackMutation(markedCompleted: Bool) {
+    private func recordCurrentPlaybackMutation() {
         let currentContentId = currentWatchDetail?.contentId ?? lastLoadRequest?.contentId
         if let currentContentId, !currentContentId.isEmpty {
             contentIdsNeedingDetailRefresh.insert(currentContentId)
-            if markedCompleted {
-                completedContentIdsNeedingDetailAdvance.insert(currentContentId)
-            }
         }
 
         guard let detail = currentWatchDetail,
               let rawSeriesId = detail.seriesId else { return }
         let seriesId = rawSeriesId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !seriesId.isEmpty else { return }
+        lastSeriesPlayback = (seriesId, detail.seasonNumber)
         contentIdsNeedingDetailRefresh.insert(seriesId)
         if let seasonNumber = detail.seasonNumber {
             contentIdsNeedingDetailRefresh.insert("\(seriesId)-S\(seasonNumber)")
         }
+    }
+
+    /// The Series episode on screen as the player closes, so its Series page
+    /// can land on it or on the episode after it. See `SeriesPlaybackReturn`.
+    private func seriesPlaybackReturn(completed: Bool) -> SeriesPlaybackReturn? {
+        if let detail = currentWatchDetail {
+            guard let seriesId = detail.seriesId?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !seriesId.isEmpty else { return nil }
+            return SeriesPlaybackReturn(
+                episodeContentId: detail.contentId,
+                seriesContentId: seriesId,
+                seasonNumber: detail.seasonNumber,
+                completed: completed
+            )
+        }
+        // The player closed while the next episode was still loading. Autoplay
+        // keeps that episode's season in `nextUpEpisode`; otherwise assume the
+        // previous episode's season.
+        guard let loadingId = lastLoadRequest?.contentId, let lastSeriesPlayback else { return nil }
+        let queued = nextUpEpisode?.contentId == loadingId ? nextUpEpisode : nil
+        return SeriesPlaybackReturn(
+            episodeContentId: loadingId,
+            seriesContentId: lastSeriesPlayback.seriesId,
+            seasonNumber: queued?.seasonNumber ?? lastSeriesPlayback.seasonNumber,
+            completed: false
+        )
     }
 
     private func loadAether(
@@ -3683,7 +3709,7 @@ class PlayerViewModel {
         )
 
         if !isPremature {
-            recordCurrentPlaybackMutation(markedCompleted: true)
+            recordCurrentPlaybackMutation()
 
             // Aether has already delivered the native terminal event, so
             // publish the terminal position now rather than waiting for the
@@ -4074,14 +4100,7 @@ class PlayerViewModel {
         PosterImageCache.trimDecodedMemory()
         #endif
         isNextUpTransitioning = origin == .autoplay && showNextUpScreen
-        let currentItemCompleted = PlayerNextUpCompletionPolicy.shouldFinalizeAsCompleted(
-            isNextUpPresented: showNextUpScreen,
-            hasReachedEndOfFile: hasReachedEndOfFile,
-            currentTime: currentTime,
-            duration: duration,
-            promptSeconds: settings.nextUpPromptSeconds
-        )
-        recordCurrentPlaybackMutation(markedCompleted: currentItemCompleted)
+        recordCurrentPlaybackMutation()
         let pendingNaturalEndProgressTask = naturalEndProgressTask
         naturalEndProgressTask = nil
         // Intro decisions belong to the content, not to one stream of it. A
@@ -6408,7 +6427,16 @@ class PlayerViewModel {
             duration: duration,
             promptSeconds: settings.nextUpPromptSeconds
         )
-        recordCurrentPlaybackMutation(markedCompleted: currentItemCompleted)
+        recordCurrentPlaybackMutation()
+        // The server counts an episode watched past its threshold, which is
+        // often before the Next Up prompt. Leaving during the credits must
+        // still move the Series page on to the next episode.
+        let crossedWatchedThreshold = duration.isFinite && duration > 0
+            && currentTime / duration > Self.defaultWatchedFraction
+        SeriesPlaybackReturnInbox.publish(
+            seriesPlaybackReturn(completed: currentItemCompleted || crossedWatchedThreshold),
+            generation: seriesReturnGeneration
+        )
         let pendingNaturalEndProgressTask = naturalEndProgressTask
         naturalEndProgressTask = nil
         isDisposed = true
@@ -7829,7 +7857,7 @@ class PlayerViewModel {
         guard position.isFinite, position >= 0 else { return }
         let duration = duration.isFinite && duration > 0 ? duration : 0
         let watched = markCompleted
-            || (duration > 0 && position / duration > Self.offlineWatchedFraction)
+            || (duration > 0 && position / duration > Self.defaultWatchedFraction)
         DownloadManager.shared.recordOfflineProgress(
             mediaItemId: context.mediaItemId,
             position: position,

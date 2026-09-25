@@ -28,6 +28,12 @@ struct TVItemDetailView: View {
     /// Series owns one in-place episode selection. `nil` means the Show tab
     /// and its suggested next episode are active.
     @State private var activeSeriesEpisodeContentId: String?
+    /// Bumped to move the episode row to `activeSeriesEpisodeContentId`
+    /// after the player closes, including when the row holds focus.
+    @State private var seriesEpisodeSelectionRequest = 0
+    @State private var isPageVisible = false
+    /// Set when this page starts playback, so it only acts on its own return.
+    @State private var awaitsPlaybackReturn = false
     @State private var isLoadingNextUpPlaybackDetail = false
     @State private var didLoadNextUpPlaybackDetail = false
     @State private var carouselLoadFailed = false
@@ -82,6 +88,7 @@ struct TVItemDetailView: View {
             set: { viewModel.personalStateNotice = $0 }
         ))
         .onAppear {
+            isPageVisible = true
             Self.focusLogger.debug("itemDetail.appear contentId=\(contentId, privacy: .public) pathDepth=\(router.path.count, privacy: .public)")
             allowRemoteTrailers = TVTrailerLaunch.canDisplayRemoteCards()
             seedSubtitleOverrideIfNeeded()
@@ -92,6 +99,7 @@ struct TVItemDetailView: View {
             viewModel.resumeTrailerFetchIfNeeded()
         }
         .onDisappear {
+            isPageVisible = false
             viewModel.cancelDetailLoading()
             Self.focusLogger.debug("itemDetail.disappear contentId=\(contentId, privacy: .public) pathDepth=\(router.path.count, privacy: .public)")
             viewModel.cancelDeferredEpisodePersonalListStateRefresh()
@@ -120,13 +128,18 @@ struct TVItemDetailView: View {
             }
         }
         .task(id: contentId) {
+            // Returning from the player restarts this task. Keep the episode
+            // the page was showing instead of falling back to a stale guess.
+            let isReturning = hasStartedDetailLoad
             let entryContext = !hasStartedDetailLoad
                 && navigationContext?.seriesContentId == contentId
                 ? navigationContext : nil
             didClearSubtitleOverride = false
             didClearNextUpSubtitleOverride = false
             nextUpPlaybackDetail = nil
-            activeSeriesEpisodeContentId = entryContext?.episodeContentId
+            if !isReturning {
+                activeSeriesEpisodeContentId = entryContext?.episodeContentId
+            }
             isLoadingNextUpPlaybackDetail = false
             didLoadNextUpPlaybackDetail = false
             if let seasonNumber = entryContext?.seasonNumber {
@@ -134,15 +147,21 @@ struct TVItemDetailView: View {
                     seasonNumber, seriesId: contentId
                 )
             } else {
+                if isReturning, let playback = takePlaybackReturn() {
+                    await applySeriesPlaybackReturn(playback)
+                }
                 viewModel.initialResumeSeasonNumber = viewModel.selectedSeason?.seasonNumber
+                    ?? viewModel.initialResumeSeasonNumber
             }
             hasStartedDetailLoad = true
             await viewModel.loadDetail(contentId: contentId)
             seedSubtitleOverrideIfNeeded()
         }
-        .onReceive(NotificationCenter.default.publisher(for: .tvPlaybackStateDidRefresh)) { note in
-            guard let event = note.object as? TVPlaybackStateRefreshEvent else { return }
-            applyCompletedPlaybackRefresh(event)
+        .onReceive(NotificationCenter.default.publisher(for: .seriesPlaybackDidReturn)) { _ in
+            // The player can finish tearing down after this page reappears.
+            // While the page is hidden, its reappearing task applies the return.
+            guard hasStartedDetailLoad, isPageVisible, let playback = takePlaybackReturn() else { return }
+            Task { await applySeriesPlaybackReturn(playback) }
         }
     }
 
@@ -154,49 +173,21 @@ struct TVItemDetailView: View {
         nonmutating set { viewModel.preferredVersionFileId = newValue }
     }
 
-    /// The cache has already reloaded authoritative watched/progress data when
-    /// this arrives. Advance only the editorial episode selection; the native
-    /// episode rail keeps ownership of focus and scrolling exactly as before.
-    private func applyCompletedPlaybackRefresh(_ event: TVPlaybackStateRefreshEvent) {
-        guard event.refreshedContentIds.contains(contentId),
-              viewModel.detail?.type == "series",
-              !event.completedContentIds.isEmpty else { return }
+    private func takePlaybackReturn() -> SeriesPlaybackReturn? {
+        guard awaitsPlaybackReturn,
+              let playback = SeriesPlaybackReturnInbox.take(seriesContentId: contentId) else { return nil }
+        awaitsPlaybackReturn = false
+        return playback
+    }
 
-        let activeWasCompleted = activeSeriesEpisodeContentId.map {
-            event.completedContentIds.contains($0)
-        } ?? false
-        let completedEpisodeIsVisible = viewModel.episodes.contains {
-            event.completedContentIds.contains($0.contentId)
-        }
-        guard activeSeriesEpisodeContentId == nil
-                || activeWasCompleted
-                || completedEpisodeIsVisible else { return }
-
-        if activeSeriesEpisodeContentId == nil,
-           let inProgress = viewModel.episodes.first(where: {
-               $0.userData?.isInProgress == true && !($0.userData?.played ?? false)
-           }) {
-            activeSeriesEpisodeContentId = inProgress.contentId
-            return
-        }
-
-        if let activeSeriesEpisodeContentId,
-           let completedIndex = viewModel.seriesEpisodeWindow.episodes.firstIndex(where: {
-               $0.contentId == activeSeriesEpisodeContentId
-           }),
-           let next = viewModel.seriesEpisodeWindow.episodes.dropFirst(completedIndex + 1).first(where: {
-               !($0.userData?.played ?? false)
-           }) {
-            viewModel.activateLoadedSeriesEpisode(next.contentId)
-            self.activeSeriesEpisodeContentId = next.contentId
-            return
-        }
-
-        if let nextUnwatched = viewModel.episodes.first(where: {
-            !($0.userData?.played ?? false)
-        }) {
-            activeSeriesEpisodeContentId = nextUnwatched.contentId
-        }
+    /// Land on the episode after a finished one, or on the same episode after
+    /// a partial watch, and move the episode row there with it.
+    private func applySeriesPlaybackReturn(_ playback: SeriesPlaybackReturn) async {
+        guard let episodeId = await viewModel.prepareSeriesPlaybackReturn(playback),
+              !Task.isCancelled else { return }
+        viewModel.activateLoadedSeriesEpisode(episodeId)
+        activeSeriesEpisodeContentId = episodeId
+        seriesEpisodeSelectionRequest &+= 1
     }
 
     private var preferredAudioTrackIndex: Int? {
@@ -296,6 +287,7 @@ struct TVItemDetailView: View {
                     if carouselLoadFailed { carouselRetryGeneration &+= 1 }
                 },
                 activeEpisodeContentId: activeSeriesEpisodeContentId,
+                episodeSelectionRequest: seriesEpisodeSelectionRequest,
                 episodeFavoriteStates: viewModel.episodeFavoriteStates,
                 episodeWatchlistStates: viewModel.episodeWatchlistStates,
                 isLoadingEpisodes: viewModel.isLoadingSeriesHierarchy,
@@ -338,6 +330,8 @@ struct TVItemDetailView: View {
                     activeSeriesEpisodeContentId = id
                 },
                 onPlayEpisode: { id, fileId, startFromBeginning in
+                    awaitsPlaybackReturn = true
+                    SeriesPlaybackReturnInbox.discardPending()
                     let episode = viewModel.seriesEpisodeWindow.episodes.first(where: { $0.contentId == id })
                     let resumePosition = startFromBeginning
                         ? nil

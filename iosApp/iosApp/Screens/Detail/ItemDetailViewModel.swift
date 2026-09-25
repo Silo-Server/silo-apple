@@ -137,6 +137,9 @@ class ItemDetailViewModel {
     /// Season whose episodes are actually painted. Used to roll back an
     /// optimistic chip/page selection if its request fails.
     private var loadedSeasonNumber: Int?
+    /// Bumped by explicit season choices, not by automatic refreshes. A
+    /// playback return that finishes loading after one leaves it alone.
+    @ObservationIgnored private var seasonChoiceGeneration = 0
 
     /// Bumped by every writer of `detail` + `CacheKey.itemDetail`, so a load
     /// that started earlier but finishes later cannot publish over a newer
@@ -1084,7 +1087,10 @@ class ItemDetailViewModel {
         guard !Task.isCancelled else { return }
         // An explicit chip/page selection supersedes the one-shot resume intent.
         // Automatic hierarchy refreshes must retain it until the catalog succeeds.
-        if !forceRefresh { initialResumeSeasonNumber = nil }
+        if !forceRefresh {
+            initialResumeSeasonNumber = nil
+            seasonChoiceGeneration += 1
+        }
         let fallbackSeasonNumber = loadedSeasonNumber ?? selectedSeason?.seasonNumber
         selectedSeason = season
         guard let seriesId = seriesContentId else { return }
@@ -1111,6 +1117,89 @@ class ItemDetailViewModel {
             coalescesMetadataRequest: coalescesMetadataRequest,
             fetchEpisodes: fetchEpisodes
         )
+    }
+
+    /// Select the season that holds the episode to land on after the player
+    /// closes, and return that episode. `nil` keeps the page's selection.
+    func prepareSeriesPlaybackReturn(
+        _ playback: SeriesPlaybackReturn,
+        fetchEpisodes: (@Sendable (String, Int) async throws -> EpisodesResponse)? = nil
+    ) async -> String? {
+        guard detail?.type == "series", detail?.contentId == playback.seriesContentId else { return nil }
+        if let contentId = playback.episodeToSelect(in: loadedSeriesEpisodes) { return contentId }
+
+        let ordered = SeriesEpisodeWindow.orderedSeasons(seasons)
+        guard let playedIndex = ordered.firstIndex(where: { $0.seasonNumber == playback.seasonNumber }) else {
+            return nil
+        }
+        if !loadedSeriesEpisodes.contains(where: { $0.contentId == playback.episodeContentId }) {
+            // Autoplay can carry playback into a season the page is not showing.
+            guard await selectSeasonForPlaybackReturn(ordered[playedIndex], fetchEpisodes: fetchEpisodes) else {
+                return nil
+            }
+            if let contentId = playback.episodeToSelect(in: loadedSeriesEpisodes) { return contentId }
+        }
+        guard playback.completed else { return nil }
+
+        // A finished season finale continues with the next regular season.
+        // After the last one, stay on the finished finale.
+        guard let next = ordered[(playedIndex + 1)...].first(where: {
+            $0.episodeCount > 0 && !($0.isSpecials == true || $0.seasonNumber == 0)
+        }) else {
+            return loadedSeriesEpisodes.contains(where: { $0.contentId == playback.episodeContentId })
+                ? playback.episodeContentId : nil
+        }
+        guard await selectSeasonForPlaybackReturn(next, fetchEpisodes: fetchEpisodes),
+              let first = episodes.first,
+              first.seasonNumber == next.seasonNumber else { return nil }
+        return first.contentId
+    }
+
+    /// Select `season` with its page already in hand. A forced `selectSeason`
+    /// publishes nothing when a concurrent refresh supersedes its request,
+    /// which would drop the return. Returns whether `season` is selected.
+    private func selectSeasonForPlaybackReturn(
+        _ season: Season,
+        fetchEpisodes: (@Sendable (String, Int) async throws -> EpisodesResponse)?
+    ) async -> Bool {
+        guard let seriesId = seriesContentId else { return false }
+        let choiceGeneration = seasonChoiceGeneration
+        if episodesBySeason[season.seasonNumber] == nil {
+            let response: EpisodesResponse
+            do {
+                if let fetchEpisodes {
+                    response = try await fetchEpisodes(seriesId, season.seasonNumber)
+                } else {
+                    response = try await MetadataRequestPool.shared.episodes(
+                        seriesId: seriesId, seasonNumber: season.seasonNumber, libraryId: libraryId
+                    )
+                }
+            } catch {
+                return false
+            }
+            guard !Task.isCancelled, seriesContentId == seriesId else { return false }
+            ResponseCache.shared.set(
+                response,
+                for: CacheKey.itemEpisodes(seriesId: seriesId, seasonNumber: season.seasonNumber, libraryId: libraryId)
+            )
+            if episodesBySeason[season.seasonNumber] == nil {
+                episodesBySeason[season.seasonNumber] = response.episodes.sorted { $0.episodeNumber < $1.episodeNumber }
+            }
+            // The user chose a season while this page loaded; keep their choice.
+            guard choiceGeneration == seasonChoiceGeneration else { return false }
+        }
+        // The page is in memory, so this publishes it synchronously.
+        await selectSeason(season)
+        return !Task.isCancelled && selectedSeason?.seasonNumber == season.seasonNumber
+    }
+
+    /// Episodes the Series page can select without loading another season.
+    private var loadedSeriesEpisodes: [EpisodeListItem] {
+        #if os(tvOS)
+        seriesEpisodeWindow.episodes
+        #else
+        episodes
+        #endif
     }
 
     #if os(tvOS)
@@ -1154,6 +1243,7 @@ class ItemDetailViewModel {
               let season = seasons.first(where: { $0.seasonNumber == episode.seasonNumber }),
               let page = episodesBySeason[episode.seasonNumber] else { return }
         episodeLoadGeneration += 1
+        seasonChoiceGeneration += 1
         cancelDeferredEpisodePersonalListStateRefresh()
         selectedSeason = season
         episodes = page
