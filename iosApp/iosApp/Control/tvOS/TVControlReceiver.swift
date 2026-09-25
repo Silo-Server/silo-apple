@@ -12,6 +12,10 @@ final class TVControlReceiver {
     private var advertisedServerId: String?
     private var advertisedServerName: String?
     private var advertisedServerIdentity: String?
+    /// The saved server the listener was started for. Temporary phone
+    /// identities never change it, so a new value means the TV itself
+    /// switched servers.
+    private var listenerRegistryServerId: String?
     /// Bumped whenever we intentionally cancel/replace the listener, so its
     /// state handler can tell a system-initiated failure (restart) from our
     /// own teardown (ignore).
@@ -94,7 +98,16 @@ final class TVControlReceiver {
             return
         }
 
-        stop()
+        // Switching servers ends the remote session on purpose. Say so, or
+        // the phone reconnects into a session the new server never
+        // authorizes. A rename or a listener the system cancelled only needs
+        // a fresh advertisement, so the session keeps running through those.
+        if let listenerRegistryServerId,
+           !ServerRegistry.serverIdsMatch(listenerRegistryServerId, server.id) {
+            closeActiveSession(sendClose: true)
+        }
+        listenerRegistryServerId = server.id
+        stopListener()
         startListener(serverId: serverId, serverName: serverName, serverIdentity: serverIdentity)
     }
 
@@ -192,16 +205,29 @@ final class TVControlReceiver {
     }
 
     func stop() {
+        // The root view re-keys on the active server, so a server switch
+        // arrives here. It ends the session for good: say goodbye so the
+        // phone doesn't reconnect into a session the new server never
+        // authorizes. Other teardowns (a profile switch) drop the connection
+        // without one, and the phone reconnects once the TV is back.
+        let serverChanged = listenerRegistryServerId.map {
+            !ServerRegistry.serverIdsMatch($0, ServerRegistry.shared.activeServerId)
+        } ?? false
+        stopListener()
+        listenerRegistryServerId = nil
+        closeActiveSession(sendClose: serverChanged)
+        for connectionId in Array(pendingConnections.keys) {
+            dropPendingConnection(connectionId, sendClose: serverChanged)
+        }
+    }
+
+    private func stopListener() {
         listenerGeneration += 1
         listener?.cancel()
         listener = nil
         advertisedServerId = nil
         advertisedServerName = nil
         advertisedServerIdentity = nil
-        closeActiveSession(sendClose: false)
-        for connectionId in Array(pendingConnections.keys) {
-            dropPendingConnection(connectionId, sendClose: false)
-        }
     }
 
     func disconnectRemoteControl() {
