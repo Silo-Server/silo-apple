@@ -4,6 +4,8 @@ enum SiloControlProtocol {
     static let version = 2
     static let supportedVersions = [1, 2]
     static let serviceType = "_silocast._tcp"
+    /// A TV's refusal of a `resume` hello while another phone holds it.
+    static let controllerActiveErrorCode = "controller_active"
 
     static func negotiatedVersion(with peer: [Int]) -> Int? {
         supportedVersions.filter(peer.contains).max()
@@ -26,6 +28,11 @@ struct SiloControlHello: Codable, Equatable, Sendable {
     /// it. Lets a phone and a TV on different addresses of one server
     /// recognise each other. Optional on the wire: older peers omit it.
     var serverIdentity: String? = nil
+    /// Set by a phone reconnecting or silently resuming, as opposed to a
+    /// person picking this TV. A receiver refuses such a connection while
+    /// another phone holds the session, so a background retry never takes the
+    /// TV from whoever is using it. Optional on the wire: older peers omit it.
+    var resume: Bool? = nil
 
     init(
         role: SiloControlPeerRole,
@@ -34,7 +41,8 @@ struct SiloControlHello: Codable, Equatable, Sendable {
         serverId: String?,
         serverName: String?,
         supportedVersions: [Int],
-        serverIdentity: String? = nil
+        serverIdentity: String? = nil,
+        resume: Bool? = nil
     ) {
         self.role = role
         self.deviceName = deviceName
@@ -43,6 +51,7 @@ struct SiloControlHello: Codable, Equatable, Sendable {
         self.serverName = serverName
         self.supportedVersions = supportedVersions
         self.serverIdentity = serverIdentity
+        self.resume = resume
     }
 }
 

@@ -24,11 +24,22 @@ final class TVControlReceiver {
     private weak var router: AppRouter?
     private var activeSession: SiloControlSession?
     private var activeConnectionId: UUID?
+    /// Connections that haven't said hello yet. One only takes the session
+    /// slot once its hello arrives (see `promote`), so a bare socket or a
+    /// stalled handshake can't evict the phone in use.
+    private struct PendingConnection {
+        let session: SiloControlSession
+        var readTask: Task<Void, Never>?
+        var authWatchdogTask: Task<Void, Never>?
+        let acceptedAt = ContinuousClock.now
+    }
+    private var pendingConnections: [UUID: PendingConnection] = [:]
+    /// A burst of connections that never say hello can't pile up past this.
+    private static let maxPendingConnections = 4
     private(set) var standbyState: TVControlStandbyState?
     private var readTask: Task<Void, Never>?
     private var stateTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
-    private var authWatchdogTask: Task<Void, Never>?
     private var handoffTask: Task<Void, Never>?
     private var readyTimeoutTask: Task<Void, Never>?
     private var missedHeartbeats = 0
@@ -181,6 +192,9 @@ final class TVControlReceiver {
         advertisedServerName = nil
         advertisedServerIdentity = nil
         closeActiveSession(sendClose: false)
+        for connectionId in Array(pendingConnections.keys) {
+            dropPendingConnection(connectionId, sendClose: false)
+        }
     }
 
     func disconnectRemoteControl() {
@@ -256,15 +270,119 @@ final class TVControlReceiver {
     }
 
     private func accept(_ connection: NWConnection) async {
-        if activeSession != nil {
-            // Newest controller wins (matches AirPlay/Cast); frees the old slot.
-            closeActiveSession(sendClose: true)
+        // Newest controller wins (matches AirPlay/Cast), but only once it has
+        // said hello: until then the phone in use keeps the session.
+        if pendingConnections.count >= Self.maxPendingConnections,
+           let oldest = pendingConnections.min(by: { $0.value.acceptedAt < $1.value.acceptedAt })?.key {
+            dropPendingConnection(oldest, sendClose: false)
         }
-
         let session = SiloControlSession(connection: connection)
         let connectionId = UUID()
-        activeSession = session
+        pendingConnections[connectionId] = PendingConnection(session: session)
+        let stream = await session.open()
+        pendingConnections[connectionId]?.readTask = makeReadTask(stream: stream, connectionId: connectionId)
+        pendingConnections[connectionId]?.authWatchdogTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: Self.authGracePeriod)
+            guard let self, self.pendingConnections[connectionId] != nil else { return }
+            Self.logger.info("control: connection never said hello; closing it")
+            self.dropPendingConnection(connectionId, sendClose: true)
+        }
+
+        do {
+            try await session.send(makeHello())
+        } catch {
+            dropPendingConnection(connectionId, sendClose: false)
+        }
+    }
+
+    private func makeReadTask(
+        stream: AsyncThrowingStream<SiloControlMessage, Error>,
+        connectionId: UUID
+    ) -> Task<Void, Never> {
+        Task { [weak self] in
+            do {
+                for try await message in stream {
+                    await MainActor.run {
+                        self?.route(message, connectionId: connectionId)
+                    }
+                }
+                await MainActor.run {
+                    self?.handleConnectionClosed(connectionId: connectionId)
+                }
+            } catch {
+                await MainActor.run {
+                    if self?.activeConnectionId == connectionId {
+                        self?.sendError(code: "connection_failed", message: error.localizedDescription)
+                    }
+                    self?.handleConnectionClosed(connectionId: connectionId)
+                }
+            }
+        }
+    }
+
+    private func route(_ message: SiloControlMessage, connectionId: UUID) {
+        guard pendingConnections[connectionId] != nil else {
+            handle(message, connectionId: connectionId)
+            return
+        }
+        switch message {
+        case .hello(let hello):
+            promote(connectionId, hello: hello)
+        case .ping:
+            pendingConnections[connectionId]?.session.enqueue(.pong)
+        case .close:
+            dropPendingConnection(connectionId, sendClose: false)
+        default:
+            // Nothing else counts before a hello.
+            break
+        }
+    }
+
+    /// Makes a pending connection the active controller now that its hello
+    /// names it. A `resume` hello (a phone reconnecting or silently resuming,
+    /// not a person picking this TV) is refused while a different phone holds
+    /// the session.
+    private func promote(_ connectionId: UUID, hello: SiloControlHello) {
+        guard let pending = pendingConnections.removeValue(forKey: connectionId) else { return }
+        pending.authWatchdogTask?.cancel()
+        func refuse(code: String, message: String) {
+            pending.session.enqueue(.error(SiloControlErrorMessage(code: code, message: message)))
+            Task {
+                await pending.session.closeGracefully()
+                pending.readTask?.cancel()
+            }
+        }
+        // A phone this TV can't serve must not cost the current one its session.
+        guard hello.role == .phone,
+              let version = SiloControlProtocol.negotiatedVersion(with: hello.supportedVersions),
+              let serverId = hello.serverId, !serverId.isEmpty else {
+            refuse(code: "version_unsupported", message: "Update Silo on both devices to continue.")
+            return
+        }
+        if version < 2, !RemotePlaybackIdentityManager.shared.controllerMatchesEffectiveServer(
+            serverId: serverId,
+            serverIdentity: ServerIdentity.usable(hello.serverIdentity)
+        ) {
+            refuse(code: "server_mismatch", message: "This Apple TV is connected to a different Silo server.")
+            return
+        }
+        if hello.resume == true,
+           activeSession != nil,
+           let current = remoteControllerDeviceId,
+           current != hello.deviceId {
+            Self.logger.info("control: refusing a resume while another controller is active")
+            refuse(
+                code: SiloControlProtocol.controllerActiveErrorCode,
+                message: "\(remoteControllerName ?? "Another phone") is using this Apple TV."
+            )
+            return
+        }
+        if activeSession != nil {
+            closeActiveSession(sendClose: true)
+        }
+        activeSession = pending.session
         activeConnectionId = connectionId
+        readTask = pending.readTask
         isAuthorized = false
         didReceiveHello = false
         negotiatedVersion = nil
@@ -273,43 +391,23 @@ final class TVControlReceiver {
         remoteControllerDeviceId = nil
         remoteControllerServerId = nil
         remoteControllerServerIdentity = nil
-        refreshStandbyState()
-        let stream = await session.open()
-        startReadLoop(stream: stream, connectionId: connectionId)
         if playerViewModel != nil {
             startStateUpdates()
         }
         startHeartbeat(connectionId: connectionId)
-        startAuthWatchdog(connectionId: connectionId)
-
-        do {
-            try await session.send(makeHello())
-        } catch {
-            closeActiveSession(sendClose: false)
-        }
+        handle(.hello(hello), connectionId: connectionId)
     }
 
-    private func startReadLoop(
-        stream: AsyncThrowingStream<SiloControlMessage, Error>,
-        connectionId: UUID
-    ) {
-        readTask?.cancel()
-        readTask = Task { [weak self] in
-            do {
-                for try await message in stream {
-                    await MainActor.run {
-                        self?.handle(message, connectionId: connectionId)
-                    }
-                }
-                await MainActor.run {
-                    self?.handleConnectionClosed(connectionId: connectionId)
-                }
-            } catch {
-                await MainActor.run {
-                    self?.sendError(code: "connection_failed", message: error.localizedDescription)
-                    self?.handleConnectionClosed(connectionId: connectionId)
-                }
+    private func dropPendingConnection(_ connectionId: UUID, sendClose: Bool) {
+        guard let pending = pendingConnections.removeValue(forKey: connectionId) else { return }
+        pending.authWatchdogTask?.cancel()
+        Task {
+            if sendClose {
+                await pending.session.closeGracefully()
+            } else {
+                await pending.session.close()
             }
+            pending.readTask?.cancel()
         }
     }
 
@@ -332,7 +430,6 @@ final class TVControlReceiver {
             }
             didReceiveHello = true
             negotiatedVersion = version
-            authWatchdogTask?.cancel(); authWatchdogTask = nil
             remoteControllerName = hello.deviceName
             remoteControllerDeviceId = hello.deviceId
             remoteControllerServerId = serverId
@@ -555,6 +652,10 @@ final class TVControlReceiver {
     }
 
     private func handleConnectionClosed(connectionId: UUID) {
+        if pendingConnections[connectionId] != nil {
+            dropPendingConnection(connectionId, sendClose: false)
+            return
+        }
         guard activeConnectionId == connectionId else { return }
         cancelPendingHandoff()
         activeSession = nil
@@ -564,7 +665,6 @@ final class TVControlReceiver {
         stateTask?.cancel()
         stateTask = nil
         heartbeatTask?.cancel(); heartbeatTask = nil
-        authWatchdogTask?.cancel(); authWatchdogTask = nil
         missedHeartbeats = 0
         isAuthorized = false
         didReceiveHello = false
@@ -587,7 +687,6 @@ final class TVControlReceiver {
         stateTask?.cancel()
         stateTask = nil
         heartbeatTask?.cancel(); heartbeatTask = nil
-        authWatchdogTask?.cancel(); authWatchdogTask = nil
         missedHeartbeats = 0
         isAuthorized = false
         didReceiveHello = false
@@ -670,16 +769,6 @@ final class TVControlReceiver {
                 }
                 self.activeSession?.enqueue(.ping)
             }
-        }
-    }
-
-    private func startAuthWatchdog(connectionId: UUID) {
-        authWatchdogTask?.cancel()
-        authWatchdogTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: Self.authGracePeriod)
-            guard let self, self.activeConnectionId == connectionId, !self.didReceiveHello else { return }
-            Self.logger.info("control: controller never authorized; closing session")
-            self.closeActiveSession(sendClose: true)
         }
     }
 
