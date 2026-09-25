@@ -190,10 +190,12 @@ final class WatchPartyPlaybackAdapter {
         player?.prepareWatchParty(context, adapter: self)
     }
 
+    /// `correction` marks a seek that realigns this member rather than an
+    /// explicit room seek, so it leaves the correction load budget alone.
     @discardableResult
-    func apply(_ action: WatchPartyPlaybackAction) async throws -> WatchPartyPlaybackSnapshot {
+    func apply(_ action: WatchPartyPlaybackAction, correction: Bool = false) async throws -> WatchPartyPlaybackSnapshot {
         guard let player, let context else { throw WatchPartyPlaybackError.invalidated }
-        return try await player.applyWatchPartyTransport(action, context: context)
+        return try await player.applyWatchPartyTransport(action, context: context, correction: correction)
     }
 
     func canSeekLocally(to position: Double) -> Bool {

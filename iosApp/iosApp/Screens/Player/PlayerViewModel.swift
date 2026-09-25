@@ -8207,7 +8207,7 @@ extension PlayerViewModel {
             watchPartyReloadBudget.settle()
             return watchPartyPlaybackSnapshot
         case .seek:
-            if isWatchPartyTargetBuffered(position, from: local) {
+            if isWatchPartyTargetBuffered(position, from: local, locallySeekable: canSeekWatchPartyLocally(to: position)) {
                 return try await applyWatchPartyTransport(.seek(position), context: context, correction: true)
             }
             return try await loadWatchPartyCorrection(to: position, context: context)
@@ -8221,11 +8221,16 @@ extension PlayerViewModel {
         }
     }
 
-    /// Aether reports only the media buffered ahead of playback, so a target
-    /// behind the current position counts as unbuffered and goes through the
-    /// load budget.
-    private func isWatchPartyTargetBuffered(_ target: Double, from local: Double) -> Bool {
-        target >= local && target <= local + bufferedAheadSeconds
+    /// Whether a correction can seek at once instead of loading new media.
+    /// Aether reports only the buffer ahead of playback. A target behind it
+    /// that the stream reaches in place is media just played, which a
+    /// browser keeps buffered too. Without buffer data, seek at once as
+    /// before rather than rate-limit every correction.
+    private func isWatchPartyTargetBuffered(_ target: Double, from local: Double, locallySeekable: Bool) -> Bool {
+        if target < local { return locallySeekable }
+        guard let ahead = aetherPlaybackController.engine.liveTelemetry?.forwardBufferSeconds,
+              ahead.isFinite else { return true }
+        return target <= local + max(0, ahead)
     }
 
     /// A correction to media that is not buffered loads it and lands late by
@@ -8243,6 +8248,12 @@ extension PlayerViewModel {
             let snapshot = try await applyWatchPartyTransport(.seek(aim), context: context, correction: true)
             if watchPartyReloadBudget.generation == generation { watchPartyReloadBudget.noteLoading() }
             return snapshot
+        } catch is CancellationError {
+            // A newer room command cancelled the wait, not the seek, which is
+            // already loading. Let it land and measure its load time, as the
+            // web client does; `staleAfter` covers a load that never lands.
+            if watchPartyReloadBudget.generation == generation { watchPartyReloadBudget.noteLoading() }
+            throw CancellationError()
         } catch {
             if watchPartyReloadBudget.generation == generation { watchPartyReloadBudget.abandon(at: Date()) }
             throw error
@@ -8316,9 +8327,9 @@ extension PlayerViewModel {
         watchPartyAdapter?.update(watchPartyPlaybackSnapshot)
     }
 
-    /// `correction` marks a seek issued by a correction, which owns its own
-    /// load budget. Any other room seek lands on the room's target and
-    /// supersedes a correction load in flight.
+    /// `correction` marks a seek that is not an explicit room seek. Only an
+    /// explicit room seek supersedes a correction load in flight, as on the
+    /// web client.
     func applyWatchPartyTransport(
         _ action: WatchPartyPlaybackAction,
         context: WatchPartyPlaybackContext,
@@ -8379,6 +8390,7 @@ extension PlayerViewModel {
     }
 
     fileprivate func pauseForLocalPreparation() {
+        cancelWatchPartyCorrection()
         watchPartyLocalPreparation = isWatchPartyPlayback
         aetherPlaybackController.pause()
         publishWatchPartySnapshot()
