@@ -72,6 +72,9 @@ final class WatchPartySession {
     @ObservationIgnored private var lastReport: Date = .distantPast
     @ObservationIgnored private var lastPing: Date = .distantPast
     @ObservationIgnored private var lastReady: Date = .distantPast
+    /// The playback session whose media has been playable at least once. Its
+    /// position is real from then on, including while it rebuffers.
+    @ObservationIgnored private var playableSession: String?
     @ObservationIgnored private var stall = WatchPartyStallTimer()
     @ObservationIgnored private var serverOffset: TimeInterval = 0
     /// Local receipt time of the current room snapshot. Its anchor position is
@@ -618,6 +621,18 @@ final class WatchPartySession {
     private func requestTransport(_ action: WatchPartyPlaybackAction, position: Double, paused: Bool) {
         guard connection == .connected, attachmentConfirmed, let room,
               action.isPermitted(canPlayPause: room.selfCanControlTransport, canSeek: room.selfRole == .host) else { return }
+        // A session now attaches while its media is still loading. Play and
+        // pause carry the local position, which the room adopts as its
+        // anchor; before the media has first become playable that is not a
+        // real position. Such a press is dropped, as it was when the session
+        // could not attach before then (#410 tracks queueing it). A seek
+        // carries its own target.
+        switch action {
+        case .seek: break
+        case .play, .pause:
+            guard let snapshot = adapter?.snapshot, let session = snapshot.sessionId,
+                  snapshot.isReady || playableSession == session else { return }
+        }
         let wire: WatchPartyTransportAction
         let target: Double
         switch action {
@@ -704,8 +719,14 @@ final class WatchPartySession {
                   let adapter, let room, let session = adapter.snapshot.sessionId,
                   adapter.context == playbackContext else { return }
             let snapshot = adapter.snapshot
+            if snapshot.isReady { playableSession = session }
             if !attachmentConfirmed {
-                if now.timeIntervalSince(lastAttach) >= 1.5, snapshot.isReady {
+                // Attach as soon as the stream has a committed session, as the
+                // web client does. The start barrier only waits for attached
+                // members, so waiting for playable media here let a member that
+                // loaded faster release the room without this one. Commands
+                // that arrive before the media is ready stay pending until it is.
+                if now.timeIntervalSince(lastAttach) >= 1.5 {
                     lastAttach = now
                     issuedAttachSession = session
                     trace("attach ready=\(snapshot.isReady) file=\(snapshot.fileId ?? 0)")
@@ -729,7 +750,7 @@ final class WatchPartySession {
             let completed = commands.completed
             let ready = WatchPartyCommandState.canAcknowledge(completed, roomPlaybackState: room.playbackState,
                 sourceTime: snapshot.sourceTime, isHost: room.selfRole == .host)
-            if ready, room.members.first(where: \.isSelf)?.isReady != true, now.timeIntervalSince(lastReady) >= 0.5 {
+            if ready, WatchPartyCommandState.awaitsReadiness(room), now.timeIntervalSince(lastReady) >= 0.5 {
                 lastReady = now
                 try await socket.send(WatchPartyClientMessage(type: "ready", sessionId: session, commandId: completed?.commandId,
                     positionSeconds: snapshot.sourceTime, isPaused: !snapshot.isPlaying))
