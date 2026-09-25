@@ -2190,10 +2190,15 @@ struct MainTabView: View {
     /// Opens Search for a Siri request: the Search tab when the menu shows
     /// one, else Search pushed over the current tab. Either way Search comes
     /// up with the spoken words filled in and its results showing.
+    ///
+    /// Full-screen players would cover Search, so video playback closes and
+    /// an audiobook's full player steps aside for the mini player, as on tvOS.
     private func openRequestedSearch() {
         guard let request = router.requestedSearch else { return }
         router.requestedSearch = nil
         siriSearchRequest = request
+        router.presentedPlayer = nil
+        audioStore.dismissFullPlayer()
         router.dismissItemDetail()
         router.popToRoot()
         if visibleDestinations.contains(where: { $0.id == .app(.search) }) {
