@@ -75,8 +75,7 @@ final class WatchPartySession {
     /// The playback session whose media has been playable at least once. Its
     /// position is real from then on, including while it rebuffers.
     @ObservationIgnored private var playableSession: String?
-    @ObservationIgnored private var bufferBegan: Date?
-    @ObservationIgnored private var reportedBuffering = false
+    @ObservationIgnored private var stall = WatchPartyStallTimer()
     @ObservationIgnored private var serverOffset: TimeInterval = 0
     /// Local receipt time of the current room snapshot. Its anchor position is
     /// already projected to the server's build time, so only this age remains.
@@ -409,8 +408,7 @@ final class WatchPartySession {
                 self.socket = socket
                 self.attachmentConfirmed = false
                 self.issuedAttachSession = nil
-                self.bufferBegan = nil
-                self.reportedBuffering = false
+                self.stall.reset()
                 self.commandTask?.cancel()
                 self.commandTask = nil
                 self.applyingCommand = nil
@@ -548,8 +546,7 @@ final class WatchPartySession {
             commands = WatchPartyCommandState()
             attachmentConfirmed = false
             issuedAttachSession = nil
-            bufferBegan = nil
-            reportedBuffering = false
+            stall.reset()
             adapter?.stop()
             adapter = nil
             playbackContext = Self.playbackContext(for: incoming)
@@ -588,8 +585,7 @@ final class WatchPartySession {
             guard let self, self.adapter === adapter else { return }
             self.attachmentConfirmed = false
             self.issuedAttachSession = nil
-            self.bufferBegan = nil
-            self.reportedBuffering = false
+            self.stall.reset()
             self.lastAttach = .distantPast
         }
         adapter.onResyncRequired = { [weak self, weak adapter] in
@@ -741,18 +737,15 @@ final class WatchPartySession {
             applyPendingCommand()
             guard !snapshot.isSeeking, commands.pending == nil,
                   now.timeIntervalSince(lastCommandCompleted) >= 0.25,
-                  snapshot.fileId == playbackContext?.fileId else { return }
-            if snapshot.isBuffering {
-                if bufferBegan == nil { bufferBegan = now }
-                if !reportedBuffering, now.timeIntervalSince(bufferBegan!) >= 0.5 {
-                    reportedBuffering = true
-                    try await socket.send(WatchPartyClientMessage(type: "buffering", sessionId: session,
-                        positionSeconds: snapshot.sourceTime, isPaused: !snapshot.isPlaying))
-                }
+                  snapshot.fileId == playbackContext?.fileId else {
+                stall.interrupt(buffering: snapshot.isBuffering)
                 return
             }
-            bufferBegan = nil
-            reportedBuffering = false
+            if stall.observe(buffering: snapshot.isBuffering, at: now) {
+                try await socket.send(WatchPartyClientMessage(type: "buffering", sessionId: session,
+                    positionSeconds: snapshot.sourceTime, isPaused: !snapshot.isPlaying))
+            }
+            if snapshot.isBuffering { return }
             guard snapshot.isReady else { return }
             let completed = commands.completed
             let ready = WatchPartyCommandState.canAcknowledge(completed, roomPlaybackState: room.playbackState,

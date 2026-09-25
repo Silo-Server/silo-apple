@@ -77,6 +77,45 @@ struct WatchPartyCommandState {
     }
 }
 
+/// Times a member's stall for the room's `buffering` report. Stalls shorter
+/// than the grace stay local, as on the web client: the room pauses only for a
+/// stall that outlasts the catch-up band, and the short rebuffer after a
+/// correction seek is not a stall. See the server's Watch Party buffering
+/// policy.
+struct WatchPartyStallTimer {
+    static let grace: TimeInterval = 2
+
+    private(set) var began: Date?
+    private(set) var reported = false
+
+    /// A seek or room command is in progress, so this tick cannot report. A
+    /// stall timed before it is not the stall that follows it, so the grace
+    /// restarts once it settles. A stall already reported stays reported
+    /// while media is still stalled; media that recovered ends it, so the
+    /// next stall is reported too.
+    mutating func interrupt(buffering: Bool) {
+        if buffering { began = nil } else { reset() }
+    }
+
+    /// Returns true once per stall, when it has lasted the grace period.
+    mutating func observe(buffering: Bool, at now: Date) -> Bool {
+        guard buffering else {
+            reset()
+            return false
+        }
+        let began = self.began ?? now
+        self.began = began
+        guard !reported, now.timeIntervalSince(began) >= Self.grace else { return false }
+        reported = true
+        return true
+    }
+
+    mutating func reset() {
+        began = nil
+        reported = false
+    }
+}
+
 /// Only HTTP determines personal votes; every socket path carries common rows.
 struct WatchPartyVotes {
     private(set) var rows: [WatchPartySuggestion] = []
