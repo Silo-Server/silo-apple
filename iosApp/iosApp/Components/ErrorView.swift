@@ -50,14 +50,38 @@ struct ErrorView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private var headline: String {
+    private var headline: String { Self.headline(for: state) }
+
+    nonisolated static func headline(for state: ErrorState) -> String {
         if state.updateRequirement != nil { return "Update required" }
         if state.isAuthFailure { return "Session expired" }
+        if state.isForbidden { return "Not allowed" }
         if state.isNotFound { return "Not found" }
         return "Something went wrong"
     }
 
     // MARK: - Action selection
+
+    enum Recovery: Equatable { case signInAgain, goBack, tryAgain }
+
+    struct RecoveryPlan: Equatable {
+        let primary: Recovery?
+        let secondary: [Recovery]
+    }
+
+    /// Which recovery actions a state offers. Only a 401 offers sign-in; a
+    /// 403 or 404 prefers leaving the screen, since retrying rarely helps.
+    nonisolated static func recoveryPlan(for state: ErrorState, canRetry: Bool, canGoBack: Bool) -> RecoveryPlan {
+        if state.isAuthFailure {
+            return RecoveryPlan(primary: .signInAgain, secondary: canRetry ? [.tryAgain] : [])
+        }
+        if state.isNotFound || state.isForbidden, canGoBack {
+            return RecoveryPlan(primary: .goBack, secondary: canRetry ? [.tryAgain] : [])
+        }
+        if canRetry { return RecoveryPlan(primary: .tryAgain, secondary: []) }
+        if canGoBack { return RecoveryPlan(primary: .goBack, secondary: []) }
+        return RecoveryPlan(primary: nil, secondary: [])
+    }
 
     private struct Action {
         let title: String
@@ -73,20 +97,12 @@ struct ErrorView: View {
         onSignOut ?? { router.signOutAndReset() }
     }
 
+    private var plan: RecoveryPlan {
+        Self.recoveryPlan(for: state, canRetry: onRetry != nil, canGoBack: resolvedOnGoBack != nil)
+    }
+
     private var primaryAction: Action? {
-        if state.isAuthFailure {
-            return Action(title: "Sign In Again", run: resolvedOnSignOut)
-        }
-        if state.isNotFound, let goBack = resolvedOnGoBack {
-            return Action(title: "Go Back", run: goBack)
-        }
-        if let onRetry {
-            return Action(title: "Try Again", run: onRetry)
-        }
-        if let goBack = resolvedOnGoBack {
-            return Action(title: "Go Back", run: goBack)
-        }
-        return nil
+        plan.primary.flatMap(action(for:))
     }
 
     private var secondaryActions: [Action] {
@@ -94,17 +110,18 @@ struct ErrorView: View {
         if let onManageServers {
             actions.append(Action(title: "Manage Servers", run: onManageServers))
         }
-        if state.isAuthFailure {
-            if let onRetry {
-                actions.append(Action(title: "Try Again", run: onRetry))
-            }
-            return actions
-        }
-        if state.isNotFound, resolvedOnGoBack != nil {
-            if let onRetry {
-                actions.append(Action(title: "Try Again", run: onRetry))
-            }
-        }
+        actions.append(contentsOf: plan.secondary.compactMap(action(for:)))
         return actions
+    }
+
+    private func action(for recovery: Recovery) -> Action? {
+        switch recovery {
+        case .signInAgain:
+            return Action(title: "Sign In Again", run: resolvedOnSignOut)
+        case .goBack:
+            return resolvedOnGoBack.map { Action(title: "Go Back", run: $0) }
+        case .tryAgain:
+            return onRetry.map { Action(title: "Try Again", run: $0) }
+        }
     }
 }
