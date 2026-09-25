@@ -413,6 +413,8 @@ final class WatchPartySession {
                 self.commandTask = nil
                 self.applyingCommand = nil
                 self.commands = WatchPartyCommandState()
+                // A catch-up nudge does not outlive the connection it came on.
+                self.adapter?.cancelCorrection()
                 var openedAt: Date?
                 do {
                     let receipt = self.state.receipt
@@ -456,6 +458,7 @@ final class WatchPartySession {
                 guard owner == self.engagement, socketID == self.connectionID, !Task.isCancelled else { return }
                 self.reportTask?.cancel()
                 self.commandTask?.cancel()
+                self.adapter?.cancelCorrection()
                 self.attachmentConfirmed = false
                 // The server ends every room socket at its connection deadline
                 // (five minutes, or sooner when the bearer expires). A socket
@@ -674,7 +677,9 @@ final class WatchPartySession {
                 } else if command.action == .seek || abs(adapter.snapshot.sourceTime - target) > 1 {
                     let smallPausedCorrection = command.action == .pause
                         && abs(adapter.snapshot.sourceTime - target) <= 2 && !adapter.canSeekLocally(to: target)
-                    if !smallPausedCorrection { _ = try await adapter.apply(.seek(target)) }
+                    if !smallPausedCorrection {
+                        _ = try await adapter.apply(.seek(target), origin: command.action == .seek ? .room : .realign)
+                    }
                 }
                 try Task.checkCancellation()
                 guard owner == self.engagement, socketID == self.connectionID,

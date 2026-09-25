@@ -42,15 +42,161 @@ enum WatchPartyPlaybackError: Error {
     case notReady
 }
 
+/// How a member applies a room correction, matching the web client's
+/// `roomSyncCatchup.ts` so native and browser members converge the same way.
+/// Small drift against a target the stream cannot reach without a rebuild
+/// converges by playback rate; everything reachable in place stays a seek.
 enum WatchPartyCorrection: Equatable {
     case none
     case seek
-    case temporaryRate(Double)
+    case rate(Double)
 
+    /// Drift within this band converges by rate instead of rebuilding the stream.
+    static let catchupBand: Double = 2
+    /// Playback already this close to the room needs no correction.
+    static let deadband: Double = 0.35
+    static let minRate: Double = 0.9
+    static let maxRate: Double = 1.25
+    /// A 1s deficit plays at 1.125x and converges in about 8s; the band edge
+    /// reaches the cap. Gentle on purpose: this runs during normal playback.
+    private static let rateDivisor: Double = 8
+
+    /// `drift` is the room target minus the local position, in seconds.
     static func resolve(drift: Double, locallySeekable: Bool) -> Self {
-        guard drift.isFinite, abs(drift) > 0.35 else { return .none }
-        if locallySeekable || abs(drift) > 2 { return .seek }
-        return .temporaryRate(drift > 0 ? 1.05 : 0.95)
+        guard drift.isFinite, abs(drift) > deadband else { return .none }
+        if locallySeekable || abs(drift) > catchupBand { return .seek }
+        return .rate(min(maxRate, max(minRate, 1 + drift / rateDivisor)))
+    }
+
+    /// The room keeps advancing at 1x after a correction executes, so a rate
+    /// catch-up converges on that moving position, not the static target.
+    static func expectedPosition(_ target: Double, elapsed: TimeInterval) -> Double {
+        max(0, target + max(0, elapsed))
+    }
+
+    static func converged(target: Double, elapsed: TimeInterval, local: Double) -> Bool {
+        abs(expectedPosition(target, elapsed: elapsed) - local) <= deadband
+    }
+
+    /// Whether a correction can seek at once instead of loading new media.
+    /// Only a target the stream reaches in place can be buffered; any other
+    /// seek rebuilds the stream. Aether reports only the buffer ahead of
+    /// playback, and a target behind it is media just played, which a browser
+    /// keeps buffered too. Without buffer data, which server HLS never
+    /// reports, seek at once as before rather than rate-limit every correction.
+    static func targetBuffered(_ target: Double, local: Double, locallySeekable: Bool, forwardBuffer: Double?) -> Bool {
+        guard locallySeekable else { return false }
+        guard target > local, let forwardBuffer, forwardBuffer.isFinite else { return true }
+        return target <= local + max(0, forwardBuffer)
+    }
+}
+
+/// Why a party member seeks, which decides what the seek does to a correction
+/// load in flight.
+enum WatchPartySeekOrigin: Equatable {
+    /// An explicit room seek. It supersedes any correction load and ends the
+    /// backoff, as on the web client.
+    case room
+    /// A seek that realigns this member with the room: a correction to
+    /// buffered media, or a command applied to a member that is not playing.
+    /// It replaces the seek of any correction load in flight, which would
+    /// otherwise never land and block the next load until it went stale.
+    case realign
+    /// The seek of a correction load, tracked by the load budget itself.
+    case correctionLoad
+}
+
+/// Correction-driven media loads, matching the web client. A correction whose
+/// target is not buffered has to load media and lands late by its load time;
+/// with a load on every correction a slow viewer chases the advancing room
+/// forever. Only one load runs at a time, later ones back off from 10 to 60
+/// seconds until the viewer converges, and each aims ahead of the room by the
+/// load time the previous one took, up to 10 seconds.
+struct WatchPartyReloadBudget: Equatable {
+    static let minInterval: TimeInterval = 10
+    static let maxInterval: TimeInterval = 60
+    /// A load that never lands stops blocking the next one after this long.
+    static let staleAfter: TimeInterval = 30
+    static let maxLead: TimeInterval = 10
+
+    /// Identifies the current load, so a completion from an earlier load
+    /// cannot act on a later one aimed at the same position.
+    private(set) var generation: UInt64 = 0
+    /// Where the in-flight load aims, or nil when none runs.
+    private(set) var target: Double?
+    /// Whether this load's own seek was taken.
+    private(set) var loadStarted = false
+    private(set) var startedAt: Date = .distantPast
+    private(set) var nextAllowedAt: Date = .distantPast
+    /// Loads since the viewer last converged on the room.
+    private(set) var attempts = 0
+    /// Load time the last load took, added to the next target.
+    private(set) var lead: TimeInterval = 0
+
+    func allowed(at now: Date) -> Bool {
+        if target != nil { return now.timeIntervalSince(startedAt) >= Self.staleAfter }
+        return now >= nextAllowedAt
+    }
+
+    /// Records a load toward `roomPosition` and returns where to aim it. The
+    /// lead never aims past the end of the media, which the room refuses.
+    mutating func begin(roomPosition: Double, at now: Date, duration: Double) -> Double {
+        generation &+= 1
+        var aim = roomPosition + lead
+        if duration > 0 { aim = min(aim, max(roomPosition, duration)) }
+        target = aim
+        loadStarted = false
+        startedAt = now
+        attempts += 1
+        nextAllowedAt = now.addingTimeInterval(Self.staleAfter)
+        return aim
+    }
+
+    mutating func noteLoading() {
+        if target != nil { loadStarted = true }
+    }
+
+    /// Whether playback at `position` is this load playing. The stream it
+    /// replaces can sit on either side of the target, so position alone
+    /// cannot settle a load whose seek has not been taken.
+    func landed(at position: Double) -> Bool {
+        guard let target, loadStarted else { return false }
+        let offset = position - target
+        return offset >= -WatchPartyCorrection.deadband && offset <= WatchPartyCorrection.catchupBand
+    }
+
+    /// The load is playing: remember its load time and space the next one.
+    mutating func land(at now: Date) {
+        guard target != nil else { return }
+        generation &+= 1
+        lead = min(Self.maxLead, max(0, now.timeIntervalSince(startedAt)))
+        target = nil
+        nextAllowedAt = now.addingTimeInterval(backoff)
+    }
+
+    /// Another seek replaced the in-flight load's seek, so it will never
+    /// land. Space the next load as for any attempt; with no load in flight
+    /// this does nothing.
+    mutating func retire(at now: Date) {
+        guard target != nil else { return }
+        abandon(at: now)
+    }
+
+    /// The load was refused or superseded; space the next one.
+    mutating func abandon(at now: Date) {
+        generation &+= 1
+        target = nil
+        nextAllowedAt = now.addingTimeInterval(backoff)
+    }
+
+    /// The viewer reached the room; the next drift starts a fresh backoff.
+    mutating func settle() {
+        attempts = 0
+        nextAllowedAt = .distantPast
+    }
+
+    private var backoff: TimeInterval {
+        min(Self.maxInterval, Self.minInterval * pow(2, Double(max(0, attempts - 1))))
     }
 }
 
@@ -79,10 +225,11 @@ final class WatchPartyPlaybackAdapter {
         player?.prepareWatchParty(context, adapter: self)
     }
 
+    /// `origin` says why a seek happens; see `WatchPartySeekOrigin`.
     @discardableResult
-    func apply(_ action: WatchPartyPlaybackAction) async throws -> WatchPartyPlaybackSnapshot {
+    func apply(_ action: WatchPartyPlaybackAction, origin: WatchPartySeekOrigin = .room) async throws -> WatchPartyPlaybackSnapshot {
         guard let player, let context else { throw WatchPartyPlaybackError.invalidated }
-        return try await player.applyWatchPartyTransport(action, context: context)
+        return try await player.applyWatchPartyTransport(action, context: context, origin: origin)
     }
 
     func canSeekLocally(to position: Double) -> Bool {
