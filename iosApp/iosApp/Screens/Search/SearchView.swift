@@ -81,6 +81,8 @@ struct SearchView: View {
         }
         .task(id: seededQuery?.id) {
             guard let seed = seededQuery else { return }
+            // A filter left from an earlier search could hide the title.
+            viewModel.selectedMediaType = .all
             viewModel.query = seed.query
             seededQuery = nil
         }
