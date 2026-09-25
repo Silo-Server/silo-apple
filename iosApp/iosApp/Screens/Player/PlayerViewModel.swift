@@ -706,8 +706,9 @@ class PlayerViewModel {
     private var offlinePlaybackContext: OfflinePlaybackContext?
     /// Mirrors the server's default watched threshold (90%) so an offline
     /// watch latches `completed` — and with it delete-watched retention and
-    /// the reclaim sheet — the same way an online session would.
-    private static let offlineWatchedFraction: Double = 0.9
+    /// the reclaim sheet — the same way an online session would, and so a
+    /// Series page moves past an episode the server now counts as watched.
+    private static let defaultWatchedFraction: Double = 0.9
 
     /// Cached external subtitle URLs returned by the server; added to the
     /// player once the file has loaded.
@@ -962,6 +963,8 @@ class PlayerViewModel {
     /// Series of the last episode whose watch detail loaded. Covers the gap
     /// while a replacement episode loads and `currentWatchDetail` is empty.
     private var lastSeriesPlayback: (seriesId: String, seasonNumber: Int?)?
+    /// `SeriesPlaybackReturnInbox` generation when this player was created.
+    private let seriesReturnGeneration: Int
     #if os(iOS)
     @ObservationIgnored
     private var refreshHomeAfterPlaybackWrite: (@MainActor () -> Void)?
@@ -993,6 +996,7 @@ class PlayerViewModel {
 
     init(libraryId: Int? = nil) {
         self.initialLibraryId = libraryId
+        self.seriesReturnGeneration = SeriesPlaybackReturnInbox.generation
         do {
             aetherPlaybackController = try AetherPlaybackController()
         } catch {
@@ -6424,7 +6428,15 @@ class PlayerViewModel {
             promptSeconds: settings.nextUpPromptSeconds
         )
         recordCurrentPlaybackMutation()
-        SeriesPlaybackReturnInbox.publish(seriesPlaybackReturn(completed: currentItemCompleted))
+        // The server counts an episode watched past its threshold, which is
+        // often before the Next Up prompt. Leaving during the credits must
+        // still move the Series page on to the next episode.
+        let crossedWatchedThreshold = duration.isFinite && duration > 0
+            && currentTime / duration > Self.defaultWatchedFraction
+        SeriesPlaybackReturnInbox.publish(
+            seriesPlaybackReturn(completed: currentItemCompleted || crossedWatchedThreshold),
+            generation: seriesReturnGeneration
+        )
         let pendingNaturalEndProgressTask = naturalEndProgressTask
         naturalEndProgressTask = nil
         isDisposed = true
@@ -7845,7 +7857,7 @@ class PlayerViewModel {
         guard position.isFinite, position >= 0 else { return }
         let duration = duration.isFinite && duration > 0 ? duration : 0
         let watched = markCompleted
-            || (duration > 0 && position / duration > Self.offlineWatchedFraction)
+            || (duration > 0 && position / duration > Self.defaultWatchedFraction)
         DownloadManager.shared.recordOfflineProgress(
             mediaItemId: context.mediaItemId,
             position: position,

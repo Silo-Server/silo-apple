@@ -125,7 +125,9 @@ final class SeriesPlaybackReturnTests: XCTestCase {
     }
 
     func testInboxHandsTheReturnOnlyToItsSeriesOnce() {
-        SeriesPlaybackReturnInbox.publish(playback("s1e1", completed: false))
+        SeriesPlaybackReturnInbox.publish(
+            playback("s1e1", completed: false), generation: SeriesPlaybackReturnInbox.generation
+        )
         XCTAssertNil(SeriesPlaybackReturnInbox.take(seriesContentId: "another-series"))
         XCTAssertEqual(SeriesPlaybackReturnInbox.take(seriesContentId: seriesId)?.episodeContentId, "s1e1")
         XCTAssertNil(SeriesPlaybackReturnInbox.take(seriesContentId: seriesId))
@@ -133,9 +135,25 @@ final class SeriesPlaybackReturnTests: XCTestCase {
 
     func testStartingPlaybackDiscardsAnEarlierReturn() {
         // A player no page was waiting for, such as one started from Home.
-        SeriesPlaybackReturnInbox.publish(playback("s1e1", completed: false))
+        SeriesPlaybackReturnInbox.publish(
+            playback("s1e1", completed: false), generation: SeriesPlaybackReturnInbox.generation
+        )
         SeriesPlaybackReturnInbox.discardPending()
         XCTAssertNil(SeriesPlaybackReturnInbox.take(seriesContentId: seriesId))
+    }
+
+    func testAnOlderPlayerCannotAnswerForNewPlayback() {
+        // The E1 player is still in Picture in Picture when the page starts E2.
+        let olderPlayer = SeriesPlaybackReturnInbox.generation
+        SeriesPlaybackReturnInbox.discardPending()
+        let newPlayer = SeriesPlaybackReturnInbox.generation
+
+        // Presenting E2 tears the E1 session down, which publishes late.
+        SeriesPlaybackReturnInbox.publish(playback("s1e1", completed: true), generation: olderPlayer)
+        XCTAssertNil(SeriesPlaybackReturnInbox.take(seriesContentId: seriesId))
+
+        SeriesPlaybackReturnInbox.publish(playback("s1e2", completed: false), generation: newPlayer)
+        XCTAssertEqual(SeriesPlaybackReturnInbox.take(seriesContentId: seriesId)?.episodeContentId, "s1e2")
     }
 
     // MARK: - Fixtures

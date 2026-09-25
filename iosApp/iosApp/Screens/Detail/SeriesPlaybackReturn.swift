@@ -42,8 +42,14 @@ extension Notification.Name {
 @MainActor
 enum SeriesPlaybackReturnInbox {
     private static var pending: SeriesPlaybackReturn?
+    /// Bumped each time a Series page starts playback. A player publishes
+    /// under the generation it was created in, so an older session that tears
+    /// down late, such as one still in Picture in Picture, cannot answer for
+    /// the playback the page just started.
+    private(set) static var generation = 0
 
-    static func publish(_ playback: SeriesPlaybackReturn?) {
+    static func publish(_ playback: SeriesPlaybackReturn?, generation: Int) {
+        guard generation == self.generation else { return }
         pending = playback
         NotificationCenter.default.post(name: .seriesPlaybackDidReturn, object: playback)
     }
@@ -52,6 +58,7 @@ enum SeriesPlaybackReturnInbox {
     /// starts playback, so it only takes the return that playback produces.
     static func discardPending() {
         pending = nil
+        generation &+= 1
     }
 
     /// Consume the pending return when it belongs to `seriesContentId`.
