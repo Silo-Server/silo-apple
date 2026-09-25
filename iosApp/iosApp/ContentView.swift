@@ -721,8 +721,8 @@ struct ContentView: View {
     ///   download notifications)
     /// - `silo://watch-party?server=…&token=…` — join a Watch Party
     ///   invitation (see `WatchPartyInvitation`)
-    /// - `silo://search?q={term}`, `silo://play?q={title}` — Siri requests
-    ///   (see `SiriLink`)
+    /// - `silo://search?q={term}` — open Search with `term` filled in
+    ///   (Siri's in-app search; see `SiriSearchLink`)
     ///
     /// If the auth state isn't ready yet, the link is queued in
     /// `pendingDeepLink` until startup commits its initial route.
@@ -811,27 +811,12 @@ struct ContentView: View {
         }
 
         #if os(iOS) || os(tvOS)
-        if let siriLink = SiriLink(url: url) {
+        if let term = SiriSearchLink.term(from: url) {
             guard router.authState == .authenticated else {
                 pendingDeepLink = url
                 return
             }
-            switch siriLink {
-            case .search(let term):
-                router.requestSearch(query: term)
-            case .play(let title, let onTV):
-                startSiriPlayback(fallbackTerm: title, onTV: onTV, revision: revision) {
-                    try await SiriPlaybackResolver.live.resolve(title)
-                }
-            case .playTitle(let contentId, let title, let isSeries, let onTV):
-                startSiriPlayback(fallbackTerm: title, onTV: onTV, revision: revision) {
-                    try await SiriPlaybackResolver.live.resolve(
-                        contentId: contentId,
-                        title: title,
-                        isSeries: isSeries
-                    )
-                }
-            }
+            router.requestSearch(query: term)
             return
         }
         #endif
@@ -904,110 +889,6 @@ struct ContentView: View {
             && router.authState == .authenticated
             && identity == currentDeepLinkIdentity
     }
-
-    #if os(iOS) || os(tvOS)
-    private func startSiriPlayback(
-        fallbackTerm: String,
-        onTV: Bool,
-        revision: UInt,
-        resolve: @escaping @MainActor () async throws -> SiriPlaybackOutcome
-    ) {
-        let identity = currentDeepLinkIdentity
-        playDeepLinkTask = Task { @MainActor in
-            await routeSiriPlayback(
-                fallbackTerm: fallbackTerm,
-                onTV: onTV,
-                revision: revision,
-                identity: identity,
-                resolve: resolve
-            )
-            if deepLinkRevision == revision {
-                playDeepLinkTask = nil
-            }
-        }
-    }
-
-    /// Plays what Siri asked for, or opens Search for it when the match
-    /// isn't clear or the lookup fails.
-    @MainActor
-    private func routeSiriPlayback(
-        fallbackTerm: String,
-        onTV: Bool,
-        revision: UInt,
-        identity: DeepLinkIdentity,
-        resolve: @MainActor () async throws -> SiriPlaybackOutcome
-    ) async {
-        let outcome: SiriPlaybackOutcome
-        do {
-            outcome = try await resolve()
-        } catch {
-            outcome = .search(term: fallbackTerm)
-        }
-        guard canCompletePlayDeepLink(revision: revision, identity: identity) else { return }
-
-        switch outcome {
-        case .search(let term):
-            router.requestSearch(query: term)
-        case .play(let contentId, let titleContentId):
-            #if os(iOS)
-            if onTV {
-                await playSiriRequestOnTV(contentId: contentId, revision: revision, identity: identity)
-                return
-            }
-            router.presentPlayer(contentId: contentId)
-            #else
-            // A player pushed from a detail page is a route, and must close
-            // before this one opens over it. Back from the new player lands on
-            // the title's page.
-            audioStore.dismissFullPlayer()
-            router.popToRoot()
-            router.presentPlayer(contentId: contentId, returnToContentId: titleContentId)
-            #endif
-        }
-    }
-    #endif
-
-    #if os(iOS)
-    /// Sends a Siri "play on TV" request to the engaged TV, else to the one
-    /// obvious TV on the network, else asks which TV.
-    @MainActor
-    private func playSiriRequestOnTV(
-        contentId: String,
-        revision: UInt,
-        identity: DeepLinkIdentity
-    ) async {
-        router.dismissItemDetail()
-        if siloControl.remotePlaybackEngaged {
-            // The routing interceptor sends it, asking first if the TV is
-            // playing something else.
-            router.presentPlayer(contentId: contentId)
-            return
-        }
-
-        let request = SiloControlPlaybackRequest(
-            contentId: contentId,
-            fileId: nil,
-            audioTrackIndex: nil,
-            subtitleTrackIndex: nil,
-            startFromBeginning: false,
-            resumePosition: nil
-        )
-        let preferredId = siloControl.preferredTargetId
-        let found = await SiriTVTarget.discover(preferredId: preferredId)
-        guard canCompletePlayDeepLink(revision: revision, identity: identity) else { return }
-
-        if let target = SiriTVTarget.choose(
-            from: found,
-            preferredId: preferredId,
-            isOnActiveServer: { $0.targetsActiveServer }
-        ) {
-            router.presentedPlayer = nil
-            await siloControl.play(on: target, request: request)
-        } else {
-            router.pendingTVPickerRequest = AppRouter.TVPickerRequest(request: request)
-        }
-    }
-    #endif
 
     @MainActor
     private func routePlayDeepLink(
@@ -2289,9 +2170,6 @@ struct MainTabView: View {
             onDismiss: { router.itemDetailPresentationDidDismiss() }
         ) { presentation in
             ItemDetailSheet(presentation: presentation, router: router)
-        }
-        .sheet(item: $router.pendingTVPickerRequest) { box in
-            SiloControlTargetPickerView(request: box.request, controller: siloControl)
         }
         .sheet(isPresented: Binding(
             get: { siloControl.isShowingRemoteControl },

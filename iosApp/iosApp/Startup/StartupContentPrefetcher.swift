@@ -188,11 +188,6 @@ enum StartupContentPrefetcher {
             #endif
             ResponseCache.shared.set(response, for: CacheKey.homeSections)
             prefetchHomeArtwork(for: response)
-            #if os(iOS) || os(tvOS)
-            if SiriTitleCatalog.update(from: response.sections, profileId: requestProfileID) {
-                SiloAppShortcuts.updateAppShortcutParameters()
-            }
-            #endif
             return response
         } catch {
             if profileScopedGeneration == profileGeneration,

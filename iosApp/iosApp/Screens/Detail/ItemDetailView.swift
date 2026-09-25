@@ -1043,7 +1043,13 @@ private struct ItemDetailPhoneContent: View {
 
     private func nextUpEpisode(for detail: ItemDetail) -> EpisodeListItem? {
         guard detail.type == "series" else { return nil }
-        return SeriesNextUpPolicy.nextUpEpisode(in: viewModel.episodes)
+        if let inProgress = viewModel.episodes.first(where: { $0.userData?.isInProgress == true }) {
+            return inProgress
+        }
+        if let unwatched = viewModel.episodes.first(where: { !($0.userData?.played ?? false) }) {
+            return unwatched
+        }
+        return viewModel.episodes.first
     }
 
     /// Series detail keeps one active episode on the main page. The user's

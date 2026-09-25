@@ -297,14 +297,6 @@ class AppRouter {
     }
     var pendingReplaceRemotePlayback: ReplaceRemotePlaybackChoice?
 
-    /// A Siri "play on TV" request that found no TV to pick on its own (none
-    /// or several on the network). The main tab view shows the TV picker.
-    struct TVPickerRequest: Identifiable {
-        let id = UUID()
-        let request: SiloControlPlaybackRequest
-    }
-    var pendingTVPickerRequest: TVPickerRequest?
-
     /// Installed by the root view: the title the engaged TV is playing right
     /// now, or nil when it is idle, so the router knows whether a play
     /// would replace something.
