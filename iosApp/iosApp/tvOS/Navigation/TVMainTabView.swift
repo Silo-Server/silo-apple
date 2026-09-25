@@ -1295,7 +1295,9 @@ struct TVMainTabView: View {
     /// Video playback closes the way Menu closes it. A player started from a
     /// detail page is a route and leaves with the pop; one started from a
     /// card is a cover and is dismissed here. An audiobook's full player
-    /// steps aside while the audiobook keeps playing in the mini player.
+    /// steps aside while the audiobook keeps playing in the mini player. An
+    /// open sign-out confirmation is cancelled; Search takes focus instead of
+    /// the profile button.
     private func openRequestedSearch() {
         guard let request = router.requestedSearch else { return }
         router.requestedSearch = nil
@@ -1304,6 +1306,7 @@ struct TVMainTabView: View {
         if audioStore.isShowingFullPlayer {
             audioStore.dismissFullPlayer()
         }
+        showSignOutConfirm = false
         closePanelForContentHandoff()
         if !router.path.isEmpty {
             router.popToRoot()

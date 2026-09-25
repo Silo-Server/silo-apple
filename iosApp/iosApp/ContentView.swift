@@ -2194,10 +2194,14 @@ struct MainTabView: View {
     /// Anything presented over the tabs would cover Search, so video
     /// playback closes, an audiobook's full player steps aside for the mini
     /// player (as on tvOS), and the TV remote and item detail sheets close.
+    /// A pending remote-playback confirmation is cancelled so accepting it
+    /// later can't start the stale request.
     private func openRequestedSearch() {
         guard let request = router.requestedSearch else { return }
         router.requestedSearch = nil
         siriSearchRequest = request
+        router.pendingReplaceRemotePlayback = nil
+        router.pendingOfflinePlayChoice = nil
         router.presentedPlayer = nil
         audioStore.dismissFullPlayer()
         siloControl.hideRemoteControl()
