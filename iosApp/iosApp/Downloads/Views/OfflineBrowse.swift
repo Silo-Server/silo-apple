@@ -348,10 +348,10 @@ struct OfflineDownloadDetailView: View {
             }
         }
         if let year = manifest?.year, year > 0 { tokens.append(.text(String(year))) }
-        if let runtime = manifest?.runtime, runtime > 0 {
-            tokens.append(.text(PhoneHeroMetadata.formatRuntime(runtime)))
+        if let runtime = MediaTextFormatting.runtime(minutes: manifest?.runtime) {
+            tokens.append(.text(runtime))
         }
-        if let resolution = manifest?.resolution, !resolution.isEmpty { tokens.append(.text(resolution)) }
+        if let resolution = MediaTextFormatting.resolution(manifest?.resolution) { tokens.append(.text(resolution)) }
         if manifest?.hdr == true { tokens.append(.text("HDR")) }
         return tokens
     }

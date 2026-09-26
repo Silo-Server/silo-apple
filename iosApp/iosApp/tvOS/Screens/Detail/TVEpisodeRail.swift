@@ -607,8 +607,8 @@ struct TVEpisodeCard: View {
         if let airDate = DetailDateFormatting.abbreviatedDate(episode.airDate) {
             parts.append(airDate)
         }
-        if let runtime = episode.runtime, runtime > 0 {
-            parts.append(episodeRuntimeText(runtime))
+        if let runtime = MediaTextFormatting.runtime(minutes: episode.runtime) {
+            parts.append(runtime)
         }
         return parts.isEmpty ? nil : parts.joined(separator: "  ·  ")
     }
@@ -722,9 +722,8 @@ private struct EpisodeCardLabel: View {
                                 .lineLimit(1)
                             Spacer(minLength: 8)
                             if captionStyle.showsMetadata,
-                               let runtime = episode.runtime,
-                               runtime > 0 {
-                                Text(episodeRuntimeText(runtime))
+                               let runtime = MediaTextFormatting.runtime(minutes: episode.runtime) {
+                                Text(runtime)
                                     .font(.system(size: 18, weight: .medium))
                                     .foregroundStyle(Color.siloSecondaryText)
                                     .lineLimit(1)
@@ -849,11 +848,6 @@ private struct EpisodeCardLabel: View {
         else { return nil }
         return pos / dur
     }
-
-}
-
-private func episodeRuntimeText(_ minutes: Int) -> String {
-    minutes >= 60 ? "\(minutes / 60)h \(minutes % 60)m" : "\(minutes)m"
 }
 
 /// Reserves the anchored rail's card geometry while a season loads so lower

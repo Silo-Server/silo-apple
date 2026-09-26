@@ -56,11 +56,9 @@ enum PhoneHeroMetadata {
         } else if let year = detail.year, year > 0 {
             tokens.append(.text(String(year)))
         }
-        if let runtime = SelectedMediaRuntime.minutes(
-            detail: detail,
-            selectedVersion: selectedVersion
-        ), runtime > 0 {
-            tokens.append(.text(formatRuntime(runtime)))
+        let runtime = SelectedMediaRuntime.minutes(detail: detail, selectedVersion: selectedVersion)
+        if let runtimeText = MediaTextFormatting.runtime(minutes: runtime) {
+            tokens.append(.text(runtimeText))
         }
         tokens.append(contentsOf: qualityTokens(from: detail, version: selectedVersion))
         return tokens
@@ -215,13 +213,6 @@ enum PhoneHeroMetadata {
 
     private static func hasSubtitles(version: FileVersion) -> Bool {
         !(version.subtitleTracks ?? []).isEmpty
-    }
-
-    static func formatRuntime(_ minutes: Int) -> String {
-        if minutes >= 60 {
-            return "\(minutes / 60)h \(minutes % 60)m"
-        }
-        return "\(minutes) min"
     }
 }
 #endif

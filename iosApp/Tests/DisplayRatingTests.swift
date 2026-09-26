@@ -189,7 +189,7 @@ final class DisplayRatingTests: XCTestCase {
         let content = TVMarqueeContent(item: item, rowTitle: "Continue Watching", isContinueWatching: true)
         XCTAssertEqual(content.rating?.accessibilityText, "IMDb 7.8")
         XCTAssertFalse(content.metaParts.contains("7.8"), "no bare score in the text tokens")
-        XCTAssertEqual(content.trailingMetaParts, ["40 min left"], "time left follows the rating")
+        XCTAssertEqual(content.trailingMetaParts, ["40m left"], "time left follows the rating")
     }
 
     func testMarqueeFallsBackToTMDBAndSkipsEpisodes() throws {

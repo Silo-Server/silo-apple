@@ -55,20 +55,11 @@ enum HomeFeed {
 // MARK: - Metadata formatting
 
 enum HomeFeedMeta {
-    static func runtime(minutes: Int?) -> String? {
-        guard let minutes, minutes > 0 else { return nil }
-        let hours = minutes / 60
-        let remainder = minutes % 60
-        if hours > 0, remainder > 0 { return "\(hours)h \(remainder)m" }
-        if hours > 0 { return "\(hours)h" }
-        return "\(remainder)m"
-    }
-
     static func remaining(position: Double?, duration: Double?) -> String? {
         guard let position, let duration, duration > 0, position > 0 else { return nil }
         let minutesLeft = Int((duration - position) / 60)
         guard minutesLeft > 0 else { return nil }
-        return runtime(minutes: minutesLeft).map { "\($0) left" }
+        return MediaTextFormatting.runtime(minutes: minutesLeft).map { "\($0) left" }
     }
 
     static func progress(for item: SectionItem) -> Double? {

@@ -532,8 +532,8 @@ struct RequestDetailView: View {
             if let seasons = detail.numberOfSeasons, seasons > 0 {
                 parts.append("\(seasons) season\(seasons == 1 ? "" : "s")")
             }
-        } else if let runtime = detail.runtime, runtime > 0 {
-            parts.append(runtime >= 60 ? "\(runtime / 60)h \(runtime % 60)m" : "\(runtime)m")
+        } else if let runtime = MediaTextFormatting.runtime(minutes: detail.runtime) {
+            parts.append(runtime)
         }
         // The TMDB score renders as a rating entry (logo + score), not text.
         return parts
