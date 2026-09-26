@@ -7,9 +7,7 @@ import SwiftUI
 /// after its administrator finishes setup elsewhere.
 struct ServerNeedsSetupView: View {
     var router: AppRouter
-    @State private var isChecking = false
-    @State private var error: String?
-    @State private var retryTask: Task<Void, Never>?
+    @State private var retryModel = ServerNeedsSetupRetryModel()
 
     private var serverURL: String { AuthService.shared.serverUrl }
 
@@ -32,16 +30,16 @@ struct ServerNeedsSetupView: View {
             )
             .padding(.top, 26)
 
-            if let error {
+            if let error = retryModel.error {
                 MarqueeErrorText(error)
                     .padding(.top, 14)
             }
 
             Button(action: retry) {
-                Text(isChecking ? "Checking…" : "Check again")
+                Text(retryModel.isChecking ? "Checking…" : "Check again")
             }
-            .buttonStyle(.marquee(.primary, isLoading: isChecking))
-            .disabled(isChecking)
+            .buttonStyle(.marquee(.primary, isLoading: retryModel.isChecking))
+            .disabled(retryModel.isChecking)
             .padding(.top, 26)
 
             if let url = URL(string: serverURL) {
@@ -56,48 +54,22 @@ struct ServerNeedsSetupView: View {
                 .buttonStyle(.marqueePlain)
                 .padding(.top, 6)
         }
-        .animation(.easeInOut(duration: 0.2), value: error)
+        .animation(.easeInOut(duration: 0.2), value: retryModel.error)
         .navigationBarBackButtonHidden()
         .marqueeTransparentNavigation()
-        .onDisappear(perform: cancelRetry)
+        .onDisappear { retryModel.cancel() }
     }
 
     /// Re-probe the current server. If it's now set up, pop back to the login
     /// screen (this view sits on top of `LoginView` in the `.needsLogin`
     /// stack). Otherwise surface a gentle nudge.
     private func retry() {
-        guard !isChecking else { return }
-        isChecking = true
-        error = nil
-        let expectedServerURL = AuthService.shared.serverUrl
-        retryTask = Task {
-            do {
-                let status = try await AuthService.shared.checkServer(url: expectedServerURL)
-                isChecking = false
-                guard !Task.isCancelled,
-                      AuthService.shared.serverUrl == expectedServerURL else { return }
-                if status.needsSetup {
-                    error = "This server still needs administrator setup."
-                } else {
-                    router.goBack()
-                }
-            } catch {
-                isChecking = false
-                guard !Task.isCancelled else { return }
-                self.error = "Couldn't reach the server. Check it's running and try again."
-            }
-        }
+        retryModel.retry { router.goBack() }
     }
 
     private func changeServer() {
-        cancelRetry()
+        retryModel.cancel()
         router.resetToServerSetup()
-    }
-
-    private func cancelRetry() {
-        retryTask?.cancel()
-        retryTask = nil
-        isChecking = false
     }
 }
 #endif
