@@ -125,6 +125,9 @@ enum WatchPartyPrimaryAction: Equatable, Sendable {
     case ready(isReady: Bool)
     /// The room is playing; this device can rejoin the player.
     case returnToPlayback
+    /// The room is playing but this device's player reached the end; the
+    /// host brings everyone back to the lobby.
+    case returnToLobby
     case none
 }
 
@@ -215,10 +218,15 @@ enum WatchPartyLobbyPolicy {
         members.filter { $0.connected && !$0.isHost && !$0.lobbyReady }.map(\.displayName)
     }
 
+    /// `playbackEnded` is this device's player parked at the end of the title.
     static func primaryAction(room: WatchPartyRoom, capabilities: WatchPartyCapabilities?,
-                              canStart: Bool, winnerTitle: String?, selectionUnavailable: Bool = false) -> WatchPartyPrimaryAction {
+                              canStart: Bool, winnerTitle: String?, selectionUnavailable: Bool = false,
+                              playbackEnded: Bool = false) -> WatchPartyPrimaryAction {
         switch room.phase {
-        case .playing: return selectionUnavailable && !room.selfCanManageRoom ? .none : .returnToPlayback
+        case .playing:
+            // A finished player has nothing to return to.
+            if playbackEnded { return room.selfCanManageRoom && capabilities?.stopPlayback == true ? .returnToLobby : .none }
+            return selectionUnavailable && !room.selfCanManageRoom ? .none : .returnToPlayback
         case .lobby: break
         default: return .none
         }

@@ -702,6 +702,35 @@ final class WatchPartyStateTests: XCTestCase {
         XCTAssertEqual(WatchPartyLobbyPolicy.primaryAction(room: guestRoom, capabilities: caps, canStart: false, winnerTitle: nil, selectionUnavailable: true), .none)
     }
 
+    func testPrimaryActionLeavesAFinishedPlayerForTheLobby() {
+        var host = WatchPartyRoom(roomId: "room")
+        host.selfCanManageRoom = true
+        host.selectedContentId = "42"
+        host.phase = .playing
+        var guest = WatchPartyRoom(roomId: "room")
+        guest.members = [member("Me", isSelf: true)]
+        guest.phase = .playing
+        var stop = WatchPartyCapabilities()
+        stop.stopPlayback = true
+        func action(_ room: WatchPartyRoom, _ capabilities: WatchPartyCapabilities?, ended: Bool,
+                    unavailable: Bool = false) -> WatchPartyPrimaryAction {
+            WatchPartyLobbyPolicy.primaryAction(room: room, capabilities: capabilities, canStart: false, winnerTitle: nil,
+                                                selectionUnavailable: unavailable, playbackEnded: ended)
+        }
+        XCTAssertEqual(action(host, stop, ended: false), .returnToPlayback)
+        XCTAssertEqual(action(host, nil, ended: false), .returnToPlayback)
+        XCTAssertEqual(action(guest, stop, ended: false), .returnToPlayback)
+        // A finished player has nothing to return to; only the host can move the room.
+        XCTAssertEqual(action(host, stop, ended: true), .returnToLobby)
+        XCTAssertEqual(action(host, stop, ended: true, unavailable: true), .returnToLobby)
+        XCTAssertEqual(action(host, nil, ended: true), .none)
+        XCTAssertEqual(action(guest, stop, ended: true), .none)
+        XCTAssertEqual(action(guest, nil, ended: true), .none)
+        // The flag only applies while the room plays.
+        host.phase = .lobby
+        XCTAssertEqual(action(host, stop, ended: true), .chooseTitle)
+    }
+
     @MainActor func testRejoinConflictIsRecognizedAsARefusal() {
         XCTAssertTrue(WatchPartySession.isConflict(APIv2Error.httpStatus(409)))
         XCTAssertFalse(WatchPartySession.isConflict(APIv2Error.httpStatus(500)))
