@@ -148,7 +148,8 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
 
     /// While this book is the active session the button reflects the live
     /// player instead of the (stale) detail payload: it reopens the player
-    /// when playing, or resumes and reopens it when paused.
+    /// when playing, resumes and reopens it when paused, and restarts the
+    /// book once the session has reached the end.
     @ViewBuilder
     private func primaryButton(_ presentation: BookDetailPresentation) -> some View {
         let player = audioStore.player
@@ -161,6 +162,19 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
                     action: { audioStore.showFullPlayer() },
                     fullWidth: true,
                     progress: fraction
+                )
+            } else if AudiobookProgress.isFinished(
+                played: false,
+                position: player.currentTime,
+                totalDuration: player.duration
+            ) {
+                // The session reached the end. Playing from there would stop
+                // at once, so restart the book like the finished state does.
+                PhonePrimaryPillButton(
+                    icon: "arrow.counterclockwise",
+                    title: "Play Again",
+                    action: { startPlayback(restart: true) },
+                    fullWidth: true
                 )
             } else {
                 let left = PlayerTimeFormatter.formatRuntime(max(0, player.duration - player.currentTime))
