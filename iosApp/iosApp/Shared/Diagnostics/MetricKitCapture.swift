@@ -170,16 +170,28 @@ enum MetricKitDiagnosticParser {
     }
 
     private static func stackExcerpt(from rawJSON: Data) -> String? {
-        guard let object = try? JSONSerialization.jsonObject(with: rawJSON) else {
+        guard let root = try? JSONSerialization.jsonObject(with: rawJSON) as? [String: Any],
+              let rootFrames = attributedRootFrames(in: root) else {
             return nil
         }
         var frames: [String] = []
-        collectFrames(from: object, into: &frames)
+        collectFrames(rootFrames, into: &frames)
         guard !frames.isEmpty else {
             return nil
         }
-        let excerpt = frames.prefix(12).joined(separator: "\n")
-        return truncatedToUTF8ByteLimit(excerpt, crashTextByteLimit)
+        return truncatedToUTF8ByteLimit(frames.joined(separator: "\n"), crashTextByteLimit)
+    }
+
+    /// The root frames of the stack MetricKit attributes the diagnostic to:
+    /// the crashed thread for a crash, the main thread for a hang. Falls back
+    /// to the first stack when none carries `threadAttributed`.
+    private static func attributedRootFrames(in root: [String: Any]) -> [Any]? {
+        let tree = (root["callStackTree"] as? [String: Any]) ?? root
+        if let stacks = tree["callStacks"] as? [[String: Any]], !stacks.isEmpty {
+            let stack = stacks.first(where: { ($0["threadAttributed"] as? Bool) == true }) ?? stacks[0]
+            return stack["callStackRootFrames"] as? [Any]
+        }
+        return tree["callStackRootFrames"] as? [Any]
     }
 
     private static func summary(type: ReportType, stackExcerpt: String?) -> String {
@@ -199,6 +211,9 @@ enum MetricKitDiagnosticParser {
     /// and `summary`.
     private static let crashTextByteLimit = 8192
 
+    /// The most frames `stackExcerpt` keeps from the attributed stack.
+    private static let maxExcerptFrames = 12
+
     /// Trims `value` to at most `maxBytes` UTF-8 bytes without splitting a
     /// character, so multibyte content can't push the result past the limit.
     private static func truncatedToUTF8ByteLimit(_ value: String, _ maxBytes: Int) -> String {
@@ -209,26 +224,18 @@ enum MetricKitDiagnosticParser {
         return result
     }
 
-    private static func collectFrames(from value: Any, into frames: inout [String]) {
-        if frames.count >= 12 {
-            return
-        }
-        if let dictionary = value as? [String: Any] {
-            if let rendered = renderFrame(dictionary) {
+    /// Walks frames in call-stack order, each frame before its `subFrames`,
+    /// until `maxExcerptFrames` are collected.
+    private static func collectFrames(_ values: [Any], into frames: inout [String]) {
+        for case let frame as [String: Any] in values {
+            guard frames.count < maxExcerptFrames else {
+                return
+            }
+            if let rendered = renderFrame(frame) {
                 frames.append(rendered)
             }
-            // Recurse into every value once. A separate named-keys pass would
-            // revisit the same subtrees (callStackRootFrames, subFrames, …),
-            // appending each frame twice until the 12-frame cap.
-            for nested in dictionary.values {
-                collectFrames(from: nested, into: &frames)
-            }
-        } else if let array = value as? [Any] {
-            for element in array {
-                collectFrames(from: element, into: &frames)
-                if frames.count >= 12 {
-                    break
-                }
+            if let subFrames = frame["subFrames"] as? [Any] {
+                collectFrames(subFrames, into: &frames)
             }
         }
     }
