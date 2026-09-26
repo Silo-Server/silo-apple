@@ -91,11 +91,18 @@ final class DownloadManager {
     private var lastProgressPersist = Date.distantPast
     /// Session events that arrive before the first scope activation loads the
     /// persisted registry (a background relaunch replays buffered delegate
-    /// events the moment the session is recreated). Handling them against an
-    /// empty registry would discard finished media as unmatched, so they are
-    /// held here and replayed by `releaseHeldSessionEvents()`.
+    /// events the moment the session is recreated). A finished file is
+    /// parked on disk under its owner before its event is sent, so the hold
+    /// no longer protects finished media; it keeps early progress and
+    /// failure events for the first loaded scope, which would otherwise be
+    /// dropped. Replayed by `releaseHeldSessionEvents()`.
     private var pendingSessionEvents: [DownloadSessionEvent] = []
     private var sessionEventsHeld = true
+    /// The settle of parked finished transfers for the store most recently
+    /// installed into `file`. Activation, reconnect and the background
+    /// completion handler wait for it, so a finished download completes
+    /// before anything could re-queue it or iOS could suspend the app.
+    private var parkedSettle: (scope: ScopeKey, task: Task<Void, Never>)?
     /// In-flight back-off timers keyed by record id, tracked so a foreground
     /// reconcile doesn't re-queue a record that already has a scheduled
     /// restart (double-starting the transfer) and so pause/delete can abort
@@ -267,21 +274,25 @@ final class DownloadManager {
         file.subscriptions.first { $0.seriesId == seriesId }
     }
 
+    // Record paths are built from the scope `file` was loaded for: records
+    // always come from `file`, which lags the active scope while a switch
+    // waits on its load.
+
     func absoluteMediaURL(for record: DownloadRecord) -> URL? {
-        guard let filename = record.mediaFilename, !scopeServerId.isEmpty else { return nil }
+        guard let filename = record.mediaFilename, !fileServerId.isEmpty else { return nil }
         return DownloadFilePaths.fileURL(
-            serverId: scopeServerId,
-            profileId: scopeProfileId,
+            serverId: fileServerId,
+            profileId: fileProfileId,
             downloadId: record.id,
             filename: filename
         )
     }
 
     func absoluteFileURL(for record: DownloadRecord, filename: String) -> URL? {
-        guard !scopeServerId.isEmpty else { return nil }
+        guard !fileServerId.isEmpty else { return nil }
         return DownloadFilePaths.fileURL(
-            serverId: scopeServerId,
-            profileId: scopeProfileId,
+            serverId: fileServerId,
+            profileId: fileProfileId,
             downloadId: record.id,
             filename: filename
         )
@@ -392,7 +403,7 @@ final class DownloadManager {
             guard let record = file.records[id] else { continue }
             if let taskId = record.taskIdentifier {
                 intentionalCancels.insert(taskId)
-                sessionDelegate.cancel(taskId: taskId)
+                sessionDelegate.cancel(taskId: taskId, expecting: ownedTag(recordId: id))
             }
             retryTasks[id]?.cancel()
             retryTasks[id] = nil
@@ -404,11 +415,11 @@ final class DownloadManager {
         // Enqueue the updated snapshot before removing assets, as for single
         // deletion. Persistence remains asynchronous through the save chain.
         persist()
-        if !scopeServerId.isEmpty {
+        if !fileServerId.isEmpty {
             for id in removedIds {
                 DownloadFilePaths.removeDownloadDirectory(
-                    serverId: scopeServerId,
-                    profileId: scopeProfileId,
+                    serverId: fileServerId,
+                    profileId: fileProfileId,
                     downloadId: id
                 )
             }
@@ -461,6 +472,12 @@ final class DownloadManager {
            fileServerId == serverId, fileProfileId == profileId,
            !file.records.isEmpty || file.capability != nil {
             releaseHeldSessionEvents()
+            // A switch away and back before the other store loaded keeps
+            // this store installed, but a finish in that window was parked.
+            if parkedSettle?.scope != loadedScope { startParkedSettle() }
+            // Launch activates concurrently from several places; none of
+            // them may reconnect before the install's settle has run.
+            await awaitParkedSettle()
             return true
         }
         if serverId != scopeServerId || profileId != scopeProfileId {
@@ -500,6 +517,7 @@ final class DownloadManager {
             fileServerId = serverId
             fileProfileId = profileId
             adoptLegacySessionTasksIfNeeded()
+            startParkedSettle()
             if let released = releasedProgressClaims.removeValue(forKey: Self.progressClaimKey(serverId, profileId)),
                OfflineProgressQueue.releaseClaims(&file.progressQueue, ids: released) {
                 persist()
@@ -510,6 +528,7 @@ final class DownloadManager {
             scopeLoadProfileId = ""
         }
         releaseHeldSessionEvents()
+        await awaitParkedSettle()
         refreshStorageUsage()
         await backfillEpisodeMetadataIfNeeded()
         return true
@@ -552,6 +571,68 @@ final class DownloadManager {
         }
         file.taskSessionIdentifier = DownloadSessionDelegate.sessionIdentifier
         persist()
+    }
+
+    /// Starts settling the loaded scope's parked transfers, replacing the
+    /// settle of any earlier install.
+    private func startParkedSettle() {
+        guard let scope = loadedScope else { return }
+        parkedSettle = (scope, Task { @MainActor [weak self] in
+            // A later install of this scope has started its own settle.
+            guard let self, self.loadedScope == scope else { return }
+            await self.settleParkedTransfers(serverId: scope.serverId, profileId: scope.profileId)
+        })
+    }
+
+    /// Waits for the parked-transfer settle of the loaded scope's store
+    /// install. Returns at once when none is running for the loaded scope.
+    private func awaitParkedSettle() async {
+        guard let settle = parkedSettle, settle.scope == loadedScope else { return }
+        await settle.task.value
+    }
+
+    /// Settles the finished transfers parked in a scope while its store was
+    /// not loaded (another profile or server was active, or the app was not
+    /// running). A record that accepts its file completes; any other parked
+    /// file is removed, and so is a download directory with a parked file
+    /// but no record. Directories without a parked file are never touched.
+    private func settleParkedTransfers(serverId: String, profileId: String) async {
+        guard let scope = loadedScope, scope.serverId == serverId, scope.profileId == profileId else { return }
+        let parked = await Task.detached(priority: .utility) {
+            DownloadFilePaths.finishedTransfers(serverId: serverId, profileId: profileId)
+        }.value
+        guard !parked.isEmpty, loadedScope == scope else { return }
+        // Directory names are sanitized download ids.
+        let recordIds = Dictionary(
+            file.records.keys.map { (DownloadFilePaths.directoryName(forDownloadId: $0), $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let fm = FileManager.default
+        for (directoryName, url) in parked {
+            let recordId = recordIds[directoryName]
+            let tag = DownloadTaskTag(serverId: serverId, profileId: profileId, downloadId: recordId ?? directoryName)
+            // Evaluated against the current `file`: a live finish may have
+            // completed the record since the scan.
+            let disposition = Self.finishedTransferDisposition(
+                tag: tag,
+                loadedServerId: scope.serverId,
+                loadedProfileId: scope.profileId,
+                record: recordId.flatMap { file.records[$0] }
+            )
+            switch disposition {
+            case .complete:
+                if let recordId { completeFinishedTransfer(recordId: recordId, from: url) }
+            case .discardFile:
+                try? fm.removeItem(at: url)
+            case .discardDirectory:
+                // The original id is unknown when no record matched, so the
+                // directory goes by the URL the scan found.
+                try? fm.removeItem(at: url.deletingLastPathComponent())
+            case .keepForOwner:
+                break
+            }
+        }
+        refreshStorageUsage()
     }
 
     private func removeLegacyDownloadsIfNeeded() async {
@@ -623,6 +704,7 @@ final class DownloadManager {
         file = .empty
         fileServerId = ""
         fileProfileId = ""
+        parkedSettle = nil
         rateSamples.removeAll()
         transferRates.removeAll()
     }
@@ -631,7 +713,7 @@ final class DownloadManager {
         for record in file.records.values where record.localStatus == .downloading {
             if let taskId = record.taskIdentifier {
                 intentionalCancels.insert(taskId)
-                sessionDelegate.cancel(taskId: taskId)
+                sessionDelegate.cancel(taskId: taskId, expecting: ownedTag(recordId: record.id))
             }
         }
     }
@@ -908,8 +990,8 @@ final class DownloadManager {
     /// Suspend an in-flight media transfer. The status flips to `.paused`
     /// synchronously (so the UI responds on the tap) and the resume data is
     /// captured asynchronously — the task identifier stays on the record
-    /// until then so a transfer that finishes during the race still
-    /// completes normally instead of being discarded.
+    /// until then. A transfer that finishes during the race still completes
+    /// normally: a finish completes a `.paused` record that has no media.
     func pauseDownload(id: String) {
         guard var record = file.records[id], record.localStatus == .downloading else { return }
         guard let taskId = record.taskIdentifier else {
@@ -931,9 +1013,10 @@ final class DownloadManager {
         file.records[id] = record
         clearTransferRate(recordId: id)
         persist()
+        let owner = ownedTag(recordId: id)
         Task { @MainActor [weak self] in
             guard let self else { return }
-            let data = await self.sessionDelegate.pause(taskId: taskId)
+            let data = await self.sessionDelegate.pause(taskId: taskId, expecting: owner)
             self.finishPause(recordId: id, resumeData: data)
         }
         processQueue()
@@ -1025,7 +1108,8 @@ final class DownloadManager {
             let resumeData = try? Data(contentsOf: url)
             try? FileManager.default.removeItem(at: url)
             record.resumeDataFilename = nil
-            if let resumeData, let taskId = sessionDelegate.resume(data: resumeData) {
+            if let resumeData, let tag = ownedTag(recordId: record.id),
+               let taskId = sessionDelegate.resume(data: resumeData, tag: tag) {
                 record.taskIdentifier = taskId
                 record.localStatus = .downloading
                 file.records[record.id] = record
@@ -1085,7 +1169,8 @@ final class DownloadManager {
             auth: auth,
             allowsCellular: !DownloadSettings.shared.wifiOnly
         )
-        let taskId = sessionDelegate.start(request: request)
+        let tag = DownloadTaskTag(serverId: owner.scope.serverId, profileId: owner.scope.profileId, downloadId: recordId)
+        let taskId = sessionDelegate.start(request: request, tag: tag)
         record.taskIdentifier = taskId
         record.localStatus = .downloading
         record.pendingStatusEvent = Self.statusEvent(.downloading, for: record)
@@ -1296,16 +1381,17 @@ final class DownloadManager {
     private func handleSessionEvent(_ event: DownloadSessionEvent) {
         // Hold events until the first scope activation has loaded the
         // persisted registry — on a cold (background) relaunch the recreated
-        // session replays its buffered events immediately, and matching them
-        // against a not-yet-loaded registry would delete finished media as
-        // orphaned and re-download it from scratch.
+        // session replays its buffered events immediately. A finished file
+        // is already parked on disk under its owner, so the hold no longer
+        // protects media; it keeps early progress and failure events for the
+        // first loaded scope, which would otherwise be dropped.
         guard !sessionEventsHeld else {
             pendingSessionEvents.append(event)
             return
         }
         switch event {
-        case let .progress(taskId, written, total):
-            guard var record = recordByTask(taskId) else { return }
+        case let .progress(ref, written, total):
+            guard var record = loadedRecord(for: resolveTag(ref)), record.localStatus == .downloading else { return }
             updateTransferRate(recordId: record.id, bytes: written)
             // Publish to the observable blob at a readable cadence — the raw
             // callbacks fire many times per second and each reassignment
@@ -1320,30 +1406,32 @@ final class DownloadManager {
             file.records[record.id] = record
             persistProgressThrottled()
 
-        case let .finished(taskId, stagedURL, _):
-            handleMediaFinished(taskId: taskId, stagedURL: stagedURL)
+        case let .finished(ref, fileURL):
+            handleMediaFinished(ref, fileURL: fileURL)
 
-        case let .failed(taskId, statusCode, resumeData, message):
-            handleMediaFailure(taskId: taskId, statusCode: statusCode, resumeData: resumeData, message: message)
+        case let .failed(ref, statusCode, resumeData, message):
+            handleMediaFailure(ref, statusCode: statusCode, resumeData: resumeData, message: message)
 
         case .allEventsDelivered:
             // Flush queued store writes before handing control back — iOS
             // can suspend the process as soon as the completion handler
             // runs, and the `.finished`/`.failed` records handled above are
-            // still on the async save chain.
+            // still on the async save chain. The parked-transfer settle of
+            // the store just installed runs first: its completed records
+            // must be saved too, or the next launch downloads them again.
             guard let handler = sessionDelegate.backgroundCompletionHandler else { return }
             sessionDelegate.backgroundCompletionHandler = nil
-            let pendingSave = saveChain
             Task { @MainActor in
-                await pendingSave?.value
+                await self.parkedSettle?.task.value
+                await self.saveChain?.value
                 handler()
             }
         }
     }
 
     /// Replay events held during launch, in arrival order, now that the
-    /// registry reflects the active scope (or the lack of one — orphan
-    /// cleanup is then correct rather than premature).
+    /// registry reflects the active scope (or the lack of one, in which case
+    /// finished files stay parked for their owners).
     private func releaseHeldSessionEvents() {
         guard sessionEventsHeld else { return }
         sessionEventsHeld = false
@@ -1352,22 +1440,103 @@ final class DownloadManager {
         }
     }
 
-    private func handleMediaFinished(taskId: Int, stagedURL: URL) {
-        intentionalCancels.remove(taskId)
-        guard var record = recordByTask(taskId) else {
-            try? FileManager.default.removeItem(at: stagedURL)
-            return
+    /// Routes a finished file to its owner. `fileURL` is the owner's parked
+    /// path for a tagged task, or a staging file for an untagged one.
+    private func handleMediaFinished(_ ref: DownloadTaskRef, fileURL: URL) {
+        intentionalCancels.remove(ref.taskId)
+        let tag = resolveTag(ref)
+        // Decided against `loadedScope`, never `scopeServerId`: while a switch
+        // waits on its load, `scopeServerId` already names the new scope but
+        // `file` still holds the old one.
+        let scope = loadedScope
+        let disposition = Self.finishedTransferDisposition(
+            tag: tag,
+            loadedServerId: scope?.serverId ?? "",
+            loadedProfileId: scope?.profileId ?? "",
+            record: loadedRecord(for: tag)
+        )
+        let fm = FileManager.default
+        switch disposition {
+        case .complete:
+            guard let tag else { return }
+            completeFinishedTransfer(recordId: tag.downloadId, from: fileURL)
+        case .keepForOwner:
+            guard let tag else { return }
+            // A tagged file is already parked; an attributed one moves there
+            // from staging.
+            let parked = DownloadFilePaths.finishedTransferURL(for: tag)
+            guard fileURL.standardizedFileURL.path != parked.standardizedFileURL.path else { return }
+            try? fm.removeItem(at: parked)
+            do {
+                try fm.moveItem(at: fileURL, to: parked)
+            } catch {
+                Self.logger.error("Failed to park finished download: \(String(describing: error), privacy: .private)")
+                try? fm.removeItem(at: fileURL)
+            }
+        case .discardFile:
+            try? fm.removeItem(at: fileURL)
+        case .discardDirectory:
+            guard let tag else { return }
+            try? fm.removeItem(at: fileURL)
+            DownloadFilePaths.removeDownloadDirectory(
+                serverId: tag.serverId,
+                profileId: tag.profileId,
+                downloadId: tag.downloadId
+            )
         }
+    }
+
+    /// What happens to a finished transfer's file.
+    enum FinishedTransferDisposition: Equatable {
+        /// Its record in the loaded scope takes it as its media.
+        case complete
+        /// Its owner's store is not loaded: it stays parked under that owner
+        /// until the store is next installed.
+        case keepForOwner
+        /// Nothing wants it: the record has media already, was reset, or
+        /// the task has no known owner.
+        case discardFile
+        /// The loaded scope owns it but has no record for it: its download
+        /// directory is left over from a deleted record.
+        case discardDirectory
+    }
+
+    /// `loadedServerId`/`loadedProfileId` name the loaded scope (empty when
+    /// none is), and `record` is that scope's record for the tag's download
+    /// id, looked up only when the tag names the loaded scope.
+    nonisolated static func finishedTransferDisposition(
+        tag: DownloadTaskTag?,
+        loadedServerId: String,
+        loadedProfileId: String,
+        record: DownloadRecord?
+    ) -> FinishedTransferDisposition {
+        guard let tag else { return .discardFile }
+        guard !loadedServerId.isEmpty, !loadedProfileId.isEmpty,
+              tag.isOwned(byServerId: loadedServerId, profileId: loadedProfileId) else { return .keepForOwner }
+        guard let record else { return .discardDirectory }
+        // A finish that races a pause still completes the record.
+        switch record.localStatus {
+        case .downloading, .paused:
+            return record.mediaFilename == nil ? .complete : .discardFile
+        default:
+            return .discardFile
+        }
+    }
+
+    /// Moves a finished file into its record's media slot and completes the
+    /// record. A live finish and the parked-transfer settle can both reach
+    /// one parked file; whichever comes second finds it gone and changes
+    /// nothing.
+    private func completeFinishedTransfer(recordId: String, from source: URL) {
+        guard FileManager.default.fileExists(atPath: source.path),
+              var record = file.records[recordId] else { return }
         clearTransferRate(recordId: record.id)
         let ext = mediaExtension(for: record)
         let filename = "media.\(ext)"
-        guard let destination = absoluteFileURLForNewAsset(recordId: record.id, filename: filename) else {
-            try? FileManager.default.removeItem(at: stagedURL)
-            return
-        }
+        guard let destination = absoluteFileURLForNewAsset(recordId: record.id, filename: filename) else { return }
         try? FileManager.default.removeItem(at: destination)
         do {
-            try FileManager.default.moveItem(at: stagedURL, to: destination)
+            try FileManager.default.moveItem(at: source, to: destination)
         } catch {
             Self.logger.error("Failed to move finished media: \(String(describing: error), privacy: .private)")
             record.localStatus = .failed
@@ -1400,9 +1569,13 @@ final class DownloadManager {
         // watched episode right after it reads the watch state in full.
     }
 
-    private func handleMediaFailure(taskId: Int, statusCode: Int?, resumeData: Data?, message: String) {
-        if intentionalCancels.remove(taskId) != nil { return }
-        guard var record = recordByTask(taskId) else { return }
+    /// Applies a failure only to the loaded scope's record the task belongs
+    /// to, and only while that record still names this task: a failure of
+    /// another scope's transfer, or of a task the record no longer tracks,
+    /// is dropped. The record re-queues when its scope next reconnects.
+    private func handleMediaFailure(_ ref: DownloadTaskRef, statusCode: Int?, resumeData: Data?, message: String) {
+        if intentionalCancels.remove(ref.taskId) != nil { return }
+        guard var record = loadedRecord(for: resolveTag(ref)), record.taskIdentifier == ref.taskId else { return }
         record.taskIdentifier = nil
         clearTransferRate(recordId: record.id)
 
@@ -1476,14 +1649,15 @@ final class DownloadManager {
             // restarting on top of it would run two transfers of one file.
             guard let record = self.file.records[recordId],
                   record.taskIdentifier == nil,
-                  record.localStatus == .downloading || record.localStatus == .fetchingAssets else { return }
+                  record.localStatus == .downloading || record.localStatus == .fetchingAssets,
+                  let tag = self.ownedTag(recordId: recordId) else { return }
             if refreshToken {
                 // Any authenticated v2 read runs HTTPClient's single-flight
                 // 401 refresh, so the next background request carries a
                 // fresh token.
                 await self.refreshCapability()
             }
-            if let resumeData, let taskId = self.sessionDelegate.resume(data: resumeData) {
+            if let resumeData, let taskId = self.sessionDelegate.resume(data: resumeData, tag: tag) {
                 guard var rec = self.file.records[recordId] else { return }
                 rec.taskIdentifier = taskId
                 rec.localStatus = .downloading
@@ -1806,23 +1980,37 @@ final class DownloadManager {
     /// cancelled and its download re-queued, so it restarts from a fresh
     /// manifest instead of ending in a 410.
     private func reconnectActiveTasks() async {
-        let (active, retired) = await sessionDelegate.liveTasks()
-        for taskId in retired {
-            intentionalCancels.insert(taskId)
-            sessionDelegate.cancel(taskId: taskId)
+        // A transfer that finished while its store was not loaded is parked
+        // on disk; the settle completes its record, which must happen before
+        // the missing live task re-queues it here. The scope is captured
+        // first: one installed while this waits has its own settle, which
+        // this wait did not cover.
+        guard let scope = loadedScope else { return }
+        await awaitParkedSettle()
+        guard loadedScope == scope else { return }
+        let (current, retired) = await sessionDelegate.liveTasks()
+        for ref in retired {
+            intentionalCancels.insert(ref.taskId)
+            sessionDelegate.cancel(taskId: ref.taskId, expecting: nil)
         }
-        for (id, record) in file.records {
-            var record = record
-            // Task identifiers are only unique within one URLSession
-            // instance — a recreated session hands the same small integers
-            // to new tasks, so a persisted id with no live task must be
-            // dropped before it can match (and misroute) another record's
-            // transfer. Pause round-trips keep theirs: the cancelled task
-            // may still deliver a final event that must find this record.
-            if let taskId = record.taskIdentifier,
-               !active.contains(taskId),
-               !pendingPauseIds.contains(id) {
-                record.taskIdentifier = nil
+        guard loadedScope == scope else { return }
+        // Task identifiers repeat across session instances and every scope
+        // shares the session, so a persisted id says nothing on its own. A
+        // task counts as live for a record only when its tag (or, for a
+        // task an earlier build started, its request) names this scope and
+        // that record.
+        let live = Self.liveTaskIds(
+            loadedServerId: scope.serverId,
+            loadedProfileId: scope.profileId,
+            tasks: current.map { ($0.taskId, resolveTag($0)) }
+        )
+        for (id, original) in file.records {
+            var record = original
+            // Only a transferring record, or one whose pause is still
+            // capturing resume data, tracks a task.
+            let tracksTask = record.localStatus == .downloading || pendingPauseIds.contains(id)
+            record.taskIdentifier = tracksTask ? live[id] : nil
+            if record.taskIdentifier != original.taskIdentifier {
                 file.records[id] = record
             }
             // Records with a live back-off timer are owned by the retry;
@@ -1836,12 +2024,29 @@ final class DownloadManager {
             // that did not survive the relaunch; re-queue them too so they
             // aren't wedged (and don't keep occupying a concurrency slot
             // forever).
-            if record.localStatus == .downloading,
-               let taskId = record.taskIdentifier, active.contains(taskId) {
+            if record.localStatus == .downloading, record.taskIdentifier != nil {
                 continue
             }
             setLocalStatus(.queued, id: id)
         }
+    }
+
+    /// Maps record id to the live task the loaded scope owns for it. When
+    /// one record has several live tasks, the newest (highest id) wins.
+    nonisolated static func liveTaskIds(
+        loadedServerId: String,
+        loadedProfileId: String,
+        tasks: [(taskId: Int, tag: DownloadTaskTag?)]
+    ) -> [String: Int] {
+        guard !loadedServerId.isEmpty, !loadedProfileId.isEmpty else { return [:] }
+        var live: [String: Int] = [:]
+        for task in tasks {
+            guard let tag = task.tag, tag.isOwned(byServerId: loadedServerId, profileId: loadedProfileId) else {
+                continue
+            }
+            live[tag.downloadId] = max(live[tag.downloadId] ?? task.taskId, task.taskId)
+        }
+        return live
     }
 
     // MARK: - Series monitoring
@@ -2581,12 +2786,12 @@ final class DownloadManager {
     private func discardLocalAssets(for record: DownloadRecord) {
         if let taskId = record.taskIdentifier {
             intentionalCancels.insert(taskId)
-            sessionDelegate.cancel(taskId: taskId)
+            sessionDelegate.cancel(taskId: taskId, expecting: ownedTag(recordId: record.id))
         }
-        guard !scopeServerId.isEmpty else { return }
+        guard !fileServerId.isEmpty else { return }
         DownloadFilePaths.removeDownloadDirectory(
-            serverId: scopeServerId,
-            profileId: scopeProfileId,
+            serverId: fileServerId,
+            profileId: fileProfileId,
             downloadId: record.id
         )
     }
@@ -2705,10 +2910,6 @@ final class DownloadManager {
         persist()
     }
 
-    private func recordByTask(_ taskId: Int) -> DownloadRecord? {
-        file.records.values.first { $0.taskIdentifier == taskId }
-    }
-
     private func mediaExtension(for record: DownloadRecord) -> String {
         switch (record.container ?? "").lowercased() {
         case "mkv", "matroska": return "mkv"
@@ -2756,13 +2957,38 @@ final class DownloadManager {
     }
 
     private func absoluteFileURLForNewAsset(recordId: String, filename: String) -> URL? {
-        guard !scopeServerId.isEmpty else { return nil }
+        guard !fileServerId.isEmpty else { return nil }
         return DownloadFilePaths.fileURL(
-            serverId: scopeServerId,
-            profileId: scopeProfileId,
+            serverId: fileServerId,
+            profileId: fileProfileId,
             downloadId: recordId,
             filename: filename
         )
+    }
+
+    /// The owner tag of a record in `file`: the scope `file` was loaded for
+    /// and the record id. Nil when no store is loaded.
+    private func ownedTag(recordId: String) -> DownloadTaskTag? {
+        guard !fileServerId.isEmpty, !fileProfileId.isEmpty else { return nil }
+        return DownloadTaskTag(serverId: fileServerId, profileId: fileProfileId, downloadId: recordId)
+    }
+
+    /// The owner of the task an event came from: its tag, or for a task an
+    /// earlier build started without one, the owner its request names.
+    private func resolveTag(_ ref: DownloadTaskRef) -> DownloadTaskTag? {
+        ref.tag ?? DownloadTaskTag.attributing(
+            requestURL: ref.requestURL,
+            profileId: ref.requestProfileId,
+            servers: ServerRegistry.shared.entries.map { ($0.id, $0.url) }
+        )
+    }
+
+    /// The loaded scope's record `tag` names, or nil when there is no tag,
+    /// no loaded scope, or the tag names another scope.
+    private func loadedRecord(for tag: DownloadTaskTag?) -> DownloadRecord? {
+        guard let tag, let scope = loadedScope,
+              tag.isOwned(byServerId: scope.serverId, profileId: scope.profileId) else { return nil }
+        return file.records[tag.downloadId]
     }
 
     private func fileSizeOnDisk(_ url: URL) -> Int64 {

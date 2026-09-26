@@ -568,7 +568,10 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     var downloadedAt: Date?
     var lastError: String?
     var retryCount: Int
-    /// `URLSessionDownloadTask.taskIdentifier`, for reconnecting on relaunch.
+    /// `URLSessionDownloadTask.taskIdentifier` of the record's live transfer,
+    /// used only to cancel or pause that task in this process. Events find
+    /// their record by the task's `DownloadTaskTag`, not by this id, and
+    /// reconnect re-validates it against the tags of the live tasks.
     var taskIdentifier: Int?
     /// The latest local status event the server has not answered yet. A
     /// retry resends exactly this event.
@@ -585,6 +588,76 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     var progressFraction: Double {
         guard fileSize > 0 else { return 0 }
         return min(1, max(0, Double(bytesDownloaded) / Double(fileSize)))
+    }
+}
+
+/// The owner of one background transfer: the scope (server and profile)
+/// whose store holds its record, and the download id. Every profile and
+/// server shares one background session, so each task carries this in its
+/// `taskDescription`, and its events reach that scope whichever one is
+/// loaded when they arrive.
+struct DownloadTaskTag: Hashable, Sendable {
+    let serverId: String
+    let profileId: String
+    let downloadId: String
+
+    init(serverId: String, profileId: String, downloadId: String) {
+        self.serverId = serverId
+        self.profileId = profileId
+        self.downloadId = downloadId
+    }
+
+    /// Download ids are server-defined text, so the fields are JSON-encoded
+    /// instead of joined with a delimiter.
+    private struct Payload: Codable {
+        let v: Int
+        let server: String
+        let profile: String
+        let download: String
+    }
+
+    private static let payloadVersion = 1
+
+    /// JSON `{"v":1,"server":…,"profile":…,"download":…}`.
+    var taskDescription: String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        let payload = Payload(v: Self.payloadVersion, server: serverId, profile: profileId, download: downloadId)
+        guard let data = try? encoder.encode(payload) else { return "" }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// Nil for nil, non-JSON, other versions, or empty fields.
+    init?(taskDescription: String?) {
+        guard let data = taskDescription?.data(using: .utf8),
+              let payload = try? JSONDecoder().decode(Payload.self, from: data),
+              payload.v == Self.payloadVersion,
+              !payload.server.isEmpty, !payload.profile.isEmpty, !payload.download.isEmpty else { return nil }
+        self.init(serverId: payload.server, profileId: payload.profile, downloadId: payload.download)
+    }
+
+    /// Attribution for a task an earlier build started without a tag: the
+    /// download id from its v2 file URL, the profile from its `X-Profile-Id`
+    /// header, and the first server whose file URL for that id has the same
+    /// origin and path. Nil when any of them is missing.
+    static func attributing(
+        requestURL: URL?,
+        profileId: String?,
+        servers: [(id: String, url: String)]
+    ) -> DownloadTaskTag? {
+        guard let downloadId = APIv2Client.downloadFileID(requestURL),
+              let profileId, !profileId.isEmpty,
+              let key = DownloadSessionDelegate.legacyTransferKey(requestURL),
+              let server = servers.first(where: {
+                  DownloadSessionDelegate.legacyTransferKey(
+                      APIv2Client.downloadFileURL(id: downloadId, serverURL: $0.url)
+                  ) == key
+              }) else { return nil }
+        return DownloadTaskTag(serverId: server.id, profileId: profileId, downloadId: downloadId)
+    }
+
+    func isOwned(byServerId serverId: String, profileId: String) -> Bool {
+        self.serverId == serverId && self.profileId == profileId
     }
 }
 

@@ -10,6 +10,7 @@ import OSLog
 /// ```
 /// <AppSupport>/SiloDownloads/
 ///   .legacy-downloads-removed    (see `LegacyDownloadStorage`)
+///   staging/task-<n>.bin         (finished untagged transfers, see below)
 /// <AppSupport>/SiloDownloads/<serverId>/<profileId>/
 ///   store.json
 ///   <downloadId>/
@@ -17,7 +18,12 @@ import OSLog
 ///     manifest.json
 ///     poster.jpg | backdrop.jpg | logo.png
 ///     sub_<n>.<ext>
+///     transfer.finished          (a finished transfer waiting for its record)
 /// ```
+///
+/// A finished transfer is parked as `transfer.finished` in its owner's
+/// download directory, whichever scope is loaded, and becomes `media.<ext>`
+/// once that scope's store is loaded and its record accepts it.
 ///
 /// `DownloadRecord` stores **relative filenames** (e.g. `media.mp4`), not
 /// absolute URLs, because the iOS app-container path can change between
@@ -53,10 +59,11 @@ enum DownloadFilePaths {
             .appendingPathComponent(storeFileName, isDirectory: false)
     }
 
-    /// Staging area where the background session delegate parks a finished
-    /// download's temp file (which is only valid during the delegate
-    /// callback) before the manager resolves its record and moves it to the
-    /// final per-download directory. Keyed by task identifier.
+    /// Staging area where the background session delegate moves the temp
+    /// file (only valid during the delegate callback) of a finished task
+    /// that carries no `DownloadTaskTag`, which only an earlier build
+    /// starts. The manager then attributes it by its request and moves it
+    /// on. Keyed by task identifier.
     static func stagingFileURL(taskIdentifier: Int) -> URL {
         let dir = rootDirectory().appendingPathComponent("staging", isDirectory: true)
         ensureDirectory(dir, excludeFromBackup: true)
@@ -79,6 +86,43 @@ enum DownloadFilePaths {
     ) -> URL {
         downloadDirectory(serverId: serverId, profileId: profileId, downloadId: downloadId)
             .appendingPathComponent(filename, isDirectory: false)
+    }
+
+    static let finishedTransferFilename = "transfer.finished"
+
+    /// Where a finished transfer waits in its owner's download directory
+    /// until that scope's store is loaded and its record accepts it.
+    static func finishedTransferURL(for tag: DownloadTaskTag) -> URL {
+        fileURL(
+            serverId: tag.serverId,
+            profileId: tag.profileId,
+            downloadId: tag.downloadId,
+            filename: finishedTransferFilename
+        )
+    }
+
+    /// The name of a download's directory inside its scope directory.
+    static func directoryName(forDownloadId downloadId: String) -> String {
+        sanitize(downloadId)
+    }
+
+    /// Every parked finished transfer in a scope, keyed by the name of the
+    /// download directory that holds it (see `directoryName(forDownloadId:)`).
+    static func finishedTransfers(serverId: String, profileId: String, root: URL = rootDirectory()) -> [String: URL] {
+        let scope = scopeDirectory(serverId: serverId, profileId: profileId, root: root)
+        let fm = FileManager.default
+        guard let children = try? fm.contentsOfDirectory(
+            at: scope,
+            includingPropertiesForKeys: [.isDirectoryKey]
+        ) else { return [:] }
+        var parked: [String: URL] = [:]
+        for child in children where (try? child.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
+            let url = child.appendingPathComponent(finishedTransferFilename, isDirectory: false)
+            if fm.fileExists(atPath: url.path) {
+                parked[child.lastPathComponent] = url
+            }
+        }
+        return parked
     }
 
     /// Delete every on-disk asset for one download (media, manifest,
