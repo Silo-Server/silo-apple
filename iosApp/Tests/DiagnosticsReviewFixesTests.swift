@@ -1,11 +1,10 @@
 import XCTest
 @testable import Silo
 
-/// Focused coverage for the behavior fixes made in response to the PR #96
-/// review: permanent-failure gating, consent notice refresh on upload,
-/// binding-scoped playback sessions, and byte-safe stack truncation.
+/// Cross-cutting diagnostics behavior: report state, consent refresh, recent sessions,
+/// capture gates, exit sentinels, crash evidence, log filtering and multipart uploads.
 final class DiagnosticsReviewFixesTests: XCTestCase {
-    // MARK: - Permanent-failure state (#3 too_large, #9 needsServerUpdate)
+    // MARK: - Pending report state
 
     func testPendingReportStateDecodesLegacyStateWithoutTooLarge() throws {
         let legacy = try DiagnosticsJSONCoding.makeDecoder().decode(
@@ -22,126 +21,6 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         XCTAssertTrue(PendingReportState(needsServerUpdate: true).isPermanentFailure)
         XCTAssertTrue(PendingReportState(needsServerUpdate: false, tooLarge: true).isPermanentFailure)
     }
-
-    // MARK: - Consent notice + mode refresh before upload (#2, round 3)
-
-    func testUpdatingConsentRefreshesModeAndNoticeVersion() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("diag-tests-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let store = PendingReportStore(rootDirectory: root)
-
-        // Captured under Always; the server notice then advanced, demoting the
-        // account Always→Ask (prompt). The rewrite must not keep claiming
-        // always for the new notice.
-        let report = try store.save(makeCapture(noticeVersion: 1, consentMode: .always))
-        XCTAssertEqual(report.manifest.consent.mode, .always)
-
-        let updated = store.updatingConsent(report, mode: .prompt, noticeVersion: 2)
-        XCTAssertEqual(updated.manifest.consent.mode, .prompt)
-        XCTAssertEqual(updated.manifest.consent.noticeVersion, 2)
-        // Evidence stays frozen: the captured timestamp is unchanged.
-        XCTAssertEqual(updated.binding.capturedAt, report.binding.capturedAt)
-
-        // The change is persisted to disk, so a re-read report is not stale.
-        let reloaded = store.report(id: report.id)
-        XCTAssertEqual(reloaded?.manifest.consent.mode, .prompt)
-        XCTAssertEqual(reloaded?.manifest.consent.noticeVersion, 2)
-    }
-
-    // MARK: - Binding-scoped playback sessions (#10)
-
-    func testRecentSessionsAreScopedToTheirBinding() {
-        let suite = UserDefaults(suiteName: "diag-tests-\(UUID().uuidString)")!
-        let tracker = RecentSessionTracker(defaults: SharedDefaults(suite: suite, standard: suite))
-
-        let serverA = DiagnosticsBinding(serverInstanceID: "server-a", accountUserID: "account-a")
-        let serverB = DiagnosticsBinding(serverInstanceID: "server-b", accountUserID: "account-b")
-
-        tracker.record(sessionID: "sess-a", binding: serverA)
-        tracker.record(sessionID: "sess-b", binding: serverB)
-
-        XCTAssertEqual(tracker.recentSessionIDs(for: serverA), ["sess-a"])
-        XCTAssertEqual(tracker.recentSessionIDs(for: serverB), ["sess-b"])
-    }
-
-    func testRecentSessionsWithoutBindingNeverMatchAReport() {
-        let suite = UserDefaults(suiteName: "diag-tests-\(UUID().uuidString)")!
-        let tracker = RecentSessionTracker(defaults: SharedDefaults(suite: suite, standard: suite))
-        let binding = DiagnosticsBinding(serverInstanceID: "server-a", accountUserID: "account-a")
-
-        tracker.record(sessionID: "legacy", binding: nil)
-
-        XCTAssertTrue(tracker.recentSessionIDs(for: binding).isEmpty)
-    }
-
-    func testPurgingRecentSessionsOnlyRemovesMatchingBinding() {
-        let suite = UserDefaults(suiteName: "diag-tests-\(UUID().uuidString)")!
-        let tracker = RecentSessionTracker(defaults: SharedDefaults(suite: suite, standard: suite))
-        let optedOut = DiagnosticsBinding(serverInstanceID: "server-a", accountUserID: "account-a")
-        let retained = DiagnosticsBinding(serverInstanceID: "server-a", accountUserID: "account-b")
-
-        tracker.record(sessionID: "remove-me", binding: optedOut)
-        tracker.record(sessionID: "keep-me", binding: retained)
-        tracker.purge(binding: optedOut)
-
-        XCTAssertTrue(tracker.recentSessionIDs(for: optedOut).isEmpty)
-        XCTAssertEqual(tracker.recentSessionIDs(for: retained), ["keep-me"])
-    }
-
-    func testRecentSessionsExpire() {
-        let suite = UserDefaults(suiteName: "diag-tests-\(UUID().uuidString)")!
-        let tracker = RecentSessionTracker(defaults: SharedDefaults(suite: suite, standard: suite))
-        let binding = DiagnosticsBinding(serverInstanceID: "server-a", accountUserID: "account-a")
-        let now = Date(timeIntervalSince1970: 2_000_000_000)
-
-        tracker.record(
-            sessionID: "expired",
-            binding: binding,
-            now: now.addingTimeInterval(-RecentSessionTracker.retentionInterval - 1)
-        )
-        tracker.record(sessionID: "current", binding: binding, now: now)
-
-        XCTAssertEqual(tracker.recentSessionIDs(for: binding, now: now), ["current"])
-    }
-
-    func testTransientAuthenticationGatePreservesFailedRunSessionEvidence() {
-        let tracker = RecentSessionTracker.shared
-        let binding = DiagnosticsBinding(serverInstanceID: "server-a", accountUserID: "account-a")
-        tracker.resetForTests()
-        defer { tracker.resetForTests() }
-
-        tracker.record(sessionID: "failed-run-session", binding: binding)
-        DiagnosticsCoordinator.authenticationStateBecameUnavailable()
-
-        XCTAssertEqual(tracker.recentSessionIDs(for: binding), ["failed-run-session"])
-    }
-
-    // MARK: - Byte-safe stack truncation (#11)
-
-#if os(iOS)
-    // MetricKitDiagnosticParser is iOS-only.
-    func testStackExcerptTruncatesToUTF8ByteLimit() throws {
-        // 12 frames of multibyte symbols exceed 8192 UTF-8 bytes when joined.
-        let frame: [String: Any] = ["symbolName": String(repeating: "é", count: 1000), "offset": 1]
-        let payload: [String: Any] = ["callStacks": [["callStackRootFrames": Array(repeating: frame, count: 12)]]]
-        let rawJSON = try JSONSerialization.data(withJSONObject: payload)
-
-        let crash = MetricKitDiagnosticParser.crashInfo(
-            rawJSON: rawJSON,
-            type: .crash,
-            periodStart: Date(),
-            periodEnd: Date()
-        )
-        let excerpt = try XCTUnwrap(crash.stackExcerpt)
-        XCTAssertGreaterThan(excerpt.utf8.count, 0)
-        XCTAssertLessThanOrEqual(excerpt.utf8.count, 8192)
-        // Passes the same validation the server enforces.
-        XCTAssertNoThrow(try crash.validate())
-    }
-#endif
-
-    // MARK: - Declined-prompt suppression (round 2 #6)
 
     func testPendingReportStateDecodesLegacyStateWithoutPromptDeclined() throws {
         let legacy = try DiagnosticsJSONCoding.makeDecoder().decode(
@@ -170,32 +49,97 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         XCTAssertFalse(reloaded.state.isPermanentFailure)
     }
 
-    // MARK: - Abnormal-exit marker binding (round 2 #3)
+    // MARK: - Consent refresh before upload
 
-    func testExitSentinelMarkerRoundTripsBindingAndProfile() throws {
-        let binding = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "acct-a")
-        let marker = ExitSentinelMarker(
-            runID: "run-1",
-            startedAt: "2026-07-20T10:00:00Z",
+    func testUpdatingConsentRefreshesModeAndNoticeVersion() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("diag-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = PendingReportStore(rootDirectory: root)
+
+        // Captured under Always; the server notice then advanced, demoting the
+        // account Always→Ask (prompt). The rewrite must not keep claiming
+        // always for the new notice.
+        let report = try store.save(makeCapture(noticeVersion: 1, consentMode: .always))
+        XCTAssertEqual(report.manifest.consent.mode, .always)
+
+        let updated = store.updatingConsent(report, mode: .prompt, noticeVersion: 2)
+        XCTAssertEqual(updated.manifest.consent.mode, .prompt)
+        XCTAssertEqual(updated.manifest.consent.noticeVersion, 2)
+        // Evidence stays frozen: the captured timestamp is unchanged.
+        XCTAssertEqual(updated.binding.capturedAt, report.binding.capturedAt)
+
+        // The change is persisted to disk, so a re-read report is not stale.
+        let reloaded = store.report(id: report.id)
+        XCTAssertEqual(reloaded?.manifest.consent.mode, .prompt)
+        XCTAssertEqual(reloaded?.manifest.consent.noticeVersion, 2)
+    }
+
+    // MARK: - Recent playback sessions
+
+    func testRecentSessionsAreScopedToTheirBinding() {
+        let tracker = RecentSessionTracker(defaults: makeIsolatedDefaults())
+
+        let serverA = DiagnosticsBinding(serverInstanceID: "server-a", accountUserID: "account-a")
+        let serverB = DiagnosticsBinding(serverInstanceID: "server-b", accountUserID: "account-b")
+
+        tracker.record(sessionID: "sess-a", binding: serverA)
+        tracker.record(sessionID: "sess-b", binding: serverB)
+
+        XCTAssertEqual(tracker.recentSessionIDs(for: serverA), ["sess-a"])
+        XCTAssertEqual(tracker.recentSessionIDs(for: serverB), ["sess-b"])
+    }
+
+    func testRecentSessionsWithoutBindingNeverMatchAReport() {
+        let tracker = RecentSessionTracker(defaults: makeIsolatedDefaults())
+        let binding = DiagnosticsBinding(serverInstanceID: "server-a", accountUserID: "account-a")
+
+        tracker.record(sessionID: "legacy", binding: nil)
+
+        XCTAssertTrue(tracker.recentSessionIDs(for: binding).isEmpty)
+    }
+
+    func testPurgingRecentSessionsOnlyRemovesMatchingBinding() {
+        let tracker = RecentSessionTracker(defaults: makeIsolatedDefaults())
+        let optedOut = DiagnosticsBinding(serverInstanceID: "server-a", accountUserID: "account-a")
+        let retained = DiagnosticsBinding(serverInstanceID: "server-a", accountUserID: "account-b")
+
+        tracker.record(sessionID: "remove-me", binding: optedOut)
+        tracker.record(sessionID: "keep-me", binding: retained)
+        tracker.purge(binding: optedOut)
+
+        XCTAssertTrue(tracker.recentSessionIDs(for: optedOut).isEmpty)
+        XCTAssertEqual(tracker.recentSessionIDs(for: retained), ["keep-me"])
+    }
+
+    func testRecentSessionsExpire() {
+        let tracker = RecentSessionTracker(defaults: makeIsolatedDefaults())
+        let binding = DiagnosticsBinding(serverInstanceID: "server-a", accountUserID: "account-a")
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+
+        tracker.record(
+            sessionID: "expired",
             binding: binding,
-            profileID: "prof-1"
+            now: now.addingTimeInterval(-RecentSessionTracker.retentionInterval - 1)
         )
-        let data = try DiagnosticsJSONCoding.makeEncoder().encode(marker)
-        let decoded = try DiagnosticsJSONCoding.makeDecoder().decode(ExitSentinelMarker.self, from: data)
-        XCTAssertEqual(decoded, marker)
-        XCTAssertEqual(decoded.binding, binding)
-        XCTAssertEqual(decoded.profileID, "prof-1")
+        tracker.record(sessionID: "current", binding: binding, now: now)
+
+        XCTAssertEqual(tracker.recentSessionIDs(for: binding, now: now), ["current"])
     }
 
-    func testExitSentinelMarkerDecodesLegacyWithoutBinding() throws {
-        let legacy = Data(#"{"run_id":"run-2","started_at":"2026-07-20T10:00:00Z"}"#.utf8)
-        let decoded = try DiagnosticsJSONCoding.makeDecoder().decode(ExitSentinelMarker.self, from: legacy)
-        XCTAssertEqual(decoded.runID, "run-2")
-        XCTAssertNil(decoded.binding)
-        XCTAssertNil(decoded.profileID)
+    func testTransientAuthenticationGatePreservesFailedRunSessionEvidence() {
+        let tracker = RecentSessionTracker.shared
+        let binding = DiagnosticsBinding(serverInstanceID: "server-a", accountUserID: "account-a")
+        tracker.resetForTests()
+        defer { tracker.resetForTests() }
+
+        tracker.record(sessionID: "failed-run-session", binding: binding)
+        DiagnosticsCoordinator.authenticationStateBecameUnavailable()
+
+        XCTAssertEqual(tracker.recentSessionIDs(for: binding), ["failed-run-session"])
     }
 
-    // MARK: - Breadcrumb capture defaults off (round 2 #4)
+    // MARK: - Breadcrumb capture gate
 
     func testBreadcrumbCaptureDisabledWithoutContext() {
         let store = makeConsentStore()
@@ -223,8 +167,6 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         XCTAssertTrue(DiagnosticsCoordinator.breadcrumbCaptureEnabled(for: askContext, consentStore: store))
     }
 
-    // MARK: - Breadcrumbs disabled when status unavailable (round 3)
-
     func testBreadcrumbCaptureDisabledWhenStatusUnavailable() {
         let store = makeConsentStore()
 
@@ -249,7 +191,7 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         XCTAssertTrue(DiagnosticsCoordinator.breadcrumbCaptureEnabled(for: available, consentStore: store))
     }
 
-    // MARK: - Offline capture fallback restricted to transient failures (round 4)
+    // MARK: - Capture fallback and binding validation
 
     func testCaptureFallbackAllowsTransientFailures() {
         // Offline / transport failures and 5xx server errors are transient: a
@@ -329,7 +271,7 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         ))
     }
 
-    // MARK: - Profile-mismatch upload gate (round 4, finding 6)
+    // MARK: - Profile gates
 
     func testProfileUploadMismatchHoldsOnlyOnBothPresentDisagreement() {
         // Both present and different -> the server would reject with
@@ -350,7 +292,82 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         XCTAssertFalse(DiagnosticsCoordinator.isProfileUploadMismatch(captured: "profile-a", active: "   "))
     }
 
-    // MARK: - Exit sentinel leftover preservation (round 6 #3)
+    func testProfileLookupDistinguishesMissingProfileFromUnavailableRequest() {
+        let adult = UserProfile(
+            id: "adult",
+            name: "Adult",
+            avatarEmoji: nil,
+            hasPin: false,
+            isChild: false
+        )
+        let child = UserProfile(
+            id: "child",
+            name: "Child",
+            avatarEmoji: nil,
+            hasPin: false,
+            isChild: true
+        )
+
+        XCTAssertEqual(
+            DiagnosticsCoordinator.profileLookupResult(profileID: "adult", profiles: [adult, child]),
+            .adult
+        )
+        XCTAssertEqual(
+            DiagnosticsCoordinator.profileLookupResult(profileID: "child", profiles: [adult, child]),
+            .child
+        )
+        XCTAssertEqual(
+            DiagnosticsCoordinator.profileLookupResult(profileID: "deleted", profiles: [adult, child]),
+            .missing
+        )
+        XCTAssertEqual(
+            DiagnosticsCoordinator.profileLookupResult(profileID: "adult", profiles: nil),
+            .unavailable
+        )
+    }
+
+    func testProfileEligibilityCacheIsScopedToBindingAndProfile() {
+        let defaults = makeIsolatedDefaults()
+        let store = DiagnosticsProfileEligibilityStore(defaults: defaults)
+        let bindingA = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "acct-a")
+        let bindingB = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "acct-b")
+
+        store.record(isChild: false, profileID: "profile-1", binding: bindingA)
+        store.record(isChild: true, profileID: "profile-1", binding: bindingB)
+
+        XCTAssertEqual(store.isChild(profileID: "profile-1", binding: bindingA), false)
+        XCTAssertEqual(store.isChild(profileID: "profile-1", binding: bindingB), true)
+        XCTAssertNil(store.isChild(profileID: "profile-2", binding: bindingA))
+
+        // The next-launch store sees the same last-known values while offline.
+        let reloaded = DiagnosticsProfileEligibilityStore(defaults: defaults)
+        XCTAssertEqual(reloaded.isChild(profileID: "profile-1", binding: bindingA), false)
+    }
+
+    // MARK: - Exit sentinel
+
+    func testExitSentinelMarkerRoundTripsBindingAndProfile() throws {
+        let binding = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "acct-a")
+        let marker = ExitSentinelMarker(
+            runID: "run-1",
+            startedAt: "2026-07-20T10:00:00Z",
+            binding: binding,
+            profileID: "prof-1"
+        )
+        let data = try DiagnosticsJSONCoding.makeEncoder().encode(marker)
+        let decoded = try DiagnosticsJSONCoding.makeDecoder().decode(ExitSentinelMarker.self, from: data)
+        XCTAssertEqual(decoded, marker)
+        XCTAssertEqual(decoded.binding, binding)
+        XCTAssertEqual(decoded.profileID, "prof-1")
+    }
+
+    func testExitSentinelMarkerDecodesLegacyWithoutBinding() throws {
+        let legacy = Data(#"{"run_id":"run-2","started_at":"2026-07-20T10:00:00Z"}"#.utf8)
+        let decoded = try DiagnosticsJSONCoding.makeDecoder().decode(ExitSentinelMarker.self, from: legacy)
+        XCTAssertEqual(decoded.runID, "run-2")
+        XCTAssertNil(decoded.binding)
+        XCTAssertNil(decoded.profileID)
+    }
 
     func testExitSentinelStorePreservesLeftoverAcrossArmAndTerminate() throws {
         let directory = FileManager.default.temporaryDirectory
@@ -454,9 +471,71 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         XCTAssertNotEqual(store.currentURL, store.leftoverURL)
     }
 
+    func testExitSentinelStoreRebindsCurrentRunAndResetsEvidenceWindow() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ExitSentinelStoreTests-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let store = ExitSentinelMarkerStore(
+            currentURL: directory.appendingPathComponent("exit-sentinel.json", isDirectory: false)
+        )
+        let originalStart = "2026-07-21T10:00:00.000Z"
+        let bindingA = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "acct-a")
+        let bindingB = DiagnosticsBinding(serverInstanceID: "srv-b", accountUserID: "acct-b")
+        store.writeCurrent(ExitSentinelMarker(runID: "run", startedAt: originalStart))
+
+        let initiallyBound = try XCTUnwrap(store.bindCurrentRun(
+            runID: "run",
+            binding: bindingA,
+            profileID: "profile-a",
+            now: Date(timeIntervalSince1970: 1_000)
+        ))
+        XCTAssertEqual(initiallyBound.startedAt, originalStart)
+        XCTAssertEqual(initiallyBound.binding, bindingA)
+
+        let reboundAt = Date(timeIntervalSince1970: 2_000)
+        let rebound = try XCTUnwrap(store.bindCurrentRun(
+            runID: "run",
+            binding: bindingB,
+            profileID: "profile-b",
+            now: reboundAt
+        ))
+        XCTAssertEqual(rebound.startedAt, DiagnosticsTimestamp.string(from: reboundAt))
+        XCTAssertEqual(rebound.binding, bindingB)
+        XCTAssertEqual(rebound.profileID, "profile-b")
+
+        // Re-applying the same identity must not move the start time forward.
+        let unchanged = try XCTUnwrap(store.bindCurrentRun(
+            runID: "run",
+            binding: bindingB,
+            profileID: "profile-b",
+            now: Date(timeIntervalSince1970: 3_000)
+        ))
+        XCTAssertEqual(unchanged, rebound)
+    }
+
+    // MARK: - Crash evidence (iOS)
+
 #if os(iOS)
-    // MetricKitCapture is iOS-only; the rest of this file runs on tvOS too.
-    // MARK: - MetricKit evidence isolation (PR #98)
+    // MetricKitDiagnosticParser and MetricKitCapture are iOS-only; the rest of
+    // this file runs on tvOS too.
+    func testStackExcerptTruncatesToUTF8ByteLimit() throws {
+        // 12 frames of multibyte symbols exceed 8192 UTF-8 bytes when joined.
+        let frame: [String: Any] = ["symbolName": String(repeating: "é", count: 1000), "offset": 1]
+        let payload: [String: Any] = ["callStacks": [["callStackRootFrames": Array(repeating: frame, count: 12)]]]
+        let rawJSON = try JSONSerialization.data(withJSONObject: payload)
+
+        let crash = MetricKitDiagnosticParser.crashInfo(
+            rawJSON: rawJSON,
+            type: .crash,
+            periodStart: Date(),
+            periodEnd: Date()
+        )
+        let excerpt = try XCTUnwrap(crash.stackExcerpt)
+        XCTAssertGreaterThan(excerpt.utf8.count, 0)
+        XCTAssertLessThanOrEqual(excerpt.utf8.count, 8192)
+        // Passes the same validation the server enforces.
+        XCTAssertNoThrow(try crash.validate())
+    }
 
     func testMetricKitCaptureOmitsUncorrelatedProcessEvidence() throws {
         let root = FileManager.default.temporaryDirectory
@@ -498,6 +577,8 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
     }
 #endif
 
+    // MARK: - Failed-run logs
+
     func testEmptyFailedRunLogSnapshotStillFreezesLogsArtifact() async {
         DiagLog.ring.clear()
         let artifact = await DiagnosticsCoordinator().logSnapshotArtifact(
@@ -507,40 +588,6 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
 
         XCTAssertEqual(artifact.relativePath, "logs.jsonl")
         XCTAssertEqual(artifact.data, Data())
-    }
-
-    func testProfileLookupDistinguishesMissingProfileFromUnavailableRequest() {
-        let adult = UserProfile(
-            id: "adult",
-            name: "Adult",
-            avatarEmoji: nil,
-            hasPin: false,
-            isChild: false
-        )
-        let child = UserProfile(
-            id: "child",
-            name: "Child",
-            avatarEmoji: nil,
-            hasPin: false,
-            isChild: true
-        )
-
-        XCTAssertEqual(
-            DiagnosticsCoordinator.profileLookupResult(profileID: "adult", profiles: [adult, child]),
-            .adult
-        )
-        XCTAssertEqual(
-            DiagnosticsCoordinator.profileLookupResult(profileID: "child", profiles: [adult, child]),
-            .child
-        )
-        XCTAssertEqual(
-            DiagnosticsCoordinator.profileLookupResult(profileID: "deleted", profiles: [adult, child]),
-            .missing
-        )
-        XCTAssertEqual(
-            DiagnosticsCoordinator.profileLookupResult(profileID: "adult", profiles: nil),
-            .unavailable
-        )
     }
 
     func testAbnormalExitLogsRequireFailedRunID() throws {
@@ -585,72 +632,7 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         )
     }
 
-    // MARK: - Offline profile eligibility cache (PR #98)
-
-    func testProfileEligibilityCacheIsScopedToBindingAndProfile() {
-        let suite = UserDefaults(suiteName: "diag-tests-\(UUID().uuidString)")!
-        let defaults = SharedDefaults(suite: suite, standard: suite)
-        let store = DiagnosticsProfileEligibilityStore(defaults: defaults)
-        let bindingA = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "acct-a")
-        let bindingB = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "acct-b")
-
-        store.record(isChild: false, profileID: "profile-1", binding: bindingA)
-        store.record(isChild: true, profileID: "profile-1", binding: bindingB)
-
-        XCTAssertEqual(store.isChild(profileID: "profile-1", binding: bindingA), false)
-        XCTAssertEqual(store.isChild(profileID: "profile-1", binding: bindingB), true)
-        XCTAssertNil(store.isChild(profileID: "profile-2", binding: bindingA))
-
-        // The next-launch store sees the same last-known values while offline.
-        let reloaded = DiagnosticsProfileEligibilityStore(defaults: defaults)
-        XCTAssertEqual(reloaded.isChild(profileID: "profile-1", binding: bindingA), false)
-    }
-
-    // MARK: - Exit sentinel rebinding (PR #98)
-
-    func testExitSentinelStoreRebindsCurrentRunAndResetsEvidenceWindow() throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ExitSentinelStoreTests-\(UUID().uuidString)", isDirectory: true)
-        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
-        let store = ExitSentinelMarkerStore(
-            currentURL: directory.appendingPathComponent("exit-sentinel.json", isDirectory: false)
-        )
-        let originalStart = "2026-07-21T10:00:00.000Z"
-        let bindingA = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "acct-a")
-        let bindingB = DiagnosticsBinding(serverInstanceID: "srv-b", accountUserID: "acct-b")
-        store.writeCurrent(ExitSentinelMarker(runID: "run", startedAt: originalStart))
-
-        let initiallyBound = try XCTUnwrap(store.bindCurrentRun(
-            runID: "run",
-            binding: bindingA,
-            profileID: "profile-a",
-            now: Date(timeIntervalSince1970: 1_000)
-        ))
-        XCTAssertEqual(initiallyBound.startedAt, originalStart)
-        XCTAssertEqual(initiallyBound.binding, bindingA)
-
-        let reboundAt = Date(timeIntervalSince1970: 2_000)
-        let rebound = try XCTUnwrap(store.bindCurrentRun(
-            runID: "run",
-            binding: bindingB,
-            profileID: "profile-b",
-            now: reboundAt
-        ))
-        XCTAssertEqual(rebound.startedAt, DiagnosticsTimestamp.string(from: reboundAt))
-        XCTAssertEqual(rebound.binding, bindingB)
-        XCTAssertEqual(rebound.profileID, "profile-b")
-
-        // Re-applying the same identity must not move the start time forward.
-        let unchanged = try XCTUnwrap(store.bindCurrentRun(
-            runID: "run",
-            binding: bindingB,
-            profileID: "profile-b",
-            now: Date(timeIntervalSince1970: 3_000)
-        ))
-        XCTAssertEqual(unchanged, rebound)
-    }
-
-    // MARK: - Diagnostics multipart filenames (PR #98)
+    // MARK: - Multipart upload
 
     func testDiagnosticsMultipartPartsIncludeStableFilenames() {
         let body = HTTPClient.multipartBody(
@@ -682,10 +664,17 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
 
     // MARK: - Helpers
 
+    /// A private defaults suite, removed when the test finishes.
+    private func makeIsolatedDefaults() -> SharedDefaults {
+        let name = "DiagnosticsReviewFixesTests.\(UUID().uuidString)"
+        let suite = UserDefaults(suiteName: name)!
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
+        return SharedDefaults(suite: suite, standard: suite)
+    }
+
     private func makeConsentStore() -> DiagnosticsConsentStore {
-        let suite = UserDefaults(suiteName: "diag-tests-\(UUID().uuidString)")!
-        return DiagnosticsConsentStore(
-            defaults: SharedDefaults(suite: suite, standard: suite),
+        DiagnosticsConsentStore(
+            defaults: makeIsolatedDefaults(),
             onNeverSelected: { _ in }
         )
     }
