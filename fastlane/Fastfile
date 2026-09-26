@@ -72,19 +72,29 @@ def marketing_version_xcarg
   "MARKETING_VERSION=#{value} "
 end
 
-# Optional CURRENT_PROJECT_VERSION override for the unsigned sideload lanes.
-# CI passes a GitHub-release-derived build number via BUILD_NUMBER so sideload
-# builds carry a distinct CFBundleVersion per release (v1.0.0-build.N). Same
-# validation/threat model as marketing_version_xcarg: this flows into
-# xcodebuild's xcargs as a shell string.
-def build_number_xcarg
+# Returns the CI-injected BUILD_NUMBER, or nil when it is unset or blank.
+#
+# The release workflow passes the number its reserve_build_numbers job reserved
+# for the platform; the sideload workflow passes its run number. The value flows
+# into xcodebuild's xcargs as CURRENT_PROJECT_VERSION, a shell string, so it
+# must be a plain integer with no spaces or shell metacharacters (same threat
+# model as marketing_version_xcarg).
+def injected_build_number
   value = ENV["BUILD_NUMBER"].to_s.strip
-  return "" if value.empty?
+  return nil if value.empty?
 
   unless value.match?(/\A\d+\z/)
     UI.user_error!("Invalid BUILD_NUMBER #{value.inspect}; expected a positive integer")
   end
-  "CURRENT_PROJECT_VERSION=#{value} "
+  value
+end
+
+# Optional CURRENT_PROJECT_VERSION override for the unsigned sideload lanes, so
+# each sideload build carries a distinct CFBundleVersion. Empty when
+# BUILD_NUMBER is unset: local builds keep the project.yml value.
+def build_number_xcarg
+  value = injected_build_number
+  value ? "CURRENT_PROJECT_VERSION=#{value} " : ""
 end
 
 # Overrides the SILO_BUILD_CHANNEL build setting (project.yml default: release)
@@ -110,17 +120,10 @@ TVOS_SIDELOAD_KEYCHAIN_XCARG = "SILO_USER_INDEPENDENT_KEYCHAIN=NO ".freeze
 # and passes it to the (parallel) ios/tvos jobs via BUILD_NUMBER — so the two
 # jobs never race latest_testflight_build_number against each other. Local and
 # ad-hoc runs leave BUILD_NUMBER unset and fall back to querying App Store
-# Connect directly.
-#
-# BUILD_NUMBER is validated as a positive integer before use: it flows into
-# xcodebuild's xcargs as CURRENT_PROJECT_VERSION, so it must never carry spaces
-# or shell metacharacters (same threat model as marketing_version_xcarg).
+# Connect directly. injected_build_number validates the injected value.
 def resolve_build_number(api_key:, app_identifier:, platform:)
-  injected = ENV["BUILD_NUMBER"].to_s.strip
-  unless injected.empty?
-    unless injected.match?(/\A\d+\z/)
-      UI.user_error!("Invalid BUILD_NUMBER #{injected.inspect}; expected a positive integer")
-    end
+  injected = injected_build_number
+  if injected
     UI.message("Using injected BUILD_NUMBER=#{injected} for #{platform}")
     return injected.to_i
   end
@@ -136,7 +139,7 @@ end
 # given scheme. Shared by the unsigned IPA lanes.
 # Returns the absolute iosApp directory.
 #
-# Note: beta_ios/beta_tvos intentionally do NOT use this helper — they interleave
+# Note: testflight_release intentionally does NOT use this helper — it interleaves
 # match() and the build-number query between xcodegen and resolvePackageDependencies,
 # so the three steps are not contiguous there.
 def prepare_xcode_project(scheme:)
@@ -147,6 +150,16 @@ def prepare_xcode_project(scheme:)
   ios_app_dir
 end
 
+# Fails the lane if the .app or .ipa embeds the subtitle libraries as framework
+# wrappers instead of linking them statically (scripts/ci/validate-subtitle-packaging.py).
+# product is relative to the repo root or absolute. Every TestFlight and unsigned
+# IPA lane runs it.
+def validate_subtitle_packaging(product)
+  script = File.expand_path("../scripts/ci/validate-subtitle-packaging.py", __dir__)
+  product_path = File.expand_path(product, File.expand_path("..", __dir__))
+  sh("python3", script, product_path)
+end
+
 # Repackages a compiled .app from an unsigned .xcarchive into an unsigned .ipa.
 #
 # An .ipa is just a zip with the app under Payload/. We build the archive with
@@ -154,12 +167,6 @@ end
 # product here. The resulting IPA is NOT installable as-is — it is meant to be
 # re-signed by the end user with their own certificate via AltStore, Sideloadly,
 # SideStore, etc. before sideloading. See docs/release/sideloading.md.
-def validate_subtitle_packaging(product)
-  script = File.expand_path("../scripts/ci/validate-subtitle-packaging.py", __dir__)
-  product_path = File.expand_path(product, File.expand_path("..", __dir__))
-  sh("python3", script, product_path)
-end
-
 def package_unsigned_ipa(archive_path:, app_name:, output_dir:, output_ipa:)
   app_path = "#{archive_path}/Products/Applications/#{app_name}.app"
   UI.user_error!("Expected app not found at #{app_path}") unless File.exist?(app_path)
@@ -228,6 +235,163 @@ def testflight_changelog
     UI.user_error!("Publish the matching release source archive and set SILO_RELEASE_SOURCE_URL before external TestFlight distribution.")
   end
   source_url.empty? ? changelog : "#{changelog}\n\nSource and rebuild instructions: #{source_url}"
+end
+
+# ── TestFlight release ────────────────────────────────────────────────────────
+
+# Everything that differs between the iOS and tvOS TestFlight builds.
+# testflight_release reads one entry; sync_signing reads every entry's targets.
+#
+# match_platform:        match's platform ("ios" / "tvos").
+# build_number_platform: latest_testflight_build_number's platform. Each
+#                        platform has its own build-number sequence under
+#                        Universal Purchase ("appletvos" for tvOS).
+# targets:               every signed target in the archive, mapped to its
+#                        bundle ID, app first. Each needs its own App Store
+#                        profile: the bundle IDs differ, and so do the
+#                        entitlements declared on each App ID (the notification
+#                        service extension has its own App Group; the tvOS app
+#                        and Top Shelf both need App Group + Keychain Sharing).
+#                        match, update_code_signing_settings and export_options
+#                        all see the targets in this order.
+TESTFLIGHT_PLATFORMS = {
+  ios: {
+    match_platform:        "ios",
+    build_number_platform: "ios",
+    scheme:                "Silo",
+    destination:           "generic/platform=iOS",
+    output_directory:      "build/ios",
+    output_name:           "Silo.ipa",
+    targets: {
+      "Silo"                    => "org.siloserver.silo",
+      "SiloNotificationService" => "org.siloserver.silo.NotificationService",
+      "SiloDownloadsActivity"   => "org.siloserver.silo.DownloadsActivity",
+    }.freeze,
+  }.freeze,
+  tvos: {
+    match_platform:        "tvos",
+    build_number_platform: "appletvos",
+    scheme:                "SiloTV",
+    destination:           "generic/platform=tvOS",
+    output_directory:      "build/tvos",
+    output_name:           "SiloTV.ipa",
+    targets: {
+      "SiloTV"         => "org.siloserver.silo",
+      "SiloTVTopShelf" => "org.siloserver.silo.topshelf",
+    }.freeze,
+  }.freeze,
+}.freeze
+
+# Builds one platform's app with App Store signing and uploads it to TestFlight.
+# beta_ios and beta_tvos call this with :ios and :tvos.
+def testflight_release(platform)
+  config     = TESTFLIGHT_PLATFORMS.fetch(platform)
+  targets    = config[:targets]
+  bundle_ids = targets.values
+  app_id     = bundle_ids.first
+
+  # setup_ci creates a temporary keychain on CI runners; no-op locally.
+  setup_ci if is_ci
+
+  api_key = setup_api_key
+  team_id = ENV["TEAM_ID"]
+  # The release workflow always sets TESTFLIGHT_DISTRIBUTION=external (see
+  # .github/workflows/release.yml): every tag and manual dispatch distributes
+  # to TESTFLIGHT_EXTERNAL_GROUPS and notifies testers. Internal remains the
+  # default only for ad-hoc local runs with the env var unset.
+  testflight_upload = testflight_upload_config
+  # Apple requires a "What to Test" note for every external group build.
+  # Set TESTFLIGHT_CHANGELOG in CI variables for an explicit note;
+  # falls back to the latest git commit subject when not set.
+  changelog   = testflight_changelog
+  ios_app_dir = File.expand_path("../iosApp", __dir__)
+  project     = "#{ios_app_dir}/Silo.xcodeproj"
+  UI.message("TestFlight distribution: #{testflight_upload[:distribution]}")
+
+  # Regenerate Silo.xcodeproj from project.yml first. update_code_signing_settings
+  # below writes each target's profile into the generated project, so xcodegen
+  # must not run again after it. match writes nothing to the project: it
+  # installs the certs and profiles and records their names in lane_context.
+  sh("xcodegen generate --spec '#{ios_app_dir}/project.yml'")
+
+  # Sync the distribution cert and a profile for every signed target. CI is
+  # read-only; run sync_signing locally to create or renew them.
+  match(
+    type:           "appstore",
+    platform:       config[:match_platform],
+    app_identifier: bundle_ids,
+    readonly:       is_ci,
+    api_key:        api_key
+  )
+
+  # Injected by CI's reserve_build_numbers job, or queried directly for local runs.
+  build_number = resolve_build_number(
+    api_key:        api_key,
+    app_identifier: app_id,
+    platform:       config[:build_number_platform]
+  )
+
+  # Resolve SPM packages before building.
+  sh("xcodebuild -project '#{project}' " \
+     "-scheme #{config[:scheme]} -resolvePackageDependencies")
+
+  # Profile name for each of this platform's bundle IDs, from match.
+  profile_map = lane_context[SharedValues::MATCH_PROVISIONING_PROFILE_MAPPING]
+  profiles    = bundle_ids.to_h { |bundle_id| [bundle_id, profile_map[bundle_id]] }
+
+  # Patch signing settings per target in the regenerated Xcode project.
+  # xcodebuild needs a per-target PROVISIONING_PROFILE_SPECIFIER during the
+  # archive step; a single global xcarg would apply the app's profile to the
+  # extension targets (different bundle ID → signing failure).
+  targets.each do |target, bundle_id|
+    update_code_signing_settings(
+      use_automatic_signing: false,
+      path:                  project,
+      targets:               [target],
+      code_sign_identity:    "Apple Distribution",
+      profile_name:          profiles[bundle_id],
+      team_id:               team_id
+    )
+  end
+
+  ipa = "#{config[:output_directory]}/#{config[:output_name]}"
+
+  build_app(
+    project:          project,
+    scheme:           config[:scheme],
+    destination:      config[:destination],
+    export_method:    "app-store",
+    output_directory: config[:output_directory],
+    output_name:      config[:output_name],
+    # PROVISIONING_PROFILE_SPECIFIER is intentionally absent from xcargs —
+    # a global value would override every target with the same profile.
+    # Per-target settings were written above via update_code_signing_settings.
+    xcargs: "#{marketing_version_xcarg}" \
+            "CODE_SIGN_STYLE=Manual " \
+            "CODE_SIGN_IDENTITY='Apple Distribution' " \
+            "CURRENT_PROJECT_VERSION=#{build_number} " \
+            "DEVELOPMENT_TEAM=#{team_id}",
+    # export_options.provisioningProfiles maps each bundle ID to its profile
+    # name for the IPA packaging step (separate from the archive step above).
+    export_options: {
+      method:               "app-store",
+      signingStyle:         "manual",
+      provisioningProfiles: profiles
+    }
+  )
+
+  validate_subtitle_packaging(ipa)
+
+  upload_to_testflight(
+    api_key:                 api_key,
+    app_identifier:          app_id,
+    ipa:                     ipa,
+    # Public/external tags wait for Apple processing so groups can be assigned.
+    changelog:               changelog,
+    groups:                  testflight_upload[:groups],
+    distribute_external:     testflight_upload[:distribute_external],
+    notify_external_testers: testflight_upload[:notify_external_testers]
+  )
 end
 
 # ── CI keychain teardown ──────────────────────────────────────────────────────
@@ -299,273 +463,30 @@ platform :ios do
   lane :sync_signing do
     api_key = setup_api_key
 
-    # iOS: app + notification service extension + downloads Live Activity extension.
-    match(
-      type:           "appstore",
-      platform:       "ios",
-      app_identifier: [
-        "org.siloserver.silo",
-        "org.siloserver.silo.NotificationService",
-        "org.siloserver.silo.DownloadsActivity",
-      ],
-      readonly:       false,
-      api_key:        api_key
-    )
-
-    # tvOS: app + Top Shelf extension.
-    match(
-      type:           "appstore",
-      platform:       "tvos",
-      app_identifier: ["org.siloserver.silo", "org.siloserver.silo.topshelf"],
-      readonly:       false,
-      api_key:        api_key
-    )
+    # One read-write match per platform (iOS, then tvOS), covering every target
+    # testflight_release signs: iOS has the app plus the notification service
+    # and downloads Live Activity extensions; tvOS has the app plus Top Shelf.
+    TESTFLIGHT_PLATFORMS.each_value do |config|
+      match(
+        type:           "appstore",
+        platform:       config[:match_platform],
+        app_identifier: config[:targets].values,
+        readonly:       false,
+        api_key:        api_key
+      )
+    end
   end
 
-  # ── iOS TestFlight ────────────────────────────────────────────────────────
+  # ── TestFlight ────────────────────────────────────────────────────────────
 
   desc "Build the iOS app and upload to TestFlight"
   lane :beta_ios do
-    # setup_ci creates a temporary keychain on CI runners; no-op locally.
-    setup_ci if is_ci
-
-    api_key        = setup_api_key
-    app_id         = "org.siloserver.silo"
-    notification_id = "org.siloserver.silo.NotificationService"
-    downloads_id    = "org.siloserver.silo.DownloadsActivity"
-    team_id        = ENV["TEAM_ID"]
-    # The release workflow always sets TESTFLIGHT_DISTRIBUTION=external (see
-    # .github/workflows/release.yml): every tag and manual dispatch distributes
-    # to TESTFLIGHT_EXTERNAL_GROUPS and notifies testers. Internal remains the
-    # default only for ad-hoc local runs with the env var unset.
-    testflight_upload = testflight_upload_config
-    # Apple requires a "What to Test" note for every external group build.
-    # Set TESTFLIGHT_CHANGELOG in CI variables for an explicit note;
-    # falls back to the latest git commit subject when not set.
-    changelog       = testflight_changelog
-    ios_app_dir     = File.expand_path("../iosApp", __dir__)
-    UI.message("TestFlight distribution: #{testflight_upload[:distribution]}")
-
-    # Regenerate Silo.xcodeproj from project.yml first — match must run on
-    # an existing project so it can write the provisioning profile specifier into
-    # it. Running xcodegen after match would wipe those settings out.
-    sh("xcodegen generate --spec '#{ios_app_dir}/project.yml'")
-
-    # Sync distribution certs + provisioning profiles for the app and both
-    # embedded extensions. Each needs its own profile because they have
-    # different bundle IDs (and the notification service extension carries its
-    # own App Group entitlement, which must be declared on its App ID).
-    match(
-      type:           "appstore",
-      platform:       "ios",
-      app_identifier: [app_id, notification_id, downloads_id],
-      readonly:       is_ci,
-      api_key:        api_key
-    )
-
-    # iOS-specific build number (injected by CI's reserve_build_numbers job, or
-    # queried directly for local runs). platform: "ios" scopes the query to iOS
-    # builds only — tvOS tracks its own sequence independently under Universal
-    # Purchase.
-    build_number = resolve_build_number(
-      api_key:        api_key,
-      app_identifier: app_id,
-      platform:       "ios"
-    )
-
-    # Resolve SPM packages before building.
-    sh("xcodebuild -project '#{ios_app_dir}/Silo.xcodeproj' " \
-       "-scheme Silo -resolvePackageDependencies")
-
-    # Pull the profile names for all three targets from the match mapping.
-    profile_map          = lane_context[SharedValues::MATCH_PROVISIONING_PROFILE_MAPPING]
-    app_profile          = profile_map[app_id]
-    notification_profile = profile_map[notification_id]
-    downloads_profile    = profile_map[downloads_id]
-
-    # Patch signing settings per-target in the regenerated Xcode project.
-    # xcodebuild needs per-target PROVISIONING_PROFILE_SPECIFIER during the
-    # archive step; a single global xcarg would apply the app's profile to the
-    # extension targets (different bundle IDs → signing failure). Same pattern
-    # as the tvOS lane's Top Shelf handling.
-    {
-      "Silo"                    => app_profile,
-      "SiloNotificationService" => notification_profile,
-      "SiloDownloadsActivity"   => downloads_profile,
-    }.each do |target, profile|
-      update_code_signing_settings(
-        use_automatic_signing: false,
-        path:                  "#{ios_app_dir}/Silo.xcodeproj",
-        targets:               [target],
-        code_sign_identity:    "Apple Distribution",
-        profile_name:          profile,
-        team_id:               team_id
-      )
-    end
-
-    build_app(
-      project:          "#{ios_app_dir}/Silo.xcodeproj",
-      scheme:           "Silo",
-      destination:      "generic/platform=iOS",
-      export_method:    "app-store",
-      output_directory: "build/ios",
-      output_name:      "Silo.ipa",
-      # PROVISIONING_PROFILE_SPECIFIER is intentionally absent from xcargs —
-      # a global value would override every target with the same profile.
-      # Per-target settings were written above via update_code_signing_settings.
-      xcargs: "#{marketing_version_xcarg}" \
-              "CODE_SIGN_STYLE=Manual " \
-              "CODE_SIGN_IDENTITY='Apple Distribution' " \
-              "CURRENT_PROJECT_VERSION=#{build_number} " \
-              "DEVELOPMENT_TEAM=#{team_id}",
-      # export_options.provisioningProfiles maps each bundle ID to its profile
-      # name for the IPA packaging step (separate from the archive step above).
-      export_options: {
-        method:               "app-store",
-        signingStyle:         "manual",
-        provisioningProfiles: {
-          app_id          => app_profile,
-          notification_id => notification_profile,
-          downloads_id    => downloads_profile,
-        }
-      }
-    )
-
-    validate_subtitle_packaging("build/ios/Silo.ipa")
-
-    upload_to_testflight(
-      api_key:                 api_key,
-      app_identifier:          app_id,
-      ipa:                     "build/ios/Silo.ipa",
-      # Public/external tags wait for Apple processing so groups can be assigned.
-      changelog:               changelog,
-      groups:                  testflight_upload[:groups],
-      distribute_external:     testflight_upload[:distribute_external],
-      notify_external_testers: testflight_upload[:notify_external_testers]
-    )
+    testflight_release(:ios)
   end
-
-  # ── tvOS TestFlight ───────────────────────────────────────────────────────
 
   desc "Build the tvOS app and upload to TestFlight"
   lane :beta_tvos do
-    # setup_ci creates a temporary keychain on CI runners; no-op locally.
-    setup_ci if is_ci
-
-    api_key        = setup_api_key
-    app_id         = "org.siloserver.silo"
-    topshelf_id    = "org.siloserver.silo.topshelf"
-    team_id        = ENV["TEAM_ID"]
-    # The release workflow always sets TESTFLIGHT_DISTRIBUTION=external (see
-    # .github/workflows/release.yml): every tag and manual dispatch distributes
-    # to TESTFLIGHT_EXTERNAL_GROUPS and notifies testers. Internal remains the
-    # default only for ad-hoc local runs with the env var unset.
-    testflight_upload = testflight_upload_config
-    # Apple requires a "What to Test" note for every external group build.
-    # Set TESTFLIGHT_CHANGELOG in CI variables for an explicit note;
-    # falls back to the latest git commit subject when not set.
-    changelog       = testflight_changelog
-    ios_app_dir     = File.expand_path("../iosApp", __dir__)
-    UI.message("TestFlight distribution: #{testflight_upload[:distribution]}")
-
-    # Regenerate .xcodeproj from project.yml first — same reason as beta_ios:
-    # match must write the provisioning profile into an existing project, and
-    # xcodegen must not run after match or it will overwrite those settings.
-    sh("xcodegen generate --spec '#{ios_app_dir}/project.yml'")
-
-    # Sync distribution certs + provisioning profiles for both the tvOS app
-    # and the embedded Top Shelf extension. Both need their own profile because
-    # they have different bundle IDs and different entitlements (App Group +
-    # Keychain Sharing must be declared in the portal for both App IDs).
-    match(
-      type:           "appstore",
-      platform:       "tvos",
-      app_identifier: [app_id, topshelf_id],
-      readonly:       is_ci,
-      api_key:        api_key
-    )
-
-    # tvOS-specific build number (injected by CI's reserve_build_numbers job, or
-    # queried directly for local runs). platform: "appletvos" scopes the query to
-    # tvOS builds only — independent from the iOS sequence under Universal Purchase.
-    build_number = resolve_build_number(
-      api_key:        api_key,
-      app_identifier: app_id,
-      platform:       "appletvos"
-    )
-
-    # Resolve SPM packages before building.
-    sh("xcodebuild -project '#{ios_app_dir}/Silo.xcodeproj' " \
-       "-scheme SiloTV -resolvePackageDependencies")
-
-    # Pull both profile names from the match mapping.
-    profile_map     = lane_context[SharedValues::MATCH_PROVISIONING_PROFILE_MAPPING]
-    tv_profile      = profile_map[app_id]
-    shelf_profile   = profile_map[topshelf_id]
-
-    # Patch signing settings per-target in the regenerated Xcode project.
-    # xcodebuild needs per-target PROVISIONING_PROFILE_SPECIFIER during the
-    # archive step; a single global xcarg would apply the wrong profile to the
-    # extension target (different bundle ID → different entitlements → signing
-    # failure). update_code_signing_settings writes the correct profile name
-    # into each target's build settings before archiving.
-    update_code_signing_settings(
-      use_automatic_signing: false,
-      path:                  "#{ios_app_dir}/Silo.xcodeproj",
-      targets:               ["SiloTV"],
-      code_sign_identity:    "Apple Distribution",
-      profile_name:          tv_profile,
-      team_id:               team_id
-    )
-
-    update_code_signing_settings(
-      use_automatic_signing: false,
-      path:                  "#{ios_app_dir}/Silo.xcodeproj",
-      targets:               ["SiloTVTopShelf"],
-      code_sign_identity:    "Apple Distribution",
-      profile_name:          shelf_profile,
-      team_id:               team_id
-    )
-
-    build_app(
-      project:          "#{ios_app_dir}/Silo.xcodeproj",
-      scheme:           "SiloTV",
-      destination:      "generic/platform=tvOS",
-      export_method:    "app-store",
-      output_directory: "build/tvos",
-      output_name:      "SiloTV.ipa",
-      # PROVISIONING_PROFILE_SPECIFIER is intentionally absent from xcargs —
-      # a global value would override both targets with the same profile.
-      # Per-target settings were written above via update_code_signing_settings.
-      xcargs: "#{marketing_version_xcarg}" \
-              "CODE_SIGN_STYLE=Manual " \
-              "CODE_SIGN_IDENTITY='Apple Distribution' " \
-              "CURRENT_PROJECT_VERSION=#{build_number} " \
-              "DEVELOPMENT_TEAM=#{team_id}",
-      # export_options.provisioningProfiles maps each bundle ID to its profile
-      # name for the IPA packaging step (separate from the archive step above).
-      export_options: {
-        method:               "app-store",
-        signingStyle:         "manual",
-        provisioningProfiles: {
-          app_id      => tv_profile,
-          topshelf_id => shelf_profile,
-        }
-      }
-    )
-
-    validate_subtitle_packaging("build/tvos/SiloTV.ipa")
-
-    upload_to_testflight(
-      api_key:                 api_key,
-      app_identifier:          app_id,
-      ipa:                     "build/tvos/SiloTV.ipa",
-      # Public/external tags wait for Apple processing so groups can be assigned.
-      changelog:               changelog,
-      groups:                  testflight_upload[:groups],
-      distribute_external:     testflight_upload[:distribute_external],
-      notify_external_testers: testflight_upload[:notify_external_testers]
-    )
+    testflight_release(:tvos)
   end
 
   # ── Build-number reservation ────────────────────────────────────────────────
