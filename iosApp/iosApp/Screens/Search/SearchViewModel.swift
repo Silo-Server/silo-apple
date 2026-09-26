@@ -32,6 +32,7 @@ enum SearchMediaType: String, CaseIterable, Identifiable {
 }
 
 @Observable
+@MainActor
 class SearchViewModel {
     var query = ""
     var selectedMediaType: SearchMediaType = .all
@@ -62,6 +63,7 @@ class SearchViewModel {
     var total = 0
 
     private var searchTask: Task<Void, Never>?
+    private let api: SiloAPI
     private let pageSize = 60
     /// Where the next page of the current results starts; `nil` after the
     /// last page. A new search replaces it.
@@ -69,6 +71,10 @@ class SearchViewModel {
     /// Bumped by every new search so a load-more for the previous results
     /// cannot append to (or hand its continuation to) the new ones.
     private var generation = 0
+
+    init(api: SiloAPI = .shared) {
+        self.api = api
+    }
 
     /// Debounced search triggered on query change.
     func onQueryChanged() {
@@ -122,9 +128,9 @@ class SearchViewModel {
         do {
             let page: CatalogListPage
             if let nextPage {
-                page = try await SiloAPI.shared.nextCatalogPage(nextPage)
+                page = try await api.nextCatalogPage(nextPage)
             } else {
-                page = try await SiloAPI.shared.catalogPage(.search(
+                page = try await api.catalogPage(.search(
                     trimmed,
                     type: selectedMediaType.queryValue(audiobooksEnabled: audiobooksEnabled),
                     limit: pageSize
