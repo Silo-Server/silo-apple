@@ -75,6 +75,12 @@ struct PendingReport: Identifiable, Equatable {
     }
 }
 
+/// Per-report flags persisted as `state.json`. Several store writers change
+/// different fields, and callers hold `PendingReport` values that go stale as
+/// soon as another writer runs. Every write must therefore reload this state
+/// from disk under the store lock, through `updateState(of:_:)` or an explicit
+/// `loadReport(from:)`, and change only the fields it owns. Writing a caller's
+/// `report.state` back would undo whatever was persisted since it was loaded.
 struct PendingReportState: Codable, Equatable {
     var needsServerUpdate: Bool
     /// The generated bundle exceeds the server's size limit. Like

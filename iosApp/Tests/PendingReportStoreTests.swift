@@ -119,6 +119,42 @@ final class PendingReportStoreTests: XCTestCase {
         XCTAssertTrue(store.canAutoUpload(fingerprint: "fp", binding: binding, now: now.addingTimeInterval(25 * 60 * 60)))
     }
 
+    func testSnapshotWritersKeepFlagsWrittenSinceTheSnapshot() throws {
+        let store = try makeStore()
+        let binding = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "42")
+        let snapshot = try store.save(makeCapture(binding: binding, fingerprint: "stale-snapshot"))
+
+        store.markServerRejected(snapshot)
+        store.markTooLarge(snapshot)
+        store.markNeedsServerUpdate(snapshot)
+        store.markPromptDeclined(snapshot)
+
+        // No `now:` skips the 7-day expiry pass, which would delete this
+        // 1970-dated capture.
+        let persisted = try XCTUnwrap(store.listReports(for: binding).first)
+        XCTAssertTrue(persisted.state.serverRejected)
+        XCTAssertTrue(persisted.state.tooLarge)
+        XCTAssertTrue(persisted.state.needsServerUpdate)
+        XCTAssertTrue(persisted.state.promptDeclined)
+    }
+
+    func testDecliningAPromptKeepsAnInFlightDeliveryClaim() throws {
+        let store = try makeStore()
+        let binding = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "42")
+        let snapshot = try store.save(makeCapture(binding: binding, fingerprint: "claimed-then-declined"))
+
+        XCTAssertTrue(try store.claimSelfHostedDelivery(snapshot))
+        store.markPromptDeclined(snapshot)
+
+        let persisted = try XCTUnwrap(store.listReports(for: binding).first)
+        XCTAssertTrue(persisted.state.deliveryUncertain)
+        XCTAssertTrue(persisted.state.promptDeclined)
+        XCTAssertFalse(
+            try store.claimSelfHostedDelivery(snapshot),
+            "A report whose first delivery is unanswered must not be sent again"
+        )
+    }
+
     private func makeStore() throws -> PendingReportStore {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("PendingReportStoreTests-\(UUID().uuidString)", isDirectory: true)
