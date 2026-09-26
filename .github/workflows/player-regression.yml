@@ -24,12 +24,20 @@ on:
         description: Build and validate only the iOS simulator app for an iOS-only change
         type: boolean
         default: false
+  # release.yml calls this to gate TestFlight uploads on the full suite.
+  workflow_call:
+    inputs:
+      release_gate:
+        description: Keeps a release run out of the PR and main concurrency groups
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: player-regression-${{ github.ref }}-${{ inputs.baseline_ref || 'head' }}
+  # Release runs get their own group so a release from main and a main push never cancel each other.
+  group: player-regression-${{ inputs.release_gate && 'release-' || '' }}${{ github.ref }}-${{ inputs.baseline_ref || 'head' }}
   cancel-in-progress: true
 
 jobs:
