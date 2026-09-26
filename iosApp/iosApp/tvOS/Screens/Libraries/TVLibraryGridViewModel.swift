@@ -33,6 +33,7 @@ final class TVLibraryGridViewModel {
 
     // MARK: - Private state
 
+    private let api: SiloAPI
     private let libraryId: Int
     /// Media family — picks the sort/facet vocabulary in the panels.
     let mediaType: BrowseMediaType
@@ -58,7 +59,13 @@ final class TVLibraryGridViewModel {
     )
     private var generation: Int = 0
 
-    init(libraryId: Int, libraryType: String, initialFilter: CatalogFilterState = .none) {
+    init(
+        libraryId: Int,
+        libraryType: String,
+        initialFilter: CatalogFilterState = .none,
+        api: SiloAPI = .shared
+    ) {
+        self.api = api
         self.libraryId = libraryId
         self.mediaType = BrowseMediaType.from(libraryType: libraryType)
         self.sendsType = SiloMediaType.isSeries(libraryType) || SiloMediaType.isMovieLibrary(libraryType)
@@ -194,6 +201,13 @@ final class TVLibraryGridViewModel {
 
     // MARK: - Fetch logic
 
+    /// A superseded fetch must not clear the flags of the fetch that replaced it.
+    private func finishLoading(for completedGeneration: Int) {
+        guard completedGeneration == generation else { return }
+        isLoading = false
+        isRefreshing = false
+    }
+
     private func reload() async {
         // A cache-backed reload can preserve the grid's row identities and
         // visibility. Cancel old URLs without discarding that geometry.
@@ -217,17 +231,14 @@ final class TVLibraryGridViewModel {
         } else {
             isLoading = true
         }
-        defer {
-            isLoading = false
-            isRefreshing = false
-        }
+        defer { finishLoading(for: myGeneration) }
 
         do {
             let page: CatalogListPage
             if let nextPage {
-                page = try await SiloAPI.shared.nextCatalogPage(nextPage)
+                page = try await api.nextCatalogPage(nextPage)
             } else {
-                page = try await SiloAPI.shared.catalogPage(CatalogQueryBuilder.build(
+                page = try await api.catalogPage(CatalogQueryBuilder.build(
                     filter,
                     libraryId: libraryId,
                     mediaType: mediaType,
