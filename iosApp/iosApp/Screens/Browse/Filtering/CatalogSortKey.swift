@@ -38,6 +38,17 @@ enum BrowseMediaType: String, Codable, Hashable {
         case .audiobook, .mixed: return nil
         }
     }
+
+    /// The `type` param for a query with no `library_id`, where nothing else
+    /// scopes the page (the iOS hubs' "All" grids).
+    var crossLibraryTypeParam: String? {
+        switch self {
+        case .movie: return "movie"
+        case .series: return "series"
+        case .audiobook: return "audiobook"
+        case .mixed: return nil
+        }
+    }
 }
 
 /// One sortable field. The raw value is the canonical server `sort` field

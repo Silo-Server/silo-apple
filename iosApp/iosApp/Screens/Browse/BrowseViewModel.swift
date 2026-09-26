@@ -22,6 +22,9 @@ class BrowseViewModel {
     /// no continuation, so a load-more over it restarts from page 1.
     private var continuation: APIv2CatalogContinuation?
     private var libraryId: Int?
+    /// Media scope for a cross-library grid (Watch tab "All"); `nil` when a
+    /// library already scopes the query.
+    private var scope: BrowseMediaType?
     private var hasConfigured = false
     private var configurationGeneration = 0
     /// Bumped on every reset; a returning fetch from an older generation
@@ -29,14 +32,24 @@ class BrowseViewModel {
     private var generation = 0
 
     @discardableResult
-    func configure(libraryId: Int?, libraryType: String? = nil) async -> Bool {
+    func configure(
+        libraryId: Int?,
+        libraryType: String? = nil,
+        scope: BrowseMediaType? = nil
+    ) async -> Bool {
         configurationGeneration += 1
         let myConfiguration = configurationGeneration
-        let libraryChanged = !hasConfigured || self.libraryId != libraryId
-        let resolvedMediaType = await resolveMediaType(libraryId: libraryId, libraryType: libraryType)
+        let libraryChanged = !hasConfigured || self.libraryId != libraryId || self.scope != scope
+        let resolvedMediaType: BrowseMediaType
+        if let scope {
+            resolvedMediaType = scope
+        } else {
+            resolvedMediaType = await resolveMediaType(libraryId: libraryId, libraryType: libraryType)
+        }
         guard myConfiguration == configurationGeneration, !Task.isCancelled else { return false }
 
         self.libraryId = libraryId
+        self.scope = scope
         hasConfigured = true
         mediaType = resolvedMediaType
 
@@ -45,7 +58,7 @@ class BrowseViewModel {
             continuation = nil
             hasMore = true
             items = []
-            filterState = BrowsePrefsStore.shared.savedState(libraryId: libraryId) ?? .none
+            filterState = BrowsePrefsStore.shared.savedState(libraryId: libraryId, scope: prefsScope) ?? .none
         }
 
         facets = FacetLoader.shared.cachedFacets(libraryId: libraryId)
@@ -90,7 +103,8 @@ class BrowseViewModel {
             } else {
                 page = try await StartupContentPrefetcher.fetchBrowseFirstPage(
                     libraryId: libraryId,
-                    state: filterState
+                    state: filterState,
+                    scope: scope
                 )
             }
             // Discard if another reset superseded us while we awaited.
@@ -121,7 +135,7 @@ class BrowseViewModel {
     func apply(_ newState: CatalogFilterState) async {
         guard newState != filterState else { return }
         filterState = newState
-        BrowsePrefsStore.shared.saveState(newState, libraryId: libraryId)
+        BrowsePrefsStore.shared.saveState(newState, libraryId: libraryId, scope: prefsScope)
         items = []
         hydratePage1FromCache()
         await loadItems(reset: true)
@@ -162,19 +176,27 @@ class BrowseViewModel {
 
     // MARK: - Preserve toggle
 
-    var preserveEnabled: Bool { BrowsePrefsStore.shared.preserveEnabled(libraryId: libraryId) }
+    /// Cross-library grids (All Movies, All Audiobooks) keep their own
+    /// saved filters.
+    private var prefsScope: String? { scope?.crossLibraryTypeParam }
+
+    var preserveEnabled: Bool { BrowsePrefsStore.shared.preserveEnabled(libraryId: libraryId, scope: prefsScope) }
 
     func setPreserveEnabled(_ enabled: Bool) {
-        BrowsePrefsStore.shared.setPreserveEnabled(enabled, libraryId: libraryId)
+        BrowsePrefsStore.shared.setPreserveEnabled(enabled, libraryId: libraryId, scope: prefsScope)
         if enabled {
-            BrowsePrefsStore.shared.saveState(filterState, libraryId: libraryId)
+            BrowsePrefsStore.shared.saveState(filterState, libraryId: libraryId, scope: prefsScope)
         }
     }
 
     // MARK: - Cache
 
     private var currentCacheKey: String {
-        CacheKey.browse(libraryId: libraryId, filterKey: filterState.cacheKeyFragment)
+        CacheKey.browse(
+            libraryId: libraryId,
+            filterKey: filterState.cacheKeyFragment,
+            scope: scope?.crossLibraryTypeParam
+        )
     }
 
     private func hydratePage1FromCache() {
