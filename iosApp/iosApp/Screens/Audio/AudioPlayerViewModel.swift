@@ -57,10 +57,20 @@ final class AudioPlayerViewModel {
         category: "Playback"
     )
 
-    private(set) var context: AudiobookPlaybackContext?
+    private(set) var context: AudiobookPlaybackContext? {
+        didSet { refreshCurrentChapter() }
+    }
     private(set) var isLoading = false
     private(set) var error: ErrorState?
-    private(set) var currentTime: Double = 0
+    /// The playhead, updated on every ~10 Hz clock tick. Read it only in
+    /// small views that render the time, such as the scrubber.
+    private(set) var currentTime: Double = 0 {
+        didSet { refreshCurrentChapter() }
+    }
+    /// The chapter the playhead is currently inside, if any. Stored so views
+    /// that show it re-render when the playhead crosses a chapter boundary,
+    /// not on every tick.
+    private(set) var currentChapter: AudioPlaybackChapter?
     private(set) var duration: Double = 0
     /// Typed Aether state remains the transport source of truth. The UI's
     /// play/pause affordances derive from this value instead of optimistic
@@ -95,13 +105,6 @@ final class AudioPlayerViewModel {
     var posterUrl: String? { context?.posterUrl }
     var chapters: [AudioPlaybackChapter] { context?.chapters ?? [] }
     var tracks: [AudioPlaybackTrack] { context?.tracks ?? [] }
-
-    /// The chapter the playhead is currently inside, if any.
-    var currentChapter: AudioPlaybackChapter? {
-        chapters
-            .filter { $0.startSeconds <= currentTime }
-            .max { $0.startSeconds < $1.startSeconds }
-    }
 
     /// The intervals the audiobook controls use right now.
     var skipIntervals: SeekIntervalPair {
@@ -690,7 +693,20 @@ final class AudioPlayerViewModel {
                 in: track
             )
         )
-        pushNowPlaying()
+        // A tick only advances the playhead, which the system extrapolates
+        // from the published rate, so the coordinator republishes it at most
+        // every couple of seconds. Transport changes still publish at once.
+        nowPlaying.updatePlayhead(position: currentTime)
+    }
+
+    /// Keeps `currentChapter` in step with the playhead and the book. Assigns
+    /// only on a change: Observation notifies on every assignment, and chapter
+    /// readers must not follow the tick.
+    private func refreshCurrentChapter() {
+        let chapter = AudioPlaybackTimeline.chapter(at: currentTime, in: chapters)
+        if chapter != currentChapter {
+            currentChapter = chapter
+        }
     }
 
     private func advanceAfterTrackEnd(expectedGeneration: Int) async {

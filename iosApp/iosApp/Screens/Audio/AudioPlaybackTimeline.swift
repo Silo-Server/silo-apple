@@ -22,4 +22,28 @@ enum AudioPlaybackTimeline {
     static func globalTime(for localTime: Double, in track: AudioPlaybackTrack) -> Double {
         track.startOffsetSeconds + min(max(0, localTime), max(0, track.durationSeconds))
     }
+
+    /// The chapter the playhead at `globalTime` is inside: the last one that
+    /// starts at or before it, and the first of several sharing that start.
+    /// Nil before the first chapter. `chapters` must be sorted by
+    /// `startSeconds`, as `AudiobookPlaybackContext` builds them.
+    static func chapter(at globalTime: Double, in chapters: [AudioPlaybackChapter]) -> AudioPlaybackChapter? {
+        // Binary search for the first chapter that starts after the playhead.
+        var low = 0
+        var high = chapters.count
+        while low < high {
+            let mid = (low + high) / 2
+            if chapters[mid].startSeconds <= globalTime {
+                low = mid + 1
+            } else {
+                high = mid
+            }
+        }
+        guard low > 0 else { return nil }
+        var index = low - 1
+        while index > 0, chapters[index - 1].startSeconds == chapters[index].startSeconds {
+            index -= 1
+        }
+        return chapters[index]
+    }
 }
