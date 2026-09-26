@@ -129,38 +129,35 @@ private struct WatchPartyRoomSheets: ViewModifier {
     }
     #endif
 
+    /// One stack per destination for both presenters. Choosing a title here
+    /// must never start solo playback.
+    private func destinationStack(_ destination: WatchPartyRoomSheet) -> some View {
+        NavigationStack {
+            switch destination {
+            case .select: WatchPartyMediaPicker(session: session, purpose: .select)
+            case .suggest: WatchPartyMediaPicker(session: session, purpose: .suggest)
+            case .invite: WatchPartyInviteView(session: session)
+            #if os(tvOS)
+            case .end: WatchPartyEndConfirmation(session: session)
+            #endif
+            }
+        }
+        .environment(\.allowsDirectPlayback, false)
+    }
+
     func body(content: Content) -> some View {
         content
             .sheet(item: cardSheet, onDismiss: { router.watchPartySheetDidDismiss() }) { destination in
-                NavigationStack {
-                    switch destination {
-                    case .select: WatchPartyMediaPicker(session: session, purpose: .select)
-                    case .suggest: WatchPartyMediaPicker(session: session, purpose: .suggest)
-                    case .invite: WatchPartyInviteView(session: session)
-                    #if os(tvOS)
-                    case .end: WatchPartyEndConfirmation(session: session)
-                    #endif
-                    }
-                }
-                // Choosing a title here must never start solo playback.
-                .environment(\.allowsDirectPlayback, false)
+                destinationStack(destination)
             }
             #if os(tvOS)
             .fullScreenCover(item: coverSheet, onDismiss: { router.watchPartySheetDidDismiss() }) { destination in
-                NavigationStack {
-                    switch destination {
-                    case .select: WatchPartyMediaPicker(session: session, purpose: .select)
-                    case .suggest: WatchPartyMediaPicker(session: session, purpose: .suggest)
-                    case .invite: WatchPartyInviteView(session: session)
-                    case .end: WatchPartyEndConfirmation(session: session)
-                    }
-                }
                 // Same hosting as the tab shell: the stack sits edge-to-edge so
                 // Skyline rows inside it see no horizontal safe area. Applying
                 // this inside the stack instead leaves each row's scroll view
                 // with an automatic inset that shows the moment focus leaves it.
-                .ignoresSafeArea(edges: [.top, .horizontal])
-                .environment(\.allowsDirectPlayback, false)
+                destinationStack(destination)
+                    .ignoresSafeArea(edges: [.top, .horizontal])
             }
             #endif
             .onChange(of: session.playbackContext) { _, context in
@@ -218,11 +215,6 @@ private struct WatchPartyEntryView: View {
     private enum EntryFocus: Hashable { case create, vote, rejoin, code, join, retry }
     #endif
 
-    private var canEnter: Bool {
-        session.capabilities?.supportsSocket == true
-            && session.capabilities?.connectionReplaced == true && session.supportsPlayback
-    }
-
     var body: some View {
         ZStack {
             WatchPartyBackdrop(url: nil)
@@ -235,7 +227,7 @@ private struct WatchPartyEntryView: View {
     }
 
     private var headline: some View {
-        VStack(alignment: leadingAlignment, spacing: WatchPartyMetrics.body * 0.6) {
+        VStack(alignment: .leading, spacing: WatchPartyMetrics.body * 0.6) {
             WatchPartyEyebrow(text: "Watch Party")
             Text("Watch something\ntogether")
                 .font(.system(size: WatchPartyMetrics.heroTitle, weight: .bold))
@@ -247,14 +239,14 @@ private struct WatchPartyEntryView: View {
                 .foregroundStyle(Color.siloSecondaryText)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .multilineTextAlignment(textAlignment)
+        .multilineTextAlignment(.leading)
     }
 
     @ViewBuilder
     private var statusBanner: some View {
         if let message = session.errorMessage {
             WatchPartyBanner(message: message, tone: .warning)
-        } else if !canEnter {
+        } else if !session.supportsSynchronizedParty {
             WatchPartyBanner(message: isCheckingSupport
                 ? "Checking Watch Party support…"
                 : "Watch Party is not available for this profile on this server.")
@@ -273,7 +265,7 @@ private struct WatchPartyEntryView: View {
                         .lineLimit(1)
                 }
                 .buttonStyle(WatchPartyButtonStyle(kind: .outlined))
-                .disabled(session.locksControls || !canEnter)
+                .disabled(session.locksControls || !session.supportsSynchronizedParty)
                 #if os(tvOS)
                 .focused($focused, equals: .rejoin)
                 #endif
@@ -308,7 +300,7 @@ private struct WatchPartyEntryView: View {
             .focused($focused, equals: .vote)
             #endif
         }
-        .disabled(session.locksControls || !canEnter)
+        .disabled(session.locksControls || !session.supportsSynchronizedParty)
     }
 
     private var joinField: some View {
@@ -346,7 +338,7 @@ private struct WatchPartyEntryView: View {
             Text("Join party")
         }
         .buttonStyle(WatchPartyButtonStyle(kind: .secondary))
-        .disabled(invitation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || session.locksControls || !canEnter)
+        .disabled(invitation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || session.locksControls || !session.supportsSynchronizedParty)
         .accessibilityIdentifier("watchParty.join")
         #if os(tvOS)
         .focused($focused, equals: .join)
@@ -355,7 +347,7 @@ private struct WatchPartyEntryView: View {
 
     @ViewBuilder
     private var retryButton: some View {
-        if !canEnter {
+        if !session.supportsSynchronizedParty {
             Button(action: onCheckSupport) { Text("Check again") }
                 .buttonStyle(WatchPartyButtonStyle(kind: .secondary))
                 .disabled(isCheckingSupport)
@@ -366,9 +358,6 @@ private struct WatchPartyEntryView: View {
     }
 
     #if os(tvOS)
-    private var leadingAlignment: HorizontalAlignment { .leading }
-    private var textAlignment: TextAlignment { .leading }
-
     private var tvLayout: some View {
         HStack(alignment: .top, spacing: 120) {
             VStack(alignment: .leading, spacing: 40) {
@@ -400,9 +389,6 @@ private struct WatchPartyEntryView: View {
         .defaultFocus($focused, session.recentRoom != nil ? .rejoin : .create, priority: .userInitiated)
     }
     #else
-    private var leadingAlignment: HorizontalAlignment { .leading }
-    private var textAlignment: TextAlignment { .leading }
-
     private var phoneLayout: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {

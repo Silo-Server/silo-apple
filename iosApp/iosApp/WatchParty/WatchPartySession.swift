@@ -38,6 +38,12 @@ final class WatchPartySession {
         if room?.selectionMode == .vote { return voteWinner != nil }
         return capabilities?.stagedSelection == true && !(room?.selectedContentId?.isEmpty ?? true)
     }
+    /// The server can host a synchronized party for this profile: the room
+    /// socket protocol, connection replacement, and coordinated fixed-file
+    /// playback. Every Watch Party entry point and `enter` share this gate.
+    var supportsSynchronizedParty: Bool {
+        capabilities?.supportsSocket == true && capabilities?.connectionReplaced == true && supportsPlayback
+    }
     var inviteURL: URL? {
         guard isEngaged, let path = room?.invitePath, let auth else { return nil }
         return WatchPartyLobbyPolicy.inviteURL(path: path, serverURL: auth.account.serverURL)
@@ -211,7 +217,7 @@ final class WatchPartySession {
         }
         if let recentAuth, !recentAuth.sameCredentialIdentity(as: captured) { forgetRecentRoomInMemory() }
         guard await loadCapabilities(auth: captured, owner: owner), owner == engagement else { return false }
-        guard capabilities?.supportsSocket == true, capabilities?.connectionReplaced == true, supportsPlayback else {
+        guard supportsSynchronizedParty else {
             errorMessage = "This server needs an update to support synchronized Watch Party playback safely on this profile."
             return false
         }

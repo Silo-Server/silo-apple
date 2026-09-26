@@ -576,6 +576,32 @@ final class WatchPartyStateTests: XCTestCase {
     }
 
     @MainActor
+    func testSynchronizedPartySupportNeedsSocketReplacementAndCoordinatedPlayback() async throws {
+        let stub = APIv2TestStub()
+        let session = try await sessionClient(urlSession: stub.makeSession())
+        defer { session.leave() }
+        XCTAssertFalse(session.supportsSynchronizedParty, "Nothing is offered before the server's support is known")
+        stub.reply(200, sessionCapabilities)
+        await session.refreshCapabilities()
+        XCTAssertTrue(session.supportsSynchronizedParty)
+        let missingOne: [(input: String, body: String)] = [
+            ("connection replacement", sessionCapabilities.replacingOccurrences(
+                of: #""connection_replaced":true"#, with: #""connection_replaced":false"#)),
+            ("room socket protocol", sessionCapabilities.replacingOccurrences(
+                of: #""silo.room.v2""#, with: #""silo.room.v1""#)),
+            ("coordinated playback", sessionCapabilities.replacingOccurrences(
+                of: #""watch_party_coordinator_v1","#, with: "")),
+        ]
+        for (input, body) in missingOne {
+            stub.reply(200, body)
+            await session.refreshCapabilities()
+            XCTAssertNil(session.errorMessage, "The body missing \(input) loaded, so no earlier state carries over")
+            XCTAssertFalse(session.supportsSynchronizedParty, "Missing \(input)")
+        }
+        XCTAssertFalse(session.supportsPlayback, "The last body drops only the coordinator feature")
+    }
+
+    @MainActor
     func testColdProfileVerificationRestoresRecentOnlyAfterMatchingIdentityReturns() async throws {
         let name = "WatchPartyColdRestoreTests.\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: name))
