@@ -14,6 +14,10 @@ or similar. This is separate from the TestFlight pipeline
   read. The workflow runs on any macOS runner without release credentials.
 - **No upload.** Nothing goes to Apple. Artifacts are published to the workflow
   run and, on tag builds, attached to the GitHub Release.
+- **No user-independent keychain on tvOS.** The tvOS lane sets
+  `SILO_USER_INDEPENDENT_KEYCHAIN=NO`. That keychain needs Apple's User
+  Management entitlement, which the unsigned archive lacks and re-signers
+  generally cannot grant, so the app uses the ordinary keychain instead.
 
 ## How it triggers
 - Push tag `vX.Y.Z` → builds both IPAs and attaches them to that tag's release.
@@ -61,5 +65,9 @@ Both run locally with no credentials.
 - **tvOS Top Shelf extension.** It is embedded in `SiloTV.app` and archived
   automatically. Re-signers who cannot sign the extension (common on free
   accounts) can strip it before sideloading — the app installs without Top Shelf.
+- **tvOS sideload builds share one sign-in across Apple TV users.** They ship
+  without Apple's User Management entitlement, so the app does not run as the
+  current Apple TV user; every Apple TV user sees the same Silo sign-in and
+  profile choice.
 - tvOS sideloading is more sensitive to OS version; new tvOS releases can
   temporarily break the sideloading tools.

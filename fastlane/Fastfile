@@ -95,6 +95,15 @@ end
 # untrusted input to validate.
 SIDELOAD_CHANNEL_XCARG = "SILO_BUILD_CHANNEL=sideload ".freeze
 
+# Turns off the user-independent keychain for the unsigned tvOS sideload lane.
+# SiloTV.xcconfig and SiloTVTopShelf.xcconfig default SILO_USER_INDEPENDENT_KEYCHAIN
+# to YES for builds that carry the user-management entitlement
+# (runs-as-current-user-with-user-independent-keychain). The sideload archive
+# has no entitlements, and re-signers generally cannot grant that one, so the
+# flag goes off here, as Local.xcconfig.sample does for Personal Team builds.
+# Constant, not env-derived, like SIDELOAD_CHANNEL_XCARG.
+TVOS_SIDELOAD_KEYCHAIN_XCARG = "SILO_USER_INDEPENDENT_KEYCHAIN=NO ".freeze
+
 # Returns the build number to stamp on a TestFlight build.
 #
 # In CI the reserve_build_numbers job computes the next number per platform once
@@ -644,6 +653,7 @@ platform :ios do
       archive_path: archive_path,
       xcargs:       "#{marketing_version_xcarg}#{build_number_xcarg}" \
                     "#{SIDELOAD_CHANNEL_XCARG}" \
+                    "#{TVOS_SIDELOAD_KEYCHAIN_XCARG}" \
                     "CODE_SIGNING_ALLOWED=NO " \
                     "CODE_SIGNING_REQUIRED=NO " \
                     "CODE_SIGN_IDENTITY='' " \
