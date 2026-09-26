@@ -53,16 +53,6 @@ struct MobilePlayerGestureLayer: View {
     /// Width of the brightness/volume strips along each screen edge.
     private static let edgeZoneWidth: CGFloat = 88
 
-    /// Screen hosting the app's foreground scene. `UIScreen.main` is
-    /// deprecated on iOS 26; the player always lives in the single
-    /// foreground window scene, so resolving through the scene list is
-    /// equivalent.
-    private var activeScreen: UIScreen? {
-        UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .first { $0.activationState == .foregroundActive }?
-            .screen
-    }
     /// Fraction of the width on each side that double-taps treat as a skip
     /// zone; the middle band toggles play/pause instead.
     private static let skipZoneFraction: CGFloat = 0.35
@@ -142,7 +132,7 @@ struct MobilePlayerGestureLayer: View {
                     let startX = value.startLocation.x
                     if startX < Self.edgeZoneWidth {
                         activeAdjustment = .brightness
-                        dragBaseline = Double(activeScreen?.brightness ?? 0.5)
+                        dragBaseline = PlayerScreenBrightness.shared.currentLevel()
                     } else if startX > size.width - Self.edgeZoneWidth {
                         activeAdjustment = .volume
                         dragBaseline = Double(viewModel.currentUserVolume)
@@ -160,7 +150,7 @@ struct MobilePlayerGestureLayer: View {
                 gaugeHideTask?.cancel()
                 switch adjustment {
                 case .brightness:
-                    activeScreen?.brightness = fraction
+                    PlayerScreenBrightness.shared.apply(fraction)
                 case .volume:
                     viewModel.applyUserVolume(Float(fraction))
                 }

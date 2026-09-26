@@ -38,6 +38,7 @@ struct PlayerView: View {
     #if os(iOS)
     @State private var orientationCoordinator = PlayerOrientationCoordinator.shared
     @State private var pictureInPicture = PictureInPictureCoordinator.shared
+    @Environment(\.scenePhase) private var scenePhase
     #endif
     #if os(tvOS)
     @State private var remoteIdentityNotice: RemotePlaybackIdentityManager.ActiveIdentity?
@@ -382,6 +383,15 @@ struct PlayerView: View {
             guard pictureInPicture.ownsEngagedSession(viewModel) else { return }
             closePresentation()
         }
+        // Hand the user's brightness back while the app is away, and take the
+        // player's level again on return unless the user changed it.
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                PlayerScreenBrightness.shared.resume()
+            } else {
+                PlayerScreenBrightness.shared.suspend()
+            }
+        }
         #endif
         .onChange(of: viewModel.remoteDismissToken) { _, newValue in
             guard newValue != nil else { return }
@@ -481,6 +491,7 @@ struct PlayerView: View {
             #endif
             #if os(iOS)
             orientationCoordinator.deactivatePlayer()
+            PlayerScreenBrightness.shared.restore()
             #endif
             #if os(tvOS)
             // A detail/Home read launched synchronously from this disappear
