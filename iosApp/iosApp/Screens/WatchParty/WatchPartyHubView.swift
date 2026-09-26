@@ -441,7 +441,7 @@ struct WatchPartyLobbyView: View {
     @Environment(AppRouter.self) private var router
     #if os(tvOS)
     @FocusState private var focused: LobbyFocus?
-    private enum LobbyFocus: Hashable { case code, primary, secondary, returnToLobby, more, suggest }
+    private enum LobbyFocus: Hashable { case code, primary, secondary, more, suggest }
     @State private var showsHostControls = false
     #endif
 
@@ -668,28 +668,15 @@ struct WatchPartyLobbyView: View {
             }
             .buttonStyle(WatchPartyButtonStyle(kind: .primary))
         case .returnToLobby:
-            returnToLobbyButton(kind: .primary)
+            Button { Task { await session.stopPlayback() } } label: {
+                Label("Return everyone to lobby", systemImage: "arrow.uturn.backward")
+            }
+            .buttonStyle(WatchPartyButtonStyle(kind: .primary))
+            .disabled(session.locksControls)
+            .accessibilityIdentifier("watchParty.returnToLobby")
         case .none:
             EmptyView()
         }
-    }
-
-    /// Shown beside the primary action while it is not itself this button.
-    @ViewBuilder
-    private func stopPlaybackButton(_ room: WatchPartyRoom) -> some View {
-        if room.phase == .playing, room.selfCanManageRoom, session.capabilities?.stopPlayback == true,
-           primaryAction != .returnToLobby {
-            returnToLobbyButton(kind: .secondary)
-        }
-    }
-
-    private func returnToLobbyButton(kind: WatchPartyButtonKind) -> some View {
-        Button { Task { await session.stopPlayback() } } label: {
-            Label("Return everyone to lobby", systemImage: "arrow.uturn.backward")
-        }
-        .buttonStyle(WatchPartyButtonStyle(kind: kind))
-        .disabled(session.locksControls)
-        .accessibilityIdentifier("watchParty.returnToLobby")
     }
 
     @ViewBuilder
@@ -775,7 +762,6 @@ struct WatchPartyLobbyView: View {
             }
             VStack(spacing: 10) {
                 primaryButton(room)
-                stopPlaybackButton(room)
                 secondaryButton(room)
                 hint(room)
             }
@@ -931,7 +917,6 @@ struct WatchPartyLobbyView: View {
                 VStack(alignment: .trailing, spacing: 16) {
                     HStack(spacing: 18) {
                         secondaryButton(room).focused($focused, equals: .secondary)
-                        stopPlaybackButton(room).focused($focused, equals: .returnToLobby)
                         primaryButton(room).focused($focused, equals: .primary)
                     }
                     .focusSection()
