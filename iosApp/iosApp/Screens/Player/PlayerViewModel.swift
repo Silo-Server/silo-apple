@@ -3463,11 +3463,10 @@ class PlayerViewModel {
         var next = settings.subtitleAppearance
         guard next.position != position else { return }
         next.position = position
-        settings.subtitleAppearance = next.sanitized()
-        settings.subtitleUsesDeviceAppearanceOverride = true
+        settings.stageSubtitleAppearance(next)
         applySubtitleAppearanceToPlayer()
         Task { [settings] in
-            await settings.setSubtitleAppearance(next)
+            await settings.flushPendingDeviceSettings()
         }
     }
 

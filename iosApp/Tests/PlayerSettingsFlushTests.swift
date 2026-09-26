@@ -1136,6 +1136,50 @@ final class PlayerSettingsFlushTests: XCTestCase {
         XCTAssertEqual(byKey[.playerOrientationMode]?.value, .string("rotateFreely"))
     }
 
+    func testAdoptingAProfileWriteUpdatesTheLocalValueWithoutQueueingADeviceOverride() async throws {
+        let harness = try PlayerSettingsHarness()
+
+        // The onboarding tour already wrote these at profile scope. Sending
+        // them again would create a `profile_device` row that shadows it.
+        harness.settings.adoptProfileQuality(resolution: "720p", bitrateKbps: 3_000)
+        harness.settings.adoptProfileIntroSkipMode(.always)
+        harness.settings.adoptProfileAutoSkipCredits(true)
+
+        XCTAssertEqual(harness.settings.preferredQualityResolution, "720p")
+        XCTAssertEqual(harness.settings.maxBitrateKbps, 3_000)
+        XCTAssertEqual(harness.settings.introSkipMode, .always)
+        XCTAssertTrue(harness.settings.autoSkipCredits)
+
+        await harness.settings.flushPendingDeviceSettings()
+        XCTAssertTrue(
+            harness.transport.writes().isEmpty,
+            "adopting a profile value must not queue a device-scope write"
+        )
+    }
+
+    func testStagingASubtitleAppearanceAppliesItAtOnceAndSendsItOnFlush() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.settings.setSubtitleMatchesSystemAppearance(true)
+        var appearance = SubtitleAppearance.default
+        appearance.position = .top
+
+        harness.settings.stageSubtitleAppearance(appearance)
+
+        // Silo Control's position command is synchronous: the edit, the
+        // override and handing control back from the system captions all
+        // apply before anything suspends.
+        XCTAssertEqual(harness.settings.subtitleAppearance.position, .top)
+        XCTAssertTrue(harness.settings.subtitleUsesDeviceAppearanceOverride)
+        XCTAssertFalse(harness.settings.subtitleMatchesSystemAppearance)
+        XCTAssertEqual(harness.settings.effectiveSubtitleAppearance.position, .top)
+
+        await harness.settings.flushPendingDeviceSettings()
+        XCTAssertEqual(
+            harness.transport.writesByKey()[.playbackSubtitleAppearance]?.value,
+            try SettingJSONValue.encoding(appearance.sanitized())
+        )
+    }
+
     func testNoAudioLanguagePreferenceIsSentAsJSONNull() async throws {
         let harness = try PlayerSettingsHarness()
 
