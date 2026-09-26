@@ -312,6 +312,12 @@ struct DiagnosticsCaptureContext {
     }
 }
 
+/// Pending diagnostics reports and their ledgers on disk, serialized by one
+/// lock. Lookups never write or delete, with two deliberate exceptions:
+/// passing `now` to `listReports` or `report(id:now:)` runs the 7-day expiry
+/// pass first, and `loadHostedEnvelope` repairs envelope state for the upload
+/// that is about to use it. Ledger pruning and removal of leftover evidence
+/// belong to writers and to `performMaintenance(now:)`.
 final class PendingReportStore {
     static let shared = PendingReportStore()
     static let expiryInterval: TimeInterval = 7 * 24 * 60 * 60
@@ -327,6 +333,9 @@ final class PendingReportStore {
     /// receipts fit comfortably below this ceiling while corrupt/hostile files
     /// cannot consume unbounded memory at launch.
     static let maxHostedErasureLedgerBytes = 2 * 1024 * 1024
+    /// How long a seen fingerprint suppresses a duplicate capture, and how
+    /// long an auto-upload throttle entry is kept.
+    private static let fingerprintRetentionInterval: TimeInterval = 30 * 24 * 60 * 60
     private static let seenFingerprintsFile = "seen-fingerprints.json"
     private static let throttleFile = "auto-upload-throttle.json"
     private static let hostedDeletionIntentsFile = "hosted-deletion-intents.json"
@@ -350,9 +359,6 @@ final class PendingReportStore {
         }
         self.rootDirectory = rootDirectory ?? DiagnosticsStorageRoot.baseDirectory(fileManager: fileManager)
             .appendingPathComponent("Diagnostics", isDirectory: true)
-        lock.lock()
-        try? reconcileHostedReadyReceiptsLocked(now: Date())
-        lock.unlock()
     }
 
     var pendingDirectory: URL {
@@ -432,11 +438,12 @@ final class PendingReportStore {
         return report
     }
 
+    /// Lists visible reports, oldest first. Without `now` this only reads.
+    /// Passing `now` first deletes reports past the 7-day expiry.
     func listReports(for binding: DiagnosticsBinding? = nil, now: Date? = nil) -> [PendingReport] {
         lock.lock()
         defer { lock.unlock() }
 
-        try? ensureDirectory(rootDirectory)
         if let now {
             try? cleanupExpiredLocked(now: now)
         }
@@ -458,11 +465,40 @@ final class PendingReportStore {
         lock.lock()
         defer { lock.unlock() }
 
-        let reports = binding.destinationChoice == .selfHosted
-            ? scanSelfHostedReportsLocked()
-            : scanReportsLocked()
+        return purgeLocked(destination: binding.destinationChoice) {
+            $0.binding.binding == binding
+        }
+    }
+
+    func purge(serverInstanceID: String) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        purgeLocked(
+            destination: DiagnosticsBinding.destinationChoice(forServerInstanceID: serverInstanceID)
+        ) {
+            $0.binding.serverInstanceID == serverInstanceID
+        }
+    }
+
+    /// Removes every local report that `matches`. Self-hosted purges never
+    /// consult the hosted erasure ledgers, so a corrupt collector ledger
+    /// cannot block erasing evidence kept for the user's own server. Hosted
+    /// purges also remove READY-receipted leftovers, which scans only hide.
+    @discardableResult
+    private func purgeLocked(
+        destination: DiagnosticsDestinationChoice,
+        matching matches: (PendingReport) -> Bool
+    ) -> Bool {
+        let reports: [PendingReport]
+        if destination == .selfHosted {
+            reports = scanSelfHostedReportsLocked()
+        } else {
+            removeReadyReceiptedDirectoriesLocked()
+            reports = scanReportsLocked()
+        }
         var removedAll = true
-        for report in reports where report.binding.binding == binding {
+        for report in reports where matches(report) {
             do {
                 try fileManager.removeItem(at: report.directoryURL)
             } catch {
@@ -470,22 +506,6 @@ final class PendingReportStore {
             }
         }
         return removedAll
-    }
-
-    func purge(serverInstanceID: String) {
-        lock.lock()
-        defer { lock.unlock() }
-
-        let bindingDestination = DiagnosticsBinding(
-            serverInstanceID: serverInstanceID,
-            accountUserID: ""
-        ).destinationChoice
-        let reports = bindingDestination == .selfHosted
-            ? scanSelfHostedReportsLocked()
-            : scanReportsLocked()
-        for report in reports where report.binding.serverInstanceID == serverInstanceID {
-            try? fileManager.removeItem(at: report.directoryURL)
-        }
     }
 
     @discardableResult
@@ -527,12 +547,14 @@ final class PendingReportStore {
         }
     }
 
+    /// READY receipts that retention still keeps. Only reads; the same
+    /// pruning is persisted by `performMaintenance(now:)`.
     func hostedReadyReceiptIDs(for binding: DiagnosticsBinding? = nil) throws -> [UUID] {
         lock.lock()
         defer { lock.unlock() }
 
-        try pruneHostedReadyReceiptsLocked(now: Date())
-        return try loadHostedErasureLedgersLocked().readyReceipts
+        let erasureState = try loadHostedErasureLedgersLocked()
+        return retainedHostedReadyReceiptsLocked(erasureState, now: Date())
             .compactMap { key, receipt in
                 guard binding == nil || receipt.binding == binding else { return nil }
                 return UUID(uuidString: key)
@@ -602,6 +624,7 @@ final class PendingReportStore {
         defer { lock.unlock() }
 
         let erasureState = try loadHostedErasureLedgersLocked()
+        removeReadyReceiptedDirectoriesLocked()
         let reports = scanReportsLocked().filter { $0.binding.binding == binding }
         var intents = erasureState.deletionIntents
         for report in reports where report.binding.binding.destinationChoice == .hosted
@@ -632,6 +655,7 @@ final class PendingReportStore {
         defer { lock.unlock() }
 
         let erasureState = try loadHostedErasureLedgersLocked()
+        removeReadyReceiptedDirectoriesLocked()
         let reports = scanReportsLocked().filter { $0.binding.serverInstanceID == serverInstanceID }
         var intents = erasureState.deletionIntents
         for report in reports where report.binding.binding.destinationChoice == .hosted
@@ -741,8 +765,26 @@ final class PendingReportStore {
         lock.lock()
         defer { lock.unlock() }
 
+        guard let seenAt = loadDateMap(Self.seenFingerprintsFile)[fingerprint] else {
+            return false
+        }
+        return now.timeIntervalSince(seenAt) <= Self.fingerprintRetentionInterval
+    }
+
+    /// Housekeeping that lookups never do. Prunes expired READY receipts,
+    /// removes report directories the collector already accepted (a READY
+    /// receipt whose local removal failed or was interrupted), and drops
+    /// fingerprint and throttle entries past their retention. Each ledger is
+    /// rewritten only when it changed. `DiagnosticsCoordinator` runs this at
+    /// the start of its maintenance pass, at launch and on every foreground.
+    func performMaintenance(now: Date = Date()) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        // An unreadable erasure ledger fails closed: nothing is pruned or removed.
+        try? pruneHostedReadyReceiptsLocked(now: now)
+        removeReadyReceiptedDirectoriesLocked()
         pruneFingerprintStateLocked(now: now)
-        return loadDateMap(Self.seenFingerprintsFile)[fingerprint] != nil
     }
 
     func canAutoUpload(fingerprint: String, binding: DiagnosticsBinding, now: Date = Date()) -> Bool {
@@ -1057,14 +1099,12 @@ final class PendingReportStore {
         try? fileManager.removeItem(at: rootDirectory)
     }
 
+    /// Loads every report except those a READY receipt covers, and hides all
+    /// hosted reports while the erasure ledgers are unreadable. Only reads:
+    /// READY-receipted directories are removed by `performMaintenance(now:)`
+    /// and the hosted purges.
     private func scanReportsLocked() -> [PendingReport] {
-        let erasureState: HostedErasureLedgers?
-        do {
-            try pruneHostedReadyReceiptsLocked(now: Date())
-            erasureState = try loadHostedErasureLedgersLocked()
-        } catch {
-            erasureState = nil
-        }
+        let erasureState = try? loadHostedErasureLedgersLocked()
         let readyReportIDs = Set(erasureState.map { Array($0.readyReceipts.keys) } ?? [])
         guard let urls = try? fileManager.contentsOfDirectory(
             at: pendingDirectory,
@@ -1074,7 +1114,6 @@ final class PendingReportStore {
         }
         return urls.compactMap { url in
             if readyReportIDs.contains(url.lastPathComponent.lowercased()) {
-                try? hostedDeletionRemover(url)
                 return nil
             }
             guard let report = loadReport(from: url) else { return nil }
@@ -1127,13 +1166,12 @@ final class PendingReportStore {
     }
 
     private func cleanupExpiredLocked(now: Date) throws {
+        // Without trustworthy erasure state an unreadable directory could be
+        // the only surviving copy of a report already marked READY or
+        // deleting. While the ledgers are unreadable, keep unreadable
+        // directories and every hosted report; self-hosted expiry remains
+        // independent of this collector-local state.
         let hostedErasureStateIsReadable = (try? loadHostedErasureLedgersLocked()) != nil
-        if !hostedErasureStateIsReadable {
-            // Without trustworthy erasure state an unreadable directory could
-            // be the only surviving copy of a report already marked READY or
-            // deleting. Preserve every hosted directory; self-hosted expiry
-            // remains independent of this collector-local state.
-        }
         guard let urls = try? fileManager.contentsOfDirectory(
             at: pendingDirectory,
             includingPropertiesForKeys: nil
@@ -1192,13 +1230,15 @@ final class PendingReportStore {
     }
 
     private func pruneFingerprintStateLocked(now: Date) {
-        var seen = loadDateMap(Self.seenFingerprintsFile)
-        seen = seen.filter { now.timeIntervalSince($0.value) <= 30 * 24 * 60 * 60 }
-        saveDateMap(seen, fileName: Self.seenFingerprintsFile)
-
-        var throttle = loadDateMap(Self.throttleFile)
-        throttle = throttle.filter { now.timeIntervalSince($0.value) <= 30 * 24 * 60 * 60 }
-        saveDateMap(throttle, fileName: Self.throttleFile)
+        for fileName in [Self.seenFingerprintsFile, Self.throttleFile] {
+            let entries = loadDateMap(fileName)
+            let retained = entries.filter {
+                now.timeIntervalSince($0.value) <= Self.fingerprintRetentionInterval
+            }
+            if retained.count != entries.count {
+                saveDateMap(retained, fileName: fileName)
+            }
+        }
     }
 
     private func throttleKey(fingerprint: String, binding: DiagnosticsBinding) -> String {
@@ -1326,9 +1366,21 @@ final class PendingReportStore {
 
     private func pruneHostedReadyReceiptsLocked(now: Date) throws {
         let erasureState = try loadHostedErasureLedgersLocked()
-        let receipts = erasureState.readyReceipts
+        let retained = retainedHostedReadyReceiptsLocked(erasureState, now: now)
+        if retained != erasureState.readyReceipts {
+            try saveHostedReadyReceiptsLocked(retained)
+        }
+    }
+
+    /// The READY receipts retention keeps at `now`: those whose report
+    /// directory still exists, those a deletion intent refers to, and those
+    /// younger than `hostedReadyReceiptInterval`. Only reads.
+    private func retainedHostedReadyReceiptsLocked(
+        _ erasureState: HostedErasureLedgers,
+        now: Date
+    ) -> [String: HostedReadyReceipt] {
         let deletionIntents = Set(erasureState.deletionIntents.keys)
-        let retained = receipts.filter { reportID, receipt in
+        return erasureState.readyReceipts.filter { reportID, receipt in
             let directory = pendingDirectory.appendingPathComponent(reportID, isDirectory: true)
             if fileManager.fileExists(atPath: directory.path) {
                 // Never let age pruning resurrect raw evidence whose local
@@ -1342,14 +1394,15 @@ final class PendingReportStore {
             return deletionIntents.contains(reportID)
                 || now.timeIntervalSince(readyAt) <= Self.hostedReadyReceiptInterval
         }
-        if retained != receipts {
-            try saveHostedReadyReceiptsLocked(retained)
-        }
     }
 
-    private func reconcileHostedReadyReceiptsLocked(now: Date) throws {
-        try pruneHostedReadyReceiptsLocked(now: now)
-        for reportID in try loadHostedErasureLedgersLocked().readyReceipts.keys {
+    /// Removes the directories of reports that already have a READY receipt.
+    /// The receipt is written before the directory is removed, so a directory
+    /// outlives it only when that removal failed or was interrupted. Does
+    /// nothing while either erasure ledger is unreadable.
+    private func removeReadyReceiptedDirectoriesLocked() {
+        guard let erasureState = try? loadHostedErasureLedgersLocked() else { return }
+        for reportID in erasureState.readyReceipts.keys {
             let directory = pendingDirectory.appendingPathComponent(reportID, isDirectory: true)
             if fileManager.fileExists(atPath: directory.path) {
                 try? hostedDeletionRemover(directory)

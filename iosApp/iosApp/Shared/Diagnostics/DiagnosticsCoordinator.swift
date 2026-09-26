@@ -807,16 +807,25 @@ actor DiagnosticsCoordinator {
 
     /// Foreground settings/prompt hydration must not wait behind remote
     /// maintenance. Coalesce triggers and bound each pass; future foregrounds
-    /// continue draining the durable queue.
-    func scheduleHostedDeletionMaintenance() {
-        guard hostedDeletionMaintenanceTask == nil else { return }
-        hostedDeletionMaintenanceTask = Task { [weak self] in
-            await self?.runHostedDeletionMaintenance()
+    /// continue draining the durable queue. Each pass starts with the pending
+    /// store's local maintenance, which its lookups never do. Returns the pass
+    /// in flight, so a caller can wait for it.
+    @discardableResult
+    func scheduleHostedDeletionMaintenance() -> Task<Void, Never> {
+        if let hostedDeletionMaintenanceTask {
+            return hostedDeletionMaintenanceTask
         }
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.runHostedDeletionMaintenance()
+        }
+        hostedDeletionMaintenanceTask = task
+        return task
     }
 
     private func runHostedDeletionMaintenance() async {
         defer { hostedDeletionMaintenanceTask = nil }
+        pendingStore.performMaintenance()
         _ = await drainHostedDeletionIntents(maximumAttempts: 4)
     }
 
