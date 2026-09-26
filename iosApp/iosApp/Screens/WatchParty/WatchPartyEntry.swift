@@ -20,10 +20,7 @@ enum WatchPartyEntry {
     }
 
     static var isAvailable: Bool {
-        guard isEnabled else { return false }
-        let session = WatchPartySession.shared
-        return session.capabilities?.supportsSocket == true
-            && session.capabilities?.connectionReplaced == true && session.supportsPlayback
+        isEnabled && WatchPartySession.shared.supportsSynchronizedParty
     }
 
     /// Inside a party, only a host-pick room's manager picks directly; everyone
