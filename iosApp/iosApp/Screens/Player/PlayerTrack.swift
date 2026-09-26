@@ -96,10 +96,53 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
             "vtt", "webvtt", "vobsub", "dvdsub", "mov_text",
         ]
         if formatNames.contains(lowered) { return nil }
+        if Self.looksLikeReleaseName(lowered) { return nil }
         if let codec, lowered == codec.lowercased() { return nil }
         if title.caseInsensitiveCompare(languageDisplayName(lang)) == .orderedSame { return nil }
         if title.caseInsensitiveCompare(lang) == .orderedSame { return nil }
         return title
+    }
+
+    /// Detail line for a language-first subtitle row: the meaningful title,
+    /// then flags and codec. The language is left out when it already leads
+    /// the row.
+    var languageFirstAttributesLabel: String? {
+        var parts: [String] = []
+        if let detail = languageFirstDetailLabel {
+            parts.append(detail)
+        }
+        parts += attributePillLabels(includeLanguage: normalizedLanguageCode == nil)
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// One-line subtitle name for surfaces that show only a name, such as the
+    /// phone remote's menus: the language plus whatever tells same-language
+    /// tracks apart, e.g. "English", "English (SDH)", "English (Signs & Songs, Forced)".
+    var languageFirstSingleLineLabel: String {
+        var qualifiers: [String] = []
+        if let detail = languageFirstDetailLabel {
+            qualifiers.append(detail)
+        }
+        if isForced {
+            qualifiers.append("Forced")
+        }
+        if isHearingImpaired {
+            qualifiers.append("SDH")
+        }
+        guard !qualifiers.isEmpty else { return languageFirstPrimaryLabel }
+        return "\(languageFirstPrimaryLabel) (\(qualifiers.joined(separator: ", ")))"
+    }
+
+    /// Release groups often stamp every track with the release name
+    /// ("Movie (2026) [Remux-2160p HEVC DV …]"), which says nothing about the
+    /// track. Expects a lowercased title.
+    private static func looksLikeReleaseName(_ lowered: String) -> Bool {
+        let markers = [
+            "2160p", "1080p", "720p", "480p", "remux", "bluray", "blu-ray",
+            "web-dl", "webrip", "hdtv", "x264", "x265", "h.264", "h.265",
+            "hevc", "10-bit", "hdr10", ".mkv", ".mp4",
+        ]
+        return markers.contains { lowered.contains($0) }
     }
 
     private func attributeParts(includeLanguage: Bool = true) -> [String] {

@@ -1740,8 +1740,8 @@ private struct SubtitlesPane: View {
                 .focused($entryTrackFocused)
                 ForEach(viewModel.orderedSubtitleTracks) { track in
                     HUDTrackRow(
-                        name: track.primaryLabel,
-                        attributes: track.attributesLabel,
+                        name: track.languageFirstPrimaryLabel,
+                        attributes: track.languageFirstAttributesLabel,
                         isSelected: viewModel.selectedSubtitleId == track.trackId
                     ) {
                         viewModel.selectSubtitle(track)
@@ -1767,8 +1767,8 @@ private struct SubtitlesPane: View {
                     }
                     ForEach(viewModel.availableSecondarySubtitleTracks) { track in
                         HUDTrackRow(
-                            name: track.primaryLabel,
-                            attributes: track.attributesLabel,
+                            name: track.languageFirstPrimaryLabel,
+                            attributes: track.languageFirstAttributesLabel,
                             isSelected: viewModel.selectedSecondarySubtitleId == track.trackId,
                             isDisabled: track.trackId == viewModel.selectedSubtitleId
                         ) {

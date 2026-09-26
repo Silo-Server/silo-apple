@@ -82,7 +82,7 @@ struct MacPlayerOptionsPanel: View {
                 }
                 ForEach(viewModel.orderedSubtitleTracks) { track in
                     trackButton(
-                        title: track.primaryLabel,
+                        title: track.languageFirstPrimaryLabel,
                         detail: subtitleDetail(for: track),
                         selected: viewModel.selectedSubtitleId == track.trackId
                     ) {
@@ -236,7 +236,7 @@ struct MacPlayerOptionsPanel: View {
 
     private func subtitleDetail(for track: PlayerTrack) -> String? {
         var parts: [String] = []
-        if let attributes = track.attributesLabel, !attributes.isEmpty {
+        if let attributes = track.languageFirstAttributesLabel, !attributes.isEmpty {
             parts.append(attributes)
         }
         parts.append(track.isExternal ? "External" : "Embedded")
