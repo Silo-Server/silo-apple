@@ -18,9 +18,20 @@ final class CurrentProfileStore {
 
     /// Bumped on every `reset()` so a load that finishes after a sign-out
     /// or profile switch discards its result instead of repopulating the
-    /// next account's avatar.
+    /// next account's avatar, and doesn't clear a newer load's `inFlight`.
     private var generation = 0
     private var inFlight: Task<Void, Never>?
+
+    private let activeProfileId: @MainActor () -> String?
+    private let fetchProfiles: @MainActor () async throws -> [UserProfile]
+
+    init(
+        activeProfileId: @escaping @MainActor () -> String? = { AuthService.shared.profileId },
+        fetchProfiles: @escaping @MainActor () async throws -> [UserProfile] = { try await AuthService.shared.getProfiles() }
+    ) {
+        self.activeProfileId = activeProfileId
+        self.fetchProfiles = fetchProfiles
+    }
 
     /// Load the active profile if it isn't cached yet. Concurrent callers
     /// share one request. Pass `force` to refetch after a known change.
@@ -32,9 +43,11 @@ final class CurrentProfileStore {
         }
         let gen = generation
         let task = Task { @MainActor in
-            defer { inFlight = nil }
-            guard let profileId = AuthService.shared.profileId else { return }
-            guard let profiles = try? await AuthService.shared.getProfiles(),
+            defer {
+                if gen == generation { inFlight = nil }
+            }
+            guard let profileId = activeProfileId() else { return }
+            guard let profiles = try? await fetchProfiles(),
                   gen == generation else { return }
             profile = profiles.first(where: { $0.id == profileId })
         }
