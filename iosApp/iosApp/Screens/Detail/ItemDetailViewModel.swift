@@ -1716,26 +1716,12 @@ class ItemDetailViewModel {
 
     /// Tell adjacent caches that a mutation invalidated derived state
     /// (e.g. parent series progress when a child episode is marked
-    /// watched). Drops the cached payloads so the next visit fetches
-    /// fresh — painted content keeps showing in the meantime via the
-    /// existing `detail` binding.
+    /// watched), through the same `PersonalStateSync.invalidateItemState`
+    /// the card watched toggle uses. The next visit fetches fresh; painted content
+    /// keeps showing in the meantime via the existing `detail` binding. An
+    /// episode page's series is the fallback parent.
     private func invalidateRelatedCaches(contentId: String, seriesId: String? = nil) {
-        ResponseCache.shared.removeItemMetadata(contentId: contentId)
-        if let seriesId = seriesId ?? detail?.seriesId {
-            ResponseCache.shared.removeItemMetadata(contentId: seriesId)
-        }
-        // Home + recommendations watch-progress rows are now stale too. A
-        // Home read already in flight began before this change; drop it.
-        StartupContentPrefetcher.invalidateHomeSectionsInFlight()
-        ResponseCache.shared.remove(CacheKey.homeSections)
-        ResponseCache.shared.remove(CacheKey.recommendations)
-        ResponseCache.shared.remove(CacheKey.favorites)
-        ResponseCache.shared.remove(CacheKey.watchlist)
-        ResponseCache.shared.remove(CacheKey.history)
-
-        #if os(tvOS)
-        ItemDetailCache.shared.markStaleFamily(contentId: contentId)
-        #endif
+        PersonalStateSync.invalidateItemState(contentId: contentId, seriesId: seriesId ?? detail?.seriesId)
     }
 }
 
