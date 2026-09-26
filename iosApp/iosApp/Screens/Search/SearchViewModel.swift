@@ -72,6 +72,7 @@ class SearchViewModel {
 
     private var searchTask: Task<Void, Never>?
     private var peopleTask: Task<Void, Never>?
+    private let api: SiloAPI
     /// Only the Search screen shows people; pickers that reuse this model
     /// never ask for them.
     private let includesPeople: Bool
@@ -91,7 +92,8 @@ class SearchViewModel {
     /// cannot append to (or hand its continuation to) the new ones.
     private var generation = 0
 
-    init(includesPeople: Bool = false) {
+    init(api: SiloAPI = .shared, includesPeople: Bool = false) {
+        self.api = api
         self.includesPeople = includesPeople
     }
 
@@ -149,9 +151,9 @@ class SearchViewModel {
         do {
             let page: CatalogListPage
             if let nextPage {
-                page = try await SiloAPI.shared.nextCatalogPage(nextPage)
+                page = try await api.nextCatalogPage(nextPage)
             } else {
-                page = try await SiloAPI.shared.catalogPage(.search(trimmed, type: mediaType, limit: pageSize))
+                page = try await api.catalogPage(.search(trimmed, type: mediaType, limit: pageSize))
             }
             guard !Task.isCancelled, myGeneration == generation else { return }
             let response = page.response
@@ -209,10 +211,10 @@ class SearchViewModel {
     private func matchingPeople(for query: String, mediaScope: String?) async -> [Person] {
         do {
             if peopleSearchSupported == nil {
-                peopleSearchSupported = try await SiloAPI.shared.peopleSearchSupported()
+                peopleSearchSupported = try await api.peopleSearchSupported()
             }
             guard peopleSearchSupported == true else { return [] }
-            return try await SiloAPI.shared.searchPeople(query: query, mediaScope: mediaScope, limit: peopleLimit)
+            return try await api.searchPeople(query: query, mediaScope: mediaScope, limit: peopleLimit)
         } catch {
             if !Task.isCancelled {
                 Self.logger.error("people search failed: \(error.localizedDescription, privacy: .public)")
