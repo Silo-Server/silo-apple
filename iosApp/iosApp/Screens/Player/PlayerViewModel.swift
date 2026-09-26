@@ -8233,11 +8233,11 @@ extension PlayerViewModel {
         if isWatchPartyPlayback { aetherPlaybackController.setSpeed(1) }
     }
 
-    /// Applies a server correction to a playing member the way the web client
-    /// does: no change inside the deadband, a seek to media already buffered,
-    /// a budgeted load for media that is not, and a rate catch-up for small
-    /// drift the stream cannot reach in place. Returns without waiting for a
-    /// rate catch-up, so the member keeps reporting while it converges.
+    /// Applies a server correction to a playing member: no change inside the
+    /// deadband, a rate catch-up for small drift, and for larger drift a seek
+    /// to media already buffered or a budgeted load for media that is not.
+    /// Returns without waiting for a rate catch-up, so the member keeps
+    /// reporting while it converges.
     func correctWatchPartyPlayback(
         to position: Double, context: WatchPartyPlaybackContext
     ) async throws -> WatchPartyPlaybackSnapshot {
@@ -8245,7 +8245,7 @@ extension PlayerViewModel {
               watchPartyAdapter?.context == context else { throw WatchPartyPlaybackError.invalidated }
         let local = watchPartyPlaybackSnapshot.sourceTime
         let locallySeekable = canSeekWatchPartyLocally(to: position)
-        switch WatchPartyCorrection.resolve(drift: position - local, locallySeekable: locallySeekable) {
+        switch WatchPartyCorrection.resolve(drift: position - local) {
         case .none:
             // Already at the room position; drop any stale catch-up.
             cancelWatchPartyCorrection()
