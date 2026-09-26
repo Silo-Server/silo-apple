@@ -9,6 +9,7 @@ struct TVPlaybackSettingsPane: View {
     let detailFocus: FocusState<TVSettingsDetailFocus?>.Binding
     let presentPicker: (TVSettingsPickerRequest) -> Void
     @State private var seekIntervals = SeekIntervalPreferences.shared
+    @State private var showSpeakerTest = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -29,6 +30,9 @@ struct TVPlaybackSettingsPane: View {
             resetSection
         }
         .task { await seekIntervals.refresh() }
+        .fullScreenCover(isPresented: $showSpeakerTest) {
+            TVAtmosSpeakerTestView { showSpeakerTest = false }
+        }
     }
 
     // MARK: - Sections
@@ -92,6 +96,10 @@ struct TVPlaybackSettingsPane: View {
             let value = !viewModel.trueHDAtmosEnabled
             viewModel.trueHDAtmosEnabled = value
             Task { await viewModel.setTrueHDAtmosEnabled(value) }
+        }
+
+        TVSettingsPickerRow(title: "Atmos Speaker Test", value: "") {
+            showSpeakerTest = true
         }
 
         TVSettingsPickerRow(
