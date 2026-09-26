@@ -1650,14 +1650,14 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertTrue(WatchPartyPlaybackAction.seek(10).isPermitted(canPlayPause: true, canSeek: true))
     }
 
-    func testWatchPartySmallCorrectionOutsideWindowDoesNotReplan() {
-        XCTAssertEqual(WatchPartyCorrection.resolve(drift: 0.3, locallySeekable: true), .none)
-        XCTAssertEqual(WatchPartyCorrection.resolve(drift: 1.2, locallySeekable: true), .seek)
-        XCTAssertEqual(WatchPartyCorrection.resolve(drift: 1, locallySeekable: false), .rate(1.125))
-        XCTAssertEqual(WatchPartyCorrection.resolve(drift: 2, locallySeekable: false), .rate(WatchPartyCorrection.maxRate))
-        XCTAssertEqual(WatchPartyCorrection.resolve(drift: -1.2, locallySeekable: false), .rate(WatchPartyCorrection.minRate))
-        XCTAssertEqual(WatchPartyCorrection.resolve(drift: 3, locallySeekable: false), .seek)
-        XCTAssertEqual(WatchPartyCorrection.resolve(drift: .nan, locallySeekable: false), .none)
+    func testWatchPartySmallCorrectionConvergesByRate() {
+        XCTAssertEqual(WatchPartyCorrection.resolve(drift: 0.3), .none)
+        XCTAssertEqual(WatchPartyCorrection.resolve(drift: 1), .rate(1.125))
+        XCTAssertEqual(WatchPartyCorrection.resolve(drift: 2), .rate(WatchPartyCorrection.maxRate))
+        XCTAssertEqual(WatchPartyCorrection.resolve(drift: -1.2), .rate(WatchPartyCorrection.minRate))
+        XCTAssertEqual(WatchPartyCorrection.resolve(drift: 3), .seek)
+        XCTAssertEqual(WatchPartyCorrection.resolve(drift: -3), .seek)
+        XCTAssertEqual(WatchPartyCorrection.resolve(drift: .nan), .none)
     }
 
     func testWatchPartyScrubResumeIsPartOfTheSeekRequest() {

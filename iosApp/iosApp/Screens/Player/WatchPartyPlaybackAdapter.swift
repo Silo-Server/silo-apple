@@ -42,16 +42,18 @@ enum WatchPartyPlaybackError: Error {
     case notReady
 }
 
-/// How a member applies a room correction, matching the web client's
+/// How a member applies a room correction, following the web client's
 /// `roomSyncCatchup.ts` so native and browser members converge the same way.
-/// Small drift against a target the stream cannot reach without a rebuild
-/// converges by playback rate; everything reachable in place stays a seek.
+/// Small drift converges by playback rate and larger drift seeks. Unlike the
+/// web client, small drift stays a rate catch-up even when the stream can
+/// reach the target in place: Aether seeks frame-accurately, so on direct
+/// play every correction would otherwise be a visible hitch.
 enum WatchPartyCorrection: Equatable {
     case none
     case seek
     case rate(Double)
 
-    /// Drift within this band converges by rate instead of rebuilding the stream.
+    /// Drift within this band converges by rate instead of seeking.
     static let catchupBand: Double = 2
     /// Playback already this close to the room needs no correction.
     static let deadband: Double = 0.35
@@ -62,9 +64,9 @@ enum WatchPartyCorrection: Equatable {
     private static let rateDivisor: Double = 8
 
     /// `drift` is the room target minus the local position, in seconds.
-    static func resolve(drift: Double, locallySeekable: Bool) -> Self {
+    static func resolve(drift: Double) -> Self {
         guard drift.isFinite, abs(drift) > deadband else { return .none }
-        if locallySeekable || abs(drift) > catchupBand { return .seek }
+        if abs(drift) > catchupBand { return .seek }
         return .rate(min(maxRate, max(minRate, 1 + drift / rateDivisor)))
     }
 
