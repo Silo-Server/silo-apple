@@ -49,10 +49,7 @@ struct TVMediaCard: View {
     }
 
     @FocusState private var isFocused: Bool
-    @State private var actionFeedback = MediaActionFeedback()
-    @State private var playedOverride: Bool?
-    @State private var favoriteOverride: Bool?
-    @State private var watchlistOverride: Bool?
+    @State private var personalState = MediaCardPersonalState()
     @State private var uiCustomization = UICustomizationPreferences.shared
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
 
@@ -79,11 +76,9 @@ struct TVMediaCard: View {
             }
         }
         .frame(width: resolvedCardWidth)
-        .mediaActionFeedback(actionFeedback)
+        .mediaActionFeedback(personalState.feedback)
         .onChange(of: userState) { _, _ in
-            playedOverride = nil
-            favoriteOverride = nil
-            watchlistOverride = nil
+            personalState.reset()
         }
     }
 
@@ -93,22 +88,18 @@ struct TVMediaCard: View {
         contentId != nil && userState != nil
     }
 
-    private var isFavorite: Bool {
-        favoriteOverride ?? (userState?.isFavorite == true)
-    }
+    private var isFavorite: Bool { personalState.isFavorite(userState) }
 
-    private var isInWatchlist: Bool {
-        watchlistOverride ?? (userState?.inWatchlist == true)
-    }
+    private var isInWatchlist: Bool { personalState.inWatchlist(userState) }
 
-    private var isPlayed: Bool { playedOverride ?? (userState?.played == true) }
+    private var isPlayed: Bool { personalState.isPlayed(userState) }
 
     private var stateMenu: MediaStateMenuItems {
         MediaStateMenuItems(
             isWatched: isPlayed,
             isFavorite: isFavorite,
             inWatchlist: isInWatchlist,
-            isUpdating: actionFeedback.isUpdating,
+            isUpdating: personalState.feedback.isUpdating,
             onToggleWatched: aspect != .square ? toggleWatched : nil,
             onToggleFavorite: togglePersonalFavorite,
             onToggleWatchlist: togglePersonalWatchlist
@@ -117,44 +108,17 @@ struct TVMediaCard: View {
 
     private func toggleWatched() {
         guard let contentId else { return }
-        let played = !isPlayed
-        let previous = playedOverride
-        actionFeedback.perform {
-            playedOverride = played
-            let outcome = await MediaCardWatchedSync.setWatched(contentId: contentId, played: played)
-            if outcome != .applied { playedOverride = previous }
-            return outcome
-        }
+        personalState.toggleWatched(from: userState, via: .catalog(contentId: contentId))
     }
 
     private func togglePersonalFavorite() {
         guard let contentId else { return }
-        let newValue = !isFavorite
-        let watchlist = isInWatchlist
-        let previous = favoriteOverride
-        actionFeedback.perform {
-            favoriteOverride = newValue
-            let outcome = await PersonalListSync.setFavorite(
-                contentId: contentId, isFavorite: newValue, inWatchlist: watchlist
-            )
-            if outcome != .applied { favoriteOverride = previous }
-            return outcome
-        }
+        personalState.toggleFavorite(contentId: contentId, from: userState)
     }
 
     private func togglePersonalWatchlist() {
         guard let contentId else { return }
-        let newValue = !isInWatchlist
-        let favorite = isFavorite
-        let previous = watchlistOverride
-        actionFeedback.perform {
-            watchlistOverride = newValue
-            let outcome = await PersonalListSync.setWatchlist(
-                contentId: contentId, isFavorite: favorite, inWatchlist: newValue
-            )
-            if outcome != .applied { watchlistOverride = previous }
-            return outcome
-        }
+        personalState.toggleWatchlist(contentId: contentId, from: userState)
     }
 
     @ViewBuilder
