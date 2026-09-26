@@ -88,9 +88,11 @@ struct MediaCard: View {
     var onRemoveFromContinueWatching: (() -> Void)? = nil
     var onSetWatched: ((Bool) async -> Bool)? = nil
     var aspect: MediaCardAspect = .poster
-    /// Overrides the theme's default card width. Skyline's dense landing
-    /// rows (§5.6) pass 208 so two rows + the marquee fit above the fold;
-    /// the poster keeps its 2:3 ratio.
+    /// Overrides the theme's default card width, before the poster-size
+    /// preference scales it. Callers pass
+    /// `SiloTheme.Skyline.densePosterCardWidth` for Skyline's dense tvOS
+    /// rows, or a width fitted to a grid's columns. The poster keeps its
+    /// aspect ratio.
     var cardWidthOverride: CGFloat? = nil
     /// Episode context retained for the card's accessibility label. Episode
     /// numbers are intentionally not drawn over poster artwork.
@@ -100,10 +102,7 @@ struct MediaCard: View {
     /// Watchlist grids use it to drop the card from the list in place.
     var onUserStateChanged: ((MediaItemUserState) -> Void)? = nil
 
-    @State private var actionFeedback = MediaActionFeedback()
-    @State private var playedOverride: Bool?
-    @State private var favoriteOverride: Bool?
-    @State private var watchlistOverride: Bool?
+    @State private var personalState = MediaCardPersonalState()
     @State private var uiCustomization = UICustomizationPreferences.shared
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
     /// iOS 26 zoom transition namespace, shared from `MainTabView`. When
@@ -138,7 +137,7 @@ struct MediaCard: View {
     }
 
     var body: some View {
-        cardBody.mediaActionFeedback(actionFeedback)
+        cardBody.mediaActionFeedback(personalState.feedback)
     }
 
     private var cardBody: some View {
@@ -166,9 +165,7 @@ struct MediaCard: View {
             posterImage
         }
         .onChange(of: userState) { _, _ in
-            playedOverride = nil
-            favoriteOverride = nil
-            watchlistOverride = nil
+            personalState.reset()
         }
         #else
         Group {
@@ -181,9 +178,7 @@ struct MediaCard: View {
             }
         }
         .onChange(of: userState) { _, _ in
-            playedOverride = nil
-            favoriteOverride = nil
-            watchlistOverride = nil
+            personalState.reset()
         }
         .frame(width: cardWidth)
         #endif
@@ -245,13 +240,9 @@ struct MediaCard: View {
         contentId != nil && userState != nil
     }
 
-    private var isFavorite: Bool {
-        favoriteOverride ?? (userState?.isFavorite == true)
-    }
+    private var isFavorite: Bool { personalState.isFavorite(userState) }
 
-    private var isInWatchlist: Bool {
-        watchlistOverride ?? (userState?.inWatchlist == true)
-    }
+    private var isInWatchlist: Bool { personalState.inWatchlist(userState) }
 
     private var canSetWatched: Bool {
         onSetWatched != nil || (hasPersonalActions && aspect != .square)
@@ -264,7 +255,7 @@ struct MediaCard: View {
             isWatched: isPlayed,
             isFavorite: isFavorite,
             inWatchlist: isInWatchlist,
-            isUpdating: actionFeedback.isUpdating,
+            isUpdating: personalState.feedback.isUpdating,
             onToggleWatched: canSetWatched ? toggleWatched : nil,
             onToggleFavorite: hasPersonalActions ? togglePersonalFavorite : nil,
             onToggleWatchlist: hasPersonalActions ? togglePersonalWatchlist : nil
@@ -272,70 +263,26 @@ struct MediaCard: View {
     }
 
     private func toggleWatched() {
-        let played = !isPlayed
-        let previous = playedOverride
-        // Home's injected handler owns its page-level failure alert.
-        actionFeedback.perform(reportsFailure: onSetWatched == nil) {
-            playedOverride = played
-            let outcome: PersonalStateOutcome
-            if let onSetWatched {
-                outcome = await onSetWatched(played) ? .applied : .failed(nil)
-            } else if let contentId {
-                outcome = await MediaCardWatchedSync.setWatched(contentId: contentId, played: played)
-            } else {
-                outcome = .failed(nil)
-            }
-            if outcome == .applied {
-                onUserStateChanged?(MediaItemUserState(
-                    played: played, isFavorite: isFavorite, inWatchlist: isInWatchlist
-                ))
-            } else {
-                playedOverride = previous
-            }
-            return outcome
+        let write: MediaCardPersonalState.WatchedWrite
+        if let onSetWatched {
+            // Home's injected handler owns its page-level failure alert.
+            write = .host(onSetWatched)
+        } else if let contentId {
+            write = .catalog(contentId: contentId)
+        } else {
+            return
         }
+        personalState.toggleWatched(from: userState, via: write, onApplied: onUserStateChanged)
     }
 
     private func togglePersonalFavorite() {
         guard let contentId else { return }
-        let newValue = !isFavorite
-        let watchlist = isInWatchlist
-        let previous = favoriteOverride
-        actionFeedback.perform {
-            favoriteOverride = newValue
-            let outcome = await PersonalListSync.setFavorite(
-                contentId: contentId, isFavorite: newValue, inWatchlist: watchlist
-            )
-            if outcome == .applied {
-                onUserStateChanged?(
-                    MediaItemUserState(played: isPlayed, isFavorite: newValue, inWatchlist: watchlist)
-                )
-            } else {
-                favoriteOverride = previous
-            }
-            return outcome
-        }
+        personalState.toggleFavorite(contentId: contentId, from: userState, onApplied: onUserStateChanged)
     }
 
     private func togglePersonalWatchlist() {
         guard let contentId else { return }
-        let newValue = !isInWatchlist
-        let favorite = isFavorite
-        let previous = watchlistOverride
-        actionFeedback.perform {
-            watchlistOverride = newValue
-            let outcome = await PersonalListSync.setWatchlist(
-                contentId: contentId, isFavorite: favorite, inWatchlist: newValue
-            )
-            if outcome == .applied {
-                onUserStateChanged?(
-                    MediaItemUserState(played: isPlayed, isFavorite: favorite, inWatchlist: newValue)
-                )
-            } else {
-                watchlistOverride = previous
-            }
-            return outcome
-        }
+        personalState.toggleWatchlist(contentId: contentId, from: userState, onApplied: onUserStateChanged)
     }
 
     private var cardContent: some View {
@@ -408,9 +355,7 @@ struct MediaCard: View {
         .frame(width: cardWidth, height: cardHeight)
     }
 
-    private var isPlayed: Bool {
-        playedOverride ?? (userState?.played == true)
-    }
+    private var isPlayed: Bool { personalState.isPlayed(userState) }
 
     private var accessibilityDescription: String {
         mediaCardAccessibilityLabel(
