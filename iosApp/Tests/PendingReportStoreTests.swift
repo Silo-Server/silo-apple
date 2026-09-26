@@ -155,13 +155,180 @@ final class PendingReportStoreTests: XCTestCase {
         )
     }
 
-    private func makeStore() throws -> PendingReportStore {
+    func testLookupsOnAnEmptyStoreCreateNoFiles() throws {
+        let store = try makeStore()
+        let root = store.pendingDirectory.deletingLastPathComponent()
+        let binding = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "42")
+
+        XCTAssertFalse(store.hasSeenFingerprint("fp"))
+        XCTAssertTrue(store.canAutoUpload(fingerprint: "fp", binding: binding))
+        XCTAssertEqual(store.listReports(), [])
+        XCTAssertEqual(store.listReports(for: binding), [])
+        XCTAssertEqual(try store.hostedDeletionIntents(), [])
+        XCTAssertEqual(try store.hostedReadyReceiptIDs(), [])
+
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: root.path),
+            "Lookups must not create the store's directories or ledgers"
+        )
+    }
+
+    func testFingerprintLookupsLeaveLedgersUntouchedUntilMaintenance() throws {
+        let store = try makeStore()
+        let root = store.pendingDirectory.deletingLastPathComponent()
+        let seenFile = root.appendingPathComponent("seen-fingerprints.json")
+        let throttleFile = root.appendingPathComponent("auto-upload-throttle.json")
+        let binding = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "42")
+        let day: TimeInterval = 24 * 60 * 60
+        let start = Date(timeIntervalSince1970: 1_000)
+        _ = try store.save(makeCapture(binding: binding, fingerprint: "old", capturedAt: start))
+        _ = try store.save(makeCapture(
+            binding: binding,
+            fingerprint: "recent",
+            capturedAt: start.addingTimeInterval(20 * day)
+        ))
+        store.recordAutoUploadAttempt(fingerprint: "old", binding: binding, now: start)
+        let seenFileNumber = try fileNumber(seenFile)
+        let throttleFileNumber = try fileNumber(throttleFile)
+        let lookupTime = start.addingTimeInterval(40 * day)
+
+        // Answers still apply the 30-day window, without pruning the files.
+        XCTAssertFalse(store.hasSeenFingerprint("old", now: lookupTime))
+        XCTAssertTrue(store.hasSeenFingerprint("recent", now: lookupTime))
+        XCTAssertTrue(store.canAutoUpload(fingerprint: "old", binding: binding, now: lookupTime))
+        XCTAssertEqual(try fileNumber(seenFile), seenFileNumber, "A lookup must not rewrite the seen ledger")
+        XCTAssertEqual(try fileNumber(throttleFile), throttleFileNumber, "A lookup must not rewrite the throttle ledger")
+
+        store.performMaintenance(now: lookupTime)
+
+        XCTAssertEqual(try dateMapKeys(seenFile), ["recent"])
+        XCTAssertEqual(try dateMapKeys(throttleFile), [])
+        XCTAssertTrue(store.hasSeenFingerprint("recent", now: lookupTime))
+
+        let prunedSeenFileNumber = try fileNumber(seenFile)
+        store.performMaintenance(now: lookupTime)
+        XCTAssertEqual(
+            try fileNumber(seenFile),
+            prunedSeenFileNumber,
+            "Maintenance must not rewrite a ledger that has nothing to prune"
+        )
+    }
+
+    func testListingHidesReadyReceiptedEvidenceUntilMaintenanceRemovesIt() throws {
+        let remover = SwitchableRemover()
+        let store = try makeStore(hostedDeletionRemover: remover.remove)
+        let binding = DiagnosticsBinding.hosted(serverRegistryID: "srv-hosted", accountUserID: "42")
+        let report = try store.save(makeCapture(binding: binding, fingerprint: "ready-leftover", capturedAt: Date()))
+        // The collector accepted the report, but removing its directory failed.
+        XCTAssertThrowsError(try store.recordHostedReadyAndDelete(report))
+        remover.isEnabled = true
+
+        XCTAssertEqual(store.listReports(), [])
+        XCTAssertEqual(store.listReports(for: binding, now: Date()), [])
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: report.directoryURL.path),
+            "Listing must hide accepted evidence without deleting it"
+        )
+
+        store.performMaintenance()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: report.directoryURL.path))
+        XCTAssertEqual(try store.hostedReadyReceiptIDs(), [report.id])
+    }
+
+    func testReadyReceiptLookupsDoNotPruneTheLedger() throws {
+        let store = try makeStore()
+        let ledger = store.pendingDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("hosted-ready-receipts.json")
+        let binding = DiagnosticsBinding.hosted(serverRegistryID: "srv-hosted", accountUserID: "42")
+        let report = try store.save(makeCapture(binding: binding, fingerprint: "expired-ready", capturedAt: Date()))
+        let readyAt = Date().addingTimeInterval(-(PendingReportStore.hostedReadyReceiptInterval + 60))
+        try store.recordHostedReadyAndDelete(report, now: readyAt)
+
+        // The directory is gone and the receipt is past retention, so lookups
+        // leave it out, but only maintenance removes it from the ledger.
+        XCTAssertEqual(try store.hostedReadyReceiptIDs(), [])
+        XCTAssertEqual(store.listReports(), [])
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: ledger.path),
+            "Lookups must not prune the READY ledger"
+        )
+
+        store.performMaintenance()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: ledger.path))
+    }
+
+    func testMaintenanceKeepsReadyReceiptedEvidenceWhileAnErasureLedgerIsUnreadable() throws {
+        let remover = SwitchableRemover()
+        let store = try makeStore(hostedDeletionRemover: remover.remove)
+        let root = store.pendingDirectory.deletingLastPathComponent()
+        let binding = DiagnosticsBinding.hosted(serverRegistryID: "srv-hosted", accountUserID: "42")
+        let report = try store.save(makeCapture(binding: binding, fingerprint: "ready-corrupt", capturedAt: Date()))
+        XCTAssertThrowsError(try store.recordHostedReadyAndDelete(report))
+        remover.isEnabled = true
+        try Data("invalid ledger".utf8).write(to: root.appendingPathComponent("hosted-deletion-intents.json"))
+
+        store.performMaintenance()
+
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: report.directoryURL.path),
+            "Maintenance must not remove evidence while erasure state is unreadable"
+        )
+    }
+
+    func testHostedPurgesStillRemoveReadyReceiptedEvidence() throws {
+        let binding = DiagnosticsBinding.hosted(serverRegistryID: "srv-hosted", accountUserID: "42")
+        let purges: [(name: String, run: (PendingReportStore) throws -> Void)] = [
+            ("purge(binding:)", { _ = $0.purge(binding: binding) }),
+            ("purge(serverInstanceID:)", { $0.purge(serverInstanceID: binding.serverInstanceID) }),
+            ("stageHostedDeletionsAndPurge(binding:)", { try $0.stageHostedDeletionsAndPurge(binding: binding) }),
+            ("stageHostedDeletionsAndPurge(serverInstanceID:)", {
+                try $0.stageHostedDeletionsAndPurge(serverInstanceID: binding.serverInstanceID)
+            }),
+        ]
+
+        for purge in purges {
+            let remover = SwitchableRemover()
+            let store = try makeStore(hostedDeletionRemover: remover.remove)
+            let report = try store.save(makeCapture(
+                binding: binding,
+                fingerprint: "ready-\(purge.name)",
+                capturedAt: Date()
+            ))
+            XCTAssertThrowsError(try store.recordHostedReadyAndDelete(report))
+            remover.isEnabled = true
+
+            try purge.run(store)
+
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: report.directoryURL.path),
+                "\(purge.name) must remove evidence the collector already accepted"
+            )
+        }
+    }
+
+    private func makeStore(
+        hostedDeletionRemover: ((URL) throws -> Void)? = nil
+    ) throws -> PendingReportStore {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("PendingReportStoreTests-\(UUID().uuidString)", isDirectory: true)
         addTeardownBlock {
             try? FileManager.default.removeItem(at: directory)
         }
-        return PendingReportStore(rootDirectory: directory)
+        return PendingReportStore(rootDirectory: directory, hostedDeletionRemover: hostedDeletionRemover)
+    }
+
+    /// Atomic writes replace the file, so a changed file number means the
+    /// ledger was rewritten.
+    private func fileNumber(_ url: URL) throws -> NSNumber {
+        try XCTUnwrap(FileManager.default.attributesOfItem(atPath: url.path)[.systemFileNumber] as? NSNumber)
+    }
+
+    private func dateMapKeys(_ url: URL) throws -> Set<String> {
+        let map = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: String]
+        return Set(try XCTUnwrap(map).keys)
     }
 
     private func makeCapture(
@@ -229,5 +396,16 @@ final class PendingReportStoreTests: XCTestCase {
             videoCodecs: .string("not_collected"),
             network: .object(["transport": .string("not_collected")])
         )
+    }
+}
+
+/// Fails every removal until enabled, standing in for a removal that was
+/// interrupted after the READY receipt was written.
+private final class SwitchableRemover {
+    var isEnabled = false
+
+    func remove(_ url: URL) throws {
+        guard isEnabled else { throw DiagnosticsStoreError.invalidHostedEnvelope }
+        try FileManager.default.removeItem(at: url)
     }
 }

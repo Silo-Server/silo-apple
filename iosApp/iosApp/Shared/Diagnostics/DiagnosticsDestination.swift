@@ -54,7 +54,14 @@ extension DiagnosticsBinding {
     private static let hostedAccountPrefix = "hosted-account:"
 
     var destinationChoice: DiagnosticsDestinationChoice {
-        serverInstanceID.hasPrefix(Self.hostedPrefix) ? .hosted : .selfHosted
+        Self.destinationChoice(forServerInstanceID: serverInstanceID)
+    }
+
+    /// The destination is determined by the server instance ID alone, so
+    /// callers that have no account (such as a whole-server purge) can ask
+    /// without building a binding.
+    static func destinationChoice(forServerInstanceID serverInstanceID: String) -> DiagnosticsDestinationChoice {
+        serverInstanceID.hasPrefix(hostedPrefix) ? .hosted : .selfHosted
     }
 
     static func selfHosted(
