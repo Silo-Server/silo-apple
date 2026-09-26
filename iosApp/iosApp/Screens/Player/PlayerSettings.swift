@@ -206,14 +206,14 @@ final class PlayerSettings {
     /// 20 Mbps in ``ApplePlaybackQuality``). A stored id would silently change
     /// meaning depending on which table read it back; a stored pair says what
     /// it means and each table interprets it rather than owning it.
-    var preferredQualityResolution: String {
+    private(set) var preferredQualityResolution: String {
         didSet {
             defaults.set(preferredQualityResolution, forKey: Self.cacheKey(Keys.preferredQuality))
         }
     }
 
     /// The bandwidth half of the quality preference; nil is uncapped.
-    var maxBitrateKbps: Int? {
+    private(set) var maxBitrateKbps: Int? {
         didSet {
             let key = Self.cacheKey(Keys.maxBitrateKbps)
             // Removed rather than stored as a sentinel, so "uncapped" is the
@@ -261,7 +261,7 @@ final class PlayerSettings {
         )
     }
 
-    var audioLanguage: String {
+    private(set) var audioLanguage: String {
         didSet { defaults.set(audioLanguage, forKey: Self.cacheKey(Keys.audioLanguage)) }
     }
 
@@ -270,7 +270,7 @@ final class PlayerSettings {
     private(set) var audioLanguageSuggestions: [String] = []
 
     /// What the player does when an intro starts — `playback.intro_skip_mode`.
-    var introSkipMode: IntroSkipMode {
+    private(set) var introSkipMode: IntroSkipMode {
         didSet {
             defaults.set(introSkipMode.wireValue, forKey: Self.cacheKey(Keys.introSkipMode))
         }
@@ -280,25 +280,25 @@ final class PlayerSettings {
     /// ``introSkipMode`` so the two can never disagree locally.
     var autoSkipIntro: Bool { introSkipMode.legacyAutoSkip }
 
-    var autoSkipCredits: Bool {
+    private(set) var autoSkipCredits: Bool {
         didSet { defaults.set(autoSkipCredits, forKey: Self.cacheKey(Keys.autoSkipCredits)) }
     }
 
-    var hdrEnabled: Bool {
+    private(set) var hdrEnabled: Bool {
         didSet { defaults.set(hdrEnabled, forKey: Self.cacheKey(Keys.hdrEnabled)) }
     }
 
     /// When off, Dolby Vision sources with a compatible base layer play as
     /// plain HDR10/HLG instead. Profile 5 has no such base layer and always
     /// plays in Dolby Vision.
-    var dolbyVisionEnabled: Bool {
+    private(set) var dolbyVisionEnabled: Bool {
         didSet { defaults.set(dolbyVisionEnabled, forKey: Self.cacheKey(Keys.dolbyVisionEnabled)) }
     }
 
     /// Retained as the cross-client buffering preference. Aether owns the
     /// cache implementation; the adapter maps this preference without
     /// constructing a Silo source cache.
-    var seekCacheEnabled: Bool {
+    private(set) var seekCacheEnabled: Bool {
         didSet { defaults.set(seekCacheEnabled, forKey: Self.cacheKey(Keys.seekCacheEnabled)) }
     }
 
@@ -311,7 +311,7 @@ final class PlayerSettings {
     /// fact about the room rather than a preference that should follow the
     /// profile onto a phone. Default on, which is the bridge the previous
     /// engine always used.
-    var losslessAudioEnabled: Bool {
+    private(set) var losslessAudioEnabled: Bool {
         didSet {
             defaults.set(losslessAudioEnabled, forKey: Self.cacheKey(Keys.losslessAudioEnabled))
         }
@@ -327,7 +327,7 @@ final class PlayerSettings {
     /// device, not a preference that should follow the profile onto a TV.
     /// Default on, which is Aether's own default. Audiobooks are unaffected —
     /// their controller never reads this and always keeps playing.
-    var backgroundPlaybackEnabled: Bool {
+    private(set) var backgroundPlaybackEnabled: Bool {
         didSet {
             defaults.set(
                 backgroundPlaybackEnabled,
@@ -341,7 +341,7 @@ final class PlayerSettings {
     /// Never synced to the server, and deliberately not a contract key — see
     /// ``BufferAheadMode``. Default ``BufferAheadMode/automatic``, which keeps
     /// the historical behaviour of deriving the window from ``seekCacheEnabled``.
-    var bufferAhead: BufferAheadMode {
+    private(set) var bufferAhead: BufferAheadMode {
         didSet {
             defaults.set(bufferAhead.rawValue, forKey: Self.cacheKey(Keys.bufferAhead))
         }
@@ -352,7 +352,7 @@ final class PlayerSettings {
     /// Never synced to the server, and deliberately not a contract key — see
     /// ``DeinterlacePreference``. Default ``DeinterlacePreference/automatic``,
     /// which is Aether's own default, so nothing changes until a user picks.
-    var deinterlaceMode: DeinterlacePreference {
+    private(set) var deinterlaceMode: DeinterlacePreference {
         didSet {
             defaults.set(deinterlaceMode.rawValue, forKey: Self.cacheKey(Keys.deinterlaceMode))
         }
@@ -368,7 +368,7 @@ final class PlayerSettings {
     ///
     /// Never synced to the server: what this device plays into is a fact about
     /// the room or the headphones, not the profile. Default on.
-    var trueHDAtmosEnabled: Bool {
+    private(set) var trueHDAtmosEnabled: Bool {
         didSet {
             defaults.set(trueHDAtmosEnabled, forKey: Self.cacheKey(Keys.trueHDAtmosEnabled))
         }
@@ -380,7 +380,7 @@ final class PlayerSettings {
     /// ``DeinterlaceFieldRatePreference``. Default
     /// ``DeinterlaceFieldRatePreference/fullMotion``, which is Aether's own
     /// default.
-    var deinterlaceFieldRate: DeinterlaceFieldRatePreference {
+    private(set) var deinterlaceFieldRate: DeinterlaceFieldRatePreference {
         didSet {
             defaults.set(
                 deinterlaceFieldRate.rawValue,
@@ -389,7 +389,7 @@ final class PlayerSettings {
         }
     }
 
-    var subtitleAppearance: SubtitleAppearance {
+    private(set) var subtitleAppearance: SubtitleAppearance {
         didSet {
             let sanitized = subtitleAppearance.sanitized()
             defaults.set(sanitized.jsonString, forKey: Self.cacheKey(Keys.subtitleAppearance))
@@ -409,7 +409,7 @@ final class PlayerSettings {
         }
     }
 
-    var subtitleUsesDeviceAppearanceOverride: Bool {
+    private(set) var subtitleUsesDeviceAppearanceOverride: Bool {
         didSet {
             defaults.set(
                 subtitleUsesDeviceAppearanceOverride,
@@ -422,7 +422,7 @@ final class PlayerSettings {
     /// Subtitles & Captioning accessibility preferences instead of the
     /// Silo appearance. Never synced to the server — it is inherently
     /// about *this* device's accessibility configuration.
-    var subtitleMatchesSystemAppearance: Bool {
+    private(set) var subtitleMatchesSystemAppearance: Bool {
         didSet {
             defaults.set(
                 subtitleMatchesSystemAppearance,
@@ -444,55 +444,55 @@ final class PlayerSettings {
             : inheritedSubtitleAppearance
     }
 
-    var subtitleFontSize: Double {
+    private(set) var subtitleFontSize: Double {
         didSet { defaults.set(subtitleFontSize, forKey: Keys.subtitleFontSize) }
     }
 
-    var subtitleTextColor: String {
+    private(set) var subtitleTextColor: String {
         didSet { defaults.set(subtitleTextColor, forKey: Keys.subtitleTextColor) }
     }
 
-    var subtitleBorderSize: Double {
+    private(set) var subtitleBorderSize: Double {
         didSet { defaults.set(subtitleBorderSize, forKey: Keys.subtitleBorderSize) }
     }
 
-    var subtitleBorderColor: String {
+    private(set) var subtitleBorderColor: String {
         didSet { defaults.set(subtitleBorderColor, forKey: Keys.subtitleBorderColor) }
     }
 
-    var subtitleBackgroundColor: String {
+    private(set) var subtitleBackgroundColor: String {
         didSet { defaults.set(subtitleBackgroundColor, forKey: Keys.subtitleBackgroundColor) }
     }
 
-    var subtitleBackgroundOpacityPercent: Int {
+    private(set) var subtitleBackgroundOpacityPercent: Int {
         didSet { defaults.set(subtitleBackgroundOpacityPercent, forKey: Keys.subtitleBackgroundOpacityPercent) }
     }
 
-    var subtitlePosition: Int {
+    private(set) var subtitlePosition: Int {
         didSet { defaults.set(subtitlePosition, forKey: Keys.subtitlePosition) }
     }
 
-    var subtitleSyncMs: Int {
+    private(set) var subtitleSyncMs: Int {
         didSet { defaults.set(subtitleSyncMs, forKey: Self.cacheKey(Keys.subtitleSyncMs)) }
     }
 
-    var playbackSpeed: Double {
+    private(set) var playbackSpeed: Double {
         didSet { defaults.set(playbackSpeed, forKey: Self.cacheKey(Keys.playbackSpeed)) }
     }
 
-    var videoGravity: VideoGravity {
+    private(set) var videoGravity: VideoGravity {
         didSet { defaults.set(videoGravity.rawValue, forKey: Self.cacheKey(Keys.videoGravity)) }
     }
 
-    var playerOrientationMode: PlayerOrientationMode {
+    private(set) var playerOrientationMode: PlayerOrientationMode {
         didSet { defaults.set(playerOrientationMode.rawValue, forKey: Self.cacheKey(Keys.playerOrientationMode)) }
     }
 
-    var autoPlayNextEpisode: Bool {
+    private(set) var autoPlayNextEpisode: Bool {
         didSet { defaults.set(autoPlayNextEpisode, forKey: Self.cacheKey(Keys.autoPlayNextEpisode)) }
     }
 
-    var nextUpPromptSeconds: Int {
+    private(set) var nextUpPromptSeconds: Int {
         didSet { defaults.set(nextUpPromptSeconds, forKey: Self.cacheKey(Keys.nextUpPromptSeconds)) }
     }
 
@@ -651,9 +651,10 @@ final class PlayerSettings {
 
     /// Pull every synced setting from the server and adopt it.
     ///
-    /// One batched call: the server resolves all seventeen keys in a single
-    /// store read, and asking per key would be seventeen round trips on every
-    /// app launch, profile switch and settings-screen open.
+    /// One batched call: the server resolves every key in
+    /// `playerDeviceSettingKeys` in a single store read, and asking per key
+    /// would be one round trip per key on every app launch, profile switch and
+    /// settings-screen open.
     @discardableResult
     @MainActor
     func refreshFromServer() async -> RefreshResult {
@@ -842,14 +843,21 @@ final class PlayerSettings {
         flusher.enqueue(.subtitleSyncMs, value: .int(subtitleSyncMs))
     }
 
-    @MainActor
-    func setSubtitleAppearance(_ appearance: SubtitleAppearance) async {
+    /// Applies a device appearance edit and queues it for the server; the
+    /// flusher's debounce sends it. `setSubtitleAppearance(_:)` is this plus an
+    /// immediate flush.
+    func stageSubtitleAppearance(_ appearance: SubtitleAppearance) {
         let sanitized = appearance.sanitized()
         subtitleAppearance = sanitized
         subtitleUsesDeviceAppearanceOverride = true
         // A manual edit takes over from the system-matching source.
         subtitleMatchesSystemAppearance = false
         enqueueSubtitleAppearance(sanitized)
+    }
+
+    @MainActor
+    func setSubtitleAppearance(_ appearance: SubtitleAppearance) async {
+        stageSubtitleAppearance(appearance)
         await flushPendingDeviceSettings()
     }
 
@@ -878,6 +886,27 @@ final class PlayerSettings {
         flusher.enqueueDelete(.subtitleAppearance)
         await flushPendingDeviceSettings()
         await refreshFromServer()
+    }
+
+    // Adopting a profile write. The onboarding tour stores these at profile
+    // scope, so the server already has them; these methods only update the
+    // local value and deliberately queue nothing. Enqueueing would write a
+    // `profile_device` override that pins this device to the value and shadows
+    // later changes to the profile row. An edit this device owns goes through
+    // the matching `setX` instead.
+
+    /// Normalizes the pair the same way ``setQualityPreset(_:)`` does.
+    func adoptProfileQuality(resolution: String, bitrateKbps: Int?) {
+        preferredQualityResolution = SiloQualityPresets.normalizeResolution(resolution)
+        maxBitrateKbps = bitrateKbps.flatMap { $0 > 0 ? $0 : nil }
+    }
+
+    func adoptProfileIntroSkipMode(_ mode: IntroSkipMode) {
+        introSkipMode = mode
+    }
+
+    func adoptProfileAutoSkipCredits(_ enabled: Bool) {
+        autoSkipCredits = enabled
     }
 
     @MainActor

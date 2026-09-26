@@ -30,12 +30,12 @@ final class OnboardingRuntimeSettingsRefresher: OnboardingRuntimeSettingsRefresh
         switch key {
         case "quality_preference":
             if let preset = SiloQualityPresets.preset(id: value) {
-                PlayerSettings.shared.preferredQualityResolution = preset.resolution
-                PlayerSettings.shared.maxBitrateKbps = preset.bitrateKbps
+                PlayerSettings.shared.adoptProfileQuality(
+                    resolution: preset.resolution,
+                    bitrateKbps: preset.bitrateKbps
+                )
             } else {
-                PlayerSettings.shared.preferredQualityResolution =
-                    SiloQualityPresets.normalizeResolution(value)
-                PlayerSettings.shared.maxBitrateKbps = nil
+                PlayerSettings.shared.adoptProfileQuality(resolution: value, bitrateKbps: nil)
             }
         case "subtitle_language":
             ProfilePrefsStore.shared.setPreferredSubtitleLanguage(value)
@@ -43,11 +43,11 @@ final class OnboardingRuntimeSettingsRefresher: OnboardingRuntimeSettingsRefresh
             // The server mirrors the tour's boolean onto the mode that
             // superseded it; `never` is not reachable from the tour.
             if let enabled = Self.boolean(value) {
-                PlayerSettings.shared.introSkipMode = IntroSkipMode(legacyAutoSkip: enabled)
+                PlayerSettings.shared.adoptProfileIntroSkipMode(IntroSkipMode(legacyAutoSkip: enabled))
             }
         case "auto_skip_credits":
             if let enabled = Self.boolean(value) {
-                PlayerSettings.shared.autoSkipCredits = enabled
+                PlayerSettings.shared.adoptProfileAutoSkipCredits(enabled)
             }
         default:
             break

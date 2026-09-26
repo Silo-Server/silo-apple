@@ -11,30 +11,17 @@ where Value.Stride: SignedInteger {
     let range: ClosedRange<Value>
     let step: Value.Stride
     let display: (Value) -> String
-    let onCommit: () -> Void
 
     var body: some View {
         #if os(tvOS)
-        Picker(title, selection: Binding(
-            get: { value },
-            set: { newValue in
-                value = newValue
-                onCommit()
-            }
-        )) {
+        Picker(title, selection: $value) {
             ForEach(Array(stride(from: range.lowerBound, through: range.upperBound, by: step)), id: \.self) { option in
                 Text(display(option)).tag(option)
             }
         }
         #else
         Stepper(
-            value: Binding(
-                get: { value },
-                set: { newValue in
-                    value = newValue
-                    onCommit()
-                }
-            ),
+            value: $value,
             in: range,
             step: step
         ) {
@@ -196,14 +183,11 @@ struct PlayerSettingsSheet: View {
                         title: "Subtitle Delay",
                         value: Binding(
                             get: { viewModel.settings.subtitleSyncMs },
-                            set: { viewModel.settings.subtitleSyncMs = $0 }
+                            set: { viewModel.setSubtitleSyncMilliseconds($0) }
                         ),
                         range: -10000...10000,
                         step: 100,
-                        display: { formatMs($0) },
-                        onCommit: {
-                            viewModel.setSubtitleSyncMilliseconds(viewModel.settings.subtitleSyncMs)
-                        }
+                        display: { formatMs($0) }
                     )
                 }
             }
@@ -580,14 +564,11 @@ struct PlayerSettingsSheet: View {
                         title: "Subtitle delay",
                         value: Binding(
                             get: { viewModel.settings.subtitleSyncMs },
-                            set: { viewModel.settings.subtitleSyncMs = $0 }
+                            set: { viewModel.setSubtitleSyncMilliseconds($0) }
                         ),
                         range: -10000...10000,
                         step: 100,
-                        display: { formatMs($0) },
-                        onCommit: {
-                            viewModel.setSubtitleSyncMilliseconds(viewModel.settings.subtitleSyncMs)
-                        }
+                        display: { formatMs($0) }
                     )
                 }
             }
