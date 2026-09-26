@@ -7,12 +7,17 @@
 //  clock. No libass, no websocket, no player.
 //
 //  Transitions under test (spec Data flow (e)):
-//    beginPreparing → snapshot selection, pause if playing, show "Preparing…".
-//    started        → install + select the live track, arm the 30s timer.
+//    beginPreparing → snapshot selection, pause if playing, show "Preparing…",
+//                     arm the 30s timer.
+//    pre-start safety timeout
+//                   → resume if we paused + retract the notice; the job stays
+//                     active for the poller handoff or a late started.
+//    started        → install + select the live track, re-arm the 30s timer.
 //                     If no beginPreparing ran first, started performs that
 //                     same snapshot/pause/notice setup itself.
 //    first cues     → feed cues, cancel the timer, resume (playhead-first).
-//    safety timeout → resume + fail out + restore selection.
+//    cue safety timeout
+//                   → resume + fail out + restore selection.
 //    completed      → register the persisted track, close the live track.
 //    failed         → close the live track, restore the prior selection,
 //                     resume if we paused.
@@ -49,6 +54,7 @@ final class LiveSubtitleCoordinatorTests: XCTestCase {
             case restore(Int64?)
             case registerPersisted(Int)
             case showPreparing
+            case hidePreparing
             case showFailure(String)
         }
         private(set) var calls: [Call] = []
@@ -70,10 +76,15 @@ final class LiveSubtitleCoordinatorTests: XCTestCase {
         func restorePriorSelection(_ selection: Int64?) { calls.append(.restore(selection)) }
         func registerPersisted(subtitleId: Int) { calls.append(.registerPersisted(subtitleId)) }
         func showPreparingNotice() { calls.append(.showPreparing) }
+        func hidePreparingNotice() { calls.append(.hidePreparing) }
         func showFailureNotice(_ message: String) { calls.append(.showFailure(message)) }
 
         var feedCount: Int { calls.filter { if case .feed = $0 { return true }; return false }.count }
         func contains(_ call: Call) -> Bool { calls.contains(call) }
+        func count(_ call: Call) -> Int { calls.filter { $0 == call }.count }
+        var hasFailureNotice: Bool { calls.contains { if case .showFailure = $0 { return true }; return false } }
+        var hasRestore: Bool { calls.contains { if case .restore = $0 { return true }; return false } }
+        var hasClose: Bool { calls.contains { if case .close = $0 { return true }; return false } }
     }
 
     /// Clock that hands the scheduled action back to the test to fire (or not)
@@ -147,19 +158,22 @@ final class LiveSubtitleCoordinatorTests: XCTestCase {
         XCTAssertEqual(controls.pauseCount, 1, "submit should pause immediately")
         XCTAssertEqual(controls.playCount, 0, "must not resume before completion/cues/cancel")
         XCTAssertTrue(sink.contains(.showPreparing))
-        XCTAssertEqual(clock.scheduleCount, 0, "cue safety timer starts only once websocket started lands")
+        XCTAssertEqual(clock.scheduleCount, 1, "submit pause is bounded by the safety timer")
+        XCTAssertEqual(clock.lastInterval, LiveSubtitleCoordinator.safetyResumeSeconds)
     }
 
     func testStartedAfterBeginPreparingReusesPauseSnapshotAndResumesOnCues() {
         let (coordinator, controls, sink, clock) = makeCoordinator(isPlaying: true, priorSelection: nil)
         coordinator.beginPreparing()
+        let preStartHandle = clock.lastHandle
         coordinator.handle(started("ai-7"))
 
         XCTAssertEqual(controls.pauseCount, 1, "started must not pause a second time")
         XCTAssertEqual(sink.calls.filter { $0 == .showPreparing }.count, 1, "preparing notice shown once")
         XCTAssertTrue(sink.contains(.install(trackKey: "ai-7", label: "Spanish", language: "es")))
         XCTAssertTrue(sink.contains(.selectLive(trackKey: "ai-7")))
-        XCTAssertEqual(clock.scheduleCount, 1)
+        XCTAssertEqual(clock.scheduleCount, 2, "started replaces the pre-start timer with the cue timer")
+        XCTAssertEqual(preStartHandle?.cancelled, true, "pre-start timer cancelled once started lands")
 
         coordinator.handle(cues("ai-7", [(10, 12, "hi")]))
         XCTAssertEqual(controls.playCount, 1, "resume still uses the submit-time pause snapshot")
@@ -244,7 +258,7 @@ final class LiveSubtitleCoordinatorTests: XCTestCase {
     }
 
     func testCancelBeforeStartedResumesSubmitPauseWithoutFailure() {
-        let (coordinator, controls, sink, _) = makeCoordinator(isPlaying: true, priorSelection: nil)
+        let (coordinator, controls, sink, clock) = makeCoordinator(isPlaying: true, priorSelection: nil)
         coordinator.beginPreparing()
 
         coordinator.cancelActivePresentation()
@@ -257,6 +271,11 @@ final class LiveSubtitleCoordinatorTests: XCTestCase {
                 return false
             }
         )
+
+        // The pre-start timer from `beginPreparing` is inert after the cancel.
+        clock.fireSafety()
+        XCTAssertEqual(controls.playCount, 1, "no second resume from a cancelled job's timer")
+        XCTAssertEqual(coordinator.phase, .idle)
     }
 
     // MARK: - safety timeout
@@ -285,6 +304,126 @@ final class LiveSubtitleCoordinatorTests: XCTestCase {
         clock.fireSafety()
         XCTAssertEqual(coordinator.phase, .streaming)
         XCTAssertEqual(controls.playCount, 1, "no double resume from a stale timer")
+    }
+
+    func testCueTimeoutAfterBeginPreparingStillFailsOut() {
+        let (coordinator, controls, sink, clock) = makeCoordinator(isPlaying: true, priorSelection: 0x4000_0008)
+        var safetyTimeouts = 0
+        coordinator.onSafetyTimeout = { safetyTimeouts += 1 }
+        coordinator.beginPreparing()
+        coordinator.handle(started("ai-7"))
+
+        // `started` landed in time, so the pending timer is the cue timer.
+        clock.fireSafety()
+
+        XCTAssertEqual(coordinator.phase, .failed)
+        XCTAssertTrue(sink.contains(.close(trackKey: "ai-7")))
+        XCTAssertTrue(sink.contains(.restore(0x4000_0008)))
+        XCTAssertTrue(sink.hasFailureNotice)
+        XCTAssertEqual(controls.playCount, 1, "resume on cue timeout")
+        XCTAssertEqual(safetyTimeouts, 1)
+    }
+
+    // MARK: - pre-start safety timeout (no `started` within the window)
+
+    func testSafetyTimeoutBeforeStartedResumesAndKeepsJobPending() {
+        let (coordinator, controls, sink, clock) = makeCoordinator(isPlaying: true, priorSelection: 0x4000_0007)
+        var safetyTimeouts = 0
+        coordinator.onSafetyTimeout = { safetyTimeouts += 1 }
+        coordinator.beginPreparing()
+
+        clock.fireSafety()
+
+        XCTAssertEqual(controls.playCount, 1, "pre-start timeout resumes the submit pause")
+        XCTAssertEqual(coordinator.phase, .preparing, "the job is still pending")
+        XCTAssertTrue(coordinator.isActive)
+        XCTAssertFalse(coordinator.hasLiveTrack)
+        XCTAssertEqual(sink.count(.hidePreparing), 1, "preparing notice retracted")
+        XCTAssertFalse(sink.hasFailureNotice, "the job is still running; no failure to report")
+        XCTAssertFalse(sink.hasRestore)
+        XCTAssertFalse(sink.hasClose)
+        XCTAssertEqual(safetyTimeouts, 0, "releasing the pause does not end the job")
+
+        // The poller finishes the job later.
+        coordinator.persistedHandoffAlreadyDone(trackKey: "ai-7")
+        XCTAssertEqual(coordinator.phase, .completed)
+        XCTAssertEqual(controls.playCount, 1, "poller completion must not resume again")
+
+        // The completed job bumped the generation; the old action is inert.
+        clock.fireSafety()
+        XCTAssertEqual(coordinator.phase, .completed)
+        XCTAssertEqual(controls.playCount, 1)
+    }
+
+    func testSafetyTimeoutBeforeStartedLeavesUserPausedPlayerPaused() {
+        let (coordinator, controls, _, clock) = makeCoordinator(isPlaying: false, priorSelection: nil)
+        coordinator.beginPreparing()
+        XCTAssertEqual(clock.scheduleCount, 1)
+
+        clock.fireSafety()
+
+        XCTAssertEqual(controls.playCount, 0, "must not resume a player the user had paused")
+        XCTAssertEqual(controls.pauseCount, 0)
+        XCTAssertEqual(coordinator.phase, .preparing)
+    }
+
+    func testLateStartedAfterPreStartTimeoutDoesNotPauseAgain() {
+        let (coordinator, controls, sink, clock) = makeCoordinator(isPlaying: true, priorSelection: nil)
+        coordinator.beginPreparing()
+        clock.fireSafety()
+        XCTAssertEqual(controls.playCount, 1)
+
+        coordinator.handle(started("ai-7"))
+
+        XCTAssertEqual(controls.pauseCount, 1, "late started must not pause again")
+        XCTAssertEqual(sink.count(.showPreparing), 1, "late started must not re-show the notice")
+        XCTAssertTrue(sink.contains(.install(trackKey: "ai-7", label: "Spanish", language: "es")))
+        XCTAssertTrue(sink.contains(.selectLive(trackKey: "ai-7")))
+        XCTAssertEqual(clock.scheduleCount, 2, "late started arms the cue timer")
+        let cueHandle = clock.lastHandle
+
+        coordinator.handle(cues("ai-7", [(10, 12, "hi")]))
+
+        XCTAssertEqual(coordinator.phase, .streaming)
+        XCTAssertEqual(controls.playCount, 1, "first cues must not resume again")
+        XCTAssertEqual(cueHandle?.cancelled, true, "first cues cancel the cue timer")
+    }
+
+    func testLiveFailureAfterPreStartTimeoutDoesNotResumeAgain() {
+        let (coordinator, controls, sink, clock) = makeCoordinator(isPlaying: true, priorSelection: nil)
+        coordinator.beginPreparing()
+        clock.fireSafety()
+        XCTAssertEqual(controls.playCount, 1, "pre-start timeout resumes the submit pause")
+
+        coordinator.liveDriverDidGiveUp(message: "x")
+
+        XCTAssertEqual(coordinator.phase, .failed)
+        XCTAssertTrue(sink.contains(.restore(nil)))
+        XCTAssertTrue(sink.contains(.showFailure("x")))
+        XCTAssertEqual(controls.playCount, 1, "failure after the release must not resume again")
+    }
+
+    func testStalePreStartTimerIgnoredAfterTeardownAndResubmit() {
+        let (coordinator, controls, sink, clock) = makeCoordinator(isPlaying: true, priorSelection: nil)
+        coordinator.beginPreparing()
+        let stale = clock.lastAction
+        coordinator.teardown()
+
+        stale?()
+        XCTAssertEqual(coordinator.phase, .idle)
+        XCTAssertEqual(controls.playCount, 0)
+
+        // Resubmit: a new job is preparing when the old action fires again.
+        // ManualClock ignores cancellation, so only the generation guard stops it.
+        controls.isPlaying = true
+        coordinator.beginPreparing()
+        XCTAssertEqual(controls.pauseCount, 2)
+        XCTAssertEqual(coordinator.phase, .preparing)
+
+        stale?()
+        XCTAssertEqual(controls.playCount, 0, "a stale timer must not resume the new job")
+        XCTAssertEqual(coordinator.phase, .preparing)
+        XCTAssertEqual(sink.count(.hidePreparing), 1, "only teardown retracted the notice")
     }
 
     // MARK: - completed → register + close (no restore)
