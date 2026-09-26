@@ -116,6 +116,16 @@ final class SiloControlWireCompatibilityTests: XCTestCase {
         XCTAssertThrowsError(try JSONDecoder().decode(SiloControlMessage.self, from: data))
     }
 
+    // MARK: - Messages: newer peers
+
+    /// A message type from a newer peer is ignored, not a decode error that
+    /// tears the session down. Android does the same.
+    func testUnknownMessageTypeDecodesAsUnsupported() throws {
+        let data = Data(#"{"type":"future_thing","v":2,"future_thing":{"x":1}}"#.utf8)
+        let message = try JSONDecoder().decode(SiloControlMessage.self, from: data)
+        XCTAssertEqual(message, .unsupported(type: "future_thing"))
+    }
+
     // MARK: - Commands: no regression from the hand-written decoder
 
     /// `SiloControlCommand` now decodes by hand, so every argument field has
