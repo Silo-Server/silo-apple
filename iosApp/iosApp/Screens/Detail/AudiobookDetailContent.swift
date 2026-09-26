@@ -1,393 +1,287 @@
+#if !os(tvOS)
 import SwiftUI
 
-func audiobookRelatedItemAccessibilityLabel(_ item: AudiobookRelatedItem) -> String {
-    var components = [item.title]
-    if let seriesIndex = item.seriesIndex {
-        components.append("Book \(seriesIndex)")
-    }
-    if let year = item.year {
-        components.append(String(year))
-    }
-    return components.joined(separator: ", ")
-}
-
-struct AudiobookDetailContent: View {
+/// Phone, iPad, and Mac audiobook detail, built on the same scaffold as
+/// `MovieDetailContent`: the artwork page surface, `PhoneDetailHero`, the
+/// named action row, and the shared section headers, rails, and Details
+/// list. Book-specific pieces are the cover-forward hero, the listening
+/// controls (progress-aware Resume, speed, start over), chapters and parts,
+/// the author/narrator rail, and the series rails. Format wording and cover
+/// shape come from `BookDetailKind`.
+///
+/// tvOS keeps its own audiobook page, `TVAudiobookDetailView`.
+struct AudiobookDetailContent<BelowOverview: View>: View {
     let detail: ItemDetail
     var libraryId: Int? = nil
+    let isFavorite: Bool
+    let inWatchlist: Bool
+    let isWatched: Bool
+    let onToggleFavorite: () -> Void
+    let onToggleWatchlist: () -> Void
+    let onToggleWatched: () -> Void
+    let onPersonTap: (String) -> Void
     let onNavigateToItem: (String) -> Void
+    /// Reference-backed scroll state observed only by the small parallax and
+    /// pinned-chrome views, keeping the native ScrollView's body stable.
+    let scrollState: PhoneDetailScrollState
+    /// On-view description-translation affordance, built at the detail call
+    /// site (which owns the view model) and rendered under the overview.
+    @ViewBuilder let belowOverview: () -> BelowOverview
 
     @Environment(AudioPlaybackStore.self) private var audioStore
-    @State private var uiCustomization = UICustomizationPreferences.shared
-
-    #if !os(tvOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var showAllChapters = false
-    #endif
+
+    private let kind = BookDetailKind.audiobook
+
+    private var presentation: BookDetailPresentation {
+        BookDetailPresentation(detail: detail, kind: kind, isMarkedFinished: isWatched)
+    }
 
     var body: some View {
-        #if os(tvOS)
-        TVAudiobookDetailView(detail: detail, libraryId: libraryId, onNavigateToItem: onNavigateToItem)
-        #else
-        phoneBody
-        #endif
-    }
-
-    @ViewBuilder
-    private var aboutSection: some View {
-        if let overview = detail.overview, !overview.isEmpty {
-            detailSection(title: "About") {
-                Text(overview)
-                    .font(aboutFont)
-                    .foregroundStyle(.secondary)
-                    .lineSpacing(3)
-            }
-        }
-    }
-
-    /// Series / narration / recommendation rails — identical on every
-    /// platform, so both layouts share them.
-    @ViewBuilder
-    private var commonSections: some View {
-        if let series = detail.audiobook?.series, !series.entries.isEmpty {
-            detailSection(title: series.name ?? "Series") {
-                relatedRail(items: series.entries)
-            }
-        }
-
-        if !otherNarrations.isEmpty {
-            narrationsSection
-        }
-
-        if let related = detail.audiobook?.related {
-            if !related.alsoByAuthor.isEmpty {
-                detailSection(title: "More by Author") {
-                    relatedRail(items: related.alsoByAuthor)
-                }
-            }
-            if !related.similar.isEmpty {
-                detailSection(title: "Related") {
-                    relatedRail(items: related.similar)
-                }
-            }
-        }
-    }
-
-    private var narrationsSection: some View {
-        detailSection(title: "Alternate Narrations") {
-            VStack(spacing: 10) {
-                ForEach(otherNarrations) { narration in
-                    Button {
-                        onNavigateToItem(narration.contentId)
-                    } label: {
-                        HStack(spacing: 12) {
-                            Image(systemName: "person.wave.2")
-                                .frame(width: 28)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(narration.title)
-                                    .font(.headline)
-                                    .lineLimit(1)
-                                if !narration.narrators.isEmpty {
-                                    Text(narration.narrators.joined(separator: ", "))
-                                        .font(.subheadline)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
-                            }
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .foregroundStyle(.secondary)
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        }
-    }
-
-    // MARK: - iOS / macOS hero
-
-    #if !os(tvOS)
-    private var phoneBody: some View {
-        // The GeometryReader captures the real top safe-area inset *before*
-        // the ScrollView ignores it, so the hero column can clear the status
-        // bar while the backdrop still bleeds to the physical top edge.
-        GeometryReader { proxy in
-            let topInset = proxy.safeAreaInsets.top
+        PhoneDetailPageSurface(
+            backdropURL: hasBackdrop ? detail.backdropUrl : detail.posterUrl,
+            backdropThumbhash: hasBackdrop ? detail.backdropThumbhash : detail.posterThumbhash,
+            enablesArtworkGlass: true
+        ) {
             ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 0) {
-                    phoneHero(topInset: topInset)
-                    phoneSections
-                        .padding(.horizontal, SiloTheme.safePadding)
-                        .padding(.top, sectionSpacing)
-                        .padding(.bottom, bottomPadding)
+                VStack(alignment: .leading, spacing: heroToContentSpacing) {
+                    hero
+                    belowFold
                 }
+                .padding(.bottom, 40)
             }
             .ignoresSafeArea(edges: .top)
+            .coordinateSpace(name: PhoneDetailScrollCoordinateSpace.name)
+            .detailScrollDismissal()
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                let offset = max(0, geometry.contentOffset.y + geometry.contentInsets.top)
+                return offset <= 150 ? 0 : min(offset, 480)
+            } action: { _, offset in
+                scrollState.update(offset)
+            }
         }
-        .siloPageBackground()
     }
 
-    private var phoneSections: some View {
-        VStack(alignment: .leading, spacing: sectionSpacing) {
-            aboutSection
+    private var heroToContentSpacing: CGFloat {
+        horizontalSizeClass == .regular ? 16 : 32
+    }
 
+    private var hasBackdrop: Bool {
+        !(detail.backdropUrl?.isEmpty ?? true)
+    }
+
+    // MARK: - Hero
+
+    private var hero: some View {
+        let presentation = presentation
+        return PhoneDetailHero(
+            title: presentation.title,
+            logoUrl: detail.logoUrl,
+            posterUrl: detail.posterUrl,
+            posterThumbhash: detail.posterThumbhash,
+            backdropUrl: detail.backdropUrl,
+            backdropThumbhash: detail.backdropThumbhash,
+            eyebrow: kind.eyebrow,
+            sourceTokens: presentation.sourceTokens,
+            ratingChip: PhoneHeroMetadata.contentRatingChip(from: detail),
+            overview: detail.overview,
+            factsLine: presentation.factsTokens.map(PhoneHeroFactToken.text),
+            creditText: presentation.creditText,
+            enablesArtworkParallax: true,
+            artworkStyle: hasBackdrop
+                ? .backdrop
+                : .cover(aspectRatio: kind.coverAspectRatio, placeholderSymbol: kind.placeholderSymbol),
+            actions: { actionStack(presentation) },
+            belowOverview: { belowOverview() }
+        )
+    }
+
+    /// Resume, then the same named action row movies use, with the watch
+    /// wording swapped for book wording and listening controls in place of
+    /// download.
+    private func actionStack(_ presentation: BookDetailPresentation) -> some View {
+        VStack(spacing: 14) {
+            PhonePrimaryPillButton(
+                icon: presentation.primaryIcon,
+                title: presentation.primaryLabel,
+                action: { performPrimaryAction(presentation.primaryAction) },
+                fullWidth: true,
+                progress: presentation.resumeFraction
+            )
+
+            PhoneLabeledActionRow {
+                PhoneLabeledAction(
+                    icon: "heart",
+                    iconActive: "heart.fill",
+                    isActive: isFavorite,
+                    label: "Favorite",
+                    accessibilityLabelOverride: isFavorite
+                        ? "Remove from Favorites" : "Add to Favorites",
+                    action: onToggleFavorite
+                )
+                PhoneLabeledAction(
+                    icon: "bookmark",
+                    iconActive: "bookmark.fill",
+                    isActive: inWatchlist,
+                    label: kind.queueLabel,
+                    accessibilityLabelOverride: inWatchlist
+                        ? "Remove from \(kind.queueLabel)" : "Add to \(kind.queueLabel)",
+                    action: onToggleWatchlist
+                )
+                PhoneLabeledAction(
+                    icon: "checkmark.circle",
+                    iconActive: "checkmark.circle.fill",
+                    isActive: isWatched,
+                    label: kind.finishedLabel,
+                    accessibilityLabelOverride: isWatched
+                        ? "Mark as Not Finished" : "Mark as Finished",
+                    action: onToggleWatched
+                )
+                PhoneLabeledMenu(
+                    icon: "speedometer",
+                    label: "Speed \(speedLabel(audioStore.player.playbackRate))"
+                ) {
+                    speedMenuItems
+                }
+                PhoneLabeledMenu(label: "More") {
+                    moreMenuItems
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private var speedMenuItems: some View {
+        ForEach(speedOptions, id: \.self) { rate in
+            Button {
+                audioStore.player.setPlaybackRate(rate)
+            } label: {
+                if abs(audioStore.player.playbackRate - rate) < 0.01 {
+                    Label(speedLabel(rate), systemImage: "checkmark")
+                } else {
+                    Text(speedLabel(rate))
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var moreMenuItems: some View {
+        Button {
+            startPlayback(restart: true)
+        } label: {
+            Label("Start Over", systemImage: "arrow.counterclockwise")
+        }
+        if !otherNarrations.isEmpty {
+            Menu {
+                ForEach(otherNarrations) { narration in
+                    Button(narrationLabel(narration)) {
+                        onNavigateToItem(narration.contentId)
+                    }
+                }
+            } label: {
+                Label("Other Narrations", systemImage: "person.wave.2")
+            }
+        }
+    }
+
+    /// Audiobooks resume where the listener left off without the movie
+    /// page's resume prompt; Start Over lives in the More menu.
+    private func performPrimaryAction(_ action: BookDetailPresentation.PrimaryAction) {
+        switch action {
+        case .resume(let position):
+            startPlayback(startPosition: position)
+        case .playAgain:
+            startPlayback(restart: true)
+        case .play:
+            startPlayback()
+        }
+    }
+
+    private func startPlayback(restart: Bool = false, startPosition: Double? = nil) {
+        audioStore.play(
+            contentId: detail.contentId,
+            restart: restart,
+            startPosition: startPosition,
+            libraryId: libraryId
+        )
+    }
+
+    // MARK: - Below the fold
+
+    private var belowFold: some View {
+        VStack(alignment: .leading, spacing: 36) {
             if !displayChapters.isEmpty {
-                phoneChaptersSection
+                chaptersSection
+                    .padding(.horizontal, SiloTheme.safePadding)
             }
 
             if parts.count > 1 {
-                phonePartsSection
+                partsSection
+                    .padding(.horizontal, SiloTheme.safePadding)
             }
 
-            commonSections
-            phoneDetailsLine
-        }
-    }
-
-    /// Identity-first hero in the house style: the square cover floats on a
-    /// blurred, color-extracted wash of itself (the §5.5 detail backdrop the
-    /// movie hero already uses, adapted for square art), with a clear
-    /// Title → Author → Narrator hierarchy and a progress-forward CTA. The
-    /// backdrop is a top-pinned background so it fills up under the status
-    /// bar; the cover is inset past the safe area so it clears it.
-    private func phoneHero(topInset: CGFloat) -> some View {
-        VStack(spacing: 0) {
-            phoneCover
-                .padding(.top, topInset + 14)
-            phoneIdentity
-                .padding(.top, 20)
-            phoneProgressActions
-                .padding(.top, 22)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, SiloTheme.safePadding)
-        .background(alignment: .top) {
-            phoneBackdrop
-        }
-    }
-
-    private var phoneBackdrop: some View {
-        ZStack {
-            if let url = detail.posterUrl, !url.isEmpty {
-                AsyncImageView(
-                    url: url,
-                    thumbhash: detail.posterThumbhash,
-                    targetSize: CGSize(width: 420, height: 420),
-                    contentMode: .fill
-                )
-                .frame(height: phoneBackdropHeight)
-                .frame(maxWidth: .infinity)
-                .clipped()
-                .blur(radius: 48, opaque: true)
-                .opacity(0.55)
-            } else {
-                Color.siloSurface.frame(height: phoneBackdropHeight)
-            }
-            LinearGradient(
-                stops: [
-                    .init(color: Color.siloBackground.opacity(0.30), location: 0.0),
-                    .init(color: Color.siloBackground.opacity(0.72), location: 0.55),
-                    .init(color: Color.siloBackground, location: 0.95),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .frame(height: phoneBackdropHeight)
-        }
-        .frame(maxWidth: .infinity, alignment: .top)
-        .allowsHitTesting(false)
-    }
-
-    @ViewBuilder
-    private var phoneCover: some View {
-        Group {
-            if let url = detail.posterUrl, !url.isEmpty {
-                AsyncImageView(
-                    url: url,
-                    thumbhash: detail.posterThumbhash,
-                    targetSize: CGSize(width: phoneCoverSize, height: phoneCoverSize),
-                    contentMode: .fill
-                )
-            } else {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color.siloSurfaceElevated)
-                    .overlay {
-                        Image(systemName: "headphones")
-                            .font(.system(size: phoneCoverSize * 0.2, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                    }
-            }
-        }
-        .frame(width: phoneCoverSize, height: phoneCoverSize)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
-        )
-        .shadow(color: .black.opacity(0.5), radius: 26, x: 0, y: 16)
-    }
-
-    private var phoneIdentity: some View {
-        VStack(spacing: 0) {
-            Text("AUDIOBOOK")
-                .font(.system(size: 11, weight: .semibold))
-                .tracking(1.6)
-                .foregroundColor(.siloOnSurface)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 5)
-                .background(Capsule().fill(Color.siloSurfaceElevated))
-
-            Text(displayTitle)
-                .font(.system(size: 28, weight: .bold))
-                .tracking(-0.4)
-                .multilineTextAlignment(.center)
-                .foregroundColor(.siloOnSurface)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.top, 14)
-
-            if let seriesLineText {
-                Text(seriesLineText.uppercased())
-                    .font(.system(size: 11, weight: .semibold))
-                    .tracking(1.6)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.top, 7)
+            if !creditMembers.isEmpty {
+                creditsSection
             }
 
-            if let authorSummary {
-                Text(authorSummary)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(.siloOnSurface)
-                    .multilineTextAlignment(.center)
-                    .padding(.top, 12)
-            }
-
-            if let narratorSummary {
-                Text("Narrated by \(narratorSummary)")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(2)
-                    .padding(.top, 4)
-            }
-
-            if !metaTokens.isEmpty {
-                Text(metaTokens.joined(separator: "  ·  "))
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.top, 11)
-            }
-        }
-        .frame(maxWidth: 560)
-    }
-
-    private var phoneProgressActions: some View {
-        VStack(spacing: 14) {
-            if resumeFraction != nil {
-                HStack {
-                    Text("\(percentComplete)% complete")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(.siloOnSurface)
-                    Spacer()
-                    Text("\(PlayerTimeFormatter.formatRuntime(timeLeftSeconds)) left")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 4)
-            }
-
-            AudiobookResumePill(
-                icon: primaryActionIcon,
-                title: primaryActionLabel,
-                progress: resumeFraction
-            ) {
-                primaryAction()
-            }
-
-            phoneSecondaryControls
-        }
-        .frame(maxWidth: 420)
-    }
-
-    private var phoneSecondaryControls: some View {
-        HStack(alignment: .top, spacing: 26) {
-            phoneControl("Start Over") {
-                PhoneCircleActionButton(
-                    icon: "arrow.counterclockwise",
-                    accessibilityLabel: "Start Over"
-                ) {
-                    audioStore.play(contentId: detail.contentId, restart: true, libraryId: libraryId)
-                }
-            }
-
-            phoneControl("Speed") {
-                phoneSpeedControl
+            if let series = detail.audiobook?.series, !series.entries.isEmpty {
+                coverRail(title: series.name ?? "Series", items: series.entries)
             }
 
             if !otherNarrations.isEmpty {
-                phoneControl("Narration") {
-                    PhoneCircleMenuButton(icon: "person.wave.2", accessibilityLabel: "Narration") {
-                        ForEach(otherNarrations) { narration in
-                            Button {
-                                onNavigateToItem(narration.contentId)
-                            } label: {
-                                Text(narration.narrators.isEmpty
-                                     ? narration.title
-                                     : narration.narrators.joined(separator: ", "))
-                            }
-                        }
-                    }
-                }
+                narrationsSection
+                    .padding(.horizontal, SiloTheme.safePadding)
+            }
+
+            if let alsoByAuthor = detail.audiobook?.related?.alsoByAuthor, !alsoByAuthor.isEmpty {
+                coverRail(title: moreByAuthorTitle, items: alsoByAuthor)
+            }
+
+            detailsSection
+                .padding(.horizontal, SiloTheme.safePadding)
+
+            if let similar = detail.audiobook?.related?.similar, !similar.isEmpty {
+                coverRail(title: "More Like This", items: similar)
             }
         }
     }
 
-    private var phoneSpeedControl: some View {
-        Menu {
-            ForEach(speedOptions, id: \.self) { rate in
-                Button {
-                    audioStore.player.setPlaybackRate(rate)
-                } label: {
-                    if abs(audioStore.player.playbackRate - rate) < 0.01 {
-                        Label(speedLabel(rate), systemImage: "checkmark")
-                    } else {
-                        Text(speedLabel(rate))
-                    }
-                }
-            }
-        } label: {
-            Text(speedLabel(audioStore.player.playbackRate))
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundColor(.white)
-                .frame(width: 44, height: 44)
-                .background(
-                    Circle()
-                        .fill(Color.white.opacity(0.10))
-                        .overlay(Circle().stroke(Color.white.opacity(0.25), lineWidth: 1))
-                )
-        }
-        .accessibilityLabel("Playback Speed")
+    private func coverRail(title: String, items: [AudiobookRelatedItem]) -> some View {
+        PhonePosterRail(
+            title: title,
+            items: items.map(SimilarPosterItem.init(audiobook:)),
+            aspectRatio: kind.coverAspectRatio,
+            placeholderSymbol: kind.placeholderSymbol,
+            onSelect: onNavigateToItem
+        )
     }
 
-    @ViewBuilder
-    private func phoneControl<Content: View>(
-        _ caption: String,
-        @ViewBuilder _ content: () -> Content
-    ) -> some View {
-        VStack(spacing: 7) {
-            content()
-            Text(caption)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+    private var moreByAuthorTitle: String {
+        let authors = detail.audiobook?.authors ?? []
+        if authors.count == 1, let name = authors.first?.name, !name.contains(",") {
+            return "More by \(name)"
         }
+        return "More by These Authors"
     }
 
-    private var phoneChaptersSection: some View {
-        detailSection(title: "Chapters") {
+    // MARK: - Chapters
+
+    private var chaptersSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            PhoneSectionHeader(title: "Chapters", trailingText: "\(displayChapters.count)")
             VStack(spacing: 0) {
                 ForEach(Array(visibleChapters.enumerated()), id: \.element.id) { index, chapter in
-                    phoneChapterRow(chapter, showsDivider: index > 0)
+                    timelineRow(
+                        icon: "play.fill",
+                        title: chapter.title,
+                        trailing: PlayerTimeFormatter.formatHMS(chapter.startSeconds),
+                        showsDivider: index > 0
+                    ) {
+                        startPlayback(startPosition: chapter.startSeconds)
+                    }
                 }
 
                 if displayChapters.count > chapterCollapseLimit {
@@ -404,7 +298,7 @@ struct AudiobookDetailContent: View {
                                 .font(.system(size: 12, weight: .semibold))
                         }
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.siloOnSurface.opacity(0.6))
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.top, 12)
                         .contentShape(Rectangle())
@@ -415,93 +309,56 @@ struct AudiobookDetailContent: View {
         }
     }
 
-    private func phoneChapterRow(_ chapter: DisplayChapter, showsDivider: Bool) -> some View {
-        Button {
-            audioStore.play(
-                contentId: detail.contentId,
-                restart: false,
-                startPosition: chapter.startSeconds,
-                libraryId: libraryId
-            )
-        } label: {
-            HStack(spacing: 13) {
-                Image(systemName: "play.fill")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(.siloOnSurface)
-                    .frame(width: 26, height: 26)
-                    .background(
-                        Circle()
-                            .fill(Color.white.opacity(0.07))
-                            .overlay(Circle().stroke(Color.white.opacity(0.10), lineWidth: 0.5))
-                    )
-                Text(chapter.title)
-                    .font(.system(size: 15))
-                    .foregroundColor(.siloOnSurface)
-                    .lineLimit(1)
-                Spacer()
-                Text(PlayerTimeFormatter.formatHMS(chapter.startSeconds))
-                    .font(.system(size: 13))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.vertical, 11)
-            .contentShape(Rectangle())
-            .overlay(alignment: .top) {
-                if showsDivider {
-                    Rectangle()
-                        .fill(Color.siloDivider)
-                        .frame(height: 0.5)
-                }
-            }
-        }
-        .buttonStyle(.plain)
-    }
-
-    private var phonePartsSection: some View {
-        detailSection(title: "Parts") {
+    private var partsSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            PhoneSectionHeader(title: "Parts", trailingText: "\(parts.count)")
             VStack(spacing: 0) {
                 ForEach(parts.indices, id: \.self) { index in
-                    phonePartRow(parts[index], index: index, showsDivider: index > 0)
+                    timelineRow(
+                        icon: "waveform",
+                        title: partTitle(parts[index], fallbackIndex: index),
+                        trailing: PlayerTimeFormatter.formatRuntime(partDuration(parts[index])),
+                        showsDivider: index > 0
+                    ) {
+                        startPlayback(startPosition: partStartOffset(index))
+                    }
                 }
             }
         }
     }
 
-    private func phonePartRow(_ part: FileVersion, index: Int, showsDivider: Bool) -> some View {
-        Button {
-            audioStore.play(
-                contentId: detail.contentId,
-                restart: false,
-                startPosition: partStartOffset(index),
-                libraryId: libraryId
-            )
-        } label: {
+    /// One tappable row in the chapter and part lists: a small play glyph,
+    /// the title, and a quiet timestamp or length.
+    private func timelineRow(
+        icon: String,
+        title: String,
+        trailing: String,
+        showsDivider: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
             HStack(spacing: 13) {
-                Image(systemName: "waveform")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(.siloOnSurface)
+                Image(systemName: icon)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(Color.siloOnSurface)
                     .frame(width: 26, height: 26)
-                    .background(
-                        Circle()
-                            .fill(Color.white.opacity(0.07))
-                            .overlay(Circle().stroke(Color.white.opacity(0.10), lineWidth: 0.5))
-                    )
-                Text(partTitle(part, fallbackIndex: index))
+                    .background(Circle().fill(Color.white.opacity(0.10)))
+                Text(title)
                     .font(.system(size: 15))
-                    .foregroundColor(.siloOnSurface)
+                    .foregroundStyle(Color.siloOnSurface)
                     .lineLimit(1)
                 Spacer()
-                Text(PlayerTimeFormatter.formatRuntime(partDuration(part)))
+                Text(trailing)
                     .font(.system(size: 13))
                     .monospacedDigit()
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.siloOnSurface.opacity(0.6))
             }
             .padding(.vertical, 11)
             .contentShape(Rectangle())
             .overlay(alignment: .top) {
                 if showsDivider {
                     Rectangle()
-                        .fill(Color.siloDivider)
+                        .fill(Color.white.opacity(0.08))
                         .frame(height: 0.5)
                 }
             }
@@ -509,104 +366,134 @@ struct AudiobookDetailContent: View {
         .buttonStyle(.plain)
     }
 
-    @ViewBuilder
-    private var phoneDetailsLine: some View {
-        if !formatTokens.isEmpty {
-            Text(formatTokens.joined(separator: "  ·  "))
-                .font(.system(size: 12))
-                .foregroundColor(.siloOnSurface.opacity(0.4))
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-    #endif
+    // MARK: - Authors & narrators
 
-    // MARK: - Shared section scaffolding
-
-    private func detailSection<Content: View>(
-        title: String,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
+    private var creditsSection: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(title)
-                .font(sectionTitleFont)
-                .fontWeight(.semibold)
-                .foregroundColor(.siloOnSurface)
-            content()
+            PhoneSectionHeader(title: creditsTitle)
+                .padding(.horizontal, SiloTheme.safePadding)
+            PhoneCastRail(cast: creditMembers, onTap: onPersonTap)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func relatedRail(items: [AudiobookRelatedItem]) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(alignment: HorizontalMediaRailLayout.cardAlignment, spacing: railSpacing) {
-                ForEach(items) { item in
+    private var creditsTitle: String {
+        let hasAuthors = !(detail.audiobook?.authors.isEmpty ?? true)
+        let hasNarrators = !(detail.audiobook?.narrators.isEmpty ?? true)
+        switch (hasAuthors, hasNarrators) {
+        case (true, false): return "Authors"
+        case (false, true): return "Narrators"
+        default: return "Authors & Narrators"
+        }
+    }
+
+    /// Authors then narrators as cast-rail entries, with each person's role
+    /// in the caption. Someone who both wrote and reads the book appears
+    /// once, as "Author & Narrator".
+    private var creditMembers: [CastMember] {
+        var people: [(person: AudiobookPerson, roles: [String])] = []
+        var indexById: [String: Int] = [:]
+        let credited = (detail.audiobook?.authors ?? []).map { ($0, "Author") }
+            + (detail.audiobook?.narrators ?? []).map { ($0, "Narrator") }
+        for (person, role) in credited {
+            if let index = indexById[person.id] {
+                if !people[index].roles.contains(role) {
+                    people[index].roles.append(role)
+                }
+            } else {
+                indexById[person.id] = people.count
+                people.append((person, [role]))
+            }
+        }
+        return people.enumerated().map { order, entry in
+            CastMember(
+                name: entry.person.name,
+                character: entry.roles.joined(separator: " & "),
+                order: order,
+                personId: entry.person.personId,
+                tmdbId: nil,
+                tvdbId: nil,
+                imdbId: nil,
+                photoUrl: entry.person.photoUrl,
+                photoThumbhash: entry.person.photoThumbhash
+            )
+        }
+    }
+
+    // MARK: - Narrations
+
+    private var narrationsSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            PhoneSectionHeader(title: "Other Narrations")
+            VStack(spacing: 0) {
+                ForEach(Array(otherNarrations.enumerated()), id: \.element.id) { index, narration in
                     Button {
-                        onNavigateToItem(item.contentId)
+                        onNavigateToItem(narration.contentId)
                     } label: {
-                        VStack(alignment: .leading, spacing: 8) {
-                            relatedPoster(item)
-                            if uiCustomization.cardPresentation.caption.showsTitle {
-                                Text(item.title)
-                                    .font(.subheadline)
-                                    .fontWeight(.semibold)
+                        HStack(spacing: 13) {
+                            Image(systemName: "person.wave.2")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(Color.siloOnSurface)
+                                .frame(width: 26, height: 26)
+                                .background(Circle().fill(Color.white.opacity(0.10)))
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(narrationLabel(narration))
+                                    .font(.system(size: 15))
                                     .foregroundStyle(Color.siloOnSurface)
-                                    .lineLimit(2, reservesSpace: true)
-                                if uiCustomization.cardPresentation.caption.showsMetadata {
-                                    if let seriesIndex = item.seriesIndex {
-                                        Text("Book \(seriesIndex)")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    } else if let year = item.year {
-                                        Text(String(year))
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
+                                    .lineLimit(1)
+                                if let year = narration.year {
+                                    Text(String(year))
+                                        .font(.system(size: 13))
+                                        .foregroundStyle(Color.siloOnSurface.opacity(0.6))
                                 }
                             }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(Color.siloOnSurface.opacity(0.4))
                         }
-                        .frame(width: relatedPosterWidth, alignment: .leading)
+                        .padding(.vertical, 11)
+                        .contentShape(Rectangle())
+                        .overlay(alignment: .top) {
+                            if index > 0 {
+                                Rectangle()
+                                    .fill(Color.white.opacity(0.08))
+                                    .frame(height: 0.5)
+                            }
+                        }
                     }
                     .buttonStyle(.plain)
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel(audiobookRelatedItemAccessibilityLabel(item))
                 }
             }
-            .padding(.vertical, 4)
-            .phoneMediaRailBounds()
         }
     }
 
-    @ViewBuilder
-    private func relatedPoster(_ item: AudiobookRelatedItem) -> some View {
-        if let url = item.posterUrl, !url.isEmpty {
-            AsyncImageView(
-                url: url,
-                targetSize: CGSize(width: relatedPosterWidth, height: relatedPosterHeight),
-                contentMode: .fill
-            )
-            .frame(width: relatedPosterWidth, height: relatedPosterHeight)
-            .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
-        } else {
-            RoundedRectangle(cornerRadius: SiloTheme.cornerRadius)
-                .fill(Color.siloSurfaceElevated)
-                .frame(width: relatedPosterWidth, height: relatedPosterHeight)
-                .overlay {
-                    Image(systemName: "book.closed")
-                        .foregroundStyle(.secondary)
-                }
+    private func narrationLabel(_ narration: AudiobookNarration) -> String {
+        narration.narrators.isEmpty ? narration.title : narration.narrators.joined(separator: ", ")
+    }
+
+    // MARK: - Details
+
+    private var detailsSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            PhoneSectionHeader(title: "Details")
+            PhoneDetailFactsSection(detail: detail)
         }
     }
 
-    // MARK: - Audiobook timeline data
+    // MARK: - Timeline data
 
     private var parts: [FileVersion] {
         AudiobookPlaybackContext.audioParts(of: detail)
     }
 
+    private var otherNarrations: [AudiobookNarration] {
+        detail.audiobook?.otherNarrations ?? []
+    }
+
     private var displayChapters: [DisplayChapter] {
         var offset = 0.0
         var chapters: [DisplayChapter] = []
-        for (partPosition, part) in parts.enumerated() {
+        for part in parts {
             for chapter in part.chapters ?? [] {
                 let title: String
                 if let chapterTitle = chapter.title, !chapterTitle.isEmpty {
@@ -617,8 +504,7 @@ struct AudiobookDetailContent: View {
                 chapters.append(DisplayChapter(
                     id: "\(part.fileId)-\(chapter.index)-\(chapter.startSeconds)",
                     title: title,
-                    startSeconds: offset + chapter.startSeconds,
-                    partTitle: partTitle(part, fallbackIndex: partPosition)
+                    startSeconds: offset + chapter.startSeconds
                 ))
             }
             offset += partDuration(part)
@@ -626,52 +512,11 @@ struct AudiobookDetailContent: View {
         return chapters.sorted { $0.startSeconds < $1.startSeconds }
     }
 
-    private var otherNarrations: [AudiobookNarration] {
-        detail.audiobook?.otherNarrations ?? []
+    private var visibleChapters: [DisplayChapter] {
+        showAllChapters ? displayChapters : Array(displayChapters.prefix(chapterCollapseLimit))
     }
 
-    private var resumePosition: Double? {
-        guard let position = detail.userData?.positionSeconds,
-              position.isFinite,
-              position > 30 else { return nil }
-        // Use the same duration source that drives the finished-state logic,
-        // so a completed book with a missing/stale userData duration still
-        // suppresses Resume and routes to Play Again.
-        let duration = totalDurationSeconds
-        if duration.isFinite,
-           duration > 0,
-           position >= duration - 5 {
-            return nil
-        }
-        return position
-    }
-
-    private var positionSeconds: Double {
-        max(0, detail.userData?.positionSeconds ?? 0)
-    }
-
-    /// Whether the book is effectively finished. Shared so every platform
-    /// can route completed titles to "Play Again" (restart) instead of
-    /// resuming near the end.
-    private var isFinished: Bool {
-        if detail.userData?.played == true { return true }
-        guard totalDurationSeconds > 0, positionSeconds > 0 else { return false }
-        return positionSeconds >= totalDurationSeconds - 5
-    }
-
-    private var primaryActionIcon: String {
-        resumePosition == nil && isFinished ? "arrow.counterclockwise" : "play.fill"
-    }
-
-    private func primaryAction() {
-        if let resumePosition {
-            audioStore.play(contentId: detail.contentId, restart: false, startPosition: resumePosition, libraryId: libraryId)
-        } else if isFinished {
-            audioStore.play(contentId: detail.contentId, restart: true, libraryId: libraryId)
-        } else {
-            audioStore.play(contentId: detail.contentId, restart: false, libraryId: libraryId)
-        }
-    }
+    private let chapterCollapseLimit = 8
 
     private func partTitle(_ part: FileVersion, fallbackIndex: Int) -> String {
         if let fileName = part.fileName, !fileName.isEmpty {
@@ -686,109 +531,6 @@ struct AudiobookDetailContent: View {
         AudiobookPlaybackContext.partDuration(part)
     }
 
-    /// Total book duration, preferring the server's authoritative value and
-    /// falling back to the stitched part durations.
-    private var totalDurationSeconds: Double {
-        if let total = detail.audiobook?.totalDurationSeconds, total > 0 {
-            return Double(total)
-        }
-        if let duration = detail.userData?.durationSeconds, duration > 0 {
-            return duration
-        }
-        return parts.reduce(0) { $0 + partDuration($1) }
-    }
-
-    // MARK: - iOS / macOS hero data
-
-    #if !os(tvOS)
-    private var displayTitle: String {
-        AudiobookDetailFormatting.cleanTitle(detail.title, seriesName: detail.audiobook?.series?.name)
-    }
-
-    /// The series total comes from the title's "(N of M)" locator rather
-    /// than the series grouping's entry count — the grouping can include
-    /// alternate editions/narrations, which inflates the count (e.g. "of 19"
-    /// for a 5-book series).
-    private var seriesLineText: String? {
-        let volume = AudiobookDetailFormatting.volume(in: detail.title)
-        return AudiobookDetailFormatting.seriesLine(
-            name: detail.audiobook?.series?.name,
-            index: currentSeriesIndex ?? volume.index,
-            total: volume.total
-        )
-    }
-
-    private var currentSeriesIndex: Int? {
-        detail.audiobook?.series?.entries
-            .first(where: { $0.contentId == detail.contentId })?
-            .seriesIndex
-    }
-
-    private var authorSummary: String? {
-        AudiobookDetailFormatting.peopleSummary(
-            detail.audiobook?.authors.map(\.name) ?? [],
-            visible: 3
-        )
-    }
-
-    private var narratorSummary: String? {
-        AudiobookDetailFormatting.peopleSummary(
-            detail.audiobook?.narrators.map(\.name) ?? [],
-            visible: 2
-        )
-    }
-
-    /// Compact, content-y metadata for the hero (interpunct-joined): runtime,
-    /// publisher, year. Codec/bitrate intentionally excluded.
-    private var metaTokens: [String] {
-        var tokens: [String] = []
-        let runtime = PlayerTimeFormatter.formatRuntime(totalDurationSeconds)
-        if !runtime.isEmpty { tokens.append(runtime) }
-        if let publisher = detail.audiobook?.publisher, !publisher.isEmpty {
-            tokens.append(publisher)
-        }
-        if let year = detail.year { tokens.append(String(year)) }
-        return tokens
-    }
-
-    /// Quiet, deemphasised technical line at the foot of the page.
-    private var formatTokens: [String] {
-        guard let primary = parts.first else { return [] }
-        var tokens: [String] = []
-        if let codec = primary.codecAudio, !codec.isEmpty {
-            tokens.append(codec.uppercased())
-        }
-        if let container = primary.container, !container.isEmpty {
-            tokens.append(container.uppercased())
-        }
-        if parts.count > 1 {
-            tokens.append("\(parts.count) parts")
-        }
-        let runtime = PlayerTimeFormatter.formatRuntime(totalDurationSeconds)
-        if !runtime.isEmpty { tokens.append(runtime) }
-        return tokens
-    }
-
-    /// Listening progress 0...1, only when there's a meaningful resume point.
-    private var resumeFraction: Double? {
-        guard resumePosition != nil, totalDurationSeconds > 0 else { return nil }
-        return min(1, max(0, positionSeconds / totalDurationSeconds))
-    }
-
-    private var percentComplete: Int {
-        Int((resumeFraction ?? 0) * 100 + 0.5)
-    }
-
-    private var timeLeftSeconds: Double {
-        max(0, totalDurationSeconds - positionSeconds)
-    }
-
-    private var primaryActionLabel: String {
-        if resumePosition != nil { return "Resume" }
-        if isFinished { return "Play Again" }
-        return "Play"
-    }
-
     private func partStartOffset(_ index: Int) -> Double {
         var offset = 0.0
         for position in 0..<index where parts.indices.contains(position) {
@@ -797,11 +539,7 @@ struct AudiobookDetailContent: View {
         return offset
     }
 
-    private var visibleChapters: [DisplayChapter] {
-        showAllChapters ? displayChapters : Array(displayChapters.prefix(chapterCollapseLimit))
-    }
-
-    private let chapterCollapseLimit = 8
+    // MARK: - Speed
 
     private let speedOptions: [Double] = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
 
@@ -811,92 +549,11 @@ struct AudiobookDetailContent: View {
             : String(format: "%g", rate)
         return "\(value)×"
     }
-    #endif
-
-    // MARK: - Platform metrics
-
-    // The shared About / rail sections now render only on iOS & macOS — the
-    // tvOS audiobook page is `TVAudiobookDetailView` — so these carry phone
-    // values only. They stay outside `#if` so the shared section builders
-    // still resolve when the file is compiled for tvOS.
-    private var sectionTitleFont: Font { .headline }
-
-    private var aboutFont: Font { .system(size: 15) }
-
-    private var relatedPosterWidth: CGFloat {
-        110 * uiCustomization.cardPresentation.posterSize.scale
-    }
-
-    private var relatedPosterHeight: CGFloat {
-        // Audiobook covers are square — don't stretch them into the
-        // 2:3 poster shape the video rails use.
-        relatedPosterWidth
-    }
-
-    private var sectionSpacing: CGFloat { 30 }
-
-    private var railSpacing: CGFloat { 12 }
-
-    private var bottomPadding: CGFloat { 44 }
-
-    #if !os(tvOS)
-    private var phoneCoverSize: CGFloat { 196 }
-
-    private var phoneBackdropHeight: CGFloat { 470 }
-    #endif
 }
 
 private struct DisplayChapter: Identifiable, Hashable {
     let id: String
     let title: String
     let startSeconds: Double
-    let partTitle: String
-}
-
-#if !os(tvOS)
-/// Solid-white capsule resume/play button with the in-pill progress bar
-/// the design language specifies for in-progress items (§5.5): a thin black
-/// track + fill hugging the bottom of the pill.
-private struct AudiobookResumePill: View {
-    let icon: String
-    let title: String
-    let progress: Double?
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                Image(systemName: icon)
-                    .font(.system(size: 17, weight: .bold))
-                Text(title)
-                    .font(.system(size: 17, weight: .semibold))
-                    .lineLimit(1)
-            }
-            .foregroundColor(.black)
-            .frame(maxWidth: .infinity)
-            .frame(height: 54)
-            .background {
-                ZStack {
-                    Capsule().fill(Color.white)
-                    if let progress, progress > 0 {
-                        GeometryReader { geo in
-                            ZStack(alignment: .leading) {
-                                Capsule()
-                                    .fill(Color.black.opacity(0.16))
-                                    .frame(height: 5)
-                                Capsule()
-                                    .fill(Color.black.opacity(0.82))
-                                    .frame(width: max(6, geo.size.width * progress), height: 5)
-                            }
-                            .frame(maxHeight: .infinity, alignment: .bottom)
-                            .padding(.horizontal, 16)
-                            .padding(.bottom, 8)
-                        }
-                    }
-                }
-            }
-        }
-        .buttonStyle(.plain)
-    }
 }
 #endif

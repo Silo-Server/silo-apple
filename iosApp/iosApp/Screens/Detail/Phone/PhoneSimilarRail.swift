@@ -44,23 +44,7 @@ struct PhoneSimilarRail: View {
     // MARK: - Rail
 
     private var rail: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(alignment: HorizontalMediaRailLayout.cardAlignment, spacing: 12) {
-                ForEach(items) { item in
-                    Button {
-                        onSelect(item.contentId)
-                    } label: {
-                        PhoneSimilarCard(item: item)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel(item.accessibilityDescription)
-                }
-            }
-            .padding(.horizontal, SiloTheme.safePadding)
-            .padding(.vertical, 4)
-            .phoneMediaRailBounds()
-        }
+        PhonePosterRailCards(items: items, onSelect: onSelect)
     }
 
     // MARK: - Loading placeholder
@@ -107,6 +91,68 @@ struct PhoneSimilarRail: View {
     }
 }
 
+// MARK: - Poster rail
+
+/// Titled horizontal rail of poster cards, shared by the detail pages'
+/// "More Like This" rail and the book rails (series, more by author).
+/// `aspectRatio` is width ÷ height: 2:3 video posters by default, square
+/// for audiobook covers.
+struct PhonePosterRail: View {
+    let title: String
+    var trailingText: String? = nil
+    let items: [SimilarPosterItem]
+    var aspectRatio: CGFloat = SiloTheme.posterCardWidth / SiloTheme.posterCardHeight
+    var placeholderSymbol: String = "film"
+    let onSelect: (String) -> Void
+
+    var body: some View {
+        if !items.isEmpty {
+            VStack(alignment: .leading, spacing: 14) {
+                PhoneSectionHeader(title: title, trailingText: trailingText)
+                    .padding(.horizontal, SiloTheme.safePadding)
+                PhonePosterRailCards(
+                    items: items,
+                    aspectRatio: aspectRatio,
+                    placeholderSymbol: placeholderSymbol,
+                    onSelect: onSelect
+                )
+            }
+        }
+    }
+}
+
+/// The untitled card strip inside `PhonePosterRail`.
+struct PhonePosterRailCards: View {
+    let items: [SimilarPosterItem]
+    var aspectRatio: CGFloat = SiloTheme.posterCardWidth / SiloTheme.posterCardHeight
+    var placeholderSymbol: String = "film"
+    let onSelect: (String) -> Void
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            LazyHStack(alignment: HorizontalMediaRailLayout.cardAlignment, spacing: 12) {
+                ForEach(items) { item in
+                    Button {
+                        onSelect(item.contentId)
+                    } label: {
+                        PhonePosterCard(
+                            item: item,
+                            aspectRatio: aspectRatio,
+                            placeholderSymbol: placeholderSymbol
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(item.accessibilityDescription)
+                }
+            }
+            .padding(.horizontal, SiloTheme.safePadding)
+            .padding(.vertical, 4)
+            .phoneMediaRailBounds()
+        }
+    }
+}
+
 // MARK: - Card model
 
 /// View-side projection of a recommendation card containing only what
@@ -118,11 +164,10 @@ struct SimilarPosterItem: Identifiable, Hashable {
     let posterUrl: String?
     let posterThumbhash: String?
     let year: Int?
+    /// Replaces the year caption when set, e.g. "Book 2" in a series rail.
+    let subtitle: String?
+    let accessibilityDescription: String
     var id: String { contentId }
-
-    var accessibilityDescription: String {
-        [title, year.map(String.init)].compactMap { $0 }.joined(separator: ", ")
-    }
 
     init(card: BrowseItem) {
         self.contentId = card.contentId
@@ -130,20 +175,36 @@ struct SimilarPosterItem: Identifiable, Hashable {
         self.posterUrl = card.posterUrl
         self.posterThumbhash = card.posterThumbhash
         self.year = card.year
+        self.subtitle = nil
+        self.accessibilityDescription = [card.title, card.year.map(String.init)]
+            .compactMap { $0 }
+            .joined(separator: ", ")
+    }
+
+    init(audiobook item: AudiobookRelatedItem) {
+        self.contentId = item.contentId
+        self.title = item.title
+        self.posterUrl = item.posterUrl
+        self.posterThumbhash = nil
+        self.year = item.year
+        self.subtitle = item.seriesIndex.map { "Book \($0)" }
+        self.accessibilityDescription = audiobookRelatedItemAccessibilityLabel(item)
     }
 }
 
 // MARK: - Card
 
-private struct PhoneSimilarCard: View {
+private struct PhonePosterCard: View {
     let item: SimilarPosterItem
+    let aspectRatio: CGFloat
+    let placeholderSymbol: String
     @State private var uiCustomization = UICustomizationPreferences.shared
 
     private var cardWidth: CGFloat {
         SiloTheme.posterCardWidth * uiCustomization.cardPresentation.posterSize.scale
     }
     private var cardHeight: CGFloat {
-        cardWidth * (SiloTheme.posterCardHeight / SiloTheme.posterCardWidth)
+        cardWidth / aspectRatio
     }
 
     var body: some View {
@@ -156,8 +217,9 @@ private struct PhoneSimilarCard: View {
                     .lineLimit(2, reservesSpace: true)
                     .multilineTextAlignment(.leading)
             }
-            if uiCustomization.cardPresentation.caption.showsMetadata, let year = item.year {
-                Text(String(year))
+            if uiCustomization.cardPresentation.caption.showsMetadata,
+               let caption = item.subtitle ?? item.year.map(String.init) {
+                Text(caption)
                     .font(.siloCaption)
                     .foregroundColor(.siloSecondaryText)
             }
@@ -178,7 +240,7 @@ private struct PhoneSimilarCard: View {
                 .fill(Color.siloSurfaceElevated)
                 .frame(width: cardWidth, height: cardHeight)
                 .overlay(
-                    Image(systemName: "film")
+                    Image(systemName: placeholderSymbol)
                         .foregroundColor(.siloOnSurface.opacity(0.3))
                 )
         }

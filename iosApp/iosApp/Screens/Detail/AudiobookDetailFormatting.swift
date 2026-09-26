@@ -142,3 +142,14 @@ enum AudiobookDetailFormatting {
         return s
     }
 }
+
+func audiobookRelatedItemAccessibilityLabel(_ item: AudiobookRelatedItem) -> String {
+    var components = [item.title]
+    if let seriesIndex = item.seriesIndex {
+        components.append("Book \(seriesIndex)")
+    }
+    if let year = item.year {
+        components.append(String(year))
+    }
+    return components.joined(separator: ", ")
+}

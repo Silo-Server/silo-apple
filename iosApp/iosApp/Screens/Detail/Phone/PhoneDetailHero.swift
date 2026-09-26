@@ -154,6 +154,15 @@ private enum PhoneDetailGrainTexture {
     }()
 }
 
+/// What fills the hero's artwork slot. Video titles use their wide backdrop.
+/// Books have only cover art, so `.cover` keeps the same slot but fills it
+/// with a blurred wash of the cover and floats the sharp cover on top.
+/// `aspectRatio` is the cover's width ÷ height.
+enum PhoneDetailArtworkStyle: Equatable {
+    case backdrop
+    case cover(aspectRatio: CGFloat, placeholderSymbol: String)
+}
+
 /// Artwork moves at roughly half foreground speed. Its translation and
 /// scroll-linked dimming are render-time effects derived directly from the
 /// native scroll geometry, avoiding an observable-state update and image-view
@@ -163,6 +172,7 @@ private struct PhoneDetailParallaxArtwork: View {
     let thumbhash: String?
     let height: CGFloat
     let isEnabled: Bool
+    var style: PhoneDetailArtworkStyle = .backdrop
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -201,10 +211,24 @@ private struct PhoneDetailParallaxArtwork: View {
 
     @ViewBuilder
     private var artwork: some View {
-        if let url, !url.isEmpty {
-            AsyncImageView(url: url, thumbhash: thumbhash, contentMode: .fill)
-        } else {
-            Color.siloSurface
+        switch style {
+        case .backdrop:
+            if let url, !url.isEmpty {
+                AsyncImageView(url: url, thumbhash: thumbhash, contentMode: .fill)
+            } else {
+                Color.siloSurface
+            }
+        case .cover(let aspectRatio, let placeholderSymbol):
+            // The cover clears the floating top controls and leaves the lower
+            // part of the slot to the title, which overlays it as usual.
+            PhoneDetailCoverArtwork(
+                url: url,
+                thumbhash: thumbhash,
+                aspectRatio: aspectRatio,
+                placeholderSymbol: placeholderSymbol,
+                coverHeight: min(max(height * 0.48, 190), 250),
+                coverTopInset: 100
+            )
         }
     }
 
@@ -254,6 +278,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     /// intentionally renders no card-overlay badges in this redesigned surface.
     var overlayData: OverlayData? = nil
     var enablesArtworkParallax = false
+    var artworkStyle: PhoneDetailArtworkStyle = .backdrop
     @ViewBuilder let actions: () -> Actions
     @ViewBuilder let belowOverview: () -> BelowOverview
 
@@ -318,7 +343,8 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
                 url: resolvedArtworkURL,
                 thumbhash: resolvedArtworkThumbhash,
                 height: compactArtworkHeight,
-                isEnabled: enablesArtworkParallax
+                isEnabled: enablesArtworkParallax,
+                style: artworkStyle
             )
 
             LinearGradient(
@@ -433,23 +459,41 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
 
     @ViewBuilder
     private var artwork: some View {
-        if let url = resolvedArtworkURL {
-            AsyncImageView(
-                url: url,
-                thumbhash: resolvedArtworkThumbhash,
-                contentMode: .fill
-            )
-        } else {
-            Color.siloSurface
+        switch artworkStyle {
+        case .backdrop:
+            if let url = resolvedArtworkURL {
+                AsyncImageView(
+                    url: url,
+                    thumbhash: resolvedArtworkThumbhash,
+                    contentMode: .fill
+                )
+            } else {
+                Color.siloSurface
+            }
+        case .cover(let aspectRatio, let placeholderSymbol):
+            GeometryReader { geometry in
+                PhoneDetailCoverArtwork(
+                    url: resolvedArtworkURL,
+                    thumbhash: resolvedArtworkThumbhash,
+                    aspectRatio: aspectRatio,
+                    placeholderSymbol: placeholderSymbol,
+                    coverHeight: geometry.size.height * 0.68,
+                    coverTopInset: nil
+                )
+            }
         }
     }
 
+    /// Cover art always shows the cover; backdrop art falls back to the
+    /// poster only when the title has no backdrop.
     private var resolvedArtworkURL: String? {
-        nonEmpty(backdropUrl) ?? nonEmpty(posterUrl)
+        if case .cover = artworkStyle { return nonEmpty(posterUrl) }
+        return nonEmpty(backdropUrl) ?? nonEmpty(posterUrl)
     }
 
     private var resolvedArtworkThumbhash: String? {
-        nonEmpty(backdropUrl) != nil ? backdropThumbhash : posterThumbhash
+        if case .cover = artworkStyle { return posterThumbhash }
+        return nonEmpty(backdropUrl) != nil ? backdropThumbhash : posterThumbhash
     }
 
     private func nonEmpty(_ value: String?) -> String? {
@@ -586,6 +630,79 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
 
     private var isOverviewClipped: Bool {
         (overview?.count ?? 0) > 140
+    }
+}
+
+// MARK: - Cover artwork
+
+/// Fills the artwork slot with a soft, saturated wash of the cover, then
+/// floats the sharp cover on it. `coverTopInset` pins the cover below the
+/// top controls; nil centres it in the slot.
+private struct PhoneDetailCoverArtwork: View {
+    let url: String?
+    let thumbhash: String?
+    let aspectRatio: CGFloat
+    let placeholderSymbol: String
+    let coverHeight: CGFloat
+    let coverTopInset: CGFloat?
+
+    var body: some View {
+        ZStack(alignment: coverTopInset == nil ? .center : .top) {
+            wash
+            cover
+                .padding(.top, coverTopInset ?? 0)
+        }
+    }
+
+    @ViewBuilder
+    private var wash: some View {
+        if let url, !url.isEmpty {
+            Color.clear
+                .overlay {
+                    AsyncImageView(
+                        url: url,
+                        thumbhash: thumbhash,
+                        targetSize: CGSize(width: 420, height: 420),
+                        contentMode: .fill
+                    )
+                    .scaleEffect(1.25)
+                    .saturation(1.2)
+                    .blur(radius: 44, opaque: true)
+                }
+                .overlay(Color.black.opacity(0.26))
+                .clipped()
+        } else {
+            Color.siloSurface
+        }
+    }
+
+    private var cover: some View {
+        let width = coverHeight * aspectRatio
+        return Group {
+            if let url, !url.isEmpty {
+                AsyncImageView(
+                    url: url,
+                    thumbhash: thumbhash,
+                    targetSize: CGSize(width: width, height: coverHeight),
+                    contentMode: .fill
+                )
+            } else {
+                Color.siloSurfaceElevated
+                    .overlay {
+                        Image(systemName: placeholderSymbol)
+                            .font(.system(size: coverHeight * 0.2, weight: .semibold))
+                            .foregroundStyle(Color.siloOnSurface.opacity(0.45))
+                    }
+            }
+        }
+        .frame(width: width, height: coverHeight)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.white.opacity(0.10), lineWidth: 0.5)
+        )
+        .shadow(color: .black.opacity(0.5), radius: 26, x: 0, y: 16)
+        .accessibilityHidden(true)
     }
 }
 
