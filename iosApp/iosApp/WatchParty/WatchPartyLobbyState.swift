@@ -74,9 +74,7 @@ struct WatchPartySelectedItem: Equatable, Sendable {
     var factsLine: [String] {
         var facts: [String] = []
         if let year, year > 0 { facts.append(String(year)) }
-        if let runtimeMinutes, runtimeMinutes > 0 {
-            facts.append(runtimeMinutes >= 60 ? "\(runtimeMinutes / 60)h \(runtimeMinutes % 60)m" : "\(runtimeMinutes)m")
-        }
+        if let runtime = MediaTextFormatting.runtime(minutes: runtimeMinutes) { facts.append(runtime) }
         return facts
     }
 }

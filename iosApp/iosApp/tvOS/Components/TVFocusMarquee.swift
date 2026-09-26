@@ -84,7 +84,7 @@ struct TVMarqueeContent: Equatable {
     /// Technical capability chips (`4K · DOLBY VISION · ATMOS`).
     let badges: [String]
     /// Dot-joined identity tokens: year · genre · runtime, or
-    /// `S2 E7 · episode title · 45 min · 23 min left` for episodes.
+    /// `S2 E7 · episode title · 45m · 23m left` for episodes.
     let metaParts: [String]
     /// Where runtime belongs in `metaParts`. Detail enrichment inserts its
     /// fallback here when a lightweight section payload omitted runtime.
@@ -239,11 +239,12 @@ extension TVMarqueeContent {
 
     /// Badge chips from the section payload's `OverlaySummary` — the
     /// marquee shows the headline trio (resolution, dynamic range,
-    /// audio), uppercased to the §4.1 badge style.
+    /// audio). Resolution uses the card overlays' label (`1080p`, `4K`);
+    /// dynamic range and audio are uppercased to the §4.1 badge style.
     private static func badges(from summary: OverlaySummary?) -> [String] {
         guard let summary else { return [] }
         var badges: [String] = []
-        if let resolution = prettyResolution(summary.resolution) {
+        if let resolution = MediaTextFormatting.resolution(summary.resolution) {
             badges.append(resolution)
         }
         if let hdr = nonEmpty(summary.hdr) {
@@ -257,15 +258,6 @@ extension TVMarqueeContent {
         return badges
     }
 
-    private static func prettyResolution(_ value: String?) -> String? {
-        guard let value = nonEmpty(value) else { return nil }
-        switch value.lowercased() {
-        case "2160p", "4k", "uhd": return "4K"
-        case "4320p", "8k": return "8K"
-        default: return value.uppercased()
-        }
-    }
-
     private static func episodeToken(season: Int?, episode: Int?) -> String? {
         switch (season, episode) {
         case let (season?, episode?): return "S\(season) E\(episode)"
@@ -275,7 +267,7 @@ extension TVMarqueeContent {
         }
     }
 
-    /// `23 min left` for items with a live resume point, mirroring the
+    /// `23m left` for items with a live resume point, mirroring the
     /// progress rules MediaRow uses for its bars.
     private static func timeLeftText(position: Double?, duration: Double?) -> String? {
         guard let position, let duration,
@@ -284,25 +276,15 @@ extension TVMarqueeContent {
             return nil
         }
         let remaining = max(Int(((duration - position) / 60).rounded(.up)), 1)
-        return "\(remaining) min left"
+        return MediaTextFormatting.runtime(minutes: remaining).map { "\($0) left" }
     }
 
     /// Episode/movie length: the metadata runtime when present, else
     /// derived from the file duration the payload already carries.
     private static func lengthText(runtimeMinutes: Int?, durationSeconds: Double?) -> String? {
-        if let text = runtimeText(minutes: runtimeMinutes) { return text }
+        if let text = MediaTextFormatting.runtime(minutes: runtimeMinutes) { return text }
         guard let durationSeconds, durationSeconds > 0 else { return nil }
-        return runtimeText(minutes: Int((durationSeconds / 60).rounded()))
-    }
-
-    private static func runtimeText(minutes: Int?) -> String? {
-        guard let minutes, minutes > 0 else { return nil }
-        if minutes >= 60 {
-            let hours = minutes / 60
-            let rest = minutes % 60
-            return rest == 0 ? "\(hours)h" : "\(hours)h \(rest)m"
-        }
-        return "\(minutes) min"
+        return MediaTextFormatting.runtime(minutes: Int((durationSeconds / 60).rounded()))
     }
 
     private static func nonEmpty(_ value: String?) -> String? {
@@ -450,7 +432,7 @@ final class TVContinueWatchingPlaybackMetadataStore {
         overlayData.multiSub = (version.subtitleTracks?.count ?? 0) > 1
 
         var badges: [String] = []
-        if let resolution = prettyResolution(version.resolution) {
+        if let resolution = MediaTextFormatting.resolution(version.resolution) {
             badges.append(resolution)
         }
         if let hdr {
@@ -525,16 +507,6 @@ final class TVContinueWatchingPlaybackMetadataStore {
         }
         return "HDR"
     }
-
-    private static func prettyResolution(_ value: String?) -> String? {
-        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !value.isEmpty else { return nil }
-        switch value.lowercased() {
-        case "2160p", "4k", "uhd": return "4K"
-        case "4320p", "8k": return "8K"
-        default: return value.uppercased()
-        }
-    }
 }
 
 // MARK: - Detail enrichment
@@ -566,7 +538,7 @@ struct TVMarqueeEnrichment: Equatable {
         contentRatingBadge = trimmedRating?.isEmpty == false
             ? trimmedRating?.uppercased()
             : nil
-        runtimeText = Self.runtimeText(minutes: detail.runtime)
+        runtimeText = MediaTextFormatting.runtime(minutes: detail.runtime)
         var parts: [String] = []
         if let airDate = Self.airDateText(detail.airDate) {
             parts.append("Aired \(airDate)")
@@ -587,16 +559,6 @@ struct TVMarqueeEnrichment: Equatable {
     private static func airDateText(_ raw: String?) -> String? {
         guard let raw, !raw.isEmpty else { return nil }
         return DetailDateFormatting.abbreviatedDate(raw)
-    }
-
-    private static func runtimeText(minutes: Int?) -> String? {
-        guard let minutes, minutes > 0 else { return nil }
-        if minutes >= 60 {
-            let hours = minutes / 60
-            let remainder = minutes % 60
-            return remainder == 0 ? "\(hours)h" : "\(hours)h \(remainder)m"
-        }
-        return "\(minutes) min"
     }
 }
 

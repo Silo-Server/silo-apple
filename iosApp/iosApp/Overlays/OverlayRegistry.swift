@@ -67,20 +67,6 @@ enum OverlayRegistry {
 
 private extension OverlayRegistry {
 
-    static func prettyResolution(_ value: String?) -> String? {
-        guard let value, !value.isEmpty else { return nil }
-        let v = value.lowercased()
-        switch v {
-        case "2160p", "4k", "uhd": return "4K"
-        case "4320p", "8k":         return "8K"
-        default:
-            if v.range(of: #"^\d+p$"#, options: .regularExpression) != nil {
-                return v
-            }
-            return value.uppercased()
-        }
-    }
-
     static func compactHdrSuffix(_ value: String?) -> String? {
         guard let value, !value.isEmpty else { return nil }
         return value.contains("DV") ? "DV" : "HDR"
@@ -126,9 +112,9 @@ private extension OverlayRegistry {
             defaultEnabled: true,
             iconId: .monitor,
             iconCapable: true,
-            // `prettyResolution`, not raw uppercase: web renders "4K" for a
-            // `2160p` payload and the standalone badge must match it.
-            getValue: { prettyResolution($0.resolution) }
+            // `MediaTextFormatting.resolution`, not raw uppercase: web renders
+            // "4K" for a `2160p` payload and the standalone badge must match it.
+            getValue: { MediaTextFormatting.resolution($0.resolution) }
         ),
         OverlayDef(
             id: .hdr,
@@ -144,7 +130,7 @@ private extension OverlayRegistry {
             defaultEnabled: false,
             iconCapable: true,
             getValue: { data in
-                guard let res = prettyResolution(data.resolution) else { return nil }
+                guard let res = MediaTextFormatting.resolution(data.resolution) else { return nil }
                 if let hdr = compactHdrSuffix(data.hdr) { return "\(res) \(hdr)" }
                 return res
             },
@@ -287,13 +273,6 @@ private extension OverlayRegistry {
 
 private extension OverlayRegistry {
 
-    static func formatRuntime(_ minutes: Int?) -> String? {
-        guard let minutes, minutes > 0 else { return nil }
-        let h = minutes / 60
-        let m = minutes % 60
-        return h > 0 ? "\(h)h \(m)m" : "\(m)m"
-    }
-
     /// English display name for a language tag, matching web's
     /// `formatLanguage` (English CLDR names, so "en" → "English" not
     /// "EN"). A tag CLDR can't name falls back to the uppercased code
@@ -326,7 +305,7 @@ private extension OverlayRegistry {
             defaultEnabled: false,
             iconId: .clock,
             iconCapable: true,
-            getValue: { formatRuntime($0.runtime) }
+            getValue: { MediaTextFormatting.runtime(minutes: $0.runtime) }
         ),
         OverlayDef(
             id: .originalLanguage,

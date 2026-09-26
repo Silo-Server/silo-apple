@@ -555,8 +555,8 @@ private struct SeriesEpisodeDownloadPicker: View {
 
     private func episodeDetailText(_ episode: EpisodeListItem) -> String {
         var parts = ["Episode \(episode.episodeNumber)"]
-        if let runtime = episode.runtime, runtime > 0 {
-            parts.append("\(runtime) min")
+        if let runtime = MediaTextFormatting.runtime(minutes: episode.runtime) {
+            parts.append(runtime)
         }
         return parts.joined(separator: " · ")
     }

@@ -411,7 +411,7 @@ struct OfflineDownloadDetailView: View {
 
     private func metaLine(_ record: DownloadRecord) -> String {
         var parts: [String] = []
-        if let runtime = manifest?.runtime, runtime > 0 { parts.append("\(runtime) min") }
+        if let runtime = MediaTextFormatting.runtime(minutes: manifest?.runtime) { parts.append(runtime) }
         if let year = manifest?.year { parts.append(String(year)) }
         return parts.joined(separator: " · ")
     }
