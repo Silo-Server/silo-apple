@@ -150,13 +150,18 @@ struct DiagnosticsBundleBuilder {
             throw DiagnosticsBundleError.invalidHostedEnvelope
         }
 
+        // Bind the exact bytes that will be re-sent to the manifest the collector checks.
+        guard cached.manifest.archive.bytes == cached.bundleData.count,
+              cached.manifest.archive.sha256 == DiagnosticsSHA256.hex(data: cached.bundleData) else {
+            throw DiagnosticsBundleError.invalidHostedEnvelope
+        }
+        // Bind the retained sanitized members to those bytes by content, not by
+        // re-deflating them: deflate output is not stable across zlib versions,
+        // so a byte comparison would reject envelopes saved before an OS update.
         let entries = cached.archiveEntries.map { ($0.relativePath, $0.data) }
         let tarData = try Self.makeTar(entries: entries)
-        let bundleData = try Self.gzip(tarData)
-        guard bundleData == cached.bundleData,
-              cached.manifest.archive.bytes == bundleData.count,
-              cached.manifest.archive.uncompressedBytes == tarData.count,
-              cached.manifest.archive.sha256 == DiagnosticsSHA256.hex(data: bundleData) else {
+        guard cached.manifest.archive.uncompressedBytes == tarData.count,
+              (try? Self.gunzip(cached.bundleData, maximumBytes: tarData.count)) == tarData else {
             throw DiagnosticsBundleError.invalidHostedEnvelope
         }
 
@@ -1093,11 +1098,11 @@ struct DiagnosticsBundleBuilder {
         header[155] = 32
     }
 
-    static func gzip(_ data: Data) throws -> Data {
+    static func gzip(_ data: Data, level: Int32 = Z_DEFAULT_COMPRESSION) throws -> Data {
         var stream = z_stream()
         let initStatus = deflateInit2_(
             &stream,
-            Z_DEFAULT_COMPRESSION,
+            level,
             Z_DEFLATED,
             MAX_WBITS + 16,
             8,
@@ -1139,11 +1144,81 @@ struct DiagnosticsBundleBuilder {
         }
         return output
     }
+
+    /// Decompresses a single gzip member with a bare header (FLG == 0), as
+    /// written by `gzip`. Throws if the stream is empty, malformed, truncated,
+    /// carries optional header fields, is followed by trailing bytes, or
+    /// inflates past `maximumBytes`.
+    static func gunzip(_ data: Data, maximumBytes: Int) throws -> Data {
+        guard !data.isEmpty else {
+            throw DiagnosticsBundleError.gunzipFailed(Z_BUF_ERROR)
+        }
+        // 10-byte header plus 8-byte CRC-32/ISIZE trailer. `gzip` never calls
+        // `deflateSetHeader`, so zlib writes FLG == 0: no FEXTRA, FNAME,
+        // FCOMMENT or FHCRC that could carry bytes outside the tar.
+        guard data.count >= 18, data[data.startIndex + 3] == 0 else {
+            throw DiagnosticsBundleError.invalidHostedEnvelope
+        }
+
+        var stream = z_stream()
+        let initStatus = inflateInit2_(
+            &stream,
+            MAX_WBITS + 16,
+            ZLIB_VERSION,
+            Int32(MemoryLayout<z_stream>.size)
+        )
+        guard initStatus == Z_OK else {
+            throw DiagnosticsBundleError.gunzipFailed(initStatus)
+        }
+        defer { inflateEnd(&stream) }
+
+        var output = Data()
+        var status: Int32 = Z_OK
+        try data.withUnsafeBytes { inputBuffer in
+            guard let inputBase = inputBuffer.bindMemory(to: Bytef.self).baseAddress else {
+                throw DiagnosticsBundleError.gunzipFailed(Z_BUF_ERROR)
+            }
+            stream.next_in = UnsafeMutablePointer(mutating: inputBase)
+            stream.avail_in = uInt(data.count)
+
+            repeat {
+                var buffer = [UInt8](repeating: 0, count: 16 * 1024)
+                let capacity = buffer.count
+                var produced = 0
+                try buffer.withUnsafeMutableBytes { outputBuffer in
+                    stream.next_out = outputBuffer.bindMemory(to: Bytef.self).baseAddress
+                    stream.avail_out = uInt(capacity)
+                    // A truncated stream returns Z_OK once its input is used
+                    // up, then Z_BUF_ERROR on the next call because no
+                    // progress is possible, so this loop cannot spin. inflate
+                    // checks the CRC-32 and ISIZE trailer (Z_DATA_ERROR).
+                    status = inflate(&stream, Z_NO_FLUSH)
+                    guard status == Z_OK || status == Z_STREAM_END else {
+                        throw DiagnosticsBundleError.gunzipFailed(status)
+                    }
+                    produced = capacity - Int(stream.avail_out)
+                }
+                if produced > 0 {
+                    output.append(buffer, count: produced)
+                }
+                guard output.count <= maximumBytes else {
+                    throw DiagnosticsBundleError.invalidHostedEnvelope
+                }
+            } while status != Z_STREAM_END
+
+            // zlib stops after one gzip member; anything left is not part of it.
+            guard stream.avail_in == 0 else {
+                throw DiagnosticsBundleError.invalidHostedEnvelope
+            }
+        }
+        return output
+    }
 }
 
 enum DiagnosticsBundleError: Error, Equatable {
     case invalidEntryName(String)
     case gzipFailed(Int32)
+    case gunzipFailed(Int32)
     case invalidHostedEnvelope
 }
 #endif

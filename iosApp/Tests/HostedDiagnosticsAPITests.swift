@@ -1270,6 +1270,126 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
     }
 
+    func testCommittedHostedEnvelopeSurvivesADifferentDeflateEncoding() throws {
+        // Simulates an envelope saved under a zlib whose deflate output differs
+        // from the one that later loads it.
+        let fixture = try makePendingHostedReport(label: "reencoded-envelope")
+        let bundle = try DiagnosticsBundleBuilder().build(
+            report: fixture.report,
+            logLines: [],
+            droppedLogLines: 0
+        )
+        try fixture.store.saveHostedEnvelope(bundle, for: fixture.report)
+        let rewritten = try reencoded(bundle, level: Z_NO_COMPRESSION)
+        XCTAssertNotEqual(rewritten.bundleData, bundle.bundleData)
+
+        let generation = try publishedHostedEnvelopeDirectory(of: fixture.report)
+        try rewritten.bundleData.write(
+            to: generation.appendingPathComponent("bundle.tar.gz"),
+            options: .atomic
+        )
+        try rewritten.manifestData.write(
+            to: generation.appendingPathComponent("manifest.json"),
+            options: .atomic
+        )
+
+        guard case .available(let cached) = fixture.store.loadHostedEnvelope(for: fixture.report) else {
+            return XCTFail("A valid envelope must not depend on deterministic deflate output")
+        }
+        XCTAssertEqual(cached.bundleData, rewritten.bundleData)
+        XCTAssertEqual(cached.manifestData, rewritten.manifestData)
+    }
+
+    func testCommittedHostedEnvelopeRejectsBundleBytesThatDoNotMatchManifestDigest() throws {
+        let fixture = try makePendingHostedReport(label: "digest-mismatch")
+        let bundle = try DiagnosticsBundleBuilder().build(
+            report: fixture.report,
+            logLines: [],
+            droppedLogLines: 0
+        )
+        try fixture.store.saveHostedEnvelope(bundle, for: fixture.report)
+        // Valid gzip of the right tar, but the outer manifest still describes
+        // the original bytes.
+        let unboundBytes = try DiagnosticsBundleBuilder.gzip(
+            gunzip(bundle.bundleData),
+            level: Z_NO_COMPRESSION
+        )
+        XCTAssertNotEqual(unboundBytes, bundle.bundleData)
+        let generation = try publishedHostedEnvelopeDirectory(of: fixture.report)
+        try unboundBytes.write(
+            to: generation.appendingPathComponent("bundle.tar.gz"),
+            options: .atomic
+        )
+
+        guard case .corrupt = fixture.store.loadHostedEnvelope(for: fixture.report) else {
+            return XCTFail("Stored bytes must stay bound to the manifest digest the collector checks")
+        }
+
+        // Same length and the same decompressed tar (the gzip MTIME field is
+        // outside the CRC), so only the digest check can reject these bytes.
+        var sameLengthBytes = bundle.bundleData
+        sameLengthBytes[sameLengthBytes.startIndex + 4] ^= 0x01
+        XCTAssertEqual(try gunzip(sameLengthBytes), try gunzip(bundle.bundleData))
+        try sameLengthBytes.write(
+            to: generation.appendingPathComponent("bundle.tar.gz"),
+            options: .atomic
+        )
+        guard case .corrupt = fixture.store.loadHostedEnvelope(for: fixture.report) else {
+            return XCTFail("Same-length bytes with a different digest must not load")
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+    }
+
+    func testCachedHostedEnvelopeRejectsDigestMatchedBytesWithDifferentMembers() throws {
+        let fixture = try makePendingHostedReport(label: "digest-matched-members")
+        let builder = DiagnosticsBundleBuilder()
+        let bundle = try builder.build(
+            report: fixture.report,
+            logLines: [],
+            droppedLogLines: 0
+        )
+        // Control: the re-encoding helper alone yields an envelope that validates.
+        XCTAssertNoThrow(try builder.validateCachedHostedEnvelope(
+            reencoded(bundle, level: Z_DEFAULT_COMPRESSION)
+        ))
+
+        let tar = try gunzip(bundle.bundleData)
+        let deviceEntry = try XCTUnwrap(bundle.archiveEntries.first { $0.relativePath == "device.json" })
+        let range = try XCTUnwrap(tar.range(of: deviceEntry.data))
+        var mutatedTar = tar
+        mutatedTar[range.lowerBound] = mutatedTar[range.lowerBound] == UInt8(ascii: "{")
+            ? UInt8(ascii: "[")
+            : UInt8(ascii: "{")
+        // Digest, sizes, outer manifest and embedded draft all match; only the
+        // decompressed members differ from the retained entries.
+        let result = try reencoded(bundle, level: Z_DEFAULT_COMPRESSION, tar: mutatedTar)
+
+        XCTAssertThrowsError(try builder.validateCachedHostedEnvelope(result)) {
+            XCTAssertEqual($0 as? DiagnosticsBundleError, .invalidHostedEnvelope)
+        }
+    }
+
+    func testGunzipRejectsTruncatedTrailingOversizedAndDecoratedStreams() throws {
+        let original = Data(repeating: 0x41, count: 4096)
+        let gz = try DiagnosticsBundleBuilder.gzip(original)
+        XCTAssertEqual(try DiagnosticsBundleBuilder.gunzip(gz, maximumBytes: 4096), original)
+
+        // The truncated stream must be long enough to reach inflate.
+        XCTAssertGreaterThanOrEqual(gz.count - 8, 18)
+        XCTAssertThrowsError(try DiagnosticsBundleBuilder.gunzip(gz.prefix(gz.count - 8), maximumBytes: 4096))
+        XCTAssertThrowsError(try DiagnosticsBundleBuilder.gunzip(gz + [0x00], maximumBytes: 4096))
+        XCTAssertThrowsError(try DiagnosticsBundleBuilder.gunzip(gz, maximumBytes: 4095))
+        XCTAssertThrowsError(try DiagnosticsBundleBuilder.gunzip(Data("not gzip".utf8), maximumBytes: 4096))
+        XCTAssertThrowsError(try DiagnosticsBundleBuilder.gunzip(Data(), maximumBytes: 4096))
+
+        // FNAME set (FLG bit 3) with a one-character name after the fixed header.
+        var decorated = gz
+        decorated[decorated.startIndex + 3] = 0x08
+        decorated.insert(contentsOf: Data("x\0".utf8), at: decorated.startIndex + 10)
+        XCTAssertEqual(try gunzip(decorated), original)
+        XCTAssertThrowsError(try DiagnosticsBundleBuilder.gunzip(decorated, maximumBytes: 4096))
+    }
+
     func testHostedProcessingAndRejectionStateRetainLocalEvidence() throws {
         let fixture = try makePendingHostedReport(label: "processing-state")
 
@@ -2989,6 +3109,47 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                 XCTFail("Unregistered hosted attribute \(line.cat.rawValue).\(key)", file: file, line: sourceLine)
             }
         }
+    }
+
+    private func publishedHostedEnvelopeDirectory(of report: PendingReport) throws -> URL {
+        try XCTUnwrap(
+            FileManager.default.contentsOfDirectory(
+                at: report.directoryURL,
+                includingPropertiesForKeys: nil
+            ).first {
+                $0.lastPathComponent.hasPrefix(".hosted-envelope-")
+                    && !$0.lastPathComponent.hasPrefix(".hosted-envelope-staging-")
+            }
+        )
+    }
+
+    /// Re-encodes a built hosted bundle at another deflate level, optionally
+    /// from a replacement tar, with an outer manifest that describes the new
+    /// bytes. Retained entries are unchanged.
+    private func reencoded(
+        _ bundle: DiagnosticsBundleBuildResult,
+        level: Int32,
+        tar: Data? = nil
+    ) throws -> DiagnosticsBundleBuildResult {
+        let tar = try tar ?? gunzip(bundle.bundleData)
+        let bundleData = try DiagnosticsBundleBuilder.gzip(tar, level: level)
+        let archive = DiagnosticsManifest.Archive(
+            entries: bundle.manifest.archive.entries,
+            bytes: bundleData.count,
+            uncompressedBytes: tar.count,
+            sha256: DiagnosticsSHA256.hex(data: bundleData)
+        )
+        let draft = try DiagnosticsJSONCoding.makeDecoder().decode(
+            DiagnosticsManifestDraft.self,
+            from: bundle.archiveEntries[0].data
+        )
+        let manifest = draft.finalized(archive: archive)
+        return DiagnosticsBundleBuildResult(
+            manifest: manifest,
+            manifestData: try DiagnosticsJSONCoding.makeEncoder().encode(manifest),
+            bundleData: bundleData,
+            archiveEntries: bundle.archiveEntries
+        )
     }
 
     private func gunzip(_ data: Data) throws -> Data {
