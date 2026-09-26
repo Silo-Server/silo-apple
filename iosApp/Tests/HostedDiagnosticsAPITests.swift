@@ -1750,6 +1750,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertEqual(hostedStub.requests().map(\.method), ["DELETE"])
     }
 
+    @MainActor
     func testReadyReceiptHidesEvidenceAcrossInterruptedLocalRemoval() async throws {
         let fixture = try makePendingHostedReport(
             label: "ready-delete-crash",
@@ -1764,12 +1765,25 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertEqual(try fixture.store.hostedReadyReceiptIDs(), [fixture.report.id])
         XCTAssertTrue(fixture.store.listReports(now: Date()).isEmpty)
 
-        // A fresh process with a working filesystem remover finishes the local
-        // half before the report can be listed or uploaded again.
+        // A fresh process with a working filesystem remover does no I/O when
+        // the store is built, and listing keeps the report hidden without
+        // deleting it. The coordinator's maintenance pass, which runs at
+        // launch and on every foreground, finishes the local half.
         let restoredStore = PendingReportStore(rootDirectory: root)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+        XCTAssertTrue(restoredStore.listReports(now: Date()).isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+
+        let coordinator = DiagnosticsCoordinator(
+            hostedAPI: try makeHostedUploadAPI(),
+            pendingStore: restoredStore
+        )
+        await coordinator.scheduleHostedDeletionMaintenance().value
+
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
         XCTAssertTrue(restoredStore.listReports(now: Date()).isEmpty)
         XCTAssertEqual(try restoredStore.hostedReadyReceiptIDs(), [fixture.report.id])
+        XCTAssertTrue(hostedStub.requests().isEmpty)
     }
 
     func testHostedDeletionIntentIsNotClearedOrUploadableWhileLocalEvidenceCannotBeRemoved() async throws {
