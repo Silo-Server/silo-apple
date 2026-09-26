@@ -7,9 +7,7 @@ import SwiftUI
 struct TVServerNeedsSetupView: View {
     var router: AppRouter
 
-    @State private var isChecking = false
-    @State private var error: String?
-    @State private var retryTask: Task<Void, Never>?
+    @State private var retryModel = ServerNeedsSetupRetryModel()
     @FocusState private var focusedAction: Action?
 
     private enum Action: Hashable {
@@ -48,7 +46,7 @@ struct TVServerNeedsSetupView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
-                    if let error {
+                    if let error = retryModel.error {
                         Label(error, systemImage: "exclamationmark.circle.fill")
                             .font(.siloCaption)
                             .foregroundStyle(Color.requestRose)
@@ -61,13 +59,13 @@ struct TVServerNeedsSetupView: View {
                     HStack(spacing: 24) {
                         Button(action: retry) {
                             Label(
-                                isChecking ? "Checking…" : "Check again",
+                                retryModel.isChecking ? "Checking…" : "Check again",
                                 systemImage: "arrow.clockwise"
                             )
                         }
-                        .buttonStyle(AuroraPrimaryButtonStyle(isLoading: isChecking))
+                        .buttonStyle(AuroraPrimaryButtonStyle(isLoading: retryModel.isChecking))
                         .focused($focusedAction, equals: .retry)
-                        .disabled(isChecking)
+                        .disabled(retryModel.isChecking)
 
                         Button("Change server", action: changeServer)
                         .buttonStyle(AuroraGhostButtonStyle())
@@ -88,50 +86,17 @@ struct TVServerNeedsSetupView: View {
         .ignoresSafeArea()
         .navigationBarBackButtonHidden()
         .defaultFocus($focusedAction, .retry, priority: .userInitiated)
-        .animation(.easeInOut(duration: 0.2), value: error)
-        .onDisappear(perform: cancelRetry)
+        .animation(.easeInOut(duration: 0.2), value: retryModel.error)
+        .onDisappear { retryModel.cancel() }
     }
 
     private func retry() {
-        guard !isChecking else { return }
-        isChecking = true
-        error = nil
-        let expectedServerURL = AuthService.shared.serverUrl
-
-        retryTask = Task {
-            do {
-                let status = try await AuthService.shared.checkServer(
-                    url: expectedServerURL
-                )
-                await MainActor.run {
-                    isChecking = false
-                    guard !Task.isCancelled,
-                          AuthService.shared.serverUrl == expectedServerURL else { return }
-                    if status.needsSetup {
-                        error = "This server still needs administrator setup."
-                    } else {
-                        router.goBack()
-                    }
-                }
-            } catch {
-                await MainActor.run {
-                    isChecking = false
-                    guard !Task.isCancelled else { return }
-                    self.error = "Could not reach the server. Check that it is running and try again."
-                }
-            }
-        }
+        retryModel.retry { router.goBack() }
     }
 
     private func changeServer() {
-        cancelRetry()
+        retryModel.cancel()
         router.resetToServerSetup()
-    }
-
-    private func cancelRetry() {
-        retryTask?.cancel()
-        retryTask = nil
-        isChecking = false
     }
 }
 #endif
