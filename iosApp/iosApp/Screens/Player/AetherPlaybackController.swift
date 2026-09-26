@@ -131,6 +131,9 @@ final class AetherPlaybackController {
     private var externalPlaybackObservation: NSKeyValueObservation?
     private var observedExternalPlaybackPlayer: AVPlayer?
     private var externalPlaybackPolicyTask: Task<Void, Never>?
+    private lazy var externalPlaybackPolicyGuard = ExternalPlaybackPolicyGuard { [weak self] player in
+        self?.externalPlaybackPolicy(for: player)
+    }
     /// The outgoing native player's receiver policy while Aether replaces its
     /// item. Clearing the active spec must not momentarily revoke an active
     /// AirPlay route before the successor load completes its own handoff.
@@ -742,6 +745,7 @@ final class AetherPlaybackController {
         externalPlaybackObservation?.invalidate()
         externalPlaybackObservation = nil
         observedExternalPlaybackPlayer = player
+        externalPlaybackPolicyGuard.bind(to: player)
         configureExternalPlaybackPolicy()
 
         guard let player else {
@@ -764,20 +768,12 @@ final class AetherPlaybackController {
     private func configureExternalPlaybackPolicy() {
         guard let player = observedExternalPlaybackPlayer,
               engine.currentAVPlayer === player else { return }
-        let allowed = permitsExternalPlayback && Self.externalPlaybackAllowed(
-            activePolicy: externalPlaybackIsReceiverFetchable,
-            preservedReplacementPolicy: replacementExternalPlaybackPolicy,
-            preservedPolicyIsReceiverSafe: preservedReplacementPolicyIsReceiverSafe
-        )
-        player.allowsExternalPlayback = allowed
-        #if os(iOS)
-        player.usesExternalPlaybackWhileExternalScreenIsActive = allowed
-        #endif
+        externalPlaybackPolicyGuard.apply()
 
-        // Other custom-UI integrations bind to the same published AVPlayer.
-        // Reassert once after that synchronous publication fan-out so a
-        // generic PiP host cannot accidentally reopen a credentialed remote
-        // HLS URL to an AirPlay receiver that cannot send its headers.
+        // `@Published` publishes from `willSet`, so a sink such as `$videoRoute`
+        // runs while the engine still reports the previous route. Re-evaluate
+        // once that publishing job finishes. Other writers of the flags are
+        // corrected by the guard's KVO, not by this pass.
         externalPlaybackPolicyTask?.cancel()
         externalPlaybackPolicyTask = Task { @MainActor [weak self, weak player] in
             await Task.yield()
@@ -785,18 +781,23 @@ final class AetherPlaybackController {
                   let self, let player,
                   self.observedExternalPlaybackPlayer === player,
                   self.engine.currentAVPlayer === player else { return }
-            let allowed = self.permitsExternalPlayback && Self.externalPlaybackAllowed(
-                activePolicy: self.externalPlaybackIsReceiverFetchable,
-                preservedReplacementPolicy: self.replacementExternalPlaybackPolicy,
-                preservedPolicyIsReceiverSafe: self.preservedReplacementPolicyIsReceiverSafe
-            )
-            player.allowsExternalPlayback = allowed
-            #if os(iOS)
-            player.usesExternalPlaybackWhileExternalScreenIsActive = allowed
-            #endif
+            self.externalPlaybackPolicyGuard.apply()
             self.refreshExternalPlaybackState()
             self.externalPlaybackPolicyTask = nil
         }
+    }
+
+    /// The value the bound player's external-playback flags must hold, or nil
+    /// when the controller does not own `player`: it is not both the observed
+    /// player and the one the engine currently publishes.
+    private func externalPlaybackPolicy(for player: AVPlayer) -> Bool? {
+        guard observedExternalPlaybackPlayer === player,
+              engine.currentAVPlayer === player else { return nil }
+        return permitsExternalPlayback && Self.externalPlaybackAllowed(
+            activePolicy: externalPlaybackIsReceiverFetchable,
+            preservedReplacementPolicy: replacementExternalPlaybackPolicy,
+            preservedPolicyIsReceiverSafe: preservedReplacementPolicyIsReceiverSafe
+        )
     }
 
     /// A loopback route is receiver-reachable through Aether's AirPlay host
