@@ -40,7 +40,7 @@ enum CollectionGroupSupport: Equatable {
 class CollectionsViewModel {
     private(set) var collections: [UserCollection] = []
     private(set) var groups: [CollectionGroup] = []
-    /// Cached output of [buildSections]. Recomputed whenever [collections]
+    /// Cached output of rebuildSections(). Recomputed whenever [collections]
     /// or [groups] change — never on every view body access.
     private(set) var sections: [UserCollectionSection] = []
     var isLoading = false

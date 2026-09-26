@@ -265,7 +265,7 @@ struct RecommendationsView: View {
                 shortcutsRow
                     .padding(.horizontal, contentHorizontalPadding)
 
-                ForEach(Array(viewModel.sections.enumerated()), id: \.element.id) { index, section in
+                ForEach(viewModel.sections) { section in
                     SectionRow(
                         section: section,
                         onItemTap: { destinationContentId, item in
@@ -276,7 +276,6 @@ struct RecommendationsView: View {
                                 )
                             )
                         },
-                        prefersDefaultFocusOnFirstItem: prefersDefaultFocus(forSectionAt: index),
                         onMoveUp: nil
                     )
                 }
@@ -327,10 +326,6 @@ struct RecommendationsView: View {
         #else
         return SiloTheme.padding
         #endif
-    }
-
-    private func prefersDefaultFocus(forSectionAt index: Int) -> Bool {
-        return false
     }
 }
 

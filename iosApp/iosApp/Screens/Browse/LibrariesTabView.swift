@@ -119,7 +119,7 @@ func visibleLibrariesForRoot(
     return libraries.filter { libraryMatchesPrimaryMenuCategory($0, category: category) }
 }
 
-func libraryRootCanSwitch(fixedLibraryId: Int?, visibleLibraryCount: Int) -> Bool {
+func libraryRootCanSwitch(visibleLibraryCount: Int) -> Bool {
     visibleLibraryCount > 1
 }
 
@@ -347,10 +347,7 @@ struct LibrariesTabView: View {
         VStack(spacing: 0) {
             LibrariesTopBar(
                 activeLibrary: activeLibrary,
-                canSwitch: libraryRootCanSwitch(
-                    fixedLibraryId: fixedLibraryId,
-                    visibleLibraryCount: visibleLibraries.count
-                ),
+                canSwitch: libraryRootCanSwitch(visibleLibraryCount: visibleLibraries.count),
                 onLibraryTap: { showPicker = true },
                 onSearch: { router.navigate(to: .search) },
                 onOpenSettings: { router.navigate(to: .settings) },

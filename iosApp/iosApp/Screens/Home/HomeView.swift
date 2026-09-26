@@ -353,10 +353,6 @@ struct HomeView: View {
     }
 
     #if !os(tvOS)
-    private var sectionSpacing: CGFloat {
-        SiloTheme.largePadding
-    }
-
     /// On iOS the ScrollView already starts inside the safe area, so the
     /// runway must not count the status-bar inset a second time.
     private func runwaySafeAreaInset(_ geometry: GeometryProxy) -> CGFloat {
