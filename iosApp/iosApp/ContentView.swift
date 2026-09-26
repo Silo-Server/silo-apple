@@ -305,6 +305,7 @@ struct ContentView: View {
                 await uiCustomization.refresh()
                 await SeekIntervalPreferences.shared.refresh()
                 #if os(iOS)
+                // Doesn't wait for the permission alert, so it can't delay onAppActive.
                 await ApplePushRegistrationCoordinator.shared.prepareForAuthenticatedProfile()
                 #endif
                 #if !os(tvOS)

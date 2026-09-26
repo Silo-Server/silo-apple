@@ -373,6 +373,33 @@ actor ApplePushRegistrar {
     }
 }
 
+/// The system calls the coordinator needs to decide on and request
+/// notification permission. `live` wraps UNUserNotificationCenter,
+/// UIApplication and AuthService; tests substitute closures.
+struct ApplePushAuthorizationClient {
+    var hasAuthenticatedProfile: @MainActor () -> Bool
+    var authorizationStatus: @MainActor () async -> UNAuthorizationStatus
+    var requestAuthorization: @MainActor () async throws -> Bool
+    var registerForRemoteNotifications: @MainActor () -> Void
+
+    static var live: ApplePushAuthorizationClient {
+        ApplePushAuthorizationClient(
+            hasAuthenticatedProfile: {
+                AuthService.shared.hasServer && AuthService.shared.hasProfile
+            },
+            authorizationStatus: {
+                await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
+            },
+            requestAuthorization: {
+                try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])
+            },
+            registerForRemoteNotifications: {
+                UIApplication.shared.registerForRemoteNotifications()
+            }
+        )
+    }
+}
+
 @MainActor
 final class ApplePushRegistrationCoordinator {
     static let shared = ApplePushRegistrationCoordinator()
@@ -382,38 +409,61 @@ final class ApplePushRegistrationCoordinator {
         category: "ApplePush"
     )
 
+    private let authorization: ApplePushAuthorizationClient
+    private let registrar: ApplePushRegistrar
     private var lastDeviceToken: Data?
-    private let registrar = ApplePushRegistrar()
     private var registrationRunning = false
     private var registrationRequested = false
+    private var authorizationRequest: Task<Void, Never>?
 
-    private init() {}
+    /// The permission request that is still waiting for the user's answer, if
+    /// any. Tests await its `value` to observe what the answer led to.
+    var pendingAuthorizationRequest: Task<Void, Never>? { authorizationRequest }
 
+    init(authorization: ApplePushAuthorizationClient = .live,
+         registrar: ApplePushRegistrar = ApplePushRegistrar()) {
+        self.authorization = authorization
+        self.registrar = registrar
+    }
+
+    /// Registers for remote notifications when permission is granted, and asks
+    /// for it when it is undetermined. It never waits for the user's answer:
+    /// ContentView awaits this on the session hydration chain, and download
+    /// capability, scope activation and queued Downloads links must not wait
+    /// on a system alert. A grant registers from the background request.
     func prepareForAuthenticatedProfile() async {
-        guard AuthService.shared.hasServer, AuthService.shared.hasProfile else {
+        guard authorization.hasAuthenticatedProfile() else {
             return
         }
 
-        let center = UNUserNotificationCenter.current()
-        let settings = await center.notificationSettings()
-        switch settings.authorizationStatus {
+        switch await authorization.authorizationStatus() {
         case .authorized, .provisional, .ephemeral:
-            UIApplication.shared.registerForRemoteNotifications()
+            authorization.registerForRemoteNotifications()
         case .notDetermined:
-            do {
-                let granted = try await center.requestAuthorization(options: [.alert, .sound, .badge])
-                guard granted else {
-                    Self.logger.info("User declined Apple push notification authorization")
-                    return
-                }
-                UIApplication.shared.registerForRemoteNotifications()
-            } catch {
-                Self.logger.error("Apple push authorization request failed: \(String(describing: error), privacy: .public)")
-            }
+            requestAuthorizationInBackground()
         case .denied:
             Self.logger.info("Apple push notification authorization is denied")
         @unknown default:
             Self.logger.info("Apple push notification authorization is in an unknown state")
+        }
+    }
+
+    /// Starts the permission request unless one is already waiting for the
+    /// user, and registers for remote notifications if they allow it.
+    private func requestAuthorizationInBackground() {
+        guard authorizationRequest == nil else { return }
+        authorizationRequest = Task { [self] in
+            defer { authorizationRequest = nil }
+            do {
+                let granted = try await authorization.requestAuthorization()
+                guard granted else {
+                    Self.logger.info("User declined Apple push notification authorization")
+                    return
+                }
+                authorization.registerForRemoteNotifications()
+            } catch {
+                Self.logger.error("Apple push authorization request failed: \(String(describing: error), privacy: .public)")
+            }
         }
     }
 
