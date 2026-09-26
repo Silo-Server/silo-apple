@@ -1,0 +1,25 @@
+repository=https://github.com/Silo-Server/silo-server
+path=contracts/api/v2/openapi.json
+commit=84ed9e59679e62b59bfe4bfffcf0cc644c5aee84
+
+apiv2-retry-safety.json is an excerpt of the server's API v2 contract: the
+method, path template and x-silo-retry-safety class of every annotated
+operation, sorted by path then method. Do not hand-edit it. Regenerate it from
+the server repository, never from a working tree:
+
+  git -C "$SILO_SERVER_REPO" show 84ed9e596:contracts/api/v2/openapi.json \
+    | jq -S '[.paths | to_entries[] | .key as $p | .value | to_entries[]
+        | select(.value | type == "object" and has("x-silo-retry-safety"))
+        | {method: (.key | ascii_upcase), path: $p, retry_safety: .value["x-silo-retry-safety"]}]
+        | sort_by(.path, .method)' \
+    > iosApp/Tests/Fixtures/APIv2RetrySafety/apiv2-retry-safety.json
+
+The commit must match the one in Fixtures/APIv2/SOURCE. Whenever
+scripts/sync-apiv2-fixtures.sh moves the API v2 fixtures to a new server
+commit, regenerate this excerpt at the same commit and update the commit
+above. APIv2RetrySafetyTests then checks APIv2MutationCatalog
+(iosApp/iosApp/Networking/APIv2/APIv2RetrySafety.swift) against it; update the
+catalog in the same change when it fails.
+
+The excerpt lives outside Fixtures/APIv2 because the sync script deletes any
+JSON there that it does not list.

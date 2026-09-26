@@ -169,8 +169,8 @@ extension APIv2Client {
     }
 
     /// Whole-batch statuses the server returns before writing anything, for
-    /// a condition that passes: an auth refusal (an expired session whose
-    /// refresh failed, or a profile whose proof is missing or stale) that
+    /// a condition that passes: an auth refusal (an expired session, or a
+    /// profile whose proof is missing or stale) that
     /// clears after re-authentication, timeout, rate limit, unavailable. A
     /// 500 is not one: the server can raise it after the writes.
     private static let deferredStatuses: Set<Int> = [401, 403, 408, 429, 503]

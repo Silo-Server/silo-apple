@@ -480,7 +480,7 @@ actor HTTPClient {
             )
 
             if response.statusCode == 401,
-               shouldAttemptRefresh(path: path, method: method),
+               Self.shouldAttemptRefresh(path: path, method: method),
                try await refreshScopedTokens(
                    auth: auth,
                    expected: requestIdentity,
@@ -540,7 +540,7 @@ actor HTTPClient {
                     )
                     #endif
                 }
-            } else if response.statusCode == 401, shouldAttemptRefresh(path: path, method: method) {
+            } else if response.statusCode == 401, Self.shouldAttemptRefresh(path: path, method: method) {
                 // Refresh was eligible but declined (wrong credential owner,
                 // no refresh token, dispatch blocked). `shouldAttemptRefresh`
                 // is re-checked so a 401 from `/auth/login` — an ordinary wrong
@@ -1035,7 +1035,7 @@ actor HTTPClient {
             dispatchRecord: dispatchRecord
         )
 
-        if response.statusCode == 401, shouldAttemptRefresh(path: path, method: method) {
+        if response.statusCode == 401, Self.shouldAttemptRefresh(path: path, method: method) {
             if let capturedAuth,
                let refreshedAuth = try await refreshTokens(
                    expected: capturedAuth,
@@ -1761,42 +1761,21 @@ actor HTTPClient {
         "/api/v2/system/setup", "/api/v2/auth/signup",
     ]
 
-    /// The v2 exclusions are single-dispatch mutations (`docs/native-api-v2.md`):
-    /// a 401 on one of them surfaces as the failure it is instead of being
-    /// re-sent under a refreshed bearer, because the server may already have
+    /// Whether a 401 may refresh the session and re-send the request. Reads
+    /// (GET, HEAD) always may. A mutation may only when it is on the replay
+    /// allowlist taken from the contract's `x-silo-retry-safety` annotations:
+    /// `APIv2MutationCatalog` in `APIv2RetrySafety.swift`, checked against a
+    /// vendored contract excerpt by `APIv2RetrySafetyTests`. Everything else,
+    /// including a mutation the catalog does not know, is sent once, and its
+    /// 401 surfaces as the failure it is, because the server may already have
     /// consumed the first attempt. A bearer known to be expired is renewed
-    /// before any request is sent, so these operations do not meet that 401
-    /// just because the token timed out. Settings value writes are
-    /// `natural_idempotent` and are not excluded: a 401 refreshes once and
-    /// re-sends the same desired value under the same captured owner.
-    private func shouldAttemptRefresh(path: String, method: String) -> Bool {
-        // Matches the guard in AuthInterceptorImpl.kt:96.
-        let diagnosticsUploads = "/api/v2/diagnostics/reports/uploads"
-        return !Self.isPublicAuthPath(path) && path != "/api/v2/diagnostics/reports"
-            && !(path.hasPrefix("/api/v2/watch-together/rooms/")
-                && ((method == "POST" && (path.hasSuffix("/playback/start") || path.hasSuffix("/suggestions/promote")))
-                    || (method == "PUT" && path.hasSuffix("/selection"))))
-            && !(method == "POST" && path.hasPrefix("/api/v2/playback/sessions/") && path.hasSuffix("/control/ws-ticket"))
-            && !(method == "POST" && path.hasPrefix("/api/v2/playback/") && (path.hasSuffix("/replan") || path.hasSuffix("/route-events")))
-            && path != "/api/v2/subtitles/download"
-            && !(method == "POST" && path == "/api/v2/devices/push/apple")
-            && !(["PUT", "DELETE"].contains(method) && path.hasPrefix("/api/v2/watchlist/"))
-            && !(["PUT", "DELETE"].contains(method) && path.hasPrefix("/api/v2/favorites/"))
-            && !(["POST", "DELETE"].contains(method) && path.hasPrefix("/api/v2/watched/"))
-            && !(path == "/api/v2/downloads/subscriptions" && method == "POST")
-            && path != "/api/v2/onboarding/progress"
-            && path != "/api/v2/subtitles/ai/translate"
-            && !(path.hasPrefix("/api/v2/catalog/items/") && path.hasSuffix("/translate-description"))
-            && !(method == "POST" && path.hasPrefix("/api/v2/catalog/items/") && path.hasSuffix("/trailers/refresh"))
-            && !(method == "POST" && path.hasPrefix("/api/v2/catalog/people/") && path.hasSuffix("/refresh"))
-            && !(path == "/api/v2/profiles" && method == "POST")
-            // A journaled own-profile PATCH has one dispatch, even when a
-            // refresh could obtain another bearer for the same account.
-            && !(method == "PATCH" && path.hasPrefix("/api/v2/profiles/")
-                && path.split(separator: "/").count == 4)
-            && !(path == "/api/v2/downloads" && method == "POST")
-            && path != diagnosticsUploads
-            && !(path.hasPrefix(diagnosticsUploads + "/") && path.hasSuffix("/complete"))
+    /// before any request is sent, so single-dispatch operations do not meet
+    /// that 401 just because the token timed out.
+    static func shouldAttemptRefresh(path: String, method: String) -> Bool {
+        guard !isPublicAuthPath(path) else { return false }
+        let verb = method.uppercased()
+        if verb == "GET" || verb == "HEAD" { return true }
+        return APIv2MutationCatalog.operation(method: verb, path: path)?.replaysAfterRefresh ?? false
     }
 
     private var isRequestDispatchBlocked: Bool {

@@ -220,6 +220,38 @@ final class RequestsV2Tests: XCTestCase {
         }
     }
 
+    func testCreate401IsNotRefreshedOrReplayed() async throws {
+        let (api, tokens) = try await client()
+        try await assertSentOnceAfter401(tokens, path: "/api/v2/requests") {
+            _ = try await api.createRequest(self.heatInput())
+        }
+    }
+
+    func testCancel401IsNotRefreshedOrReplayed() async throws {
+        let (api, tokens) = try await client()
+        try await assertSentOnceAfter401(tokens, path: "/api/v2/requests/request-one/cancel") {
+            _ = try await api.cancelRequest(id: "request-one", reason: nil)
+        }
+    }
+
+    /// Every request except a token refresh gets a 401, and the refresh would
+    /// succeed, so only the transport's retry-safety allowlist can stop the
+    /// refresh and the second dispatch of a `non_retryable` mutation.
+    private func assertSentOnceAfter401(_ tokens: TokenStore, path: String,
+                                        _ call: () async throws -> Void) async throws {
+        _ = await tokens.saveTokens(accessToken: "old-access", refreshToken: "old-refresh")
+        stub.reply(path: "/api/v2/auth/refresh", 200,
+                   #"{"access_token":"new-access","refresh_token":"new-refresh","expires_in":900}"#)
+        stub.reply(401, "{}")
+        do {
+            try await call()
+            XCTFail("the 401 is the answer")
+        } catch {}
+        XCTAssertEqual(stub.requestedPaths, [path], "no token refresh and no second dispatch")
+        let accessToken = await tokens.getAccessToken()
+        XCTAssertEqual(accessToken, "old-access")
+    }
+
     /// Once create or cancel has captured its owner, an owner change cannot
     /// prove the server never acted: the transport raises the same error just
     /// before sending and after the response. Both mutations report it as an

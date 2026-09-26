@@ -1,0 +1,1872 @@
+[
+  {
+    "method": "POST",
+    "path": "/api/v2/account/password",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/access-groups",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/admin/access-groups/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/access-groups/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/api-keys",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/admin/api-keys/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/api-keys/{id}/tier",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/autoscan/connections",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/autoscan/connections/test",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/admin/autoscan/connections/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/autoscan/connections/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/autoscan/settings",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/autoscan/sources",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/admin/autoscan/sources/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/autoscan/sources/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/admin/autoscan/sources/{id}/webhook",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/autoscan/sources/{id}/webhook",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/autoscan/sources/{id}/webhook/rotate",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/autoscan/trigger",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/admin/branding/assets/{kind}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/branding/assets/{kind}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/catalog/export",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/catalog/export-jobs",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/catalog/export-jobs/{id}/publish",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/catalog/import",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/catalog/import-jobs",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/collection-groups/{group_id}/collections/order",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/admin/collection-groups/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v2/admin/collection-groups/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/collections",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/collections/import/mdblist",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/collections/import/tmdb",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/collections/import/trakt",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/collections/order",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/collections/preview",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/collections/template-bundles/{bundle_id}/apply",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/collections/template-bundles/{bundle_id}/apply-job",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/admin/collections/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v2/admin/collections/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/collections/{id}/backdrop",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/admin/collections/{id}/image",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/collections/{id}/items/order",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/admin/collections/{id}/items/{item_id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/collections/{id}/items/{item_id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/collections/{id}/poster",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/collections/{id}/sync",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/admin/dashboard/layout",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/dashboard/layout",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/admin/diagnostics/reports/{id}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/email/test",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/files/{fileId}/contribute",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/history-import-sources",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/admin/history-import-sources/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/history-import-sources/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/history-imports/mappings",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/admin/history-imports/mappings/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/history-imports/mappings/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/history-imports/mappings/{id}/run",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/history-imports/plex/login",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/history-imports/runs/{id}/cancel",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/history-imports/sources/{id}/bulk-run",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/admin/history-imports/sources/{id}/token",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/history-imports/sources/{id}/token",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/invitations",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/admin/invitations/{id}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/invitations/{id}/resend",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/invite-codes",
+    "retry_safety": "unique_constraint"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/admin/invite-codes/{id}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/invite-codes/{id}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/invite-codes/{id}/top-up",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/items/{id}/images/apply",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/items/{id}/match/apply",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/items/{id}/match/search",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/items/{id}/merge",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v2/admin/items/{id}/metadata",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/items/{id}/metadata-translation",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/items/{id}/metadata-translation/jobs/{job_id}/cancel",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/items/{id}/redetect-intro",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/items/{id}/refresh-markers",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/items/{id}/refresh-metadata",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/items/{id}/split",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v2/admin/jellyfin-compat/settings",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/jellyfin-compat/web/install",
+    "retry_safety": "coalescing"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/jellyfin-compat/web/remove",
+    "retry_safety": "coalescing"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/libraries/{library_id}/collection-groups",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/libraries/{library_id}/collection-groups/order",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/literary-works/link",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/literary-works/matches/confirm",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/literary-works/matches/ignore",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/admin/literary-works/{work_id}/items/{content_id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/logs/ws-ticket",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/markers/providers/{provider}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/markers/providers/{provider}/validate",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/network-access/{provider}/connect",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/network-access/{provider}/disconnect",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/nodes",
+    "retry_safety": "unique_constraint"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/nodes/force-reload",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/admin/nodes/{id}",
+    "retry_safety": "durable_dispatch"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/nodes/{id}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/nodes/{id}/check",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/nodes/{id}/force-reload",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/nodes/{id}/reprobe",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/notifications/discord/test",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/notifications/push/apple/test",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/notifications/push/fcm/test",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/admin/notifications/push/relay",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/notifications/push/relay/register",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/notifications/server-channels",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/admin/notifications/server-channels/{id}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/notifications/server-channels/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/notifications/server-channels/{id}/rotate-secret",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/notifications/server-channels/{id}/test",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v2/admin/people/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/people/{id}/refresh",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/plugins/catalog-settings",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/plugins/installations",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/admin/plugins/installations/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/plugins/installations/{id}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/plugins/installations/{id}/auth-binding",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/plugins/installations/{id}/config",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/plugins/installations/{id}/config/test",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/plugins/installations/{id}/restart",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/plugins/installations/{id}/task-bindings/{capability_id}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/plugins/installations/{id}/update",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/plugins/repositories",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/admin/plugins/repositories/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/plugins/repositories/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/plugins/uploads",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/plugins/uploads/chunked",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/admin/plugins/uploads/chunked/{upload_id}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/plugins/uploads/chunked/{upload_id}/chunks/{chunk_index}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/plugins/uploads/chunked/{upload_id}/complete",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/policy/documents",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/admin/policy/documents/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v2/admin/policy/documents/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/policy/documents/{id}/active-version",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/policy/documents/{id}/versions",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/policy/simulate",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/policy/validate",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v2/admin/rate-limits/config",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/recommendations/trigger/cowatch",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/recommendations/trigger/embeddings",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/recommendations/trigger/recommendations",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/recommendations/trigger/taste-profiles",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/request-integrations",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/admin/request-integrations/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/request-integrations/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/request-integrations/{id}/options",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/request-settings",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/request-users/{user_id}/limit",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/requests/{id}/approve",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/requests/{id}/cancel",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/requests/{id}/decline",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/requests/{id}/retry",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/sections",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/sections/bulk",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/sections/defaults",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/sections/order",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/sections/preview",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/admin/sections/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v2/admin/sections/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/server/restart",
+    "retry_safety": "coalescing"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/sessions/{session_id}/message",
+    "retry_safety": "domain_identity"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/sessions/{session_id}/pause",
+    "retry_safety": "domain_identity"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/sessions/{session_id}/resume",
+    "retry_safety": "domain_identity"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/sessions/{session_id}/stop",
+    "retry_safety": "domain_identity"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/sessions/{session_id}/terminate",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/settings",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/settings/check/{kind}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/settings/sections",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/settings/{key}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/subtitle-providers/{provider}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/subtitle-providers/{provider}/test",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/admin/subtitles/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v2/admin/subtitles/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/tasks/{key}/cancel",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/tasks/{key}/run",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/tasks/{key}/triggers",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/users",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/admin/users/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/users/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/admin/users/{id}/impersonate",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/admin/users/{id}/settings/values/{key}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/admin/users/{id}/settings/values/{key}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/api-keys",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/api-keys/{id}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/audio-prefs/{series_id}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/audio-prefs/{series_id}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/auth/device/approve",
+    "retry_safety": "domain_identity"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/auth/device/approve-handoff",
+    "retry_safety": "domain_identity"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/auth/device/deny",
+    "retry_safety": "domain_identity"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/auth/device/poll",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/auth/device/start",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/auth/impersonation/end",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/auth/login",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/auth/logout",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/auth/oauth/complete",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/auth/oauth/{install_id}/init",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/auth/plugin-launch",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/auth/refresh",
+    "retry_safety": "domain_identity"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/auth/sessions/{id}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/auth/setup",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/auth/signup",
+    "retry_safety": "unique_constraint"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/autoscan/webhooks/{token}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/catalog/items/{id}/trailers/refresh",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/catalog/items/{id}/translate-description",
+    "retry_safety": "coalescing"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/catalog/people/{id}/refresh",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/catalog/query",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/collections",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/collections/groups",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/collections/groups/order",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/collections/groups/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v2/collections/groups/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/collections/import/mdblist",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/collections/import/tmdb",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/collections/import/trakt",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/collections/order",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/collections/preview",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/collections/sort-preference",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/collections/sort-preference",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/collections/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v2/collections/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/collections/{id}/image",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/collections/{id}/items/order",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/collections/{id}/items/{item_id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/collections/{id}/items/{item_id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/collections/{id}/poster",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/collections/{id}/sync",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/devices/push/apple",
+    "retry_safety": "domain_identity"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/devices/{device_id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/devices/{device_id}/settings",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/diagnostics/reports",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/diagnostics/reports/uploads",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/diagnostics/reports/uploads/{upload_id}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/diagnostics/reports/uploads/{upload_id}/chunks/{chunk_index}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/diagnostics/reports/uploads/{upload_id}/complete",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/downloads",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/downloads/subscriptions",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/downloads/subscriptions/sync",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/downloads/subscriptions/{id}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v2/downloads/subscriptions/{id}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/downloads/{id}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v2/downloads/{id}",
+    "retry_safety": "domain_identity"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/ebooks/{content_id}/annotations",
+    "retry_safety": "unique_constraint"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/ebooks/{content_id}/annotations/{annotation_id}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v2/ebooks/{content_id}/annotations/{annotation_id}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/ebooks/{content_id}/progress",
+    "retry_safety": "domain_identity"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/ebooks/{content_id}/reader-config",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/events/ws-ticket",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/favorites/{item_id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/favorites/{item_id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/history-imports/emby-connect/login",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/history-imports/plex/auth/check",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/history-imports/plex/auth/pin",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/history-imports/runs",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/history/remove",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/home/dismissals/{surface}/{item_id}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/home/dismissals/{surface}/{item_id}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/invitations/{token}/accept",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/libraries",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/libraries/reorder",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/libraries/roots/override",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/libraries/roots/override",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/libraries/stale-ids/{content_id}/rematch",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/libraries/{id}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v2/libraries/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/libraries/{id}/check-mount",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/libraries/{id}/confirm-empty-root-cleanup",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/libraries/{id}/metadata-match-queue/cancel",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/libraries/{id}/metadata-match-queue/retry",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/libraries/{id}/poster",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/libraries/{id}/poster",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/libraries/{id}/providers",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/libraries/{id}/refresh-metadata",
+    "retry_safety": "coalescing"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/library-jobs/{job_id}/cancel",
+    "retry_safety": "coalescing"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/library-playback-prefs/{library_id}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v2/library-playback-prefs/{library_id}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/markers/files/{file_id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/markers/files/{file_id}/{segment}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/markers/items/{item_id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/notifications/discord-link",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/notifications/discord-preferences",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/notifications/discord/link/init",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/notifications/email-preferences",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/notifications/email-preferences/address",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/notifications/email-preferences/address",
+    "retry_safety": "durable_dispatch"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/notifications/email/unsubscribe",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/notifications/preferences",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/notifications/push/devices",
+    "retry_safety": "domain_identity"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/notifications/push/devices/{device_id}",
+    "retry_safety": "domain_identity"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/notifications/read-all",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/notifications/web-push/subscriptions",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/notifications/web-push/subscriptions/{id}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/notifications/web-push/unsubscribe",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/notifications/webhooks",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/notifications/webhooks/{id}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/notifications/webhooks/{id}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/notifications/webhooks/{id}/rotate-secret",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/notifications/webhooks/{id}/test",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/notifications/{id}/read",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/onboarding/progress",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/playback/route-events",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/playback/sessions/{session_id}/control/ws-ticket",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/playback/start",
+    "retry_safety": "domain_identity"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/playback/{session_id}",
+    "retry_safety": "domain_identity"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/playback/{session_id}/progress",
+    "retry_safety": "domain_identity"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/playback/{session_id}/replan",
+    "retry_safety": "domain_identity"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/profile/sections",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/profile/sections",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/profiles",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/profiles/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v2/profiles/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/profiles/{id}/avatar",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/profiles/{id}/avatar",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/profiles/{id}/verify-pin",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/ratings/{item_id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/ratings/{item_id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/recommendations/taste-seed",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/requests",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/requests/{id}/cancel",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/scan",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/scan/cancel",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/settings/device/subtitle-appearance",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/settings/device/subtitle-appearance",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/settings/plugins/{installation_id}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/settings/values/effective",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/settings/values/nav.shortcuts/item",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/settings/values/{key}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/settings/values/{key}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/subtitle-prefs/{series_id}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/subtitle-prefs/{series_id}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/subtitles/ai/jobs/{job_id}/cancel",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/subtitles/ai/translate",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/subtitles/detect-language",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/subtitles/download",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/subtitles/search",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/subtitles/stored/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/subtitles/upload",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/sync/progress",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/sync/progress/snapshots",
+    "retry_safety": "domain_identity"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/theme/catalog/refresh",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/watch-providers/{provider}/auth/api-key",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/watch-providers/{provider}/auth/device-code",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/watch-providers/{provider}/auth/poll",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/watch-providers/{provider}/connection",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v2/watch-providers/{provider}/connection",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/watch-providers/{provider}/sync",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/watch-together/join",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/watch-together/rooms",
+    "retry_safety": "unique_constraint"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/watch-together/rooms/{room_id}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/watch-together/rooms/{room_id}/member-state",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/watch-together/rooms/{room_id}/playback/start",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/watch-together/rooms/{room_id}/playback/stop",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v2/watch-together/rooms/{room_id}/policy",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/watch-together/rooms/{room_id}/selection",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v2/watch-together/rooms/{room_id}/selection-mode",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/watch-together/rooms/{room_id}/source-fallback",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/watch-together/rooms/{room_id}/staged-selection",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/watch-together/rooms/{room_id}/suggestions",
+    "retry_safety": "unique_constraint"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/watch-together/rooms/{room_id}/suggestions/promote",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/watch-together/rooms/{room_id}/suggestions/{suggestion_id}",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/watch-together/rooms/{room_id}/suggestions/{suggestion_id}/vote",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/watch-together/rooms/{room_id}/suggestions/{suggestion_id}/vote",
+    "retry_safety": "unique_constraint"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/watch-together/rooms/{room_id}/ws-ticket",
+    "retry_safety": "natural_idempotent"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/watched/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/watched/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/watchlist/{item_id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/watchlist/{item_id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/webhook-sync/connections",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v2/webhook-sync/connections/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/webhook-sync/connections/{id}",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v2/webhook-sync/connections/{id}/profile-mappings",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/webhook-sync/connections/{id}/webhook/rotate",
+    "retry_safety": "non_retryable"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v2/webhook-sync/webhooks/{secret}",
+    "retry_safety": "non_retryable"
+  }
+]
