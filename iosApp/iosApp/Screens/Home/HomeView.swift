@@ -209,11 +209,9 @@ struct HomeView: View {
         }
         #endif
         }
-        #if os(iOS) || os(tvOS)
         .onReceive(NotificationCenter.default.publisher(for: .homeSectionsShouldRefresh)) { _ in
             Task { await viewModel.loadSections() }
         }
-        #endif
         .alert(
             "Couldn’t Update Item",
             isPresented: $viewModel.isShowingActionError

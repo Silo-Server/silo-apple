@@ -991,7 +991,7 @@ class PlayerViewModel {
     private var lastSeriesPlayback: (seriesId: String, seasonNumber: Int?)?
     /// `SeriesPlaybackReturnInbox` generation when this player was created.
     private let seriesReturnGeneration: Int
-    #if os(iOS)
+    #if os(iOS) || os(macOS)
     @ObservationIgnored
     private var refreshHomeAfterPlaybackWrite: (@MainActor () -> Void)?
     #endif
@@ -3785,7 +3785,7 @@ class PlayerViewModel {
                currentTime >= 0 {
                 let priorNaturalEndProgressTask = naturalEndProgressTask
                 let endPosition = currentTime
-                #if os(iOS)
+                #if os(iOS) || os(macOS)
                 let refreshHome = refreshHomeAfterPlaybackWrite
                 #endif
                 naturalEndProgressTask = Task { [sessionBridge] in
@@ -3794,7 +3794,7 @@ class PlayerViewModel {
                         position: endPosition,
                         isPaused: true
                     )
-                    #if os(iOS)
+                    #if os(iOS) || os(macOS)
                     if result == .success { refreshHome?() }
                     #endif
                 }
@@ -4149,7 +4149,7 @@ class PlayerViewModel {
         origin: LoadOrigin = .userInitiated
     ) {
         guard !isDisposed else { return }
-        #if os(iOS)
+        #if os(iOS) || os(macOS)
         if refreshHomeAfterPlaybackWrite == nil {
             refreshHomeAfterPlaybackWrite = StartupContentPrefetcher.homeRefreshAfterPlaybackWrite()
         }
@@ -4239,7 +4239,7 @@ class PlayerViewModel {
                 } else {
                     await self.sessionBridge.reportProgress(position: snapshotPosition, isPaused: true)
                 }
-                #if os(iOS)
+                #if os(iOS) || os(macOS)
                 self.refreshHomeAfterPlaybackWrite?()
                 #endif
             }
@@ -6707,7 +6707,7 @@ class PlayerViewModel {
             if stopServerSessionOnTeardown {
                 await sessionBridge.stopSession(position: finalPosition, isPaused: true)
             }
-            #if os(iOS)
+            #if os(iOS) || os(macOS)
             refreshHomeAfterPlaybackWrite?()
             #endif
         }
