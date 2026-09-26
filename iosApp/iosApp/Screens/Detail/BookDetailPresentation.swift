@@ -126,15 +126,19 @@ struct BookDetailPresentation {
         Self.totalDurationSeconds(of: detail)
     }
 
+    /// Uses the larger of the server total and the stitched part lengths,
+    /// as `AudiobookPlaybackContext` does, so a stale short total can't make
+    /// a position in the last parts look finished.
     static func totalDurationSeconds(of detail: ItemDetail) -> Double {
+        let partTotal = AudiobookPlaybackContext.audioParts(of: detail)
+            .reduce(0) { $0 + AudiobookPlaybackContext.partDuration($1) }
         if let total = detail.audiobook?.totalDurationSeconds, total > 0 {
-            return Double(total)
+            return max(Double(total), partTotal)
         }
         if let duration = detail.userData?.durationSeconds, duration > 0 {
-            return duration
+            return max(duration, partTotal)
         }
-        return AudiobookPlaybackContext.audioParts(of: detail)
-            .reduce(0) { $0 + AudiobookPlaybackContext.partDuration($1) }
+        return partTotal
     }
 
     var positionSeconds: Double {
@@ -156,9 +160,9 @@ struct BookDetailPresentation {
         )
     }
 
-    /// Listening progress 0...1, only when there is a meaningful resume point.
+    /// Listening progress 0...1, only when the primary action resumes.
     var resumeFraction: Double? {
-        guard resumePosition != nil, totalDurationSeconds > 0 else { return nil }
+        guard case .resume = primaryAction, totalDurationSeconds > 0 else { return nil }
         return min(1, max(0, positionSeconds / totalDurationSeconds))
     }
 
@@ -170,7 +174,15 @@ struct BookDetailPresentation {
         case play
     }
 
+    /// Finished was switched on from this page and the payload hasn't caught
+    /// up. That choice beats the saved position. A book the server already
+    /// marks played keeps its position, so a re-listen can still resume.
+    private var wasJustMarkedFinished: Bool {
+        isMarkedFinished && detail.userData?.played != true
+    }
+
     var primaryAction: PrimaryAction {
+        if wasJustMarkedFinished { return .playAgain }
         if let resumePosition { return .resume(at: resumePosition) }
         if isFinished { return .playAgain }
         return .play

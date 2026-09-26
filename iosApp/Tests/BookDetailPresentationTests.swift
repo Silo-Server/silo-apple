@@ -91,6 +91,42 @@ final class BookDetailPresentationTests: XCTestCase {
         XCTAssertEqual(finished.primaryIcon, "arrow.counterclockwise")
     }
 
+    func testMarkingAPartlyListenedBookFinishedOffersPlayAgain() throws {
+        let detail = try audiobook(
+            title: "Book",
+            extra: #""user_data":{"played":false,"position_seconds":3600},"#,
+            audiobook: #""total_duration_seconds":14400"#
+        )
+        let presentation = BookDetailPresentation(detail: detail, isMarkedFinished: true)
+
+        XCTAssertEqual(presentation.primaryAction, .playAgain)
+        XCTAssertNil(presentation.resumeFraction)
+    }
+
+    func testRelistenOfAPlayedBookStillResumes() throws {
+        let detail = try audiobook(
+            title: "Book",
+            extra: #""user_data":{"played":true,"position_seconds":3600},"#,
+            audiobook: #""total_duration_seconds":14400"#
+        )
+        let presentation = BookDetailPresentation(detail: detail, isMarkedFinished: true)
+
+        XCTAssertEqual(presentation.primaryAction, .resume(at: 3600))
+    }
+
+    func testStaleShortServerTotalDoesNotEndTheBookEarly() throws {
+        // The server says 1h, but the two parts run 2h; 90 minutes in is mid-book.
+        let detail = try audiobook(
+            title: "Book",
+            extra: #""user_data":{"played":false,"position_seconds":5400},"versions":[{"file_id":1,"duration":3600,"codec_audio":"aac"},{"file_id":2,"duration":3600,"codec_audio":"aac"}],"#,
+            audiobook: #""total_duration_seconds":3600"#
+        )
+        let presentation = BookDetailPresentation(detail: detail, isMarkedFinished: false)
+
+        XCTAssertEqual(presentation.totalDurationSeconds, 7200)
+        XCTAssertEqual(presentation.primaryAction, .resume(at: 5400))
+    }
+
     func testPositionAtTheEndCountsAsFinished() throws {
         let detail = try audiobook(
             title: "Book",
