@@ -897,14 +897,13 @@ final class UICustomizationPreferencesTests: XCTestCase {
             "an inaccessible pinned ID must not fall through to another library"
         )
         XCTAssertFalse(
-            libraryRootCanSwitch(fixedLibraryId: second.id, visibleLibraryCount: 1),
+            libraryRootCanSwitch(visibleLibraryCount: 1),
             "a direct root with no same-type siblings disables the library picker"
         )
         XCTAssertTrue(
-            libraryRootCanSwitch(fixedLibraryId: second.id, visibleLibraryCount: 2),
+            libraryRootCanSwitch(visibleLibraryCount: 2),
             "a direct root with same-type siblings allows switching via the top selector"
         )
-        XCTAssertTrue(libraryRootCanSwitch(fixedLibraryId: nil, visibleLibraryCount: 2))
 
         XCTAssertEqual(
             resolvedLibraryIdForRoot(

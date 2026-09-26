@@ -104,7 +104,7 @@ struct CollectionsView: View {
             ForEach(viewModel.sections) { section in
                 Section {
                     if section.collections.isEmpty {
-                        Text("Drop collections here to add them to this group.")
+                        Text("No collections in this group.")
                             .font(.siloSmall)
                             .foregroundColor(.siloSecondaryText)
                             .listRowBackground(Color.siloSurface)
