@@ -10,7 +10,7 @@ struct PINEntryView: View {
     @FocusState private var focusedPadKey: String?
     @Environment(\.dismiss) private var dismiss
 
-    private let maxDigits = 4
+    private let maxDigits = ProfilePIN.length
     private let sheetDragIndicatorClearance: CGFloat = 24
 
     // 3-column grid for the number pad

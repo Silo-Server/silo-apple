@@ -34,6 +34,11 @@ struct CreateProfileView: View {
 
     private enum Field: Hashable { case name, pin }
 
+    /// Shown under the PIN field while it holds a partial PIN, which also
+    /// keeps Create Profile disabled.
+    private static let incompletePINHint =
+        "Enter all \(ProfilePIN.length) digits, or clear the field for no PIN."
+
     /// Whether the assignable libraries are known yet. A failed read is kept
     /// apart from an empty list so the form never claims there is nothing to
     /// assign when it simply could not ask.
@@ -251,9 +256,15 @@ struct CreateProfileView: View {
                     .focused($focusedField, equals: .pin)
                     .autocorrectionDisabled()
                     .onChange(of: pin) { _, newValue in
-                        let filtered = String(newValue.prefix(4).filter(\.isNumber))
+                        let filtered = ProfilePIN.sanitized(newValue)
                         if filtered != newValue { pin = filtered }
                     }
+                // Plain text only: it must not join the focus graph.
+                if !ProfilePIN.isAcceptableForCreate(pin) {
+                    Text(Self.incompletePINHint)
+                        .font(.system(size: 16))
+                        .foregroundStyle(.white.opacity(0.55))
+                }
             }
 
             ChildProfileRow(isOn: $isChild)
@@ -270,7 +281,7 @@ struct CreateProfileView: View {
             // Gate validity via .disabled, but not the in-flight state: disabling
             // the focused button mid-create bounces focus to a neighbour. The
             // spinner label signals progress and re-entry is guarded above.
-            .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+            .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || !ProfilePIN.isAcceptableForCreate(pin))
             .padding(.top, 8)
         }
     }
@@ -350,9 +361,14 @@ struct CreateProfileView: View {
                                 .keyboardType(.numberPad)
                                 #endif
                                 .onChange(of: pin) { _, newValue in
-                                    let filtered = String(newValue.prefix(4).filter(\.isNumber))
+                                    let filtered = ProfilePIN.sanitized(newValue)
                                     if filtered != newValue { pin = filtered }
                                 }
+                            if !ProfilePIN.isAcceptableForCreate(pin) {
+                                Text(Self.incompletePINHint)
+                                    .font(.siloCaption)
+                                    .foregroundColor(.siloSecondaryText)
+                            }
                         }
 
                         Toggle(isOn: $isChild) {
@@ -375,7 +391,11 @@ struct CreateProfileView: View {
                             Task { await createProfile() }
                         }
                         .siloPrimaryButton(isLoading: isLoading)
-                        .disabled(isLoading || name.trimmingCharacters(in: .whitespaces).isEmpty)
+                        .disabled(
+                            isLoading
+                                || name.trimmingCharacters(in: .whitespaces).isEmpty
+                                || !ProfilePIN.isAcceptableForCreate(pin)
+                        )
                     }
                     .padding(.horizontal, SiloTheme.largePadding)
                     .padding(.vertical, SiloTheme.largePadding)
@@ -613,6 +633,13 @@ struct CreateProfileView: View {
     private func createProfile() async {
         guard !name.trimmingCharacters(in: .whitespaces).isEmpty else {
             formError = CreateProfileFailure(title: "Name Required", message: "Please enter a name.")
+            return
+        }
+        guard ProfilePIN.isAcceptableForCreate(pin) else {
+            formError = CreateProfileFailure(
+                title: "PIN Too Short",
+                message: "Enter all \(ProfilePIN.length) digits, or leave the PIN empty for no PIN."
+            )
             return
         }
         guard !libraryRestrictionsEnabled || !allowedLibraryIds.isEmpty else {
