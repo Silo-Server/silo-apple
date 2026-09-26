@@ -44,9 +44,8 @@ struct SubtitleTranslateMenu: View {
     /// flow: dismisses the WHOLE subtitle UI (this menu plus the enclosing HUD /
     /// sheet) down to the player, so the "Preparing subtitles" pause → resume
     /// plays out where the user can see it. Distinct from `onDismiss`, which
-    /// only backs out of this menu (returning to the container). Defaults to
-    /// `onDismiss` for call sites that don't distinguish the two.
-    var onJobStarted: () -> Void = {}
+    /// only backs out of this menu (returning to the container).
+    let onJobStarted: () -> Void
 
     /// The profile's preferred subtitle language, floated to the top of the
     /// list. Observed so a late hydration (below, in `.task`) refreshes the row.
@@ -62,16 +61,6 @@ struct SubtitleTranslateMenu: View {
 
     private var controller: SubtitleAIController { viewModel.subtitleAI }
     private var capabilities: AICapabilities { .shared }
-
-    /// One selectable target language. `hint` floats a short provenance tag
-    /// ("Preferred" / "Original language") next to the suggested rows; nil for
-    /// the plain language list.
-    private struct LanguageChoice: Identifiable {
-        let code: String
-        let label: String
-        let hint: String?
-        var id: String { code }
-    }
 
     static func isBitmap(_ track: PlayerTrack) -> Bool {
         SubtitleCodecClassifier.isBitmap(track.codec)
@@ -195,52 +184,18 @@ struct SubtitleTranslateMenu: View {
         onJobStarted()
     }
 
-    /// Display name for a language code, preferring the curated label.
-    private func displayName(_ code: String) -> String {
-        if let opt = PlaybackLanguageOption.all.first(where: {
-            $0.code.caseInsensitiveCompare(code) == .orderedSame
-        }) {
-            return opt.label
-        }
-        return Locale(identifier: "en").localizedString(forLanguageCode: code)?.capitalized
-            ?? code.uppercased()
-    }
-
     /// Languages offered, deduped, with the profile's preferred language and the
     /// spoken/original language floated to the top.
-    private var orderedLanguages: [LanguageChoice] {
-        var result: [LanguageChoice] = []
-        var seen = Set<String>()
-        func add(_ code: String, hint: String?) {
-            let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return }
-            let key = PlaybackLanguageOption.languageIdentity(trimmed)
-            guard !seen.contains(key) else { return }
-            seen.insert(key)
-            result.append(.init(code: trimmed, label: displayName(trimmed), hint: hint))
-        }
-        if let preferred = profilePrefs.preferredSubtitleLanguage {
-            add(preferred, hint: "Preferred")
-        }
-        if let spoken = spokenLanguageCode {
-            add(spoken, hint: "Original language")
-        }
-        for option in PlaybackLanguageOption.all {
-            add(option.code, hint: nil)
-        }
-        return result
+    private var languages: SubtitleLanguageList {
+        .init(preferred: profilePrefs.preferredSubtitleLanguage, spoken: spokenLanguageCode)
     }
 
     /// Preferred + original, kept in priority order (these are deliberately
     /// floated to the top, so they are not alphabetized).
-    private var suggestedLanguages: [LanguageChoice] { orderedLanguages.filter { $0.hint != nil } }
+    private var suggestedLanguages: [SubtitleLanguageChoice] { languages.suggested }
 
     /// The full language list, sorted alphabetically by display name.
-    private var otherLanguages: [LanguageChoice] {
-        orderedLanguages
-            .filter { $0.hint == nil }
-            .sorted { $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending }
-    }
+    private var otherLanguages: [SubtitleLanguageChoice] { languages.other }
 
     /// Show the ASR quota gauge whenever at least one offered target would rely
     /// on transcription. A file can have a translatable subtitle for most targets
@@ -248,13 +203,13 @@ struct SubtitleTranslateMenu: View {
     private var showsQuota: Bool {
         capabilities.transcribeEnabled
             && !viewModel.audioTracks.isEmpty
-            && orderedLanguages.contains { requiresTranscription(for: $0.code) }
+            && languages.ordered.contains { requiresTranscription(for: $0.code) }
             && quotaText != nil
     }
 
     #if os(tvOS)
     /// Rows in display order: suggested (priority) then the alphabetized rest.
-    private var displayLanguages: [LanguageChoice] { suggestedLanguages + otherLanguages }
+    private var displayLanguages: [SubtitleLanguageChoice] { languages.displayOrder }
 
     /// Recover focus when it falls to `nil`.
     private func focusFirstServiceableLanguage() {
@@ -346,11 +301,11 @@ struct SubtitleTranslateMenu: View {
     }
 
     @ViewBuilder
-    private func tvLanguageRow(_ choice: LanguageChoice) -> some View {
+    private func tvLanguageRow(_ choice: SubtitleLanguageChoice) -> some View {
         TVLanguageRow(
             name: choice.label,
             detail: choice.hint,
-            systemImage: choice.hint == "Preferred" ? "star.fill" : "globe",
+            systemImage: choice.suggestion == .preferred ? "star.fill" : "globe",
             code: choice.code,
             isDisabled: !canServe(choice.code),
             focusedID: $focusedLanguageID
@@ -416,11 +371,11 @@ struct SubtitleTranslateMenu: View {
 
     #if !os(tvOS)
     @ViewBuilder
-    private func languageRow(_ choice: LanguageChoice) -> some View {
+    private func languageRow(_ choice: SubtitleLanguageChoice) -> some View {
         MenuRow(
             name: choice.label,
             detail: choice.hint,
-            systemImage: choice.hint == "Preferred" ? "star.fill" : "globe",
+            systemImage: choice.suggestion == .preferred ? "star.fill" : "globe",
             isDisabled: !canServe(choice.code)
         ) {
             route(to: choice.code)
