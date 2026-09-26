@@ -51,3 +51,30 @@ struct UserProfile: Codable, Identifiable, Hashable {
         self.preferredMetadataLanguage = preferredMetadataLanguage
     }
 }
+
+// MARK: - Profile PIN
+
+/// The profile PIN every Silo client can enter: exactly `length` ASCII
+/// digits. Android and the web editor enforce the same rule; the server
+/// accepts 1-72 bytes, so the clients hold the line.
+enum ProfilePIN {
+    static let length = 4
+
+    /// Keeps ASCII digits 0-9 only, then the first `length` of them.
+    static func sanitized(_ input: String) -> String {
+        String(input.filter(isASCIIDigit).prefix(length))
+    }
+
+    /// A PIN the form may submit: empty (no PIN) or exactly `length` ASCII digits.
+    static func isAcceptableForCreate(_ pin: String) -> Bool {
+        pin.isEmpty || (pin.count == length && pin.allSatisfy(isASCIIDigit))
+    }
+
+    /// `Character.isNumber` alone admits numerals the keypad can't type
+    /// ("٣", "½"). A `"0"..."9"` range check would admit a digit carrying a
+    /// combining mark, because `Character` compares whole grapheme clusters;
+    /// `isASCII` is false for such a cluster.
+    private static func isASCIIDigit(_ c: Character) -> Bool {
+        c.isASCII && c.isNumber
+    }
+}

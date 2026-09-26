@@ -17,7 +17,7 @@ struct PINEntryView: View {
     @FocusState private var focusedPadKey: String?
     @Environment(\.dismiss) private var dismiss
 
-    private let maxDigits = 4
+    private let maxDigits = ProfilePIN.length
 
     init(
         profile: UserProfile,
