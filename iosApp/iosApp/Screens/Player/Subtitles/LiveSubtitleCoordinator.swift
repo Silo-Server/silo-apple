@@ -6,6 +6,13 @@
 //  playhead-first cue experience over the websocket on top of the M3 polling
 //  authority:
 //
+//    beginPreparing
+//              → on submit: snapshot the selection; pause if playing; show
+//                "Preparing…"; arm the 30s safety timer. If no `started`
+//                arrives in that window (poll-only job, or one still queued on
+//                the server), resume if we paused and retract the notice while
+//                the job keeps running; the poller handoff, a failure, a
+//                cancel, or a late `started` still settles it.
 //    started   → snapshot the current subtitle selection; pause if playing
 //                (remember `wasPlaying`); install + select a synthetic Aether-
 //                clocked overlay track; show "Preparing…"; arm a 30s safety-resume
@@ -19,7 +26,7 @@
 //                two share ONE terminal action and must not double-register);
 //                swap selection from the live track to the persisted one;
 //                close the live track.
-//    failed    → also fired on the 30s timeout or a socket-lost-with-no-poll-
+//    failed    → also fired on the 30s cue timeout or a socket-lost-with-no-poll-
 //                completion: close the live track, restore the prior
 //                selection, resume if we paused, surface a soft notice.
 //
@@ -164,8 +171,10 @@ final class LiveSubtitleCoordinator {
         category: "LiveSubtitle"
     )
 
-    /// Safety net: if a started job streams no cue within this window, resume
-    /// playback and fail out rather than strand the viewer on a paused frame.
+    /// Safety net so the viewer is never stranded on a paused frame. If no
+    /// `started` arrives within this window after submit, resume playback and
+    /// keep waiting for the job. If a started job streams no cue within this
+    /// window, resume playback and fail out.
     static let safetyResumeSeconds: TimeInterval = 30
 
     /// Where the live machine is. The owning controller maps this onto the
@@ -174,8 +183,11 @@ final class LiveSubtitleCoordinator {
         /// No live job.
         case idle
         /// Submit/start received: paused, overlay up, waiting for either the
-        /// live `started` frame or poller completion. Once `started` lands, the
-        /// synthetic track is installed/selected and the cue safety timer arms.
+        /// live `started` frame or poller completion. The submit pause lasts
+        /// at most `safetyResumeSeconds`; if `started` hasn't landed by then,
+        /// playback resumes and the job stays here until the poller settles
+        /// it. Once `started` lands, the synthetic track is installed/selected
+        /// and the cue safety timer arms.
         case preparing
         /// First cues arrived: resumed, cues rendering live.
         case streaming
@@ -266,6 +278,10 @@ final class LiveSubtitleCoordinator {
     /// Start the user-visible AI subtitle wait as soon as the user submits the
     /// job, before the websocket's `started` event exists. This keeps the
     /// pause/progress UX tied to the user's action instead of backend timing.
+    ///
+    /// Arms the safety timer so the pause is bounded. If `started` lands in
+    /// time, it replaces this timer with the cue timer. If not, the timer
+    /// resumes playback and retracts the notice but keeps the job active.
     func beginPreparing() {
         guard !isActive else { return }
         generation &+= 1
@@ -278,6 +294,7 @@ final class LiveSubtitleCoordinator {
         }
         sink.showPreparingNotice()
         phase = .preparing
+        armSafetyTimer()
     }
 
     /// Feed one decoded subtitle event into the machine. The owning controller
@@ -426,14 +443,33 @@ final class LiveSubtitleCoordinator {
         safetyTimer = clock.scheduleSafetyResume(after: Self.safetyResumeSeconds) { [weak self] in
             guard let self, gen == self.generation else { return }
             guard self.phase == .preparing else { return }
+            self.safetyTimer = nil
+            if self.activeTrackKey == nil {
+                self.releaseSubmitPause()
+                return
+            }
             Self.logger.warning("[AI-LIVE] safety timeout — no cues within \(Self.safetyResumeSeconds, privacy: .public)s, resuming")
             self.failOut(message: "Couldn't start live subtitles. Try again.")
             self.onSafetyTimeout?()
         }
     }
 
-    /// Terminal failure path shared by the `failed` event, the safety timeout,
-    /// and a socket-lost-with-no-poll-completion give-up: close the live
+    /// No `started` frame arrived within the safety window: the job is poll-only
+    /// (no `session_id`) or still queued on the server. Resume if we paused and
+    /// retract the notice, but keep the job owned so the poller handoff, a
+    /// failure, a cancel, or a late `started` still settle it. Clearing
+    /// `wasPlaying` means no later path resumes again or pauses a second time.
+    private func releaseSubmitPause() {
+        Self.logger.warning("[AI-LIVE] no live start within \(Self.safetyResumeSeconds, privacy: .public)s; resuming while the job finishes")
+        if !didResume, wasPlaying {
+            controls.play()
+        }
+        wasPlaying = false
+        sink.hidePreparingNotice()
+    }
+
+    /// Terminal failure path shared by the `failed` event, the cue safety
+    /// timeout, and a socket-lost-with-no-poll-completion give-up: close the live
     /// track, restore the prior selection, resume if we paused, soft notice.
     private func failOut(message: String) {
         guard isActive || activeTrackKey != nil else { return }
