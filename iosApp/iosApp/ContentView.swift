@@ -374,6 +374,7 @@ struct ContentView: View {
             await diagnosticsModel.handleForeground()
             #endif
             #if os(iOS)
+            // Doesn't wait for the permission alert, so it can't delay onAppActive.
             await ApplePushRegistrationCoordinator.shared.prepareForAuthenticatedProfile()
             #endif
             #if !os(tvOS)
