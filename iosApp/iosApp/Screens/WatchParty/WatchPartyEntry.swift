@@ -20,7 +20,7 @@ enum WatchPartyEntry {
     }
 
     static var isAvailable: Bool {
-        isEnabled && WatchPartySession.shared.canEnterParty
+        isEnabled && WatchPartySession.shared.supportsSynchronizedParty
     }
 
     /// Inside a party, only a host-pick room's manager picks directly; everyone
@@ -91,14 +91,6 @@ extension EnvironmentValues {
     var watchPartyEpisodePreview: ((EpisodeListItem) -> WatchPartySelectedItem)? {
         get { self[WatchPartyEpisodePreviewKey.self] }
         set { self[WatchPartyEpisodePreviewKey.self] = newValue }
-    }
-}
-
-extension WatchPartySession {
-    /// The server offers the room socket and connection handoff for this
-    /// profile, and this client can play the party's title.
-    var canEnterParty: Bool {
-        capabilities?.supportsSocket == true && capabilities?.connectionReplaced == true && supportsPlayback
     }
 }
 #endif
