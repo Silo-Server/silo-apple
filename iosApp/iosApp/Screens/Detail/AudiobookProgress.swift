@@ -5,10 +5,8 @@ import Foundation
 /// onto one whole-book timeline; this enum layers the pure "where am I"
 /// rules on top so they can be unit tested without an `ItemDetail` fixture.
 ///
-/// The gating here deliberately mirrors the private logic that drives the
-/// phone/macOS layout in `AudiobookDetailContent` — the phone code is left
-/// untouched (zero-risk), but every rule below must stay behaviour-identical
-/// to it so the two layouts route Resume / Play Again the same way.
+/// Both the tvOS page (`TVAudiobookViewModel`) and the phone/iPad/Mac page
+/// (`BookDetailPresentation`) route Resume / Play Again through these rules.
 enum AudiobookProgress {
 
     /// The meaningful resume point, or nil when Resume should be suppressed.

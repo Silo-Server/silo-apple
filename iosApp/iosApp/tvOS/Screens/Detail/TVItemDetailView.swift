@@ -259,7 +259,7 @@ struct TVItemDetailView: View {
     @ViewBuilder
     private func content(for detail: ItemDetail) -> some View {
         if detail.isAudiobook {
-            AudiobookDetailContent(
+            TVAudiobookDetailView(
                 detail: detail,
                 libraryId: libraryId,
                 onNavigateToItem: { id in

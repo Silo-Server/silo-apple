@@ -103,6 +103,9 @@ enum AudiobookDetailFormatting {
         guard hay.lowercased().hasPrefix(core.lowercased()) else { return title }
 
         var rest = Substring(hay.dropFirst(core.count))
+        // The series name must end at a word boundary: series "Dune" is not
+        // a prefix of "Dunes of Arrakis", nor series "A" of "American Gods".
+        if let next = rest.first, next.isLetter { return title }
         // Eat the volume number and separators that sit between the series
         // name and the actual title ("Stormlight Archive" → " 5 - " → title).
         rest = rest.drop { ch in
@@ -141,4 +144,15 @@ enum AudiobookDetailFormatting {
         }
         return s
     }
+}
+
+func audiobookRelatedItemAccessibilityLabel(_ item: AudiobookRelatedItem) -> String {
+    var components = [item.title]
+    if let seriesIndex = item.seriesIndex {
+        components.append("Book \(seriesIndex)")
+    }
+    if let year = item.year {
+        components.append(String(year))
+    }
+    return components.joined(separator: ", ")
 }

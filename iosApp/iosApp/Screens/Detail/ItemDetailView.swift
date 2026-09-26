@@ -485,7 +485,7 @@ private struct ItemDetailPhoneContent: View {
         let showsBack = !showsClose && !router.itemDetailPath.isEmpty
 
         return PhoneDetailTopChrome(
-            title: viewModel.detail?.title ?? "",
+            title: scrollTitle,
             isScrollGlassEnabled: supportsScrollGlassChrome,
             scrollState: detailScrollState,
             leadingSystemName: showsClose ? "xmark" : (showsBack ? "chevron.left" : nil),
@@ -504,6 +504,14 @@ private struct ItemDetailPhoneContent: View {
         )
     }
 
+    /// Audiobooks show the same cleaned title as their hero, without the
+    /// series prefix and volume locator baked into catalog titles.
+    private var scrollTitle: String {
+        guard let detail = viewModel.detail else { return "" }
+        guard detail.isAudiobook else { return detail.title }
+        return AudiobookDetailFormatting.cleanTitle(detail.title, seriesName: detail.audiobook?.series?.name)
+    }
+
     private var supportsScrollGlassChrome: Bool {
         guard UIDevice.current.userInterfaceIdiom == .phone,
               horizontalSizeClass != .regular,
@@ -512,6 +520,7 @@ private struct ItemDetailPhoneContent: View {
         }
         return SiloMediaType.isMovieLibrary(detail.type)
             || SiloMediaType.isSeries(detail.type)
+            || detail.isAudiobook
     }
 
     /// Movies and episodes retain the existing cast-and-play behavior. Series
@@ -584,8 +593,24 @@ private struct ItemDetailPhoneContent: View {
             AudiobookDetailContent(
                 detail: detail,
                 libraryId: libraryId,
+                isFavorite: viewModel.isFavorite,
+                inWatchlist: viewModel.inWatchlist,
+                isWatched: viewModel.isWatched,
+                onToggleFavorite: { Task { await viewModel.toggleFavorite() } },
+                onToggleWatchlist: { Task { await viewModel.toggleWatchlist() } },
+                onToggleWatched: { Task { await viewModel.toggleWatched() } },
+                onPersonTap: { personId in
+                    if !personId.isEmpty {
+                        router.navigate(to: .personDetail(personId: personId))
+                    }
+                },
                 onNavigateToItem: { id in
                     router.navigate(to: .itemDetail(contentId: id))
+                },
+                scrollState: detailScrollState,
+                belowOverview: {
+                    DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
+                        .id(detail.contentId)
                 }
             )
         } else if detail.type == "season" || detail.type == "episode" {
