@@ -352,6 +352,8 @@ targets:
         buildPhase: none
       - path: Tests/Fixtures/APIv2/SOURCE
         buildPhase: none
+      - path: Tests/Fixtures/APIv2RetrySafety/SOURCE
+        buildPhase: none
       - path: Tests/Fixtures/DiagnosticsContract/SOURCE
         buildPhase: none
       - path: Tests/Fixtures/ASS/README.md
@@ -411,6 +413,8 @@ targets:
       - path: Tests/Fixtures/PlaybackV3/SOURCE
         buildPhase: none
       - path: Tests/Fixtures/APIv2/SOURCE
+        buildPhase: none
+      - path: Tests/Fixtures/APIv2RetrySafety/SOURCE
         buildPhase: none
       - path: Tests/Fixtures/DiagnosticsContract/SOURCE
         buildPhase: none
