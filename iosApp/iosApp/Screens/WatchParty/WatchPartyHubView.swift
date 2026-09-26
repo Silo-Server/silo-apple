@@ -71,6 +71,8 @@ struct WatchPartyHubView: View {
 /// Opened from Back inside party playback. The player stays mounted below.
 struct WatchPartyRoomPanel: View {
     let session: WatchPartySession
+    /// The player below reached the end of the title.
+    var playbackEnded = false
     @Environment(\.dismiss) private var dismiss
     @State private var roomSheet: WatchPartyRoomSheet?
     @State private var confirmsEnd = false
@@ -80,7 +82,7 @@ struct WatchPartyRoomPanel: View {
             Group {
                 if session.isEngaged {
                     WatchPartyLobbyView(session: session, sheet: $roomSheet, confirmsEnd: $confirmsEnd,
-                        onReturnToPlayback: { dismiss() })
+                        onReturnToPlayback: { dismiss() }, playbackEnded: playbackEnded)
                 }
             }
             .modifier(WatchPartyRoomSheets(session: session, sheet: $roomSheet, confirmsEnd: $confirmsEnd))
@@ -435,10 +437,11 @@ struct WatchPartyLobbyView: View {
     @Binding var sheet: WatchPartyRoomSheet?
     @Binding var confirmsEnd: Bool
     var onReturnToPlayback: (() -> Void)? = nil
+    var playbackEnded = false
     @Environment(AppRouter.self) private var router
     #if os(tvOS)
     @FocusState private var focused: LobbyFocus?
-    private enum LobbyFocus: Hashable { case code, primary, secondary, more, suggest }
+    private enum LobbyFocus: Hashable { case code, primary, secondary, returnToLobby, more, suggest }
     @State private var showsHostControls = false
     #endif
 
@@ -503,7 +506,7 @@ struct WatchPartyLobbyView: View {
         let pendingPick = session.room?.selectedContentId != room.selectedContentId
         return WatchPartyLobbyPolicy.primaryAction(room: room, capabilities: session.capabilities,
             canStart: session.canStartPlayback || pendingPick, winnerTitle: session.voteWinner?.title,
-            selectionUnavailable: session.selectedItemUnavailable)
+            selectionUnavailable: session.selectedItemUnavailable, playbackEnded: playbackEnded)
     }
 
     private var isConnected: Bool { session.connection == .connected }
@@ -664,9 +667,29 @@ struct WatchPartyLobbyView: View {
                 Label("Return to playback", systemImage: "play.fill")
             }
             .buttonStyle(WatchPartyButtonStyle(kind: .primary))
+        case .returnToLobby:
+            returnToLobbyButton(kind: .primary)
         case .none:
             EmptyView()
         }
+    }
+
+    /// Shown beside the primary action while it is not itself this button.
+    @ViewBuilder
+    private func stopPlaybackButton(_ room: WatchPartyRoom) -> some View {
+        if room.phase == .playing, room.selfCanManageRoom, session.capabilities?.stopPlayback == true,
+           primaryAction != .returnToLobby {
+            returnToLobbyButton(kind: .secondary)
+        }
+    }
+
+    private func returnToLobbyButton(kind: WatchPartyButtonKind) -> some View {
+        Button { Task { await session.stopPlayback() } } label: {
+            Label("Return everyone to lobby", systemImage: "arrow.uturn.backward")
+        }
+        .buttonStyle(WatchPartyButtonStyle(kind: kind))
+        .disabled(session.locksControls)
+        .accessibilityIdentifier("watchParty.returnToLobby")
     }
 
     @ViewBuilder
@@ -687,6 +710,12 @@ struct WatchPartyLobbyView: View {
                 .buttonStyle(WatchPartyButtonStyle(kind: .secondary))
                 .disabled(session.locksControls)
                 .accessibilityIdentifier("watchParty.suggest")
+        } else if room.phase == .playing, room.selfCanManageRoom, room.selectionMode == .hostPick {
+            // A new selection starts for everyone at once.
+            Button { openSheet(.select) } label: { Text("Choose something else") }
+                .buttonStyle(WatchPartyButtonStyle(kind: .secondary))
+                .disabled(session.locksControls)
+                .accessibilityIdentifier("watchParty.choose")
         }
     }
 
@@ -746,6 +775,7 @@ struct WatchPartyLobbyView: View {
             }
             VStack(spacing: 10) {
                 primaryButton(room)
+                stopPlaybackButton(room)
                 secondaryButton(room)
                 hint(room)
             }
@@ -901,6 +931,7 @@ struct WatchPartyLobbyView: View {
                 VStack(alignment: .trailing, spacing: 16) {
                     HStack(spacing: 18) {
                         secondaryButton(room).focused($focused, equals: .secondary)
+                        stopPlaybackButton(room).focused($focused, equals: .returnToLobby)
                         primaryButton(room).focused($focused, equals: .primary)
                     }
                     .focusSection()
