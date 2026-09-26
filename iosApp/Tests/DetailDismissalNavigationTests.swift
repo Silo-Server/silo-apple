@@ -166,8 +166,8 @@ final class DetailDismissalNavigationTests: XCTestCase {
         let decoder = JSONDecoder()
         return (
             try decoder.decode(ItemDetail.self, from: Data(#"{"contentId":"resume-speed-series","type":"series","title":"Synthetic series"}"#.utf8)),
-            try decoder.decode(SeasonsResponse.self, from: Data(#"{"seasons":[{"contentId":"resume-speed-season","seasonNumber":3,"episodeCount":2}]}"#.utf8)),
-            try decoder.decode(EpisodesResponse.self, from: Data(#"{"episodes":[{"contentId":"resume-speed-e2","seasonNumber":3,"episodeNumber":2},{"contentId":"resume-speed-e1","seasonNumber":3,"episodeNumber":1}]}"#.utf8))
+            SeasonsResponse(seasons: try decoder.decode([Season].self, from: Data(#"[{"contentId":"resume-speed-season","seasonNumber":3,"episodeCount":2}]"#.utf8))),
+            EpisodesResponse(episodes: try decoder.decode([EpisodeListItem].self, from: Data(#"[{"contentId":"resume-speed-e2","seasonNumber":3,"episodeNumber":2},{"contentId":"resume-speed-e1","seasonNumber":3,"episodeNumber":1}]"#.utf8)))
         )
     }
 

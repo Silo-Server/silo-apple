@@ -259,10 +259,9 @@ enum OfflinePlaybackBuilder {
 }
 
 extension WatchDetail {
-    /// Build a `WatchDetail` from a stored offline manifest. `WatchDetail`
-    /// has only a decoding initializer, so this sets every stored property
-    /// directly. `userData` is nil — the offline resume point is carried on
-    /// the synthetic session's `position` instead.
+    /// Build a `WatchDetail` from a stored offline manifest. `userData` is
+    /// nil — the offline resume point is carried on the synthetic session's
+    /// `position` instead.
     init(offlineLeafContentId: String, manifest: OfflineManifest, version: FileVersion) {
         contentId = offlineLeafContentId
         type = manifest.type
