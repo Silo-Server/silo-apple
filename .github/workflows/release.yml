@@ -33,7 +33,6 @@ permissions:
   contents: read
 
 env:
-  XCODEGEN_VERSION: "2.43.0"
   TESTFLIGHT_DISTRIBUTION: external
   TESTFLIGHT_NOTIFY_EXTERNAL_TESTERS: "true"
 
@@ -63,6 +62,8 @@ jobs:
       platform: ${{ steps.p.outputs.platform }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - id: p
         env:
           GH_EVENT_NAME: ${{ github.event_name }}
@@ -87,6 +88,8 @@ jobs:
       tvos_build: ${{ steps.bn.outputs.tvos_build }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: ruby/setup-ruby@v1
         with:
           bundler-cache: true
@@ -111,17 +114,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0   # tags + history for changelog fallback
+          persist-credentials: false
 
       - name: Select Xcode 26
         run: sudo xcode-select -s /Applications/Xcode_26.3.app
 
-      - name: Install XcodeGen (pinned)
-        run: |
-          curl -fsSL -o /tmp/xcodegen.zip \
-            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
-          unzip -q /tmp/xcodegen.zip -d /tmp/xcodegen-dist
-          sudo /tmp/xcodegen-dist/xcodegen/install.sh /usr/local
-          xcodegen --version
+      - name: Install XcodeGen (pinned, checksum-verified)
+        uses: ./.github/actions/install-xcodegen
 
       - uses: ruby/setup-ruby@v1
         with:
@@ -171,17 +170,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Select Xcode 26
         run: sudo xcode-select -s /Applications/Xcode_26.3.app
 
-      - name: Install XcodeGen (pinned)
-        run: |
-          curl -fsSL -o /tmp/xcodegen.zip \
-            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
-          unzip -q /tmp/xcodegen.zip -d /tmp/xcodegen-dist
-          sudo /tmp/xcodegen-dist/xcodegen/install.sh /usr/local
-          xcodegen --version
+      - name: Install XcodeGen (pinned, checksum-verified)
+        uses: ./.github/actions/install-xcodegen
 
       - uses: ruby/setup-ruby@v1
         with:

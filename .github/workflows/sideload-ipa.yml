@@ -25,9 +25,6 @@ on:
           - ios
           - tvos
 
-env:
-  XCODEGEN_VERSION: "2.43.0"
-
 # Serialize runs: build numbers are unique per run (see the release job), but
 # two runs targeting the same tag would still race each other's `gh release`
 # asset uploads, and one sideload build already occupies two macOS runners.
@@ -155,13 +152,8 @@ jobs:
       - name: Select Xcode 26
         run: sudo xcode-select -s /Applications/Xcode_26.3.app
 
-      - name: Install XcodeGen (pinned)
-        run: |
-          curl -fsSL -o /tmp/xcodegen.zip \
-            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
-          unzip -q /tmp/xcodegen.zip -d /tmp/xcodegen-dist
-          sudo /tmp/xcodegen-dist/xcodegen/install.sh /usr/local
-          xcodegen --version
+      - name: Install XcodeGen (pinned, checksum-verified)
+        uses: ./.github/actions/install-xcodegen
 
       - uses: ruby/setup-ruby@v1
         with:
