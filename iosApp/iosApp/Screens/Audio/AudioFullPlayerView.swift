@@ -30,10 +30,14 @@ struct AudioFullPlayerView: View {
         dismiss()
     }
 
-    /// "1×", "1.5×", "0.75×" — trailing-zero-free rate labels shared by
-    /// the rate menus on every platform.
+    /// "1×", "1.25×", "0.75×": up to two decimals with trailing zeros dropped,
+    /// using "." in every locale. Shared by the rate menus on every platform.
     static func rateLabel(_ rate: Double) -> String {
-        String(format: "%.2g×", rate)
+        rate.formatted(
+            .number
+                .precision(.fractionLength(0...2))
+                .locale(Locale(identifier: "en_US_POSIX"))
+        ) + "×"
     }
 
     private func stop(player: AudioPlayerViewModel) {
