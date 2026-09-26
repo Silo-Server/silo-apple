@@ -7,7 +7,7 @@ import OSLog
 /// connection to a `PairingSession`. One connection at a time; later peers
 /// are rejected as busy.
 ///
-/// Self-healing (same generation-guarded pattern as `TVControlReceiver`): the
+/// Self-healing (generation-guarded restart via `BonjourSelfHeal`): the
 /// first-run screen is the longest-dwelling screen in the app, so a listener
 /// the system reclaims or fails must come back on its own — otherwise the TV
 /// shows "Looking for a phone or tablet…" while advertising nothing.
@@ -15,7 +15,7 @@ import OSLog
 final class TVPairingAdvertiser {
     private var listener: NWListener?
     private var busy = false
-    private var generation = 0
+    private let selfHeal = BonjourSelfHeal()
     private var onConnection: ((PairingSession, AsyncThrowingStream<PairingMessage, Error>) -> Void)?
     private var receiverState: PairingReceiverState = .setup
     private var serverIdentity: String?
@@ -72,8 +72,7 @@ final class TVPairingAdvertiser {
     }
 
     private func startListener() {
-        generation += 1
-        let gen = generation
+        let gen = selfHeal.activate()
         let device = AppleDeviceIdentity.current
         // `sid` is a fresh nonce minted each time the listener starts — i.e.
         // each time the TV (re)starts advertising (reboot, leaving and
@@ -97,7 +96,7 @@ final class TVPairingAdvertiser {
             listener.service = NWListener.Service(name: device.name, type: PairingProtocol.serviceType, txtRecord: txt)
             listener.newConnectionHandler = { [weak self] connection in
                 Task { @MainActor in
-                    guard let self, self.generation == gen, let onConnection = self.onConnection else {
+                    guard let self, self.selfHeal.isCurrent(gen), let onConnection = self.onConnection else {
                         connection.cancel()
                         return
                     }
@@ -111,7 +110,7 @@ final class TVPairingAdvertiser {
             // Runs on `.main` (see `start(queue:)` below).
             listener.stateUpdateHandler = { [weak self] state in
                 MainActor.assumeIsolated {
-                    guard let self, self.generation == gen else { return }
+                    guard let self, self.selfHeal.isCurrent(gen) else { return }
                     switch state {
                     case .failed(let error):
                         Self.logger.error("listener failed: \(String(describing: error), privacy: .public)")
@@ -136,8 +135,7 @@ final class TVPairingAdvertiser {
 
     private func scheduleListenerRestart() {
         listener = nil
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(2))
+        selfHeal.scheduleRestart { [weak self] in
             guard let self, self.listener == nil, self.onConnection != nil else { return }
             self.startListener()
         }
@@ -147,7 +145,7 @@ final class TVPairingAdvertiser {
     func release() { busy = false }
 
     func stop() {
-        generation += 1
+        selfHeal.deactivate()
         listener?.cancel()
         listener = nil
         busy = false
