@@ -3,8 +3,9 @@ import SwiftUI
 
 /// Subtitles pane of tvOS Settings, rendered inline in the right pane of
 /// the two-pane `TVSettingsView`. Profile-wide prefs (language / behavior
-/// / forced) save through the root view's `onChange` handlers; the
-/// appearance block writes a per-device override directly.
+/// / forced / metadata language) save through the `ProfilePrefsEditor`
+/// `set…` methods their controls call; the appearance block writes a
+/// per-device override directly.
 struct TVSubtitleSettingsPane: View {
     @Bindable var viewModel: SettingsViewModel
     let detailFocus: FocusState<TVSettingsDetailFocus?>.Binding
@@ -56,8 +57,7 @@ struct TVSubtitleSettingsPane: View {
             title: "Show Forced Subtitles",
             isOn: viewModel.prefs.showForcedSubtitles == "on"
         ) {
-            viewModel.prefs.showForcedSubtitles =
-                viewModel.prefs.showForcedSubtitles == "on" ? "off" : "on"
+            Task { await viewModel.prefs.setShowForcedSubtitles(viewModel.prefs.showForcedSubtitles != "on") }
         }
         .disabled(viewModel.prefs.serverUpgradeRequired || viewModel.subtitleMatchesSystemAppearance)
 
@@ -261,14 +261,16 @@ struct TVSubtitleSettingsPane: View {
     }
 
     private func pickerRequest(for kind: PickerKind) -> TVSettingsPickerRequest {
-        @Bindable var prefs = viewModel.prefs
         return switch kind {
         case .language:
             TVSettingsPickerRequest(
                 id: kind.id,
                 title: "Language",
                 options: TVSettingsOptions.subtitleLanguage(viewModel.subtitleLanguageOptions),
-                selection: $prefs.subtitleLanguage,
+                selection: Binding(
+                    get: { viewModel.prefs.subtitleLanguage },
+                    set: { value in Task { await viewModel.prefs.setSubtitleLanguage(value) } }
+                ),
                 returnFocus: kind.returnFocus
             )
         case .mode:
@@ -276,7 +278,10 @@ struct TVSubtitleSettingsPane: View {
                 id: kind.id,
                 title: "Behavior",
                 options: TVSettingsOptions.subtitleMode,
-                selection: $prefs.subtitleMode,
+                selection: Binding(
+                    get: { viewModel.prefs.subtitleMode },
+                    set: { value in Task { await viewModel.prefs.setSubtitleMode(value) } }
+                ),
                 returnFocus: kind.returnFocus
             )
         case .metadataLanguage:
@@ -284,7 +289,10 @@ struct TVSubtitleSettingsPane: View {
                 id: kind.id,
                 title: "Metadata Language",
                 options: TVSettingsOptions.metadataLanguage(viewModel.metadataLanguageOptions),
-                selection: $prefs.preferredMetadataLanguage,
+                selection: Binding(
+                    get: { viewModel.prefs.preferredMetadataLanguage },
+                    set: { value in Task { await viewModel.prefs.setPreferredMetadataLanguage(value) } }
+                ),
                 returnFocus: kind.returnFocus
             )
         case .fontSize:
