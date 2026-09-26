@@ -362,12 +362,12 @@ final class SeriesHierarchyLoadingTests: XCTestCase {
 
     nonisolated private func seasons(_ numbers: [Int]) throws -> SeasonsResponse {
         let rows = numbers.map { "{\"contentId\":\"regression-season-\($0)\",\"seasonNumber\":\($0)}" }.joined(separator: ",")
-        return try JSONDecoder().decode(SeasonsResponse.self, from: Data("{\"seasons\":[\(rows)]}".utf8))
+        return SeasonsResponse(seasons: try JSONDecoder().decode([Season].self, from: Data("[\(rows)]".utf8)))
     }
 
     nonisolated private func episodes(_ numbers: [Int]) throws -> EpisodesResponse {
         let rows = numbers.map { "{\"contentId\":\"regression-episode-\($0)\",\"seasonNumber\":1,\"episodeNumber\":\($0)}" }.joined(separator: ",")
-        return try JSONDecoder().decode(EpisodesResponse.self, from: Data("{\"episodes\":[\(rows)]}".utf8))
+        return EpisodesResponse(episodes: try JSONDecoder().decode([EpisodeListItem].self, from: Data("[\(rows)]".utf8)))
     }
 }
 

@@ -251,10 +251,12 @@ enum SiloMediaType {
 extension BrowseItem {
     var isAudiobook: Bool { SiloMediaType.isAudiobook(type) }
 
-    /// A Home card in the catalog-row shape, for a client-composed shelf
-    /// (Watch Party's picker). Artwork URLs are already absolute on a section
-    /// item. Never fails; failable only for the existing caller.
-    init?(sectionItem item: SectionItem) {
+    /// Lift a Home row into the catalog shape for Watch Party's picker, which
+    /// opens a confirmation page from a `BrowseItem`. Every field the two
+    /// types share is copied; artwork on a decoded section row is already
+    /// resolved. `addedAt`, `releaseDate` and `lastAirDate` are not on
+    /// section rows and stay nil.
+    init(sectionItem item: SectionItem) {
         self.init(
             contentId: item.contentId,
             type: item.type,
@@ -639,7 +641,7 @@ struct CrewMember: Codable, Identifiable, Hashable {
     var id: String { "\(personId ?? name)-\(job ?? "")" }
 }
 
-struct Person: Codable, Identifiable, Hashable {
+struct Person: Identifiable, Hashable {
     let id: String
     let name: String
     let bio: String?
@@ -1090,7 +1092,7 @@ struct SubtitleUrl: Codable, Identifiable, Hashable {
 
 // MARK: - Watch Detail
 
-struct WatchDetail: Codable {
+struct WatchDetail {
     let contentId: String
     let type: String
     let title: String
@@ -1113,28 +1115,6 @@ struct WatchDetail: Codable {
     let effectiveSubtitleMode: String?
     let effectiveShowForcedSubtitles: Bool?
     let effectiveSubtitleTrackSignature: SubtitleTrackSignature?
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        contentId = try c.decode(String.self, forKey: .contentId)
-        type = try c.decode(String.self, forKey: .type)
-        title = try c.decode(String.self, forKey: .title)
-        year = try c.decodeIfPresent(Int.self, forKey: .year)
-        overview = try c.decodeIfPresent(String.self, forKey: .overview)
-        versions = try c.decodeIfPresent([FileVersion].self, forKey: .versions) ?? []
-        subtitles = try c.decodeIfPresent([SubtitleInfoBasic].self, forKey: .subtitles)
-        intro = try c.decodeIfPresent(TimeRange.self, forKey: .intro)
-        credits = try c.decodeIfPresent(TimeRange.self, forKey: .credits)
-        userData = try c.decodeIfPresent(LeafItemUserData.self, forKey: .userData)
-        seriesId = try c.decodeIfPresent(String.self, forKey: .seriesId)
-        seriesTitle = try c.decodeIfPresent(String.self, forKey: .seriesTitle)
-        seasonNumber = try c.decodeIfPresent(Int.self, forKey: .seasonNumber)
-        episodeNumber = try c.decodeIfPresent(Int.self, forKey: .episodeNumber)
-        effectiveSubtitleLanguage = try c.decodeIfPresent(String.self, forKey: .effectiveSubtitleLanguage)
-        effectiveSubtitleMode = try c.decodeIfPresent(String.self, forKey: .effectiveSubtitleMode)
-        effectiveShowForcedSubtitles = try c.decodeIfPresent(Bool.self, forKey: .effectiveShowForcedSubtitles)
-        effectiveSubtitleTrackSignature = try c.decodeIfPresent(SubtitleTrackSignature.self, forKey: .effectiveSubtitleTrackSignature)
-    }
 }
 
 // MARK: - Collections
@@ -1195,12 +1175,6 @@ struct LibrariesResponse: Codable {
 
     init(libraries: [Library]) {
         self.libraries = libraries.filter(\.isSupportedLibrary)
-    }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        libraries = try c.decodeIfPresent([Library].self, forKey: .libraries)?
-            .filter(\.isSupportedLibrary) ?? []
     }
 }
 
@@ -1315,26 +1289,16 @@ struct LibraryCollectionsResponse {
 
 // MARK: - Seasons / Episodes
 
-struct SeasonsResponse: Codable {
+struct SeasonsResponse {
     let seasons: [Season]
 
     init(seasons: [Season]) { self.seasons = seasons }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        seasons = try c.decodeIfPresent([Season].self, forKey: .seasons) ?? []
-    }
 }
 
-struct EpisodesResponse: Codable {
+struct EpisodesResponse {
     let episodes: [EpisodeListItem]
 
     init(episodes: [EpisodeListItem]) { self.episodes = episodes }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        episodes = try c.decodeIfPresent([EpisodeListItem].self, forKey: .episodes) ?? []
-    }
 }
 
 // MARK: - Collection Create
@@ -1347,7 +1311,7 @@ struct CreateCollectionRequest: Encodable {
 
 // MARK: - User Info
 
-struct UserInfo: Codable, Sendable {
+struct UserInfo: Sendable {
     let id: String?
     let username: String
     let isAdmin: Bool?
@@ -1357,7 +1321,7 @@ struct UserInfo: Codable, Sendable {
 
 /// The personal-collections page as the screen caches it
 /// (`CacheKey.collections`), built from ``APIv2PersonalCollections``.
-struct CollectionsResponse: Codable {
+struct CollectionsResponse {
     let collections: [UserCollection]?
     let groups: [CollectionGroup]?
 
