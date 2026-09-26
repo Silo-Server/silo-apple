@@ -75,6 +75,12 @@ struct PendingReport: Identifiable, Equatable {
     }
 }
 
+/// Per-report flags persisted as `state.json`. Several store writers change
+/// different fields, and callers hold `PendingReport` values that go stale as
+/// soon as another writer runs. Every write must therefore reload this state
+/// from disk under the store lock, through `updateStateLocked` or an explicit
+/// `loadReport(from:)`, and change only the fields it owns. Writing a caller's
+/// `report.state` back would undo whatever was persisted since it was loaded.
 struct PendingReportState: Codable, Equatable {
     var needsServerUpdate: Bool
     /// The generated bundle exceeds the server's size limit. Like
@@ -763,28 +769,21 @@ final class PendingReportStore {
         lock.lock()
         defer { lock.unlock() }
 
-        var state = report.state
-        state.needsServerUpdate = true
-        try? writeJSON(state, to: report.directoryURL.appendingPathComponent("state.json"))
+        _ = try? updateStateLocked(report) { $0.needsServerUpdate = true }
     }
 
     func markTooLarge(_ report: PendingReport) {
         lock.lock()
         defer { lock.unlock() }
 
-        var state = report.state
-        state.tooLarge = true
-        try? writeJSON(state, to: report.directoryURL.appendingPathComponent("state.json"))
+        _ = try? updateStateLocked(report) { $0.tooLarge = true }
     }
 
     func markServerRejected(_ report: PendingReport) {
         lock.lock()
         defer { lock.unlock() }
 
-        guard let current = loadReport(from: report.directoryURL) else { return }
-        var state = current.state
-        state.serverRejected = true
-        try? writeJSON(state, to: current.directoryURL.appendingPathComponent("state.json"))
+        _ = try? updateStateLocked(report) { $0.serverRejected = true }
     }
 
     /// Records a self-hosted delivery attempt before its first request can
@@ -812,10 +811,7 @@ final class PendingReportStore {
         lock.lock()
         defer { lock.unlock() }
 
-        guard let current = loadReport(from: report.directoryURL) else { return }
-        var state = current.state
-        state.deliveryUncertain = false
-        try? writeJSON(state, to: current.directoryURL.appendingPathComponent("state.json"))
+        _ = try? updateStateLocked(report) { $0.deliveryUncertain = false }
     }
 
     /// Records that the user declined this report's prompt, suppressing further
@@ -824,9 +820,7 @@ final class PendingReportStore {
         lock.lock()
         defer { lock.unlock() }
 
-        var state = report.state
-        state.promptDeclined = true
-        try? writeJSON(state, to: report.directoryURL.appendingPathComponent("state.json"))
+        _ = try? updateStateLocked(report) { $0.promptDeclined = true }
     }
 
     /// Rewrites the stored manifest's consent `mode` and `notice_version` so an
@@ -985,10 +979,7 @@ final class PendingReportStore {
         lock.lock()
         defer { lock.unlock() }
 
-        guard let current = loadReport(from: report.directoryURL) else { return }
-        var state = current.state
-        state.hostedConsentRefreshRequired = true
-        try? writeJSON(state, to: current.directoryURL.appendingPathComponent("state.json"))
+        _ = try? updateStateLocked(report) { $0.hostedConsentRefreshRequired = true }
     }
 
     func markHostedProcessing(_ report: PendingReport, shortID: String) {
@@ -996,22 +987,20 @@ final class PendingReportStore {
         lock.lock()
         defer { lock.unlock() }
 
-        guard let current = loadReport(from: report.directoryURL) else { return }
-        var state = current.state
-        state.hostedRemoteShortID = shortID
-        state.hostedRejectionCode = nil
-        try? writeJSON(state, to: current.directoryURL.appendingPathComponent("state.json"))
+        _ = try? updateStateLocked(report) { state in
+            state.hostedRemoteShortID = shortID
+            state.hostedRejectionCode = nil
+        }
     }
 
     func markHostedRejected(_ report: PendingReport, code: String?) {
         lock.lock()
         defer { lock.unlock() }
 
-        guard let current = loadReport(from: report.directoryURL) else { return }
-        var state = current.state
-        state.hostedRemoteShortID = nil
-        state.hostedRejectionCode = code?.isEmpty == false ? code : "rejected"
-        try? writeJSON(state, to: current.directoryURL.appendingPathComponent("state.json"))
+        _ = try? updateStateLocked(report) { state in
+            state.hostedRemoteShortID = nil
+            state.hostedRejectionCode = code?.isEmpty == false ? code : "rejected"
+        }
     }
 
     private func readHostedEnvelope(
@@ -1120,6 +1109,21 @@ final class PendingReportStore {
         }
         let state = readJSON(PendingReportState.self, from: directory.appendingPathComponent("state.json")) ?? .empty
         return PendingReport(id: uuid, directoryURL: directory, binding: binding, manifest: manifest, state: state)
+    }
+
+    /// Applies `change` to the report's on-disk state, never the caller's
+    /// snapshot, and persists it. Callers must hold `lock`. Returns false and
+    /// writes nothing when the report directory no longer loads.
+    @discardableResult
+    private func updateStateLocked(
+        _ report: PendingReport,
+        _ change: (inout PendingReportState) -> Void
+    ) throws -> Bool {
+        guard let current = loadReport(from: report.directoryURL) else { return false }
+        var state = current.state
+        change(&state)
+        try writeJSON(state, to: current.directoryURL.appendingPathComponent("state.json"))
+        return true
     }
 
     private func cleanupExpiredLocked(now: Date) throws {

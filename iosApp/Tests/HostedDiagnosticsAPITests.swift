@@ -2194,6 +2194,51 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
     }
 
+    // Main-actor isolation keeps the assertions on the main thread. On Xcode
+    // 27.0, XCTest intermittently dropped failures recorded off the main
+    // thread, which hid some of this test's failures.
+    @MainActor
+    func testBundlePutFailureAfterEnvelopeSaveKeepsHostedErasureHandle() async throws {
+        let cases: [(label: String, error: HostedDiagnosticsAPIError, expected: DiagnosticsUploadDecision)] = [
+            ("put-too-large", .http(statusCode: 413, code: "bundle_too_large"), .keptTooLarge),
+            ("put-unsupported-schema", .http(statusCode: 400, code: "unsupported_schema"), .keptNeedsServerUpdate),
+        ]
+        for testCase in cases {
+            let fixture = try makePendingHostedReport(label: testCase.label)
+            let coordinator = DiagnosticsCoordinator(pendingStore: fixture.store)
+            fixture.store.markHostedConsentRefreshRequired(fixture.report)
+
+            // The upload path holds this value across saveHostedEnvelope and
+            // the create POST / bundle PUT, so it is stale by the time the
+            // PUT fails.
+            let snapshot = try XCTUnwrap(
+                fixture.store.listReports(for: fixture.report.binding.binding, now: Date()).first
+            )
+            XCTAssertTrue(snapshot.state.hostedConsentRefreshRequired, testCase.label)
+            XCTAssertNil(snapshot.state.hostedEnvelopeGeneration, testCase.label)
+
+            let bundle = try DiagnosticsBundleBuilder().build(report: snapshot, logLines: [], droppedLogLines: 0)
+            try fixture.store.saveHostedEnvelope(bundle, for: snapshot)
+
+            let decision = await coordinator.handleHostedUploadError(testCase.error, report: snapshot)
+            XCTAssertEqual(decision, testCase.expected, testCase.label)
+
+            let persisted = try XCTUnwrap(
+                fixture.store.listReports(for: fixture.report.binding.binding, now: Date()).first
+            )
+            XCTAssertNotNil(persisted.state.hostedEnvelopeGeneration, testCase.label)
+            XCTAssertFalse(persisted.state.hostedConsentRefreshRequired, testCase.label)
+            if testCase.expected == .keptTooLarge {
+                XCTAssertTrue(persisted.state.tooLarge, testCase.label)
+            } else {
+                XCTAssertTrue(persisted.state.needsServerUpdate, testCase.label)
+            }
+
+            try fixture.store.stageHostedDeletionAndDelete(snapshot)
+            XCTAssertEqual(try fixture.store.hostedDeletionIntents(), [fixture.report.id], testCase.label)
+        }
+    }
+
     func testCapabilitiesArePublicAndMapCollectorIdentity() async throws {
         hostedStub.configureCapabilities()
         let api = HostedDiagnosticsAPI(
