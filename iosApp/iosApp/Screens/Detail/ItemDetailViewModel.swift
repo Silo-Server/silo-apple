@@ -167,6 +167,10 @@ class ItemDetailViewModel {
     /// mutation. Without this, a slow entry load can overwrite an optimistic
     /// button tap and put the stale pair back into `ResponseCache`.
     private var userStateMutationGeneration = 0
+    /// Bumped when this page changes the item's watched flag. A load that
+    /// captured an older value may have read `played` before the change and
+    /// must not overwrite `isWatched`.
+    @ObservationIgnored private var watchedMutationGeneration = 0
     /// Owner captured when the detail load began. Membership reads and
     /// favorite/watchlist/watched writes from this page run under it, so a
     /// tap after a profile or server switch is refused instead of landing on
@@ -203,7 +207,8 @@ class ItemDetailViewModel {
     func loadDetail(
         contentId: String,
         preserveSeasonSelection: Bool = false,
-        coalescesMetadataRequests: Bool = true
+        coalescesMetadataRequests: Bool = true,
+        fetchDetail: (@Sendable (String) async throws -> ItemDetail)? = nil
     ) async {
         guard !Task.isCancelled else { return }
         detailLoadGeneration += 1
@@ -283,10 +288,13 @@ class ItemDetailViewModel {
 
         do {
             let userStateGeneration = userStateMutationGeneration
+            let watchedGeneration = watchedMutationGeneration
             personalStateOwner = await TokenStore.shared.captureOrdinaryRequestAuth()
 
             let item: ItemDetail
-            if coalescesMetadataRequests {
+            if let fetchDetail {
+                item = try await fetchDetail(contentId)
+            } else if coalescesMetadataRequests {
                 item = try await MetadataRequestPool.shared.itemDetail(contentId: contentId, libraryId: libraryId)
             } else {
                 item = try await SiloAPI.shared.itemDetail(contentId: contentId, libraryId: libraryId)
@@ -315,10 +323,13 @@ class ItemDetailViewModel {
             // Superseded: a newer payload is already on screen. Deriving
             // watched state or the season/episode structure from this older
             // copy would undo parts of it (and re-run the season auto-select
-            // under the user).
+            // under the user). A watched change made after this load began
+            // also wins.
             guard let enriched else { return }
 
-            isWatched = enriched.userData?.played ?? false
+            if watchedMutationGeneration == watchedGeneration {
+                isWatched = enriched.userData?.played ?? false
+            }
 
             #if os(tvOS)
             if cachedDetailForRelatedStructure != nil {
@@ -490,7 +501,9 @@ class ItemDetailViewModel {
     /// same path a `loadDetail` response would — enrichment, cache write,
     /// watched flag, season/episode structure — minus the catalog fetch that
     /// produced it and the favorite/watchlist round trips, which nothing
-    /// about a background refresh invalidates.
+    /// about a background refresh invalidates. The watched flag is skipped
+    /// when this page changed it after `watchedGeneration` was captured: the
+    /// payload may predate that change.
     ///
     /// Enrichment failing is not fatal here: it returns the payload
     /// untouched, so the new trailers still render.
@@ -501,7 +514,8 @@ class ItemDetailViewModel {
     private func apply(
         item: ItemDetail,
         contentId: String,
-        preserveSeasonSelection: Bool
+        preserveSeasonSelection: Bool,
+        watchedGeneration: Int
     ) async {
         let generation = beginDetailWrite()
         guard let enriched = await adoptDetail(
@@ -509,7 +523,9 @@ class ItemDetailViewModel {
             contentId: contentId,
             generation: generation
         ) else { return }
-        isWatched = enriched.userData?.played ?? false
+        if watchedMutationGeneration == watchedGeneration {
+            isWatched = enriched.userData?.played ?? false
+        }
         await loadRelatedStructure(
             for: enriched,
             contentId: contentId,
@@ -731,6 +747,9 @@ class ItemDetailViewModel {
     func startTrailerFetch(remoteVideosDisplayable: Bool = true) {
         guard let contentId = detail?.contentId, supportsTrailerFetch else { return }
         trailerFetchContentId = contentId
+        // Captured once per run: a resumed poll reuses this closure, and the
+        // payload it finds may have been read before a later watched change.
+        let watchedGeneration = watchedMutationGeneration
         trailerFetch.start(
             baseline: detail,
             remoteVideosDisplayable: remoteVideosDisplayable
@@ -755,7 +774,8 @@ class ItemDetailViewModel {
             await self.apply(
                 item: found,
                 contentId: contentId,
-                preserveSeasonSelection: true
+                preserveSeasonSelection: true,
+                watchedGeneration: watchedGeneration
             )
         }
     }
@@ -1520,12 +1540,29 @@ class ItemDetailViewModel {
     /// Mark the detail item (and, for series/seasons, its leaf episodes)
     /// as watched or unwatched through POST / DELETE
     /// `/api/v2/watched/{id}`; the server resolves the targets.
-    func toggleWatched() async {
+    ///
+    /// A detail load that may have read `played` before this change cannot
+    /// revert it. A load that began before the server confirmed skips its
+    /// watched write if it lands afterwards, and the confirmed value is
+    /// re-asserted over a load that landed while the write was in flight.
+    func toggleWatched(
+        send: ((_ contentId: String, _ watched: Bool) async -> PersonalStateOutcome)? = nil
+    ) async {
         guard let contentId = detail?.contentId else { return }
+        watchedMutationGeneration += 1
         let requested = !isWatched
         isWatched = requested
-        let outcome = await dispatchPersonalState(.watched, contentId: contentId, to: requested)
+        let outcome: PersonalStateOutcome
+        if let send {
+            outcome = await send(contentId, requested)
+        } else {
+            outcome = await dispatchPersonalState(.watched, contentId: contentId, to: requested)
+        }
         if outcome == .applied {
+            if detail?.contentId == contentId {
+                watchedMutationGeneration += 1
+                isWatched = requested
+            }
             invalidateRelatedCaches(contentId: contentId)
         } else {
             if isWatched == requested { isWatched = !requested }
@@ -1577,6 +1614,7 @@ class ItemDetailViewModel {
         let outcome = await dispatchPersonalState(.watched, contentId: contentId, to: played)
         guard outcome == .applied else { return outcome }
         if contentId == detail?.contentId {
+            watchedMutationGeneration += 1
             isWatched = played
         }
         invalidateRelatedCaches(
