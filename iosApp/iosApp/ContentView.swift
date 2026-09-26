@@ -1307,7 +1307,6 @@ private struct WindowSceneFullScreenReader: UIViewRepresentable {
 /// cannot resize the overlay while retaining the system sidebar presentation.
 private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
     let width: CGFloat
-    let sidebarIsHidden: Bool
     let onSwipeLeft: () -> Void
     /// Opens the sidebar from a leading-edge swipe. Returns without effect
     /// when the detail stack has pushed screens, where that edge means Back.
@@ -1319,13 +1318,11 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
             onSwipeLeft: onSwipeLeft,
             onEdgeSwipe: onEdgeSwipe
         )
-        controller.sidebarIsHidden = sidebarIsHidden
         return controller
     }
 
     func updateUIViewController(_ controller: Controller, context: Context) {
         controller.width = width
-        controller.sidebarIsHidden = sidebarIsHidden
         controller.onSwipeLeft = onSwipeLeft
         controller.onEdgeSwipe = onEdgeSwipe
         controller.applyWidthLock()
@@ -1337,7 +1334,6 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
 
     final class Controller: UIViewController, UIGestureRecognizerDelegate {
         var width: CGFloat
-        var sidebarIsHidden = false
         var onSwipeLeft: () -> Void
         var onEdgeSwipe: () -> Void
         private var dragStartOffset: CGFloat = 0
@@ -1432,13 +1428,12 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
         func applyWidthLock() {
             guard let splitViewController = splitViewControllerAncestor else { return }
             managedSplitViewController = splitViewController
-            // While the sidebar is visible the direct-touch pan below is the
-            // sole interactive transition owner: keeping UIKit's built-in pan
-            // enabled would let both recognizers move the same primary column
-            // simultaneously. While the sidebar is hidden our recognizer only
-            // accepts leftward swipes, so the system edge swipe stays enabled
-            // to reveal the sidebar.
-            splitViewController.presentsWithGesture = sidebarIsHidden
+            // The recognizers below own every sidebar gesture: the
+            // direct-touch pan closes it and the leading-edge pan opens it
+            // on root screens only. UIKit's built-in pan would move the same
+            // column alongside the first, and could open the sidebar on a
+            // pushed screen where the leading edge means Back.
+            splitViewController.presentsWithGesture = false
             if splitViewController.preferredPrimaryColumnWidth != width {
                 splitViewController.preferredPrimaryColumnWidth = width
             }
@@ -2565,7 +2560,6 @@ struct MainTabView: View {
                 .background {
                     FixedPrimarySplitViewWidth(
                         width: iPadSidebarWidth,
-                        sidebarIsHidden: iPadColumnVisibility == .detailOnly,
                         onSwipeLeft: finishInteractiveSidebarDismissal,
                         onEdgeSwipe: revealSidebarFromEdge
                     )
