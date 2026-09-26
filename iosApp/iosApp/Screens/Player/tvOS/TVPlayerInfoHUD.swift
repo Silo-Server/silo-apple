@@ -1752,7 +1752,7 @@ private struct SubtitlesPane: View {
                 .focused($entryTrackFocused)
                 ForEach(viewModel.orderedSubtitleTracks) { track in
                     HUDTrackRow(
-                        name: track.primaryLabel,
+                        name: track.languageFirstPrimaryLabel,
                         attributes: attributes(for: track),
                         isSelected: viewModel.selectedSubtitleId == track.trackId
                     ) {
@@ -1779,8 +1779,8 @@ private struct SubtitlesPane: View {
                     }
                     ForEach(viewModel.availableSecondarySubtitleTracks) { track in
                         HUDTrackRow(
-                            name: track.primaryLabel,
-                            attributes: track.attributesLabel,
+                            name: track.languageFirstPrimaryLabel,
+                            attributes: track.languageFirstAttributesLabel,
                             isSelected: viewModel.selectedSecondarySubtitleId == track.trackId,
                             isDisabled: track.trackId == viewModel.selectedSubtitleId
                         ) {
@@ -1795,7 +1795,7 @@ private struct SubtitlesPane: View {
     /// The track's attributes, followed by its sync status when it can be
     /// synced ("Syncing… 40%", "Synced −3.0 s").
     private func attributes(for track: PlayerTrack) -> String? {
-        let parts = [track.attributesLabel, viewModel.subtitleSyncStatus(for: track)].compactMap { $0 }.filter { !$0.isEmpty }
+        let parts = [track.languageFirstAttributesLabel, viewModel.subtitleSyncStatus(for: track)].compactMap { $0 }.filter { !$0.isEmpty }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
