@@ -155,9 +155,7 @@ struct TVEpisodeRail: View {
     @Namespace private var anchoredFocusScope
     @State private var anchoredContentId: String?
     @State private var actionFeedback = MediaActionFeedback()
-    @State private var anchoredPlayedOverrides: [String: Bool] = [:]
-    @State private var anchoredFavoriteOverrides: [String: Bool] = [:]
-    @State private var anchoredWatchlistOverrides: [String: Bool] = [:]
+    @State private var anchoredOverrides = PersonalStateOverrides()
     @State private var uiCustomization = UICustomizationPreferences.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -559,19 +557,28 @@ struct TVEpisodeRail: View {
     }
 
     private func anchoredIsPlayed(_ episode: EpisodeListItem) -> Bool {
-        anchoredPlayedOverrides[episode.contentId]
-            ?? episode.userData?.played
-            ?? false
+        anchoredOverrides.value(
+            .watched,
+            for: episode.contentId,
+            incoming: episode.userData?.played ?? false
+        )
     }
 
     private func anchoredIsFavorite(_ episode: EpisodeListItem) -> Bool {
-        anchoredFavoriteOverrides[episode.contentId]
-            ?? favoriteStates[episode.contentId]
-            ?? (currentContentId == episode.contentId && currentContentIsFavorite)
+        anchoredOverrides.value(
+            .favorite,
+            for: episode.contentId,
+            incoming: favoriteStates[episode.contentId]
+                ?? (currentContentId == episode.contentId && currentContentIsFavorite)
+        )
     }
 
     private func anchoredInWatchlist(_ episode: EpisodeListItem) -> Bool {
-        anchoredWatchlistOverrides[episode.contentId] ?? watchlistStates[episode.contentId] ?? false
+        anchoredOverrides.value(
+            .watchlist,
+            for: episode.contentId,
+            incoming: watchlistStates[episode.contentId] ?? false
+        )
     }
 
     private func anchoredMetadataLine(for episode: EpisodeListItem) -> String? {
@@ -611,36 +618,33 @@ struct TVEpisodeRail: View {
                 onToggleWatched: onSetWatched.map { update in
                     {
                         let value = !anchoredIsPlayed(episode)
-                        let previous = anchoredPlayedOverrides[episode.contentId]
+                        let overrides = anchoredOverrides
                         actionFeedback.perform {
-                            anchoredPlayedOverrides[episode.contentId] = value
-                            let outcome = await update(episode.contentId, value)
-                            if outcome != .applied { anchoredPlayedOverrides[episode.contentId] = previous }
-                            return outcome
+                            await overrides.run(.watched, contentId: episode.contentId, value: value) {
+                                await update(episode.contentId, value)
+                            }
                         }
                     }
                 },
                 onToggleFavorite: onSetFavorite.map { update in
                     {
                         let value = !anchoredIsFavorite(episode)
-                        let previous = anchoredFavoriteOverrides[episode.contentId]
+                        let overrides = anchoredOverrides
                         actionFeedback.perform {
-                            anchoredFavoriteOverrides[episode.contentId] = value
-                            let outcome = await update(episode.contentId, value)
-                            if outcome != .applied { anchoredFavoriteOverrides[episode.contentId] = previous }
-                            return outcome
+                            await overrides.run(.favorite, contentId: episode.contentId, value: value) {
+                                await update(episode.contentId, value)
+                            }
                         }
                     }
                 },
                 onToggleWatchlist: onSetWatchlist.map { update in
                     {
                         let value = !anchoredInWatchlist(episode)
-                        let previous = anchoredWatchlistOverrides[episode.contentId]
+                        let overrides = anchoredOverrides
                         actionFeedback.perform {
-                            anchoredWatchlistOverrides[episode.contentId] = value
-                            let outcome = await update(episode.contentId, value)
-                            if outcome != .applied { anchoredWatchlistOverrides[episode.contentId] = previous }
-                            return outcome
+                            await overrides.run(.watchlist, contentId: episode.contentId, value: value) {
+                                await update(episode.contentId, value)
+                            }
                         }
                     }
                 }
