@@ -227,7 +227,7 @@ struct TVServerSetupView: View {
                         fieldLabel("Port")
                         AuroraInputField(
                             text: $viewModel.port,
-                            placeholder: "8096",
+                            placeholder: ServerSetupViewModel.nativeServerPort,
                             focus: $focusedField,
                             equals: .port,
                             keyboard: .numberPad

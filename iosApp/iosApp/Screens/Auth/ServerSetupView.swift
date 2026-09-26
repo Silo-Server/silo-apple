@@ -120,7 +120,7 @@ struct ServerSetupView: View {
                 AuroraTextField(
                     label: "Port",
                     text: $viewModel.port,
-                    placeholder: "8096",
+                    placeholder: ServerSetupViewModel.nativeServerPort,
                     focus: $focusedField,
                     equals: .port,
                     keyboard: .number

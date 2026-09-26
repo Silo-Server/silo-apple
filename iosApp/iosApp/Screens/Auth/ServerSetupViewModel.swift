@@ -26,6 +26,11 @@ class ServerSetupViewModel {
     var isLoading: Bool = false
     var error: String?
 
+    /// Host port that the stock silo-server compose file publishes for the native
+    /// API (`${PORT:-8090}:8080`). Setup suggests it and probes it as the Auto
+    /// fallback. 8096 is the Jellyfin-compat listener, not the Silo API.
+    static let nativeServerPort = "8090"
+
     /// Probes one candidate URL and commits it on success.
     typealias ServerCheck = @Sendable (String) async throws -> APIv2SetupStatus
 
@@ -104,7 +109,7 @@ class ServerSetupViewModel {
         }
 
         if selectedScheme == .auto, explicitPort == nil {
-            candidates.append(try makeURL(scheme: "http", host: parsed.host, port: "8090", path: parsed.path))
+            candidates.append(try makeURL(scheme: "http", host: parsed.host, port: Self.nativeServerPort, path: parsed.path))
         }
 
         return unique(candidates)
