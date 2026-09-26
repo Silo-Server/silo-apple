@@ -146,9 +146,10 @@ embedded crate.
 
 SiloObjectAudio is Silo's object-audio decoder library, licensed under the Apache License
 2.0. Its static `SiloObjectAudio.xcframework` contains the `truehd` crate (TrueHD/MLP
-decoder) and the `oamd` crate (object audio metadata) from the truehdd project,
-Copyright Rainbaby and the truehdd contributors, under the Apache License 2.0, at
-the exact commit `45eff984e3e5ab0cf36a47d12148b1628c38bda4`. It also compiles in
+decoder) from the truehdd project at the exact commit
+`45eff984e3e5ab0cf36a47d12148b1628c38bda4`, Copyright Rainbaby and the truehdd
+contributors, and the `oamd` crate 0.1.0 (object audio metadata) from crates.io,
+Copyright Rainbaby, both under the Apache License 2.0. It also compiles in
 the Rust standard library and the crates its NOTICE lists, each under the MIT
 license or the Apache License 2.0. The bundled text reproduces the NOTICE and the
 Apache License.
@@ -156,6 +157,7 @@ Apache License.
 - Exact source and rebuild script:
   <https://github.com/Silo-Server/SiloObjectAudio/tree/645b91c072fafb60146151fd5127f8ff0ca38b6f>
 - Embedded decoder source: <https://github.com/truehdd/truehdd/tree/45eff984e3e5ab0cf36a47d12148b1628c38bda4>
+- Embedded metadata parser source: <https://crates.io/crates/oamd/0.1.0>
 - Bundled text: `SiloObjectAudio-Apache-2.0.txt`
 
 ## Nuke and NukeUI
