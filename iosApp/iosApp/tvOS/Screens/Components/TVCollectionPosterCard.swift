@@ -9,8 +9,9 @@ import SwiftUI
 /// line beneath it, paralleling the title/year caption on media cards.
 ///
 /// Artwork: `LibraryCollection.posterUrl`. When the server returns no poster
-/// the card degrades to a deterministic gradient with a stack glyph, so an
-/// art-less collection still reads as a collection rather than a blank tile.
+/// the card degrades to a gradient derived from the collection id, with a
+/// stack glyph, so an art-less collection still reads as a collection rather
+/// than a blank tile and keeps the same color on every launch.
 struct TVCollectionPosterCard: View {
     let collection: LibraryCollection
     let action: () -> Void
@@ -76,9 +77,9 @@ struct TVCollectionPosterCard: View {
         .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
     }
 
-    /// Art-less fallback: a deterministic gradient + stack glyph so the tile
-    /// still reads as a collection. Same derivation the card used before the
-    /// poster redesign, so missing-art collections look consistent.
+    /// Art-less fallback: a gradient tinted by `placeholderHue(forCollectionId:)`
+    /// plus a stack glyph, so the tile still reads as a collection and keeps
+    /// its color across launches.
     private var placeholder: some View {
         ZStack {
             LinearGradient(
@@ -154,14 +155,20 @@ struct TVCollectionPosterCard: View {
         return label
     }
 
-    /// Stable hue for the art-less placeholder, derived from the id so a
-    /// collection's fallback tile looks the same each time it appears.
-    private var hue: Double {
-        var hasher = Hasher()
-        hasher.combine(collection.id)
-        let raw = UInt(bitPattern: hasher.finalize())
-        return Double(raw % 360) / 360.0
+    /// Placeholder hue in [0, 1) for an art-less collection. FNV-1a (64-bit)
+    /// over the id's UTF-8 bytes, so the same collection gets the same color on
+    /// every launch and device. Swift's `Hasher` is seeded per process, so it
+    /// can't be used here.
+    static func placeholderHue(forCollectionId id: String) -> Double {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in id.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x0000_0100_0000_01b3
+        }
+        return Double(hash % 360) / 360.0
     }
+
+    private var hue: Double { Self.placeholderHue(forCollectionId: collection.id) }
 }
 
 private extension View {
