@@ -10,6 +10,7 @@ class LoginViewModel {
     private let auth = AuthService.shared
 
     /// Authenticate with username and password.
+    @MainActor
     func login(router: AppRouter) async {
         guard !username.trimmingCharacters(in: .whitespaces).isEmpty else {
             error = "Please enter your username."
@@ -26,7 +27,7 @@ class LoginViewModel {
 
         do {
             try await auth.login(username: username, password: password)
-            await StartupContentPrefetcher.prefetchProfiles()
+            StartupContentPrefetcher.prefetchProfiles()
             router.showProfileSelection()
         } catch let loginError {
             self.error = Self.message(for: loginError)
