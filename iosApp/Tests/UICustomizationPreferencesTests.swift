@@ -1168,8 +1168,9 @@ final class UICustomizationPreferencesTests: XCTestCase {
             forKey: cacheKey
         )
 
-        let transport = RecoveringShortcutProbe()
-        await transport.setOnline()
+        let transport = FakeUICustomizationTransport(rows: [
+            try .init(.navShortcuts, .profile, encoding: NavigationShortcutsPreference.empty),
+        ])
         let preferences = UICustomizationPreferences(
             defaults: defaults,
             transport: transport,
@@ -1178,12 +1179,13 @@ final class UICustomizationPreferencesTests: XCTestCase {
         )
         await preferences.refresh()
 
-        let snapshot = await transport.snapshot()
-        let operation = try XCTUnwrap(snapshot.shortcutOperations.first)
-        XCTAssertEqual(snapshot.shortcutOperations.count, 1)
-        XCTAssertEqual(operation.item.id, "collection|0|0#|13#featured:2026")
-        XCTAssertTrue(operation.present, "the cache written with a mutation id still replays")
-        XCTAssertEqual(preferences.shortcuts.items.map(\.id), [operation.item.id])
+        let shortcutOperations = await transport.calls(.shortcut)
+        let operation = try XCTUnwrap(shortcutOperations.first)
+        let replayedItem = try XCTUnwrap(operation.item)
+        XCTAssertEqual(shortcutOperations.count, 1)
+        XCTAssertEqual(replayedItem.id, "collection|0|0#|13#featured:2026")
+        XCTAssertEqual(operation.present, true, "the cache written with a mutation id still replays")
+        XCTAssertEqual(preferences.shortcuts.items.map(\.id), [replayedItem.id])
     }
 
     func testPrimaryMenuRejectsMissingOrDuplicateHomeAndDuplicateShortcuts() {
@@ -1228,7 +1230,10 @@ final class UICustomizationPreferencesTests: XCTestCase {
             UserDefaults().removePersistentDomain(forName: standardName)
         }
 
-        let transport = OrderedWriteProbe()
+        let transport = FakeUICustomizationTransport(
+            effectiveResponse: FakeUICustomizationTransport.emptyResponse
+        )
+        await transport.hold(.puts)
         let preferences = UICustomizationPreferences(
             defaults: SharedDefaults(suite: suite, standard: standard),
             transport: transport,
@@ -1242,19 +1247,20 @@ final class UICustomizationPreferencesTests: XCTestCase {
         XCTAssertTrue(preferences.isSaving)
 
         let release = Task {
-            await transport.waitForStartedWrites(1)
+            await transport.waitForStarted(.put, count: 1)
             try? await Task.sleep(nanoseconds: 50_000_000)
-            await transport.releaseFirstWrite()
+            await transport.release(.puts)
         }
-        await transport.waitForCompletedWrites(2)
+        await transport.waitForCompleted(.put, count: 2)
         await release.value
         try await Task.sleep(nanoseconds: 20_000_000)
 
-        let snapshot = await transport.snapshot()
-        let presentations = try snapshot.values.map {
+        let values = await transport.calls(.put).compactMap(\.value)
+        let maxConcurrentWrites = await transport.maxConcurrentWrites
+        let presentations = try values.map {
             try $0.decoded(as: CardPresentationPreference.self)
         }
-        XCTAssertEqual(snapshot.maxInFlight, 1, "writes must never overtake one another")
+        XCTAssertEqual(maxConcurrentWrites, 1, "writes must never overtake one another")
         XCTAssertEqual(
             presentations,
             [
@@ -1277,7 +1283,10 @@ final class UICustomizationPreferencesTests: XCTestCase {
 
         let defaults = SharedDefaults(suite: suite, standard: standard)
         let cacheKey = "silo.uiCustomization.server.profile.mobile"
-        let transport = OrderedWriteProbe()
+        let transport = FakeUICustomizationTransport(
+            effectiveResponse: FakeUICustomizationTransport.emptyResponse
+        )
+        await transport.hold(.puts)
         let preferences = UICustomizationPreferences(
             defaults: defaults,
             transport: transport,
@@ -1288,7 +1297,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         let desired = CardPresentationPreset.artworkOnly.presentation
 
         preferences.setCardPresentation(desired)
-        await transport.waitForStartedWrites(1)
+        await transport.waitForStarted(.put, count: 1)
 
         let cachedData = try XCTUnwrap(defaults.data(forKey: cacheKey))
         let cache = try XCTUnwrap(
@@ -1299,8 +1308,8 @@ final class UICustomizationPreferencesTests: XCTestCase {
         XCTAssertEqual(card["poster_size"] as? String, "large")
         XCTAssertNotNil(pending[SettingKey.uiCardPresentation.rawValue])
 
-        await transport.releaseFirstWrite()
-        await transport.waitForCompletedWrites(1)
+        await transport.release(.puts)
+        await transport.waitForCompleted(.put, count: 1)
     }
 
     func testAcceptedPinDurablyTransitionsToMenuOutboxBeforeTransportCompletion() async throws {
@@ -1315,7 +1324,10 @@ final class UICustomizationPreferencesTests: XCTestCase {
 
         let defaults = SharedDefaults(suite: suite, standard: standard)
         let cacheKey = "silo.uiCustomization.server.profile.tv"
-        let transport = AcceptedMenuCrashProbe()
+        let transport = FakeUICustomizationTransport(
+            effectiveResponse: FakeUICustomizationTransport.emptyResponse
+        )
+        await transport.hold(.put(.navPrimaryMenu))
         let preferences = UICustomizationPreferences(
             defaults: defaults,
             transport: transport,
@@ -1333,7 +1345,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         let item = PrimaryMenuItem.library(libraryId: 7, label: "Accepted")
 
         preferences.setLibraryPinned(library, isPinned: true)
-        await transport.waitForMenuWriteStarted()
+        await transport.waitForStarted(.put, count: 1)
 
         let cachedData = try XCTUnwrap(defaults.data(forKey: cacheKey))
         let cache = try XCTUnwrap(
@@ -1343,9 +1355,8 @@ final class UICustomizationPreferencesTests: XCTestCase {
         XCTAssertNil(cache["pendingShortcutOperations"])
         XCTAssertNotNil(pendingWrites[SettingKey.navPrimaryMenu.rawValue])
 
-        let replayTransport = ShortcutOrderingProbe(
-            outcomes: [:],
-            initialShortcuts: [item]
+        let replayTransport = FakeUICustomizationTransport(
+            rows: try menuAndShortcutRows(shortcuts: [item])
         )
         let restarted = UICustomizationPreferences(
             defaults: defaults,
@@ -1356,13 +1367,16 @@ final class UICustomizationPreferencesTests: XCTestCase {
         )
         await restarted.refresh()
 
-        let replaySnapshot = await replayTransport.snapshot()
-        XCTAssertEqual(replaySnapshot.menuWrites.count, 1)
-        XCTAssertTrue(replaySnapshot.menuWrites[0].items.contains { $0.id == item.id })
+        let menuWrites = await replayTransport.decodedPuts(
+            .navPrimaryMenu,
+            as: PrimaryMenuPreference.self
+        )
+        XCTAssertEqual(menuWrites.count, 1)
+        XCTAssertTrue(menuWrites[0].items.contains { $0.id == item.id })
         XCTAssertTrue(restarted.isLibraryPinned(7))
 
-        await transport.releaseMenuWrite()
-        await transport.waitForMenuWriteCompleted()
+        await transport.release(.put(.navPrimaryMenu))
+        await transport.waitForCompleted(.put, count: 1)
     }
 
     func testSuccessfulMenuWriteDoesNotClearShortcutWriteFailure() async throws {
@@ -1375,7 +1389,11 @@ final class UICustomizationPreferencesTests: XCTestCase {
             UserDefaults().removePersistentDomain(forName: standardName)
         }
 
-        let transport = SelectiveFailureWriteProbe(failingKey: .navShortcuts)
+        let transport = FakeUICustomizationTransport(
+            effectiveResponse: FakeUICustomizationTransport.emptyResponse
+        )
+        await transport.fail(.put(.navShortcuts))
+        await transport.fail(.shortcuts)
         let preferences = UICustomizationPreferences(
             defaults: SharedDefaults(suite: suite, standard: standard),
             transport: transport,
@@ -1396,10 +1414,12 @@ final class UICustomizationPreferencesTests: XCTestCase {
             .builtin(.home),
             .builtin(.forYou),
         ])
-        await transport.waitForCompletedWrites(2)
+        await transport.waitForCompleted(.write, count: 2)
         try await Task.sleep(nanoseconds: 20_000_000)
-        let writtenKeys = await transport.writtenKeys()
-        let wholeShortcutPutCount = await transport.wholeShortcutPutCount()
+        let writtenKeys = await transport.calls(.write).compactMap(\.key)
+        let wholeShortcutPutCount = await transport.calls(.put)
+            .filter { $0.key == .navShortcuts }
+            .count
 
         XCTAssertEqual(writtenKeys, [.navShortcuts, .navPrimaryMenu])
         XCTAssertEqual(
@@ -1440,9 +1460,10 @@ final class UICustomizationPreferencesTests: XCTestCase {
             sortOrder: 1,
             posterUrl: nil
         )
-        let transport = SelectiveFailureWriteProbe(
-            failingShortcutIds: ["library:7"]
+        let transport = FakeUICustomizationTransport(
+            effectiveResponse: FakeUICustomizationTransport.emptyResponse
         )
+        await transport.fail(.shortcut(id: "library:7"))
         let preferences = UICustomizationPreferences(
             defaults: defaults,
             transport: transport,
@@ -1453,7 +1474,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
 
         preferences.setLibraryPinned(failedLibrary, isPinned: true)
         preferences.setLibraryPinned(successfulLibrary, isPinned: true)
-        await transport.waitForCompletedWrites(3)
+        await transport.waitForCompleted(.write, count: 3)
 
         XCTAssertNotNil(
             preferences.syncErrorMessage,
@@ -1468,7 +1489,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
             initialCapabilityState: .supported
         )
         await restarted.refresh()
-        let attemptedShortcutIds = await transport.shortcutItemIds()
+        let attemptedShortcutIds = await transport.calls(.shortcut).compactMap(\.item?.id)
 
         XCTAssertEqual(
             attemptedShortcutIds,
@@ -1488,10 +1509,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
             UserDefaults().removePersistentDomain(forName: standardName)
         }
 
-        let transport = ShortcutOrderingProbe(outcomes: [
-            "library:7": [.success],
-            "library:8": [.success],
-        ])
+        let transport = FakeUICustomizationTransport(rows: try menuAndShortcutRows())
         let preferences = UICustomizationPreferences(
             defaults: SharedDefaults(suite: suite, standard: standard),
             transport: transport,
@@ -1516,15 +1534,19 @@ final class UICustomizationPreferencesTests: XCTestCase {
 
         preferences.setLibraryPinned(first, isPinned: true)
         preferences.setLibraryPinned(second, isPinned: true)
-        await transport.waitForCompletedWrites(4)
+        await transport.waitForCompleted(.write, count: 4)
 
-        let snapshot = await transport.snapshot()
-        XCTAssertEqual(snapshot.shortcutAttempts.map(\.item.id), ["library:7", "library:8"])
-        XCTAssertEqual(snapshot.menuWrites.count, 2)
-        XCTAssertTrue(snapshot.menuWrites[0].items.contains { $0.id == "library:7" })
-        XCTAssertFalse(snapshot.menuWrites[0].items.contains { $0.id == "library:8" })
-        XCTAssertTrue(snapshot.menuWrites[1].items.contains { $0.id == "library:7" })
-        XCTAssertTrue(snapshot.menuWrites[1].items.contains { $0.id == "library:8" })
+        let shortcutAttempts = await transport.calls(.shortcut)
+        let menuWrites = await transport.decodedPuts(
+            .navPrimaryMenu,
+            as: PrimaryMenuPreference.self
+        )
+        XCTAssertEqual(shortcutAttempts.compactMap(\.item?.id), ["library:7", "library:8"])
+        XCTAssertEqual(menuWrites.count, 2)
+        XCTAssertTrue(menuWrites[0].items.contains { $0.id == "library:7" })
+        XCTAssertFalse(menuWrites[0].items.contains { $0.id == "library:8" })
+        XCTAssertTrue(menuWrites[1].items.contains { $0.id == "library:7" })
+        XCTAssertTrue(menuWrites[1].items.contains { $0.id == "library:8" })
     }
 
     func testLaterRejectedPinNeverEntersEarlierAcceptedPinMenuWrite() async throws {
@@ -1537,10 +1559,8 @@ final class UICustomizationPreferencesTests: XCTestCase {
             UserDefaults().removePersistentDomain(forName: standardName)
         }
 
-        let transport = ShortcutOrderingProbe(outcomes: [
-            "library:7": [.success],
-            "library:8": [.definitiveFailure],
-        ])
+        let transport = FakeUICustomizationTransport(rows: try menuAndShortcutRows())
+        await transport.fail(.shortcut(id: "library:8"), with: .api(.invalidValue(message: "shortcut rejected")), times: 1)
         let cacheKey = "silo.uiCustomization.server.profile.tv"
         let preferences = UICustomizationPreferences(
             defaults: SharedDefaults(suite: suite, standard: standard),
@@ -1566,13 +1586,16 @@ final class UICustomizationPreferencesTests: XCTestCase {
 
         preferences.setLibraryPinned(first, isPinned: true)
         preferences.setLibraryPinned(second, isPinned: true)
-        await transport.waitForCompletedWrites(3)
+        await transport.waitForCompleted(.write, count: 3)
         await preferences.refresh()
 
-        let snapshot = await transport.snapshot()
-        XCTAssertEqual(snapshot.menuWrites.count, 1)
-        XCTAssertTrue(snapshot.menuWrites[0].items.contains { $0.id == "library:7" })
-        XCTAssertFalse(snapshot.menuWrites[0].items.contains { $0.id == "library:8" })
+        let menuWrites = await transport.decodedPuts(
+            .navPrimaryMenu,
+            as: PrimaryMenuPreference.self
+        )
+        XCTAssertEqual(menuWrites.count, 1)
+        XCTAssertTrue(menuWrites[0].items.contains { $0.id == "library:7" })
+        XCTAssertFalse(menuWrites[0].items.contains { $0.id == "library:8" })
         XCTAssertTrue(preferences.isLibraryPinned(7))
         XCTAssertFalse(preferences.isLibraryPinned(8))
         XCTAssertFalse(
@@ -1590,13 +1613,9 @@ final class UICustomizationPreferencesTests: XCTestCase {
             UserDefaults().removePersistentDomain(forName: standardName)
         }
 
-        let transport = ShortcutOrderingProbe(
-            outcomes: [
-                "library:7": [.success],
-                "library:8": [.definitiveFailure],
-            ],
-            effectiveFails: true
-        )
+        let transport = FakeUICustomizationTransport(rows: try menuAndShortcutRows())
+        await transport.fail(.shortcut(id: "library:8"), with: .api(.invalidValue(message: "shortcut rejected")), times: 1)
+        await transport.fail(.reads)
         let cacheKey = "silo.uiCustomization.server.profile.tv"
         let preferences = UICustomizationPreferences(
             defaults: SharedDefaults(suite: suite, standard: standard),
@@ -1622,7 +1641,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
 
         preferences.setLibraryPinned(first, isPinned: true)
         preferences.setLibraryPinned(second, isPinned: true)
-        await transport.waitForCompletedWrites(3)
+        await transport.waitForCompleted(.write, count: 3)
         try await Task.sleep(nanoseconds: 30_000_000)
 
         XCTAssertTrue(preferences.isLibraryPinned(7))
@@ -1651,10 +1670,8 @@ final class UICustomizationPreferencesTests: XCTestCase {
             UserDefaults().removePersistentDomain(forName: standardName)
         }
 
-        let transport = ShortcutOrderingProbe(outcomes: [
-            "library:7": [.transientFailure, .success],
-            "library:8": [.success],
-        ])
+        let transport = FakeUICustomizationTransport(rows: try menuAndShortcutRows())
+        await transport.fail(.shortcut(id: "library:7"), times: 1)
         let cacheKey = "silo.uiCustomization.server.profile.tv"
         let preferences = UICustomizationPreferences(
             defaults: SharedDefaults(suite: suite, standard: standard),
@@ -1680,21 +1697,28 @@ final class UICustomizationPreferencesTests: XCTestCase {
 
         preferences.setLibraryPinned(first, isPinned: true)
         preferences.setLibraryPinned(second, isPinned: true)
-        await transport.waitForCompletedWrites(3)
+        await transport.waitForCompleted(.write, count: 3)
 
-        var snapshot = await transport.snapshot()
-        XCTAssertEqual(snapshot.menuWrites.count, 1)
-        XCTAssertFalse(snapshot.menuWrites[0].items.contains { $0.id == "library:7" })
-        XCTAssertTrue(snapshot.menuWrites[0].items.contains { $0.id == "library:8" })
+        var menuWrites = await transport.decodedPuts(
+            .navPrimaryMenu,
+            as: PrimaryMenuPreference.self
+        )
+        XCTAssertEqual(menuWrites.count, 1)
+        XCTAssertFalse(menuWrites[0].items.contains { $0.id == "library:7" })
+        XCTAssertTrue(menuWrites[0].items.contains { $0.id == "library:8" })
 
         await preferences.refresh()
 
-        snapshot = await transport.snapshot()
+        let shortcutAttempts = await transport.calls(.shortcut)
+        menuWrites = await transport.decodedPuts(
+            .navPrimaryMenu,
+            as: PrimaryMenuPreference.self
+        )
         XCTAssertEqual(
-            snapshot.shortcutAttempts.map(\.item.id),
+            shortcutAttempts.compactMap(\.item?.id),
             ["library:7", "library:8", "library:7"]
         )
-        let finalIds = snapshot.menuWrites.last?.items.map(\.id) ?? []
+        let finalIds = menuWrites.last?.items.map(\.id) ?? []
         let firstIndex = try XCTUnwrap(finalIds.firstIndex(of: "library:7"))
         let secondIndex = try XCTUnwrap(finalIds.firstIndex(of: "library:8"))
         XCTAssertLessThan(firstIndex, secondIndex)
@@ -1711,7 +1735,11 @@ final class UICustomizationPreferencesTests: XCTestCase {
             UserDefaults().removePersistentDomain(forName: standardName)
         }
 
-        let transport = BlockingShortcutProbe()
+        let transport = FakeUICustomizationTransport(
+            rows: [try .init(.navShortcuts, .profile, encoding: NavigationShortcutsPreference.empty)],
+            persistsPuts: false
+        )
+        await transport.hold(.shortcuts)
         let preferences = UICustomizationPreferences(
             defaults: SharedDefaults(suite: suite, standard: standard),
             transport: transport,
@@ -1732,16 +1760,20 @@ final class UICustomizationPreferencesTests: XCTestCase {
         ])
 
         preferences.setLibraryPinned(library, isPinned: true)
-        await transport.waitForStartedShortcutOperations(1)
+        await transport.waitForStarted(.shortcut, count: 1)
         preferences.setPrimaryMenuItems(explicitMenu.items)
-        await transport.releaseFirstShortcutOperation()
-        await transport.waitForCompletedShortcutOperations(1)
-        await transport.waitForGenericPuts(1)
+        await transport.release(.shortcuts)
+        await transport.waitForCompleted(.shortcut, count: 1)
+        await transport.waitForCompleted(.put, count: 1)
         try await Task.sleep(nanoseconds: 30_000_000)
 
-        let snapshot = await transport.snapshot()
-        XCTAssertEqual(snapshot.genericPutCount, 1)
-        XCTAssertEqual(snapshot.menuWrites, [explicitMenu])
+        let genericPutCount = await transport.calls(.put).count
+        let menuWrites = await transport.decodedPuts(
+            .navPrimaryMenu,
+            as: PrimaryMenuPreference.self
+        )
+        XCTAssertEqual(genericPutCount, 1)
+        XCTAssertEqual(menuWrites, [explicitMenu])
         XCTAssertEqual(preferences.primaryMenu, explicitMenu)
         XCTAssertTrue(preferences.isLibraryPinned(7))
         XCTAssertFalse(preferences.isSaving)
@@ -1757,7 +1789,11 @@ final class UICustomizationPreferencesTests: XCTestCase {
             UserDefaults().removePersistentDomain(forName: standardName)
         }
 
-        let transport = BlockingShortcutProbe()
+        let transport = FakeUICustomizationTransport(
+            rows: [try .init(.navShortcuts, .profile, encoding: NavigationShortcutsPreference.empty)],
+            persistsPuts: false
+        )
+        await transport.hold(.shortcuts)
         let preferences = UICustomizationPreferences(
             defaults: SharedDefaults(suite: suite, standard: standard),
             transport: transport,
@@ -1775,18 +1811,22 @@ final class UICustomizationPreferencesTests: XCTestCase {
         let pendingItem = PrimaryMenuItem.library(libraryId: 7, label: "Pending")
 
         preferences.setLibraryPinned(library, isPinned: true)
-        await transport.waitForStartedShortcutOperations(1)
+        await transport.waitForStarted(.shortcut, count: 1)
         preferences.setPrimaryMenuItems([.builtin(.home), pendingItem])
 
         XCTAssertNil(preferences.primaryMenu)
         XCTAssertTrue(preferences.syncErrorMessage?.contains("finish syncing") == true)
 
-        await transport.releaseFirstShortcutOperation()
-        await transport.waitForCompletedShortcutOperations(1)
-        await transport.waitForGenericPuts(1)
-        let snapshot = await transport.snapshot()
-        XCTAssertEqual(snapshot.genericPutCount, 1)
-        XCTAssertTrue(snapshot.menuWrites[0].items.contains { $0.id == pendingItem.id })
+        await transport.release(.shortcuts)
+        await transport.waitForCompleted(.shortcut, count: 1)
+        await transport.waitForCompleted(.put, count: 1)
+        let genericPutCount = await transport.calls(.put).count
+        let menuWrites = await transport.decodedPuts(
+            .navPrimaryMenu,
+            as: PrimaryMenuPreference.self
+        )
+        XCTAssertEqual(genericPutCount, 1)
+        XCTAssertTrue(menuWrites[0].items.contains { $0.id == pendingItem.id })
         XCTAssertNil(preferences.syncErrorMessage)
     }
 
@@ -1800,7 +1840,11 @@ final class UICustomizationPreferencesTests: XCTestCase {
             UserDefaults().removePersistentDomain(forName: standardName)
         }
 
-        let transport = BlockingShortcutProbe()
+        let transport = FakeUICustomizationTransport(
+            rows: [try .init(.navShortcuts, .profile, encoding: NavigationShortcutsPreference.empty)],
+            persistsPuts: false
+        )
+        await transport.hold(.shortcuts)
         let preferences = UICustomizationPreferences(
             defaults: SharedDefaults(suite: suite, standard: standard),
             transport: transport,
@@ -1822,21 +1866,25 @@ final class UICustomizationPreferencesTests: XCTestCase {
         ])
 
         preferences.setLibraryPinned(library, isPinned: true)
-        await transport.waitForStartedShortcutOperations(1)
+        await transport.waitForStarted(.shortcut, count: 1)
         preferences.setPrimaryMenuItems(firstExplicitMenu.items)
         preferences.setPrimaryMenuItems(firstExplicitMenu.items + [item])
 
         XCTAssertEqual(preferences.primaryMenu, firstExplicitMenu)
         XCTAssertTrue(preferences.syncErrorMessage?.contains("finish syncing") == true)
 
-        await transport.releaseFirstShortcutOperation()
-        await transport.waitForCompletedShortcutOperations(1)
-        await transport.waitForGenericPuts(1)
+        await transport.release(.shortcuts)
+        await transport.waitForCompleted(.shortcut, count: 1)
+        await transport.waitForCompleted(.put, count: 1)
         try await Task.sleep(nanoseconds: 30_000_000)
 
-        let snapshot = await transport.snapshot()
-        XCTAssertEqual(snapshot.genericPutCount, 1)
-        XCTAssertEqual(snapshot.menuWrites, [firstExplicitMenu])
+        let genericPutCount = await transport.calls(.put).count
+        let menuWrites = await transport.decodedPuts(
+            .navPrimaryMenu,
+            as: PrimaryMenuPreference.self
+        )
+        XCTAssertEqual(genericPutCount, 1)
+        XCTAssertEqual(menuWrites, [firstExplicitMenu])
         XCTAssertNil(preferences.syncErrorMessage)
     }
 
@@ -1854,10 +1902,9 @@ final class UICustomizationPreferencesTests: XCTestCase {
         let cacheKey = "silo.uiCustomization.server.profile.tv"
         let first = PrimaryMenuItem.library(libraryId: 7, label: "First")
         let second = PrimaryMenuItem.library(libraryId: 8, label: "Second")
-        let offlineTransport = ShortcutOrderingProbe(outcomes: [
-            first.id: [.transientFailure],
-            second.id: [.transientFailure],
-        ])
+        let offlineTransport = FakeUICustomizationTransport(rows: try menuAndShortcutRows())
+        await offlineTransport.fail(.shortcut(id: first.id), times: 1)
+        await offlineTransport.fail(.shortcut(id: second.id), times: 1)
         let authored = UICustomizationPreferences(
             defaults: defaults,
             transport: offlineTransport,
@@ -1875,7 +1922,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
             isPinned: true
         )
         authored.setPrimaryMenuItems([.builtin(.home), first])
-        await offlineTransport.waitForCompletedWrites(2)
+        await offlineTransport.waitForCompleted(.write, count: 2)
 
         XCTAssertTrue(authored.syncErrorMessage?.contains("finish syncing") == true)
         let blockedCacheData = try XCTUnwrap(defaults.data(forKey: cacheKey))
@@ -1887,10 +1934,8 @@ final class UICustomizationPreferencesTests: XCTestCase {
             [first.id]
         )
 
-        let replayTransport = ShortcutOrderingProbe(outcomes: [
-            first.id: [.success],
-            second.id: [.transientFailure],
-        ])
+        let replayTransport = FakeUICustomizationTransport(rows: try menuAndShortcutRows())
+        await replayTransport.fail(.shortcut(id: second.id), times: 1)
         let restarted = UICustomizationPreferences(
             defaults: defaults,
             transport: replayTransport,
@@ -1902,8 +1947,8 @@ final class UICustomizationPreferencesTests: XCTestCase {
 
         await restarted.refresh()
 
-        let replay = await replayTransport.snapshot()
-        XCTAssertEqual(replay.shortcutAttempts.map(\.item.id), [first.id, second.id])
+        let replayShortcutIds = await replayTransport.calls(.shortcut).compactMap(\.item?.id)
+        XCTAssertEqual(replayShortcutIds, [first.id, second.id])
         XCTAssertFalse(restarted.syncErrorMessage?.contains("finish syncing") == true)
         let reconciledCacheData = try XCTUnwrap(defaults.data(forKey: cacheKey))
         let reconciledCache = try XCTUnwrap(
@@ -1923,7 +1968,10 @@ final class UICustomizationPreferencesTests: XCTestCase {
         }
 
         let defaults = SharedDefaults(suite: suite, standard: standard)
-        let transport = RecoveringShortcutProbe()
+        let transport = FakeUICustomizationTransport(rows: [
+            try .init(.navShortcuts, .profile, encoding: NavigationShortcutsPreference.empty),
+        ])
+        await transport.fail(.shortcuts)
         let cacheKey = "silo.uiCustomization.server.profile.tv"
         let preferences = UICustomizationPreferences(
             defaults: defaults,
@@ -1945,9 +1993,9 @@ final class UICustomizationPreferencesTests: XCTestCase {
         ])
 
         preferences.setLibraryPinned(library, isPinned: true)
-        await transport.waitForShortcutAttempts(1)
+        await transport.waitForStarted(.shortcut, count: 1)
         preferences.setPrimaryMenuItems(explicitMenu.items)
-        await transport.waitForGenericPuts(1)
+        await transport.waitForCompleted(.put, count: 1)
 
         let cachedData = try XCTUnwrap(defaults.data(forKey: cacheKey))
         let cache = try XCTUnwrap(
@@ -1958,7 +2006,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         )
         XCTAssertEqual(pending["library:7"]?["updatesPrimaryMenu"] as? Bool, false)
 
-        await transport.setOnline()
+        await transport.stopFailing(.shortcuts)
         let restarted = UICustomizationPreferences(
             defaults: defaults,
             transport: transport,
@@ -1968,9 +2016,10 @@ final class UICustomizationPreferencesTests: XCTestCase {
         )
         await restarted.refresh()
 
-        let snapshot = await transport.snapshot()
-        XCTAssertEqual(snapshot.shortcutOperations.count, 2)
-        XCTAssertEqual(snapshot.genericPutCount, 1)
+        let shortcutOperationCount = await transport.calls(.shortcut).count
+        let genericPutCount = await transport.calls(.put).count
+        XCTAssertEqual(shortcutOperationCount, 2)
+        XCTAssertEqual(genericPutCount, 1)
         XCTAssertEqual(restarted.primaryMenu, explicitMenu)
         XCTAssertTrue(restarted.isLibraryPinned(7))
     }
@@ -1996,11 +2045,10 @@ final class UICustomizationPreferencesTests: XCTestCase {
             .builtin(.forYou),
             item,
         ])
-        let transport = ShortcutOrderingProbe(
-            outcomes: ["library:7": [.transientFailure, .success]],
-            initialMenu: initialMenu,
-            initialShortcuts: [item]
+        let transport = FakeUICustomizationTransport(
+            rows: try menuAndShortcutRows(menu: initialMenu, shortcuts: [item])
         )
+        await transport.fail(.shortcut(id: "library:7"), times: 1)
         let cacheKey = "silo.uiCustomization.server.profile.tv"
         let preferences = UICustomizationPreferences(
             defaults: SharedDefaults(suite: suite, standard: standard),
@@ -2015,13 +2063,16 @@ final class UICustomizationPreferencesTests: XCTestCase {
             Library(id: 7, name: "Pinned", type: "movies", sortOrder: 0, posterUrl: nil),
             isPinned: false
         )
-        await transport.waitForCompletedWrites(1)
+        await transport.waitForCompleted(.write, count: 1)
         preferences.setPrimaryMenuItems(explicitMenu.items)
-        await transport.waitForCompletedWrites(2)
+        await transport.waitForCompleted(.write, count: 2)
         await preferences.refresh()
 
-        let snapshot = await transport.snapshot()
-        XCTAssertEqual(snapshot.menuWrites, [explicitMenu])
+        let menuWrites = await transport.decodedPuts(
+            .navPrimaryMenu,
+            as: PrimaryMenuPreference.self
+        )
+        XCTAssertEqual(menuWrites, [explicitMenu])
         XCTAssertFalse(preferences.isLibraryPinned(7))
         XCTAssertEqual(preferences.primaryMenu, explicitMenu)
     }
@@ -2042,14 +2093,10 @@ final class UICustomizationPreferencesTests: XCTestCase {
             firstItem,
             .builtin(.forYou),
         ])
-        let transport = ShortcutOrderingProbe(
-            outcomes: [
-                "library:7": [.transientFailure, .success],
-                "library:8": [.success],
-            ],
-            initialMenu: initialMenu,
-            initialShortcuts: [firstItem]
+        let transport = FakeUICustomizationTransport(
+            rows: try menuAndShortcutRows(menu: initialMenu, shortcuts: [firstItem])
         )
+        await transport.fail(.shortcut(id: "library:7"), times: 1)
         let cacheKey = "silo.uiCustomization.server.profile.tv"
         let preferences = UICustomizationPreferences(
             defaults: SharedDefaults(suite: suite, standard: standard),
@@ -2076,19 +2123,25 @@ final class UICustomizationPreferencesTests: XCTestCase {
 
         preferences.setLibraryPinned(first, isPinned: false)
         preferences.setLibraryPinned(second, isPinned: true)
-        await transport.waitForCompletedWrites(3)
+        await transport.waitForCompleted(.write, count: 3)
 
-        var snapshot = await transport.snapshot()
+        var menuWrites = await transport.decodedPuts(
+            .navPrimaryMenu,
+            as: PrimaryMenuPreference.self
+        )
         XCTAssertEqual(
-            snapshot.menuWrites.first?.items.map(\.id),
+            menuWrites.first?.items.map(\.id),
             ["builtin:home", "library:7", "builtin:for_you", "library:8"]
         )
 
         await preferences.refresh()
 
-        snapshot = await transport.snapshot()
+        menuWrites = await transport.decodedPuts(
+            .navPrimaryMenu,
+            as: PrimaryMenuPreference.self
+        )
         XCTAssertEqual(
-            snapshot.menuWrites.last?.items.map(\.id),
+            menuWrites.last?.items.map(\.id),
             ["builtin:home", "builtin:for_you", "library:8"]
         )
     }
@@ -2109,14 +2162,10 @@ final class UICustomizationPreferencesTests: XCTestCase {
             firstItem,
             .builtin(.forYou),
         ])
-        let transport = ShortcutOrderingProbe(
-            outcomes: [
-                "library:7": [.definitiveFailure],
-                "library:8": [.success],
-            ],
-            initialMenu: initialMenu,
-            initialShortcuts: [firstItem]
+        let transport = FakeUICustomizationTransport(
+            rows: try menuAndShortcutRows(menu: initialMenu, shortcuts: [firstItem])
         )
+        await transport.fail(.shortcut(id: "library:7"), with: .api(.invalidValue(message: "shortcut rejected")), times: 1)
         let cacheKey = "silo.uiCustomization.server.profile.tv"
         let preferences = UICustomizationPreferences(
             defaults: SharedDefaults(suite: suite, standard: standard),
@@ -2143,12 +2192,15 @@ final class UICustomizationPreferencesTests: XCTestCase {
 
         preferences.setLibraryPinned(first, isPinned: false)
         preferences.setLibraryPinned(second, isPinned: true)
-        await transport.waitForCompletedWrites(3)
+        await transport.waitForCompleted(.write, count: 3)
         await preferences.refresh()
 
-        let snapshot = await transport.snapshot()
+        let menuWrites = await transport.decodedPuts(
+            .navPrimaryMenu,
+            as: PrimaryMenuPreference.self
+        )
         XCTAssertEqual(
-            snapshot.menuWrites.last?.items.map(\.id),
+            menuWrites.last?.items.map(\.id),
             ["builtin:home", "library:7", "builtin:for_you", "library:8"]
         )
         XCTAssertTrue(preferences.isLibraryPinned(7))
@@ -2184,8 +2236,8 @@ final class UICustomizationPreferencesTests: XCTestCase {
         let cachedData = try JSONSerialization.data(withJSONObject: cache, options: [.sortedKeys])
         let defaults = SharedDefaults(suite: suite, standard: standard)
         defaults.set(cachedData, forKey: cacheKey)
-        let transport = UICustomizationTransportStub(
-            result: .success(.init(settings: [], revision: SettingKey.revision))
+        let transport = FakeUICustomizationTransport(
+            effectiveResponse: FakeUICustomizationTransport.emptyResponse
         )
         let preferences = UICustomizationPreferences(
             defaults: defaults,
@@ -2236,10 +2288,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
             ],
             revision: SettingKey.revision
         )
-        let transport = SelectiveFailureWriteProbe(
-            failingShortcutIds: [],
-            effectiveResponse: response
-        )
+        let transport = FakeUICustomizationTransport(effectiveResponse: response)
         let preferences = UICustomizationPreferences(
             defaults: SharedDefaults(suite: suite, standard: standard),
             transport: transport,
@@ -2261,7 +2310,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         XCTAssertTrue(preferences.isLibraryPinned(7))
         XCTAssertFalse(preferences.isLibraryPinned(8))
         XCTAssertFalse(preferences.isSaving)
-        let writtenKeys = await transport.writtenKeys()
+        let writtenKeys = await transport.calls(.write).compactMap(\.key)
         XCTAssertTrue(writtenKeys.isEmpty)
     }
 
@@ -2299,8 +2348,8 @@ final class UICustomizationPreferencesTests: XCTestCase {
         defaults.set(cachedData, forKey: cacheKey)
         let preferences = UICustomizationPreferences(
             defaults: defaults,
-            transport: UICustomizationTransportStub(
-                result: .success(.init(settings: [], revision: SettingKey.revision))
+            transport: FakeUICustomizationTransport(
+                effectiveResponse: FakeUICustomizationTransport.emptyResponse
             ),
             cacheKey: { cacheKey },
             requestIdentity: { testRequestIdentity(for: cacheKey) },
@@ -2335,7 +2384,44 @@ final class UICustomizationPreferencesTests: XCTestCase {
 
         let cacheKey = "silo.uiCustomization.server.profile.tv"
         let defaults = SharedDefaults(suite: suite, standard: standard)
-        let transport = DefinitiveShortcutRejectionProbe()
+        // Fixed responses rather than rows: neither carries the card key.
+        func response(shortcutCount: Int) throws -> EffectiveSettingValuesResponse {
+            let items = (1...shortcutCount).map {
+                PrimaryMenuItem.library(libraryId: $0, label: "Library \($0)")
+            }
+            return EffectiveSettingValuesResponse(
+                settings: [
+                    EffectiveSettingValue(
+                        key: SettingKey.navPrimaryMenu.rawValue,
+                        value: try SettingJSONValue.encoding(
+                            PrimaryMenuPreference(items: [.builtin(.home)])
+                        ),
+                        source: .scope(.profileClient),
+                        scope: .profileClient,
+                        profileId: "profile",
+                        clientFamily: "tv"
+                    ),
+                    EffectiveSettingValue(
+                        key: SettingKey.navShortcuts.rawValue,
+                        value: try SettingJSONValue.encoding(
+                            NavigationShortcutsPreference(items: items)
+                        ),
+                        source: .scope(.profile),
+                        scope: .profile,
+                        profileId: "profile"
+                    ),
+                ],
+                revision: SettingKey.revision
+            )
+        }
+        let before = try response(shortcutCount: 255)
+        let after = try response(shortcutCount: 256)
+        let transport = FakeUICustomizationTransport(effectiveResponse: before)
+        await transport.hold(.shortcuts)
+        await transport.fail(
+            .shortcuts,
+            with: .api(.invalidValue(message: "items must contain at most 256 entries"))
+        )
         let preferences = UICustomizationPreferences(
             defaults: defaults,
             transport: transport,
@@ -2356,19 +2442,26 @@ final class UICustomizationPreferencesTests: XCTestCase {
         XCTAssertFalse(preferences.primaryMenuUsesDeviceOverride)
 
         preferences.setLibraryPinned(racedLibrary, isPinned: true)
-        await transport.waitForCompletedWrites(1)
+        await transport.waitForStarted(.shortcut, count: 1)
+        await transport.setEffectiveResponse(after)
+        await transport.release(.shortcuts)
+        await transport.waitForCompleted(.shortcut, count: 1)
         await preferences.refresh()
         await preferences.refresh()
 
-        let snapshot = await transport.snapshot()
-        XCTAssertEqual(snapshot.shortcutWriteAttempts, 1)
+        let shortcutWriteAttempts = await transport.calls(.shortcut).count
+        let effectiveReads = await transport.calls(.read).count
+        let primaryMenuWriteAttempts = await transport.calls(.put)
+            .filter { $0.key == .navPrimaryMenu }
+            .count
+        XCTAssertEqual(shortcutWriteAttempts, 1)
         XCTAssertEqual(
-            snapshot.primaryMenuWriteAttempts,
+            primaryMenuWriteAttempts,
             0,
             "a rejected profile shortcut must not commit only its family-menu placement"
         )
         XCTAssertGreaterThanOrEqual(
-            snapshot.effectiveReads,
+            effectiveReads,
             2,
             "overlapping refreshes may coalesce, but one authoritative read must follow the rejection"
         )
@@ -2398,7 +2491,10 @@ final class UICustomizationPreferencesTests: XCTestCase {
         }
 
         let defaults = SharedDefaults(suite: suite, standard: standard)
-        let transport = RecoveringShortcutProbe()
+        let transport = FakeUICustomizationTransport(rows: [
+            try .init(.navShortcuts, .profile, encoding: NavigationShortcutsPreference.empty),
+        ])
+        await transport.fail(.shortcuts)
         let cacheKey = "silo.uiCustomization.server.profile.mobile"
         let library = Library(
             id: 7,
@@ -2416,8 +2512,8 @@ final class UICustomizationPreferencesTests: XCTestCase {
         )
 
         offline.setLibraryPinned(library, isPinned: true)
-        await transport.waitForShortcutAttempts(1)
-        await transport.setOnline()
+        await transport.waitForStarted(.shortcut, count: 1)
+        await transport.stopFailing(.shortcuts)
 
         let restarted = UICustomizationPreferences(
             defaults: defaults,
@@ -2430,15 +2526,18 @@ final class UICustomizationPreferencesTests: XCTestCase {
 
         await restarted.refresh()
 
-        let snapshot = await transport.snapshot()
+        let steps = await transport.steps()
+        let shortcutOperations = await transport.calls(.shortcut)
+        XCTAssertEqual(steps, [
+            .shortcut(id: "library:7", present: true, .failed),
+            .shortcut(id: "library:7", present: true, .succeeded),
+            .put(.navPrimaryMenu, .succeeded),
+            .read(.succeeded),
+        ])
+        XCTAssertEqual(shortcutOperations.compactMap(\.present), [true, true])
+        XCTAssertEqual(shortcutOperations.count, 2)
         XCTAssertEqual(
-            snapshot.events,
-            ["shortcut-failed", "shortcut-succeeded", "put-nav.primary_menu", "effective"]
-        )
-        XCTAssertEqual(snapshot.shortcutOperations.map(\.present), [true, true])
-        XCTAssertEqual(snapshot.shortcutOperations.count, 2)
-        XCTAssertEqual(
-            Set(snapshot.shortcutOperations.map(\.item.id)),
+            Set(shortcutOperations.compactMap(\.item?.id)),
             ["library:7"],
             "an ambiguous atomic operation is retried as the same desired state after restart"
         )
@@ -2457,13 +2556,14 @@ final class UICustomizationPreferencesTests: XCTestCase {
         }
 
         let defaults = SharedDefaults(suite: suite, standard: standard)
-        let transport = RecoveringShortcutProbe(
-            offlineFailure: .server(
-                status: 401,
-                code: "unauthorized",
-                message: "profile authentication expired"
-            )
-        )
+        let transport = FakeUICustomizationTransport(rows: [
+            try .init(.navShortcuts, .profile, encoding: NavigationShortcutsPreference.empty),
+        ])
+        await transport.fail(.shortcuts, with: .api(.server(
+            status: 401,
+            code: "unauthorized",
+            message: "profile authentication expired"
+        )))
         let cacheKey = "silo.uiCustomization.server.profile.mobile"
         let preferences = UICustomizationPreferences(
             defaults: defaults,
@@ -2481,7 +2581,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         )
 
         preferences.setLibraryPinned(library, isPinned: true)
-        await transport.waitForShortcutAttempts(1)
+        await transport.waitForStarted(.shortcut, count: 1)
         let failedCacheData = try XCTUnwrap(defaults.data(forKey: cacheKey))
         let failedCache = try XCTUnwrap(
             JSONSerialization.jsonObject(with: failedCacheData) as? [String: Any]
@@ -2491,12 +2591,12 @@ final class UICustomizationPreferencesTests: XCTestCase {
             "authentication failures must retain replayable user intent"
         )
 
-        await transport.setOnline()
+        await transport.stopFailing(.shortcuts)
         await preferences.refresh()
 
-        let snapshot = await transport.snapshot()
-        XCTAssertEqual(snapshot.shortcutOperations.count, 2)
-        XCTAssertEqual(Set(snapshot.shortcutOperations.map(\.item.id)), ["library:7"])
+        let shortcutOperations = await transport.calls(.shortcut)
+        XCTAssertEqual(shortcutOperations.count, 2)
+        XCTAssertEqual(Set(shortcutOperations.compactMap(\.item?.id)), ["library:7"])
         XCTAssertTrue(preferences.isLibraryPinned(library.id))
         XCTAssertNil(preferences.syncErrorMessage)
     }
@@ -2512,7 +2612,10 @@ final class UICustomizationPreferencesTests: XCTestCase {
         }
 
         let defaults = SharedDefaults(suite: suite, standard: standard)
-        let transport = RecoveringShortcutProbe()
+        let transport = FakeUICustomizationTransport(rows: [
+            try .init(.navShortcuts, .profile, encoding: NavigationShortcutsPreference.empty),
+        ])
+        await transport.fail(.shortcuts)
         let cacheKey = "silo.uiCustomization.server.profile.tv"
         let libraryB = Library(
             id: 20,
@@ -2537,10 +2640,10 @@ final class UICustomizationPreferencesTests: XCTestCase {
         )
 
         offline.setLibraryPinned(libraryB, isPinned: true)
-        await transport.waitForShortcutAttempts(1)
+        await transport.waitForStarted(.shortcut, count: 1)
         offline.setLibraryPinned(libraryA, isPinned: true)
-        await transport.waitForShortcutAttempts(2)
-        await transport.setOnline()
+        await transport.waitForStarted(.shortcut, count: 2)
+        await transport.stopFailing(.shortcuts)
 
         let restarted = UICustomizationPreferences(
             defaults: defaults,
@@ -2553,13 +2656,18 @@ final class UICustomizationPreferencesTests: XCTestCase {
 
         await restarted.refresh()
 
-        let snapshot = await transport.snapshot()
+        let shortcutOperations = await transport.calls(.shortcut)
+        let storedShortcuts = await transport.stored(
+            .navShortcuts,
+            at: .profile,
+            as: NavigationShortcutsPreference.self
+        )?.items
         XCTAssertEqual(
-            snapshot.shortcutOperations.map(\.item.id),
+            shortcutOperations.compactMap(\.item?.id),
             ["library:20", "library:10", "library:20", "library:10"],
             "restart replay must follow the user's cross-library edit order, not semantic ID order"
         )
-        XCTAssertEqual(snapshot.storedShortcuts.map(\.id), ["library:20", "library:10"])
+        XCTAssertEqual(storedShortcuts?.map(\.id), ["library:20", "library:10"])
         XCTAssertEqual(restarted.shortcuts.items.map(\.id), ["library:20", "library:10"])
         XCTAssertNil(restarted.syncErrorMessage)
     }
@@ -2575,7 +2683,11 @@ final class UICustomizationPreferencesTests: XCTestCase {
         }
 
         let defaults = SharedDefaults(suite: suite, standard: standard)
-        let transport = BlockingShortcutProbe()
+        let transport = FakeUICustomizationTransport(
+            rows: [try .init(.navShortcuts, .profile, encoding: NavigationShortcutsPreference.empty)],
+            persistsPuts: false
+        )
+        await transport.hold(.shortcuts)
         let cacheKey = "silo.uiCustomization.server.profile.tv"
         let library = Library(
             id: 9,
@@ -2593,18 +2705,25 @@ final class UICustomizationPreferencesTests: XCTestCase {
         )
 
         preferences.setLibraryPinned(library, isPinned: true)
-        await transport.waitForStartedShortcutOperations(1)
+        await transport.waitForStarted(.shortcut, count: 1)
         preferences.setLibraryPinned(library, isPinned: false)
         XCTAssertFalse(preferences.shortcuts.items.contains { $0.id == "library:9" })
 
-        await transport.releaseFirstShortcutOperation()
-        await transport.waitForCompletedShortcutOperations(2)
+        await transport.release(.shortcuts)
+        await transport.waitForCompleted(.shortcut, count: 2)
 
-        let firstSnapshot = await transport.snapshot()
-        XCTAssertEqual(firstSnapshot.shortcutOperations.map(\.present), [true, false])
-        XCTAssertTrue(firstSnapshot.storedShortcuts.isEmpty)
+        let firstShortcutOperations = await transport.calls(.shortcut)
+        let firstStored = await transport.stored(
+            .navShortcuts,
+            at: .profile,
+            as: NavigationShortcutsPreference.self
+        )
+        let firstStoredShortcuts = try XCTUnwrap(firstStored).items
+        let firstGenericPutCount = await transport.calls(.put).count
+        XCTAssertEqual(firstShortcutOperations.compactMap(\.present), [true, false])
+        XCTAssertTrue(firstStoredShortcuts.isEmpty)
         XCTAssertEqual(
-            firstSnapshot.genericPutCount,
+            firstGenericPutCount,
             0,
             "a superseded add followed by an accepted remove leaves the family menu unchanged"
         )
@@ -2620,8 +2739,8 @@ final class UICustomizationPreferencesTests: XCTestCase {
         )
         await restarted.refresh()
 
-        let finalSnapshot = await transport.snapshot()
-        XCTAssertEqual(finalSnapshot.shortcutOperations.count, 2)
+        let finalShortcutOperationCount = await transport.calls(.shortcut).count
+        XCTAssertEqual(finalShortcutOperationCount, 2)
         XCTAssertTrue(restarted.shortcuts.items.isEmpty)
         XCTAssertNil(restarted.syncErrorMessage)
     }
@@ -2637,7 +2756,10 @@ final class UICustomizationPreferencesTests: XCTestCase {
         }
 
         let defaults = SharedDefaults(suite: suite, standard: standard)
-        let transport = RecoveringWriteProbe()
+        let transport = FakeUICustomizationTransport(rows: [
+            try .init(.uiCardPresentation, .profileClient, encoding: CardPresentationPreference.standard),
+        ])
+        await transport.fail(.puts)
         let cacheKey = "silo.uiCustomization.server.profile.mobile"
         let offline = UICustomizationPreferences(
             defaults: defaults,
@@ -2649,8 +2771,8 @@ final class UICustomizationPreferencesTests: XCTestCase {
         let desired = CardPresentationPreset.artworkOnly.presentation
 
         offline.setCardPresentation(desired)
-        await transport.waitForPutAttempts(1)
-        await transport.setOnline()
+        await transport.waitForStarted(.put, count: 1)
+        await transport.stopFailing(.puts)
 
         // A fresh store proves the failed write was journaled in the cache,
         // not merely retained by the first in-memory instance.
@@ -2665,14 +2787,24 @@ final class UICustomizationPreferencesTests: XCTestCase {
 
         await restarted.refresh()
 
-        let snapshot = await transport.snapshot()
-        XCTAssertEqual(snapshot.events, ["put-failed", "put-succeeded", "effective"])
+        let steps = await transport.steps()
+        let writtenValues = await transport.calls(.put).compactMap(\.value)
+        let storedPresentation = await transport.stored(
+            .uiCardPresentation,
+            at: .profileClient,
+            as: CardPresentationPreference.self
+        )
+        XCTAssertEqual(steps, [
+            .put(.uiCardPresentation, .failed),
+            .put(.uiCardPresentation, .succeeded),
+            .read(.succeeded),
+        ])
         XCTAssertEqual(
-            snapshot.writtenValues,
+            writtenValues,
             Array(repeating: try SettingJSONValue.encoding(desired), count: 2),
             "a connectivity retry sends the same desired value again"
         )
-        XCTAssertEqual(snapshot.storedPresentation, desired)
+        XCTAssertEqual(storedPresentation, desired)
         XCTAssertEqual(restarted.cardPresentation, desired)
         XCTAssertNil(restarted.syncErrorMessage)
     }
@@ -2691,7 +2823,10 @@ final class UICustomizationPreferencesTests: XCTestCase {
         }
 
         let defaults = SharedDefaults(suite: suite, standard: standard)
-        let transport = RecoveringWriteProbe()
+        let transport = FakeUICustomizationTransport(rows: [
+            try .init(.uiCardPresentation, .profileClient, encoding: CardPresentationPreference.standard),
+        ])
+        await transport.fail(.puts)
         let cacheKey = "silo.uiCustomization.server.profile.mobile"
         let preferences = UICustomizationPreferences(
             defaults: defaults,
@@ -2704,22 +2839,35 @@ final class UICustomizationPreferencesTests: XCTestCase {
         let desired = CardPresentationPreset.artworkOnly.presentation
 
         preferences.setCardPresentation(desired)
-        await transport.waitForPutAttempts(3)
+        await transport.waitForStarted(.put, count: 3)
         for _ in 0..<200 where !preferences.hasHeldChanges {
             try await Task.sleep(for: .milliseconds(5))
         }
         XCTAssertTrue(preferences.hasHeldChanges, "the change is held once the bound runs out")
         XCTAssertEqual(preferences.syncErrorMessage, HeldSettingChange.message)
         try await Task.sleep(for: .milliseconds(50))
-        let heldEvents = await transport.snapshot().events
-        XCTAssertEqual(heldEvents, ["put-failed", "put-failed", "put-failed"], "no retry after the bound")
+        let heldSteps = await transport.steps()
+        XCTAssertEqual(
+            heldSteps,
+            [
+                .put(.uiCardPresentation, .failed),
+                .put(.uiCardPresentation, .failed),
+                .put(.uiCardPresentation, .failed),
+            ],
+            "no retry after the bound"
+        )
 
         // Online again: a refresh reads the other keys but neither replays
         // the held change nor paints the server's older value over it.
-        await transport.setOnline()
+        await transport.stopFailing(.puts)
         await preferences.refresh()
-        var snapshot = await transport.snapshot()
-        XCTAssertEqual(snapshot.events, ["put-failed", "put-failed", "put-failed", "effective"])
+        let refreshedSteps = await transport.steps()
+        XCTAssertEqual(refreshedSteps, [
+            .put(.uiCardPresentation, .failed),
+            .put(.uiCardPresentation, .failed),
+            .put(.uiCardPresentation, .failed),
+            .read(.succeeded),
+        ])
         XCTAssertEqual(preferences.cardPresentation, desired)
         XCTAssertTrue(preferences.hasHeldChanges)
 
@@ -2734,10 +2882,14 @@ final class UICustomizationPreferencesTests: XCTestCase {
         XCTAssertTrue(restarted.hasHeldChanges)
 
         await restarted.discardHeldChanges()
-        snapshot = await transport.snapshot()
+        let storedPresentation = await transport.stored(
+            .uiCardPresentation,
+            at: .profileClient,
+            as: CardPresentationPreference.self
+        )
         XCTAssertFalse(restarted.hasHeldChanges)
         XCTAssertEqual(restarted.cardPresentation, .standard, "discarding repaints what the server holds")
-        XCTAssertEqual(snapshot.storedPresentation, .standard, "discarding sends nothing")
+        XCTAssertEqual(storedPresentation, .standard, "discarding sends nothing")
         XCTAssertNil(restarted.syncErrorMessage)
     }
 
@@ -2751,7 +2903,10 @@ final class UICustomizationPreferencesTests: XCTestCase {
             UserDefaults().removePersistentDomain(forName: standardName)
         }
 
-        let transport = RecoveringWriteProbe()
+        let transport = FakeUICustomizationTransport(rows: [
+            try .init(.uiCardPresentation, .profileClient, encoding: CardPresentationPreference.standard),
+        ])
+        await transport.fail(.puts)
         let cacheKey = "silo.uiCustomization.server.profile.mobile"
         let preferences = UICustomizationPreferences(
             defaults: SharedDefaults(suite: suite, standard: standard),
@@ -2764,22 +2919,30 @@ final class UICustomizationPreferencesTests: XCTestCase {
         let desired = CardPresentationPreset.artworkOnly.presentation
 
         preferences.setCardPresentation(desired)
-        await transport.waitForPutAttempts(1)
+        await transport.waitForStarted(.put, count: 1)
         for _ in 0..<200 where !preferences.hasHeldChanges {
             try await Task.sleep(for: .milliseconds(5))
         }
         XCTAssertTrue(preferences.hasHeldChanges)
 
-        await transport.setOnline()
+        await transport.stopFailing(.puts)
         preferences.retryHeldChanges()
-        await transport.waitForPutAttempts(2)
+        await transport.waitForStarted(.put, count: 2)
         for _ in 0..<200 where preferences.hasHeldChanges {
             try await Task.sleep(for: .milliseconds(5))
         }
 
-        let snapshot = await transport.snapshot()
-        XCTAssertEqual(snapshot.events, ["put-failed", "put-succeeded"])
-        XCTAssertEqual(snapshot.storedPresentation, desired)
+        let steps = await transport.steps()
+        let storedPresentation = await transport.stored(
+            .uiCardPresentation,
+            at: .profileClient,
+            as: CardPresentationPreference.self
+        )
+        XCTAssertEqual(steps, [
+            .put(.uiCardPresentation, .failed),
+            .put(.uiCardPresentation, .succeeded),
+        ])
+        XCTAssertEqual(storedPresentation, desired)
         XCTAssertFalse(preferences.hasHeldChanges)
         XCTAssertNil(preferences.syncErrorMessage)
     }
@@ -2796,9 +2959,11 @@ final class UICustomizationPreferencesTests: XCTestCase {
 
         let defaults = SharedDefaults(suite: suite, standard: standard)
         let cacheKey = "silo.uiCustomization.server.profile.mobile"
-        let transport = CapabilityGateProbe(
-            capabilities: .failed(.transport(description: "offline"))
+        let transport = FakeUICustomizationTransport(
+            capabilities: .failed(.transport(description: "offline")),
+            effectiveResponse: FakeUICustomizationTransport.emptyResponse
         )
+        await transport.fail(.puts)
         let desired = CardPresentationPreset.artworkOnly.presentation
         let authored = UICustomizationPreferences(
             defaults: defaults,
@@ -2814,7 +2979,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
             .builtin(.calendar),
         ])
         authored.setPrimaryMenuItems(customMenu.items)
-        await transport.waitForPutAttempts(2)
+        await transport.waitForStarted(.put, count: 2)
 
         let unavailable = UICustomizationPreferences(
             defaults: defaults,
@@ -2824,14 +2989,15 @@ final class UICustomizationPreferencesTests: XCTestCase {
         )
         await unavailable.refresh()
 
-        var snapshot = await transport.snapshot()
+        var putAttempts = await transport.calls(.put).count
+        var effectiveReads = await transport.calls(.read).count
         XCTAssertEqual(unavailable.capabilityState, .unavailable)
         XCTAssertEqual(unavailable.supportProjection, .unknown)
         XCTAssertFalse(unavailable.allowsEditing)
         XCTAssertEqual(unavailable.cardPresentation, desired)
         XCTAssertEqual(unavailable.primaryMenu, customMenu)
-        XCTAssertEqual(snapshot.putAttempts, 2)
-        XCTAssertEqual(snapshot.effectiveReads, 0)
+        XCTAssertEqual(putAttempts, 2)
+        XCTAssertEqual(effectiveReads, 0)
 
         // A server that answers "settings are not available here" (disabled,
         // not configured, or not allowed) says nothing about its version: the
@@ -2839,30 +3005,33 @@ final class UICustomizationPreferencesTests: XCTestCase {
         await transport.setCapabilities(.unavailable)
         await unavailable.refresh()
 
-        snapshot = await transport.snapshot()
+        putAttempts = await transport.calls(.put).count
+        effectiveReads = await transport.calls(.read).count
         XCTAssertEqual(unavailable.capabilityState, .unavailable)
         XCTAssertEqual(unavailable.supportProjection, .unknown)
         XCTAssertFalse(unavailable.allowsEditing)
         XCTAssertEqual(unavailable.cardPresentation, desired)
         XCTAssertEqual(unavailable.primaryMenu, customMenu)
-        XCTAssertEqual(snapshot.putAttempts, 2)
-        XCTAssertEqual(snapshot.effectiveReads, 0)
+        XCTAssertEqual(putAttempts, 2)
+        XCTAssertEqual(effectiveReads, 0)
 
         await transport.setCapabilities(.serverUpgradeRequired)
         await unavailable.refresh()
 
-        snapshot = await transport.snapshot()
+        putAttempts = await transport.calls(.put).count
+        effectiveReads = await transport.calls(.read).count
         XCTAssertEqual(unavailable.capabilityState, .serverUpgradeRequired)
         XCTAssertEqual(unavailable.supportProjection, .knownUnsupported)
         XCTAssertEqual(unavailable.cardPresentation, .standard)
         XCTAssertNil(unavailable.primaryMenu)
-        XCTAssertEqual(snapshot.putAttempts, 2, "a known old server must not receive the outbox")
-        XCTAssertEqual(snapshot.effectiveReads, 0)
+        XCTAssertEqual(putAttempts, 2, "a known old server must not receive the outbox")
+        XCTAssertEqual(effectiveReads, 0)
 
-        await transport.setCapabilities(.available(testCapabilities(batchedEffective: false)))
+        await transport.setCapabilities(.available(FakeUICustomizationTransport.capabilities(batchedEffective: false)))
         await unavailable.refresh()
 
-        snapshot = await transport.snapshot()
+        putAttempts = await transport.calls(.put).count
+        effectiveReads = await transport.calls(.read).count
         XCTAssertEqual(unavailable.capabilityState, .serverUpgradeRequired)
         XCTAssertEqual(unavailable.supportProjection, .knownUnsupported)
         XCTAssertFalse(unavailable.allowsEditing)
@@ -2870,16 +3039,17 @@ final class UICustomizationPreferencesTests: XCTestCase {
         XCTAssertNil(unavailable.primaryMenu)
         XCTAssertFalse(unavailable.hasExplicitPrimaryMenu)
         XCTAssertEqual(
-            snapshot.putAttempts,
+            putAttempts,
             2,
             "the client must not use a multi-key read when the server does not advertise it"
         )
-        XCTAssertEqual(snapshot.effectiveReads, 0)
+        XCTAssertEqual(effectiveReads, 0)
 
         await transport.setCapabilities(.failed(.transport(description: "offline again")))
         await unavailable.refresh()
 
-        snapshot = await transport.snapshot()
+        putAttempts = await transport.calls(.put).count
+        effectiveReads = await transport.calls(.read).count
         XCTAssertEqual(unavailable.capabilityState, .unavailable)
         XCTAssertEqual(
             unavailable.supportProjection,
@@ -2888,8 +3058,8 @@ final class UICustomizationPreferencesTests: XCTestCase {
         )
         XCTAssertEqual(unavailable.cardPresentation, .standard)
         XCTAssertNil(unavailable.primaryMenu)
-        XCTAssertEqual(snapshot.putAttempts, 2)
-        XCTAssertEqual(snapshot.effectiveReads, 0)
+        XCTAssertEqual(putAttempts, 2)
+        XCTAssertEqual(effectiveReads, 0)
 
         let restartedKnownUnsupported = UICustomizationPreferences(
             defaults: defaults,
@@ -2903,31 +3073,33 @@ final class UICustomizationPreferencesTests: XCTestCase {
         XCTAssertEqual(restartedKnownUnsupported.cardPresentation, .standard)
         XCTAssertNil(restartedKnownUnsupported.primaryMenu)
 
-        await transport.setCapabilities(.available(testCapabilities(atomicShortcuts: false)))
+        await transport.setCapabilities(.available(FakeUICustomizationTransport.capabilities(atomicShortcuts: false)))
         await unavailable.refresh()
 
-        snapshot = await transport.snapshot()
+        putAttempts = await transport.calls(.put).count
+        effectiveReads = await transport.calls(.read).count
         XCTAssertEqual(unavailable.capabilityState, .serverUpgradeRequired)
         XCTAssertFalse(unavailable.allowsEditing)
         XCTAssertEqual(unavailable.cardPresentation, .standard)
         XCTAssertNil(unavailable.primaryMenu)
-        XCTAssertEqual(snapshot.putAttempts, 2, "an old server must not receive revision-5 writes")
-        XCTAssertEqual(snapshot.effectiveReads, 0)
+        XCTAssertEqual(putAttempts, 2, "an old server must not receive revision-5 writes")
+        XCTAssertEqual(effectiveReads, 0)
 
-        await transport.setCapabilities(.available(testCapabilities(clientFamilies: ["tv", "web"])))
+        await transport.setCapabilities(.available(FakeUICustomizationTransport.capabilities(clientFamilies: ["tv", "web"])))
         await unavailable.refresh()
 
-        snapshot = await transport.snapshot()
+        putAttempts = await transport.calls(.put).count
+        effectiveReads = await transport.calls(.read).count
         XCTAssertEqual(unavailable.capabilityState, .serverUpgradeRequired)
         XCTAssertFalse(unavailable.allowsEditing)
         XCTAssertEqual(unavailable.cardPresentation, .standard)
         XCTAssertNil(unavailable.primaryMenu)
         XCTAssertEqual(
-            snapshot.putAttempts,
+            putAttempts,
             2,
             "a server that cannot store this client family's card presentation must not receive the outbox"
         )
-        XCTAssertEqual(snapshot.effectiveReads, 0)
+        XCTAssertEqual(effectiveReads, 0)
     }
 
     func testProfileClientCardResetIsDurableAndResolvesInheritedValueAfterRestart() async throws {
@@ -2942,7 +3114,17 @@ final class UICustomizationPreferencesTests: XCTestCase {
 
         let defaults = SharedDefaults(suite: suite, standard: standard)
         let cacheKey = "silo.uiCustomization.server.profile.mobile"
-        let transport = RecoveringDeleteProbe()
+        let transport = FakeUICustomizationTransport(
+            rows: [
+                try .init(
+                    .uiCardPresentation,
+                    .profileClient,
+                    encoding: CardPresentationPreset.compact.presentation
+                ),
+            ],
+            persistsPuts: false
+        )
+        await transport.fail(.deletes)
         let preferences = UICustomizationPreferences(
             defaults: defaults,
             transport: transport,
@@ -2954,10 +3136,10 @@ final class UICustomizationPreferencesTests: XCTestCase {
         XCTAssertTrue(preferences.cardPresentationUsesFamilyOverride)
         XCTAssertEqual(preferences.cardPresentation, CardPresentationPreset.compact.presentation)
 
-        await transport.clearEvents()
+        let mark = await transport.steps().count
         preferences.resetCardPresentationToInherited()
-        await transport.waitForDeleteAttempts(1)
-        await transport.setDeletesOnline()
+        await transport.waitForStarted(.delete, count: 1)
+        await transport.stopFailing(.deletes)
 
         let restarted = UICustomizationPreferences(
             defaults: defaults,
@@ -2967,9 +3149,14 @@ final class UICustomizationPreferencesTests: XCTestCase {
         )
         await restarted.refresh()
 
-        let snapshot = await transport.snapshot()
-        XCTAssertEqual(snapshot.events, ["delete-failed", "delete-succeeded", "effective"])
-        XCTAssertEqual(snapshot.deleteScopes, [.profileClient, .profileClient])
+        let steps = Array(await transport.steps().dropFirst(mark))
+        let deleteScopes = await transport.calls(.delete).compactMap(\.scope)
+        XCTAssertEqual(steps, [
+            .delete(.uiCardPresentation, .profileClient, .failed),
+            .delete(.uiCardPresentation, .profileClient, .succeeded),
+            .read(.succeeded),
+        ])
+        XCTAssertEqual(deleteScopes, [.profileClient, .profileClient])
         XCTAssertEqual(restarted.cardPresentation, .standard)
         XCTAssertFalse(restarted.cardPresentationUsesFamilyOverride)
         XCTAssertNil(restarted.syncErrorMessage)
@@ -2986,7 +3173,10 @@ final class UICustomizationPreferencesTests: XCTestCase {
         }
 
         let identity = MutableRequestIdentity(testRequestIdentity(family: "mobile"))
-        let transport = OrderedWriteProbe()
+        let transport = FakeUICustomizationTransport(
+            effectiveResponse: FakeUICustomizationTransport.emptyResponse
+        )
+        await transport.hold(.puts)
         let preferences = UICustomizationPreferences(
             defaults: SharedDefaults(suite: suite, standard: standard),
             transport: transport,
@@ -2997,7 +3187,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
 
         preferences.setCardPresentation(CardPresentationPreset.compact.presentation)
         preferences.setCardPresentation(CardPresentationPreset.artworkOnly.presentation)
-        await transport.waitForStartedWrites(1)
+        await transport.waitForStarted(.put, count: 1)
 
         identity.value = HTTPRequestIdentity(
             serverId: "server-b",
@@ -3005,13 +3195,13 @@ final class UICustomizationPreferencesTests: XCTestCase {
             profileId: "profile-b",
             clientFamily: "mobile"
         )
-        await transport.releaseFirstWrite()
+        await transport.release(.puts)
         try await Task.sleep(nanoseconds: 50_000_000)
 
-        let snapshot = await transport.snapshot()
-        XCTAssertEqual(snapshot.identities, [testRequestIdentity(family: "mobile")])
+        let puts = await transport.calls(.put)
+        XCTAssertEqual(puts.map(\.identity), [testRequestIdentity(family: "mobile")])
         XCTAssertEqual(
-            snapshot.values.count,
+            puts.compactMap(\.value).count,
             1,
             "queued work for the old cache must be retained, not sent through the new identity"
         )
@@ -3052,7 +3242,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         )
         let preferences = UICustomizationPreferences(
             defaults: SharedDefaults(suite: suite, standard: standard),
-            transport: UICustomizationTransportStub(result: .success(response)),
+            transport: FakeUICustomizationTransport(effectiveResponse: response),
             cacheKey: { "silo.uiCustomization.server.profile.tv" },
             requestIdentity: { testRequestIdentity(family: "tv") },
             initialCapabilityState: .supported
@@ -3077,7 +3267,11 @@ final class UICustomizationPreferencesTests: XCTestCase {
 
         let cacheKey = "silo.uiCustomization.server.profile.tv"
         let defaults = SharedDefaults(suite: suite, standard: standard)
-        let transport = DeviceOverrideDeleteProbe(deleteFailureKey: .navPrimaryMenu)
+        let transport = FakeUICustomizationTransport(
+            rows: try deviceOverrideRows(),
+            persistsPuts: false
+        )
+        await transport.fail(.delete(.navPrimaryMenu))
         let preferences = UICustomizationPreferences(
             defaults: defaults,
             transport: transport,
@@ -3103,9 +3297,12 @@ final class UICustomizationPreferencesTests: XCTestCase {
         XCTAssertEqual(preferences.cardPresentation, .standard)
         XCTAssertNotNil(preferences.syncErrorMessage)
 
-        var snapshot = await transport.snapshot()
-        XCTAssertEqual(snapshot.deleteKeys, [.navPrimaryMenu, .uiCardPresentation])
-        XCTAssertEqual(snapshot.targetedReadKeys, [.uiCardPresentation])
+        var deleteKeys = await transport.calls(.delete).compactMap(\.key)
+        let targetedReadKeys = await transport.calls(.read).compactMap(\.keys)
+            .filter { $0.count == 1 }
+            .flatMap { $0 }
+        XCTAssertEqual(deleteKeys, [.navPrimaryMenu, .uiCardPresentation])
+        XCTAssertEqual(targetedReadKeys, [.uiCardPresentation])
 
         let restarted = UICustomizationPreferences(
             defaults: defaults,
@@ -3116,9 +3313,9 @@ final class UICustomizationPreferencesTests: XCTestCase {
         )
         await restarted.refresh()
 
-        snapshot = await transport.snapshot()
+        deleteKeys = await transport.calls(.delete).compactMap(\.key)
         XCTAssertEqual(
-            snapshot.deleteKeys,
+            deleteKeys,
             [.navPrimaryMenu, .uiCardPresentation, .navPrimaryMenu],
             "restart must replay only the failed device delete"
         )
@@ -3138,9 +3335,11 @@ final class UICustomizationPreferencesTests: XCTestCase {
 
         let cacheKey = "silo.uiCustomization.server.profile.tv"
         let defaults = SharedDefaults(suite: suite, standard: standard)
-        let transport = DeviceOverrideDeleteProbe(
-            targetedReadFailureKey: .navPrimaryMenu
+        let transport = FakeUICustomizationTransport(
+            rows: try deviceOverrideRows(),
+            persistsPuts: false
         )
+        await transport.fail(.read(keys: [.navPrimaryMenu]), times: 1)
         let preferences = UICustomizationPreferences(
             defaults: defaults,
             transport: transport,
@@ -3168,14 +3367,17 @@ final class UICustomizationPreferencesTests: XCTestCase {
         )
         await restarted.refresh()
 
-        let snapshot = await transport.snapshot()
+        let deleteKeys = await transport.calls(.delete).compactMap(\.key)
+        let targetedReadKeys = await transport.calls(.read).compactMap(\.keys)
+            .filter { $0.count == 1 }
+            .flatMap { $0 }
         XCTAssertEqual(
-            snapshot.deleteKeys,
+            deleteKeys,
             [.navPrimaryMenu, .uiCardPresentation, .navPrimaryMenu],
             "only the delete whose effective read failed remains in the durable outbox"
         )
         XCTAssertEqual(
-            snapshot.targetedReadKeys,
+            targetedReadKeys,
             [.navPrimaryMenu, .uiCardPresentation, .navPrimaryMenu]
         )
         XCTAssertFalse(restarted.primaryMenuUsesDeviceOverride)
@@ -3239,7 +3441,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
             ],
             revision: SettingKey.revision
         )
-        let transport = MutableEffectiveValuesProbe(response: initialResponse)
+        let transport = FakeUICustomizationTransport(effectiveResponse: initialResponse)
         let cacheKey = "silo.uiCustomization.server.profile.mobile"
         let preferences = UICustomizationPreferences(
             defaults: SharedDefaults(suite: suite, standard: standard),
@@ -3250,7 +3452,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         )
         await preferences.refresh()
 
-        await transport.setResponse(EffectiveSettingValuesResponse(
+        await transport.setEffectiveResponse(EffectiveSettingValuesResponse(
             settings: [
                 EffectiveSettingValue(
                     key: SettingKey.navPrimaryMenu.rawValue,
@@ -3294,7 +3496,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         XCTAssertNotNil(preferences.syncErrorMessage)
 
         let invalidMenu = PrimaryMenuPreference(items: [.builtin(.movies)])
-        await transport.setResponse(EffectiveSettingValuesResponse(
+        await transport.setEffectiveResponse(EffectiveSettingValuesResponse(
             settings: [
                 EffectiveSettingValue(
                     key: SettingKey.navPrimaryMenu.rawValue,
@@ -3379,10 +3581,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
             ],
             revision: SettingKey.revision
         )
-        let transport = SelectiveFailureWriteProbe(
-            failingShortcutIds: [],
-            effectiveResponse: response
-        )
+        let transport = FakeUICustomizationTransport(effectiveResponse: response)
         let cacheKey = "silo.uiCustomization.server.profile.tv"
         let preferences = UICustomizationPreferences(
             defaults: SharedDefaults(suite: suite, standard: standard),
@@ -3401,8 +3600,8 @@ final class UICustomizationPreferencesTests: XCTestCase {
 
         await preferences.refresh()
         preferences.setLibraryPinned(library, isPinned: true)
-        await transport.waitForCompletedWrites(1)
-        let writtenKeys = await transport.writtenKeys()
+        await transport.waitForCompleted(.write, count: 1)
+        let writtenKeys = await transport.calls(.write).compactMap(\.key)
 
         XCTAssertTrue(preferences.primaryMenuUsesDeviceOverride)
         XCTAssertEqual(preferences.primaryMenu, deviceMenu)
@@ -3443,7 +3642,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         )
         let preferences = UICustomizationPreferences(
             defaults: SharedDefaults(suite: suite, standard: standard),
-            transport: UICustomizationTransportStub(result: .success(response)),
+            transport: FakeUICustomizationTransport(effectiveResponse: response),
             cacheKey: { "silo.uiCustomization.server.profile.mobile" },
             requestIdentity: { testRequestIdentity(family: "mobile") },
             initialCapabilityState: .supported
@@ -3484,7 +3683,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         )
         let preferences = UICustomizationPreferences(
             defaults: SharedDefaults(suite: suite, standard: standard),
-            transport: UICustomizationTransportStub(result: .success(response)),
+            transport: FakeUICustomizationTransport(effectiveResponse: response),
             cacheKey: { "silo.uiCustomization.server.profile.tv" },
             requestIdentity: { testRequestIdentity(family: "tv") },
             initialCapabilityState: .supported
@@ -3532,7 +3731,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         let cacheKey = "silo.uiCustomization.server.profile.mobile"
         let online = UICustomizationPreferences(
             defaults: defaults,
-            transport: UICustomizationTransportStub(result: .success(response)),
+            transport: FakeUICustomizationTransport(effectiveResponse: response),
             cacheKey: { cacheKey },
             requestIdentity: { testRequestIdentity(for: cacheKey) },
             initialCapabilityState: .supported
@@ -3545,9 +3744,11 @@ final class UICustomizationPreferencesTests: XCTestCase {
         XCTAssertEqual(online.cardPresentation, cards)
         XCTAssertNil(online.syncErrorMessage)
 
+        let offlineTransport = FakeUICustomizationTransport()
+        await offlineTransport.fail(.reads)
         let offline = UICustomizationPreferences(
             defaults: defaults,
-            transport: UICustomizationTransportStub(result: .failure(URLError(.notConnectedToInternet))),
+            transport: offlineTransport,
             cacheKey: { cacheKey },
             requestIdentity: { testRequestIdentity(for: cacheKey) },
             initialCapabilityState: .supported
@@ -3576,6 +3777,40 @@ final class UICustomizationPreferencesTests: XCTestCase {
             clientFamily: scope == .profileClient ? "mobile" : nil
         )
     }
+
+    /// Server rows where this device overrides the family menu and the card
+    /// presentation.
+    private func deviceOverrideRows() throws -> [FakeUICustomizationTransport.Row] {
+        [
+            try .init(
+                .navPrimaryMenu,
+                .profileDevice,
+                encoding: PrimaryMenuPreference(items: [.builtin(.home), .builtin(.movies)])
+            ),
+            try .init(
+                .navPrimaryMenu,
+                .profileClient,
+                encoding: PrimaryMenuPreference(items: [.builtin(.home), .builtin(.series)])
+            ),
+            try .init(.navShortcuts, .profile, encoding: NavigationShortcutsPreference.empty),
+            try .init(
+                .uiCardPresentation,
+                .profileDevice,
+                encoding: CardPresentationPreset.compact.presentation
+            ),
+        ]
+    }
+
+    /// Server rows holding a family menu and the profile shortcut catalog.
+    private func menuAndShortcutRows(
+        menu: PrimaryMenuPreference = .init(items: [.builtin(.home)]),
+        shortcuts: [PrimaryMenuItem] = []
+    ) throws -> [FakeUICustomizationTransport.Row] {
+        [
+            try .init(.navPrimaryMenu, .profileClient, encoding: menu),
+            try .init(.navShortcuts, .profile, encoding: NavigationShortcutsPreference(items: shortcuts)),
+        ]
+    }
 }
 
 private func testRequestIdentity(family: String) -> HTTPRequestIdentity {
@@ -3595,1128 +3830,10 @@ private func testCacheKey(for identity: HTTPRequestIdentity) -> String {
     "silo.uiCustomization.\(identity.serverId).\(identity.profileId).\(identity.clientFamily)"
 }
 
-private func testCapabilities(
-    batchedEffective: Bool = true,
-    atomicShortcuts: Bool = true,
-    clientFamilies: [String] = ["tv", "mobile", "tablet", "desktop", "web"]
-) -> APIv2SettingsContractCapabilities {
-    APIv2SettingsContractCapabilities(
-        revision: "test",
-        state: "available",
-        allowed: true,
-        manifestRevision: SettingKey.revision,
-        clientFamilies: clientFamilies,
-        supportsBatchedEffective: batchedEffective,
-        supportsAtomicShortcuts: atomicShortcuts
-    )
-}
-
-private func completeCustomizationEffectiveResponse(
-    keys: [SettingKey],
-    settings: [EffectiveSettingValue]
-) throws -> EffectiveSettingValuesResponse {
-    var completed = settings
-    let presentKeys = Set(settings.compactMap(\.settingKey))
-    for key in keys where !presentKeys.contains(key) {
-        let value: SettingJSONValue
-        switch key {
-        case .navPrimaryMenu:
-            value = .null
-        case .navShortcuts:
-            value = try SettingJSONValue.encoding(NavigationShortcutsPreference.empty)
-        case .uiCardPresentation:
-            value = try SettingJSONValue.encoding(CardPresentationPreference.standard)
-        default:
-            continue
-        }
-        completed.append(EffectiveSettingValue(
-            key: key.rawValue,
-            value: value,
-            source: .contractDefault,
-            profileId: "profile"
-        ))
-    }
-    return EffectiveSettingValuesResponse(
-        settings: completed,
-        revision: SettingKey.revision
-    )
-}
-
 private final class MutableRequestIdentity: @unchecked Sendable {
     var value: HTTPRequestIdentity
 
     init(_ value: HTTPRequestIdentity) {
         self.value = value
-    }
-}
-
-private protocol CurrentCapabilitiesTransport: UICustomizationTransport {}
-
-private extension CurrentCapabilitiesTransport {
-    func contractCapabilities(
-        requestIdentity: HTTPRequestIdentity
-    ) async -> SettingsCapabilitiesResult {
-        .available(testCapabilities())
-    }
-}
-
-private final class UICustomizationTransportStub: CurrentCapabilitiesTransport, @unchecked Sendable {
-    private let result: Result<EffectiveSettingValuesResponse, Error>
-
-    init(result: Result<EffectiveSettingValuesResponse, Error>) {
-        self.result = result
-    }
-
-    func effectiveValues(
-        keys: [SettingKey],
-        requestIdentity: HTTPRequestIdentity
-    ) async throws -> EffectiveSettingValuesResponse {
-        try result.get()
-    }
-
-    func putValue(
-        key: SettingKey,
-        scope: SettingScopeIdentity,
-        value: SettingJSONValue,
-        requestIdentity: HTTPRequestIdentity
-    ) async throws {}
-}
-
-private actor CapabilityGateProbe: UICustomizationTransport {
-    private var capabilities: SettingsCapabilitiesResult
-    private var putAttempts = 0
-    private var effectiveReads = 0
-    private var putWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
-
-    init(capabilities: SettingsCapabilitiesResult) {
-        self.capabilities = capabilities
-    }
-
-    func contractCapabilities(
-        requestIdentity: HTTPRequestIdentity
-    ) async -> SettingsCapabilitiesResult {
-        capabilities
-    }
-
-    func effectiveValues(
-        keys: [SettingKey],
-        requestIdentity: HTTPRequestIdentity
-    ) async throws -> EffectiveSettingValuesResponse {
-        effectiveReads += 1
-        return EffectiveSettingValuesResponse(settings: [], revision: SettingKey.revision)
-    }
-
-    func putValue(
-        key: SettingKey,
-        scope: SettingScopeIdentity,
-        value: SettingJSONValue,
-        requestIdentity: HTTPRequestIdentity
-    ) async throws {
-        putAttempts += 1
-        let ready = putWaiters.filter { putAttempts >= $0.0 }
-        putWaiters.removeAll { putAttempts >= $0.0 }
-        ready.forEach { $0.1.resume() }
-        throw URLError(.notConnectedToInternet)
-    }
-
-    func waitForPutAttempts(_ count: Int) async {
-        guard putAttempts < count else { return }
-        await withCheckedContinuation { continuation in
-            putWaiters.append((count, continuation))
-        }
-    }
-
-    func setCapabilities(_ capabilities: SettingsCapabilitiesResult) {
-        self.capabilities = capabilities
-    }
-
-    func snapshot() -> (putAttempts: Int, effectiveReads: Int) {
-        (putAttempts, effectiveReads)
-    }
-}
-
-private actor MutableEffectiveValuesProbe: CurrentCapabilitiesTransport {
-    private var response: EffectiveSettingValuesResponse
-
-    init(response: EffectiveSettingValuesResponse) {
-        self.response = response
-    }
-
-    func effectiveValues(
-        keys: [SettingKey],
-        requestIdentity: HTTPRequestIdentity
-    ) async throws -> EffectiveSettingValuesResponse {
-        response
-    }
-
-    func putValue(
-        key: SettingKey,
-        scope: SettingScopeIdentity,
-        value: SettingJSONValue,
-        requestIdentity: HTTPRequestIdentity
-    ) async throws {}
-
-    func setResponse(_ response: EffectiveSettingValuesResponse) {
-        self.response = response
-    }
-}
-
-private actor DeviceOverrideDeleteProbe: CurrentCapabilitiesTransport {
-    private let deleteFailureKey: SettingKey?
-    private let targetedReadFailureKey: SettingKey?
-    private var didFailTargetedRead = false
-    private var deviceOverrideKeys: Set<SettingKey> = [
-        .navPrimaryMenu,
-        .uiCardPresentation,
-    ]
-    private var deleteKeys: [SettingKey] = []
-    private var targetedReadKeys: [SettingKey] = []
-
-    init(
-        deleteFailureKey: SettingKey? = nil,
-        targetedReadFailureKey: SettingKey? = nil
-    ) {
-        self.deleteFailureKey = deleteFailureKey
-        self.targetedReadFailureKey = targetedReadFailureKey
-    }
-
-    func effectiveValues(
-        keys: [SettingKey],
-        requestIdentity: HTTPRequestIdentity
-    ) async throws -> EffectiveSettingValuesResponse {
-        if keys.count == 1, let key = keys.first {
-            targetedReadKeys.append(key)
-            if key == targetedReadFailureKey, !didFailTargetedRead {
-                didFailTargetedRead = true
-                throw URLError(.notConnectedToInternet)
-            }
-        }
-        var settings: [EffectiveSettingValue] = []
-        for key in keys {
-            if let value = try effectiveValue(for: key) {
-                settings.append(value)
-            }
-        }
-        return EffectiveSettingValuesResponse(
-            settings: settings,
-            revision: SettingKey.revision
-        )
-    }
-
-    func putValue(
-        key: SettingKey,
-        scope: SettingScopeIdentity,
-        value: SettingJSONValue,
-        requestIdentity: HTTPRequestIdentity
-    ) async throws {}
-
-    func deleteValue(
-        key: SettingKey,
-        scope: SettingScopeIdentity,
-        requestIdentity: HTTPRequestIdentity
-    ) async throws {
-        deleteKeys.append(key)
-        if key == deleteFailureKey {
-            throw URLError(.notConnectedToInternet)
-        }
-        guard deviceOverrideKeys.remove(key) != nil else {
-            throw SettingsAPIError.noValueAtScope
-        }
-    }
-
-    func snapshot() -> (deleteKeys: [SettingKey], targetedReadKeys: [SettingKey]) {
-        (deleteKeys, targetedReadKeys)
-    }
-
-    private func effectiveValue(for key: SettingKey) throws -> EffectiveSettingValue? {
-        switch key {
-        case .navPrimaryMenu:
-            let hasDeviceOverride = deviceOverrideKeys.contains(key)
-            let menu = PrimaryMenuPreference(items: [
-                .builtin(.home),
-                .builtin(hasDeviceOverride ? .movies : .series),
-            ])
-            return EffectiveSettingValue(
-                key: key.rawValue,
-                value: try SettingJSONValue.encoding(menu),
-                source: .scope(hasDeviceOverride ? .profileDevice : .profileClient),
-                scope: hasDeviceOverride ? .profileDevice : .profileClient,
-                profileId: "profile",
-                clientFamily: hasDeviceOverride ? nil : "tv",
-                deviceId: hasDeviceOverride ? "device" : nil
-            )
-        case .navShortcuts:
-            return EffectiveSettingValue(
-                key: key.rawValue,
-                value: try SettingJSONValue.encoding(NavigationShortcutsPreference.empty),
-                source: .scope(.profile),
-                scope: .profile,
-                profileId: "profile"
-            )
-        case .uiCardPresentation:
-            let hasDeviceOverride = deviceOverrideKeys.contains(key)
-            let presentation = hasDeviceOverride
-                ? CardPresentationPreset.compact.presentation
-                : CardPresentationPreference.standard
-            return EffectiveSettingValue(
-                key: key.rawValue,
-                value: try SettingJSONValue.encoding(presentation),
-                source: hasDeviceOverride
-                    ? .scope(.profileDevice)
-                    : .contractDefault,
-                scope: hasDeviceOverride ? .profileDevice : nil,
-                profileId: "profile",
-                deviceId: hasDeviceOverride ? "device" : nil
-            )
-        default:
-            return nil
-        }
-    }
-}
-
-private actor RecoveringDeleteProbe: CurrentCapabilitiesTransport {
-    private var deletesOnline = false
-    private var familyRowPresent = true
-    private var deleteAttempts = 0
-    private var deleteScopes: [SettingScopeIdentity] = []
-    private var events: [String] = []
-    private var deleteWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
-
-    func effectiveValues(
-        keys: [SettingKey],
-        requestIdentity: HTTPRequestIdentity
-    ) async throws -> EffectiveSettingValuesResponse {
-        events.append("effective")
-        let presentation = familyRowPresent
-            ? CardPresentationPreset.compact.presentation
-            : CardPresentationPreference.standard
-        return try completeCustomizationEffectiveResponse(
-            keys: keys,
-            settings: [
-                EffectiveSettingValue(
-                    key: SettingKey.uiCardPresentation.rawValue,
-                    value: try SettingJSONValue.encoding(presentation),
-                    source: familyRowPresent ? .scope(.profileClient) : .contractDefault,
-                    scope: familyRowPresent ? .profileClient : nil,
-                    profileId: "profile",
-                    clientFamily: familyRowPresent ? "mobile" : nil
-                ),
-            ]
-        )
-    }
-
-    func putValue(
-        key: SettingKey,
-        scope: SettingScopeIdentity,
-        value: SettingJSONValue,
-        requestIdentity: HTTPRequestIdentity
-    ) async throws {}
-
-    func deleteValue(
-        key: SettingKey,
-        scope: SettingScopeIdentity,
-        requestIdentity: HTTPRequestIdentity
-    ) async throws {
-        deleteAttempts += 1
-        deleteScopes.append(scope)
-        let ready = deleteWaiters.filter { deleteAttempts >= $0.0 }
-        deleteWaiters.removeAll { deleteAttempts >= $0.0 }
-        ready.forEach { $0.1.resume() }
-        guard deletesOnline else {
-            events.append("delete-failed")
-            throw URLError(.notConnectedToInternet)
-        }
-        familyRowPresent = false
-        events.append("delete-succeeded")
-    }
-
-    func waitForDeleteAttempts(_ count: Int) async {
-        guard deleteAttempts < count else { return }
-        await withCheckedContinuation { continuation in
-            deleteWaiters.append((count, continuation))
-        }
-    }
-
-    func setDeletesOnline() {
-        deletesOnline = true
-    }
-
-    func clearEvents() {
-        events.removeAll()
-    }
-
-    func snapshot() -> (events: [String], deleteScopes: [SettingScopeIdentity]) {
-        (events, deleteScopes)
-    }
-}
-
-private actor OrderedWriteProbe: CurrentCapabilitiesTransport {
-    private var values: [SettingJSONValue] = []
-    private var identities: [HTTPRequestIdentity] = []
-    private var inFlight = 0
-    private var maxInFlight = 0
-    private var completedWrites = 0
-    private var firstWriteReleased = false
-    private var firstWriteGate: CheckedContinuation<Void, Never>?
-    private var startedWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
-    private var completedWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
-
-    func effectiveValues(
-        keys: [SettingKey],
-        requestIdentity: HTTPRequestIdentity
-    ) async throws -> EffectiveSettingValuesResponse {
-        EffectiveSettingValuesResponse(settings: [], revision: SettingKey.revision)
-    }
-
-    func putValue(
-        key: SettingKey,
-        scope: SettingScopeIdentity,
-        value: SettingJSONValue,
-        requestIdentity: HTTPRequestIdentity
-    ) async throws {
-        inFlight += 1
-        maxInFlight = max(maxInFlight, inFlight)
-        values.append(value)
-        identities.append(requestIdentity)
-        let ordinal = values.count
-        resumeStartedWaiters()
-
-        if ordinal == 1, !firstWriteReleased {
-            await withCheckedContinuation { continuation in
-                if firstWriteReleased {
-                    continuation.resume()
-                } else {
-                    firstWriteGate = continuation
-                }
-            }
-        }
-
-        inFlight -= 1
-        completedWrites += 1
-        resumeCompletedWaiters()
-    }
-
-    func waitForStartedWrites(_ count: Int) async {
-        guard values.count < count else { return }
-        await withCheckedContinuation { continuation in
-            startedWaiters.append((count, continuation))
-        }
-    }
-
-    func waitForCompletedWrites(_ count: Int) async {
-        guard completedWrites < count else { return }
-        await withCheckedContinuation { continuation in
-            completedWaiters.append((count, continuation))
-        }
-    }
-
-    func releaseFirstWrite() {
-        firstWriteReleased = true
-        firstWriteGate?.resume()
-        firstWriteGate = nil
-    }
-
-    func snapshot() -> (
-        values: [SettingJSONValue],
-        identities: [HTTPRequestIdentity],
-        maxInFlight: Int
-    ) {
-        (values, identities, maxInFlight)
-    }
-
-    private func resumeStartedWaiters() {
-        let ready = startedWaiters.filter { values.count >= $0.0 }
-        startedWaiters.removeAll { values.count >= $0.0 }
-        ready.forEach { $0.1.resume() }
-    }
-
-    private func resumeCompletedWaiters() {
-        let ready = completedWaiters.filter { completedWrites >= $0.0 }
-        completedWaiters.removeAll { completedWrites >= $0.0 }
-        ready.forEach { $0.1.resume() }
-    }
-}
-
-private actor AcceptedMenuCrashProbe: CurrentCapabilitiesTransport {
-    private var storedShortcuts: [PrimaryMenuItem] = []
-    private var menuWriteStarted = false
-    private var menuWriteCompleted = false
-    private var menuWriteGate: CheckedContinuation<Void, Never>?
-    private var startedWaiters: [CheckedContinuation<Void, Never>] = []
-    private var completedWaiters: [CheckedContinuation<Void, Never>] = []
-
-    func effectiveValues(
-        keys: [SettingKey],
-        requestIdentity: HTTPRequestIdentity
-    ) async throws -> EffectiveSettingValuesResponse {
-        EffectiveSettingValuesResponse(settings: [], revision: SettingKey.revision)
-    }
-
-    func putShortcutItem(
-        _ item: PrimaryMenuItem,
-        present: Bool,
-        requestIdentity: HTTPRequestIdentity
-    ) async throws {
-        storedShortcuts.removeAll { $0.id == item.id }
-        if present { storedShortcuts.append(item) }
-    }
-
-    func putValue(
-        key: SettingKey,
-        scope: SettingScopeIdentity,
-        value: SettingJSONValue,
-        requestIdentity: HTTPRequestIdentity
-    ) async throws {
-        guard key == .navPrimaryMenu else { return }
-        menuWriteStarted = true
-        let waiters = startedWaiters
-        startedWaiters.removeAll()
-        waiters.forEach { $0.resume() }
-        await withCheckedContinuation { continuation in
-            menuWriteGate = continuation
-        }
-        menuWriteCompleted = true
-        let completed = completedWaiters
-        completedWaiters.removeAll()
-        completed.forEach { $0.resume() }
-    }
-
-    func waitForMenuWriteStarted() async {
-        guard !menuWriteStarted else { return }
-        await withCheckedContinuation { continuation in
-            startedWaiters.append(continuation)
-        }
-    }
-
-    func releaseMenuWrite() {
-        menuWriteGate?.resume()
-        menuWriteGate = nil
-    }
-
-    func waitForMenuWriteCompleted() async {
-        guard !menuWriteCompleted else { return }
-        await withCheckedContinuation { continuation in
-            completedWaiters.append(continuation)
-        }
-    }
-}
-
-private actor SelectiveFailureWriteProbe: CurrentCapabilitiesTransport {
-    private let failingKey: SettingKey?
-    private let failingShortcutIds: Set<String>
-    private let effectiveResponse: EffectiveSettingValuesResponse
-    private var keys: [SettingKey] = []
-    private var shortcutIds: [String] = []
-    private var wholeShortcutPuts = 0
-    private var completedWrites = 0
-    private var completedWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
-
-    init(failingKey: SettingKey) {
-        self.failingKey = failingKey
-        failingShortcutIds = []
-        effectiveResponse = .init(settings: [], revision: SettingKey.revision)
-    }
-
-    init(
-        failingShortcutIds: Set<String>,
-        effectiveResponse: EffectiveSettingValuesResponse = .init(
-            settings: [],
-            revision: SettingKey.revision
-        )
-    ) {
-        failingKey = nil
-        self.failingShortcutIds = failingShortcutIds
-        self.effectiveResponse = effectiveResponse
-    }
-
-    func effectiveValues(
-        keys: [SettingKey],
-        requestIdentity: HTTPRequestIdentity
-    ) async throws -> EffectiveSettingValuesResponse {
-        effectiveResponse
-    }
-
-    func putValue(
-        key: SettingKey,
-        scope: SettingScopeIdentity,
-        value: SettingJSONValue,
-        requestIdentity: HTTPRequestIdentity
-    ) async throws {
-        keys.append(key)
-        if key == .navShortcuts { wholeShortcutPuts += 1 }
-        defer { completeWrite() }
-        if key == failingKey {
-            throw URLError(.notConnectedToInternet)
-        }
-    }
-
-    func putShortcutItem(
-        _ item: PrimaryMenuItem,
-        present: Bool,
-        requestIdentity: HTTPRequestIdentity
-    ) async throws {
-        keys.append(.navShortcuts)
-        shortcutIds.append(item.id)
-        defer { completeWrite() }
-        if failingKey == .navShortcuts || failingShortcutIds.contains(item.id) {
-            throw URLError(.notConnectedToInternet)
-        }
-    }
-
-    func waitForCompletedWrites(_ count: Int) async {
-        guard completedWrites < count else { return }
-        await withCheckedContinuation { continuation in
-            completedWaiters.append((count, continuation))
-        }
-    }
-
-    func writtenKeys() -> [SettingKey] {
-        keys
-    }
-
-    func wholeShortcutPutCount() -> Int {
-        wholeShortcutPuts
-    }
-
-    func shortcutItemIds() -> [String] {
-        shortcutIds
-    }
-
-    private func completeWrite() {
-        completedWrites += 1
-        let ready = completedWaiters.filter { completedWrites >= $0.0 }
-        completedWaiters.removeAll { completedWrites >= $0.0 }
-        ready.forEach { $0.1.resume() }
-    }
-}
-
-private actor ShortcutOrderingProbe: CurrentCapabilitiesTransport {
-    enum Outcome: Sendable {
-        case success
-        case transientFailure
-        case definitiveFailure
-    }
-
-    struct ShortcutAttempt: Sendable {
-        let item: PrimaryMenuItem
-        let present: Bool
-    }
-
-    private var outcomes: [String: [Outcome]]
-    private var shortcutAttempts: [ShortcutAttempt] = []
-    private var storedShortcuts: [PrimaryMenuItem]
-    private var storedMenu: PrimaryMenuPreference
-    private var menuWrites: [PrimaryMenuPreference] = []
-    private var completedWrites = 0
-    private var completedWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
-    private let effectiveFails: Bool
-
-    init(
-        outcomes: [String: [Outcome]],
-        initialMenu: PrimaryMenuPreference = .init(items: [.builtin(.home)]),
-        initialShortcuts: [PrimaryMenuItem] = [],
-        effectiveFails: Bool = false
-    ) {
-        self.outcomes = outcomes
-        storedMenu = initialMenu
-        storedShortcuts = initialShortcuts
-        self.effectiveFails = effectiveFails
-    }
-
-    func effectiveValues(
-        keys: [SettingKey],
-        requestIdentity: HTTPRequestIdentity
-    ) async throws -> EffectiveSettingValuesResponse {
-        if effectiveFails { throw URLError(.notConnectedToInternet) }
-        return try completeCustomizationEffectiveResponse(
-            keys: keys,
-            settings: [
-                EffectiveSettingValue(
-                    key: SettingKey.navPrimaryMenu.rawValue,
-                    value: try SettingJSONValue.encoding(storedMenu),
-                    source: .scope(.profileClient),
-                    scope: .profileClient,
-                    profileId: "profile",
-                    clientFamily: "tv"
-                ),
-                EffectiveSettingValue(
-                    key: SettingKey.navShortcuts.rawValue,
-                    value: try SettingJSONValue.encoding(
-                        NavigationShortcutsPreference(items: storedShortcuts)
-                    ),
-                    source: .scope(.profile),
-                    scope: .profile,
-                    profileId: "profile"
-                ),
-            ]
-        )
-    }
-
-    func putShortcutItem(
-        _ item: PrimaryMenuItem,
-        present: Bool,
-        requestIdentity: HTTPRequestIdentity
-    ) async throws {
-        shortcutAttempts.append(.init(item: item, present: present))
-        let outcome: Outcome
-        if var remaining = outcomes[item.id], !remaining.isEmpty {
-            outcome = remaining.removeFirst()
-            outcomes[item.id] = remaining
-        } else {
-            outcome = .success
-        }
-        defer { completeWrite() }
-        switch outcome {
-        case .success:
-            storedShortcuts.removeAll { $0.id == item.id }
-            if present { storedShortcuts.append(item) }
-        case .transientFailure:
-            throw URLError(.notConnectedToInternet)
-        case .definitiveFailure:
-            throw SettingsAPIError.invalidValue(message: "shortcut rejected")
-        }
-    }
-
-    func putValue(
-        key: SettingKey,
-        scope: SettingScopeIdentity,
-        value: SettingJSONValue,
-        requestIdentity: HTTPRequestIdentity
-    ) async throws {
-        defer { completeWrite() }
-        guard key == .navPrimaryMenu else { return }
-        let menu = try value.decoded(as: PrimaryMenuPreference.self)
-        storedMenu = menu
-        menuWrites.append(menu)
-    }
-
-    func waitForCompletedWrites(_ count: Int) async {
-        guard completedWrites < count else { return }
-        await withCheckedContinuation { continuation in
-            completedWaiters.append((count, continuation))
-        }
-    }
-
-    func snapshot() -> (
-        shortcutAttempts: [ShortcutAttempt],
-        menuWrites: [PrimaryMenuPreference]
-    ) {
-        (shortcutAttempts, menuWrites)
-    }
-
-    private func completeWrite() {
-        completedWrites += 1
-        let ready = completedWaiters.filter { completedWrites >= $0.0 }
-        completedWaiters.removeAll { completedWrites >= $0.0 }
-        ready.forEach { $0.1.resume() }
-    }
-}
-
-private actor DefinitiveShortcutRejectionProbe: CurrentCapabilitiesTransport {
-    private var didReject = false
-    private var shortcutWriteAttempts = 0
-    private var effectiveReads = 0
-    private var primaryMenuWriteAttempts = 0
-    private var completedWrites = 0
-    private var completedWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
-
-    func effectiveValues(
-        keys: [SettingKey],
-        requestIdentity: HTTPRequestIdentity
-    ) async throws -> EffectiveSettingValuesResponse {
-        effectiveReads += 1
-        let shortcutCount = didReject ? 256 : 255
-        let items = (1...shortcutCount).map {
-            PrimaryMenuItem.library(libraryId: $0, label: "Library \($0)")
-        }
-        return EffectiveSettingValuesResponse(
-            settings: [
-                EffectiveSettingValue(
-                    key: SettingKey.navPrimaryMenu.rawValue,
-                    value: try SettingJSONValue.encoding(
-                        PrimaryMenuPreference(items: [.builtin(.home)])
-                    ),
-                    source: .scope(.profileClient),
-                    scope: .profileClient,
-                    profileId: "profile",
-                    clientFamily: "tv"
-                ),
-                EffectiveSettingValue(
-                    key: SettingKey.navShortcuts.rawValue,
-                    value: try SettingJSONValue.encoding(
-                        NavigationShortcutsPreference(items: items)
-                    ),
-                    source: .scope(.profile),
-                    scope: .profile,
-                    profileId: "profile"
-                ),
-            ],
-            revision: SettingKey.revision
-        )
-    }
-
-    func putShortcutItem(
-        _ item: PrimaryMenuItem,
-        present: Bool,
-        requestIdentity: HTTPRequestIdentity
-    ) async throws {
-        shortcutWriteAttempts += 1
-        didReject = true
-        completeWrite()
-        throw SettingsAPIError.invalidValue(
-            message: "items must contain at most 256 entries"
-        )
-    }
-
-    func putValue(
-        key: SettingKey,
-        scope: SettingScopeIdentity,
-        value: SettingJSONValue,
-        requestIdentity: HTTPRequestIdentity
-    ) async throws {
-        if key == .navPrimaryMenu {
-            primaryMenuWriteAttempts += 1
-        }
-    }
-
-    func waitForCompletedWrites(_ count: Int) async {
-        guard completedWrites < count else { return }
-        await withCheckedContinuation { continuation in
-            completedWaiters.append((count, continuation))
-        }
-    }
-
-    func snapshot() -> (
-        shortcutWriteAttempts: Int,
-        effectiveReads: Int,
-        primaryMenuWriteAttempts: Int
-    ) {
-        (shortcutWriteAttempts, effectiveReads, primaryMenuWriteAttempts)
-    }
-
-    private func completeWrite() {
-        completedWrites += 1
-        let ready = completedWaiters.filter { completedWrites >= $0.0 }
-        completedWaiters.removeAll { completedWrites >= $0.0 }
-        ready.forEach { $0.1.resume() }
-    }
-}
-
-private actor RecoveringWriteProbe: CurrentCapabilitiesTransport {
-    private var isOnline = false
-    private var putAttempts = 0
-    private var putWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
-    private var events: [String] = []
-    private var writtenValues: [SettingJSONValue] = []
-    private var storedPresentation = CardPresentationPreference.standard
-
-    func effectiveValues(
-        keys: [SettingKey],
-        requestIdentity: HTTPRequestIdentity
-    ) async throws -> EffectiveSettingValuesResponse {
-        events.append("effective")
-        return try completeCustomizationEffectiveResponse(
-            keys: keys,
-            settings: [
-                EffectiveSettingValue(
-                    key: SettingKey.uiCardPresentation.rawValue,
-                    value: try SettingJSONValue.encoding(storedPresentation),
-                    source: .scope(.profileClient),
-                    scope: .profileClient,
-                    profileId: "profile",
-                    clientFamily: "mobile"
-                ),
-            ]
-        )
-    }
-
-    func putValue(
-        key: SettingKey,
-        scope: SettingScopeIdentity,
-        value: SettingJSONValue,
-        requestIdentity: HTTPRequestIdentity
-    ) async throws {
-        putAttempts += 1
-        writtenValues.append(value)
-        let ready = putWaiters.filter { putAttempts >= $0.0 }
-        putWaiters.removeAll { putAttempts >= $0.0 }
-        ready.forEach { $0.1.resume() }
-
-        guard isOnline else {
-            events.append("put-failed")
-            throw URLError(.notConnectedToInternet)
-        }
-        if key == .uiCardPresentation {
-            storedPresentation = try value.decoded(as: CardPresentationPreference.self)
-        }
-        events.append("put-succeeded")
-    }
-
-    func waitForPutAttempts(_ count: Int) async {
-        guard putAttempts < count else { return }
-        await withCheckedContinuation { continuation in
-            putWaiters.append((count, continuation))
-        }
-    }
-
-    func setOnline() {
-        isOnline = true
-    }
-
-    func snapshot() -> (
-        events: [String],
-        writtenValues: [SettingJSONValue],
-        storedPresentation: CardPresentationPreference
-    ) {
-        (events, writtenValues, storedPresentation)
-    }
-}
-
-private actor RecoveringShortcutProbe: CurrentCapabilitiesTransport {
-    struct Operation: Sendable {
-        let item: PrimaryMenuItem
-        let present: Bool
-    }
-
-    private var isOnline = false
-    private var shortcutOperations: [Operation] = []
-    private var shortcutWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
-    private var genericPutCount = 0
-    private var genericPutWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
-    private var events: [String] = []
-    private var storedShortcuts: [PrimaryMenuItem] = []
-    private var storedMenu: PrimaryMenuPreference?
-    private let offlineFailure: SettingsAPIError?
-
-    init(offlineFailure: SettingsAPIError? = nil) {
-        self.offlineFailure = offlineFailure
-    }
-
-    func effectiveValues(
-        keys: [SettingKey],
-        requestIdentity: HTTPRequestIdentity
-    ) async throws -> EffectiveSettingValuesResponse {
-        events.append("effective")
-        var settings = [
-            EffectiveSettingValue(
-                key: SettingKey.navShortcuts.rawValue,
-                value: try SettingJSONValue.encoding(
-                    NavigationShortcutsPreference(items: storedShortcuts)
-                ),
-                source: .scope(.profile),
-                scope: .profile,
-                profileId: "profile"
-            ),
-        ]
-        if let storedMenu {
-            settings.append(EffectiveSettingValue(
-                key: SettingKey.navPrimaryMenu.rawValue,
-                value: try SettingJSONValue.encoding(storedMenu),
-                source: .scope(.profileClient),
-                scope: .profileClient,
-                profileId: "profile",
-                clientFamily: requestIdentity.clientFamily
-            ))
-        }
-        return try completeCustomizationEffectiveResponse(
-            keys: keys,
-            settings: settings
-        )
-    }
-
-    func putShortcutItem(
-        _ item: PrimaryMenuItem,
-        present: Bool,
-        requestIdentity: HTTPRequestIdentity
-    ) async throws {
-        shortcutOperations.append(.init(item: item, present: present))
-        resumeShortcutWaiters()
-        guard isOnline else {
-            events.append("shortcut-failed")
-            if let offlineFailure {
-                throw offlineFailure
-            }
-            throw URLError(.notConnectedToInternet)
-        }
-        apply(item: item, present: present)
-        events.append("shortcut-succeeded")
-    }
-
-    func putValue(
-        key: SettingKey,
-        scope: SettingScopeIdentity,
-        value: SettingJSONValue,
-        requestIdentity: HTTPRequestIdentity
-    ) async throws {
-        genericPutCount += 1
-        events.append("put-\(key.rawValue)")
-        if key == .navPrimaryMenu {
-            storedMenu = try value.decoded(as: PrimaryMenuPreference.self)
-        }
-        let ready = genericPutWaiters.filter { genericPutCount >= $0.0 }
-        genericPutWaiters.removeAll { genericPutCount >= $0.0 }
-        ready.forEach { $0.1.resume() }
-    }
-
-    func waitForShortcutAttempts(_ count: Int) async {
-        guard shortcutOperations.count < count else { return }
-        await withCheckedContinuation { continuation in
-            shortcutWaiters.append((count, continuation))
-        }
-    }
-
-    func waitForGenericPuts(_ count: Int) async {
-        guard genericPutCount < count else { return }
-        await withCheckedContinuation { continuation in
-            genericPutWaiters.append((count, continuation))
-        }
-    }
-
-    func setOnline() {
-        isOnline = true
-    }
-
-    func snapshot() -> (
-        events: [String],
-        shortcutOperations: [Operation],
-        storedShortcuts: [PrimaryMenuItem],
-        genericPutCount: Int
-    ) {
-        (events, shortcutOperations, storedShortcuts, genericPutCount)
-    }
-
-    private func resumeShortcutWaiters() {
-        let ready = shortcutWaiters.filter { shortcutOperations.count >= $0.0 }
-        shortcutWaiters.removeAll { shortcutOperations.count >= $0.0 }
-        ready.forEach { $0.1.resume() }
-    }
-
-    private func apply(item: PrimaryMenuItem, present: Bool) {
-        storedShortcuts.removeAll { $0.id == item.id }
-        if present { storedShortcuts.append(item) }
-    }
-}
-
-private actor BlockingShortcutProbe: CurrentCapabilitiesTransport {
-    struct Operation: Sendable {
-        let item: PrimaryMenuItem
-        let present: Bool
-    }
-
-    private var shortcutOperations: [Operation] = []
-    private var storedShortcuts: [PrimaryMenuItem] = []
-    private var completedShortcutOperations = 0
-    private var genericPutCount = 0
-    private var menuWrites: [PrimaryMenuPreference] = []
-    private var firstOperationReleased = false
-    private var firstOperationGate: CheckedContinuation<Void, Never>?
-    private var startedWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
-    private var completedWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
-    private var genericPutWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
-
-    func effectiveValues(
-        keys: [SettingKey],
-        requestIdentity: HTTPRequestIdentity
-    ) async throws -> EffectiveSettingValuesResponse {
-        try completeCustomizationEffectiveResponse(
-            keys: keys,
-            settings: [
-                EffectiveSettingValue(
-                    key: SettingKey.navShortcuts.rawValue,
-                    value: try SettingJSONValue.encoding(
-                        NavigationShortcutsPreference(items: storedShortcuts)
-                    ),
-                    source: .scope(.profile),
-                    scope: .profile,
-                    profileId: "profile"
-                ),
-            ]
-        )
-    }
-
-    func putShortcutItem(
-        _ item: PrimaryMenuItem,
-        present: Bool,
-        requestIdentity: HTTPRequestIdentity
-    ) async throws {
-        shortcutOperations.append(.init(item: item, present: present))
-        let ordinal = shortcutOperations.count
-        resumeStartedWaiters()
-        if ordinal == 1, !firstOperationReleased {
-            await withCheckedContinuation { continuation in
-                if firstOperationReleased {
-                    continuation.resume()
-                } else {
-                    firstOperationGate = continuation
-                }
-            }
-        }
-        storedShortcuts.removeAll { $0.id == item.id }
-        if present { storedShortcuts.append(item) }
-        completedShortcutOperations += 1
-        resumeCompletedWaiters()
-    }
-
-    func putValue(
-        key: SettingKey,
-        scope: SettingScopeIdentity,
-        value: SettingJSONValue,
-        requestIdentity: HTTPRequestIdentity
-    ) async throws {
-        genericPutCount += 1
-        if key == .navPrimaryMenu {
-            menuWrites.append(try value.decoded(as: PrimaryMenuPreference.self))
-        }
-        let ready = genericPutWaiters.filter { genericPutCount >= $0.0 }
-        genericPutWaiters.removeAll { genericPutCount >= $0.0 }
-        ready.forEach { $0.1.resume() }
-    }
-
-    func waitForStartedShortcutOperations(_ count: Int) async {
-        guard shortcutOperations.count < count else { return }
-        await withCheckedContinuation { continuation in
-            startedWaiters.append((count, continuation))
-        }
-    }
-
-    func waitForCompletedShortcutOperations(_ count: Int) async {
-        guard completedShortcutOperations < count else { return }
-        await withCheckedContinuation { continuation in
-            completedWaiters.append((count, continuation))
-        }
-    }
-
-    func waitForGenericPuts(_ count: Int) async {
-        guard genericPutCount < count else { return }
-        await withCheckedContinuation { continuation in
-            genericPutWaiters.append((count, continuation))
-        }
-    }
-
-    func releaseFirstShortcutOperation() {
-        firstOperationReleased = true
-        firstOperationGate?.resume()
-        firstOperationGate = nil
-    }
-
-    func snapshot() -> (
-        shortcutOperations: [Operation],
-        storedShortcuts: [PrimaryMenuItem],
-        genericPutCount: Int,
-        menuWrites: [PrimaryMenuPreference]
-    ) {
-        (shortcutOperations, storedShortcuts, genericPutCount, menuWrites)
-    }
-
-    private func resumeStartedWaiters() {
-        let ready = startedWaiters.filter { shortcutOperations.count >= $0.0 }
-        startedWaiters.removeAll { shortcutOperations.count >= $0.0 }
-        ready.forEach { $0.1.resume() }
-    }
-
-    private func resumeCompletedWaiters() {
-        let ready = completedWaiters.filter { completedShortcutOperations >= $0.0 }
-        completedWaiters.removeAll { completedShortcutOperations >= $0.0 }
-        ready.forEach { $0.1.resume() }
     }
 }
