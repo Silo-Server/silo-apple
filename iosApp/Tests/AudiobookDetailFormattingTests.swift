@@ -102,4 +102,19 @@ final class AudiobookDetailFormattingTests: XCTestCase {
         XCTAssertNil(AudiobookDetailFormatting.peopleSummary([]))
         XCTAssertNil(AudiobookDetailFormatting.peopleSummary(["", "  "]))
     }
+
+    func testSeriesNameOnlyStripsAtAWordBoundary() {
+        XCTAssertEqual(
+            AudiobookDetailFormatting.cleanTitle("American Gods", seriesName: "A"),
+            "American Gods"
+        )
+        XCTAssertEqual(
+            AudiobookDetailFormatting.cleanTitle("Dunes of Arrakis", seriesName: "Dune"),
+            "Dunes of Arrakis"
+        )
+        XCTAssertEqual(
+            AudiobookDetailFormatting.cleanTitle("Dune Saga 12 - Dune Messiah", seriesName: "Dune Saga"),
+            "Dune Messiah"
+        )
+    }
 }

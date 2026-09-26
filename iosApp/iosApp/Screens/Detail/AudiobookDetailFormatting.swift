@@ -103,6 +103,9 @@ enum AudiobookDetailFormatting {
         guard hay.lowercased().hasPrefix(core.lowercased()) else { return title }
 
         var rest = Substring(hay.dropFirst(core.count))
+        // The series name must end at a word boundary: series "Dune" is not
+        // a prefix of "Dunes of Arrakis", nor series "A" of "American Gods".
+        if let next = rest.first, next.isLetter { return title }
         // Eat the volume number and separators that sit between the series
         // name and the actual title ("Stormlight Archive" → " 5 - " → title).
         rest = rest.drop { ch in
