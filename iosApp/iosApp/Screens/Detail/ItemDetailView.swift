@@ -578,8 +578,9 @@ private struct ItemDetailPhoneContent: View {
 
     private func playOnTV(_ request: SiloControlPlaybackRequest) {
         if siloControl.remotePlaybackEngaged {
-            // Already engaged (or reconnecting) ⇒ cast this item now.
-            Task { await siloControl.launchOnEngagedTV(request) }
+            // Already engaged (or reconnecting) ⇒ cast this item, asking
+            // first if the TV is showing a different title.
+            router.playOnEngagedTV(request)
         } else {
             // No session ⇒ pick a TV, then cast-and-play in one step.
             controlRequestBox = ControlRequestBox(request)
