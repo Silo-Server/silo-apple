@@ -38,40 +38,18 @@ struct SiloControlRemoteView: View {
                     .accessibilityLabel("Minimize")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Button {
-                            isShowingPicker = true
-                        } label: {
-                            Label("Choose a Different TV", systemImage: "tv")
-                        }
-                        Button {
-                            controller.send(.stop)
-                        } label: {
-                            Label("Stop Playback", systemImage: "stop.fill")
-                        }
-                        if controller.state?.supportsVideoGravity == true {
-                            Menu {
-                                ForEach(VideoGravity.allCases, id: \.rawValue) { gravity in
-                                    Button { controller.send(.setVideoGravity(gravity.rawValue)) } label: {
-                                        Label(gravity.label, systemImage: controller.state?.videoGravity == gravity.rawValue ? "checkmark" : "rectangle.inset.filled")
-                                    }
-                                }
-                            } label: {
-                                Label("Aspect Ratio", systemImage: "rectangle.inset.filled")
-                            }
-                        }
-                        Divider()
-                        Button(role: .destructive) {
+                    RemoteMoreOptionsMenu(
+                        supportsVideoGravity: controller.state?.supportsVideoGravity == true,
+                        videoGravity: controller.state?.videoGravity,
+                        onChooseTV: { isShowingPicker = true },
+                        onStop: { controller.send(.stop) },
+                        onSetVideoGravity: { controller.send(.setVideoGravity($0)) },
+                        onDisconnect: {
                             controller.disconnect()
                             dismiss()
-                        } label: {
-                            Label("Disconnect", systemImage: "tv.slash")
                         }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: 16, weight: .semibold))
-                    }
-                    .accessibilityLabel("More options")
+                    )
+                    .equatable()
                 }
             }
             .sheet(isPresented: $isShowingPicker) {
@@ -225,8 +203,6 @@ private struct RemoteNowPlayingContent: View {
 
     @State private var scrubPreview: Double?
     @State private var scrubSettleTask: Task<Void, Never>?
-    private let speedOptions: [Double] = [0.75, 1.0, 1.25, 1.5, 2.0]
-    private let subtitleDelayOptions = [-2_000, -1_500, -1_000, -500, -250, 0, 250, 500, 1_000, 1_500, 2_000]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -458,47 +434,113 @@ private struct RemoteNowPlayingContent: View {
     }
 
     private var secondaryControls: some View {
+        RemoteOptionMenus(model: RemoteMenuModel(state: state), onCommand: onCommand)
+            .equatable()
+    }
+
+    private func errorBanner(_ message: String) -> some View {
+        Text(message)
+            .font(.footnote)
+            .foregroundStyle(Color.siloOnSurface)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+            .padding(.horizontal, 14)
+            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.siloError.opacity(0.9)))
+    }
+}
+
+/// What the remote's option menus show, and nothing that ticks. The TV sends
+/// its full playback state twice a second, and menus built from the whole
+/// state were rebuilt on every frame: an open menu pulsed, and a long one lost
+/// its scroll position or closed. Built from this, a menu changes only when
+/// something it shows changes.
+struct RemoteMenuModel: Equatable {
+    let audioTracks: [SiloControlTrack]
+    let subtitleTracks: [SiloControlTrack]
+    let selectedAudioTrackId: Int64?
+    let selectedSubtitleTrackId: Int64?
+    let qualityOptions: [SiloControlOption]
+    let activeQualityId: String
+    let isQualitySwitching: Bool
+    let playbackSpeed: Double
+    let subtitleSyncMs: Int?
+    let subtitlePosition: String?
+    let supportsSubtitleDelay: Bool?
+    let supportsSubtitlePosition: Bool?
+
+    init(state: SiloControlPlaybackState) {
+        audioTracks = state.audioTracks
+        subtitleTracks = state.subtitleTracks
+        selectedAudioTrackId = state.selectedAudioTrackId
+        selectedSubtitleTrackId = state.selectedSubtitleTrackId
+        qualityOptions = state.qualityOptions
+        activeQualityId = state.activeQualityId
+        isQualitySwitching = state.isQualitySwitching
+        playbackSpeed = state.playbackSpeed
+        subtitleSyncMs = state.subtitleSyncMs
+        subtitlePosition = state.subtitlePosition
+        supportsSubtitleDelay = state.supportsSubtitleDelay
+        supportsSubtitlePosition = state.supportsSubtitlePosition
+    }
+}
+
+/// The Quality, Audio, Subtitles and Speed menus. Equality looks only at the
+/// model (the command closure can't be compared), so `.equatable()` skips
+/// re-rendering them while just the playhead moves.
+private struct RemoteOptionMenus: View, Equatable {
+    let model: RemoteMenuModel
+    let onCommand: (SiloControlCommand) -> Void
+
+    private let speedOptions: [Double] = [0.75, 1.0, 1.25, 1.5, 2.0]
+    private let subtitleDelayOptions = [-2_000, -1_500, -1_000, -500, -250, 0, 250, 500, 1_000, 1_500, 2_000]
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.model == rhs.model
+    }
+
+    var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            if !state.qualityOptions.isEmpty { qualityMenu }
-            if !state.audioTracks.isEmpty { audioMenu }
+            if !model.qualityOptions.isEmpty { qualityMenu }
+            if !model.audioTracks.isEmpty { audioMenu }
             if hasSubtitleControls { subtitleMenu }
             speedMenu
         }
     }
 
     private var hasSubtitleControls: Bool {
-        !state.subtitleTracks.isEmpty
-            || state.supportsSubtitleDelay == true
-            || state.supportsSubtitlePosition == true
+        !model.subtitleTracks.isEmpty
+            || model.supportsSubtitleDelay == true
+            || model.supportsSubtitlePosition == true
     }
 
     private var audioMenu: some View {
         Menu {
-            ForEach(state.audioTracks) { track in
+            ForEach(model.audioTracks) { track in
                 Button { onCommand(.selectAudioTrack(track.trackId)) } label: {
-                    Label(track.title, systemImage: state.selectedAudioTrackId == track.trackId ? "checkmark" : "waveform")
+                    Label(track.title, systemImage: model.selectedAudioTrackId == track.trackId ? "checkmark" : "waveform")
                 }
             }
         } label: { RemoteChipLabel(systemImage: "waveform", caption: "Audio") }
-        .accessibilityValue(state.audioTracks.first(where: { $0.trackId == state.selectedAudioTrackId })?.title ?? "None")
+        .accessibilityValue(model.audioTracks.first(where: { $0.trackId == model.selectedAudioTrackId })?.title ?? "None")
     }
 
     private var subtitleMenu: some View {
         Menu {
-            if !state.subtitleTracks.isEmpty {
+            if !model.subtitleTracks.isEmpty {
                 Section("Track") {
                     Button { onCommand(.selectSubtitleTrack(nil)) } label: {
-                        Label("Off", systemImage: state.selectedSubtitleTrackId == nil ? "checkmark" : "captions.bubble")
+                        Label("Off", systemImage: model.selectedSubtitleTrackId == nil ? "checkmark" : "captions.bubble")
                     }
-                    ForEach(state.subtitleTracks) { track in
+                    ForEach(model.subtitleTracks) { track in
                         Button { onCommand(.selectSubtitleTrack(track.trackId)) } label: {
-                            Label(track.title, systemImage: state.selectedSubtitleTrackId == track.trackId ? "checkmark" : "captions.bubble")
+                            Label(track.title, systemImage: model.selectedSubtitleTrackId == track.trackId ? "checkmark" : "captions.bubble")
                         }
                     }
                 }
             }
 
-            if state.supportsSubtitleDelay == true {
+            if model.supportsSubtitleDelay == true {
                 Section("Delay") {
                     ForEach(subtitleDelayMenuOptions, id: \.self) { milliseconds in
                         Button { onCommand(.setSubtitleSyncMs(milliseconds)) } label: {
@@ -511,13 +553,13 @@ private struct RemoteNowPlayingContent: View {
                 }
             }
 
-            if state.supportsSubtitlePosition == true {
+            if model.supportsSubtitlePosition == true {
                 Section("Position") {
                     ForEach(SubtitlePositionPreset.allCases) { position in
                         Button { onCommand(.setSubtitlePosition(position.rawValue)) } label: {
                             Label(
                                 position.label,
-                                systemImage: state.subtitlePosition == position.rawValue ? "checkmark" : "textformat"
+                                systemImage: model.subtitlePosition == position.rawValue ? "checkmark" : "textformat"
                             )
                         }
                     }
@@ -528,7 +570,7 @@ private struct RemoteNowPlayingContent: View {
     }
 
     private var subtitleDelayMenuOptions: [Int] {
-        let current = state.subtitleSyncMs ?? 0
+        let current = model.subtitleSyncMs ?? 0
         if subtitleDelayOptions.contains(current) {
             return subtitleDelayOptions
         }
@@ -537,42 +579,42 @@ private struct RemoteNowPlayingContent: View {
 
     private var subtitleAccessibilityValue: String {
         var values: [String] = [
-            state.subtitleTracks.first(where: { $0.trackId == state.selectedSubtitleTrackId })?.title ?? "Off"
+            model.subtitleTracks.first(where: { $0.trackId == model.selectedSubtitleTrackId })?.title ?? "Off"
         ]
-        if state.supportsSubtitleDelay == true {
-            values.append("Delay \(subtitleDelayLabel(state.subtitleSyncMs ?? 0))")
+        if model.supportsSubtitleDelay == true {
+            values.append("Delay \(subtitleDelayLabel(model.subtitleSyncMs ?? 0))")
         }
-        if state.supportsSubtitlePosition == true {
-            values.append(SubtitlePositionPreset(rawValue: state.subtitlePosition ?? "")?.label ?? "Bottom")
+        if model.supportsSubtitlePosition == true {
+            values.append(SubtitlePositionPreset(rawValue: model.subtitlePosition ?? "")?.label ?? "Bottom")
         }
         return values.joined(separator: ", ")
     }
 
     private func subtitleDelaySelectionSystemImage(_ milliseconds: Int) -> String {
-        abs((state.subtitleSyncMs ?? 0) - milliseconds) < 1 ? "checkmark" : "timer"
+        abs((model.subtitleSyncMs ?? 0) - milliseconds) < 1 ? "checkmark" : "timer"
     }
 
     private var qualityMenu: some View {
         Menu {
-            ForEach(state.qualityOptions) { option in
+            ForEach(model.qualityOptions) { option in
                 Button { onCommand(.setQuality(option.id)) } label: {
-                    Label(option.label, systemImage: state.activeQualityId == option.id ? "checkmark" : "slider.horizontal.3")
+                    Label(option.label, systemImage: model.activeQualityId == option.id ? "checkmark" : "slider.horizontal.3")
                 }
             }
         } label: { RemoteChipLabel(systemImage: "slider.horizontal.3", caption: "Quality") }
-        .accessibilityValue(state.qualityOptions.first(where: { $0.id == state.activeQualityId })?.label ?? state.activeQualityId)
-        .disabled(state.isQualitySwitching)
+        .accessibilityValue(model.qualityOptions.first(where: { $0.id == model.activeQualityId })?.label ?? model.activeQualityId)
+        .disabled(model.isQualitySwitching)
     }
 
     private var speedMenu: some View {
         Menu {
             ForEach(speedOptions, id: \.self) { speed in
                 Button { onCommand(.setPlaybackSpeed(speed)) } label: {
-                    Label(speedLabel(speed), systemImage: abs(state.playbackSpeed - speed) < 0.01 ? "checkmark" : "speedometer")
+                    Label(speedLabel(speed), systemImage: abs(model.playbackSpeed - speed) < 0.01 ? "checkmark" : "speedometer")
                 }
             }
         } label: { RemoteChipLabel(systemImage: "speedometer", caption: "Speed") }
-        .accessibilityValue(speedLabel(state.playbackSpeed))
+        .accessibilityValue(speedLabel(model.playbackSpeed))
     }
 
     private func speedLabel(_ speed: Double) -> String {
@@ -591,16 +633,52 @@ private struct RemoteNowPlayingContent: View {
         let seconds = Double(milliseconds) / 1000.0
         return String(format: "%+.1fs", seconds)
     }
+}
 
-    private func errorBanner(_ message: String) -> some View {
-        Text(message)
-            .font(.footnote)
-            .foregroundStyle(Color.siloOnSurface)
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 10)
-            .padding(.horizontal, 14)
-            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.siloError.opacity(0.9)))
+/// The toolbar's "More options" menu. The enclosing view re-renders on every
+/// state frame, so this is compared on what it shows, for the same reason as
+/// `RemoteOptionMenus`.
+private struct RemoteMoreOptionsMenu: View, Equatable {
+    let supportsVideoGravity: Bool
+    let videoGravity: String?
+    let onChooseTV: () -> Void
+    let onStop: () -> Void
+    let onSetVideoGravity: (String) -> Void
+    let onDisconnect: () -> Void
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.supportsVideoGravity == rhs.supportsVideoGravity
+            && lhs.videoGravity == rhs.videoGravity
+    }
+
+    var body: some View {
+        Menu {
+            Button(action: onChooseTV) {
+                Label("Choose a Different TV", systemImage: "tv")
+            }
+            Button(action: onStop) {
+                Label("Stop Playback", systemImage: "stop.fill")
+            }
+            if supportsVideoGravity {
+                Menu {
+                    ForEach(VideoGravity.allCases, id: \.rawValue) { gravity in
+                        Button { onSetVideoGravity(gravity.rawValue) } label: {
+                            Label(gravity.label, systemImage: videoGravity == gravity.rawValue ? "checkmark" : "rectangle.inset.filled")
+                        }
+                    }
+                } label: {
+                    Label("Aspect Ratio", systemImage: "rectangle.inset.filled")
+                }
+            }
+            Divider()
+            Button(role: .destructive, action: onDisconnect) {
+                Label("Disconnect", systemImage: "tv.slash")
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 16, weight: .semibold))
+        }
+        .accessibilityLabel("More options")
     }
 }
 
