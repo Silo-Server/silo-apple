@@ -97,7 +97,7 @@ final class SeriesSeasonSelectionTests: XCTestCase {
     func testEmptyInitialHierarchyClearsEpisodeLoading() async throws {
         let model = ItemDetailViewModel()
         model.isLoadingEpisodes = true
-        let empty = try JSONDecoder().decode(SeasonsResponse.self, from: Data("{\"seasons\":[]}".utf8))
+        let empty = SeasonsResponse(seasons: [])
 
         await model.loadSeasons(seriesId: "empty-hierarchy", fetchSeasons: { _ in empty })
 

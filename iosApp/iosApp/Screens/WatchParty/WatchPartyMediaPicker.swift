@@ -118,16 +118,19 @@ private struct WatchPartyMediaChoice: Hashable {
 private extension BrowseItem {
     /// A series row built from what an episode card already carries, enough
     /// for the episode picker, which loads the seasons itself.
-    init?(seriesId: String, title: String, posterUrl: String?, posterThumbhash: String?,
-          backdropUrl: String?, backdropThumbhash: String?) {
-        var fields = ["contentId": seriesId, "type": "series", "title": title]
-        fields["posterUrl"] = posterUrl
-        fields["posterThumbhash"] = posterThumbhash
-        fields["backdropUrl"] = backdropUrl
-        fields["backdropThumbhash"] = backdropThumbhash
-        guard let data = try? JSONEncoder().encode(fields),
-              let item = try? JSONDecoder().decode(BrowseItem.self, from: data) else { return nil }
-        self = item
+    init(seriesId: String, title: String, posterUrl: String?, posterThumbhash: String?,
+         backdropUrl: String?, backdropThumbhash: String?) {
+        self.init(
+            contentId: seriesId, type: "series", title: title,
+            year: nil, genres: nil, contentRating: nil, status: nil,
+            ratingImdb: nil, ratingTmdb: nil, ratingRtCritic: nil, ratingRtAudience: nil,
+            runtime: nil, originalLanguage: nil, studios: nil, networks: nil,
+            showStatus: nil, overview: nil,
+            posterUrl: posterUrl, posterThumbhash: posterThumbhash,
+            backdropUrl: backdropUrl, backdropThumbhash: backdropThumbhash,
+            addedAt: nil, releaseDate: nil, lastAirDate: nil,
+            userState: nil, overlaySummary: nil
+        )
     }
 }
 
@@ -297,16 +300,16 @@ struct WatchPartyMediaPicker: View {
             ?? session.picker?.watchlistUnion.first { $0.item.contentId == contentId }?.item
     }
 
-    /// Home rows come as `SectionItem`; lift one back to a `BrowseItem` shape
-    /// through the shared decoder so the confirmation page has facts and art.
+    /// Home rows come as `SectionItem`; lift one into a `BrowseItem` with
+    /// `BrowseItem(sectionItem:)` so the confirmation page has facts and art.
     /// A resume episode goes straight to its confirmation.
     private func openSection(_ item: SectionItem) {
         if item.type == "episode" {
             destination = .choice(WatchPartyMediaChoice(episode: item))
         } else if let browse = browseItem(for: item.contentId) {
             open(browse)
-        } else if let browse = BrowseItem(sectionItem: item) {
-            open(browse)
+        } else {
+            open(BrowseItem(sectionItem: item))
         }
     }
 
