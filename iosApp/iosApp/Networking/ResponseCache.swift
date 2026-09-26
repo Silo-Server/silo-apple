@@ -73,6 +73,27 @@ final class ResponseCache {
         remove(CacheKey.recommendations)
     }
 
+    /// Drop every cross-screen list and grid that can show an item's
+    /// favorite, watchlist or watched flag, so the next visit refetches it
+    /// after a personal-state change: Home and recommendation rows, the
+    /// Favorites, Watchlist and History lists, and the browse, tvOS library,
+    /// library-section and collection grids. This is the one list of those
+    /// keys; add a new screen's key here.
+    ///
+    /// The item's own `item:` entries stay, and so does a Home read already
+    /// in flight. `PersonalStateSync.invalidateItemState` drops those too.
+    func invalidatePersonalState() {
+        for key in [CacheKey.homeSections, CacheKey.recommendations, CacheKey.favorites,
+                    CacheKey.watchlist, CacheKey.history] {
+            remove(key)
+        }
+        // CacheKey.browse, .tvLibrary, .librarySections, .collectionItems
+        // and .catalogCollectionItems.
+        for prefix in ["browse:", "tvlibrary:", "library:", "collection:"] {
+            removeAll(withPrefix: prefix)
+        }
+    }
+
     func clearAll() {
         entries.removeAll()
     }

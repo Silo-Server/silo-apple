@@ -180,20 +180,21 @@ enum PersonalStateSync {
         }
     }
 
-    /// Drops every cached read that can show an item's personal flags.
+    /// Drops every cached read that can show an item's personal flags: the
+    /// item's and its series' own entries, every list and grid in
+    /// `ResponseCache.invalidatePersonalState`, a Home read already in
+    /// flight, and on tvOS the resident detail pages of the item's family.
+    /// Detail pages, card watched toggles and discarded holds call this;
+    /// card favorite and watchlist changes skip it (`PersonalListSync`).
     static func invalidateItemState(contentId: String, seriesId: String? = nil) {
         ResponseCache.shared.removeItemMetadata(contentId: contentId)
         if let seriesId {
             ResponseCache.shared.removeItemMetadata(contentId: seriesId)
         }
+        // A Home read already in flight began before this change; retire it
+        // so it cannot cache the old rows again.
         StartupContentPrefetcher.invalidateHomeSectionsInFlight()
-        for key in [CacheKey.homeSections, CacheKey.recommendations, CacheKey.favorites,
-                    CacheKey.watchlist, CacheKey.history] {
-            ResponseCache.shared.remove(key)
-        }
-        for prefix in ["browse:", "tvlibrary:", "library:", "collection:"] {
-            ResponseCache.shared.removeAll(withPrefix: prefix)
-        }
+        ResponseCache.shared.invalidatePersonalState()
         #if os(tvOS)
         ItemDetailCache.shared.markStaleFamily(contentId: contentId)
         #endif
