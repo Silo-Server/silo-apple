@@ -2138,14 +2138,17 @@ struct MainTabView: View {
             else { return }
             librarySnapshot = .init(authority: authority, libraries: response.libraries)
         }
-        #if !os(macOS)
+        #if os(tvOS)
         .fullScreenCover(isPresented: Binding(
             get: { audioStore.isShowingFullPlayer },
             set: { if !$0 { audioStore.dismissFullPlayer() } }
         )) {
             AudioFullPlayerView()
         }
+        #endif
+        #if !os(macOS)
         #if os(iOS)
+        .modifier(AudioPlayerPresentationModifier(router: router))
         .modifier(PlayerPresentationModifier(router: router))
         #else
         .fullScreenCover(item: $router.presentedPlayer) { payload in
@@ -2845,6 +2848,7 @@ private struct ItemDetailSheet: View {
         // remains available only at the root, preserving the source page.
         .interactiveDismissDisabled(!router.itemDetailPath.isEmpty)
         .modifier(PlayerPresentationModifier(router: router, detailPresentationID: presentation.id))
+        .modifier(AudioPlayerPresentationModifier(router: router, detailPresentationID: presentation.id))
     }
 
     private var currentContentID: String {

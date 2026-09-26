@@ -69,7 +69,9 @@ struct AudiobookPlaybackContext {
         let total = detail.audiobook?.totalDurationSeconds.map(Double.init) ?? offset
 
         contentId = detail.contentId
-        title = detail.title
+        // Same cleaned title as the detail page, so the player, mini player,
+        // and lock screen don't repeat the series prefix and "(N of M)".
+        title = AudiobookDetailFormatting.cleanTitle(detail.title, seriesName: detail.audiobook?.series?.name)
         subtitle = detail.audiobook?.authors
             .map(\.name)
             .filter { !$0.isEmpty }

@@ -91,6 +91,14 @@ struct BookDetailPresentation {
         return pieces.isEmpty ? nil : pieces.joined(separator: " · ")
     }
 
+    /// The author line the player shows under the title. Matches
+    /// `AudiobookPlaybackContext.subtitle` so the line doesn't change when
+    /// the session's own context replaces the preview.
+    var playerSubtitle: String? {
+        let authors = (detail.audiobook?.authors ?? []).map(\.name).filter { !$0.isEmpty }
+        return authors.isEmpty ? nil : authors.joined(separator: ", ")
+    }
+
     // MARK: - Hero metadata
 
     /// Year and length, in the same leading slots movies use for year and
