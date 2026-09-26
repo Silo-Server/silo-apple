@@ -128,18 +128,6 @@ struct TVSettingsView: View {
                 preferredFocusOwner = .detail
             }
         }
-        .onChange(of: viewModel.prefs.subtitleLanguage) { _, _ in
-            Task { await viewModel.prefs.saveSubtitlePrefs() }
-        }
-        .onChange(of: viewModel.prefs.subtitleMode) { _, _ in
-            Task { await viewModel.prefs.saveSubtitlePrefs() }
-        }
-        .onChange(of: viewModel.prefs.showForcedSubtitles) { _, _ in
-            Task { await viewModel.prefs.saveSubtitlePrefs() }
-        }
-        .onChange(of: viewModel.prefs.preferredMetadataLanguage) { _, _ in
-            Task { await viewModel.prefs.saveMetadataLanguage() }
-        }
         .onChange(of: diagnosticsModel.shouldShowSettings) { _, isVisible in
             if !isVisible, selectedCategory == .diagnostics {
                 selectedCategory = .general
