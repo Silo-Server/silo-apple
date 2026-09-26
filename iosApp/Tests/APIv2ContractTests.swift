@@ -114,10 +114,13 @@ final class APIv2ContractTests: XCTestCase {
         // UTC-millisecond instant decoded by the production date strategy.
         XCTAssertEqual(item.updatedAt.timeIntervalSince1970, 1_767_323_045, accuracy: 0.0005)
         XCTAssertTrue(page.page.hasMore)
-        XCTAssertEqual(
-            page.page.nextCursor,
-            "eyJ2IjoxLCJwIjp7InUiOiIyMDI2LTAxLTAyVDAzOjA0OjA1WiIsIm0iOiJtb3ZpZS04ZjJjMWEifX0.7fNOMpzpMssIVUy2sr5knHSZhSdx8HPH7x4WWFoLLDQ"
-        )
+        // The cursor is an opaque server-signed token; the client must carry
+        // it through unchanged, whatever the server signed it with.
+        let raw = try XCTUnwrap(JSONSerialization.jsonObject(with: fixture("list_progress_ok")) as? [String: Any])
+        let rawPage = try XCTUnwrap(raw["page"] as? [String: Any])
+        let rawCursor = try XCTUnwrap(rawPage["next_cursor"] as? String)
+        XCTAssertFalse(rawCursor.isEmpty)
+        XCTAssertEqual(page.page.nextCursor, rawCursor)
     }
 
     func testListProgressLastPageHasNoCursor() throws {
