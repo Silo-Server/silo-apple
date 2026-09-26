@@ -2536,25 +2536,18 @@ final class DownloadManager {
     }
 
     /// Uploads queued offline progress through `POST /api/v2/sync/progress`
-    /// in batches of at most 100 distinct items, under the owner of the
-    /// active download scope. Each batch is claimed durably before it is
-    /// sent, so a batch whose answer never arrives, even across a crash, is
-    /// held instead of sent again (see `OfflineProgressQueue`).
+    /// in batches of at most 100 distinct items. It runs under the loaded
+    /// scope's `ScopeOwner`, like the other scope writers, so it never sends
+    /// one scope's queue with another scope's credentials, and it stops
+    /// before the next batch once that scope is no longer current. Each
+    /// batch is claimed durably before it
+    /// is sent, so a batch whose answer never arrives, even across a crash,
+    /// is held instead of sent again (see `OfflineProgressQueue`).
     func flushProgressQueue() async {
-        let serverId = scopeServerId
-        let profileId = scopeProfileId
-        let generation = registrationScopeGeneration
-        guard !serverId.isEmpty, !profileId.isEmpty,
-              let auth = await TokenStore.shared.captureOrdinaryRequestAuth(),
-              auth.account.serverId == serverId, auth.profileId == profileId else { return }
-        // The scope generation advances on every scope change, including a
-        // switch away and back, so a stale flush cannot touch a newer file.
-        func scopeUnchanged() -> Bool {
-            generation == registrationScopeGeneration && serverId == scopeServerId && profileId == scopeProfileId
-        }
+        guard let owner = await captureScopeOwner() else { return }
 
         for _ in 0..<Self.maxProgressBatchesPerFlush {
-            guard scopeUnchanged() else { return }
+            guard isCurrent(owner) else { return }
             var queue = file.progressQueue
             OfflineProgressQueue.dropUnsendable(&queue)
             let batch = OfflineProgressQueue.nextBatch(queue)
@@ -2572,15 +2565,15 @@ final class DownloadManager {
             persist()
             await saveChain?.value
 
-            let outcome = await SiloAPI.shared.apiV2Client.syncProgress(batch.compactMap(\.syncItem), auth: auth)
+            let outcome = await SiloAPI.shared.apiV2Client.syncProgress(batch.compactMap(\.syncItem), auth: owner.auth)
             progressUploadsInFlight.subtract(ids)
-            guard scopeUnchanged() else {
+            guard isCurrent(owner) else {
                 // A batch that was sent stays dispatched in the old scope's
                 // file, which is the held state it belongs in. One that never
                 // reached the server (refused before dispatch, or deferred)
                 // goes back to pending there.
                 if OfflineProgressQueue.releasesClaims(outcome) {
-                    releaseProgressClaims(ids, serverId: serverId, profileId: profileId)
+                    releaseProgressClaims(ids, serverId: owner.scope.serverId, profileId: owner.scope.profileId)
                 }
                 return
             }
