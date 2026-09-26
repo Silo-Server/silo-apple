@@ -49,9 +49,10 @@ SiloObjectAudio / truehd
   Revision: 645b91c072fafb60146151fd5127f8ff0ca38b6f (release 1.0.0)
   License: Apache License 2.0 (SiloObjectAudio-Apache-2.0.txt, with its NOTICE)
   Source and rebuild script: https://github.com/Silo-Server/SiloObjectAudio/tree/645b91c072fafb60146151fd5127f8ff0ca38b6f
-  Embeds the truehd and oamd crates from https://github.com/truehdd/truehdd
-  (Apache-2.0), commit 45eff984e3e5ab0cf36a47d12148b1628c38bda4, and the Rust
-  standard library and crates listed in its NOTICE (MIT or Apache-2.0).
+  Embeds the truehd crate from https://github.com/truehdd/truehdd
+  (Apache-2.0), commit 45eff984e3e5ab0cf36a47d12148b1628c38bda4, the oamd crate
+  0.1.0 from crates.io (https://github.com/truehdd/oamd, Apache-2.0), and the
+  Rust standard library and crates listed in its NOTICE (MIT or Apache-2.0).
 
 LibDovi / libdovi
   Packaging revision: 0d7cce1d6836a30d13a3a2326e50a153af53f014
