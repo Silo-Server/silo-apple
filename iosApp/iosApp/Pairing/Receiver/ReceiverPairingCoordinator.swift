@@ -420,6 +420,10 @@ final class ReceiverPairingCoordinator {
                 case "approved":
                     // `validated()` guarantees complete tokens on `approved`.
                     guard let tokens = poll.tokens else { throw APIv2Error.incompleteAuthResponse }
+                    // Nothing is committed when this returns false. The catch
+                    // stays silent when the attempt was cancelled (whoever
+                    // cancelled owns state) and otherwise shows the failure
+                    // and tells the phone, so neither device waits it out.
                     guard await persist(PersistedPairing(
                         url: loginURL,
                         fetchedName: push.serverName,
@@ -428,7 +432,7 @@ final class ReceiverPairingCoordinator {
                         refreshToken: tokens.refreshToken,
                         accountID: tokens.user.id
                     )) else {
-                        return
+                        throw AttemptFailure.saveFailed
                     }
                     signedInNames.append(displayName)
                     state = .signedIn(serverCount: signedInNames.count)
@@ -471,6 +475,9 @@ final class ReceiverPairingCoordinator {
         case expired
         /// The server is v1-only, or no longer accepts this app version.
         case updateRequired(UpdateRequirement)
+        /// The phone approved, but this TV could not commit the server and
+        /// its tokens, so the new sign-in was not saved.
+        case saveFailed
 
         var code: PairingFailureCode {
             switch self {
@@ -479,6 +486,8 @@ final class ReceiverPairingCoordinator {
             case .denied: return .denied
             case .expired: return .expired
             case .updateRequired: return .updateRequired
+            // No dedicated wire code: phones already explain `auth_failed`.
+            case .saveFailed: return .authFailed
             }
         }
 
@@ -486,6 +495,8 @@ final class ReceiverPairingCoordinator {
             switch self {
             case .unreachable: return push.unreachableHelp()
             case .updateRequired(let requirement): return requirement.message
+            case .saveFailed:
+                return "This Apple TV couldn’t save the sign-in to \(push.displayName). Try again from your iPhone, or add your server manually."
             case .identityMismatch, .denied, .expired: return nil
             }
         }

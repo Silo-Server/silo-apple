@@ -1195,8 +1195,95 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
             if case .serverResult(_, .signedIn, _) = $0 { return true }
             return false
         })
+        // A cancelled save is not a failure to report: whoever cancelled
+        // owns the state.
+        XCTAssertFalse(channel.sent.contains {
+            if case .serverResult(_, .failed, _) = $0 { return true }
+            return false
+        })
 
         await http.endIdentityTransition(blockingLease)
+    }
+
+    /// A save the test fails or allows on demand; all access is on the
+    /// main actor.
+    private final class PersistOutcome: @unchecked Sendable {
+        var succeed = false
+        var calls: [String] = []
+    }
+
+    private func makeCoordinator(outcome: PersistOutcome, api: FakePairingAPI) -> ReceiverPairingCoordinator {
+        ReceiverPairingCoordinator(api: api) { pairing in
+            outcome.calls.append(pairing.url)
+            return outcome.succeed
+        }
+    }
+
+    private func isSaveFailure(_ state: ReceiverPairingCoordinator.State) -> Bool {
+        if case let .failed(name, code, help) = state {
+            return name == "Home" && code == .authFailed && help != nil
+        }
+        return false
+    }
+
+    /// Regression (F074): the phone approved but the TV could not save the
+    /// server. The TV must show the failure and tell the phone right away,
+    /// instead of sitting on the match code until the phone's watchdog fires.
+    func testPersistFailureShowsFailureAndTellsPhone() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        api.pollResponse = approvedPoll
+        let outcome = PersistOutcome()
+        let coordinator = makeCoordinator(outcome: outcome, api: api)
+        let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
+
+        await allowPush(channel, coordinator)
+        await expectEventually("save failure shown") { isSaveFailure(coordinator.state) }
+        XCTAssertEqual(outcome.calls, ["https://home.example"])
+        let failedResults = channel.sent.filter {
+            if case .serverResult("https://home.example", .failed, "auth_failed") = $0 { return true }
+            return false
+        }
+        XCTAssertEqual(failedResults.count, 1)
+        XCTAssertFalse(channel.sent.contains {
+            if case .serverResult(_, .signedIn, _) = $0 { return true }
+            return false
+        })
+
+        channel.deliver(.done)
+        await runTask.value
+        guard case .failed("Home", .authFailed, _) = coordinator.state else {
+            return XCTFail("expected the save failure to stay on screen; state is \(coordinator.state)")
+        }
+    }
+
+    /// A failed save ends only that server's attempt: consent is still held,
+    /// so the phone's next push signs in without asking again.
+    func testPersistFailureStillAcceptsTheNextServer() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        api.pollResponse = approvedPoll
+        let outcome = PersistOutcome()
+        let coordinator = makeCoordinator(outcome: outcome, api: api)
+        let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
+
+        await allowPush(channel, coordinator)
+        await expectEventually("save failure shown") { isSaveFailure(coordinator.state) }
+
+        outcome.succeed = true
+        channel.deliver(.pushServer(serverURL: "https://two.example", serverName: "Two"))
+        await expectEventually("second server signed in") {
+            coordinator.state == .signedIn(serverCount: 1)
+        }
+        XCTAssertEqual(outcome.calls, ["https://home.example", "https://two.example"])
+        XCTAssertTrue(channel.sent.contains {
+            if case .serverResult("https://two.example", .signedIn, _) = $0 { return true }
+            return false
+        })
+
+        channel.deliver(.done)
+        await runTask.value
+        XCTAssertEqual(coordinator.state, .completed(serverNames: ["Two"]))
     }
 }
 

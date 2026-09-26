@@ -312,7 +312,7 @@ struct TVPairingReceiverView: View {
         case .updateRequired:
             return help ?? UpdateRequirement.serverMessage
         case .authFailed:
-            return "Something went wrong signing in to \(name). Try again from your iPhone, or add your server manually."
+            return help ?? "Something went wrong signing in to \(name). Try again from your iPhone, or add your server manually."
         }
     }
 
