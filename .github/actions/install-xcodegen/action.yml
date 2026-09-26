@@ -1,0 +1,26 @@
+name: Install XcodeGen
+description: >-
+  Download the pinned XcodeGen release, verify its SHA-256 before unpacking it,
+  and put it on PATH for later steps. Runs without sudo.
+runs:
+  using: composite
+  steps:
+    - name: Install XcodeGen (pinned, checksum-verified)
+      shell: bash
+      env:
+        # player-regression.yml pins the same release inline; keep the two in step.
+        XCODEGEN_VERSION: "2.43.0"
+        XCODEGEN_SHA256: a4847ed77d3341a4d24049bc4424a3babca4c94ff1dcaaee923eaca2b32c678f
+      run: |
+        set -euo pipefail
+        dist="$RUNNER_TEMP/xcodegen-$XCODEGEN_VERSION"
+        zip="$dist.zip"
+        curl -fsSL -o "$zip" \
+          "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+        # Check the archive before unpacking or running anything from it.
+        echo "$XCODEGEN_SHA256  $zip" | shasum -a 256 -c -
+        rm -rf "$dist"
+        unzip -q "$zip" -d "$dist"
+        # XcodeGen finds its SettingPresets next to the binary, so it runs in place.
+        echo "$dist/xcodegen/bin" >> "$GITHUB_PATH"
+        "$dist/xcodegen/bin/xcodegen" --version
