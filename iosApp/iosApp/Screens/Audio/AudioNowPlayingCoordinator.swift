@@ -263,15 +263,19 @@ final class AudioNowPlayingCoordinator {
         publishNowPlayingInfo()
     }
 
-    /// Drops the current binding. Clearing published metadata is process-wide
-    /// when bound to the shared centers, so it may only happen once the last
-    /// claimant leaves; otherwise the surviving claimant is restored instead.
+    /// Drops the current binding and disables the transport commands it
+    /// enabled, so Control Center stops advertising controls nobody drives.
+    /// On the shared centers the arbiter owns the teardown order, so
+    /// surviving claimants keep their commands and metadata. A player-scoped
+    /// center belongs to this binding alone.
     private func unbindCurrentCenters() {
         unregisterRemoteCommands()
-        let mayClearPublishedInfo = commandCenter === MPRemoteCommandCenter.shared()
-            ? SharedNowPlayingArbiter.shared.release(self)
-            : true
-        if mayClearPublishedInfo {
+        if commandCenter === MPRemoteCommandCenter.shared() {
+            SharedNowPlayingArbiter.shared.releaseSharedCenters(self)
+        } else {
+            if let commandCenter {
+                SharedNowPlayingArbiter.disableTransportCommands(on: commandCenter)
+            }
             infoCenter?.nowPlayingInfo = nil
         }
         commandCenter = nil
