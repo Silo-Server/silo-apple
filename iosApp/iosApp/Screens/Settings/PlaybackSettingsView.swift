@@ -147,6 +147,14 @@ struct PlaybackSettingsView: View {
             .foregroundStyle(Color.siloOnSurface)
             .tint(.siloAccent)
 
+            if #available(iOS 26.0, macOS 26.0, *) {
+                NavigationLink {
+                    AtmosSpeakerTestView()
+                } label: {
+                    Text("Atmos Speaker Test").foregroundStyle(Color.siloOnSurface)
+                }
+            }
+
             Picker("Deinterlacing", selection: Binding(
                 get: { viewModel.deinterlaceMode },
                 set: { newValue in
