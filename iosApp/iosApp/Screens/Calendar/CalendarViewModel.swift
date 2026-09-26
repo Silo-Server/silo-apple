@@ -6,6 +6,10 @@ import SwiftUI
 @Observable
 @MainActor
 final class CalendarViewModel {
+    typealias FetchCalendarWeek = (
+        _ start: String, _ end: String, _ filter: String, _ timezone: String
+    ) async throws -> CalendarResponse
+
     private static let filterDefaultsKey = "calendar.filter"
 
     private(set) var days: [CalendarDay] = []
@@ -24,7 +28,14 @@ final class CalendarViewModel {
     /// already navigated away from can't clobber the visible state.
     @ObservationIgnored private var requestToken = 0
 
-    init() {
+    @ObservationIgnored private let fetchWeek: FetchCalendarWeek
+
+    init(fetchWeek: @escaping FetchCalendarWeek = { start, end, filter, timezone in
+        try await SiloAPI.shared.calendarEvents(
+            start: start, end: end, filter: filter, timezone: timezone
+        )
+    }) {
+        self.fetchWeek = fetchWeek
         let stored = UserDefaults.standard.string(forKey: Self.filterDefaultsKey) ?? ""
         filter = CalendarFilter(rawValue: stored) ?? .following
     }
@@ -105,11 +116,11 @@ final class CalendarViewModel {
         error = nil
 
         do {
-            let response = try await SiloAPI.shared.calendarEvents(
-                start: week.startString,
-                end: week.endString,
-                filter: filter.rawValue,
-                timezone: TimeZone.current.identifier
+            let response = try await fetchWeek(
+                week.startString,
+                week.endString,
+                filter.rawValue,
+                TimeZone.current.identifier
             )
             guard token == requestToken else { return }
             ResponseCache.shared.set(response, for: key)
@@ -130,5 +141,14 @@ final class CalendarViewModel {
     private func setDays(_ newDays: [CalendarDay]) {
         days = newDays
         eventsByDay = Dictionary(newDays.map { ($0.date, $0.items) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    /// Revalidates the displayed week over its cached copy. `load()` always
+    /// fetches from the network and only seeds its first paint from the
+    /// cache, so the week stays on screen while the request runs. A failed
+    /// refresh keeps the displayed days; the error screen appears only when
+    /// there is nothing to show.
+    func refresh() async {
+        await load()
     }
 }
