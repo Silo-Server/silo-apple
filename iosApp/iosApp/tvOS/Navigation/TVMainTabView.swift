@@ -1365,8 +1365,6 @@ struct TVMainTabView: View {
     @ViewBuilder
     private func routeContent(for route: Route) -> some View {
         switch route {
-        case .library(let libraryId, let title):
-            LibraryDetailView(libraryId: libraryId, initialTitle: title)
         case .libraryCollection(let libraryId, let collectionId, let title, let kind):
             LibraryCollectionDetailView(
                 libraryId: libraryId,
@@ -1406,8 +1404,6 @@ struct TVMainTabView: View {
             CollectionsView()
         case .collectionDetail(let id):
             CollectionDetailView(collectionId: id)
-        case .browse(let libraryId):
-            BrowseView(libraryId: libraryId)
         case .watchParty:
             #if os(iOS) || os(tvOS)
             WatchPartyHubView(session: .shared)
@@ -1426,8 +1422,6 @@ struct TVMainTabView: View {
             SearchView(usesTVTopMenuInset: false, seededQuery: $siriSearchRequest)
         case .settings:
             TVSettingsView()
-        case .recommendations:
-            RecommendationsView()
         case .serverList:
             ServerListView()
         case .serverSetup:
@@ -1437,14 +1431,6 @@ struct TVMainTabView: View {
             // tree entirely. Successful `connect()` flips authState to
             // `.needsLogin` and replaces this view tree.
             TVServerSetupView(router: router)
-        case .tvLibraryGrid(let libraryId, let libraryName, let libraryType, let payload, let subtitle):
-            TVLibraryGridView(
-                libraryId: libraryId,
-                libraryName: libraryName,
-                libraryType: libraryType,
-                initialFilter: payload.toFilterState(),
-                subtitle: subtitle
-            )
         default:
             EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
                 .siloBackground()
