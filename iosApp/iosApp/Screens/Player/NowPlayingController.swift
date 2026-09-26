@@ -12,6 +12,12 @@ import UIKit
 ///
 /// Single ownership: the SiloControl client owns one instance and attaches it
 /// only for the lifetime of a remote-media session.
+///
+/// Both centers are process-wide and may also be bound by a local audiobook
+/// or software-route video, so this controller claims them through
+/// `SharedNowPlayingArbiter` while attached, publishes only its own metadata,
+/// and releases them through the arbiter on `detach()`.
+@MainActor
 final class NowPlayingController {
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
@@ -55,6 +61,10 @@ final class NowPlayingController {
     private var currentArtworkURL: URL?
     private var artworkFetchTask: Task<Void, Never>?
     private var preferredSkipIntervals = SkipIntervals(backward: 10, forward: 10)
+    /// This session's metadata. Published as a whole so fields another
+    /// owner left in the shared dictionary never leak into it, and kept so
+    /// the arbiter can ask for it to be republished.
+    private var nowPlayingInfo: [String: Any] = [:]
 
     enum MediaKind {
         case video
@@ -77,6 +87,9 @@ final class NowPlayingController {
     func attach(handlers: Handlers) {
         self.handlers = handlers
         if !isActive {
+            SharedNowPlayingArbiter.shared.claim(self) { [weak self] in
+                self?.restoreSharedBinding()
+            }
             registerRemoteCommands()
             isActive = true
         } else {
@@ -94,8 +107,17 @@ final class NowPlayingController {
         currentArtworkURL = nil
 
         unregisterRemoteCommands()
+        nowPlayingInfo = [:]
+        SharedNowPlayingArbiter.shared.releaseSharedCenters(self)
+    }
 
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+    /// Re-registers targets and republishes metadata after another claimant
+    /// released the shared centers. No-op unless attached.
+    private func restoreSharedBinding() {
+        guard isActive else { return }
+        unregisterRemoteCommands()
+        registerRemoteCommands()
+        publishNowPlayingInfo()
     }
 
     func setPreferredSkipInterval(_ seconds: TimeInterval) {
@@ -130,22 +152,28 @@ final class NowPlayingController {
         playbackRate: Double = 1.0
     ) {
         guard isActive else { return }
-        var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
-        info[MPMediaItemPropertyTitle] = title
+        nowPlayingInfo[MPMediaItemPropertyTitle] = title
+        // Clear omitted fields so a previous remote item's values do not linger.
         if let artist, !artist.isEmpty {
-            info[MPMediaItemPropertyArtist] = artist
+            nowPlayingInfo[MPMediaItemPropertyArtist] = artist
+        } else {
+            nowPlayingInfo[MPMediaItemPropertyArtist] = nil
         }
         if let albumTitle, !albumTitle.isEmpty {
-            info[MPMediaItemPropertyAlbumTitle] = albumTitle
+            nowPlayingInfo[MPMediaItemPropertyAlbumTitle] = albumTitle
+        } else {
+            nowPlayingInfo[MPMediaItemPropertyAlbumTitle] = nil
         }
         if duration > 0 {
-            info[MPMediaItemPropertyPlaybackDuration] = duration
+            nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = duration
+        } else {
+            nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = nil
         }
-        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = position
-        info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? playbackRate : 0.0
-        info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = playbackRate
-        info[MPNowPlayingInfoPropertyMediaType] = mediaKind.nowPlayingValue
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = position
+        nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? playbackRate : 0.0
+        nowPlayingInfo[MPNowPlayingInfoPropertyDefaultPlaybackRate] = playbackRate
+        nowPlayingInfo[MPNowPlayingInfoPropertyMediaType] = mediaKind.nowPlayingValue
+        publishNowPlayingInfo()
         updateCommandAvailability()
     }
 
@@ -200,14 +228,18 @@ final class NowPlayingController {
     }
 
     private func applyArtwork(_ image: UIImage?) {
-        var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
         if let image {
             let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
-            info[MPMediaItemPropertyArtwork] = artwork
+            nowPlayingInfo[MPMediaItemPropertyArtwork] = artwork
         } else {
-            info[MPMediaItemPropertyArtwork] = nil
+            nowPlayingInfo[MPMediaItemPropertyArtwork] = nil
         }
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        publishNowPlayingInfo()
+    }
+
+    private func publishNowPlayingInfo() {
+        MPNowPlayingInfoCenter.default().nowPlayingInfo =
+            nowPlayingInfo.isEmpty ? nil : nowPlayingInfo
     }
 
     // MARK: - Remote commands
