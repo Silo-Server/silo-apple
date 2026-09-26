@@ -1049,7 +1049,7 @@ final class UICustomizationPreferences {
     /// audiobook opt-in remains part of that default until the user authors a
     /// new menu. Profile-wide shortcuts stay available to every family, but
     /// only an explicit family menu places them in that family's navigation.
-    func resolvedPrimaryMenuItems(availableLibraries _: [Library] = []) -> [PrimaryMenuItem] {
+    func resolvedPrimaryMenuItems() -> [PrimaryMenuItem] {
         // Every write path validates the stored menu.
         if let primaryMenu {
             return primaryMenu.items

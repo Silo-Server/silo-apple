@@ -8,7 +8,7 @@ import SwiftUI
 struct TVGeneralSettingsPane: View {
     @State private var preferences = UICustomizationPreferences.shared
     @State private var launchPreferences = ProfileLaunchPreferences.shared
-    @State private var navPrefs = TVNavPreferences.shared
+    @State private var navPrefs = AppNavPreferences.shared
     @State private var activePicker: PickerKind?
     @State private var showsHomeSectionsEditor = false
     @State private var showsMenuEditor = false
@@ -205,7 +205,7 @@ struct TVGeneralSettingsPane: View {
     }
 
     private var visibleMenuCount: Int {
-        TVMenuCustomizationSheet.visibleItems(
+        TVPrimaryMenuProjection.visibleItems(
             in: preferences.resolvedPrimaryMenuItems(),
             libraries: libraries
         ).count
@@ -754,28 +754,10 @@ private struct TVMenuCustomizationSheet: View {
     }
 
     private var visibleItems: [PrimaryMenuItem] {
-        Self.visibleItems(
+        TVPrimaryMenuProjection.visibleItems(
             in: preferences.resolvedPrimaryMenuItems(),
             libraries: libraries
         )
-    }
-
-    static func visibleItems(
-        in items: [PrimaryMenuItem],
-        libraries: [Library]
-    ) -> [PrimaryMenuItem] {
-        let availableIds = Set(libraries.map(\.id))
-        return items.filter { item in
-            switch item {
-            case .builtin(.movies): return hasLibrary(.movies, in: libraries)
-            case .builtin(.series): return hasLibrary(.series, in: libraries)
-            case .builtin(.music): return hasLibrary(.music, in: libraries)
-            case .builtin(.audiobooks): return hasLibrary(.audiobooks, in: libraries)
-            case .library(let id, _): return availableIds.contains(id)
-            case .section, .collection: return false
-            case .builtin(.home), .builtin(.forYou), .builtin(.calendar): return true
-            }
-        }
     }
 
     private var familyMenuMutationsEnabled: Bool {
