@@ -206,61 +206,67 @@ final class RemotePlaybackIdentityManager {
             expiresAt: Self.iso8601(started.expiresAt)
         ))
 
-        let deadline = Date().addingTimeInterval(TimeInterval(started.expiresIn))
-        while Date() < deadline {
-            try Task.checkCancellation()
-            let poll: APIv2DevicePoll
-            do {
-                poll = try await api.poll(serverURL: normalizedURL, deviceCode: started.deviceCode)
-            } catch APIv2Error.problem(let problem) where problem.status == 404 {
-                throw HandoffError.expired // the server has expired and removed this request
-            } catch APIv2Error.incompleteAuthResponse {
-                throw HandoffError.invalidResponse
-            }
-            try Task.checkCancellation()
-            switch DeviceLoginStatus(raw: poll.status) {
-            case .approved:
-                // `validated()` guarantees tokens, profile proof and expiry
-                // for an approved temporary session.
-                guard poll.temporary,
-                      poll.profileId == offer.profileId,
-                      let tokens = poll.tokens,
-                      let expiresAt = poll.sessionExpiresAt else {
-                    throw HandoffError.invalidResponse
-                }
-                guard await activate(TemporaryAuthScope(
-                    serverId: offer.serverId,
-                    serverURL: normalizedURL,
-                    accessToken: tokens.accessToken,
-                    refreshToken: tokens.refreshToken,
-                    profileId: offer.profileId,
-                    profileToken: poll.profileToken,
-                    controllerDeviceId: controllerDeviceId,
-                    expiresAt: expiresAt
-                ),
-                    serverName: offer.serverName,
-                    serverIdentity: offer.serverIdentity,
-                    profileName: offer.profileName,
-                    controllerDeviceName: controllerDeviceName
-                ) else {
-                    throw CancellationError()
-                }
-                return SiloControlHandoffReady(
-                    requestId: offer.requestId,
-                    serverId: offer.serverId,
-                    profileId: offer.profileId,
-                    sessionExpiresAt: Self.iso8601(expiresAt),
-                    reused: false
-                )
-            case .denied:
-                throw HandoffError.denied
-            case .expired, .consumed:
-                throw HandoffError.expired
-            case .pending, .unknown:
-                try await Task.sleep(for: .seconds(max(1, poll.pollAfter)))
-            }
+        let poll = try await Self.awaitApproval(of: started) { [api] in
+            try await api.poll(serverURL: normalizedURL, deviceCode: started.deviceCode)
         }
-        throw HandoffError.expired
+        try Task.checkCancellation()
+        // `validated()` guarantees tokens, profile proof and expiry
+        // for an approved temporary session.
+        guard poll.temporary,
+              poll.profileId == offer.profileId,
+              let tokens = poll.tokens,
+              let expiresAt = poll.sessionExpiresAt else {
+            throw HandoffError.invalidResponse
+        }
+        guard await activate(TemporaryAuthScope(
+            serverId: offer.serverId,
+            serverURL: normalizedURL,
+            accessToken: tokens.accessToken,
+            refreshToken: tokens.refreshToken,
+            profileId: offer.profileId,
+            profileToken: poll.profileToken,
+            controllerDeviceId: controllerDeviceId,
+            expiresAt: expiresAt
+        ),
+            serverName: offer.serverName,
+            serverIdentity: offer.serverIdentity,
+            profileName: offer.profileName,
+            controllerDeviceName: controllerDeviceName
+        ) else {
+            throw CancellationError()
+        }
+        return SiloControlHandoffReady(
+            requestId: offer.requestId,
+            serverId: offer.serverId,
+            profileId: offer.profileId,
+            sessionExpiresAt: Self.iso8601(expiresAt),
+            reused: false
+        )
+    }
+
+    /// Waits for the phone to approve the handoff request, on the shared
+    /// device-code poll policy: a network blip or a 5xx while the phone
+    /// approves is polled again rather than ending the handoff. Returns the
+    /// approved poll; otherwise throws the `HandoffError` the phone is told,
+    /// or an update requirement's error unchanged.
+    static func awaitApproval(
+        of started: DeviceLoginStartResponse,
+        poll: () async throws -> APIv2DevicePoll
+    ) async throws -> APIv2DevicePoll {
+        do {
+            return try await DeviceLoginPoller.waitForApproval(
+                interval: started.interval,
+                expiresIn: started.expiresIn,
+                poll: poll
+            )
+        } catch DeviceLoginPoller.Failure.denied {
+            throw HandoffError.denied
+        } catch is DeviceLoginPoller.Failure {
+            // Expired, already used, or removed by the server.
+            throw HandoffError.expired
+        } catch APIv2Error.incompleteAuthResponse {
+            throw HandoffError.invalidResponse
+        }
     }
 
     /// Picks the address this TV will use for the handoff. Only candidates

@@ -958,6 +958,33 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
         await runTask.value
     }
 
+    /// A status outside the poll contract ends the attempt the way every
+    /// device-code flow ends it (and the way wire validation already
+    /// refuses it), rather than being polled as if it were pending.
+    func testUnknownPollStatusFailsWithoutPollingAgain() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        api.pollResults = [.success(devicePoll("slow_down"))]
+        api.pollResponse = pendingPoll
+        let recorder = PersistRecorder()
+        let coordinator = makeCoordinator(api: api, recorder: recorder)
+        let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
+
+        await allowPush(channel, coordinator)
+        await expectEventually("unknown status failure") {
+            coordinator.state == .failed(serverName: "Home", code: .authFailed, help: nil)
+        }
+
+        XCTAssertEqual(api.pollCount, 1)
+        XCTAssertTrue(recorder.persisted.isEmpty)
+        XCTAssertTrue(channel.sent.contains {
+            if case .serverResult("https://home.example", .failed, "auth_failed") = $0 { return true }
+            return false
+        })
+        channel.deliver(.done)
+        await runTask.value
+    }
+
     func testCancellationDuringTransientPollBackoffDoesNotPublishFailure() async {
         let channel = FakePairingChannel()
         let api = FakePairingAPI()

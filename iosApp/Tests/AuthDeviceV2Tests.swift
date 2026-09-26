@@ -366,19 +366,21 @@ final class AuthDeviceV2Tests: XCTestCase {
 
     // MARK: QR sign-in
 
-    /// The tvOS QR poll ends on a v1-only server, a 410 upgrade answer, or a
-    /// removed request, and keeps polling through transient failures.
+    /// The tvOS QR poll's real v2 failures, as the shared device-code policy
+    /// sorts them: a v1-only server and a 410 upgrade answer end the wait
+    /// with their update message, a 404 problem means the request is gone,
+    /// and a 5xx or a network failure is polled again.
     func testQRPollFailuresFollowTheV2Answer() async throws {
         let (api, tokens) = try await harness()
         let identityValue = await tokens.refreshAccountIdentity()
         let identity = try XCTUnwrap(identityValue)
-        func pollFailure() async -> QRLoginViewModel.PollFailure? {
+        func pollError() async -> Error? {
             do {
                 _ = try await api.pollDeviceLogin(deviceCode: "secret", expectedAccount: identity)
                 XCTFail("poll failure expected")
                 return nil
             } catch {
-                return QRLoginViewModel.pollFailure(for: error)
+                return error
             }
         }
         func problem(_ status: Int, _ type: String) -> String {
@@ -387,20 +389,29 @@ final class AuthDeviceV2Tests: XCTestCase {
 
         // Go's plain 404 on a /api/v2 route is a v1-only server, not an expired code.
         stub.reply(404, "404 page not found\n")
-        let legacy = await pollFailure()
-        XCTAssertEqual(legacy, .terminal(message: UpdateRequirement.serverMessage))
+        let legacyError = await pollError()
+        let legacy = try XCTUnwrap(legacyError)
+        XCTAssertEqual(DeviceLoginPoller.classify(legacy), .terminal)
+        XCTAssertEqual(QRLoginViewModel.pollFailureMessage(for: legacy), UpdateRequirement.serverMessage)
         stub.reply(404, problem(404, "not_found"))
-        let removed = await pollFailure()
-        XCTAssertEqual(removed, .terminal(message: "This sign-in request has expired."))
+        let removedError = await pollError()
+        let removed = try XCTUnwrap(removedError)
+        XCTAssertEqual(DeviceLoginPoller.classify(removed), .removed)
+        XCTAssertEqual(QRLoginViewModel.pollFailureMessage(for: DeviceLoginPoller.Failure.removed),
+            "This sign-in request has expired.")
         stub.reply(410, problem(410, "client_upgrade_required"))
-        let upgrade = await pollFailure()
-        XCTAssertEqual(upgrade, .terminal(message: UpdateRequirement.appMessage))
+        let upgradeError = await pollError()
+        let upgrade = try XCTUnwrap(upgradeError)
+        XCTAssertEqual(DeviceLoginPoller.classify(upgrade), .terminal)
+        XCTAssertEqual(QRLoginViewModel.pollFailureMessage(for: upgrade), UpdateRequirement.appMessage)
         stub.reply(503, problem(503, "service_unavailable"))
-        let unavailable = await pollFailure()
-        XCTAssertEqual(unavailable, .keepPolling)
+        let unavailableError = await pollError()
+        let unavailable = try XCTUnwrap(unavailableError)
+        XCTAssertEqual(DeviceLoginPoller.classify(unavailable), .transient)
         stub.fail(.timedOut)
-        let offline = await pollFailure()
-        XCTAssertEqual(offline, .keepPolling)
+        let offlineError = await pollError()
+        let offline = try XCTUnwrap(offlineError)
+        XCTAssertEqual(DeviceLoginPoller.classify(offline), .transient)
         XCTAssertEqual(Set(stub.requestedPaths), ["/api/v2/auth/device/poll"])
     }
 
@@ -444,6 +455,26 @@ final class AuthDeviceV2Tests: XCTestCase {
         let poll = try XCTUnwrap(stub.requests.last)
         let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(poll.body)) as? [String: String])
         XCTAssertEqual(body, ["device_code": "dev-1"])
+    }
+
+    /// A 503 while the phone approves is polled again on the start interval,
+    /// and the next answer signs in.
+    @MainActor
+    func testQRSignInKeepsPollingThroughATransientFailure() async throws {
+        let (model, tokens) = try await qrViewModel()
+        stub.sequence([
+            .json(201, Self.fixture("start_device_login_ok", setting: ["interval": 1])),
+            .json(503, #"{"type":"https://siloserver.org/docs/api/v2/problems/service_unavailable","title":"t","status":503,"detail":"d"}"#),
+            .json(200, Self.poll_device_login_ok),
+        ])
+        await model.begin(deviceName: "TV", devicePlatform: "tvos")
+        let state = try await settle(model)
+        model.cancel()
+        XCTAssertEqual(state, .approved)
+        let access = await tokens.getAccessToken()
+        XCTAssertEqual(access, "acc")
+        XCTAssertEqual(stub.requestedPaths,
+            ["/api/v2/auth/device/start", "/api/v2/auth/device/poll", "/api/v2/auth/device/poll"])
     }
 
     /// A temporary session belongs to a SiloRemote handoff. Sign-in refuses
