@@ -1231,6 +1231,77 @@ func shouldPresentProfileSelectionAfterRecovery(
 }
 
 #if os(iOS)
+/// Reports whether the hosting window scene fills its screen. Size classes
+/// can't tell: a two-thirds Split View or a large Stage Manager window is
+/// still regular width. The scene's effective geometry changes on every
+/// resize, rotation, and multitasking transition.
+private struct WindowSceneFullScreenReader: UIViewRepresentable {
+    let onChange: (Bool) -> Void
+
+    /// Best guess before the reader joins a window, so launch doesn't build
+    /// one layout and immediately swap it for the other.
+    static func currentWindowFillsScreen() -> Bool {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let scene = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+        guard let scene else { return true }
+        return fillsScreen(scene)
+    }
+
+    static func fillsScreen(_ scene: UIWindowScene) -> Bool {
+        let window: CGSize
+        if #available(iOS 26.0, *) {
+            window = scene.effectiveGeometry.coordinateSpace.bounds.size
+        } else {
+            window = scene.coordinateSpace.bounds.size
+        }
+        let screen = scene.screen.bounds.size
+        return window.width >= screen.width - 1 && window.height >= screen.height - 1
+    }
+
+    func makeUIView(context: Context) -> ReaderView {
+        ReaderView(onChange: onChange)
+    }
+
+    func updateUIView(_ view: ReaderView, context: Context) {
+        view.onChange = onChange
+    }
+
+    final class ReaderView: UIView {
+        var onChange: (Bool) -> Void
+        private var observation: NSKeyValueObservation?
+        private var lastReported: Bool?
+
+        init(onChange: @escaping (Bool) -> Void) {
+            self.onChange = onChange
+            super.init(frame: .zero)
+            isUserInteractionEnabled = false
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) has not been implemented")
+        }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            observation = window?.windowScene?.observe(
+                \.effectiveGeometry,
+                options: [.initial, .new]
+            ) { [weak self] scene, _ in
+                let fillsScreen = WindowSceneFullScreenReader.fillsScreen(scene)
+                // KVO can fire inside a SwiftUI update; publish afterwards.
+                DispatchQueue.main.async { self?.report(fillsScreen) }
+            }
+        }
+
+        private func report(_ fillsScreen: Bool) {
+            guard fillsScreen != lastReported else { return }
+            lastReported = fillsScreen
+            onChange(fillsScreen)
+        }
+    }
+}
+
 /// SwiftUI treats `navigationSplitViewColumnWidth` as a preference on iPad.
 /// Pin the backing UIKit split controller to the same width so its divider
 /// cannot resize the overlay while retaining the system sidebar presentation.
@@ -1238,9 +1309,16 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
     let width: CGFloat
     let sidebarIsHidden: Bool
     let onSwipeLeft: () -> Void
+    /// Opens the sidebar from a leading-edge swipe. Returns without effect
+    /// when the detail stack has pushed screens, where that edge means Back.
+    let onEdgeSwipe: () -> Void
 
     func makeUIViewController(context: Context) -> Controller {
-        let controller = Controller(width: width, onSwipeLeft: onSwipeLeft)
+        let controller = Controller(
+            width: width,
+            onSwipeLeft: onSwipeLeft,
+            onEdgeSwipe: onEdgeSwipe
+        )
         controller.sidebarIsHidden = sidebarIsHidden
         return controller
     }
@@ -1249,6 +1327,7 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
         controller.width = width
         controller.sidebarIsHidden = sidebarIsHidden
         controller.onSwipeLeft = onSwipeLeft
+        controller.onEdgeSwipe = onEdgeSwipe
         controller.applyWidthLock()
     }
 
@@ -1260,6 +1339,7 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
         var width: CGFloat
         var sidebarIsHidden = false
         var onSwipeLeft: () -> Void
+        var onEdgeSwipe: () -> Void
         private var dragStartOffset: CGFloat = 0
         private var isDismissAnimationRunning = false
         private weak var managedSplitViewController: UISplitViewController?
@@ -1267,6 +1347,28 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
         private weak var dragDimmingView: UIView?
         private var dimmingBaseAlpha: CGFloat = 1
         private weak var swipeHostView: UIView?
+        private weak var edgeSwipeHostView: UIView?
+        /// Width of the leading strip where a rightward drag opens the sidebar.
+        private let edgeSwipeZoneWidth: CGFloat = 20
+        /// UIKit's own reveal gesture (`presentsWithGesture`) never opens the
+        /// overlay sidebar on current iPadOS, and screen-edge recognizers
+        /// don't fire either. A plain pan that only accepts touches starting
+        /// in the leading strip does.
+        private lazy var edgeSwipeRecognizer: UIPanGestureRecognizer = {
+            let recognizer = UIPanGestureRecognizer(
+                target: self,
+                action: #selector(handleEdgeSwipe(_:))
+            )
+            recognizer.maximumNumberOfTouches = 1
+            recognizer.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+            recognizer.cancelsTouchesInView = false
+            recognizer.delegate = self
+            return recognizer
+        }()
+
+        private var edgeSwipeDirection: CGFloat {
+            edgeSwipeHostView?.effectiveUserInterfaceLayoutDirection == .rightToLeft ? -1 : 1
+        }
         private lazy var swipeLeftRecognizer: UIPanGestureRecognizer = {
             let recognizer = UIPanGestureRecognizer(
                 target: self,
@@ -1279,9 +1381,14 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
             return recognizer
         }()
 
-        init(width: CGFloat, onSwipeLeft: @escaping () -> Void) {
+        init(
+            width: CGFloat,
+            onSwipeLeft: @escaping () -> Void,
+            onEdgeSwipe: @escaping () -> Void
+        ) {
             self.width = width
             self.onSwipeLeft = onSwipeLeft
+            self.onEdgeSwipe = onEdgeSwipe
             super.init(nibName: nil, bundle: nil)
         }
 
@@ -1342,6 +1449,7 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
                 splitViewController.maximumPrimaryColumnWidth = width
             }
             installSwipeRecognizer(in: splitViewController)
+            installEdgeSwipeRecognizer(in: splitViewController)
         }
 
         func gestureRecognizer(
@@ -1352,11 +1460,39 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
         }
 
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            if gestureRecognizer === edgeSwipeRecognizer {
+                let velocity = edgeSwipeRecognizer.velocity(in: edgeSwipeHostView).x * edgeSwipeDirection
+                return managedSplitViewController?.displayMode == .secondaryOnly
+                    && velocity > 0
+                    && velocity > abs(edgeSwipeRecognizer.velocity(in: edgeSwipeHostView).y) * 1.1
+            }
             guard let panGesture = gestureRecognizer as? UIPanGestureRecognizer else {
                 return true
             }
             let velocity = panGesture.velocity(in: swipeHostView)
             return velocity.x < 0 && abs(velocity.x) > abs(velocity.y) * 1.1
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldReceive touch: UITouch
+        ) -> Bool {
+            guard gestureRecognizer === edgeSwipeRecognizer else { return true }
+            guard let hostView = edgeSwipeHostView else { return false }
+            let x = touch.location(in: hostView).x
+            return edgeSwipeDirection > 0
+                ? x <= edgeSwipeZoneWidth
+                : x >= hostView.bounds.width - edgeSwipeZoneWidth
+        }
+
+        @objc private func handleEdgeSwipe(_ gestureRecognizer: UIPanGestureRecognizer) {
+            guard gestureRecognizer.state == .ended,
+                  let hostView = edgeSwipeHostView
+            else { return }
+            let translation = gestureRecognizer.translation(in: hostView).x * edgeSwipeDirection
+            let velocity = gestureRecognizer.velocity(in: hostView).x * edgeSwipeDirection
+            guard translation > 40 || velocity > 300 else { return }
+            onEdgeSwipe()
         }
 
         @objc private func handleSwipeLeft(_ gestureRecognizer: UIPanGestureRecognizer) {
@@ -1619,6 +1755,14 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
             swipeHostView = primaryView
         }
 
+        private func installEdgeSwipeRecognizer(in splitViewController: UISplitViewController) {
+            let hostView: UIView = splitViewController.view
+            guard edgeSwipeHostView !== hostView else { return }
+            edgeSwipeHostView?.removeGestureRecognizer(edgeSwipeRecognizer)
+            hostView.addGestureRecognizer(edgeSwipeRecognizer)
+            edgeSwipeHostView = hostView
+        }
+
         func tearDown() {
             dragPresentationView?.layer.removeAllAnimations()
             dragPresentationView?.transform = .identity
@@ -1628,6 +1772,8 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
             swipeHostView?.transform = .identity
             swipeHostView?.removeGestureRecognizer(swipeLeftRecognizer)
             swipeHostView = nil
+            edgeSwipeHostView?.removeGestureRecognizer(edgeSwipeRecognizer)
+            edgeSwipeHostView = nil
             managedSplitViewController?.presentsWithGesture = true
             managedSplitViewController = nil
         }
@@ -2029,8 +2175,10 @@ struct MainTabView: View {
     /// The Siri request Search fills its field from; Search clears it.
     @State private var siriSearchRequest: AppRouter.SearchRequest?
     #endif
-    #if !os(macOS)
-    @Environment(\.horizontalSizeClass) private var hSize
+    #if os(iOS)
+    /// Whether the app's window fills its screen. Split View, Slide Over,
+    /// Stage Manager, and resized windows all report `false`.
+    @State private var windowFillsScreen = WindowSceneFullScreenReader.currentWindowFillsScreen()
     #endif
 
     var body: some View {
@@ -2039,8 +2187,21 @@ struct MainTabView: View {
                 sidebarLayout
             } else {
                 tabLayout
+                    #if os(iOS)
+                    // A regular-width iPad window would otherwise move the
+                    // tab bar to the top. Anything short of full screen gets
+                    // the iPhone layout instead.
+                    .environment(\.horizontalSizeClass, isPad ? .compact : hSize)
+                    #endif
             }
         }
+        #if os(iOS)
+        .background {
+            WindowSceneFullScreenReader { windowFillsScreen = $0 }
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+        }
+        #endif
         .tint(.siloOnSurface)
         #if os(iOS)
         .overlay {
@@ -2221,22 +2382,38 @@ struct MainTabView: View {
     private var prefersSidebarLayout: Bool {
         #if os(macOS)
         true
-        #else
+        #elseif os(iOS)
         Self.prefersSidebarLayout(
-            isPad: UIDevice.current.userInterfaceIdiom == .pad,
-            horizontalSizeClass: hSize
+            isPad: isPad,
+            isiOSAppOnMac: ProcessInfo.processInfo.isiOSAppOnMac,
+            windowFillsScreen: windowFillsScreen
         )
+        #else
+        false
         #endif
     }
 
-    /// iPad uses the sidebar layout in the regular width; iPhone always uses
-    /// tabs. Plus/Max iPhones report a regular horizontal size class in
-    /// landscape, which on iPhone only happens while the full-screen player
-    /// is rotated (browsing is portrait-only). Keying off the size class alone
-    /// swapped the whole tab tree for the sidebar tree underneath the player,
-    /// and the rebuilt Search tab re-raised its keyboard over the video.
-    static func prefersSidebarLayout(isPad: Bool, horizontalSizeClass: UserInterfaceSizeClass?) -> Bool {
-        isPad && horizontalSizeClass == .regular
+    #if os(iOS)
+    private var isPad: Bool {
+        UIDevice.current.userInterfaceIdiom == .pad
+    }
+
+    @Environment(\.horizontalSizeClass) private var hSize
+    #endif
+
+    /// Macs always use the sidebar. iPad uses it only while the app fills the
+    /// screen; Split View, Slide Over, and smaller windows get the iPhone tab
+    /// bar. iPhone always uses tabs: Plus/Max models report a regular
+    /// horizontal size class while the player is rotated to landscape, and
+    /// swapping the tab tree underneath the player re-raised the Search
+    /// keyboard over the video.
+    static func prefersSidebarLayout(
+        isPad: Bool,
+        isiOSAppOnMac: Bool,
+        windowFillsScreen: Bool
+    ) -> Bool {
+        if isiOSAppOnMac { return true }
+        return isPad && windowFillsScreen
     }
 
     /// Visible tabs, plus a Downloads tab when the server advertises the
@@ -2369,14 +2546,6 @@ struct MainTabView: View {
                 dismissAfterSelection: true,
                 nestsPinnedLibraries: true
             )
-                .background {
-                    FixedPrimarySplitViewWidth(
-                        width: iPadSidebarWidth,
-                        sidebarIsHidden: iPadColumnVisibility == .detailOnly,
-                        onSwipeLeft: finishInteractiveSidebarDismissal
-                    )
-                        .frame(width: 0, height: 0)
-                }
                 .navigationSplitViewColumnWidth(
                     min: iPadSidebarWidth,
                     ideal: iPadSidebarWidth,
@@ -2390,6 +2559,18 @@ struct MainTabView: View {
         } detail: {
             sidebarDetailContent
                 .toolbar(removing: .sidebarToggle)
+                // The detail column is on screen from launch; the hidden
+                // sidebar column isn't, so a shim there wouldn't attach its
+                // gestures until the sidebar had been opened once.
+                .background {
+                    FixedPrimarySplitViewWidth(
+                        width: iPadSidebarWidth,
+                        sidebarIsHidden: iPadColumnVisibility == .detailOnly,
+                        onSwipeLeft: finishInteractiveSidebarDismissal,
+                        onEdgeSwipe: revealSidebarFromEdge
+                    )
+                        .frame(width: 0, height: 0)
+                }
         }
         .navigationSplitViewStyle(.prominentDetail)
     }
@@ -2446,6 +2627,15 @@ struct MainTabView: View {
         NavigationStack(path: $router.path) {
             destinationContent(for: selectedDestination)
                 .id(selectedDestination.id)
+                #if os(iOS)
+                .toolbar {
+                    if destinationNeedsSidebarToggle(selectedDestination.id) {
+                        ToolbarItem(placement: .topBarLeading) {
+                            SidebarToggleButton()
+                        }
+                    }
+                }
+                #endif
                 .navigationDestination(for: Route.self) { route in
                     routeContent(for: route)
                         #if os(iOS)
@@ -2477,12 +2667,16 @@ struct MainTabView: View {
         )) {
             ForEach(sidebarDestinations(nestingPinnedLibraries: nestsPinnedLibraries)) { item in
                 let destination = item.destination
+                let isSelected = selectedDestinationID == destination.id
                 Label(
                     destination.title,
-                    systemImage: selectedDestinationID == destination.id
-                        ? destination.selectedIcon
-                        : destination.icon
+                    systemImage: isSelected ? destination.selectedIcon : destination.icon
                 )
+                #if os(iOS)
+                // The shell's light tint fills the selected iPad row, and the
+                // system would draw white text on it.
+                .foregroundStyle(isSelected ? Color.siloBackground : Color.siloOnSurface)
+                #endif
                 .padding(.leading, item.isNestedLibrary ? 24 : 0)
                 .tag(destination.id)
             }
@@ -2554,6 +2748,13 @@ struct MainTabView: View {
     }
 
     #if os(iOS)
+    /// Leading-edge swipe on a root screen. Pushed screens keep that edge
+    /// for the navigation stack's Back gesture.
+    private func revealSidebarFromEdge() {
+        guard router.path.isEmpty, iPadColumnVisibility == .detailOnly else { return }
+        toggleSidebar()
+    }
+
     private func finishInteractiveSidebarDismissal() {
         var transaction = Transaction()
         transaction.disablesAnimations = true
@@ -2783,6 +2984,17 @@ struct MainTabView: View {
             false
         default:
             true
+        }
+    }
+
+    /// Search and Settings use the system navigation bar at the root. The
+    /// other root screens draw their own header with a `SidebarToggleButton`.
+    private func destinationNeedsSidebarToggle(_ destinationID: MainTabDestinationID) -> Bool {
+        switch destinationID {
+        case .app(.search), .app(.settings):
+            true
+        default:
+            false
         }
     }
     #endif
