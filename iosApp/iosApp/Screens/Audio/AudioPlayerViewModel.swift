@@ -60,6 +60,8 @@ final class AudioPlayerViewModel {
     private(set) var context: AudiobookPlaybackContext?
     private(set) var isLoading = false
     private(set) var error: ErrorState?
+    /// The playhead, updated on every ~10 Hz clock tick. Read it only in
+    /// small views that render the time, such as the scrubber.
     private(set) var currentTime: Double = 0
     private(set) var duration: Double = 0
     /// Typed Aether state remains the transport source of truth. The UI's
@@ -675,14 +677,17 @@ final class AudioPlayerViewModel {
                 in: track
             )
         ))
-        pushNowPlaying()
+        // A tick only advances the playhead, which the system extrapolates
+        // from the published rate, so the coordinator republishes it at most
+        // every couple of seconds. Transport changes still publish at once.
+        nowPlaying.updatePlayhead(position: currentTime)
     }
 
     /// Moves the playhead, replacing `currentChapter` only when the playhead
     /// lands in a different chapter.
     private func setPlayhead(_ globalTime: Double) {
         currentTime = globalTime
-        let chapter = chapters.last(where: { $0.startSeconds <= globalTime })
+        let chapter = AudioPlaybackTimeline.chapter(at: globalTime, in: chapters)
         if chapter != currentChapter {
             currentChapter = chapter
         }

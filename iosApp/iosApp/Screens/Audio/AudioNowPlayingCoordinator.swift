@@ -29,6 +29,13 @@ final class AudioNowPlayingCoordinator {
         category: "AudioNowPlaying"
     )
 
+    /// Minimum spacing between publishes driven only by the playhead
+    /// advancing. The system extrapolates elapsed time from the published
+    /// rate, so steady playback needs no more; video uses the same cadence.
+    static let playheadPublishInterval: Duration = .seconds(2)
+
+    private let now: () -> ContinuousClock.Instant
+    private var lastPublishedAt: ContinuousClock.Instant?
     private var handlers: Handlers?
     private var commandCenter: MPRemoteCommandCenter?
     private var infoCenter: MPNowPlayingInfoCenter?
@@ -37,6 +44,11 @@ final class AudioNowPlayingCoordinator {
     private var nowPlayingInfo: [String: Any] = [:]
     private var artworkURL: URL?
     private var artworkFetchTask: Task<Void, Never>?
+
+    /// `now` is the clock `updatePlayhead` measures its interval with.
+    init(now: @escaping () -> ContinuousClock.Instant = { ContinuousClock.now }) {
+        self.now = now
+    }
 
     #if os(iOS) || os(tvOS)
     /// Binds to Aether's player-scoped centers when available. Turning off
@@ -112,6 +124,19 @@ final class AudioNowPlayingCoordinator {
         nowPlayingInfo[MPNowPlayingInfoPropertyMediaType] = NSNumber(
             value: MPNowPlayingInfoMediaType.audio.rawValue
         )
+        publishNowPlayingInfo()
+    }
+
+    /// Records the playhead from a clock tick. Publishes only once nothing
+    /// has been published for `playheadPublishInterval`; any other change
+    /// goes through `update`, which publishes at once. The position is
+    /// stored either way, so every later publish carries the latest one.
+    func updatePlayhead(position: Double) {
+        guard infoCenter != nil else { return }
+        nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = max(0, position)
+        if let lastPublishedAt, now() - lastPublishedAt < Self.playheadPublishInterval {
+            return
+        }
         publishNowPlayingInfo()
     }
 
@@ -235,6 +260,7 @@ final class AudioNowPlayingCoordinator {
     private func publishNowPlayingInfo() {
         guard let infoCenter else { return }
         infoCenter.nowPlayingInfo = nowPlayingInfo.isEmpty ? nil : nowPlayingInfo
+        lastPublishedAt = now()
     }
 
     /// Binds the process-wide centers and registers this coordinator as a
