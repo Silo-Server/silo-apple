@@ -63,6 +63,11 @@ multiple highlighted rows or columns. A cascading selector is the main example.
   per-row `.focused(...)` bindings.
 - Store the highlighted row/column in ordinary `@State`.
 - Handle all D-pad movement for the composite with one `onMoveCommand`.
+  The focus engine resolves the move first. If a focusable lies beyond the
+  composite on an axis it owns, even diagonally or off screen, focus can
+  leave before the handler runs, especially on touch-surface swipes. Fence
+  that side with a focusable view that refuses focus
+  (`TVEpisodeRailEdgeFence`); the refused move still reaches `onMoveCommand`.
 - Commit the highlighted selection on Select, usually with `onTapGesture` on
   the focused container. Use `onExitCommand` for Menu/Back and
   `onPlayPauseCommand` for Play/Pause. Do not use `onKeyPress` for the Siri

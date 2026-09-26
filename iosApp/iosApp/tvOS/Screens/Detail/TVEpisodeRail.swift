@@ -165,7 +165,14 @@ struct TVEpisodeRail: View {
     var body: some View {
         Group {
             if anchorsFocusedCard {
-                anchoredRail
+                HStack(spacing: 0) {
+                    edgeFence
+                    anchoredRail
+                    edgeFence
+                }
+                // Keep the cards on the page's leading edge; the fence sits
+                // in the inset just outside it.
+                .padding(.leading, -1)
             } else {
                 legacyRail
             }
@@ -362,6 +369,12 @@ struct TVEpisodeRail: View {
             pendingEdge = nil
             onFocusedEpisodeChange?(nil)
         }
+    }
+
+    private var edgeFence: some View {
+        TVEpisodeRailEdgeFence(isActive: railHasFocus)
+            .frame(width: 1, height: anchoredRailHeight)
+            .accessibilityHidden(true)
     }
 
     private func anchoredCards(viewportWidth: CGFloat) -> some View {
