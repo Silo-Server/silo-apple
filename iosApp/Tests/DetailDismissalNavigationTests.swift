@@ -58,6 +58,22 @@ final class DetailDismissalNavigationTests: XCTestCase {
         XCTAssertNil(router.presentedPlayer)
     }
 
+    func testPickerOverAnEndedPartyPlayerDoesNotHoldBackTheNextOne() {
+        let router = AppRouter()
+        let first = WatchPartyPlaybackContext(roomId: "room", selectionRevision: 1,
+            contentId: "episode-1", fileId: 25, libraryId: 4, startPosition: 0)
+        let next = WatchPartyPlaybackContext(roomId: "room", selectionRevision: 3,
+            contentId: "episode-2", fileId: 26, libraryId: 4, startPosition: 0)
+        router.presentWatchParty(first)
+        // The host opens the picker from the room panel over the player, and
+        // the room returns to the lobby before the picker reports dismissal.
+        router.watchPartySheetWillPresent()
+        router.presentWatchParty(nil)
+        XCTAssertNil(router.presentedPlayer)
+        router.presentWatchParty(next)
+        XCTAssertEqual(router.presentedPlayer?.watchPartyContext, next)
+    }
+
     func testServerResolutionClearsPresentationsEvenWhenAuthStateStaysAuthenticated() {
         let router = AppRouter()
         router.authState = .authenticated

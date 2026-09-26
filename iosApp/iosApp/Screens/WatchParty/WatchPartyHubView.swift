@@ -71,6 +71,8 @@ struct WatchPartyHubView: View {
 /// Opened from Back inside party playback. The player stays mounted below.
 struct WatchPartyRoomPanel: View {
     let session: WatchPartySession
+    /// The player below reached the end of the title.
+    var playbackEnded = false
     @Environment(\.dismiss) private var dismiss
     @State private var roomSheet: WatchPartyRoomSheet?
     @State private var confirmsEnd = false
@@ -80,7 +82,7 @@ struct WatchPartyRoomPanel: View {
             Group {
                 if session.isEngaged {
                     WatchPartyLobbyView(session: session, sheet: $roomSheet, confirmsEnd: $confirmsEnd,
-                        onReturnToPlayback: { dismiss() })
+                        onReturnToPlayback: { dismiss() }, playbackEnded: playbackEnded)
                 }
             }
             .modifier(WatchPartyRoomSheets(session: session, sheet: $roomSheet, confirmsEnd: $confirmsEnd))
@@ -435,6 +437,7 @@ struct WatchPartyLobbyView: View {
     @Binding var sheet: WatchPartyRoomSheet?
     @Binding var confirmsEnd: Bool
     var onReturnToPlayback: (() -> Void)? = nil
+    var playbackEnded = false
     @Environment(AppRouter.self) private var router
     #if os(tvOS)
     @FocusState private var focused: LobbyFocus?
@@ -503,7 +506,7 @@ struct WatchPartyLobbyView: View {
         let pendingPick = session.room?.selectedContentId != room.selectedContentId
         return WatchPartyLobbyPolicy.primaryAction(room: room, capabilities: session.capabilities,
             canStart: session.canStartPlayback || pendingPick, winnerTitle: session.voteWinner?.title,
-            selectionUnavailable: session.selectedItemUnavailable)
+            selectionUnavailable: session.selectedItemUnavailable, playbackEnded: playbackEnded)
     }
 
     private var isConnected: Bool { session.connection == .connected }
@@ -664,6 +667,13 @@ struct WatchPartyLobbyView: View {
                 Label("Return to playback", systemImage: "play.fill")
             }
             .buttonStyle(WatchPartyButtonStyle(kind: .primary))
+        case .returnToLobby:
+            Button { Task { await session.stopPlayback() } } label: {
+                Label("Return everyone to lobby", systemImage: "arrow.uturn.backward")
+            }
+            .buttonStyle(WatchPartyButtonStyle(kind: .primary))
+            .disabled(session.locksControls)
+            .accessibilityIdentifier("watchParty.returnToLobby")
         case .none:
             EmptyView()
         }
@@ -687,6 +697,12 @@ struct WatchPartyLobbyView: View {
                 .buttonStyle(WatchPartyButtonStyle(kind: .secondary))
                 .disabled(session.locksControls)
                 .accessibilityIdentifier("watchParty.suggest")
+        } else if room.phase == .playing, room.selfCanManageRoom, room.selectionMode == .hostPick {
+            // A new selection starts for everyone at once.
+            Button { openSheet(.select) } label: { Text("Choose something else") }
+                .buttonStyle(WatchPartyButtonStyle(kind: .secondary))
+                .disabled(session.locksControls)
+                .accessibilityIdentifier("watchParty.choose")
         }
     }
 

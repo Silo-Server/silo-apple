@@ -390,11 +390,11 @@ struct PlayerView: View {
         #if os(tvOS)
         // A tvOS sheet is a narrow centered card; the lobby needs the screen.
         .fullScreenCover(isPresented: $showsPartyPanel) {
-            WatchPartyRoomPanel(session: .shared)
+            WatchPartyRoomPanel(session: .shared, playbackEnded: viewModel.hasReachedEndOfFile)
         }
         #else
         .sheet(isPresented: $showsPartyPanel) {
-            WatchPartyRoomPanel(session: .shared)
+            WatchPartyRoomPanel(session: .shared, playbackEnded: viewModel.hasReachedEndOfFile)
         }
         .onChange(of: showsPartyPanel) { _, isPresented in
             orientationCoordinator.setPlayerCovered(isPresented)

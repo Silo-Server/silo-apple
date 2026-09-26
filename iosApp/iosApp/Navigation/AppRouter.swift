@@ -241,7 +241,12 @@ class AppRouter {
     func presentWatchParty(_ context: WatchPartyPlaybackContext?) {
         pendingWatchPartyPresentation = context
         guard let context else {
-            if presentedPlayer?.watchPartyContext != nil { presentedPlayer = nil }
+            if presentedPlayer?.watchPartyContext != nil {
+                // A party sheet open over the player goes with it, and its
+                // dismissal is not reliably reported.
+                watchPartySheetPresented = false
+                presentedPlayer = nil
+            }
             return
         }
         if watchPartySheetPresented, presentedPlayer?.watchPartyContext == nil { return }
