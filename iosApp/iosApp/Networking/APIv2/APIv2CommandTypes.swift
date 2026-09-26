@@ -1,11 +1,10 @@
 import Foundation
 
 // Type definitions the v2 wire layer needs for sequenced playback mutations.
-// Only the shapes that cross the wire or name a wire outcome live here. The
-// journals, stores, and coordinators that sequence these commands belong to
-// the write-surface PRs and build on `DurableCommandStore`; their barrier
-// logic (target matching, held states) is deliberately not part of these
-// definitions.
+// Only the shapes that cross the wire or name a wire outcome live here.
+// Sequencing is in memory and per session: each player owns a
+// `PlaybackProgressSequence`, and no sequenced playback command outlives the
+// process.
 
 // MARK: Sequenced playback
 
