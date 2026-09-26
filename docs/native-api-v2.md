@@ -42,16 +42,25 @@ do not create an offline replay queue.
 
 ## Durable commands keep their original authority
 
-Playback and canonical settings journals preserve exact command bytes and
-captured durable ownership before dispatch. Persistent target matching and
-transient dispatch checks serve different purposes: a process restart alone
-must not erase an unresolved durable target barrier, while a different login
-or profile cannot take ownership of an old command.
+Two settings outboxes persist the latest desired value for each key together
+with the owner captured when it was queued: the player's device settings in
+`PlayerSettingsFlusher`'s `UserDefaults` journal, partitioned by server,
+profile and device, and UI customization in its `SharedDefaults` cache, keyed
+by server and profile. A process restart alone must not erase a held write,
+and a different login or profile cannot take ownership of an old one; a write
+whose owner no longer matches stays with its original partition. Offline
+watch progress for downloads follows the same rules: `DownloadManager` keeps
+it in the downloads store for its server and profile, claims each
+`POST /api/v2/sync/progress` batch on disk before sending it, and holds a
+batch whose answer never arrives. Sequenced playback progress is not
+journaled: its sequence is an in-memory, per-session counter. Profile
+preference holds in `ProfilePrefsEditor` and personal-state holds are
+memory-only.
 
 Recovery is operation-specific. Canonical settings value writes are
 `natural_idempotent`: a 401 refreshes the session once and re-sends the same
 desired value under the same captured owner. They hold uncertain writes and do
-not invent an idempotency or revision-precondition contract. Playback can resolve an exact retained command
+not invent an idempotency or revision-precondition contract. Playback can resolve an exact in-flight command
 where its accepted protocol explicitly supports that resolution. Neither path
 may convert old queued intent bytes, infer new authorization or rebase an
 unresolved operation onto a new owner.
