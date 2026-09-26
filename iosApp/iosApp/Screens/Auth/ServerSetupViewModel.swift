@@ -45,6 +45,7 @@ class ServerSetupViewModel {
     }
 
     /// Validate the server URL and determine whether setup or login is needed.
+    @MainActor
     func connect(router: AppRouter) async {
         guard !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             error = "Please enter a server host."

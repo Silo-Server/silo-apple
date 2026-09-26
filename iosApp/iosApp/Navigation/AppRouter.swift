@@ -74,6 +74,8 @@ extension Notification.Name {
 ///
 /// Manages the authentication state machine and the navigation stack.
 /// Observed by ContentView to decide which screen tree to present.
+/// Main-actor isolated because SwiftUI observes all of its state.
+@MainActor
 @Observable
 class AppRouter {
 
@@ -228,16 +230,13 @@ class AppRouter {
     @ObservationIgnored private var watchPartySheetPresented = false
     @ObservationIgnored private var pendingWatchPartyPresentation: WatchPartyPlaybackContext?
 
-    @MainActor
     func watchPartySheetWillPresent() { watchPartySheetPresented = true }
 
-    @MainActor
     func watchPartySheetDidDismiss() {
         watchPartySheetPresented = false
         if let context = pendingWatchPartyPresentation { presentWatchParty(context) }
     }
 
-    @MainActor
     func presentWatchParty(_ context: WatchPartyPlaybackContext?) {
         pendingWatchPartyPresentation = context
         guard let context else {
@@ -311,7 +310,7 @@ class AppRouter {
         guard let choice = pendingReplaceRemotePlayback else { return }
         pendingReplaceRemotePlayback = nil
         guard let remotePlaybackInterceptor else { return }
-        Task { @MainActor in _ = await remotePlaybackInterceptor(choice.request) }
+        Task { _ = await remotePlaybackInterceptor(choice.request) }
     }
 
     /// User chose the phone for a pending offline play.
@@ -327,7 +326,7 @@ class AppRouter {
         guard let choice = pendingOfflinePlayChoice else { return }
         pendingOfflinePlayChoice = nil
         guard let remotePlaybackInterceptor else { return }
-        Task { @MainActor in _ = await remotePlaybackInterceptor(choice.request) }
+        Task { _ = await remotePlaybackInterceptor(choice.request) }
     }
     #endif
 
@@ -452,7 +451,7 @@ class AppRouter {
                 return
             }
             isRoutingRemotePlayback = true
-            Task { @MainActor in
+            Task {
                 defer { isRoutingRemotePlayback = false }
                 if await remotePlaybackInterceptor(request) { return }
                 presentedPlayer = presentation
@@ -693,9 +692,7 @@ class AppRouter {
                 Self.recordAuthActionBreadcrumb(reason: "switchProfile", outcome: "refused")
                 return
             }
-            await MainActor.run {
-                self.showProfileSelection()
-            }
+            showProfileSelection()
         }
     }
 
@@ -741,7 +738,7 @@ class AppRouter {
         guard !isSigningOut else { return }
         isSigningOut = true
         accountActionError = nil
-        Task { @MainActor in
+        Task {
             defer { isSigningOut = false }
             #if os(tvOS)
             if await TokenStore.shared.hasTemporaryScope() {
@@ -870,8 +867,7 @@ class AppRouter {
     /// Report the outcome of an async router action that can refuse before it
     /// ever reaches an `authState` assignment — a refused sign-out or profile
     /// switch is exactly the "it won't let me in" case with no other trace.
-    /// Static because its call sites are inside detached `Task`s, where an
-    /// instance method would mean capturing the router just to log.
+    /// Static because it reads no router state.
     private static func recordAuthActionBreadcrumb(reason: String, outcome: String) {
         #if os(iOS) || os(tvOS)
         DiagTrace.breadcrumb(
