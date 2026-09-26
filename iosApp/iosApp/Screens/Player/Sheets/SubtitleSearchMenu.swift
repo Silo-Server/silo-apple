@@ -37,6 +37,9 @@ struct SubtitleSearchMenu: View {
     /// Called when a download succeeded and the track is registered +
     /// selected: dismisses the WHOLE subtitle UI (this menu plus the enclosing
     /// panel/sheet) down to the player, like the AI menu's `onJobStarted`.
+    /// It must remove this menu: after a success Done, swipe-down and the
+    /// rows stay disabled. Not called if this menu goes away before the
+    /// download settles.
     let onDownloaded: () -> Void
 
     /// The profile's preferred subtitle language, used to pre-select and
@@ -69,6 +72,10 @@ struct SubtitleSearchMenu: View {
     /// instead of sending it twice.
     @State private var settledDownloads: [String: String] = [:]
     @State private var searchTask: Task<Void, Never>?
+    /// The menu's reaction to the in-flight download (not the download
+    /// itself); cancelled on disappear so a late result can't act on UI
+    /// that's gone.
+    @State private var downloadTask: Task<Void, Never>?
 
     #if os(tvOS)
     /// Panel-level focus for language rows and result rows (keys never
@@ -98,7 +105,10 @@ struct SubtitleSearchMenu: View {
             // Covers the sliver where the probe lands between the row's tap
             // and this view appearing, which `onChange` would never see.
             .onAppear { reflectUnavailabilityIfIdle() }
-            .onDisappear { searchTask?.cancel() }
+            .onDisappear {
+                searchTask?.cancel()
+                downloadTask?.cancel()
+            }
     }
 
     @ViewBuilder
@@ -207,8 +217,17 @@ struct SubtitleSearchMenu: View {
             return
         }
         downloadingId = key
-        Task {
-            let outcome = await viewModel.downloadSearchedSubtitle(result)
+        // The download belongs to the player, not this menu: it is
+        // non-retryable and a stored subtitle should still be added if the
+        // menu goes away. Only the menu's reaction is tied to the menu, and
+        // cancelling it doesn't reach `work` (awaiting `value` doesn't
+        // propagate cancellation).
+        let work = Task { await viewModel.downloadSearchedSubtitle(result) }
+        downloadTask = Task {
+            let outcome = await work.value
+            // The menu went away mid-download: the track may still register,
+            // but nothing in (or above) this menu should react.
+            guard !Task.isCancelled else { return }
             guard let message = outcome.message else {
                 // Track registered + auto-selected on the live player;
                 // collapse the whole subtitle UI down to the video.
@@ -608,7 +627,10 @@ struct SubtitleSearchMenu: View {
             .siloNavigationTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
+                    // Leaving is blocked while a download is in flight, as on
+                    // tvOS (backdrop and Menu are inert then).
                     Button("Done") { onDismiss() }
+                        .disabled(downloadingId != nil)
                 }
                 if phase == .results {
                     ToolbarItem(placement: .primaryAction) {
@@ -621,6 +643,7 @@ struct SubtitleSearchMenu: View {
             .onAppear { seedSelectedLanguage() }
             .onChange(of: profilePrefs.preferredSubtitleLanguage) { _, _ in seedSelectedLanguage() }
         }
+        .interactiveDismissDisabled(downloadingId != nil)
     }
 
     private var languagePickingList: some View {
