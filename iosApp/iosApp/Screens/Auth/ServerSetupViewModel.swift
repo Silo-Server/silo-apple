@@ -90,6 +90,7 @@ class ServerSetupViewModel {
     private(set) var insecurePrompt: InsecurePrompt?
 
     /// Validate the server URL and determine whether setup or login is needed.
+    @MainActor
     func connect(router: AppRouter) async {
         guard !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             error = FormError("Please enter a server host.")

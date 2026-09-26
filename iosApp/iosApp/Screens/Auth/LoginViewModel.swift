@@ -94,6 +94,7 @@ final class LoginViewModel {
     /// Authenticate with username and password. Returns whether the
     /// sign-in succeeded (and routed on).
     @discardableResult
+    @MainActor
     func login(router: AppRouter) async -> Bool {
         guard !username.trimmingCharacters(in: .whitespaces).isEmpty else {
             error = FormError("Please enter your username.")

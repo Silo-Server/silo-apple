@@ -53,6 +53,8 @@ extension Notification.Name {
 }
 
 /// Auth state machine and navigation state for every Apple platform.
+/// Main-actor isolated because SwiftUI observes all of its state.
+@MainActor
 @Observable
 final class AppRouter {
 
@@ -233,16 +235,13 @@ final class AppRouter {
     @ObservationIgnored private var watchPartySheetPresented = false
     @ObservationIgnored private var pendingWatchPartyPresentation: WatchPartyPlaybackContext?
 
-    @MainActor
     func watchPartySheetWillPresent() { watchPartySheetPresented = true }
 
-    @MainActor
     func watchPartySheetDidDismiss() {
         watchPartySheetPresented = false
         if let context = pendingWatchPartyPresentation { presentWatchParty(context) }
     }
 
-    @MainActor
     func presentWatchParty(_ context: WatchPartyPlaybackContext?) {
         pendingWatchPartyPresentation = context
         guard let context else {
@@ -313,7 +312,7 @@ final class AppRouter {
         guard let choice = pendingReplaceRemotePlayback else { return }
         pendingReplaceRemotePlayback = nil
         guard let remotePlaybackInterceptor else { return }
-        Task { @MainActor in _ = await remotePlaybackInterceptor(choice.request) }
+        Task { _ = await remotePlaybackInterceptor(choice.request) }
     }
 
     /// User chose the phone for a pending offline play.
@@ -329,7 +328,7 @@ final class AppRouter {
         guard let choice = pendingOfflinePlayChoice else { return }
         pendingOfflinePlayChoice = nil
         guard let remotePlaybackInterceptor else { return }
-        Task { @MainActor in _ = await remotePlaybackInterceptor(choice.request) }
+        Task { _ = await remotePlaybackInterceptor(choice.request) }
     }
     #endif
 
@@ -455,7 +454,7 @@ final class AppRouter {
                 return
             }
             isRoutingRemotePlayback = true
-            Task { @MainActor in
+            Task {
                 defer { isRoutingRemotePlayback = false }
                 if await remotePlaybackInterceptor(request) { return }
                 presentedPlayer = presentation
@@ -826,7 +825,7 @@ final class AppRouter {
         guard !isSigningOut else { return }
         isSigningOut = true
         accountActionError = nil
-        Task { @MainActor in
+        Task {
             defer { isSigningOut = false }
             #if os(tvOS)
             if await TokenStore.shared.hasTemporaryScope() {

@@ -22,7 +22,7 @@ struct LoginView: View {
     var body: some View {
         // Leaving mid-sign-in would let the finished sign-in pull the app
         // back from server setup, so going back waits until it settles.
-        MarqueeStage(scrim: .bottomDeep, frostStart: 0.40, onBack: viewModel.isBusy ? nil : router.resetToServerSetup) {
+        MarqueeStage(scrim: .bottomDeep, frostStart: 0.40, onBack: viewModel.isBusy ? nil : { router.resetToServerSetup() }) {
             MarqueeTopBar {
                 MarqueeIconButton(systemImage: "chevron.left", accessibilityLabel: "Change server") {
                     router.resetToServerSetup()
