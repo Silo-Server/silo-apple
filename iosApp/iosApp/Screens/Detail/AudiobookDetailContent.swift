@@ -102,13 +102,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
     /// download.
     private func actionStack(_ presentation: BookDetailPresentation) -> some View {
         VStack(spacing: 14) {
-            PhonePrimaryPillButton(
-                icon: presentation.primaryIcon,
-                title: presentation.primaryLabel,
-                action: { performPrimaryAction(presentation.primaryAction) },
-                fullWidth: true,
-                progress: presentation.resumeFraction
-            )
+            primaryButton(presentation)
 
             PhoneLabeledActionRow {
                 PhoneLabeledAction(
@@ -150,6 +144,64 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
             }
         }
         .frame(maxWidth: .infinity)
+    }
+
+    /// While this book is the active session the button reflects the live
+    /// player instead of the (stale) detail payload: it reopens the player
+    /// when playing, resumes and reopens it when paused, and restarts the
+    /// book once the session has reached the end.
+    @ViewBuilder
+    private func primaryButton(_ presentation: BookDetailPresentation) -> some View {
+        let player = audioStore.player
+        if isActiveSession {
+            let fraction = player.duration > 0 ? min(1, max(0, player.currentTime / player.duration)) : nil
+            if player.isPlaying {
+                PhonePrimaryPillButton(
+                    icon: "waveform",
+                    title: "Now Playing",
+                    action: { audioStore.showFullPlayer() },
+                    fullWidth: true,
+                    progress: fraction
+                )
+            } else if AudiobookProgress.isFinished(
+                played: false,
+                position: player.currentTime,
+                totalDuration: player.duration
+            ) {
+                // The session reached the end. Playing from there would stop
+                // at once, so restart the book like the finished state does.
+                PhonePrimaryPillButton(
+                    icon: "arrow.counterclockwise",
+                    title: "Play Again",
+                    action: { startPlayback(restart: true) },
+                    fullWidth: true
+                )
+            } else {
+                let left = PlayerTimeFormatter.formatRuntime(max(0, player.duration - player.currentTime))
+                PhonePrimaryPillButton(
+                    icon: "play.fill",
+                    title: left.isEmpty ? "Resume" : "Resume · \(left) left",
+                    action: {
+                        player.play()
+                        audioStore.showFullPlayer()
+                    },
+                    fullWidth: true,
+                    progress: fraction
+                )
+            }
+        } else {
+            PhonePrimaryPillButton(
+                icon: presentation.primaryIcon,
+                title: presentation.primaryLabel,
+                action: { performPrimaryAction(presentation.primaryAction) },
+                fullWidth: true,
+                progress: presentation.resumeFraction
+            )
+        }
+    }
+
+    private var isActiveSession: Bool {
+        audioStore.player.context?.contentId == detail.contentId
     }
 
     @ViewBuilder
@@ -200,12 +252,20 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
         }
     }
 
+    /// Every play affordance on the page starts through here so the player
+    /// opens already showing this book's title, author, and cover.
     private func startPlayback(restart: Bool = false, startPosition: Double? = nil) {
         audioStore.play(
             contentId: detail.contentId,
             restart: restart,
             startPosition: startPosition,
-            libraryId: libraryId
+            libraryId: libraryId,
+            preview: AudioPlaybackPreview(
+                contentId: detail.contentId,
+                title: presentation.title,
+                subtitle: presentation.playerSubtitle,
+                posterUrl: detail.posterUrl
+            )
         )
     }
 

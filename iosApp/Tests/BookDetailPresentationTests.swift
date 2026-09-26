@@ -138,6 +138,22 @@ final class BookDetailPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.primaryAction, .playAgain)
     }
 
+    // MARK: - Player handoff
+
+    func testPlayerShowsTheSameCleanedTitleAndAuthorsAsTheDetailPage() throws {
+        let detail = try audiobook(
+            title: "Stormlight Archive 5 - Wind and Truth (5 of 5)",
+            extra: #""versions":[{"file_id":1,"duration":3600,"codec_audio":"aac"}],"#,
+            audiobook: #""series":{"name":"Stormlight Archive","entries":[]},"authors":[{"name":"Brandon Sanderson"},{"name":"Someone Else"}]"#
+        )
+        let presentation = BookDetailPresentation(detail: detail, isMarkedFinished: false)
+        let context = try XCTUnwrap(AudiobookPlaybackContext(detail: detail))
+
+        XCTAssertEqual(context.title, "Wind and Truth")
+        XCTAssertEqual(context.title, presentation.title)
+        XCTAssertEqual(context.subtitle, presentation.playerSubtitle)
+    }
+
     // MARK: - Details facts
 
     func testAudiobookFactsReplaceFilmCredits() throws {

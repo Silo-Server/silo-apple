@@ -75,6 +75,9 @@ final class AudioPlayerViewModel {
     /// Stays on `.fallback` until sampling resolves so the UI never
     /// blocks on image work.
     private(set) var palette: AudioCoverPalette = .fallback
+    /// The caller's preview of the book being started, shown until the
+    /// session's own context arrives. Nil once `start` finishes.
+    private(set) var loadingPreview: AudioPlaybackPreview?
 
     static let availableRates: [Double] = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0]
 
@@ -90,9 +93,9 @@ final class AudioPlayerViewModel {
             false
         }
     }
-    var title: String { context?.title ?? "" }
-    var subtitle: String? { context?.subtitle }
-    var posterUrl: String? { context?.posterUrl }
+    var title: String { context?.title ?? loadingPreview?.title ?? "" }
+    var subtitle: String? { context?.subtitle ?? loadingPreview?.subtitle }
+    var posterUrl: String? { context?.posterUrl ?? loadingPreview?.posterUrl }
     var chapters: [AudioPlaybackChapter] { context?.chapters ?? [] }
     var tracks: [AudioPlaybackTrack] { context?.tracks ?? [] }
 
@@ -118,10 +121,17 @@ final class AudioPlayerViewModel {
         }
     }
 
-    func start(contentId: String, restart: Bool = false, startPosition: Double? = nil, libraryId: Int? = nil) async {
+    func start(
+        contentId: String,
+        restart: Bool = false,
+        startPosition: Double? = nil,
+        libraryId: Int? = nil,
+        preview: AudioPlaybackPreview? = nil
+    ) async {
         startGeneration += 1
         let generation = startGeneration
         isLoading = true
+        loadingPreview = preview?.contentId == contentId ? preview : nil
         error = nil
         pendingSeekTarget = nil
         Task { await seekIntervalPreferences.refresh() }
@@ -133,6 +143,9 @@ final class AudioPlayerViewModel {
                 await closePlayback()
             }
             guard generation == startGeneration else { return }
+            if let loadingPreview {
+                loadPreviewPalette(posterUrl: loadingPreview.posterUrl, generation: generation)
+            }
             let detail = try await api.itemDetail(contentId: contentId, libraryId: libraryId)
             guard generation == startGeneration else {
                 // A newer start() superseded this request while the
@@ -163,7 +176,10 @@ final class AudioPlayerViewModel {
                 resetFailedStart()
             }
         }
-        if generation == startGeneration { isLoading = false }
+        if generation == startGeneration {
+            isLoading = false
+            loadingPreview = nil
+        }
     }
 
     func play() {
@@ -263,6 +279,7 @@ final class AudioPlayerViewModel {
     func close() async {
         startGeneration += 1
         isLoading = false
+        loadingPreview = nil
         await closePlayback()
     }
 
@@ -600,6 +617,16 @@ final class AudioPlayerViewModel {
                 streamHeaders: plan.stream.headers,
                 timeline: timeline
             )
+        }
+    }
+
+    /// Tints the player from the preview cover while the session loads, so
+    /// the background does not jump from the fallback once playback starts.
+    private func loadPreviewPalette(posterUrl: String?, generation: Int) {
+        Task { [weak self] in
+            guard let sampled = await AudioCoverPaletteSampler.palette(for: posterUrl) else { return }
+            guard let self, generation == self.startGeneration, self.context == nil else { return }
+            self.palette = sampled
         }
     }
 

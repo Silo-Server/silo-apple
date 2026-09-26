@@ -45,15 +45,9 @@ struct AudioFullPlayerView: View {
 
     @ViewBuilder
     private func content(player: AudioPlayerViewModel) -> some View {
+        #if os(tvOS)
         if player.isLoading {
-            VStack(spacing: 16) {
-                ProgressView()
-                    .controlSize(.large)
-                Text("Starting audiobook")
-                    .font(.headline)
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            startingIndicator
         } else if let error = player.error {
             ErrorView(
                 state: error,
@@ -61,27 +55,56 @@ struct AudioFullPlayerView: View {
                 onGoBack: { audioStore.dismissFullPlayer() }
             )
         } else if player.hasActiveSession {
-            #if os(tvOS)
             TVPlayerLayout(
                 player: player,
                 onShowChapters: { showChapters = true },
                 onStop: { stop(player: player) }
             )
-            #else
+        } else {
+            noSessionState
+        }
+        #else
+        // With a caller preview the player opens on its final layout (cover,
+        // title, author) and only the controls wait for the session.
+        if let error = player.error, !player.isLoading {
+            ErrorView(
+                state: error,
+                onRetry: { audioStore.retryLastRequest() },
+                onGoBack: { audioStore.dismissFullPlayer() }
+            )
+        } else if player.hasActiveSession || (player.isLoading && player.loadingPreview != nil) {
             PortraitPlayerLayout(
                 player: player,
+                isPreparing: player.isLoading,
                 onShowChapters: { showChapters = true },
                 onMinimize: minimize,
                 onStop: { stop(player: player) }
             )
-            #endif
+        } else if player.isLoading {
+            startingIndicator
         } else {
-            EmptyStateView(
-                icon: "headphones",
-                title: "No audiobook playing",
-                subtitle: nil
-            )
+            noSessionState
         }
+        #endif
+    }
+
+    private var startingIndicator: some View {
+        VStack(spacing: 16) {
+            ProgressView()
+                .controlSize(.large)
+            Text("Starting audiobook")
+                .font(.headline)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var noSessionState: some View {
+        EmptyStateView(
+            icon: "headphones",
+            title: "No audiobook playing",
+            subtitle: nil
+        )
     }
 }
 
@@ -90,6 +113,9 @@ struct AudioFullPlayerView: View {
 #if !os(tvOS)
 private struct PortraitPlayerLayout: View {
     let player: AudioPlayerViewModel
+    /// True while the session loads. The controls keep their layout but stay
+    /// hidden under a spinner, so nothing shifts when playback starts.
+    var isPreparing = false
     let onShowChapters: () -> Void
     let onMinimize: () -> Void
     let onStop: () -> Void
@@ -112,6 +138,18 @@ private struct PortraitPlayerLayout: View {
 
             Spacer(minLength: 24)
 
+            controls
+
+
+            Spacer(minLength: 20)
+        }
+        .padding(.horizontal, 24)
+        .frame(maxWidth: 560)
+        .frame(maxWidth: .infinity)
+    }
+
+    private var controls: some View {
+        VStack(spacing: 0) {
             AudioScrubberSection(player: player)
                 .padding(.horizontal, 8)
 
@@ -120,12 +158,18 @@ private struct PortraitPlayerLayout: View {
 
             optionsRow
                 .padding(.top, 26)
-
-            Spacer(minLength: 20)
         }
-        .padding(.horizontal, 24)
-        .frame(maxWidth: 560)
-        .frame(maxWidth: .infinity)
+        .opacity(isPreparing ? 0 : 1)
+        .allowsHitTesting(!isPreparing)
+        .accessibilityHidden(isPreparing)
+        .overlay {
+            if isPreparing {
+                ProgressView()
+                    .controlSize(.large)
+                    .accessibilityLabel("Starting audiobook")
+            }
+        }
+        .animation(.easeOut(duration: 0.2), value: isPreparing)
     }
 
     private var topBar: some View {
