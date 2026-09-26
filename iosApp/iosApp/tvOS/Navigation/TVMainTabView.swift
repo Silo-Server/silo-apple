@@ -48,10 +48,12 @@ struct TVMainTabView: View {
     }()
     @State private var showSignOutConfirm = false
     @State private var registry = ServerRegistry.shared
-    /// Local, per-profile tab-visibility prefs (e.g. whether the Audiobooks
-    /// tab is opted in). Observed so the bar re-derives `visibleRoots` the
-    /// instant a toggle flips in Settings.
-    @State private var navPrefs = TVNavPreferences.shared
+    /// Local, per-profile legacy Audiobooks opt-in. It only seeds the app
+    /// default menu (`resolvedPrimaryMenuItems()` reads the observed
+    /// singleton while `body` evaluates `visibleRoots`, so the bar still
+    /// re-derives when the toggle flips). Kept here so `.task` can
+    /// `refresh()` it for the now-known profile.
+    @State private var navPrefs = AppNavPreferences.shared
     @State private var uiCustomization = UICustomizationPreferences.shared
     /// Visible libraries for the active profile; drives which type tabs
     /// exist and which library each type tab scopes to. Seeded from the
@@ -990,38 +992,10 @@ struct TVMainTabView: View {
     /// fixed outside this list, which keeps their focus anchors stable while
     /// the user rearranges content tabs.
     private var visibleRoots: [TVRootDestination] {
-        var roots: [TVRootDestination] = []
-        for item in uiCustomization.resolvedPrimaryMenuItems(availableLibraries: libraries) {
-            let root: TVRootDestination?
-            switch item {
-            case .builtin(.home): root = .home
-            case .builtin(.movies): root = availableRoot(for: .movies)
-            case .builtin(.series): root = availableRoot(for: .series)
-            case .builtin(.music): root = availableRoot(for: .music)
-            case .builtin(.audiobooks):
-                root = navPrefs.showAudiobooks ? availableRoot(for: .audiobooks) : nil
-            case .builtin(.forYou): root = .recommendations
-            case .builtin(.calendar): root = .calendar
-            case .library(let libraryId, let label):
-                root = libraries.contains(where: {
-                    $0.id == libraryId && (navPrefs.showAudiobooks || !$0.isAudiobookLibrary)
-                })
-                    ? .libraryShortcut(libraryId: libraryId, label: label)
-                    : nil
-            case .section, .collection:
-                // The contract can carry these for web and future clients.
-                // Apple TV currently has a stable root route only for whole
-                // libraries, so unsupported shortcuts stay stored but hidden.
-                root = nil
-            }
-            if let root, !roots.contains(root) { roots.append(root) }
-        }
-        if !roots.contains(.home) { roots.insert(.home, at: 0) }
-        return roots
-    }
-
-    private func availableRoot(for type: TVLibraryTabType) -> TVRootDestination? {
-        libraries.contains(where: { type.matches($0) }) ? .libraryType(type) : nil
+        TVPrimaryMenuProjection.roots(
+            for: uiCustomization.resolvedPrimaryMenuItems(),
+            libraries: libraries
+        )
     }
 
     private func tabType(for library: Library) -> TVLibraryTabType? {
