@@ -27,8 +27,8 @@ struct IOSSettingsOverview: View {
                     SettingsAccountCard(
                         avatar: viewModel.activeProfile?.avatarEmoji,
                         avatarImageUrl: viewModel.activeProfile?.avatarImageUrl,
-                        name: displayName,
-                        subtitle: subtitleLine,
+                        name: summary.displayName,
+                        subtitle: summary.subtitleLine,
                         isAdministrator: viewModel.userInfo?.isAdmin == true,
                         action: switchProfile
                     )
@@ -169,7 +169,7 @@ struct IOSSettingsOverview: View {
                             subtitle: "Language, behavior, and appearance",
                             systemImage: "captions.bubble.fill",
                             tint: .pink,
-                            value: subtitleLanguageName(viewModel.prefs.subtitleLanguage)
+                            value: SettingsSummary.subtitleLanguageName(viewModel.prefs.subtitleLanguage)
                         )
                     }
                     .buttonStyle(.plain)
@@ -254,7 +254,7 @@ struct IOSSettingsOverview: View {
                 subtitle: "Installed Silo app version",
                 systemImage: "info.circle.fill",
                 tint: .gray,
-                value: versionString,
+                value: SettingsSummary.versionString(),
                 showsChevron: false
             )
 
@@ -324,56 +324,12 @@ struct IOSSettingsOverview: View {
         }
     }
 
-    private var displayName: String {
-        if let name = viewModel.activeProfile?.name, !name.isEmpty {
-            return name
-        }
-        if let username = viewModel.userInfo?.username, !username.isEmpty {
-            return username
-        }
-        return "Switch Profile"
-    }
-
-    private var subtitleLine: String {
-        let host = serverHost
-        let username = viewModel.userInfo?.username
-        switch (username, host) {
-        case let (user?, host?) where !user.isEmpty && user != displayName:
-            return "\(user) · \(host)"
-        case let (_, host?):
-            return host
-        case let (user?, _) where !user.isEmpty && user != displayName:
-            return user
-        default:
-            return "Tap to switch profile"
-        }
-    }
-
-    private var serverHost: String? {
-        guard let url = URL(string: viewModel.serverUrl), let host = url.host else {
-            return viewModel.serverUrl.isEmpty ? nil : viewModel.serverUrl
-        }
-        return host
+    private var summary: SettingsSummary {
+        SettingsSummary(viewModel: viewModel)
     }
 
     private func switchProfile() {
         router.switchProfile()
-    }
-
-    private func subtitleLanguageName(_ tag: String) -> String {
-        if tag == PlaybackPrefSentinel.none || tag.isEmpty { return "None" }
-        return PlaybackLanguageOption.label(forCode: tag)
-    }
-
-    private var versionString: String {
-        let info = Bundle.main.infoDictionary
-        let version = info?["CFBundleShortVersionString"] as? String ?? "1.0"
-        guard let build = info?["CFBundleVersion"] as? String,
-              !build.isEmpty,
-              build != version else {
-            return version
-        }
-        return "\(version) (\(build))"
     }
 
     private var matchesPlayback: Bool {
@@ -413,7 +369,7 @@ struct IOSSettingsOverview: View {
         matches(
             "about",
             "version",
-            versionString,
+            SettingsSummary.versionString(),
             "privacy",
             "policy",
             "information",
