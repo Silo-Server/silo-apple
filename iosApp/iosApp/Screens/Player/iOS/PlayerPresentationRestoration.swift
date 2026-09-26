@@ -8,8 +8,9 @@ import OSLog
 /// `AppRouter.presentedPlayer`, and `PictureInPictureCoordinator` keeps the
 /// engaged `PlayerViewModel` alive after that cover goes away. Restoring is
 /// therefore two things that have to happen together: put the cover back, and
-/// make the new `PlayerView` adopt the *same* view model. A fresh `PlayerView`
-/// mints its own `PlayerViewModel` and calls `loadAndPlay`, which would restart
+/// make the new `PlayerView` adopt the *same* view model. `PlayerView` builds
+/// its view model from the staged adoption instead of minting one, and its
+/// `onAppear` claims the adoption and skips `loadAndPlay`, which would restart
 /// the title from the resume point instead of restoring the session already in
 /// flight.
 ///
@@ -72,6 +73,13 @@ enum PlayerPresentationRestoration {
     static func consumeAdoption(matching contentId: String) -> PlayerViewModel? {
         guard let pendingAdoption, pendingAdoption.contentId == contentId else { return nil }
         Self.pendingAdoption = nil
+        return pendingAdoption.viewModel
+    }
+
+    /// Non-consuming read for `PlayerView`'s lazy view-model factory;
+    /// `onAppear` still claims the adoption through `consumeAdoption(matching:)`.
+    static func stagedAdoption(matching contentId: String) -> PlayerViewModel? {
+        guard let pendingAdoption, pendingAdoption.contentId == contentId else { return nil }
         return pendingAdoption.viewModel
     }
 

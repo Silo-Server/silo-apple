@@ -19,7 +19,8 @@ struct PlayerView: View {
     let offlineDownloadId: String?
 
     @Environment(\.dismiss) private var dismiss
-    @State private var viewModel: PlayerViewModel
+    @State private var viewModelSlot: LazyModelSlot<PlayerViewModel>
+    private var viewModel: PlayerViewModel { viewModelSlot.model }
     @State private var isOptionsPresented = false
     @State private var selectedOptionsTab: MacPlayerOptionsPanel.Tab = .audio
 
@@ -35,7 +36,7 @@ struct PlayerView: View {
         offlineDownloadId: String? = nil
     ) {
         self.contentId = contentId
-        _viewModel = State(initialValue: PlayerViewModel(libraryId: libraryId))
+        _viewModelSlot = State(initialValue: LazyModelSlot { PlayerViewModel(libraryId: libraryId) })
         self.preferredFileId = preferredFileId
         self.preferredAudioTrackIndex = preferredAudioTrackIndex
         self.preferredSubtitleTrackIndex = preferredSubtitleTrackIndex
