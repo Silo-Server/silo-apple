@@ -13,6 +13,13 @@
 
 A single-platform selection builds only that platform; the other job is skipped.
 
+Every release run, from a tag or a manual dispatch, first runs the Apple
+regression workflow (SiloTests, SiloTVTests, SiloMac build) on the release
+commit. If it fails, this workflow publishes no source release, reserves no
+build numbers and uploads nothing. The gate adds about one regression run (20-30
+minutes) to a release. A `v*` tag also starts `sideload-ipa.yml`, which is not
+gated and still publishes the tag's GitHub release with source and unsigned IPAs.
+
 The git tag is the marketing version. A preflight `build-numbers` job reserves
 the next per-platform build number from App Store Connect once, then the iOS and
 tvOS jobs **build in parallel** consuming those fixed numbers (no build-number
