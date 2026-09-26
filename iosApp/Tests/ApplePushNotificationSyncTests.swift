@@ -5,9 +5,9 @@ import XCTest
 
 private let notificationSyncPath = "/api/v2/notifications/sync"
 
-/// Notification inbox catch-up on `GET /api/v2/notifications/sync`: the
-/// checkpoint it keeps, the page bound, and how it recovers from a rejected
-/// cursor or a failed page.
+/// Notification inbox catch-up on `GET /api/v2/notifications/sync`: one page
+/// per sync, the checkpoint it persists across relaunches and for which owner,
+/// and how it recovers from a rejected cursor or a failed page.
 @MainActor
 final class ApplePushNotificationSyncTests: XCTestCase {
     private static let serverID = "server-sync"
@@ -45,6 +45,9 @@ final class ApplePushNotificationSyncTests: XCTestCase {
     }
 
     private struct Harness {
+        let suite: UserDefaults
+        let keychain: SharedKeychain
+        let defaults: SharedDefaults
         let tokens: TokenStore
         let server: InboxServer
         let coordinator: ApplePushNotificationSyncCoordinator
@@ -70,7 +73,8 @@ final class ApplePushNotificationSyncTests: XCTestCase {
             }
             UserDefaults().removePersistentDomain(forName: name)
         }
-        let tokens = TokenStore(keychain: keychain, defaults: SharedDefaults(suite: suite, standard: suite))
+        let defaults = SharedDefaults(suite: suite, standard: suite)
+        let tokens = TokenStore(keychain: keychain, defaults: defaults)
         await tokens.switchActiveServer(serverId: Self.serverID)
         await tokens.setServerUrl("https://silo.example")
         let saved = await tokens.saveTokens(accessToken: "access", refreshToken: "refresh")
@@ -80,8 +84,18 @@ final class ApplePushNotificationSyncTests: XCTestCase {
         let server = InboxServer()
         let api = APIv2Client(http: HTTPClient(session: server.handler.makeSession(), tokenStore: tokens),
             tokenStore: tokens, isUpdateRequired: { false })
-        return Harness(tokens: tokens, server: server,
-            coordinator: ApplePushNotificationSyncCoordinator(api: api, tokenStore: tokens))
+        return Harness(suite: suite, keychain: keychain, defaults: defaults, tokens: tokens, server: server,
+            coordinator: ApplePushNotificationSyncCoordinator(api: api, tokenStore: tokens, checkpoints: suite))
+    }
+
+    /// A coordinator as a relaunched process would build it: a new token store
+    /// over the same keychain and defaults, and a client fenced on that store.
+    private func relaunch(_ h: Harness) async -> ApplePushNotificationSyncCoordinator {
+        let tokens = TokenStore(keychain: h.keychain, defaults: h.defaults)
+        await tokens.switchActiveServer(serverId: Self.serverID)
+        let api = APIv2Client(http: HTTPClient(session: h.server.handler.makeSession(), tokenStore: tokens),
+            tokenStore: tokens, isUpdateRequired: { false })
+        return ApplePushNotificationSyncCoordinator(api: api, tokenStore: tokens, checkpoints: h.suite)
     }
 
     func testSyncPagesForwardAndResumesFromTheLastSyncCursor() async throws {
@@ -99,26 +113,58 @@ final class ApplePushNotificationSyncTests: XCTestCase {
 
         h.server.page(for: "c1", items: ["n2"], syncCursor: "c2", hasMore: true)
         h.server.page(for: "c2", items: [], syncCursor: "c3")
-        h.server.page(for: "c3", items: [], syncCursor: "c3")
 
         let second = await h.coordinator.sync()
         let third = await h.coordinator.sync()
 
-        XCTAssertTrue(second)
+        // One page per sync: the backlog page is not caught up, and the next
+        // sync resumes from its sync_cursor.
+        XCTAssertFalse(second)
         XCTAssertTrue(third)
-        // The final page has no next cursor; its sync_cursor is the checkpoint.
-        XCTAssertEqual(h.server.sentCursors, [nil, "c1", "c2", "c3"])
+        XCTAssertEqual(h.server.sentCursors, [nil, "c1", "c2"])
+    }
+
+    func testCheckpointSurvivesRelaunch() async throws {
+        let h = try await makeHarness()
+        h.server.page(for: nil, items: ["n1"], syncCursor: "c1")
+        _ = await h.coordinator.sync()
+        h.server.page(for: "c1", items: [], syncCursor: "c1")
+
+        let relaunched = await relaunch(h)
+        let synced = await relaunched.sync()
+
+        XCTAssertTrue(synced)
+        XCTAssertEqual(h.server.sentCursors, [nil, "c1"])
+    }
+
+    func testRelaunchedSyncWithNoNewDeliveriesDoesNotRefreshHome() async throws {
+        let h = try await makeHarness()
+        h.server.page(for: nil, items: ["n1"], syncCursor: "c1")
+        _ = await h.coordinator.sync()
+        h.server.page(for: "c1", items: [], syncCursor: "c1")
+        let relaunched = await relaunch(h)
+        let notRefreshed = expectation(forNotification: .homeSectionsShouldRefresh, object: nil)
+        notRefreshed.isInverted = true
+
+        let synced = await relaunched.sync()
+
+        await fulfillment(of: [notRefreshed], timeout: 0.2)
+        XCTAssertTrue(synced)
+        XCTAssertEqual(h.server.sentCursors, [nil, "c1"])
     }
 
     func testFailedPageKeepsTheCheckpointOfTheLastCompletedPage() async throws {
         let h = try await makeHarness()
-        h.server.page(for: nil, items: ["n1"], syncCursor: "c1", hasMore: true)
-        // No reply for "c1": the second page fails.
-
+        h.server.page(for: nil, items: ["n1"], syncCursor: "c1")
+        let seeded = await h.coordinator.sync()
+        // No reply for "c1": the next page fails.
         let failed = await h.coordinator.sync()
         h.server.page(for: "c1", items: [], syncCursor: "c1")
-        let resumed = await h.coordinator.sync()
 
+        // A relaunch reads the persisted slot, so this proves the failure left it intact.
+        let resumed = await relaunch(h).sync()
+
+        XCTAssertTrue(seeded)
         XCTAssertFalse(failed)
         XCTAssertTrue(resumed)
         XCTAssertEqual(h.server.sentCursors, [nil, "c1", "c1"])
@@ -135,6 +181,12 @@ final class ApplePushNotificationSyncTests: XCTestCase {
 
         XCTAssertTrue(restarted)
         XCTAssertEqual(h.server.sentCursors, [nil, "stale", nil])
+
+        // The replacement cursor was persisted.
+        h.server.page(for: "fresh", items: [], syncCursor: "fresh")
+        let resumed = await relaunch(h).sync()
+        XCTAssertTrue(resumed)
+        XCTAssertEqual(h.server.sentCursors, [nil, "stale", nil, "fresh"])
     }
 
     func testCheckpointIsNotSentForAnotherProfile() async throws {
@@ -151,23 +203,39 @@ final class ApplePushNotificationSyncTests: XCTestCase {
         XCTAssertEqual(h.server.handler.requests.last?.header("X-Profile-Id"), "profile-b")
     }
 
-    func testPagingStopsAtTheBoundAndResumesOnTheNextSync() async throws {
+    func testBacklogSyncReadsOnePageAndResumesOnTheNextSync() async throws {
         let h = try await makeHarness()
-        let bound = ApplePushNotificationSyncCoordinator.maxPagesPerSync
         h.server.page(for: nil, items: ["n0"], syncCursor: "c1")
         _ = await h.coordinator.sync()
-        for index in 1...bound {
-            h.server.page(for: "c\(index)", items: ["n\(index)"], syncCursor: "c\(index + 1)", hasMore: true)
+        h.server.page(for: "c1", items: ["n1"], syncCursor: "c2", hasMore: true)
+        h.server.page(for: "c2", items: ["n2"], syncCursor: "c3", hasMore: true)
+        // Created after the seeding sync, which posted its own refresh.
+        let refreshed = expectation(forNotification: .homeSectionsShouldRefresh, object: nil)
+
+        let backlog = await h.coordinator.sync()
+
+        XCTAssertFalse(backlog)
+        XCTAssertEqual(h.server.handler.requests.count, 2)
+        await fulfillment(of: [refreshed], timeout: 1)
+        _ = await h.coordinator.sync()
+        XCTAssertEqual(h.server.sentCursors, [nil, "c1", "c2"])
+    }
+
+    func testCheckpointOwnerExcludesTemporaryCredentials() async throws {
+        let h = try await makeHarness()
+        let captured = await h.tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(captured)
+
+        XCTAssertEqual(ApplePushNotificationSyncCoordinator.checkpointOwner(for: auth),
+                       [Self.serverID, auth.account.serverURL, "profile-a", "50"])
+        let temporary = CapturedOrdinaryRequestAuth(account: auth.account, credentialOwner: .temporary,
+            accessToken: auth.accessToken, profileId: auth.profileId, profileToken: auth.profileToken)
+        XCTAssertNil(ApplePushNotificationSyncCoordinator.checkpointOwner(for: temporary))
+        for profileId in [nil, ""] as [String?] {
+            let noProfile = CapturedOrdinaryRequestAuth(account: auth.account, credentialOwner: auth.credentialOwner,
+                accessToken: auth.accessToken, profileId: profileId, profileToken: auth.profileToken)
+            XCTAssertNil(ApplePushNotificationSyncCoordinator.checkpointOwner(for: noProfile))
         }
-
-        let capped = await h.coordinator.sync()
-
-        XCTAssertFalse(capped)
-        XCTAssertEqual(h.server.handler.requests.count, 1 + bound)
-        h.server.page(for: "c\(bound + 1)", items: [], syncCursor: "c\(bound + 1)")
-        let resumed = await h.coordinator.sync()
-        XCTAssertTrue(resumed)
-        XCTAssertEqual(h.server.sentCursors.last, "c\(bound + 1)")
     }
 }
 #endif

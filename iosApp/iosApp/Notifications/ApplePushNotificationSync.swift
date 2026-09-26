@@ -5,26 +5,47 @@ import OSLog
 @MainActor
 final class ApplePushNotificationSyncCoordinator {
     static let shared = ApplePushNotificationSyncCoordinator()
-    /// Pages one sync may read. A backlog past the cap resumes from the kept
-    /// checkpoint on the next wake.
-    static let maxPagesPerSync = 100
 
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "ApplePushSync"
     )
 
+    /// One slot for the last `sync_cursor` and the owner it was minted for.
+    /// The cursor is a position marker, not a credential. The next owner
+    /// overwrites the slot.
+    private static let checkpointDefaultsKey = "applePush.notificationSyncCheckpoint.v1"
+
+    private struct PersistedCheckpoint: Codable, Equatable {
+        let owner: [String]
+        let cursor: String
+    }
+
     private let api: APIv2Client
     private let tokenStore: TokenStore
+    private let checkpoints: UserDefaults
     private var inFlight = false
-    /// The last `sync_cursor` and the owner it was minted for. A cursor is
-    /// only valid for that account and profile; any other owner starts from
-    /// the server's initial snapshot.
-    private var checkpoint: (owner: CapturedOrdinaryRequestAuth, cursor: String)?
 
-    init(api: APIv2Client = SiloAPI.shared.apiV2Client, tokenStore: TokenStore = .shared) {
+    init(api: APIv2Client = SiloAPI.shared.apiV2Client, tokenStore: TokenStore = .shared,
+         checkpoints: UserDefaults = .standard) {
         self.api = api
         self.tokenStore = tokenStore
+        self.checkpoints = checkpoints
+    }
+
+    /// Stable owner of a persisted sync cursor. `nil` for temporary credentials
+    /// and requests without a profile: those read the initial snapshot.
+    ///
+    /// The server scopes and signs each cursor for one user, profile and page
+    /// limit, and answers `invalid_cursor` for any other. So the key only needs
+    /// fields that survive a relaunch; a stale match costs one extra request.
+    /// It leaves out `credentialGenerationID`, which changes every launch, and
+    /// the tokens, which are secrets and rotate.
+    static func checkpointOwner(for auth: CapturedOrdinaryRequestAuth) -> [String]? {
+        guard auth.credentialOwner == .persistentServer(serverId: auth.account.serverId),
+              let profileId = auth.profileId, !profileId.isEmpty else { return nil }
+        return [auth.account.serverId, auth.account.serverURL, profileId,
+                String(APIv2NotificationSyncPage.defaultLimit)]
     }
 
     @discardableResult
@@ -40,8 +61,9 @@ final class ApplePushNotificationSyncCoordinator {
         return await sync()
     }
 
-    /// Reads forward from the saved checkpoint until the server reports no
-    /// more pages. Returns `true` only when the inbox is fully caught up.
+    /// Reads one page forward from the persisted checkpoint and refreshes Home
+    /// when that page has deliveries. Returns `true` when the checkpoint has
+    /// reached the server's head; a backlog resumes on the next sync.
     @discardableResult
     func sync() async -> Bool {
         guard !inFlight else {
@@ -56,46 +78,63 @@ final class ApplePushNotificationSyncCoordinator {
               let profileId = auth.profileId, !profileId.isEmpty else {
             return false
         }
-        var cursor = checkpoint.flatMap { $0.owner.sameCredentialIdentity(as: auth) ? $0.cursor : nil }
+        // Computed from the auth captured before the request, so the cursor is
+        // filed under the owner it was minted for even if the profile changes
+        // while the request is in flight.
+        let owner = Self.checkpointOwner(for: auth)
+        var cursor = owner.flatMap { storedCursor(for: $0) }
         var restarted = false
-        var caughtUp = false
-        var synced = 0
-        var pages = 0
-        readPages: while !caughtUp, pages < Self.maxPagesPerSync {
-            pages += 1
-            let page: APIv2NotificationSyncPage
+        var fetched: APIv2NotificationSyncPage?
+        // At most two requests: the retry branch runs once, and every other
+        // outcome sets `fetched` or returns.
+        while fetched == nil {
             do {
-                page = try await api.notificationSync(cursor: cursor, auth: auth)
+                fetched = try await api.notificationSync(cursor: cursor, auth: auth)
             } catch APIv2Error.problem(let problem) where problem.identifier == "invalid_cursor" && cursor != nil && !restarted {
                 // The server no longer accepts the checkpoint (for example
                 // after its cursor key rotated). Start over from the
                 // initial snapshot once.
                 Self.logger.info("Notification sync checkpoint was rejected; restarting from the initial snapshot")
-                checkpoint = nil
+                clearStoredCursor()
                 cursor = nil
                 restarted = true
-                continue
             } catch {
                 Self.logger.error("Notification sync failed: \(String(describing: error), privacy: .public)")
-                break readPages
-            }
-            // Keep `sync_cursor`, not `page.next_cursor`: the last page has no
-            // next cursor but still advances the checkpoint.
-            checkpoint = (auth, page.syncCursor)
-            synced += page.items.count
-            caughtUp = !page.page.hasMore
-            cursor = page.syncCursor
-            if caughtUp {
-                Self.logger.info("Synced Silo notifications count=\(synced, privacy: .public) unread=\(page.unreadCount, privacy: .public)")
+                return false
             }
         }
-        if !caughtUp, pages == Self.maxPagesPerSync {
-            Self.logger.notice("Notification sync stopped after \(pages, privacy: .public) pages count=\(synced, privacy: .public); the next sync resumes from the checkpoint")
+        guard let page = fetched else { return false }
+        // Keep `sync_cursor`, not `page.next_cursor`: the last page has no
+        // next cursor but still advances the checkpoint.
+        if let owner {
+            storeCursor(page.syncCursor, for: owner)
         }
-        if synced > 0 {
+        let caughtUp = !page.page.hasMore
+        Self.logger.info("Synced Silo notifications count=\(page.items.count, privacy: .public) unread=\(page.unreadCount, privacy: .public) caught_up=\(caughtUp, privacy: .public)")
+        if !page.items.isEmpty {
             NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil)
         }
         return caughtUp
+    }
+
+    // MARK: - Checkpoint slot
+
+    /// The stored cursor when it was minted for `owner`. An unreadable slot
+    /// counts as empty.
+    private func storedCursor(for owner: [String]) -> String? {
+        guard let data = checkpoints.data(forKey: Self.checkpointDefaultsKey),
+              let stored = try? JSONDecoder().decode(PersistedCheckpoint.self, from: data),
+              stored.owner == owner else { return nil }
+        return stored.cursor
+    }
+
+    private func storeCursor(_ cursor: String, for owner: [String]) {
+        guard let data = try? JSONEncoder().encode(PersistedCheckpoint(owner: owner, cursor: cursor)) else { return }
+        checkpoints.set(data, forKey: Self.checkpointDefaultsKey)
+    }
+
+    private func clearStoredCursor() {
+        checkpoints.removeObject(forKey: Self.checkpointDefaultsKey)
     }
 }
 #endif
