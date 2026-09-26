@@ -893,22 +893,10 @@ private extension Route {
         switch self {
         case .serverSetup:
             return "serverSetup"
-        case .login:
-            return "login"
         case .serverNeedsSetup:
             return "serverNeedsSetup"
-        case .onboardingTour:
-            return "onboardingTour"
-        case .profileSelection:
-            return "profileSelection"
-        case .home:
-            return "home"
         case .search:
             return "search"
-        case .browse:
-            return "browse"
-        case .library:
-            return "library"
         case .libraryCollection:
             return "libraryCollection"
         case .itemDetail:
@@ -931,12 +919,8 @@ private extension Route {
             return "collectionDetail"
         case .settings:
             return "settings"
-        case .recommendations:
-            return "recommendations"
         case .serverList:
             return "serverList"
-        case .downloads:
-            return "downloads"
         case .watchParty:
             return "watchParty"
         case .requestsHub:
@@ -951,8 +935,6 @@ private extension Route {
             return "offlineSeriesBrowse"
         case .offlineDownloadDetail:
             return "offlineDownloadDetail"
-        case .tvLibraryGrid:
-            return "tvLibraryGrid"
         }
     }
 }

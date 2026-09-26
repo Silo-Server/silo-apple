@@ -308,77 +308,6 @@ struct LibraryPageTabSelector: View {
     }
 }
 
-struct LibraryDetailView: View {
-    let libraryId: Int
-    let initialTitle: String?
-    let initialLibraryType: String?
-    let showsNavigationTitle: Bool
-
-    @State private var selectedTab: LibraryPageTab = .recommended
-    @State private var title: String
-    @State private var libraryType: String?
-
-    init(
-        libraryId: Int,
-        initialTitle: String?,
-        initialLibraryType: String? = nil,
-        showsNavigationTitle: Bool = true
-    ) {
-        self.libraryId = libraryId
-        self.initialTitle = initialTitle
-        self.initialLibraryType = initialLibraryType
-        self.showsNavigationTitle = showsNavigationTitle
-        _title = State(initialValue: initialTitle ?? "Library")
-        _libraryType = State(initialValue: initialLibraryType)
-    }
-
-    var body: some View {
-        content
-            .modifier(LibraryDetailTitleModifier(title: title, isEnabled: showsNavigationTitle))
-    }
-
-    private var content: some View {
-        VStack(spacing: 0) {
-            LibraryPageTabSelector(selectedTab: $selectedTab)
-
-            tabContent
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .siloPageBackground()
-        .task {
-            await loadLibraryMetadataIfNeeded()
-        }
-    }
-
-    @ViewBuilder
-    private var tabContent: some View {
-        switch selectedTab {
-        case .recommended:
-            LibraryRecommendedView(libraryId: libraryId)
-        case .library:
-            BrowseView(libraryId: libraryId, title: nil, showsSearchShortcut: false, libraryType: libraryType)
-        case .collections:
-            LibraryCollectionsView(libraryId: libraryId)
-        }
-    }
-
-    private func loadLibraryMetadataIfNeeded() async {
-        guard initialTitle == nil || libraryType == nil else { return }
-
-        do {
-            let response = try await StartupContentPrefetcher.fetchUserLibraries()
-            if let matchedLibrary = response.libraries.first(where: { $0.id == libraryId }) {
-                if initialTitle == nil {
-                    title = matchedLibrary.name
-                }
-                libraryType = matchedLibrary.type
-            }
-        } catch {
-            // Fall back to the generic title if library metadata is unavailable.
-        }
-    }
-}
-
 @Observable
 @MainActor
 private class LibraryRecommendedViewModel {
@@ -528,24 +457,6 @@ struct LibraryRecommendedView: View {
             isRefreshing = false
             refreshStartedAt = nil
             refreshHideTask = nil
-        }
-    }
-}
-
-/// Applies the library's name as the navigation title when the detail view is
-/// the top-of-stack view. Disabled when embedded inside another screen (e.g.
-/// the Libraries tab, which owns its own title).
-private struct LibraryDetailTitleModifier: ViewModifier {
-    let title: String
-    let isEnabled: Bool
-
-    func body(content: Content) -> some View {
-        if isEnabled {
-            content
-                .navigationTitle(title)
-                .siloNavigationTitleDisplayMode(.large)
-        } else {
-            content
         }
     }
 }

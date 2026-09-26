@@ -312,9 +312,9 @@ struct LibrariesTabView: View {
 
     @ViewBuilder
     private func loadedContent(activeLibrary: Library) -> some View {
-        // Switch tab content directly here (rather than going through
-        // `LibraryDetailView`) so we can hoist the top bar + tab selector
-        // into a single `safeAreaInset` overlay shared by all three tabs.
+        // Switch tab content directly here so we can hoist the top bar + tab
+        // selector into a single `safeAreaInset` overlay shared by all three
+        // tabs.
         tabContent(activeLibrary: activeLibrary)
             // Forces the whole tab subtree to reset when switching
             // libraries, so stale content never flashes on screen.
