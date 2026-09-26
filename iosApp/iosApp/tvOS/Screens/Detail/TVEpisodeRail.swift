@@ -586,10 +586,8 @@ struct TVEpisodeRail: View {
         if let airDate = DetailDateFormatting.abbreviatedDate(episode.airDate) {
             parts.append(airDate)
         }
-        if let runtime = episode.runtime, runtime > 0 {
-            parts.append(runtime >= 60
-                ? "\(runtime / 60)h \(runtime % 60)m"
-                : "\(runtime)m")
+        if let runtime = MediaTextFormatting.runtime(minutes: episode.runtime) {
+            parts.append(runtime)
         }
         return parts.isEmpty ? nil : parts.joined(separator: "  ·  ")
     }
@@ -827,12 +825,8 @@ struct TVEpisodeCard: View {
         if let airDate = DetailDateFormatting.abbreviatedDate(episode.airDate) {
             parts.append(airDate)
         }
-        if let runtime = episode.runtime, runtime > 0 {
-            if runtime >= 60 {
-                parts.append("\(runtime / 60)h \(runtime % 60)m")
-            } else {
-                parts.append("\(runtime)m")
-            }
+        if let runtime = MediaTextFormatting.runtime(minutes: episode.runtime) {
+            parts.append(runtime)
         }
         return parts.isEmpty ? nil : parts.joined(separator: "  ·  ")
     }
@@ -944,9 +938,8 @@ private struct EpisodeCardLabel: View {
                                 .lineLimit(1)
                             Spacer(minLength: 8)
                             if captionStyle.showsMetadata,
-                               let runtime = episode.runtime,
-                               runtime > 0 {
-                                Text(formatRuntime(runtime))
+                               let runtime = MediaTextFormatting.runtime(minutes: episode.runtime) {
+                                Text(runtime)
                                     .font(.system(size: 18, weight: .medium))
                                     .foregroundStyle(Color.siloSecondaryText)
                                     .lineLimit(1)
@@ -975,17 +968,6 @@ private struct EpisodeCardLabel: View {
         guard let title = episode.title?.trimmingCharacters(in: .whitespacesAndNewlines),
               !title.isEmpty else { return code }
         return "\(code) · \(title)"
-    }
-
-    private var episodeMetadataLine: String? {
-        var parts: [String] = []
-        if let airDate = DetailDateFormatting.abbreviatedDate(episode.airDate) {
-            parts.append(airDate)
-        }
-        if let runtime = episode.runtime, runtime > 0 {
-            parts.append(formatRuntime(runtime))
-        }
-        return parts.isEmpty ? nil : parts.joined(separator: "  ·  ")
     }
 
     private var still: some View {
@@ -1086,13 +1068,6 @@ private struct EpisodeCardLabel: View {
               dur > 0, pos > 0, pos < dur
         else { return nil }
         return pos / dur
-    }
-
-    private func formatRuntime(_ minutes: Int) -> String {
-        if minutes >= 60 {
-            return "\(minutes / 60)h \(minutes % 60)m"
-        }
-        return "\(minutes)m"
     }
 }
 

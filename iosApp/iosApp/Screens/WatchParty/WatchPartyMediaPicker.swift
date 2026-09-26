@@ -61,7 +61,7 @@ private struct WatchPartyMediaChoice: Hashable {
         backdropURL = episode.stillUrl ?? series.backdropUrl
         backdropThumbhash = episode.stillUrl != nil ? episode.stillThumbhash : series.backdropThumbhash
         overview = episode.overview
-        if let runtime = episode.runtime, runtime > 0 { facts = [WatchPartyFacts.runtime(runtime)] }
+        if let runtime = MediaTextFormatting.runtime(minutes: episode.runtime) { facts = [runtime] }
         lobbyTitle = episode.title ?? "Episode \(episode.episodeNumber)"
         lobbySubtitle = "\(series.title) · S\(episode.seasonNumber):E\(episode.episodeNumber)"
         runtimeMinutes = episode.runtime
@@ -83,7 +83,7 @@ private struct WatchPartyMediaChoice: Hashable {
         backdropURL = item.backdropUrl
         backdropThumbhash = item.backdropThumbhash
         overview = item.overview
-        if let runtime = item.runtime, runtime > 0 { facts = [WatchPartyFacts.runtime(runtime)] }
+        if let runtime = MediaTextFormatting.runtime(minutes: item.runtime) { facts = [runtime] }
         lobbyTitle = item.title
         seasonNumber = item.seasonNumber
         if let seriesId = item.seriesId, !seriesId.isEmpty {
@@ -140,18 +140,12 @@ private enum WatchPartyPickerDestination: Hashable {
     case search
 }
 
-enum WatchPartyFacts {
-    static func runtime(_ minutes: Int) -> String {
-        minutes >= 60 ? "\(minutes / 60)h \(minutes % 60)m" : "\(minutes)m"
-    }
-}
-
 private extension BrowseItem {
     /// "2021 · 2h 35m · PG-13" for the picker hero.
     var watchPartyFacts: [String] {
         var facts: [String] = []
         if let year, year > 0 { facts.append(String(year)) }
-        if let runtime, runtime > 0 { facts.append(WatchPartyFacts.runtime(runtime)) }
+        if let runtimeText = MediaTextFormatting.runtime(minutes: runtime) { facts.append(runtimeText) }
         if let contentRating, !contentRating.isEmpty { facts.append(contentRating) }
         if let genres, let first = genres.first { facts.append(first) }
         return facts
@@ -870,7 +864,7 @@ private struct WatchPartyEpisodePicker: View {
     private func episodeLine(_ episode: EpisodeListItem) -> String {
         var parts = ["S\(episode.seasonNumber) · E\(episode.episodeNumber)"]
         if let title = episode.title, !title.isEmpty { parts.append(title) }
-        if let runtime = episode.runtime, runtime > 0 { parts.append(WatchPartyFacts.runtime(runtime)) }
+        if let runtime = MediaTextFormatting.runtime(minutes: episode.runtime) { parts.append(runtime) }
         return parts.joined(separator: " · ")
     }
     #endif
@@ -941,8 +935,8 @@ private struct WatchPartyEpisodePicker: View {
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Color.siloOnSurface)
                     .lineLimit(2)
-                if let runtime = episode.runtime, runtime > 0 {
-                    Text(WatchPartyFacts.runtime(runtime))
+                if let runtime = MediaTextFormatting.runtime(minutes: episode.runtime) {
+                    Text(runtime)
                         .font(.caption)
                         .foregroundStyle(Color.siloSecondaryText)
                 }

@@ -14,8 +14,8 @@ enum PhoneEpisodeFormatting {
         if let airDate = DetailDateFormatting.abbreviatedDate(episode.airDate) {
             parts.append(airDate)
         }
-        if let runtime = episode.runtime, runtime > 0 {
-            parts.append(formatRuntime(runtime))
+        if let runtime = MediaTextFormatting.runtime(minutes: episode.runtime) {
+            parts.append(runtime)
         }
         return parts.isEmpty ? nil : parts.joined(separator: "  ·  ")
     }
@@ -43,13 +43,6 @@ enum PhoneEpisodeFormatting {
             isCurrent: isCurrent,
             isPlayed: episode.userData?.played == true
         )
-    }
-
-    private static func formatRuntime(_ minutes: Int) -> String {
-        if minutes >= 60 {
-            return "\(minutes / 60)h \(minutes % 60)m"
-        }
-        return "\(minutes)m"
     }
 }
 #endif

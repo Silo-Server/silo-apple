@@ -371,8 +371,8 @@ struct RequestDetailView: View {
             if let seasons = detail.numberOfSeasons, seasons > 0 {
                 parts.append("\(seasons) season\(seasons == 1 ? "" : "s")")
             }
-        } else if let runtime = detail.runtime, runtime > 0 {
-            parts.append("\(runtime) min")
+        } else if let runtime = MediaTextFormatting.runtime(minutes: detail.runtime) {
+            parts.append(runtime)
         }
         if let director = detail.director, !director.isEmpty {
             parts.append(director)

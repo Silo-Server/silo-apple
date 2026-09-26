@@ -663,11 +663,9 @@ enum TVHeroMetadata {
         } else if let year = detail.year, year > 0 {
             tokens.append(.text(String(year)))
         }
-        if let runtime = SelectedMediaRuntime.minutes(
-            detail: detail,
-            selectedVersion: selectedVersion
-        ), runtime > 0 {
-            tokens.append(.text(formatRuntime(runtime)))
+        let runtime = SelectedMediaRuntime.minutes(detail: detail, selectedVersion: selectedVersion)
+        if let runtimeText = MediaTextFormatting.runtime(minutes: runtime) {
+            tokens.append(.text(runtimeText))
         }
         return tokens
     }
@@ -695,8 +693,8 @@ enum TVHeroMetadata {
         let runtime = playbackDetail.flatMap {
             SelectedMediaRuntime.minutes(detail: $0, selectedVersion: selectedVersion)
         } ?? episode.runtime
-        if let runtime, runtime > 0 {
-            tokens.append(.text(formatRuntime(runtime)))
+        if let runtimeText = MediaTextFormatting.runtime(minutes: runtime) {
+            tokens.append(.text(runtimeText))
         }
         return tokens
     }
@@ -740,15 +738,6 @@ enum TVHeroMetadata {
         let names = cast.prefix(3).map(\.name)
         guard !names.isEmpty else { return nil }
         return "Starring " + names.joined(separator: ", ")
-    }
-
-    // MARK: - Helpers
-
-    private static func formatRuntime(_ minutes: Int) -> String {
-        if minutes >= 60 {
-            return "\(minutes / 60)h \(minutes % 60)m"
-        }
-        return "\(minutes) min"
     }
 }
 

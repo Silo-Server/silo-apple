@@ -353,8 +353,8 @@ struct TVItemDetailLoadingView: View {
         if let genre = nonEmpty(seed.genre) {
             values.append(genre)
         }
-        if let runtime = seed.runtime, runtime > 0 {
-            values.append(runtimeLabel(runtime))
+        if let runtime = MediaTextFormatting.runtime(minutes: seed.runtime) {
+            values.append(runtime)
         }
         if let rating = nonEmpty(seed.contentRating) {
             values.append(rating.uppercased())
@@ -385,16 +385,6 @@ struct TVItemDetailLoadingView: View {
             return "Loading details for \(title)"
         }
         return "Loading details"
-    }
-
-    private func runtimeLabel(_ minutes: Int) -> String {
-        if minutes >= 60 {
-            let remainder = minutes % 60
-            return remainder == 0
-                ? "\(minutes / 60)h"
-                : "\(minutes / 60)h \(remainder)m"
-        }
-        return "\(minutes) min"
     }
 
     private func nonEmpty(_ value: String?) -> String? {
