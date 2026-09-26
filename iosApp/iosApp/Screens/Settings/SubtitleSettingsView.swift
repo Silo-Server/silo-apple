@@ -26,27 +26,20 @@ struct SubtitleSettingsView: View {
         .navigationTitle("Subtitles")
         .siloNavigationTitleDisplayMode(.inline)
         .siloToolbarColorSchemeDark()
-        .onChange(of: viewModel.prefs.subtitleLanguage) { _, _ in
-            Task { await viewModel.prefs.saveSubtitlePrefs() }
-        }
-        .onChange(of: viewModel.prefs.subtitleMode) { _, _ in
-            Task { await viewModel.prefs.saveSubtitlePrefs() }
-        }
-        .onChange(of: viewModel.prefs.showForcedSubtitles) { _, _ in
-            Task { await viewModel.prefs.saveSubtitlePrefs() }
-        }
-        .onChange(of: viewModel.prefs.preferredMetadataLanguage) { _, _ in
-            Task { await viewModel.prefs.saveMetadataLanguage() }
-        }
     }
 
     // MARK: - Metadata language (server-backed, AI-gated)
 
     @ViewBuilder
     private var metadataLanguageSection: some View {
-        @Bindable var prefs = viewModel.prefs
         Section {
-            Picker("Metadata Language", selection: $prefs.preferredMetadataLanguage) {
+            Picker(
+                "Metadata Language",
+                selection: Binding(
+                    get: { viewModel.prefs.preferredMetadataLanguage },
+                    set: { value in Task { await viewModel.prefs.setPreferredMetadataLanguage(value) } }
+                )
+            ) {
                 Text(
                     SettingPresentationMetadata.definitions[.catalogMetadataLanguage]?.unsetLabel
                         ?? "Library default"
@@ -72,9 +65,14 @@ struct SubtitleSettingsView: View {
 
     @ViewBuilder
     private var profileBackedSection: some View {
-        @Bindable var prefs = viewModel.prefs
         Section {
-            Picker("Language", selection: $prefs.subtitleLanguage) {
+            Picker(
+                "Language",
+                selection: Binding(
+                    get: { viewModel.prefs.subtitleLanguage },
+                    set: { value in Task { await viewModel.prefs.setSubtitleLanguage(value) } }
+                )
+            ) {
                 Text(
                     SettingPresentationMetadata.definitions[.playbackSubtitleLanguage]?.unsetLabel
                         ?? "None"
@@ -86,7 +84,13 @@ struct SubtitleSettingsView: View {
             .foregroundStyle(Color.siloOnSurface)
             .settingsPickerStyle()
 
-            Picker("Behavior", selection: $prefs.subtitleMode) {
+            Picker(
+                "Behavior",
+                selection: Binding(
+                    get: { viewModel.prefs.subtitleMode },
+                    set: { value in Task { await viewModel.prefs.setSubtitleMode(value) } }
+                )
+            ) {
                 ForEach(SubtitleMode.allCases, id: \.rawValue) { mode in
                     Text(mode.displayLabel).tag(mode.rawValue)
                 }
@@ -98,7 +102,7 @@ struct SubtitleSettingsView: View {
                 "Show Forced Subtitles",
                 isOn: Binding(
                     get: { viewModel.prefs.showForcedSubtitles == "on" },
-                    set: { viewModel.prefs.showForcedSubtitles = $0 ? "on" : "off" }
+                    set: { isOn in Task { await viewModel.prefs.setShowForcedSubtitles(isOn) } }
                 )
             )
             .foregroundStyle(Color.siloOnSurface)

@@ -314,10 +314,9 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         let transport = FakeProfileSettingsTransport()
         let editor = ProfilePrefsEditor(writer: Self.writer(transport))
 
-        editor.subtitleLanguage = "ja"
-        editor.subtitleMode = SubtitleMode.always.rawValue
-        editor.showForcedSubtitles = "off"
-        await editor.saveSubtitlePrefs()
+        await editor.setSubtitleLanguage("ja")
+        await editor.setSubtitleMode(SubtitleMode.always.rawValue)
+        await editor.setShowForcedSubtitles(false)
 
         let byKey = transport.writesByKey()
         XCTAssertEqual(byKey[.playbackSubtitleLanguage]?.value, .string("ja"))
@@ -334,10 +333,11 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         let transport = FakeProfileSettingsTransport()
         let editor = ProfilePrefsEditor(writer: Self.writer(transport))
 
-        editor.subtitleLanguage = PlaybackPrefSentinel.none
-        editor.preferredMetadataLanguage = PlaybackPrefSentinel.none
-        await editor.saveSubtitlePrefs()
-        await editor.saveMetadataLanguage()
+        // The fields start at the sentinel, so choose a language first.
+        await editor.setSubtitleLanguage("ja")
+        await editor.setSubtitleLanguage(PlaybackPrefSentinel.none)
+        await editor.setPreferredMetadataLanguage("ja")
+        await editor.setPreferredMetadataLanguage(PlaybackPrefSentinel.none)
 
         let byKey = transport.writesByKey()
         XCTAssertEqual(byKey[.playbackSubtitleLanguage]?.value, .null)
@@ -351,8 +351,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         let transport = FakeProfileSettingsTransport()
         let editor = ProfilePrefsEditor(writer: Self.writer(transport))
 
-        editor.preferredMetadataLanguage = "de"
-        await editor.saveMetadataLanguage()
+        await editor.setPreferredMetadataLanguage("de")
 
         XCTAssertEqual(transport.writesByKey()[.catalogMetadataLanguage]?.value, .string("de"))
         XCTAssertEqual(editor.saveState, .saved)
@@ -367,16 +366,41 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         let transport = FakeProfileSettingsTransport()
         let editor = ProfilePrefsEditor(writer: Self.writer(transport))
 
-        editor.subtitleLanguage = "fr"
-        await editor.saveSubtitlePrefs()
-        editor.preferredMetadataLanguage = "fr"
-        await editor.saveMetadataLanguage()
+        await editor.setSubtitleLanguage("fr")
+        await editor.setPreferredMetadataLanguage("fr")
 
         XCTAssertFalse(
             transport.writes().contains { $0.key == .playbackAudioLanguage },
             "playback.audio_language is device-scoped; a profile write would be shadowed by the device row"
         )
         XCTAssertFalse(ProfileSettingKeys.all.contains(.playbackAudioLanguage))
+    }
+
+    /// The only no-op filter left: re-selecting what a control shows is not
+    /// an edit. For the metadata language it also keeps the cached overviews
+    /// from being flushed for nothing.
+    func testChoosingTheShownValueSendsNothing() async throws {
+        let transport = FakeProfileSettingsTransport()
+        transport.effective = [
+            .init(key: SettingKey.playbackSubtitleLanguage.rawValue, value: .string("es"),
+                  source: .scope(.profile), scope: .profile),
+            .init(key: SettingKey.playbackSubtitleMode.rawValue, value: .string("off"),
+                  source: .scope(.profile), scope: .profile),
+            .init(key: SettingKey.playbackShowForcedSubtitles.rawValue, value: .bool(false),
+                  source: .scope(.profile), scope: .profile),
+            .init(key: SettingKey.catalogMetadataLanguage.rawValue, value: .string("it"),
+                  source: .scope(.profile), scope: .profile),
+        ]
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
+        await editor.load()
+
+        await editor.setSubtitleLanguage("es")
+        await editor.setSubtitleMode(SubtitleMode.off.rawValue)
+        await editor.setShowForcedSubtitles(false)
+        await editor.setPreferredMetadataLanguage("it")
+
+        XCTAssertTrue(transport.writes().isEmpty)
+        XCTAssertNil(editor.saveState)
     }
 
     func testEveryProfileKeyIsReadInOneBatch() async throws {
@@ -467,10 +491,8 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         let editor = ProfilePrefsEditor(writer: Self.writer(transport))
 
         await editor.load()
-        editor.subtitleLanguage = "en"
-        editor.preferredMetadataLanguage = "fr"
-        await editor.saveSubtitlePrefs()
-        await editor.saveMetadataLanguage()
+        await editor.setSubtitleLanguage("en")
+        await editor.setPreferredMetadataLanguage("fr")
 
         XCTAssertTrue(transport.writes().isEmpty)
         XCTAssertEqual(editor.saveState, .serverUpgradeRequired)
@@ -481,15 +503,13 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         transport.failWritesWith = .serverUpgradeRequired
         let editor = ProfilePrefsEditor(writer: Self.writer(transport))
 
-        editor.subtitleLanguage = "en"
-        await editor.saveSubtitlePrefs()
+        await editor.setSubtitleLanguage("en")
 
         XCTAssertEqual(editor.saveState, .serverUpgradeRequired)
         XCTAssertTrue(editor.serverUpgradeRequired)
 
         let attempts = transport.writes().count
-        editor.subtitleLanguage = "fr"
-        await editor.saveSubtitlePrefs()
+        await editor.setSubtitleLanguage("fr")
         XCTAssertEqual(
             transport.writes().count,
             attempts,
@@ -503,12 +523,10 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         await transport.writeGate.block(.string("en"))
         let editor = ProfilePrefsEditor(writer: Self.writer(transport))
 
-        editor.subtitleLanguage = "en"
-        let firstSave = Task { await editor.saveSubtitlePrefs() }
+        let firstSave = Task { @MainActor in await editor.setSubtitleLanguage("en") }
         await transport.writeGate.waitUntilEntered(.string("en"))
 
-        editor.subtitleLanguage = "fr"
-        await editor.saveSubtitlePrefs()
+        await editor.setSubtitleLanguage("fr")
         await transport.writeGate.release(.string("en"))
         await firstSave.value
 
@@ -525,12 +543,13 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
             ),
         ]
         await editor.load()
-        await editor.saveSubtitlePrefs()
+        await editor.setSubtitleMode(SubtitleMode.always.rawValue)
         XCTAssertEqual(
-            transport.writes().map(\.value),
+            transport.writes().filter { $0.key == .playbackSubtitleLanguage }.map(\.value),
             [.string("en")],
-            "a later successful load must not revive the obsolete queued edit"
+            "a later successful load and sibling edit must not revive the obsolete queued edit"
         )
+        XCTAssertEqual(editor.subtitleLanguage, "ja", "nothing is left queued, so the read repaints")
     }
 
     func testOldServerDetectionStopsAnOverlappingMetadataSaveDrain() async throws {
@@ -539,12 +558,10 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         await transport.writeGate.block(.string("en"))
         let editor = ProfilePrefsEditor(writer: Self.writer(transport))
 
-        editor.preferredMetadataLanguage = "en"
-        let firstSave = Task { await editor.saveMetadataLanguage() }
+        let firstSave = Task { @MainActor in await editor.setPreferredMetadataLanguage("en") }
         await transport.writeGate.waitUntilEntered(.string("en"))
 
-        editor.preferredMetadataLanguage = "fr"
-        await editor.saveMetadataLanguage()
+        await editor.setPreferredMetadataLanguage("fr")
         await transport.writeGate.release(.string("en"))
         await firstSave.value
 
@@ -561,12 +578,12 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
             ),
         ]
         await editor.load()
-        await editor.saveMetadataLanguage()
         XCTAssertEqual(
             transport.writes().map(\.value),
             [.string("en")],
             "a later successful load must not revive the obsolete queued edit"
         )
+        XCTAssertEqual(editor.preferredMetadataLanguage, "ja", "nothing is left queued, so the read repaints")
     }
 
     /// A transient read failure must not blank the screen: snapping every
@@ -575,8 +592,8 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
     func testATransientReadFailureLeavesTheEditorAlone() async throws {
         let transport = FakeProfileSettingsTransport()
         let editor = ProfilePrefsEditor(writer: Self.writer(transport))
-        editor.subtitleLanguage = "ko"
-        editor.showForcedSubtitles = "off"
+        await editor.setSubtitleLanguage("ko")
+        await editor.setShowForcedSubtitles(false)
 
         transport.failReadsWith = .transport(description: "offline")
         await editor.load()
@@ -595,9 +612,8 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         let editor = ProfilePrefsEditor(writer: Self.writer(transport))
         editor.seed(from: nil)
 
-        editor.subtitleMode = SubtitleMode.always.rawValue
         transport.failWritesWith = .server(status: 503, code: nil, message: nil)
-        await editor.saveSubtitlePrefs()
+        await editor.setSubtitleMode(SubtitleMode.always.rawValue)
 
         var modeWrites = transport.writes().filter { $0.key == .playbackSubtitleMode }
         XCTAssertEqual(modeWrites.map(\.value), Array(repeating: .string("always"), count: 4),
@@ -605,9 +621,10 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         XCTAssertEqual(editor.saveState, .held)
         XCTAssertTrue(editor.hasHeldChanges)
 
-        // A later save for any reason must not send the held value on its own.
+        // An edit of another control must not send the held value with it.
         transport.failWritesWith = nil
-        await editor.saveSubtitlePrefs()
+        await editor.setSubtitleLanguage("ja")
+        XCTAssertEqual(transport.writesByKey()[.playbackSubtitleLanguage]?.value, .string("ja"))
         XCTAssertEqual(transport.writes().filter { $0.key == .playbackSubtitleMode }.count, 4)
 
         // "Try Again" sends it with a fresh budget.
@@ -631,28 +648,25 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
             ),
         ]
 
-        editor.subtitleLanguage = "ja"
         transport.failWritesWith = .transport(description: "offline")
-        await editor.saveSubtitlePrefs()
+        await editor.setSubtitleLanguage("ja")
         XCTAssertTrue(editor.hasHeldChanges)
 
         // A reload while held keeps showing the user's unsaved choice.
         await editor.load()
         XCTAssertEqual(editor.subtitleLanguage, "ja")
-        await editor.saveSubtitlePrefs()
         let attempts = transport.writes().count
 
         await editor.discardHeldChanges()
         XCTAssertFalse(editor.hasHeldChanges)
         XCTAssertEqual(editor.subtitleLanguage, "en", "discarding shows what the server holds")
         XCTAssertNil(editor.saveState)
-        await editor.saveSubtitlePrefs()
         XCTAssertEqual(transport.writes().count, attempts, "discarding sends nothing")
     }
 
     /// Offline, the reload after a discard fails and leaves the fields alone.
-    /// The discarded value must not stay on screen as an unsaved edit that
-    /// the next change to any other control sends along with it.
+    /// The discarded value must not stay on screen, and the next change to
+    /// any other control must not send it along.
     func testDiscardingAHeldChangeOfflineDoesNotSendItWithTheNextEdit() async throws {
         let transport = FakeProfileSettingsTransport()
         let editor = ProfilePrefsEditor(writer: Self.writer(transport))
@@ -674,10 +688,8 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
 
         transport.failWritesWith = .transport(description: "offline")
         transport.failReadsWith = .transport(description: "offline")
-        editor.subtitleLanguage = "ja"
-        await editor.saveSubtitlePrefs()
-        editor.preferredMetadataLanguage = "ko"
-        await editor.saveMetadataLanguage()
+        await editor.setSubtitleLanguage("ja")
+        await editor.setPreferredMetadataLanguage("ko")
         XCTAssertTrue(editor.hasHeldChanges)
         let heldAttempts = transport.writes().count
 
@@ -687,9 +699,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         XCTAssertEqual(editor.preferredMetadataLanguage, "de")
 
         transport.failWritesWith = nil
-        editor.subtitleMode = SubtitleMode.always.rawValue
-        await editor.saveSubtitlePrefs()
-        await editor.saveMetadataLanguage()
+        await editor.setSubtitleMode(SubtitleMode.always.rawValue)
 
         let sent = transport.writes().dropFirst(heldAttempts)
         XCTAssertEqual(sent.map(\.key), [.playbackSubtitleMode], "only the new edit is sent")
@@ -701,20 +711,117 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         let editor = ProfilePrefsEditor(writer: Self.writer(transport))
         editor.seed(from: nil)
 
-        editor.preferredMetadataLanguage = "ja"
         transport.failWritesWith = .transport(description: "offline")
-        await editor.saveMetadataLanguage()
+        await editor.setPreferredMetadataLanguage("ja")
         XCTAssertEqual(editor.saveState, .held)
 
         transport.failWritesWith = nil
-        editor.preferredMetadataLanguage = "ko"
-        await editor.saveMetadataLanguage()
+        await editor.setPreferredMetadataLanguage("ko")
 
         let values = transport.writes().filter { $0.key == .catalogMetadataLanguage }.map(\.value)
         XCTAssertEqual(values.last, .string("ko"))
         XCTAssertFalse(values.dropLast().contains(.string("ko")))
         XCTAssertEqual(editor.saveState, .saved)
         XCTAssertFalse(editor.hasHeldChanges)
+    }
+
+    func testANewEditReplacesAHeldSubtitleValue() async throws {
+        let transport = FakeProfileSettingsTransport()
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
+        editor.seed(from: nil)
+
+        transport.failWritesWith = .server(status: 503, code: nil, message: nil)
+        await editor.setSubtitleMode(SubtitleMode.always.rawValue)
+        XCTAssertEqual(editor.saveState, .held)
+
+        transport.failWritesWith = nil
+        await editor.setSubtitleMode(SubtitleMode.off.rawValue)
+
+        let values = transport.writes().filter { $0.key == .playbackSubtitleMode }.map(\.value)
+        XCTAssertEqual(values.last, .string("off"))
+        XCTAssertFalse(values.dropLast().contains(.string("off")))
+        XCTAssertFalse(editor.hasHeldChanges)
+        XCTAssertEqual(editor.saveState, .saved)
+    }
+
+    /// The writer records a hold after the final failed attempt without
+    /// checking for a newer edit. An edit queued while that attempt was in
+    /// flight must still replace the hold, or "Try Again" would later send
+    /// the old value over it.
+    func testAnEditQueuedDuringTheFinalAttemptReplacesTheHeldValue() async throws {
+        let transport = FakeProfileSettingsTransport()
+        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(
+            transport: transport,
+            retryPolicy: .init(maximumAutomaticRetries: 0, base: .milliseconds(1), maximum: .milliseconds(1))
+        ))
+        editor.seed(from: nil)
+        await transport.writeGate.block(.string("always"))
+        transport.setWriteFailure(.server(status: 503, code: nil, message: nil), for: .playbackSubtitleMode)
+
+        let firstSave = Task { @MainActor in await editor.setSubtitleMode(SubtitleMode.always.rawValue) }
+        await transport.writeGate.waitUntilEntered(.string("always"))
+        // The fake captured the failure when "always" entered, so it still fails.
+        transport.setWriteFailure(nil, for: .playbackSubtitleMode)
+        await editor.setSubtitleMode(SubtitleMode.off.rawValue)
+        await transport.writeGate.release(.string("always"))
+        await firstSave.value
+
+        XCTAssertEqual(
+            transport.writes().filter { $0.key == .playbackSubtitleMode }.map(\.value),
+            [.string("always"), .string("off")]
+        )
+        XCTAssertFalse(editor.hasHeldChanges)
+        XCTAssertEqual(editor.saveState, .saved)
+        XCTAssertEqual(editor.subtitleMode, "off")
+    }
+
+    /// The same race, seen by a reload: while a sibling write in the same
+    /// pass is in flight, the stale hold and the newer edit both exist. A
+    /// reload then must keep showing the newer edit, or it lands while the
+    /// control shows the held value.
+    func testAReloadBeforeAStaleHoldIsReplacedKeepsTheNewerEdit() async throws {
+        let transport = FakeProfileSettingsTransport()
+        transport.effective = [
+            .init(key: SettingKey.playbackSubtitleLanguage.rawValue, value: .string("ja"),
+                  source: .scope(.profile), scope: .profile),
+        ]
+        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(
+            transport: transport,
+            retryPolicy: .init(maximumAutomaticRetries: 0, base: .milliseconds(1), maximum: .milliseconds(1))
+        ))
+        editor.seed(from: nil)
+        await transport.writeGate.block(.string("ja"))
+        await transport.writeGate.block(.string("always"))
+        await transport.writeGate.block(.bool(false))
+
+        // Queue mode and forced behind a language write so one pass sends both.
+        let languageEdit = Task { @MainActor in await editor.setSubtitleLanguage("ja") }
+        await transport.writeGate.waitUntilEntered(.string("ja"))
+        await editor.setSubtitleMode(SubtitleMode.always.rawValue)
+        await editor.setShowForcedSubtitles(false)
+        transport.setWriteFailure(.server(status: 503, code: nil, message: nil), for: .playbackSubtitleMode)
+        await transport.writeGate.release(.string("ja"))
+
+        // The mode's only attempt is in flight when the user moves the control.
+        await transport.writeGate.waitUntilEntered(.string("always"))
+        transport.setWriteFailure(nil, for: .playbackSubtitleMode)
+        await editor.setSubtitleMode(SubtitleMode.off.rawValue)
+        await transport.writeGate.release(.string("always"))
+
+        // "always" is held, "off" is queued, and the forced write is in flight.
+        await transport.writeGate.waitUntilEntered(.bool(false))
+        await editor.load()
+        XCTAssertEqual(editor.subtitleMode, "off", "a reload must not show a stale hold over a newer edit")
+        await transport.writeGate.release(.bool(false))
+        await languageEdit.value
+
+        XCTAssertEqual(
+            transport.writes().filter { $0.key == .playbackSubtitleMode }.map(\.value),
+            [.string("always"), .string("off")]
+        )
+        XCTAssertEqual(editor.subtitleMode, "off")
+        XCTAssertFalse(editor.hasHeldChanges)
+        XCTAssertEqual(editor.saveState, .saved)
     }
 
     /// A refusal retrying cannot change is reported, not retried.
@@ -724,8 +831,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         let editor = ProfilePrefsEditor(writer: Self.writer(transport))
         editor.seed(from: nil)
 
-        editor.subtitleLanguage = "not a tag"
-        await editor.saveSubtitlePrefs()
+        await editor.setSubtitleLanguage("not a tag")
 
         XCTAssertEqual(transport.writes().count, 1)
         XCTAssertEqual(editor.saveState, .failed("not a language tag"))
@@ -733,7 +839,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
     }
 
     /// A value the server refused is released: the control goes back to the
-    /// saved value, and the next edit of a sibling control does not send the
+    /// server value, and the next edit of a sibling control does not send the
     /// refused value again.
     func testARefusedSubtitleWriteIsNotSentAgainWithTheNextEdit() async throws {
         let refusals: [SettingsAPIError] = [
@@ -746,15 +852,13 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
             let editor = ProfilePrefsEditor(writer: Self.writer(transport))
             editor.seed(from: nil)
 
-            editor.subtitleLanguage = "not a tag"
-            await editor.saveSubtitlePrefs()
+            await editor.setSubtitleLanguage("not a tag")
             guard case .failed = editor.saveState else {
                 return XCTFail("the refusal must be reported: \(refusal)")
             }
             XCTAssertEqual(editor.subtitleLanguage, PlaybackPrefSentinel.none, "\(refusal)")
 
-            editor.subtitleMode = SubtitleMode.always.rawValue
-            await editor.saveSubtitlePrefs()
+            await editor.setSubtitleMode(SubtitleMode.always.rawValue)
 
             XCTAssertEqual(
                 transport.writes().filter { $0.key == .playbackSubtitleLanguage }.count,
@@ -773,10 +877,8 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         let transport = FakeProfileSettingsTransport()
         let editor = ProfilePrefsEditor(writer: Self.writer(transport))
 
-        editor.subtitleMode = SubtitleMode.always.rawValue
-        await editor.saveSubtitlePrefs()
-        editor.subtitleMode = SubtitleMode.off.rawValue
-        await editor.saveSubtitlePrefs()
+        await editor.setSubtitleMode(SubtitleMode.always.rawValue)
+        await editor.setSubtitleMode(SubtitleMode.off.rawValue)
 
         let modeWrites = transport.writes().filter { $0.key == .playbackSubtitleMode }
         XCTAssertEqual(modeWrites.map(\.value), [.string("always"), .string("off")])
@@ -789,13 +891,11 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         editor.bindProfile(id: "profile-1")
         editor.seed(from: nil)
 
-        editor.subtitleLanguage = "ja"
-        let firstSave = Task { @MainActor in await editor.saveSubtitlePrefs() }
+        let firstSave = Task { @MainActor in await editor.setSubtitleLanguage("ja") }
         await transport.writeGate.waitUntilEntered(.string("ja"))
 
         editor.bindProfile(id: "profile-2")
-        editor.subtitleLanguage = "ko"
-        await editor.saveSubtitlePrefs()
+        await editor.setSubtitleLanguage("ko")
         await transport.writeGate.release(.string("ja"))
         await firstSave.value
 
@@ -815,13 +915,11 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         editor.bindProfile(id: "profile-1")
         editor.seed(from: nil)
 
-        editor.subtitleLanguage = "ja"
-        let firstSave = Task { @MainActor in await editor.saveSubtitlePrefs() }
+        let firstSave = Task { @MainActor in await editor.setSubtitleLanguage("ja") }
         await transport.writeGate.waitUntilEntered(.string("ja"))
 
         editor.bindProfile(id: "profile-2")
-        editor.subtitleLanguage = "ko"
-        await editor.saveSubtitlePrefs()
+        await editor.setSubtitleLanguage("ko")
         transport.setWriteFailure(nil, for: .playbackSubtitleLanguage)
         await transport.writeGate.release(.string("ja"))
         await firstSave.value
@@ -842,13 +940,11 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         editor.bindProfile(id: "profile-1")
         editor.seed(from: nil)
 
-        editor.preferredMetadataLanguage = "ja"
-        let firstSave = Task { @MainActor in await editor.saveMetadataLanguage() }
+        let firstSave = Task { @MainActor in await editor.setPreferredMetadataLanguage("ja") }
         await transport.writeGate.waitUntilEntered(.string("ja"))
 
         editor.bindProfile(id: "profile-2")
-        editor.preferredMetadataLanguage = "ko"
-        await editor.saveMetadataLanguage()
+        await editor.setPreferredMetadataLanguage("ko")
         await transport.writeGate.release(.string("ja"))
         await firstSave.value
 
@@ -871,8 +967,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
             editor.bindProfile(id: "profile-1")
             editor.seed(from: nil)
 
-            editor.preferredMetadataLanguage = "ja"
-            let save = Task { @MainActor in await editor.saveMetadataLanguage() }
+            let save = Task { @MainActor in await editor.setPreferredMetadataLanguage("ja") }
             await transport.writeGate.waitUntilEntered(.string("ja"))
 
             editor.bindProfile(id: "profile-2")
@@ -886,16 +981,16 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         }
     }
 
-    // MARK: - Scope promotion
+    // MARK: - Reads never send
 
     /// A value the effective read resolved from a *narrower* scope must not be
     /// written back at `profile` scope on screen open.
     ///
     /// All three subtitle keys list `profile_device` in `allowed_scopes`, and
     /// the web admin's per-device settings pane writes them there. This editor
-    /// only ever writes at `profile`, so repainting the resolved value into the
-    /// fields makes `onChange` fire and promotes one device's override to the
-    /// whole household — with the user having touched nothing.
+    /// only ever writes at `profile`, so sending a value the read painted
+    /// would promote one device's override to the whole household, with the
+    /// user having touched nothing.
     func testOpeningTheScreenDoesNotPromoteADeviceOverrideToTheProfile() async throws {
         let transport = FakeProfileSettingsTransport()
         let editor = ProfilePrefsEditor(writer: Self.writer(transport))
@@ -925,18 +1020,21 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         ]
         await editor.load()
         XCTAssertEqual(editor.subtitleLanguage, "en", "precondition: the resolved value is painted")
-
-        // Exactly what the screens do on every field the repaint moved.
-        await editor.saveSubtitlePrefs()
-
         XCTAssertTrue(
             transport.writes().isEmpty,
             "a repaint is not a user edit: writing it back would promote the device row to the profile"
         )
+
+        await editor.setSubtitleMode(SubtitleMode.off.rawValue)
+
+        XCTAssertEqual(
+            transport.writes().map(\.key),
+            [.playbackSubtitleMode],
+            "an edit sends only the control the user changed"
+        )
     }
 
-    /// The suppression is per key and per value, not a blanket "never write
-    /// after a load": a control the user actually touches still saves.
+    /// Reads never send, but a control the user actually touches still saves.
     func testAnEditAfterALoadStillSaves() async throws {
         let transport = FakeProfileSettingsTransport()
         let editor = ProfilePrefsEditor(writer: Self.writer(transport))
@@ -951,8 +1049,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         ]
         await editor.load()
 
-        editor.subtitleLanguage = "ja"
-        await editor.saveSubtitlePrefs()
+        await editor.setSubtitleLanguage("ja")
 
         let byKey = transport.writesByKey()
         XCTAssertEqual(byKey[.playbackSubtitleLanguage]?.value, .string("ja"))
@@ -963,26 +1060,99 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         XCTAssertEqual(editor.saveState, .saved)
     }
 
+    /// A reload that lands while the user's write is in flight is a read,
+    /// not an edit. Sending it back would revert the user's choice on the
+    /// server, and here would also promote the device row to the profile.
+    func testAReloadDuringASubtitleWriteDoesNotSendTheReadValueBack() async throws {
+        let transport = FakeProfileSettingsTransport()
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
+        editor.seed(from: nil)
+        transport.effective = [
+            .init(key: SettingKey.playbackSubtitleLanguage.rawValue, value: .string("en"),
+                  source: .scope(.profileDevice), scope: .profileDevice),
+        ]
+        await transport.writeGate.block(.string("ja"))
+
+        let edit = Task { @MainActor in await editor.setSubtitleLanguage("ja") }
+        await transport.writeGate.waitUntilEntered(.string("ja"))
+        await editor.load()
+        await transport.writeGate.release(.string("ja"))
+        await edit.value
+
+        XCTAssertEqual(
+            transport.writes().filter { $0.key == .playbackSubtitleLanguage }.map(\.value),
+            [.string("ja")],
+            "neither the stale read nor the device value may be sent to the profile"
+        )
+        XCTAssertEqual(editor.saveState, .saved)
+    }
+
+    func testAReloadDuringASubtitleWriteKeepsTheUserValueOnScreen() async throws {
+        let transport = FakeProfileSettingsTransport()
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
+        editor.seed(from: nil)
+        transport.effective = [
+            .init(key: SettingKey.playbackSubtitleLanguage.rawValue, value: .string("en"),
+                  source: .scope(.profile), scope: .profile),
+        ]
+        await transport.writeGate.block(.string("ja"))
+
+        let edit = Task { @MainActor in await editor.setSubtitleLanguage("ja") }
+        await transport.writeGate.waitUntilEntered(.string("ja"))
+        await editor.load()
+        XCTAssertEqual(editor.subtitleLanguage, "ja", "a read must not replace an edit still in flight")
+        await transport.writeGate.release(.string("ja"))
+        await edit.value
+
+        XCTAssertEqual(editor.subtitleLanguage, "ja")
+        XCTAssertEqual(editor.saveState, .saved)
+        XCTAssertEqual(transport.writes().filter { $0.key == .playbackSubtitleLanguage }.count, 1)
+    }
+
+    func testAReloadDuringAMetadataWriteKeepsTheEditOnScreen() async throws {
+        let transport = FakeProfileSettingsTransport()
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
+        editor.seed(from: nil)
+        await transport.writeGate.block(.string("ja"))
+
+        let edit = Task { @MainActor in await editor.setPreferredMetadataLanguage("ja") }
+        await transport.writeGate.waitUntilEntered(.string("ja"))
+        transport.effective = [
+            .init(key: SettingKey.catalogMetadataLanguage.rawValue, value: .string("de"),
+                  source: .scope(.profile), scope: .profile),
+        ]
+        await editor.load()
+        await transport.writeGate.release(.string("ja"))
+        await edit.value
+
+        XCTAssertEqual(
+            transport.writes().filter { $0.key == .catalogMetadataLanguage }.map(\.value),
+            [.string("ja")]
+        )
+        XCTAssertEqual(editor.preferredMetadataLanguage, "ja")
+        XCTAssertEqual(editor.saveState, .saved)
+    }
+
     /// A write that was not sent because a precondition failed is still owed,
-    /// so the next save must retry it rather than treat the field as already
-    /// persisted.
-    func testAFailedWriteIsRetriedByTheNextSave() async throws {
+    /// so the next edit must send it too rather than treat the field as
+    /// already persisted.
+    func testAnUnsentWriteIsSentWithTheNextEdit() async throws {
         let transport = FakeProfileSettingsTransport()
         let editor = ProfilePrefsEditor(writer: Self.writer(transport))
 
         editor.seed(from: nil)
-        editor.subtitleLanguage = "ko"
         transport.failWritesWith = .profileRequired
-        await editor.saveSubtitlePrefs()
+        await editor.setSubtitleLanguage("ko")
         XCTAssertEqual(transport.writes().filter { $0.key == .playbackSubtitleLanguage }.count, 1)
 
         transport.failWritesWith = nil
-        await editor.saveSubtitlePrefs()
+        await editor.setSubtitleMode(SubtitleMode.always.rawValue)
 
         let languageWrites = transport.writes().filter { $0.key == .playbackSubtitleLanguage }
         XCTAssertEqual(languageWrites.count, 2,
                        "a failed write must stay owed rather than being marked persisted")
         XCTAssertEqual(languageWrites.last?.value, .string("ko"))
+        XCTAssertEqual(transport.writesByKey()[.playbackSubtitleMode]?.value, .string("always"))
     }
 
     func testOverlappingEditsToOneProfileKeyLandNewestLast() async throws {
@@ -990,14 +1160,12 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         transport.writeDelays[.string("ja")] = .milliseconds(100)
         let editor = ProfilePrefsEditor(writer: Self.writer(transport))
 
-        editor.subtitleLanguage = "ja"
-        let firstSave = Task { @MainActor in await editor.saveSubtitlePrefs() }
+        let firstSave = Task { @MainActor in await editor.setSubtitleLanguage("ja") }
         try await waitUntil("the first language write to start") {
             transport.writes().count == 1
         }
 
-        editor.subtitleLanguage = "ko"
-        await editor.saveSubtitlePrefs()
+        await editor.setSubtitleLanguage("ko")
         await firstSave.value
 
         let completedLanguages = transport.completedWrites()
@@ -1022,18 +1190,16 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         let editor = ProfilePrefsEditor(writer: Self.writer(transport))
         editor.seed(from: nil)
 
-        editor.subtitleLanguage = "ja"
-        let firstSave = Task { @MainActor in await editor.saveSubtitlePrefs() }
+        let firstSave = Task { @MainActor in await editor.setSubtitleLanguage("ja") }
         try await waitUntil("the first subtitle-language write to start") {
             transport.writes().count == 1
         }
 
         // The first request may have reached the server even though its
-        // response was lost. Reverting to the saved baseline still owes an
+        // response was lost. Going back to the server value still owes an
         // explicit compensating write.
         transport.setWriteFailure(nil, for: .playbackSubtitleLanguage)
-        editor.subtitleLanguage = PlaybackPrefSentinel.none
-        await editor.saveSubtitlePrefs()
+        await editor.setSubtitleLanguage(PlaybackPrefSentinel.none)
         await transport.writeGate.release(.string("ja"))
         await firstSave.value
 
@@ -1043,7 +1209,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         XCTAssertEqual(
             values,
             [.string("ja"), .null],
-            "an ambiguous failure must not let the saved baseline suppress the queued revert"
+            "an ambiguous failure must not suppress the queued revert"
         )
         XCTAssertEqual(editor.subtitleLanguage, PlaybackPrefSentinel.none)
         XCTAssertEqual(editor.saveState, .saved)
@@ -1056,18 +1222,23 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
             code: "forbidden",
             message: nil
         )
+        await transport.writeGate.block(.string("ja"))
         let editor = ProfilePrefsEditor(writer: Self.writer(transport))
         ProfilePrefsStore.shared.clear()
         defer { ProfilePrefsStore.shared.clear() }
 
-        editor.subtitleLanguage = "ja"
-        editor.subtitleMode = SubtitleMode.always.rawValue
-        await editor.saveSubtitlePrefs()
+        // Both edits go out in one drain: the mode edit queues behind the
+        // language write.
+        let languageEdit = Task { @MainActor in await editor.setSubtitleLanguage("ja") }
+        await transport.writeGate.waitUntilEntered(.string("ja"))
+        await editor.setSubtitleMode(SubtitleMode.always.rawValue)
+        await transport.writeGate.release(.string("ja"))
+        await languageEdit.value
 
         XCTAssertEqual(
             ProfilePrefsStore.shared.preferredSubtitleLanguage,
             "ja",
-            "a landed language row must update local ordering even when another row in the batch fails"
+            "a landed language row must update local ordering even when another row in the drain fails"
         )
         guard case .failed = editor.saveState else {
             return XCTFail("the sibling failure must still be reported")
@@ -1087,8 +1258,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         let editor = ProfilePrefsEditor(writer: Self.writer(transport))
         await editor.load()
 
-        editor.subtitleLanguage = "ja"
-        await editor.saveSubtitlePrefs()
+        await editor.setSubtitleLanguage("ja")
 
         XCTAssertEqual(
             transport.effectiveCalls().count,
@@ -1120,16 +1290,14 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         await editor.load()
         transport.effectiveDelay = .milliseconds(100)
 
-        editor.subtitleLanguage = "ja"
-        let firstSave = Task { @MainActor in await editor.saveSubtitlePrefs() }
+        let firstSave = Task { @MainActor in await editor.setSubtitleLanguage("ja") }
         for _ in 0..<100 {
             if transport.effectiveCalls().count >= 2 { break }
             try await Task.sleep(for: .milliseconds(10))
         }
         XCTAssertEqual(transport.effectiveCalls().count, 2, "the post-write resolution read must start")
 
-        editor.subtitleLanguage = "ko"
-        await editor.saveSubtitlePrefs()
+        await editor.setSubtitleLanguage("ko")
         await firstSave.value
 
         let languages = transport.writes()
@@ -1154,14 +1322,12 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         let editor = ProfilePrefsEditor(writer: Self.writer(transport))
         editor.seed(from: nil)
 
-        editor.preferredMetadataLanguage = "ja"
-        let firstSave = Task { @MainActor in await editor.saveMetadataLanguage() }
+        let firstSave = Task { @MainActor in await editor.setPreferredMetadataLanguage("ja") }
         try await waitUntil("the first metadata-language write to start") {
             transport.writes().count == 1
         }
 
-        editor.preferredMetadataLanguage = PlaybackPrefSentinel.none
-        await editor.saveMetadataLanguage()
+        await editor.setPreferredMetadataLanguage(PlaybackPrefSentinel.none)
         await firstSave.value
 
         let values = transport.writes()
@@ -1170,7 +1336,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         XCTAssertEqual(
             values,
             [.string("ja"), .null],
-            "reverting to the baseline while an older PUT is suspended must enqueue the revert"
+            "going back to the server value while an older PUT is suspended must enqueue the revert"
         )
         XCTAssertEqual(editor.preferredMetadataLanguage, PlaybackPrefSentinel.none)
         XCTAssertEqual(editor.saveState, .saved)
