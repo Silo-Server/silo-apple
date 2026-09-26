@@ -58,7 +58,11 @@ final class StubURLProtocol: URLProtocol {
         let method: String
         let url: URL?
         let path: String
+        /// The last value for each query name. Use `queryItems` when a name
+        /// repeats or order matters.
         let query: [String: String]
+        /// Every query item in URL order, repeated names included.
+        let queryItems: [URLQueryItem]
         let headers: [String: String]
         let body: Data?
 
@@ -70,8 +74,9 @@ final class StubURLProtocol: URLProtocol {
             url = request.url
             let components = request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }
             path = components?.path ?? ""
+            queryItems = components?.queryItems ?? []
             var query: [String: String] = [:]
-            for item in components?.queryItems ?? [] {
+            for item in queryItems {
                 query[item.name] = item.value ?? ""
             }
             self.query = query
