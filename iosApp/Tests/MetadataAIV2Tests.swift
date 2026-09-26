@@ -73,7 +73,7 @@ final class MetadataAIV2Tests: XCTestCase {
     func testTranslatePostsTheTargetLanguageToTheEncodedItemPath() async throws {
         let (api, _) = try await client()
         stub.reply(202, Self.job)
-        let auth = try await api.captureAIAuthority()
+        let auth = try await api.captureRequestOwner()
         let job = try await api.translateDescription(contentID: "movie/heat?1995", language: "de", auth: auth)
         XCTAssertEqual(job.id, "job-1")
         XCTAssertFalse(job.failed)
@@ -89,14 +89,14 @@ final class MetadataAIV2Tests: XCTestCase {
     func testTranslateReportsAReusedFailedJob() async throws {
         let (api, _) = try await client()
         stub.reply(202, Self.job.replacingOccurrences(of: #""status":"pending""#, with: #""status":"failed""#))
-        let auth = try await api.captureAIAuthority()
+        let auth = try await api.captureRequestOwner()
         let job = try await api.translateDescription(contentID: "movie/heat?1995", language: "de", auth: auth)
         XCTAssertTrue(job.failed)
     }
 
     func testTranslateRefusesAnyStatusButAccepted() async throws {
         let (api, _) = try await client()
-        let auth = try await api.captureAIAuthority()
+        let auth = try await api.captureRequestOwner()
         stub.reply(200, Self.job)
         do {
             _ = try await api.translateDescription(contentID: "movie/heat?1995", language: "de", auth: auth)
@@ -112,7 +112,7 @@ final class MetadataAIV2Tests: XCTestCase {
     func testTranslateRejectsAJobForAnotherItem() async throws {
         let (api, _) = try await client()
         stub.reply(202, Self.job)
-        let auth = try await api.captureAIAuthority()
+        let auth = try await api.captureRequestOwner()
         do {
             _ = try await api.translateDescription(contentID: "movie:other", language: "de", auth: auth)
             XCTFail("job for another item accepted")
@@ -121,9 +121,9 @@ final class MetadataAIV2Tests: XCTestCase {
 
     func testTranslateIsNotSentAfterTheProfileChanged() async throws {
         let (api, tokens) = try await client()
-        let auth = try await api.captureAIAuthority()
+        let auth = try await api.captureRequestOwner()
         await tokens.setProfileId("profile-two")
-        let stillCurrent = await api.matchesAIAuthority(auth)
+        let stillCurrent = await api.isCurrentOwner(auth)
         XCTAssertFalse(stillCurrent)
         do {
             _ = try await api.translateDescription(contentID: "movie/heat?1995", language: "de", auth: auth)

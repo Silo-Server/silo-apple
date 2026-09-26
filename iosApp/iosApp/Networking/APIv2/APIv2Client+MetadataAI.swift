@@ -21,21 +21,16 @@ extension APIv2Client {
     func translateDescription(contentID: String, language: String,
                               auth: CapturedOrdinaryRequestAuth) async throws -> APIv2MetadataTranslationJob {
         try await gate()
-        guard let profile = auth.profileId, await matchesAIAuthority(auth), !contentID.isEmpty,
-              !language.isEmpty else {
+        // The profile must be selected but, unlike `profileRequest`, may be empty.
+        guard auth.profileId != nil, await isCurrentOwner(auth), !contentID.isEmpty, !language.isEmpty else {
             throw HTTPError.requestIdentityChanged
         }
         let segment = try catalogPathSegment(contentID)
-        let identity = Self.requestIdentity(auth, profile: profile)
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
         let body = try encoder.encode(APIv2TranslateDescriptionBody(targetLanguage: language))
-        let raw = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "POST", path: "/api/v2/catalog/items/\(segment)/translate-description",
-                    body: body, requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
+        let raw = try await send(APIv2Request(method: "POST", path: "/api/v2/catalog/items/\(segment)/translate-description",
+                                              body: body), auth: auth)
         guard raw.statusCode == 202 else { throw APIv2Error.httpStatus(raw.statusCode) }
         let job = try HTTPClient.makeJSONDecoder().decode(APIv2MetadataTranslationJob.self, from: raw.data)
         guard !job.id.isEmpty, job.contentId == contentID, ["item", "season", "episode"].contains(job.targetKind) else {

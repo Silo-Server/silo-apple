@@ -16,11 +16,9 @@ extension APIv2Client {
     /// as having no progress on the server, so it must never see a prefix.
     func listAllProgress(auth: CapturedOrdinaryRequestAuth) async throws -> [APIv2ProgressEntry] {
         try await gate()
-        guard let profile = auth.profileId, !profile.isEmpty,
-              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+        guard let profile = auth.profileId, !profile.isEmpty, await isCurrentOwner(auth) else {
             throw HTTPError.requestIdentityChanged
         }
-        let identity = Self.requestIdentity(auth, profile: profile)
         var entries: [APIv2ProgressEntry] = []
         var ids: Set<String> = []
         var cursors: Set<String> = []
@@ -28,12 +26,7 @@ extension APIv2Client {
         for _ in 0..<Self.progressMaxPages {
             var query = ["limit": String(Self.progressPageLimit)]
             if let cursor { query["cursor"] = cursor }
-            let response = try await tokenStore.withOwnerFence(auth) {
-                try await mapErrors {
-                    try await http.requestData(method: "GET", path: "/api/v2/progress", query: query,
-                        requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-                }
-            }
+            let response = try await send(APIv2Request(method: "GET", path: "/api/v2/progress", query: query), auth: auth)
             guard response.statusCode == 200 else { throw APIv2Error.httpStatus(response.statusCode) }
             let page = try HTTPClient.makeJSONDecoder().decode(APIv2ProgressPage.self, from: response.data)
             guard page.items.count <= Self.progressPageLimit else { throw ProgressReadError.incompleteRead }
@@ -79,17 +72,14 @@ extension APIv2Client {
     func syncProgress(_ items: [SyncProgressItem], auth: CapturedOrdinaryRequestAuth) async -> ProgressSyncOutcome {
         let request = SyncProgressRequest(items: items)
         let body: Data
-        let identity: HTTPRequestIdentity
         do {
             try await gate()
             guard request.isValidBatch else { throw ProgressSyncError.invalidBatch }
-            guard let profile = auth.profileId, !profile.isEmpty,
-                  await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            guard let profile = auth.profileId, !profile.isEmpty, await isCurrentOwner(auth) else {
                 throw HTTPError.requestIdentityChanged
             }
             try Task.checkCancellation()
             body = try JSONEncoder().encode(request)
-            identity = Self.requestIdentity(auth, profile: profile)
         } catch {
             return .notSent(error)
         }
@@ -97,13 +87,8 @@ extension APIv2Client {
         let response: HTTPRawResponse
         let dispatch = HTTPDispatchRecord()
         do {
-            response = try await tokenStore.withOwnerFence(auth) {
-                try await mapErrors {
-                    try await http.requestData(method: "POST", path: "/api/v2/sync/progress", body: body,
-                        requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth,
-                        dispatchRecord: dispatch)
-                }
-            }
+            response = try await send(APIv2Request(method: "POST", path: "/api/v2/sync/progress", body: body),
+                                      auth: auth, dispatch: dispatch)
         } catch {
             return Self.progressSyncFailure(error, dispatched: dispatch.didDispatch)
         }

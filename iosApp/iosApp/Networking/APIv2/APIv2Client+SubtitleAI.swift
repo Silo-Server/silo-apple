@@ -37,20 +37,14 @@ extension APIv2Client {
     /// a different job throws `SubtitleCreationError.outcomeUnknown`.
     func createSubtitle(_ body: APIv2SubtitleCreateBody, auth: CapturedOrdinaryRequestAuth) async throws -> SubtitleCreationResult {
         try await gate()
-        guard let current = await tokenStore.captureOrdinaryRequestAuth(), current.sameCredentialIdentity(as: auth) else {
+        guard await isCurrentOwner(auth) else {
             throw HTTPError.requestIdentityChanged
         }
         let data = try Self.encodeSubtitleBody(body)
-        let identity = auth.profileId.map { Self.requestIdentity(auth, profile: $0) }
         let raw: HTTPRawResponse
         do {
-            raw = try await tokenStore.withOwnerFence(auth) {
-                try await mapErrors {
-                    try await http.requestData(method: "POST", path: "/api/v2/subtitles/ai/translate", body: data,
-                        headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:],
-                        requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-                }
-            }
+            raw = try await send(APIv2Request(method: "POST", path: "/api/v2/subtitles/ai/translate", body: data),
+                                 auth: auth)
         } catch HTTPError.authorityChanged, HTTPError.requestIdentityChanged {
             // `requestIdentityChanged` is raised both just before the bytes
             // leave and after the response arrives, so it cannot prove the

@@ -75,6 +75,25 @@ enum APIv2Error: LocalizedError, Sendable {
     }
 }
 
+/// One owner-bound v2 request, as `APIv2Client.send(_:auth:dispatch:)` hands
+/// it to `HTTPClient.requestData`. The owner, its request identity and the
+/// pre-dispatch owner guards are added by `send`, never by the caller.
+/// Whether a 401 may refresh and re-send the request is decided by
+/// `HTTPClient` from `method` and `path` (`APIv2MutationCatalog`), so it is
+/// not part of this value.
+struct APIv2Request: Sendable {
+    let method: String
+    let path: String
+    var query: [String: String] = [:]
+    var repeatedQuery: [URLQueryItem] = []
+    var body: Data?
+    var contentType = "application/json"
+    var headers: [String: String] = [:]
+    var quietStatuses: Set<Int> = []
+    var acceptedStatuses: Set<Int> = []
+    var timeout: HTTPTimeout = .standard
+}
+
 /// The v2 operations. Every path here is `/api/v2`; nothing in this file may
 /// name a v1 path, and a failed v2 call is never replayed against another API
 /// major.
@@ -82,12 +101,13 @@ enum APIv2Error: LocalizedError, Sendable {
 /// Ownership fences (`docs/native-api-v2.md`): every method that acts for a
 /// captured owner refuses to start when that owner is no longer current, and
 /// discards the response when the owner changed while the request was in
-/// flight. The leading check lives in the method's validation guard so the
-/// refusal happens before any path is built; the awaited request itself runs
-/// inside `TokenStore.withOwnerFence`, which re-checks the same owner before
-/// and after the await and throws `HTTPError.authorityChanged` on a mismatch.
-/// `HTTPClient` performs one more pre-dispatch check against `expectedAuth`
-/// immediately before the bytes leave the device.
+/// flight. `send(_:auth:dispatch:)` is the one place such a request reaches
+/// `HTTPClient`: it runs inside `TokenStore.withOwnerFence`, which re-checks
+/// the owner before and after the await and throws `HTTPError.authorityChanged`
+/// on a mismatch, and `HTTPClient` checks `expectedAuth` once more
+/// immediately before the bytes leave the device. Most methods reach `send`
+/// through `profileRequest`, which runs the gate and the leading owner check
+/// first, so the refusal happens before any path is built.
 struct APIv2Client: Sendable {
     // Internal, not private, so the per-domain `APIv2Client+<Domain>.swift`
     // extensions build on the same transport, fences and error mapping.
@@ -128,8 +148,9 @@ struct APIv2Client: Sendable {
     // MARK: getCurrentUser (authenticated)
 
     func currentUser() async throws -> APIv2Account {
-        try await gate()
-        guard let captured = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
+        let captured = try await captureRequestOwner()
+        // Reads through `http.get`, not `send`: the account read stays on the
+        // unscoped request path.
         let value: APIv2Account = try await tokenStore.withOwnerFence(captured) {
             try await mapErrors { try await http.get("/api/v2/account/me") }
         }
@@ -145,21 +166,8 @@ struct APIv2Client: Sendable {
 
     /// Account discovery is valid before selecting a household profile.
     func userLibraries() async throws -> [APIv2UserLibrary] {
-        try await gate()
-        guard let auth = await tokenStore.captureOrdinaryRequestAuth() else {
-            throw HTTPError.requestIdentityChanged
-        }
-        let identity = auth.profileId.map { Self.requestIdentity(auth, profile: $0) }
-        let response = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "GET", path: "/api/v2/user/libraries",
-                    headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:],
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
-        guard response.statusCode == 200 else { throw APIv2Error.httpStatus(response.statusCode) }
-        return try HTTPClient.makeJSONDecoder(artworkServerURL: response.url)
-            .decode(APIv2CatalogReadCollection<APIv2UserLibrary>.self, from: response.data).completeItems()
+        let collection: APIv2CatalogReadCollection<APIv2UserLibrary> = try await requestGet("/api/v2/user/libraries")
+        return try collection.completeItems()
     }
 
     // MARK: listProgress (profile_scoped)
@@ -193,8 +201,9 @@ struct APIv2Client: Sendable {
     func updateProfile(id: String, patch: APIv2ProfilePatch,
                        auth: CapturedOrdinaryRequestAuth) async throws -> APIv2Profile {
         try await gate()
-        guard id == auth.profileId,
-              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+        // Unlike `profileRequest`, the selected profile only has to be the
+        // one addressed.
+        guard id == auth.profileId, await isCurrentOwner(auth) else {
             throw HTTPError.requestIdentityChanged
         }
         let encoder = JSONEncoder()
@@ -202,13 +211,7 @@ struct APIv2Client: Sendable {
         encoder.outputFormatting = [.sortedKeys]
         let body = try encoder.encode(patch)
         let path = "/api/v2/profiles/\(try catalogPathSegment(id))"
-        let identity = Self.requestIdentity(auth, profile: id)
-        let response = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "PATCH", path: path, body: body,
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
+        let response = try await send(APIv2Request(method: "PATCH", path: path, body: body), auth: auth)
         guard response.statusCode == 200 else { throw APIv2Error.httpStatus(response.statusCode) }
         let profile = try HTTPClient.makeJSONDecoder(artworkServerURL: response.url).decode(APIv2Profile.self, from: response.data)
         guard profile.id == id else { throw APIv2Error.incompleteCatalogRead }
@@ -221,35 +224,20 @@ struct APIv2Client: Sendable {
     /// discarded if the account, credential owner, or profile changed while
     /// the request was in flight.
     func requestGet<T: Decodable>(_ path: String, query: [String: String] = [:]) async throws -> T {
-        try await gate()
-        guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
-        let identity = auth.profileId.map { Self.requestIdentity(auth, profile: $0) }
-        let response = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "GET", path: path, query: query,
-                    headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:],
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
+        let auth = try await captureRequestOwner()
+        let response = try await send(APIv2Request(method: "GET", path: path, query: query), auth: auth)
         guard response.statusCode == 200 else { throw APIv2Error.httpStatus(response.statusCode) }
         return try HTTPClient.makeJSONDecoder(artworkServerURL: response.url).decode(T.self, from: response.data)
     }
 
     func settingsRead(_ path: String, query: [URLQueryItem] = [], profileID: String? = nil,
                       expectedIdentity: HTTPRequestIdentity? = nil, profileRequired: Bool = false) async throws -> Data {
-        try await gate()
-        guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
+        let auth = try await captureRequestOwner()
         if profileRequired && auth.profileId == nil { throw SettingsAPIError.profileRequired }
         if let profileID, profileID != auth.profileId { throw HTTPError.requestIdentityChanged }
-        let identity = auth.profileId.map { Self.requestIdentity(auth, profile: $0) }
-        try Self.requireSettingsIdentity(expectedIdentity, matches: identity)
-        let response = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "GET", path: path, repeatedQuery: query,
-                    headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:],
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
+        try Self.requireSettingsIdentity(expectedIdentity,
+                                         matches: auth.profileId.map { Self.requestIdentity(auth, profile: $0) })
+        let response = try await send(APIv2Request(method: "GET", path: path, repeatedQuery: query), auth: auth)
         guard response.statusCode == 200 else { throw APIv2Error.incompleteCatalogRead }
         return response.data
     }
@@ -262,19 +250,12 @@ struct APIv2Client: Sendable {
     func settingsWrite(_ method: String, path: String, query: [String: String], body: Data?,
                        profileID: String, expectedIdentity: HTTPRequestIdentity? = nil,
                        quietStatuses: Set<Int> = []) async throws -> HTTPRawResponse {
-        try await gate()
-        guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
+        let auth = try await captureRequestOwner()
         guard let profile = auth.profileId else { throw SettingsAPIError.profileRequired }
         guard profile == profileID else { throw HTTPError.requestIdentityChanged }
-        let identity = Self.requestIdentity(auth, profile: profile)
-        try Self.requireSettingsIdentity(expectedIdentity, matches: identity)
-        return try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: method, path: path, query: query, body: body,
-                    quietStatuses: quietStatuses, requestIdentity: identity,
-                    expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
+        try Self.requireSettingsIdentity(expectedIdentity, matches: Self.requestIdentity(auth, profile: profile))
+        return try await send(APIv2Request(method: method, path: path, query: query, body: body,
+                                           quietStatuses: quietStatuses), auth: auth)
     }
 
     /// Refuses a settings request whose caller pinned an identity that is no
@@ -314,47 +295,15 @@ struct APIv2Client: Sendable {
 
     private func mutateTrackPreference(kind: TrackPreferenceKind, seriesId: String, method: String, body: Data?,
                                        auth: CapturedOrdinaryRequestAuth) async throws {
-        try await gate()
-        guard !seriesId.isEmpty,
-              let profile = auth.profileId, !profile.isEmpty,
-              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
-            throw HTTPError.requestIdentityChanged
+        _ = try await profileRequest(auth: auth, valid: !seriesId.isEmpty, cancellation: .never, status: 204) {
+            APIv2Request(method: method, path: "/api/v2/\(kind.rawValue)-prefs/\(try catalogPathSegment(seriesId))",
+                         body: body)
         }
-        let segment = try catalogPathSegment(seriesId)
-        let identity = Self.requestIdentity(auth, profile: profile)
-        let response = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: method, path: "/api/v2/\(kind.rawValue)-prefs/\(segment)",
-                    body: body, requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
-        guard response.statusCode == 204 else { throw APIv2Error.httpStatus(response.statusCode) }
-    }
-
-    /// Whether `auth` still describes the current owner. Goes through the one
-    /// comparator; callers scheduling AI work check this before dispatch.
-    func matchesAIAuthority(_ auth: CapturedOrdinaryRequestAuth) async -> Bool {
-        await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
-    }
-
-    /// The owner an AI action runs for, captured before its first await.
-    func captureAIAuthority() async throws -> CapturedOrdinaryRequestAuth {
-        try await gate()
-        guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
-        return auth
     }
 
     private func householdRequest<T: Decodable>(_ method: String, path: String, body: Data? = nil, status: Int) async throws -> T {
-        try await gate()
-        guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
-        let identity = auth.profileId.map { Self.requestIdentity(auth, profile: $0) }
-        let response = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: method, path: path, body: body,
-                    headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:],
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
+        let auth = try await captureRequestOwner()
+        let response = try await send(APIv2Request(method: method, path: path, body: body), auth: auth)
         guard response.statusCode == status else { throw APIv2Error.httpStatus(response.statusCode) }
         return try HTTPClient.makeJSONDecoder(artworkServerURL: response.url).decode(T.self, from: response.data)
     }
@@ -387,26 +336,16 @@ struct APIv2Client: Sendable {
     /// both under one captured owner. The state's strong `ETag` is the only
     /// validator a later `onboardingWrite` may send.
     func onboardingRead(surface: String? = nil) async throws -> APIv2OnboardingSession {
-        try await gate()
-        guard let auth = await tokenStore.captureOrdinaryRequestAuth(), let profile = auth.profileId else { throw HTTPError.requestIdentityChanged }
-        let identity = Self.requestIdentity(auth, profile: profile)
-        let raw = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "GET", path: "/api/v2/onboarding/state",
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
+        let auth = try await captureRequestOwner()
+        guard auth.profileId != nil else { throw HTTPError.requestIdentityChanged }
+        let raw = try await send(APIv2Request(method: "GET", path: "/api/v2/onboarding/state"), auth: auth)
         guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
         let state = try HTTPClient.makeJSONDecoder().decode(OnboardingState.self, from: raw.data)
         let tag = try Self.entityTag(raw.header("ETag"))
         var flow: OnboardingFlow?
         if let surface {
-            let response = try await tokenStore.withOwnerFence(auth) {
-                try await mapErrors {
-                    try await http.requestData(method: "GET", path: "/api/v2/onboarding/flow", query: ["surface": surface],
-                        requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-                }
-            }
+            let response = try await send(APIv2Request(method: "GET", path: "/api/v2/onboarding/flow",
+                                                       query: ["surface": surface]), auth: auth)
             guard response.statusCode == 200 else { throw APIv2Error.httpStatus(response.statusCode) }
             flow = try HTTPClient.makeJSONDecoder().decode(OnboardingFlow.self, from: response.data)
             guard flow?.tourId == state.tourId else { throw OnboardingProgressError.tourChanged }
@@ -421,24 +360,13 @@ struct APIv2Client: Sendable {
     /// write, and must replace its session with the one returned.
     func onboardingWrite(_ body: OnboardingProgressRequest,
                          session: APIv2OnboardingSession) async throws -> APIv2OnboardingSession {
-        try await gate()
         let auth = session.auth
-        guard body.tourId == session.state.tourId,
-              let profile = auth.profileId, !profile.isEmpty,
-              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
-            throw HTTPError.requestIdentityChanged
+        let raw = try await profileRequest(auth: auth, valid: body.tourId == session.state.tourId,
+                                           cancellation: .never, status: 200) {
+            let encoder = JSONEncoder(); encoder.keyEncodingStrategy = .convertToSnakeCase
+            return APIv2Request(method: "PUT", path: "/api/v2/onboarding/progress", body: try encoder.encode(body),
+                                headers: ["If-Match": session.tag])
         }
-        let identity = Self.requestIdentity(auth, profile: profile)
-        let encoder = JSONEncoder(); encoder.keyEncodingStrategy = .convertToSnakeCase
-        let data = try encoder.encode(body)
-        let tag = session.tag
-        let raw = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "PUT", path: "/api/v2/onboarding/progress", body: data,
-                    headers: ["If-Match": tag], requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
-        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
         let state = try HTTPClient.makeJSONDecoder().decode(OnboardingState.self, from: raw.data)
         // A receipt for another tour, or a finished write that did not finish
         // the tour, is not proof the requested change was applied.
@@ -457,36 +385,15 @@ struct APIv2Client: Sendable {
     /// editor read the write is based on. The answer must carry exactly
     /// `status`; anything else throws.
     ///
-    /// An owner change is reported by when it was caught:
-    /// `APIv2OwnerChangedBeforeDispatch` when the request never reached the
-    /// URL session (this guard, the fence's entry check, or `HTTPClient`'s
-    /// dispatch gate), and `HTTPError.requestIdentityChanged` or
-    /// `.authorityChanged` when it was sent and its answer discarded.
+    /// An owner change is reported by when it was caught (see
+    /// `reportingOwnerChangeBeforeDispatch`).
     func collectionRequest(_ method: String, path: String, body: Data? = nil, ifMatch: String? = nil,
                            status: Int, auth: CapturedOrdinaryRequestAuth) async throws -> HTTPRawResponse {
-        try await gate()
-        let dispatch = HTTPDispatchRecord()
-        let raw: HTTPRawResponse
-        do {
-            guard let profile = auth.profileId, !profile.isEmpty,
-                  await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
-                throw HTTPError.requestIdentityChanged
+        try await reportingOwnerChangeBeforeDispatch { dispatch in
+            try await profileRequest(auth: auth, cancellation: .never, status: status, dispatch: dispatch) {
+                APIv2Request(method: method, path: path, body: body, headers: ifMatch.map { ["If-Match": $0] } ?? [:])
             }
-            let identity = Self.requestIdentity(auth, profile: profile)
-            raw = try await tokenStore.withOwnerFence(auth) {
-                try await mapErrors {
-                    try await http.requestData(method: method, path: path, body: body,
-                        headers: ifMatch.map { ["If-Match": $0] } ?? [:], requestIdentity: identity,
-                        expectedAccount: auth.account, expectedAuth: auth, dispatchRecord: dispatch)
-                }
-            }
-        } catch HTTPError.requestIdentityChanged where !dispatch.didDispatch {
-            throw APIv2OwnerChangedBeforeDispatch()
-        } catch HTTPError.authorityChanged where !dispatch.didDispatch {
-            throw APIv2OwnerChangedBeforeDispatch()
         }
-        guard raw.statusCode == status else { throw APIv2Error.httpStatus(raw.statusCode) }
-        return raw
     }
 
     // MARK: Catalog contract
@@ -513,7 +420,7 @@ struct APIv2Client: Sendable {
         cursor: String?, seen: Set<String>, identity: HTTPRequestIdentity,
         auth: CapturedOrdinaryRequestAuth) async throws -> APIv2CatalogResult {
         try await gate()
-        guard await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+        guard await isCurrentOwner(auth) else {
             throw HTTPError.requestIdentityChanged
         }
         try Task.checkCancellation()
@@ -529,19 +436,14 @@ struct APIv2Client: Sendable {
             guard (parameters["groups"]?.utf8.count ?? 0) <= 32768 else { throw APIv2Error.invalidCatalogQuery }
             if let cursor { parameters["cursor"] = cursor }
         }
-        let method = operation == .get ? "GET" : "POST"
-        let path = operation == .get ? "/api/v2/catalog" : "/api/v2/catalog/query"
-        let requestQuery = parameters
-        let requestBody = body
-        let response = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: method, path: path, query: requestQuery, body: requestBody,
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
+        // `identity` was minted from `auth` by `catalogPage`; `send` derives
+        // the same one.
+        let response = try await send(APIv2Request(method: operation == .get ? "GET" : "POST",
+            path: operation == .get ? "/api/v2/catalog" : "/api/v2/catalog/query",
+            query: parameters, body: body), auth: auth)
         // The continuation below is handed back to the caller; check the owner
         // once more immediately before minting it.
-        guard await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+        guard await isCurrentOwner(auth) else {
             throw HTTPError.authorityChanged
         }
         try Task.checkCancellation()
@@ -564,41 +466,23 @@ struct APIv2Client: Sendable {
     /// the caller's captured owner like the other catalog reads.
     func catalogFilters(libraryId: String?, includeTechnical: Bool = true,
                         auth: CapturedOrdinaryRequestAuth) async throws -> APIv2CatalogFilters {
-        try await gate()
-        guard let profile = auth.profileId, !profile.isEmpty,
-              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
-            throw HTTPError.requestIdentityChanged
+        let raw = try await profileRequest(auth: auth, status: 200) {
+            var query: [String: String] = [:]
+            if let libraryId { query["library_id"] = libraryId }
+            if !includeTechnical { query["skip_technical"] = "true" }
+            return APIv2Request(method: "GET", path: "/api/v2/catalog/filters", query: query)
         }
-        try Task.checkCancellation()
-        var query: [String: String] = [:]
-        if let libraryId { query["library_id"] = libraryId }
-        if !includeTechnical { query["skip_technical"] = "true" }
-        let requestQuery = query
-        let identity = Self.requestIdentity(auth, profile: profile)
-        let raw = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "GET", path: "/api/v2/catalog/filters", query: requestQuery,
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
-        try Task.checkCancellation()
-        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
         return try HTTPClient.makeJSONDecoder().decode(APIv2CatalogFilters.self, from: raw.data)
     }
 
+    /// No owner check of its own: the fence's entry check is the first.
     func catalogSearchCapabilities(auth suppliedAuth: CapturedOrdinaryRequestAuth? = nil) async throws -> APIv2CatalogSearchCapabilities {
         try await gate()
         let captured = await tokenStore.captureOrdinaryRequestAuth()
-        guard let auth = suppliedAuth ?? captured, let profile = auth.profileId else {
+        guard let auth = suppliedAuth ?? captured, auth.profileId != nil else {
             throw HTTPError.requestIdentityChanged
         }
-        let identity = Self.requestIdentity(auth, profile: profile)
-        let raw = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "GET", path: "/api/v2/catalog/search/capabilities",
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
+        let raw = try await send(APIv2Request(method: "GET", path: "/api/v2/catalog/search/capabilities"), auth: auth)
         try Task.checkCancellation()
         guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
         return try HTTPClient.makeJSONDecoder().decode(APIv2CatalogSearchCapabilities.self, from: raw.data)
@@ -607,22 +491,9 @@ struct APIv2Client: Sendable {
     /// The Collections tab as the captured profile sees it: curated
     /// collections, their groups, and the profile's opted-in personal ones.
     func libraryCollectionTab(libraryId: String, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2LibraryCollectionTab {
-        try await gate()
-        guard let profile = auth.profileId, !profile.isEmpty,
-              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
-            throw HTTPError.requestIdentityChanged
+        let raw = try await profileRequest(auth: auth, status: 200) {
+            APIv2Request(method: "GET", path: "/api/v2/library/\(try catalogPathSegment(libraryId))/collections")
         }
-        try Task.checkCancellation()
-        let identity = Self.requestIdentity(auth, profile: profile)
-        let path = "/api/v2/library/\(try catalogPathSegment(libraryId))/collections"
-        let raw = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "GET", path: path,
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
-        try Task.checkCancellation()
-        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
         let tab = try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(APIv2LibraryCollectionTab.self, from: raw.data)
         guard tab.libraryId == libraryId else { throw APIv2Error.incompleteCatalogRead }
         return tab
@@ -633,76 +504,30 @@ struct APIv2Client: Sendable {
     /// Membership and watched-state mutations dispatch once, are never
     /// replayed after a refresh, and apply only under the captured owner.
     func setWatchedState(id: String, included: Bool, auth: CapturedOrdinaryRequestAuth) async throws {
-        try await gate()
-        guard let profile = auth.profileId, !profile.isEmpty,
-              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
-            throw HTTPError.requestIdentityChanged
-        }
-        try Task.checkCancellation()
-        let identity = Self.requestIdentity(auth, profile: profile)
-        let raw = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: included ? "POST" : "DELETE", path: "/api/v2/watched/\(try catalogPathSegment(id))",
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
-        try Task.checkCancellation()
-        guard raw.statusCode == 204 else { throw APIv2Error.httpStatus(raw.statusCode) }
+        try await setMembership("watched", id: id, method: included ? "POST" : "DELETE", auth: auth)
     }
 
     func setFavoriteMembership(id: String, included: Bool, auth: CapturedOrdinaryRequestAuth) async throws {
-        try await gate()
-        guard let profile = auth.profileId, !profile.isEmpty,
-              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
-            throw HTTPError.requestIdentityChanged
-        }
-        try Task.checkCancellation()
-        let identity = Self.requestIdentity(auth, profile: profile)
-        let raw = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: included ? "PUT" : "DELETE", path: "/api/v2/favorites/\(try catalogPathSegment(id))",
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
-        try Task.checkCancellation()
-        guard raw.statusCode == 204 else { throw APIv2Error.httpStatus(raw.statusCode) }
+        try await setMembership("favorites", id: id, method: included ? "PUT" : "DELETE", auth: auth)
     }
 
     func setWatchlistMembership(id: String, included: Bool, auth: CapturedOrdinaryRequestAuth) async throws {
-        try await gate()
-        guard let profile = auth.profileId, !profile.isEmpty,
-              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
-            throw HTTPError.requestIdentityChanged
+        try await setMembership("watchlist", id: id, method: included ? "PUT" : "DELETE", auth: auth)
+    }
+
+    private func setMembership(_ list: String, id: String, method: String,
+                               auth: CapturedOrdinaryRequestAuth) async throws {
+        _ = try await profileRequest(auth: auth, status: 204) {
+            APIv2Request(method: method, path: "/api/v2/\(list)/\(try catalogPathSegment(id))")
         }
-        try Task.checkCancellation()
-        let identity = Self.requestIdentity(auth, profile: profile)
-        let raw = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: included ? "PUT" : "DELETE", path: "/api/v2/watchlist/\(try catalogPathSegment(id))",
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
-        try Task.checkCancellation()
-        guard raw.statusCode == 204 else { throw APIv2Error.httpStatus(raw.statusCode) }
     }
 
     /// Membership reads return an entry on 200 and absence on 404, never legacy 204.
     func personalMembership(id: String, watchlist: Bool, auth: CapturedOrdinaryRequestAuth?) async throws -> Bool {
-        try await gate()
-        guard let auth, let profile = auth.profileId, !profile.isEmpty,
-              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
-            throw HTTPError.requestIdentityChanged
+        let raw = try await profileRequest(auth: auth, status: nil) {
+            APIv2Request(method: "GET", path: "/api/v2/\(watchlist ? "watchlist" : "favorites")/\(try catalogPathSegment(id))",
+                         quietStatuses: [404], acceptedStatuses: [404])
         }
-        try Task.checkCancellation()
-        let identity = Self.requestIdentity(auth, profile: profile)
-        let path = "/api/v2/\(watchlist ? "watchlist" : "favorites")/\(try catalogPathSegment(id))"
-        let raw = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "GET", path: path, quietStatuses: [404],
-                    requestIdentity: identity, acceptedStatuses: [404], expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
-        try Task.checkCancellation()
         if raw.statusCode == 404 {
             let problem = try HTTPClient.makeJSONDecoder().decode(APIv2Problem.self, from: raw.data)
             guard problem.status == 404, problem.identifier == "not_found" else {
@@ -718,21 +543,9 @@ struct APIv2Client: Sendable {
     }
 
     func discover(auth: CapturedOrdinaryRequestAuth) async throws -> [APIv2DiscoverRow] {
-        try await gate()
-        guard let profile = auth.profileId, !profile.isEmpty,
-              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
-            throw HTTPError.requestIdentityChanged
+        let raw = try await profileRequest(auth: auth, status: 200) {
+            APIv2Request(method: "GET", path: "/api/v2/recommendations/discover")
         }
-        try Task.checkCancellation()
-        let identity = Self.requestIdentity(auth, profile: profile)
-        let raw = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "GET", path: "/api/v2/recommendations/discover", query: [:],
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
-        try Task.checkCancellation()
-        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
         let collection = try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(APIv2CatalogReadCollection<APIv2DiscoverRow>.self, from: raw.data)
         let rows = try collection.completeItems()
         guard rows.allSatisfy({ row in
@@ -744,50 +557,29 @@ struct APIv2Client: Sendable {
 
     func dismissHomeItem(id: String, progressUpdatedAt: String?, seriesId: String?,
                          auth: CapturedOrdinaryRequestAuth?) async throws {
-        guard let auth, let profile = auth.profileId, !profile.isEmpty else { throw HTTPError.requestIdentityChanged }
-        try await gate()
-        guard await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
-            throw HTTPError.requestIdentityChanged
-        }
-        try Task.checkCancellation()
-        let surface: String
-        if let progressUpdatedAt, !progressUpdatedAt.isEmpty { surface = "continue_watching" }
-        else if let seriesId, !seriesId.isEmpty { surface = "next_up" }
-        else { throw APIv2Error.incompleteCatalogRead }
+        // Refused before the gate, unlike `profileRequest`'s own check.
+        guard let auth, auth.profileId?.isEmpty == false else { throw HTTPError.requestIdentityChanged }
         struct Body: Encodable { let progressUpdatedAt: String?; let seriesId: String? }
-        // Preserve the observed anchor verbatim. Do not manufacture a timestamp or rebase it.
-        let body = Body(progressUpdatedAt: surface == "continue_watching" ? progressUpdatedAt : nil,
-                        seriesId: surface == "next_up" ? seriesId : nil)
-        let encoder = JSONEncoder(); encoder.keyEncodingStrategy = .convertToSnakeCase
-        let data = try encoder.encode(body)
-        let identity = Self.requestIdentity(auth, profile: profile)
-        let path = "/api/v2/home/dismissals/\(surface)/\(try catalogPathSegment(id))"
-        let raw = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "PUT", path: path, body: data,
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
+        _ = try await profileRequest(auth: auth, status: 204) {
+            let surface: String
+            if let progressUpdatedAt, !progressUpdatedAt.isEmpty { surface = "continue_watching" }
+            else if let seriesId, !seriesId.isEmpty { surface = "next_up" }
+            else { throw APIv2Error.incompleteCatalogRead }
+            // Preserve the observed anchor verbatim. Do not manufacture a timestamp or rebase it.
+            let body = Body(progressUpdatedAt: surface == "continue_watching" ? progressUpdatedAt : nil,
+                            seriesId: surface == "next_up" ? seriesId : nil)
+            let encoder = JSONEncoder(); encoder.keyEncodingStrategy = .convertToSnakeCase
+            let data = try encoder.encode(body)
+            return APIv2Request(method: "PUT", path: "/api/v2/home/dismissals/\(surface)/\(try catalogPathSegment(id))",
+                                body: data)
         }
-        try Task.checkCancellation()
-        guard raw.statusCode == 204 else { throw APIv2Error.httpStatus(raw.statusCode) }
     }
 
     func librarySections(id: Int, imageSize: String?, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2LibrarySectionsRead {
-        try await gate()
-        guard id > 0, let profile = auth.profileId, !profile.isEmpty,
-              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
-            throw HTTPError.requestIdentityChanged
+        let raw = try await profileRequest(auth: auth, valid: id > 0, status: 200) {
+            APIv2Request(method: "GET", path: "/api/v2/library/\(id)/sections",
+                         query: imageSize.map { ["image_size": $0] } ?? [:])
         }
-        try Task.checkCancellation()
-        let identity = Self.requestIdentity(auth, profile: profile)
-        let raw = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "GET", path: "/api/v2/library/\(id)/sections", query: imageSize.map { ["image_size": $0] } ?? [:],
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
-        try Task.checkCancellation()
-        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
         struct Wire: Decodable { let sections: [ResolvedSection] }
         let value = try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(Wire.self, from: raw.data)
         guard Set(value.sections.map(\.id)).count == value.sections.count,
@@ -797,21 +589,9 @@ struct APIv2Client: Sendable {
     }
 
     func homeSections(imageSize: String?, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2HomeSectionsRead {
-        try await gate()
-        guard let profile = auth.profileId, !profile.isEmpty,
-              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
-            throw HTTPError.requestIdentityChanged
+        let raw = try await profileRequest(auth: auth, status: 200) {
+            APIv2Request(method: "GET", path: "/api/v2/home/sections", query: imageSize.map { ["image_size": $0] } ?? [:])
         }
-        try Task.checkCancellation()
-        let identity = Self.requestIdentity(auth, profile: profile)
-        let raw = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "GET", path: "/api/v2/home/sections", query: imageSize.map { ["image_size": $0] } ?? [:],
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
-        try Task.checkCancellation()
-        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
         struct Wire: Decodable { let sections: [ResolvedSection] }
         let value = try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(Wire.self, from: raw.data)
         guard Set(value.sections.map(\.id)).count == value.sections.count,
@@ -821,41 +601,18 @@ struct APIv2Client: Sendable {
 
     func calendar(start: String, end: String, filter: String, timezone: String,
                   auth: CapturedOrdinaryRequestAuth) async throws -> CalendarResponse {
-        try await gate()
-        guard let profile = auth.profileId, !profile.isEmpty,
-              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
-            throw HTTPError.requestIdentityChanged
+        let raw = try await profileRequest(auth: auth, status: 200) {
+            APIv2Request(method: "GET", path: "/api/v2/calendar",
+                         query: ["start": start, "end": end, "filter": filter, "timezone": timezone])
         }
-        try Task.checkCancellation()
-        let identity = Self.requestIdentity(auth, profile: profile)
-        let raw = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "GET", path: "/api/v2/calendar", query: ["start": start, "end": end, "filter": filter, "timezone": timezone],
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
-        try Task.checkCancellation()
-        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
         return try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(CalendarResponse.self, from: raw.data)
     }
 
     func similarCards(id: String, limit: Int, auth: CapturedOrdinaryRequestAuth) async throws -> [BrowseItem] {
-        try await gate()
-        guard (1...50).contains(limit), let profile = auth.profileId, !profile.isEmpty,
-              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
-            throw HTTPError.requestIdentityChanged
+        let raw = try await profileRequest(auth: auth, valid: (1...50).contains(limit), status: 200) {
+            APIv2Request(method: "GET", path: "/api/v2/recommendations/similar/\(try catalogPathSegment(id))",
+                         query: ["limit": String(limit)])
         }
-        try Task.checkCancellation()
-        let identity = Self.requestIdentity(auth, profile: profile)
-        let path = "/api/v2/recommendations/similar/\(try catalogPathSegment(id))"
-        let raw = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "GET", path: path, query: ["limit": String(limit)],
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
-        try Task.checkCancellation()
-        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
         let collection = try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(APIv2CatalogReadCollection<BrowseItem>.self, from: raw.data)
         let cards = try collection.completeItems()
         guard cards.count <= limit, Set(cards.map(\.contentId)).count == cards.count,
@@ -885,23 +642,11 @@ struct APIv2Client: Sendable {
 
     private func trailerRequest(id: String, refresh: Bool, libraryId: String? = nil, imageSize: String? = nil,
                                 auth: CapturedOrdinaryRequestAuth) async throws -> HTTPRawResponse {
-        try await gate()
-        guard let profile = auth.profileId, !profile.isEmpty,
-              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
-            throw HTTPError.requestIdentityChanged
+        try await profileRequest(auth: auth, status: nil) {
+            APIv2Request(method: refresh ? "POST" : "GET",
+                         path: "/api/v2/catalog/items/\(try catalogPathSegment(id))" + (refresh ? "/trailers/refresh" : ""),
+                         query: refresh ? [:] : catalogReadScope(libraryId: libraryId, imageSize: imageSize))
         }
-        try Task.checkCancellation()
-        let identity = Self.requestIdentity(auth, profile: profile)
-        let path = "/api/v2/catalog/items/\(try catalogPathSegment(id))" + (refresh ? "/trailers/refresh" : "")
-        let query = refresh ? [:] : catalogReadScope(libraryId: libraryId, imageSize: imageSize)
-        let raw = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: refresh ? "POST" : "GET", path: path, query: query,
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
-        try Task.checkCancellation()
-        return raw
     }
 
     func catalogItem(id: String, libraryId: String? = nil, imageSize: String?, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2CatalogRead.CatalogItemDetail {
@@ -937,49 +682,24 @@ struct APIv2Client: Sendable {
 
     func catalogEpisodes(seriesId: String, seasonNumber: Int, libraryId: String? = nil, imageSize: String?,
                          auth: CapturedOrdinaryRequestAuth) async throws -> [APIv2CatalogRead.Episode] {
-        try await gate()
         guard seasonNumber >= 0 else { throw APIv2Error.invalidCatalogQuery }
-        guard let profile = auth.profileId, !profile.isEmpty,
-              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
-            throw HTTPError.requestIdentityChanged
+        let raw = try await profileRequest(auth: auth, status: 200) {
+            APIv2Request(method: "GET",
+                         path: "/api/v2/catalog/series/\(try catalogPathSegment(seriesId))/seasons/\(seasonNumber)/episodes",
+                         query: catalogReadScope(libraryId: libraryId, imageSize: imageSize))
         }
-        try Task.checkCancellation()
-        let identity = Self.requestIdentity(auth, profile: profile)
-        let path = "/api/v2/catalog/series/\(try catalogPathSegment(seriesId))/seasons/\(seasonNumber)/episodes"
-        let query = catalogReadScope(libraryId: libraryId, imageSize: imageSize)
-        let raw = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "GET", path: path, query: query,
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
-        try Task.checkCancellation()
-        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
         let response = try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(APIv2CatalogReadCollection<APIv2CatalogRead.Episode>.self, from: raw.data)
         return try response.completeItems()
     }
 
     func catalogSeasons(seriesId: String, libraryId: String? = nil, imageSize: String?, includeArtwork: Bool? = nil,
                          auth: CapturedOrdinaryRequestAuth) async throws -> [APIv2CatalogRead.Season] {
-        try await gate()
-        guard let profile = auth.profileId, !profile.isEmpty,
-              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
-            throw HTTPError.requestIdentityChanged
+        let raw = try await profileRequest(auth: auth, status: 200) {
+            var query = catalogReadScope(libraryId: libraryId, imageSize: imageSize)
+            if let includeArtwork { query["include_artwork"] = String(includeArtwork) }
+            return APIv2Request(method: "GET", path: "/api/v2/catalog/series/\(try catalogPathSegment(seriesId))/seasons",
+                                query: query)
         }
-        try Task.checkCancellation()
-        let identity = Self.requestIdentity(auth, profile: profile)
-        let path = "/api/v2/catalog/series/\(try catalogPathSegment(seriesId))/seasons"
-        var query = catalogReadScope(libraryId: libraryId, imageSize: imageSize)
-        if let includeArtwork { query["include_artwork"] = String(includeArtwork) }
-        let requestQuery = query
-        let raw = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "GET", path: path, query: requestQuery,
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
-        try Task.checkCancellation()
-        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
         let response = try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(APIv2CatalogReadCollection<APIv2CatalogRead.Season>.self, from: raw.data)
         return try response.completeItems()
     }
@@ -1004,22 +724,8 @@ struct APIv2Client: Sendable {
     }
 
     private func personRequest(id: String, method: String, auth: CapturedOrdinaryRequestAuth) async throws -> HTTPRawResponse {
-        try await gate()
         let path = "/api/v2/catalog/people/\(try catalogPathSegment(id))" + (method == "POST" ? "/refresh" : "")
-        guard let profile = auth.profileId, !profile.isEmpty,
-              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
-            throw HTTPError.requestIdentityChanged
-        }
-        try Task.checkCancellation()
-        let identity = Self.requestIdentity(auth, profile: profile)
-        let response = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: method, path: path,
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
-        try Task.checkCancellation()
-        return response
+        return try await profileRequest(auth: auth, status: nil) { APIv2Request(method: method, path: path) }
     }
 
     private func catalogReadScope(libraryId: String?, imageSize: String?) -> [String: String] {
@@ -1040,17 +746,9 @@ struct APIv2Client: Sendable {
     }
 
     private func catalogRead<Value: Decodable>(_ path: String, query: [String: String] = [:]) async throws -> Value {
-        try await gate()
-        guard let auth = await tokenStore.captureOrdinaryRequestAuth(), let profile = auth.profileId else {
-            throw HTTPError.requestIdentityChanged
-        }
-        let identity = Self.requestIdentity(auth, profile: profile)
-        let response = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "GET", path: path, query: query, requestIdentity: identity,
-                    expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
+        let auth = try await captureRequestOwner()
+        guard auth.profileId != nil else { throw HTTPError.requestIdentityChanged }
+        let response = try await send(APIv2Request(method: "GET", path: path, query: query), auth: auth)
         guard response.statusCode == 200 else { throw APIv2Error.httpStatus(response.statusCode) }
         return try HTTPClient.makeJSONDecoder(artworkServerURL: response.url).decode(Value.self, from: response.data)
     }
@@ -1081,19 +779,15 @@ struct APIv2Client: Sendable {
                                   account: RefreshAccountIdentity, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2PersonalListResult {
         try await gate()
         guard auth.account == account, auth.profileId == identity.profileId,
-              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else { throw HTTPError.requestIdentityChanged }
+              await isCurrentOwner(auth) else { throw HTTPError.requestIdentityChanged }
         try Task.checkCancellation()
         var query = ["limit": String(limit)]
         if let imageSize { query["image_size"] = imageSize }
         if let cursor { query["cursor"] = cursor }
-        let path = "/api/v2/\(kind.rawValue)"
-        let requestQuery = query
-        let response = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "GET", path: path, query: requestQuery, requestIdentity: identity,
-                    expectedAccount: account, expectedAuth: auth)
-            }
-        }
+        // `identity` was minted from `auth` by `personalList`, and the guard
+        // ties `account` to it; `send` derives the same identity.
+        let response = try await send(APIv2Request(method: "GET", path: "/api/v2/\(kind.rawValue)", query: query),
+                                      auth: auth)
         try Task.checkCancellation()
         guard response.statusCode == 200 else { throw APIv2Error.httpStatus(response.statusCode) }
         let page = try HTTPClient.makeJSONDecoder(artworkServerURL: response.url).decode(APIv2PersonalListPage.self, from: response.data)
@@ -1201,38 +895,22 @@ struct APIv2Client: Sendable {
     // MARK: Initial playback
 
     /// One playback request under a captured owner. Fenced before and after
-    /// the await; callers check the status they expect.
+    /// the await (no owner check of its own: the fence's entry check is the
+    /// first); callers check the status they expect.
     func playbackRequest(method: String, suffix: String, body: Data? = nil,
                          auth: CapturedOrdinaryRequestAuth, query: [String: String] = [:],
                          timeout: HTTPTimeout = .standard) async throws -> HTTPRawResponse {
         try await gate()
         guard let profile = auth.profileId, !profile.isEmpty else { throw HTTPError.requestIdentityChanged }
-        let identity = Self.requestIdentity(auth, profile: profile)
-        return try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: method, path: "/api/v2/playback" + suffix, query: query, body: body,
-                    timeout: timeout, requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
+        return try await send(APIv2Request(method: method, path: "/api/v2/playback" + suffix, query: query, body: body,
+                                           timeout: timeout), auth: auth)
     }
 
     func watchDetail(id: String, libraryId: String? = nil, imageSize: String?, auth: CapturedOrdinaryRequestAuth) async throws -> WatchDetail {
-        try await gate()
-        guard let profile = auth.profileId, !profile.isEmpty,
-              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
-            throw HTTPError.requestIdentityChanged
+        let raw = try await profileRequest(auth: auth, status: 200) {
+            APIv2Request(method: "GET", path: "/api/v2/watch/\(try catalogPathSegment(id))",
+                         query: catalogReadScope(libraryId: libraryId, imageSize: imageSize))
         }
-        try Task.checkCancellation()
-        let identity = Self.requestIdentity(auth, profile: profile)
-        let path = "/api/v2/watch/\(try catalogPathSegment(id))"
-        let raw = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "GET", path: path, query: catalogReadScope(libraryId: libraryId, imageSize: imageSize),
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
-        try Task.checkCancellation()
-        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
         return try WatchDetail(v2: HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(APIv2CatalogRead.WatchDetail.self, from: raw.data))
     }
 
@@ -1244,28 +922,15 @@ struct APIv2Client: Sendable {
 
     #if os(iOS)
     func notificationSync(cursor: String?, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2NotificationSyncPage {
-        try await gate()
-        guard let profile = auth.profileId, !profile.isEmpty,
-              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
-            throw HTTPError.requestIdentityChanged
+        let raw = try await profileRequest(auth: auth, status: 200) {
+            var query = ["limit": String(APIv2NotificationSyncPage.defaultLimit)]
+            if let cursor, !cursor.isEmpty { query["cursor"] = cursor }
+            return APIv2Request(method: "GET", path: "/api/v2/notifications/sync", query: query)
         }
-        try Task.checkCancellation()
-        let identity = Self.requestIdentity(auth, profile: profile)
-        var query = ["limit": String(APIv2NotificationSyncPage.defaultLimit)]
-        if let cursor, !cursor.isEmpty { query["cursor"] = cursor }
-        let requestQuery = query
-        let raw = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: "GET", path: "/api/v2/notifications/sync", query: requestQuery,
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
-        try Task.checkCancellation()
-        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
         let page = try HTTPClient.makeJSONDecoder().decode(APIv2NotificationSyncPage.self, from: raw.data)
         guard !page.syncCursor.isEmpty, page.unreadCount >= 0,
               page.items.count <= APIv2NotificationSyncPage.defaultLimit,
-              page.items.allSatisfy({ !$0.id.isEmpty && $0.profileId == profile }),
+              page.items.allSatisfy({ !$0.id.isEmpty && $0.profileId == auth.profileId }),
               Set(page.items.map(\.id)).count == page.items.count,
               page.initialSnapshot == (cursor == nil),
               page.page.hasMore ? (page.page.nextCursor == page.syncCursor && page.syncCursor != cursor && !page.items.isEmpty) : page.page.nextCursor == nil else {
@@ -1309,69 +974,139 @@ struct APIv2Client: Sendable {
     private func applePushRequest(method: String, path: String, body: Data? = nil, headers: [String: String] = [:],
                                   auth: CapturedOrdinaryRequestAuth) async throws -> Data {
         try await gate()
+        // No owner check of its own: the fence's entry check is the first.
         guard case .persistentServer = auth.credentialOwner, let profile = auth.profileId, !profile.isEmpty else {
             throw HTTPError.requestIdentityChanged
         }
-        let identity = Self.requestIdentity(auth, profile: profile)
-        let raw = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: method, path: path, body: body, headers: headers,
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
+        let raw = try await send(APIv2Request(method: method, path: path, body: body, headers: headers), auth: auth)
         try Task.checkCancellation()
         guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
         return raw.data
     }
     #endif
 
-    // MARK: Owner-bound raw requests
+    // MARK: Owner-fenced requests
 
-    /// Captures the owner a multi-request sequence is bound to. Each
-    /// `ownedRequest` in the sequence names it, so a server, account or
-    /// profile switch refuses the remaining requests instead of sending them
-    /// to the replacement.
+    /// Captures the owner a call, or a sequence of calls, is bound to, after
+    /// the v1 gate. Each request in the sequence names it, so a server,
+    /// account or profile switch refuses the remaining requests instead of
+    /// sending them to the replacement.
     func captureRequestOwner() async throws -> CapturedOrdinaryRequestAuth {
         try await gate()
         guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
         return auth
     }
 
-    /// Whether `auth` still describes the current owner.
+    /// Whether `auth` still describes the current owner. The one comparator
+    /// (`TokenStore.currentOrdinaryRequestAuth(matchingIdentityOf:)`) every
+    /// owner check in the client goes through.
     func isCurrentOwner(_ auth: CapturedOrdinaryRequestAuth) async -> Bool {
         await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
     }
 
-    /// Sends one request with a caller-built body under `auth` and returns the
-    /// undecoded 2xx response; the caller asserts the exact status. A non-2xx
-    /// answer throws `APIv2Error`. Never retried here.
+    /// Sends `request` for `auth`. This is the only place an owner-bound v2
+    /// request reaches `HTTPClient`:
     ///
-    /// An owner change is reported by when it was caught:
-    /// `APIv2OwnerChangedBeforeDispatch` when the request never reached the
-    /// URL session (this guard, the fence's entry check, or `HTTPClient`'s
-    /// dispatch gate and owner checks), and `HTTPError.requestIdentityChanged`
-    /// or `.authorityChanged` when the request was sent and its outcome
-    /// discarded.
-    func ownedRequest(method: String, path: String, body: Data? = nil, contentType: String = "application/json",
-                      timeout: HTTPTimeout = .standard,
-                      auth: CapturedOrdinaryRequestAuth) async throws -> HTTPRawResponse {
+    /// - `TokenStore.withOwnerFence` checks that `auth` is current just
+    ///   before the request and again after the answer, and throws
+    ///   `HTTPError.authorityChanged` when it is not;
+    /// - `HTTPClient` compares the credentials it captures for the request
+    ///   with `auth` and its account just before dispatch, and throws
+    ///   `HTTPError.requestIdentityChanged` on a mismatch;
+    /// - a non-2xx answer becomes an `APIv2Error` (`mapErrors`).
+    ///
+    /// The request identity is derived from `auth`, so it always names the
+    /// owner the guards check. Without a selected profile the request carries
+    /// an explicit empty `X-Profile-Id`. `dispatch` is marked when the request
+    /// reaches the URL session. Callers run `gate()` first and check the
+    /// status. A caller handed an owner usually checks it with
+    /// `isCurrentOwner(_:)` first (`profileRequest` does); otherwise the
+    /// fence's entry check is the first owner check.
+    func send(_ request: APIv2Request, auth: CapturedOrdinaryRequestAuth,
+              dispatch: HTTPDispatchRecord? = nil) async throws -> HTTPRawResponse {
+        let identity = auth.profileId.map { Self.requestIdentity(auth, profile: $0) }
+        let headers = identity == nil
+            ? request.headers.merging(["X-Profile-Id": ""]) { _, empty in empty }
+            : request.headers
+        return try await tokenStore.withOwnerFence(auth) {
+            try await mapErrors {
+                try await http.requestData(method: request.method, path: request.path, query: request.query,
+                    repeatedQuery: request.repeatedQuery, body: request.body, contentType: request.contentType,
+                    headers: headers, quietStatuses: request.quietStatuses, timeout: request.timeout,
+                    requestIdentity: identity, acceptedStatuses: request.acceptedStatuses,
+                    expectedAccount: auth.account, expectedAuth: auth, dispatchRecord: dispatch)
+            }
+        }
+    }
+
+    /// When `profileRequest` checks for task cancellation.
+    enum CancellationCheck {
+        case never
+        case afterResponse
+        case beforeAndAfter
+    }
+
+    /// A profile-scoped call under a caller-supplied owner, in this order:
+    ///
+    /// 1. `gate()`;
+    /// 2. `HTTPError.requestIdentityChanged` unless `valid`, `auth` has a
+    ///    non-empty profile, and `auth` is still the current owner;
+    /// 3. with `.beforeAndAfter`, a cancellation check;
+    /// 4. `build`, which makes the request, so a bad path segment or body is
+    ///    reported only for a current owner;
+    /// 5. `send`;
+    /// 6. unless `.never`, a cancellation check;
+    /// 7. with a `status`, `APIv2Error.httpStatus` for any other status.
+    ///
+    /// `valid` is the caller's argument check. It shares the owner guard, so a
+    /// bad argument is refused with the same error the owner check uses.
+    func profileRequest(auth: CapturedOrdinaryRequestAuth?, valid: Bool = true,
+                        cancellation: CancellationCheck = .beforeAndAfter, status: Int?,
+                        dispatch: HTTPDispatchRecord? = nil,
+                        _ build: () throws -> APIv2Request) async throws -> HTTPRawResponse {
         try await gate()
+        guard valid, let auth, let profile = auth.profileId, !profile.isEmpty, await isCurrentOwner(auth) else {
+            throw HTTPError.requestIdentityChanged
+        }
+        if cancellation == .beforeAndAfter { try Task.checkCancellation() }
+        let raw = try await send(build(), auth: auth, dispatch: dispatch)
+        if cancellation != .never { try Task.checkCancellation() }
+        if let status, raw.statusCode != status { throw APIv2Error.httpStatus(raw.statusCode) }
+        return raw
+    }
+
+    /// Runs `operation` with a fresh dispatch record and reports an owner
+    /// change by when it was caught: `APIv2OwnerChangedBeforeDispatch` when
+    /// the request never reached the URL session (an owner check, the fence's
+    /// entry check, or `HTTPClient`'s dispatch gate and owner checks), and
+    /// `HTTPError.requestIdentityChanged` or `.authorityChanged` when it was
+    /// sent and its answer discarded.
+    private func reportingOwnerChangeBeforeDispatch<T>(
+        _ operation: (HTTPDispatchRecord) async throws -> T
+    ) async throws -> T {
         let dispatch = HTTPDispatchRecord()
         do {
-            guard await isCurrentOwner(auth) else { throw HTTPError.requestIdentityChanged }
-            let identity = auth.profileId.map { Self.requestIdentity(auth, profile: $0) }
-            return try await tokenStore.withOwnerFence(auth) {
-                try await mapErrors {
-                    try await http.requestData(method: method, path: path, body: body, contentType: contentType,
-                        headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:], timeout: timeout,
-                        requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth,
-                        dispatchRecord: dispatch)
-                }
-            }
+            return try await operation(dispatch)
         } catch HTTPError.requestIdentityChanged where !dispatch.didDispatch {
             throw APIv2OwnerChangedBeforeDispatch()
         } catch HTTPError.authorityChanged where !dispatch.didDispatch {
             throw APIv2OwnerChangedBeforeDispatch()
+        }
+    }
+
+    /// Sends one request with a caller-built body under `auth` and returns the
+    /// undecoded 2xx response; the caller asserts the exact status. A non-2xx
+    /// answer throws `APIv2Error`. Never retried here. An owner change is
+    /// reported by when it was caught (see
+    /// `reportingOwnerChangeBeforeDispatch`).
+    func ownedRequest(method: String, path: String, body: Data? = nil, contentType: String = "application/json",
+                      timeout: HTTPTimeout = .standard,
+                      auth: CapturedOrdinaryRequestAuth) async throws -> HTTPRawResponse {
+        try await gate()
+        return try await reportingOwnerChangeBeforeDispatch { dispatch in
+            guard await isCurrentOwner(auth) else { throw HTTPError.requestIdentityChanged }
+            return try await send(APIv2Request(method: method, path: path, body: body, contentType: contentType,
+                                               timeout: timeout), auth: auth, dispatch: dispatch)
         }
     }
 

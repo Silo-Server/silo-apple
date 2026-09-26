@@ -54,7 +54,7 @@ extension APIv2Client {
     func downloadSubtitle(_ body: SubtitleDownloadBody, auth: CapturedOrdinaryRequestAuth) async throws -> DownloadedSubtitle {
         guard body.mediaFileId > 0 else { throw APIv2SubtitleRequestError.invalidMediaFile }
         try await gate()
-        guard let current = await tokenStore.captureOrdinaryRequestAuth(), current.sameCredentialIdentity(as: auth) else {
+        guard await isCurrentOwner(auth) else {
             throw HTTPError.requestIdentityChanged
         }
         let data = try Self.encodeSubtitleBody(APIv2SubtitleDownloadBody(body))
@@ -93,15 +93,8 @@ extension APIv2Client {
                           timeout: HTTPTimeout = .standard,
                           auth: CapturedOrdinaryRequestAuth) async throws -> HTTPRawResponse {
         try await gate()
-        guard await matchesAIAuthority(auth) else { throw HTTPError.requestIdentityChanged }
-        let identity = auth.profileId.map { Self.requestIdentity(auth, profile: $0) }
-        return try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: method, path: path, body: body,
-                    headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:], timeout: timeout,
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
-        }
+        guard await isCurrentOwner(auth) else { throw HTTPError.requestIdentityChanged }
+        return try await send(APIv2Request(method: method, path: path, body: body, timeout: timeout), auth: auth)
     }
 
     static func encodeSubtitleBody<Body: Encodable>(_ body: Body) throws -> Data {

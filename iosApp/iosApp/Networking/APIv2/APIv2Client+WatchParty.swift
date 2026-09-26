@@ -200,27 +200,14 @@ extension APIv2Client {
     private func watchPartyRequest(method: String, path: String, query: [String: String] = [:], token: String? = nil,
                                    body: Data? = nil, status: Int = 200,
                                    auth: CapturedOrdinaryRequestAuth) async throws -> HTTPRawResponse {
-        try await gate()
-        guard let profile = auth.profileId, !profile.isEmpty,
-              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
-            throw HTTPError.requestIdentityChanged
-        }
-        var headers: [String: String] = [:]
-        if let token {
-            guard !token.isEmpty, !token.contains("\r"), !token.contains("\n") else { throw WatchPartyAPIError.invalidRequest }
-            headers["X-Room-Token"] = token
-        }
-        let requestHeaders = headers
-        let identity = Self.requestIdentity(auth, profile: profile)
-        let raw = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: method, path: path, query: query, body: body, headers: requestHeaders,
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+        try await profileRequest(auth: auth, cancellation: .afterResponse, status: status) {
+            var headers: [String: String] = [:]
+            if let token {
+                guard !token.isEmpty, !token.contains("\r"), !token.contains("\n") else { throw WatchPartyAPIError.invalidRequest }
+                headers["X-Room-Token"] = token
             }
+            return APIv2Request(method: method, path: path, query: query, body: body, headers: headers)
         }
-        try Task.checkCancellation()
-        guard raw.statusCode == status else { throw APIv2Error.httpStatus(raw.statusCode) }
-        return raw
     }
 
     private func watchPartyDecode<T: Decodable>(_ type: T.Type, _ raw: HTTPRawResponse) throws -> T {

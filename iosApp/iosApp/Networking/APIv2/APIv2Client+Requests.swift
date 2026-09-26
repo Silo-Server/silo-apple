@@ -58,9 +58,9 @@ extension APIv2Client {
     /// missing or repeated cursor, or the 100-page bound fails the whole load
     /// instead of returning a partial list.
     func myRequests() async throws -> [MediaRequest] {
+        // Captured before the per-page gate, unlike `captureRequestOwner()`.
         guard let auth = await tokenStore.captureOrdinaryRequestAuth(),
-              let profile = auth.profileId else { throw HTTPError.requestIdentityChanged }
-        let identity = Self.requestIdentity(auth, profile: profile)
+              auth.profileId != nil else { throw HTTPError.requestIdentityChanged }
         var records: [MediaRequest] = []
         var cursor: String?
         var seen: Set<String> = []
@@ -68,13 +68,7 @@ extension APIv2Client {
             try await gate()
             var query = ["limit": "50"]
             if let cursor { query["cursor"] = cursor }
-            let requestQuery = query
-            let raw = try await tokenStore.withOwnerFence(auth) {
-                try await mapErrors {
-                    try await http.requestData(method: "GET", path: "/api/v2/requests/mine",
-                        query: requestQuery, requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-                }
-            }
+            let raw = try await send(APIv2Request(method: "GET", path: "/api/v2/requests/mine", query: query), auth: auth)
             guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
             let response = try HTTPClient.makeJSONDecoder().decode(APIv2RequestsPage.self, from: raw.data)
             records.append(contentsOf: response.items)
@@ -98,19 +92,11 @@ extension APIv2Client {
 
     private func requestsCall<T: Decodable>(_ method: String, path: String, query: [String: String] = [:],
                                             body: Data? = nil, status: Int) async throws -> T {
-        try await gate()
-        guard let auth = await tokenStore.captureOrdinaryRequestAuth(), let profile = auth.profileId else {
-            throw HTTPError.requestIdentityChanged
-        }
-        let identity = Self.requestIdentity(auth, profile: profile)
+        let auth = try await captureRequestOwner()
+        guard auth.profileId != nil else { throw HTTPError.requestIdentityChanged }
         let response: HTTPRawResponse
         do {
-            response = try await tokenStore.withOwnerFence(auth) {
-                try await mapErrors {
-                    try await http.requestData(method: method, path: path, query: query, body: body,
-                        requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-                }
-            }
+            response = try await send(APIv2Request(method: method, path: path, query: query, body: body), auth: auth)
         } catch HTTPError.authorityChanged where method != "GET" {
             throw APIv2RequestsError.outcomeUnknownOwnerChanged
         } catch HTTPError.requestIdentityChanged where method != "GET" {

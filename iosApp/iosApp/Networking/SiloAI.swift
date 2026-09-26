@@ -34,11 +34,11 @@ actor SiloAI {
     /// pass it to ``translateDescription(contentId:targetLanguage:auth:)`` or
     /// ``translateSubtitle(_:auth:)``.
     func captureAuthority() async throws -> CapturedOrdinaryRequestAuth {
-        try await v2.captureAIAuthority()
+        try await v2.captureRequestOwner()
     }
 
     func matchesAuthority(_ auth: CapturedOrdinaryRequestAuth) async -> Bool {
-        await v2.matchesAIAuthority(auth)
+        await v2.isCurrentOwner(auth)
     }
 
     /// Queue an on-demand description translation for `contentId`. The 202

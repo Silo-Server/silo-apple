@@ -296,18 +296,9 @@ extension APIv2Client {
         headers: [String: String] = [:],
         auth: CapturedOrdinaryRequestAuth
     ) async throws -> HTTPRawResponse {
-        try await gate()
-        guard let profile = auth.profileId, !profile.isEmpty,
-              !AppleDeviceIdentity.current.id.isEmpty,
-              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
-            throw HTTPError.requestIdentityChanged
-        }
-        let identity = Self.requestIdentity(auth, profile: profile)
-        return try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: method, path: path, query: query, body: body,
-                    headers: headers, requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-            }
+        try await profileRequest(auth: auth, valid: !AppleDeviceIdentity.current.id.isEmpty,
+                                 cancellation: .never, status: nil) {
+            APIv2Request(method: method, path: path, query: query, body: body, headers: headers)
         }
     }
 }

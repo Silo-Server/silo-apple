@@ -100,7 +100,7 @@ actor SiloAPI {
 
     /// True while `auth` still names the active server, account and profile.
     func isCurrentOwner(_ auth: CapturedOrdinaryRequestAuth) async -> Bool {
-        await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+        await apiV2Client.isCurrentOwner(auth)
     }
 
     /// Hide an in-progress card until it is played again. The server keys
