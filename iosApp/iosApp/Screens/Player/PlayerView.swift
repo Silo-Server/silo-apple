@@ -31,7 +31,8 @@ struct PlayerView: View {
     let onPlaybackStarted: (() -> Void)?
     let onDismissRequested: (() -> Void)?
 
-    @State private var viewModel: PlayerViewModel
+    @State private var viewModelSlot: LazyModelSlot<PlayerViewModel>
+    private var viewModel: PlayerViewModel { viewModelSlot.model }
     @State private var didNotifyPlaybackStarted = false
     @State private var showsPartyPanel = false
     @Environment(\.dismiss) var dismiss
@@ -67,7 +68,14 @@ struct PlayerView: View {
     ) {
         self.contentId = contentId
         self.libraryId = libraryId
-        _viewModel = State(initialValue: PlayerViewModel(libraryId: libraryId))
+        let adoptsStagedRestore = watchPartyContext == nil
+        _viewModelSlot = State(initialValue: LazyModelSlot {
+            PlayerView.makeViewModel(
+                contentId: contentId,
+                libraryId: libraryId,
+                adoptsStagedRestore: adoptsStagedRestore
+            )
+        })
         self.preferredFileId = preferredFileId
         self.preferredAudioTrackIndex = preferredAudioTrackIndex
         self.preferredSubtitleTrackIndex = preferredSubtitleTrackIndex
@@ -80,6 +88,24 @@ struct PlayerView: View {
         self.watchPartyContext = watchPartyContext
         self.onPlaybackStarted = onPlaybackStarted
         self.onDismissRequested = onDismissRequested
+    }
+
+    /// Builds the view model on the installed view's first `body` read. A PiP
+    /// restore hands back the staged instance, so the cover never mints one
+    /// only for `onAppear` to replace it. Watch-party playback never adopts,
+    /// matching `onAppear`, which returns before its adoption check.
+    static func makeViewModel(
+        contentId: String,
+        libraryId: Int?,
+        adoptsStagedRestore: Bool
+    ) -> PlayerViewModel {
+        #if os(iOS)
+        if adoptsStagedRestore,
+           let staged = PlayerPresentationRestoration.stagedAdoption(matching: contentId) {
+            return staged
+        }
+        #endif
+        return PlayerViewModel(libraryId: libraryId)
     }
 
     var body: some View {
@@ -428,7 +454,7 @@ struct PlayerView: View {
             // that is still playing. Adopt that view model instead of minting a
             // new one, and skip the load — the session never stopped.
             if let restored = PlayerPresentationRestoration.consumeAdoption(matching: contentId) {
-                viewModel = restored
+                viewModelSlot.replace(with: restored)
                 orientationCoordinator.activatePlayer()
                 restored.playerPresentationDidAppear()
                 bindPictureInPicture(to: restored)
@@ -438,7 +464,7 @@ struct PlayerView: View {
             let activeViewModel: PlayerViewModel
             if viewModel.needsReplacementForPresentation {
                 let replacement = PlayerViewModel(libraryId: libraryId)
-                viewModel = replacement
+                viewModelSlot.replace(with: replacement)
                 activeViewModel = replacement
             } else {
                 activeViewModel = viewModel
@@ -477,17 +503,18 @@ struct PlayerView: View {
         }
         #endif
         .onDisappear {
+            let playerModel = viewModel
             #if os(tvOS)
             timelinePreviewHideTask?.cancel()
             timelinePreviewHideTask = nil
             #endif
             #if os(iOS)
-            viewModel.playerPresentationDidDisappear()
+            playerModel.playerPresentationDidDisappear()
             #else
-            viewModel.cleanup()
+            playerModel.cleanup()
             #endif
             #if os(tvOS)
-            TVControlReceiver.shared.unregisterPlayer(viewModel)
+            TVControlReceiver.shared.unregisterPlayer(playerModel)
             #endif
             #if os(iOS)
             orientationCoordinator.deactivatePlayer()
@@ -498,11 +525,11 @@ struct PlayerView: View {
             // can beat cleanup's final progress POST and cache the old watched
             // state. Capture the mutation set now, then invalidate and reload
             // only after the session bridge has finished its final write.
-            let touchedContentIds = viewModel.contentIdsNeedingDetailRefresh.isEmpty
+            let touchedContentIds = playerModel.contentIdsNeedingDetailRefresh.isEmpty
                 ? Set([contentId])
-                : viewModel.contentIdsNeedingDetailRefresh
+                : playerModel.contentIdsNeedingDetailRefresh
             Task { @MainActor in
-                await viewModel.waitForCleanupCompletion()
+                await playerModel.waitForCleanupCompletion()
 
                 // A Home request may have started as the cover disappeared.
                 // Retire that generation before asking for the authoritative
