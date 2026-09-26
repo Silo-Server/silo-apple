@@ -1024,7 +1024,7 @@ final class UICustomizationPreferences {
     /// audiobook opt-in remains part of that default until the user authors a
     /// new menu. Profile-wide shortcuts stay available to every family, but
     /// only an explicit family menu places them in that family's navigation.
-    func resolvedPrimaryMenuItems(availableLibraries _: [Library] = []) -> [PrimaryMenuItem] {
+    func resolvedPrimaryMenuItems() -> [PrimaryMenuItem] {
         if let primaryMenu, primaryMenu.isValid {
             return primaryMenu.items
         }
@@ -1035,13 +1035,7 @@ final class UICustomizationPreferences {
             .builtin(.series),
             .builtin(.music),
         ]
-        #if os(tvOS)
-        // TVNavPreferences is the semantic owner used by the legacy tvOS
-        // settings row (currently a typealias of AppNavPreferences).
-        let legacyShowsAudiobooks = TVNavPreferences.shared.showAudiobooks
-        #else
         let legacyShowsAudiobooks = AppNavPreferences.shared.showAudiobooks
-        #endif
         if legacyShowsAudiobooks {
             items.append(.builtin(.audiobooks))
         }
