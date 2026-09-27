@@ -131,10 +131,6 @@ struct TVMainTabView: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            Color.clear
-                .frame(width: 0, height: 0)
-                .tvRemotePressMonitor()
-
             NavigationStack(path: $router.path) {
                 rootContent
                     .navigationDestination(for: Route.self) { route in

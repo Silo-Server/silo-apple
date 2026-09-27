@@ -191,7 +191,6 @@ struct TVTopMenuBar: View {
     var onExit: (() -> Void)? = nil
 
     @FocusState private var focusedItem: TVTopMenuFocus?
-    @State private var crossAxisGate = TVCrossAxisGate()
     /// Dwell timer keyed on the focused element; cancelled on every focus
     /// move so bar sweeps never open a panel (§5.3, Open-Q5/Q7).
     @State private var dwellTask: Task<Void, Never>?
@@ -287,12 +286,7 @@ struct TVTopMenuBar: View {
         .onChange(of: panelHasFocus) { _, newValue in
             isMenuFocused = focusedItem != nil && !newValue
         }
-        .onChange(of: focusedItem) { oldValue, newValue in
-            // Bar items sit in one row, so a move between two of them is
-            // sideways; a Down right after it may be the tail of that swipe.
-            if oldValue != nil, newValue != nil {
-                crossAxisGate.recordMove(.horizontal)
-            }
+        .onChange(of: focusedItem) { _, newValue in
             let item = newValue.map { String(describing: $0) } ?? "nil"
             Self.logger.debug("topMenu.focus item=\(item, privacy: .public) panelHasFocus=\(panelHasFocus, privacy: .public) panelEntersFocus=\(panelEntersFocus, privacy: .public)")
             if let newValue {
@@ -475,8 +469,8 @@ struct TVTopMenuBar: View {
         // this focused button (which dropped focus).
         .modifier(TVTopMenuDownHandler(
             canOpenPanel: rootPanel(root) != nil,
-            onDown: downIfDeliberate { onEnterPanel(.root(root)) },
-            onDownToContent: downIfDeliberate(onEnterContent)
+            onDown: { onEnterPanel(.root(root)) },
+            onDownToContent: onEnterContent
         ))
         // Panel-bearing tabs publish their bounds so the shell can center the
         // anchored dropdown under them (§5.3); other tabs have no panel.
@@ -595,19 +589,12 @@ struct TVTopMenuBar: View {
                 guard let firstRoot = roots.first else { return }
                 focusedItem = .root(firstRoot)
             case .down:
-                guard crossAxisGate.allows(.down) else { return }
                 onEnterContent()
             default:
                 break
             }
         }
         .accessibilityLabel("Search")
-    }
-
-    /// Drops a Down that ends a sideways swipe across the bar, so it can't
-    /// open a panel or drop into the page. A clicked Down always passes.
-    private func downIfDeliberate(_ action: @escaping () -> Void) -> () -> Void {
-        { if crossAxisGate.allows(.down) { action() } }
     }
 
     // MARK: - Profile
@@ -644,8 +631,8 @@ struct TVTopMenuBar: View {
         .focused($focusedItem, equals: .profile)
         .modifier(TVTopMenuDownHandler(
             canOpenPanel: true,
-            onDown: downIfDeliberate { onEnterPanel(.profile) },
-            onDownToContent: downIfDeliberate(onEnterContent)
+            onDown: { onEnterPanel(.profile) },
+            onDownToContent: onEnterContent
         ))
         .modifier(TVTopMenuAnchorPublisher(panel: .profile))
         .accessibilityLabel("Profile")
