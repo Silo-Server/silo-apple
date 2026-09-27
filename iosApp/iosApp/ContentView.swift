@@ -2666,11 +2666,6 @@ struct MainTabView: View {
                     destination.title,
                     systemImage: isSelected ? destination.selectedIcon : destination.icon
                 )
-                #if os(iOS)
-                // The shell's light tint fills the selected iPad row, and the
-                // system would draw white text on it.
-                .foregroundStyle(isSelected ? Color.siloBackground : Color.siloOnSurface)
-                #endif
                 .padding(.leading, item.isNestedLibrary ? 24 : 0)
                 .tag(destination.id)
             }
@@ -2678,6 +2673,11 @@ struct MainTabView: View {
         // The sidebar's few rows rarely overflow; without this the list
         // still rubber-bands on drag, visually dragging the whole bar.
         .scrollBounceBehavior(.basedOnSize)
+        #if os(iOS)
+        // The shell's near-white tint would fill the selected row under the
+        // system's white text. Use the app accent and let iPadOS pick colors.
+        .tint(Color("AccentColor"))
+        #endif
     }
 
     private func sidebarDestinations(
