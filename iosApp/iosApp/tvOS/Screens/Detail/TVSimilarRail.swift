@@ -24,6 +24,10 @@ struct TVSimilarRail: View {
     @State private var isLoading = true
     @State private var loadedFor: String? = nil
     @State private var lastAppliedFocusRequest = 0
+    @State private var focusRequestedAt: ContinuousClock.Instant?
+    /// A request that waits for items longer than this is dropped: by then the
+    /// viewer has moved on, and focus must not jump to a late-loading rail.
+    private static let pendingFocusRequestLifetime: Duration = .seconds(1)
     @FocusState private var focusedItemId: String?
 
     private let cardWidth: CGFloat = 220
@@ -46,6 +50,7 @@ struct TVSimilarRail: View {
             onFocusChange?(focused)
         }
         .onChange(of: focusRequest, initial: true) { _, _ in
+            focusRequestedAt = .now
             applyFocusRequestIfPossible()
         }
         .onChange(of: items) { _, _ in
@@ -112,6 +117,10 @@ struct TVSimilarRail: View {
               focusRequest != lastAppliedFocusRequest,
               let firstContentId = items.first?.contentId else { return }
         lastAppliedFocusRequest = focusRequest
+        if let focusRequestedAt,
+           ContinuousClock.now - focusRequestedAt > Self.pendingFocusRequestLifetime {
+            return
+        }
         focusedItemId = firstContentId
     }
 

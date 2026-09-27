@@ -16,7 +16,7 @@ struct TVPrimaryPillButton: View {
     /// Optional focus binding so the owning detail view can both observe and
     /// claim this button's focus. Combined with `.defaultFocus(…priority:
     /// .userInitiated)` on the scroll container, this is the reliable way to
-    /// make Play win initial focus over the geometrically-higher synopsis —
+    /// make Play win initial focus over any geometrically-higher control —
     /// `prefersDefaultFocus(_:in:)` loses to geometry in practice here.
     var focused: FocusState<Bool>.Binding? = nil
 

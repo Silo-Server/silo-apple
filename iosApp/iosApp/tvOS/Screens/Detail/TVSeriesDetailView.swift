@@ -239,8 +239,6 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     @State private var seasonWatchedUpdateFailed = false
     @State private var seasonWatchedNotice: PersonalStateNotice?
     @State private var primaryFocusRegion: PrimaryFocusRegion = .outside
-    @State private var episodeRailFocusRequest = 0
-    @State private var episodeRailFocusTarget: String?
     @State private var supportingRailFocusRequest = 0
     @State private var supportingRailFocusGeneration = 0
     @State private var modeActivationTask: Task<Void, Never>?
@@ -590,14 +588,15 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                             }
                             .disabled(isUpdatingSeasonWatched || season.episodeCount == 0)
                         }
+                        // The episode row is entered natively and lands on its
+                        // anchored card. Only a row with nothing focusable
+                        // (still loading, or empty) needs Down handed on to
+                        // the supporting rails below the locked viewport.
                         .onMoveCommand { direction in
-                            guard direction == .down else { return }
-                            if !isLoadingEpisodes, let episode = displayedEpisode {
-                                episodeRailFocusTarget = episode.contentId
-                                episodeRailFocusRequest &+= 1
-                            } else {
-                                focusSupportingRail()
-                            }
+                            guard direction == .down,
+                                  episodeWindow.episodes.isEmpty,
+                                  hierarchyError == nil else { return }
+                            focusSupportingRail()
                         }
                     }
                 }
@@ -798,8 +797,6 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 cardHeightRatio: SiloTheme.thumbnailCardHeight / SiloTheme.thumbnailCardWidth,
                 cardSpacing: 40,
                 anchorsFocusedCard: true,
-                focusRequest: episodeRailFocusRequest,
-                focusTargetContentId: episodeRailFocusTarget,
                 scrollRequest: episodeScrollRequest,
                 scrollTargetContentId: episodeScrollTarget,
                 selectionRequest: episodeSelectionRequest,

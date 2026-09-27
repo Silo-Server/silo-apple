@@ -183,9 +183,9 @@ private struct DetailFocusScrollModifier: ViewModifier {
         state.generation &+= 1
         let generation = state.generation
 
-        // Ten frames at 60 Hz cover the native row-to-row reveal. The Series
-        // page explicitly releases this lock before focusing Cast, so these
-        // corrections never compete with its first deliberate page scroll.
+        // Ten frames at 60 Hz cover the native row-to-row reveal. Each write
+        // stops once focus leaves `region`, so these corrections never compete
+        // with the Series page's own reveal when Cast takes focus.
         for frame in 0...9 {
             let delay = Double(frame) / 60
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [state] in

@@ -44,9 +44,6 @@ struct TVEpisodeRail: View {
     var cardHeightRatio: CGFloat = 9 / 16
     var cardSpacing: CGFloat = 54
     var anchorsFocusedCard = false
-    /// Non-zero changes restore focus to the current Series episode card.
-    var focusRequest = 0
-    var focusTargetContentId: String? = nil
     /// Explicit season-chip jumps scroll the existing carousel without
     /// taking focus from the chip. Loaded edges extend the same episode row.
     var scrollRequest = 0
@@ -126,6 +123,15 @@ struct TVEpisodeRail: View {
             guard motion == nil, let intendedOffset, let scrollView,
                   abs(scrollView.contentOffset.x - intendedOffset) > 0.5 else { return }
             setOffset(intendedOffset)
+        }
+
+        /// Lands an in-flight season jump at its target. Focus entering the
+        /// row mid-jump must find the anchored card where it will rest, not
+        /// wherever the animation happened to be.
+        func finishScroll() {
+            guard let motion else { return }
+            stopScroll()
+            setOffset(motion.targetOffset)
         }
 
         @objc private func advanceScroll(_ link: CADisplayLink) {
@@ -280,11 +286,6 @@ struct TVEpisodeRail: View {
                         )
                     }
                 }
-                .onChange(of: focusRequest) { _, request in
-                    guard request > 0 else { return }
-                    seedAnchoredSelection(viewportWidth: geometry.size.width, targetContentId: focusTargetContentId)
-                    focusedCardId = anchoredContentId
-                }
                 .onChange(of: focusedCardId) { oldId, contentId in
                     focusTrace.railFocusChanged(contentId != nil)
                     if let contentId,
@@ -302,7 +303,7 @@ struct TVEpisodeRail: View {
         .frame(height: anchoredRailHeight)
         .onChange(of: isSelectingSeason) { _, ownsFocus in
             if !ownsFocus {
-                scrollViewport.stopScroll()
+                scrollViewport.finishScroll()
             }
         }
         .onDisappear {
