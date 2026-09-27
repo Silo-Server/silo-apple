@@ -236,9 +236,11 @@ struct TVPlayerControls: View {
         if isHUDPresented {
             if focusedHUDTab == nil { focusedHUDTab = activeHUDTab }
         } else if viewModel.showControls {
-            if viewModel.showIntroSkip && !isIntroSkipFocused {
+            // The skip pills are disabled during a timeline scrub, so a claim
+            // on them would land nowhere; the scrubber owns focus then.
+            if viewModel.showIntroSkip && !isTimelineScrubbing && !isIntroSkipFocused {
                 isIntroSkipFocused = true
-            } else if viewModel.showCreditsSkip && !isCreditsSkipFocused {
+            } else if viewModel.showCreditsSkip && !isTimelineScrubbing && !isCreditsSkipFocused {
                 isCreditsSkipFocused = true
             } else if focusedTransportButton == nil && !isScrubberFocused {
                 isScrubberFocused = true
@@ -335,8 +337,11 @@ struct TVPlayerControls: View {
             // When the intro-skip pill is showing, let it own first focus
             // instead of racing this scrubber seed — otherwise revealing the
             // controls while it is up lands focus nondeterministically on the
-            // scrubber or the pill.
-            if viewModel.showIntroSkip {
+            // scrubber or the pill. A timeline selection that revealed the
+            // controls keeps the scrubber: the pills are disabled mid-scrub.
+            if isTimelineScrubbing {
+                isScrubberFocused = true
+            } else if viewModel.showIntroSkip {
                 isScrubberFocused = false
                 isIntroSkipFocused = true
             } else if viewModel.showCreditsSkip {
