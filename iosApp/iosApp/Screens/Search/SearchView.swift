@@ -142,12 +142,12 @@ struct SearchView: View {
 
     @ViewBuilder
     private var content: some View {
-        if viewModel.isSearching && viewModel.results.isEmpty && viewModel.people.isEmpty {
+        if (viewModel.isSearching || viewModel.isSearchingPeople)
+            && viewModel.results.isEmpty && viewModel.people.isEmpty {
             Color.clear
         } else if let error = viewModel.error {
             ErrorView(state: error, onRetry: { Task { await viewModel.performSearch() } })
-        } else if viewModel.hasSearched && viewModel.results.isEmpty && viewModel.people.isEmpty
-                    && !viewModel.isSearchingPeople {
+        } else if viewModel.hasSearched && viewModel.results.isEmpty && viewModel.people.isEmpty {
             VStack {
                 Spacer(minLength: 80)
                 EmptyStateView(
