@@ -53,6 +53,10 @@ struct TVPlayerScrubber: View {
     private static let panDeadzone: CGFloat = 12
     @State private var isPanScrubbing = false
     @State private var panEngaged = false
+    /// When an engaged drag last ended. Move commands from the same swipe can
+    /// arrive just after the pan ends and must not step a full interval.
+    @State private var panEndedAt: ContinuousClock.Instant?
+    private static let panTrailingMoveWindow: Duration = .milliseconds(150)
     @State private var panAccumulated: CGFloat = 0
     /// Distinguishes entering/exiting timeline mode from a real seek. A
     /// Select-only round trip should resume the paused pipeline in place.
@@ -129,7 +133,10 @@ struct TVPlayerScrubber: View {
                             panAccumulated = 0
                         },
                         onPanChanged: handlePanChanged,
-                        onPanEnded: { isPanScrubbing = false }
+                        onPanEnded: {
+                            isPanScrubbing = false
+                            if panEngaged { panEndedAt = .now }
+                        }
                     )
                 }
                 .frame(width: 1, height: 1)
@@ -431,7 +438,8 @@ struct TVPlayerScrubber: View {
         // While a trackpad drag is in flight the same swipe also surfaces
         // here as discrete left/right move commands — the pan owns the
         // playhead, so the fixed-step path must stay quiet.
-        let panOwnsTimeline = isPanScrubbing && isTimelineScrubbing && !isTimelineAutoSeeking
+        let panJustEnded = panEndedAt.map { ContinuousClock.now - $0 < Self.panTrailingMoveWindow } ?? false
+        let panOwnsTimeline = (isPanScrubbing || panJustEnded) && isTimelineScrubbing && !isTimelineAutoSeeking
         switch direction {
         case .left:
             guard viewModel.duration > 0 else { return }

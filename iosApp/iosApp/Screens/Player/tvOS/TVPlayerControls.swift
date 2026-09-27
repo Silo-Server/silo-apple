@@ -176,7 +176,9 @@ struct TVPlayerControls: View {
         }
         .onChange(of: viewModel.showCreditsSkip) { _, visible in
             if visible {
-                if !isHUDPresented {
+                // Like the intro pill, never take focus from an active scrub:
+                // losing focus cancels the scrub preview.
+                if !isHUDPresented && !isTimelineScrubbing && !viewModel.isScrubbing {
                     isCreditsSkipFocused = true
                 }
             } else {
@@ -433,7 +435,10 @@ struct TVPlayerControls: View {
             ) {
                 viewModel.selectIntroSkipPrompt()
             }
-            .disabled(!viewModel.showControls)
+            // Out of the focus graph during a timeline scrub, like the
+            // transport row: a drag that drifts upward would otherwise land
+            // here and cancel the scrub.
+            .disabled(!viewModel.showControls || isTimelineScrubbing)
             .focused($isIntroSkipFocused)
             // Its own focus region, sized to the pill: a section spanning the
             // screen would hold Down inside it instead of handing focus to the
@@ -460,6 +465,7 @@ struct TVPlayerControls: View {
                 .frame(width: 220)
         }
         .buttonStyle(TVPillButtonStyle(kind: .primary, focusTreatment: .compact))
+        .disabled(isTimelineScrubbing)
         .focused($isCreditsSkipFocused)
         .accessibilityLabel("Skip Credits")
         .padding(.horizontal, 80)
