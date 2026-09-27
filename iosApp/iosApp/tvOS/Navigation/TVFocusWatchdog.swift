@@ -51,11 +51,17 @@ enum TVFocusSystemProbe {
     /// titles, and breadcrumbs must stay free of library content.
     @MainActor
     static func focusedItemTypeName() -> String? {
-        guard let window = keyWindow,
-              let item = UIFocusSystem.focusSystem(for: window)?.focusedItem
-        else { return nil }
-        return String(describing: type(of: item))
+        focusedItem().map { String(describing: type(of: $0)) }
     }
+
+    @MainActor
+    static func focusedItem() -> UIFocusItem? {
+        guard let window = keyWindow else { return nil }
+        return UIFocusSystem.focusSystem(for: window)?.focusedItem
+    }
+
+    @MainActor
+    static var keyWindowScreen: UIScreen? { keyWindow?.windowScene?.screen }
 
     /// Ask the engine to re-resolve focus from the window root. Used only on
     /// pushed routes, where the tvOS shell owns no focus target it could

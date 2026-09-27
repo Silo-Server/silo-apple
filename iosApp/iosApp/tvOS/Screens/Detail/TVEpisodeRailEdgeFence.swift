@@ -11,20 +11,25 @@ import UIKit
 /// episode movement.
 struct TVEpisodeRailEdgeFence: UIViewRepresentable {
     var isActive: Bool
+    var onRefuse: () -> Void = {}
 
     func makeUIView(context: Context) -> FenceView { FenceView() }
 
     func updateUIView(_ uiView: FenceView, context: Context) {
         uiView.isActive = isActive
+        uiView.onRefuse = onRefuse
     }
 
     final class FenceView: UIView {
         var isActive = false
+        var onRefuse: () -> Void = {}
 
         override var canBecomeFocused: Bool { isActive }
 
         override func shouldUpdateFocus(in context: UIFocusUpdateContext) -> Bool {
-            context.nextFocusedItem !== self
+            guard context.nextFocusedItem === self else { return true }
+            onRefuse()
+            return false
         }
     }
 }
