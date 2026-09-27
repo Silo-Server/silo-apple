@@ -270,8 +270,10 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
         }
     }
 
-    /// Whether the rendered pixel at `point` (in points) is the near-white
-    /// fill of the play/pause disc.
+    /// Whether the rendered pixel at `point` (in points) is the light fill of
+    /// the play/pause disc. Glass blends its white tint with the backdrop, so
+    /// over this test's blue-grey background the disc renders near
+    /// (215, 224, 234) on iOS 26.2, while the background stays under 60.
     private func isPlayDiscWhite(_ image: UIImage, at point: CGPoint) throws -> Bool {
         let cgImage = try XCTUnwrap(image.cgImage)
         let x = Int(point.x * image.scale), y = Int(point.y * image.scale)
@@ -285,7 +287,7 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
             context.draw(cgImage, in: CGRect(x: -x, y: y - cgImage.height + 1,
                                              width: cgImage.width, height: cgImage.height))
         }
-        return pixel[0] > 215 && pixel[1] > 215 && pixel[2] > 215
+        return pixel[0] > 180 && pixel[1] > 180 && pixel[2] > 180
     }
 
     func testMobilePlayButtonIsLargeAndCentredOnThePlayer() async throws {
