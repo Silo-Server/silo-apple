@@ -87,14 +87,14 @@ final class DetailDismissalNavigationTests: XCTestCase {
         XCTAssertTrue(router.path.isEmpty)
     }
 
-    func testCloseAndRotationControlsWaitForTapInEveryPhase() async throws {
+    func testCloseButtonWaitsForTapInEveryPhase() async throws {
         let model = PlayerViewModel()
         defer { model.cleanup() }
         for phase in ["loading", "playing", "next-up", "error"] {
             model.isLoading = phase == "loading"
             model.showNextUpScreen = phase == "next-up"
             model.error = phase == "error" ? "Synthetic playback error" : nil
-            XCTAssertFalse(model.shouldShowMobilePlayerChrome, "Close/rotate/lock stay hidden before a tap during \(phase)")
+            XCTAssertFalse(model.shouldShowMobilePlayerChrome, "Close stays hidden before a tap during \(phase)")
             model.toggleControls()
             XCTAssertTrue(model.shouldShowMobilePlayerChrome, "A tap reveals all chrome during \(phase)")
             model.toggleControls()
@@ -108,7 +108,7 @@ final class DetailDismissalNavigationTests: XCTestCase {
         model.toggleControls()
         try await Task.sleep(for: .milliseconds(5300))
         XCTAssertFalse(model.showControls)
-        XCTAssertFalse(model.shouldShowMobilePlayerChrome, "Close/rotate/lock auto-hide with transport")
+        XCTAssertFalse(model.shouldShowMobilePlayerChrome, "Close auto-hides with transport")
     }
 
     func testContinueWatchingOpensTheExistingSeriesCardWithTheExactResumeContext() throws {

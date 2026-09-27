@@ -118,8 +118,8 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
                     .onAppear { frames.extrasAppeared = true }
             }
             let viewport = layout
-                .frame(width: size.width, height: size.height - MobilePlayerRotationControls.topClearance)
-                .padding(.top, MobilePlayerRotationControls.topClearance)
+                .frame(width: size.width, height: size.height - MobilePlayerChromeVisibility.topClearance)
+                .padding(.top, MobilePlayerChromeVisibility.topClearance)
             let window = makeWindow(viewport
                 .coordinateSpace(name: "mobile-layout").ignoresSafeArea())
             defer { window.isHidden = true; window.rootViewController = nil }
@@ -135,7 +135,7 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
             attachment.lifetime = .keepAlways
             add(attachment)
             XCTAssertGreaterThan(frames.panel.height, 0)
-            XCTAssertGreaterThanOrEqual(frames.panel.minY, MobilePlayerRotationControls.topClearance)
+            XCTAssertGreaterThanOrEqual(frames.panel.minY, MobilePlayerChromeVisibility.topClearance)
             XCTAssertLessThanOrEqual(frames.panel.maxY, size.height)
             XCTAssertLessThanOrEqual(frames.panel.maxX, size.width)
             XCTAssertGreaterThan(frames.panel.minY, frames.preview.maxY)
@@ -188,7 +188,7 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
             XCTAssertGreaterThan(frames.preview.height, 30)
             XCTAssertGreaterThan(frames.panel.height, 0)
             XCTAssertGreaterThan(frames.panel.minY, frames.preview.maxY)
-            XCTAssertGreaterThanOrEqual(frames.preview.minY, MobilePlayerRotationControls.topClearance)
+            XCTAssertGreaterThanOrEqual(frames.preview.minY, MobilePlayerChromeVisibility.topClearance)
             XCTAssertGreaterThanOrEqual(frames.panel.minX, 0)
             XCTAssertLessThanOrEqual(frames.panel.maxX, frames.viewport.width + 1)
             XCTAssertLessThanOrEqual(frames.panel.maxY, frames.viewport.height + 1)
@@ -242,33 +242,97 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
         }
     }
 
-    func testPersistentRotationPillKeepsItsSizeAndTopRightPosition() async throws {
+    /// Viewport sizes paired with the safe-area insets of the device they
+    /// stand in for: iPhone portrait/landscape, a small landscape phone, iPad.
+    private static let mobileControlViewports: [(name: String, size: CGSize, insets: EdgeInsets)] = [
+        ("iphone-portrait", CGSize(width: 402, height: 874), EdgeInsets(top: 62, leading: 0, bottom: 34, trailing: 0)),
+        ("iphone-landscape", CGSize(width: 874, height: 402), EdgeInsets(top: 0, leading: 62, bottom: 21, trailing: 62)),
+        ("small-landscape", CGSize(width: 667, height: 375), EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0)),
+        ("ipad-landscape", CGSize(width: 1210, height: 834), EdgeInsets(top: 24, leading: 0, bottom: 20, trailing: 0))
+    ]
+
+    private func mobileControlsWindow(model: PlayerViewModel, size: CGSize, insets: EdgeInsets) -> UIWindow {
+        let content = ZStack {
+            Color(red: 0.2, green: 0.3, blue: 0.4)
+            MobilePlayerControls(viewModel: model, onDismiss: {})
+                .safeAreaPadding(insets)
+        }
+        .frame(width: size.width, height: size.height)
+        .ignoresSafeArea()
+        let window = makeWindow(content)
+        window.frame = CGRect(origin: .zero, size: size)
+        return window
+    }
+
+    private func render(_ window: UIWindow) -> UIImage {
+        UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+            window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+        }
+    }
+
+    /// Whether the rendered pixel at `point` (in points) is the light fill of
+    /// the play/pause disc. Glass blends its white tint with the backdrop, so
+    /// over this test's blue-grey background the disc renders near
+    /// (215, 224, 234) on iOS 26.2, while the background stays under 60.
+    private func isPlayDiscWhite(_ image: UIImage, at point: CGPoint) throws -> Bool {
+        let cgImage = try XCTUnwrap(image.cgImage)
+        let x = Int(point.x * image.scale), y = Int(point.y * image.scale)
+        var pixel = [UInt8](repeating: 0, count: 4)
+        try pixel.withUnsafeMutableBytes { buffer in
+            let context = try XCTUnwrap(CGContext(
+                data: buffer.baseAddress, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ))
+            context.draw(cgImage, in: CGRect(x: -x, y: y - cgImage.height + 1,
+                                             width: cgImage.width, height: cgImage.height))
+        }
+        return pixel[0] > 180 && pixel[1] > 180 && pixel[2] > 180
+    }
+
+    func testMobilePlayButtonIsLargeAndCentredOnThePlayer() async throws {
         XCTAssertNotNil(UIImage(systemName: "rectangle.landscape.rotate"))
-        for size in [CGSize(width: 390, height: 844), CGSize(width: 844, height: 390),
-                     CGSize(width: 568, height: 320)] {
-            let frames = MobileFrames()
-            let viewport = Color.black
-                .overlay(alignment: .topTrailing) {
-                    MobilePlayerRotationControls(orientationCoordinator: .shared, isVisible: true)
-                        .onGeometryChange(for: CGRect.self) {
-                            $0.frame(in: .named("rotation-layout"))
-                        } action: { frames.rotation = $0 }
-                        .padding(.horizontal, 16)
-                        .padding(.top, 16)
-                }
-                .frame(width: size.width, height: size.height)
-                .coordinateSpace(name: "rotation-layout")
-                .ignoresSafeArea()
-            let window = makeWindow(viewport)
+        XCTAssertNotNil(UIImage(systemName: "lock.rotation"))
+        XCTAssertNotNil(UIImage(systemName: "lock.rotation.open"))
+        for viewport in Self.mobileControlViewports {
+            let model = PlayerViewModel()
+            defer { model.cleanup() }
+            model.showControls = true
+            let window = mobileControlsWindow(model: model, size: viewport.size, insets: viewport.insets)
             defer { window.isHidden = true; window.rootViewController = nil }
             try await settle(window)
-            XCTAssertEqual(frames.rotation.width, MobilePlayerRotationControls.width, accuracy: 1)
-            XCTAssertEqual(frames.rotation.height, MobilePlayerRotationControls.height, accuracy: 1)
-            XCTAssertEqual(frames.rotation.maxX, size.width - 16, accuracy: 1)
-            XCTAssertEqual(frames.rotation.minY, 16, accuracy: 1)
-            let renderer = ImageRenderer(content: viewport)
-            let attachment = XCTAttachment(image: try XCTUnwrap(renderer.uiImage))
-            attachment.name = "Persistent rotation controls \(Int(size.width))x\(Int(size.height))"
+            let image = render(window)
+            let center = CGPoint(x: viewport.size.width / 2, y: viewport.size.height / 2)
+            let radius = MobilePlayerControls.playButtonSize / 2
+            // Inside the disc but clear of the glyph on all four sides, and
+            // background just outside it: the disc is centred on the whole
+            // player (not between the bars) and 64pt across.
+            for (dx, dy) in [(0.0, -1.0), (0.0, 1.0), (-1.0, 0.0), (1.0, 0.0)] {
+                let inside = CGPoint(x: center.x + dx * (radius - 6), y: center.y + dy * (radius - 6))
+                let outside = CGPoint(x: center.x + dx * (radius + 4), y: center.y + dy * (radius + 4))
+                XCTAssertTrue(try isPlayDiscWhite(image, at: inside), "\(viewport.name): disc at \(inside)")
+                XCTAssertFalse(try isPlayDiscWhite(image, at: outside), "\(viewport.name): background at \(outside)")
+            }
+        }
+    }
+
+    /// Rendered evidence of the controls at each viewport (paused, so the
+    /// play glyph shows). Assertion-free so it also runs against older code.
+    func testMobileControlsSnapshots() async throws {
+        for viewport in Self.mobileControlViewports {
+            let model = PlayerViewModel()
+            defer { model.cleanup() }
+            model.title = "The Next Chapter"
+            model.duration = 5400
+            model.currentTime = 1800
+            model.showControls = true
+            let window = mobileControlsWindow(model: model, size: viewport.size, insets: viewport.insets)
+            defer { window.isHidden = true; window.rootViewController = nil }
+            try await settle(window)
+            try await Task.sleep(for: .milliseconds(300))
+            let image = render(window)
+            let attachment = XCTAttachment(image: image)
+            attachment.name = "mobile-controls-\(viewport.name)"
             attachment.lifetime = .keepAlways
             add(attachment)
         }
@@ -393,7 +457,7 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
         XCTAssertEqual(itemChanges, 0)
         attachFrame("After expansion - same synthetic video item")
 
-        // The rotation pill changes scene geometry, not playback. Exercise
+        // Rotation changes scene geometry, not playback. Exercise
         // both resulting viewport shapes on the live native video surface.
         // Actual UIKit rotation/button delivery is checked interactively.
         for size in [CGSize(width: 390, height: 844), CGSize(width: 844, height: 390)] {

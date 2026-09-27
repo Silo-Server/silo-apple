@@ -279,6 +279,22 @@ actor SiloAPI {
         return try Person(catalog: try await apiV2Client.catalogPerson(id: id, auth: auth))
     }
 
+    /// Whether the server can search people by media scope. The same
+    /// capability guarantees results only carry credits the profile can see,
+    /// so without it search offers no people at all.
+    func peopleSearchSupported() async throws -> Bool {
+        let auth = try await detailReadAuth()
+        return try await apiV2Client.catalogSearchCapabilities(auth: auth).peopleMediaScope == true
+    }
+
+    /// People matching `query` for the acting profile, exact names first.
+    func searchPeople(query: String, mediaScope: String?, limit: Int) async throws -> [Person] {
+        let auth = try await detailReadAuth()
+        let people = try await apiV2Client.searchPeople(query: query, limit: limit, mediaScope: mediaScope, auth: auth)
+        guard await isCurrentOwner(auth) else { throw HTTPError.requestIdentityChanged }
+        return try people.map { try Person(catalog: $0) }
+    }
+
     /// Queue a provider refresh of the person. `non_retryable`: one dispatch,
     /// never replayed; see ``APIv2Client/refreshPerson(id:auth:)``.
     func refreshPerson(id: String) async throws {

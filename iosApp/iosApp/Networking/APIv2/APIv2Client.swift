@@ -1003,6 +1003,34 @@ struct APIv2Client: Sendable {
         return person
     }
 
+    /// People whose names match `query`, exact names first. `mediaScope`
+    /// limits them to credits the profile can see in that scope; `nil`
+    /// searches every scope. Only send it when search capabilities advertise
+    /// `people_media_scope`.
+    func searchPeople(query: String, limit: Int, mediaScope: String?,
+                      auth: CapturedOrdinaryRequestAuth) async throws -> [APIv2CatalogRead.Person] {
+        try await gate()
+        guard let profile = auth.profileId, !profile.isEmpty,
+              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try Task.checkCancellation()
+        let identity = Self.requestIdentity(auth, profile: profile)
+        var params = ["q": query, "limit": String(limit)]
+        if let mediaScope { params["media_scope"] = mediaScope }
+        let requestQuery = params
+        let raw = try await tokenStore.withOwnerFence(auth) {
+            try await mapErrors {
+                try await http.requestData(method: "GET", path: "/api/v2/catalog/people", query: requestQuery,
+                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+            }
+        }
+        try Task.checkCancellation()
+        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
+        return try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url)
+            .decode(APIv2CatalogReadCollection<APIv2CatalogRead.Person>.self, from: raw.data).items
+    }
+
     private func personRequest(id: String, method: String, auth: CapturedOrdinaryRequestAuth) async throws -> HTTPRawResponse {
         try await gate()
         let path = "/api/v2/catalog/people/\(try catalogPathSegment(id))" + (method == "POST" ? "/refresh" : "")
