@@ -3,8 +3,10 @@ import SwiftUI
 
 /// Touch-driven overlay used on iOS/iPadOS. Layout (see
 /// docs/ios-player-redesign/mockups.html):
-/// - Top strip: close, title block (series eyebrow + episode title)
-/// - Center: skip back, play/pause, skip forward (profile video intervals)
+/// - Top strip: close, title block (series eyebrow + episode title), PiP,
+///   AirPlay, rotate, rotation lock
+/// - Center: skip back, play/pause, skip forward (profile video intervals),
+///   pinned to the middle of the player rather than between the bars
 /// - Bottom stack: time row (elapsed / status chips / remaining), capsule
 ///   scrubber with buffered range + intro tint + chapter ticks + scrub
 ///   preview bubble, then a labeled action row (Quality menu, Audio &
@@ -24,6 +26,7 @@ struct MobilePlayerControls: View {
     /// duration otherwise. Tap the label to flip — the native player idiom.
     @State private var showsRemainingTime = true
     @State private var pictureInPicture = PictureInPictureCoordinator.shared
+    @State private var orientationCoordinator = PlayerOrientationCoordinator.shared
     /// Floating stats card. Kept here rather than on the view model because
     /// it is purely presentation, and kept outside the `showControls` gate
     /// below so the auto-hide takes the transport away without it.
@@ -51,11 +54,17 @@ struct MobilePlayerControls: View {
                             .ignoresSafeArea()
                             .onTapGesture { viewModel.toggleControls() }
 
+                        // Centred on the whole screen, where the video is,
+                        // rather than between the top strip and the taller
+                        // bottom stack, which would pull it off-centre. Kept
+                        // beneath the bars so the scrub preview draws over it.
+                        centerCluster
+                            .opacity(recedingOpacity)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .ignoresSafeArea()
+
                         VStack(spacing: 0) {
                             topStrip(compact: proxy.size.width < proxy.size.height)
-                                .opacity(recedingOpacity)
-                            Spacer()
-                            centerCluster
                                 .opacity(recedingOpacity)
                             Spacer()
                             bottomStack
@@ -67,8 +76,8 @@ struct MobilePlayerControls: View {
                         // a hairline of extra breathing room is needed.
                         .padding(.bottom, 2)
                         .frame(width: proxy.size.width, height: proxy.size.height)
-                        .animation(.easeOut(duration: 0.18), value: viewModel.isScrubbing)
                     }
+                    .animation(.easeOut(duration: 0.18), value: viewModel.isScrubbing)
                 }
                 .transition(.opacity)
             }
@@ -81,6 +90,9 @@ struct MobilePlayerControls: View {
                     .transition(.opacity)
             }
         }
+        // Tap-to-toggle and auto-hide flip `showControls` without an
+        // animation of their own; fade every control in and out together.
+        .animation(.easeOut(duration: 0.18), value: viewModel.showControls)
         .animation(.easeOut(duration: 0.18), value: showsStats)
         // Fades in, and out when its timer runs out. Tap takes it down at once
         // (see `PlayerViewModel.selectIntroSkipPrompt`).
@@ -152,13 +164,7 @@ struct MobilePlayerControls: View {
                 if !compact { titleBlock }
                 Spacer(minLength: 0)
                 if !compact { externalPlaybackControls }
-                // The rotation pill is a sibling overlay that fades with
-                // these controls. Reserve its exact width to avoid overlap.
-                Color.clear
-                    .frame(width: MobilePlayerRotationControls.width,
-                           height: MobilePlayerRotationControls.height)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
+                rotationControls
             }
             if compact {
                 HStack(spacing: 12) {
@@ -216,6 +222,31 @@ struct MobilePlayerControls: View {
         }
     }
 
+    private var rotationControls: some View {
+        HStack(spacing: 12) {
+            controlButton(systemName: "rectangle.landscape.rotate") {
+                orientationCoordinator.togglePlayerOrientation()
+                viewModel.resumeAutoHide()
+            }
+            .accessibilityLabel("Rotate to \(orientationCoordinator.nextPlayerOrientation.title)")
+            .accessibilityHint("Rotates the screen without interrupting playback")
+            .accessibilityIdentifier("player.rotate")
+
+            controlButton(
+                systemName: orientationCoordinator.isRotationLocked ? "lock.rotation" : "lock.rotation.open"
+            ) {
+                orientationCoordinator.toggleRotationLock()
+                viewModel.resumeAutoHide()
+            }
+            .accessibilityLabel(orientationCoordinator.isRotationLocked ? "Unlock screen rotation" : "Lock screen rotation")
+            .accessibilityValue(orientationCoordinator.isRotationLocked ? "Locked" : "Unlocked")
+            .accessibilityHint(orientationCoordinator.isRotationLocked
+                ? "Allows video to follow phone orientation"
+                : "Stops phone movement rotating video. The rotate button still works")
+            .accessibilityIdentifier("player.rotation-lock")
+        }
+    }
+
     private var titleBlock: some View {
         VStack(alignment: .leading, spacing: 1) {
             if let eyebrow = titleEyebrow {
@@ -261,19 +292,19 @@ struct MobilePlayerControls: View {
 
     // MARK: - Center
 
-    /// Every circle matches the detail page's 44pt close/remote controls.
-    /// Play/pause keeps its white tint without becoming a larger disc.
+    /// Play/pause is the largest control, flanked by smaller skips — the
+    /// same 64/52pt hierarchy and 48pt spacing as the Android phone player.
     private var centerCluster: some View {
-        HStack(spacing: 36) {
+        HStack(spacing: 48) {
             Button {
                 viewModel.skipBackward()
             } label: {
                 Image(systemName: SeekIntervalLabel.symbolName(.backward, seconds: viewModel.skipIntervals.backward))
-                    .font(.system(size: 20, weight: .medium))
+                    .font(.system(size: 24, weight: .medium))
                     .foregroundStyle(.white)
-                    .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
+                    .frame(width: Self.skipButtonSize, height: Self.skipButtonSize)
             }
-            .buttonStyle(MobilePlayerGlassButtonStyle())
+            .buttonStyle(MobilePlayerGlassButtonStyle(size: Self.skipButtonSize))
             .accessibilityLabel(SeekIntervalLabel.accessibilityLabel(.backward, seconds: viewModel.skipIntervals.backward))
             .disabled(!viewModel.canRequestSeek)
 
@@ -281,14 +312,14 @@ struct MobilePlayerControls: View {
                 viewModel.togglePlayPause()
             } label: {
                 Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 20, weight: .semibold))
+                    .font(.system(size: 28, weight: .semibold))
                     .foregroundStyle(.black.opacity(0.85))
                     // play.fill reads left-heavy inside a circle;
                     // nudge it toward the optical center.
-                    .offset(x: viewModel.isPlaying ? 0 : 1.5)
-                    .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
+                    .offset(x: viewModel.isPlaying ? 0 : 2)
+                    .frame(width: Self.playButtonSize, height: Self.playButtonSize)
             }
-            .buttonStyle(MobilePlayerGlassButtonStyle(tint: .white.opacity(0.9)))
+            .buttonStyle(MobilePlayerGlassButtonStyle(tint: .white.opacity(0.9), size: Self.playButtonSize))
             .accessibilityLabel(viewModel.isPlaying ? "Pause" : "Play")
             .disabled(!viewModel.canRequestPlayPause)
 
@@ -296,15 +327,18 @@ struct MobilePlayerControls: View {
                 viewModel.skipForward()
             } label: {
                 Image(systemName: SeekIntervalLabel.symbolName(.forward, seconds: viewModel.skipIntervals.forward))
-                    .font(.system(size: 20, weight: .medium))
+                    .font(.system(size: 24, weight: .medium))
                     .foregroundStyle(.white)
-                    .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
+                    .frame(width: Self.skipButtonSize, height: Self.skipButtonSize)
             }
-            .buttonStyle(MobilePlayerGlassButtonStyle())
+            .buttonStyle(MobilePlayerGlassButtonStyle(size: Self.skipButtonSize))
             .accessibilityLabel(SeekIntervalLabel.accessibilityLabel(.forward, seconds: viewModel.skipIntervals.forward))
             .disabled(!viewModel.canRequestSeek)
         }
     }
+
+    static let playButtonSize: CGFloat = 64
+    static let skipButtonSize: CGFloat = 52
 
     // MARK: - Bottom stack
 
@@ -862,23 +896,29 @@ private struct MobileIntroSkipPillButtonStyle: ButtonStyle {
 }
 
 /// Match detail chrome without the extra padding added by native glass
-/// button styles. A 44pt square is circular; longer labels form a 44pt pill.
+/// button styles. A square label is circular; longer labels form a pill.
+/// Chrome uses the 44pt default; the transport cluster passes larger sizes.
 struct MobilePlayerGlassButtonStyle: ButtonStyle {
     var tint: Color? = nil
+    var size: CGFloat = SiloTheme.topBarIconHitSize
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .frame(minWidth: SiloTheme.topBarIconHitSize)
-            .frame(height: SiloTheme.topBarIconHitSize)
+            .frame(minWidth: size)
+            .frame(height: size)
             .opacity(configuration.isPressed ? 0.75 : 1)
             .contentShape(Capsule())
             .siloPlayerGlass(in: Capsule(), tint: tint, interactive: true)
     }
 }
 
-/// Close and rotation controls share the same visibility, hit testing and
-/// accessibility state, including while loading and on Next Up.
+/// The standalone close button shown while loading, on Next Up and on
+/// errors — when the full controls aren't mounted — follows the same
+/// tap/auto-hide state as the controls.
 struct MobilePlayerChromeVisibility: ViewModifier {
+    /// Room the Next Up layout leaves above itself for the close button.
+    static let topClearance: CGFloat = SiloTheme.topBarIconHitSize + 32
+
     let isVisible: Bool
 
     func body(content: Content) -> some View {
@@ -887,58 +927,6 @@ struct MobilePlayerChromeVisibility: ViewModifier {
             .allowsHitTesting(isVisible)
             .accessibilityHidden(!isVisible)
             .animation(.easeOut(duration: 0.18), value: isVisible)
-    }
-}
-
-/// Top-right chrome follows transport visibility in every playback phase.
-/// Equal tap areas keep the lock centred through rotation.
-struct MobilePlayerRotationControls: View {
-    static let height = SiloTheme.topBarIconHitSize
-    static let width = height * 2 + 24
-    static let topClearance: CGFloat = height + 32
-
-    let orientationCoordinator: PlayerOrientationCoordinator
-    let isVisible: Bool
-    var onInteraction: () -> Void = {}
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Button {
-                orientationCoordinator.togglePlayerOrientation()
-                onInteraction()
-            } label: {
-                icon("rectangle.landscape.rotate")
-            }
-            .accessibilityLabel("Rotate to \(orientationCoordinator.nextPlayerOrientation.title)")
-            .accessibilityHint("Rotates the screen without interrupting playback")
-            .accessibilityIdentifier("player.rotate")
-
-            Button {
-                orientationCoordinator.toggleRotationLock()
-                onInteraction()
-            } label: {
-                icon(orientationCoordinator.isRotationLocked ? "lock" : "lock.open")
-            }
-            .accessibilityLabel(orientationCoordinator.isRotationLocked ? "Unlock screen rotation" : "Lock screen rotation")
-            .accessibilityValue(orientationCoordinator.isRotationLocked ? "Locked" : "Unlocked")
-            .accessibilityHint(orientationCoordinator.isRotationLocked
-                ? "Allows video to follow phone orientation"
-                : "Stops phone movement rotating video. The rotate button still works")
-            .accessibilityIdentifier("player.rotation-lock")
-        }
-        .buttonStyle(.plain)
-        .padding(.horizontal, 8)
-        .siloPlayerGlass(in: Capsule(), interactive: true)
-        .modifier(MobilePlayerChromeVisibility(isVisible: isVisible))
-    }
-
-    private func icon(_ symbol: String) -> some View {
-        Image(systemName: symbol)
-            .font(.system(size: 24, weight: .medium))
-            .foregroundStyle(.white)
-            .frame(width: 32, height: 32)
-            .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
-            .contentShape(Rectangle())
     }
 }
 #endif

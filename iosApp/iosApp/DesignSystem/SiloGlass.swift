@@ -38,7 +38,14 @@ extension View {
             self.siloGlass(in: shape, tint: tint, interactive: interactive)
         } else {
             // Avoid per-frame backdrop sampling over video on A12-era phones.
-            self.background(shape.fill(Color(white: 0.10).opacity(0.88)))
+            // Layer the tint over the fill as glass would, so the white
+            // play/pause disc stays white under its dark glyph.
+            self.background {
+                ZStack {
+                    shape.fill(Color(white: 0.10).opacity(0.88))
+                    if let tint { shape.fill(tint) }
+                }
+            }
         }
         #else
         if DevicePower.isLowPowerAppleTV {

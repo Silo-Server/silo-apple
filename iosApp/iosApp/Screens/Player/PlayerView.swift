@@ -296,16 +296,6 @@ struct PlayerView: View {
             }
         }
         #if os(iOS)
-        .overlay(alignment: .topTrailing) {
-            MobilePlayerRotationControls(
-                orientationCoordinator: orientationCoordinator,
-                isVisible: viewModel.shouldShowMobilePlayerChrome
-            ) {
-                viewModel.resumeAutoHide()
-            }
-            .padding(.horizontal)
-            .padding(.top)
-        }
         .onGeometryChange(for: CGSize.self) { $0.size } action: { _ in
             orientationCoordinator.refreshInterfaceOrientation()
         }
@@ -750,7 +740,7 @@ struct PlayerNextUpScreen: View {
             ZStack {
                 Color.black.ignoresSafeArea()
                     #if os(iOS)
-                    // A background tap reveals/dismisses the rotation pill
+                    // A background tap reveals/dismisses the close button
                     // without intercepting Play Now, Back, or Auto Play.
                     .onTapGesture { viewModel.toggleControls() }
                     #endif
@@ -785,7 +775,7 @@ struct PlayerNextUpScreen: View {
                     #endif
                 }
                 #if os(iOS)
-                .padding(.top, MobilePlayerRotationControls.topClearance)
+                .padding(.top, MobilePlayerChromeVisibility.topClearance)
                 #endif
                 #endif
             }

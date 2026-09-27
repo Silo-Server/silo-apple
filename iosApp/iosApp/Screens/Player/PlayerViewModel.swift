@@ -264,7 +264,7 @@ class PlayerViewModel {
     #if os(iOS)
     var shouldShowMobilePlayerChrome: Bool {
         // Loading and Next Up must not independently reveal player chrome.
-        // Close and rotation follow the same tap/auto-hide state as transport.
+        // Their close button follows the same tap/auto-hide state as transport.
         showControls
     }
     #endif
