@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Full-screen search with debounced query and grid results — Plezy style.
 struct SearchView: View {
-    @State private var viewModel = SearchViewModel()
+    @State private var viewModel = SearchViewModel(includesPeople: true)
     @State private var requestsViewModel = RequestSearchSectionViewModel()
     @State private var navPrefs = AppNavPreferences.shared
     @Environment(AppRouter.self) private var router
@@ -146,7 +146,8 @@ struct SearchView: View {
             Color.clear
         } else if let error = viewModel.error {
             ErrorView(state: error, onRetry: { Task { await viewModel.performSearch() } })
-        } else if viewModel.hasSearched && viewModel.results.isEmpty && viewModel.people.isEmpty {
+        } else if viewModel.hasSearched && viewModel.results.isEmpty && viewModel.people.isEmpty
+                    && !viewModel.isSearchingPeople {
             VStack {
                 Spacer(minLength: 80)
                 EmptyStateView(

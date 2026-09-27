@@ -39,8 +39,11 @@ class SearchViewModel {
     var results: [BrowseItem] = []
     /// People whose names match the query, exact names first, limited to
     /// credits in the selected media type. Replaced with each new search;
-    /// title paging never changes it.
+    /// title paging never changes it. Always empty unless `includesPeople`.
     var people: [Person] = []
+    /// True while a new search's people lookup is still running, so an empty
+    /// title page is not reported as "No results" before people arrive.
+    var isSearchingPeople = false
 
     /// Whether audiobooks participate in this search session. Drives both the
     /// offered filters (`availableMediaTypes`) and what `.all` means. On tvOS
@@ -67,6 +70,10 @@ class SearchViewModel {
     var total = 0
 
     private var searchTask: Task<Void, Never>?
+    private var peopleTask: Task<Void, Never>?
+    /// Only the Search screen shows people; pickers that reuse this model
+    /// never ask for them.
+    private let includesPeople: Bool
     private let pageSize = 60
     private let peopleLimit = 20
     /// Whether the server can scope people search and filter it by access;
@@ -82,6 +89,10 @@ class SearchViewModel {
     /// Bumped by every new search so a load-more for the previous results
     /// cannot append to (or hand its continuation to) the new ones.
     private var generation = 0
+
+    init(includesPeople: Bool = false) {
+        self.includesPeople = includesPeople
+    }
 
     /// Debounced search triggered on query change.
     func onQueryChanged() {
@@ -133,9 +144,7 @@ class SearchViewModel {
         error = nil
 
         let mediaType = selectedMediaType.queryValue(audiobooksEnabled: audiobooksEnabled)
-        // People load alongside the first title page. A people failure only
-        // leaves the People row out; title results still show.
-        async let matchedPeople: [Person]? = reset ? matchingPeople(for: trimmed, mediaScope: mediaType) : nil
+        if reset { startPeopleSearch(for: trimmed, mediaScope: mediaType, generation: myGeneration) }
 
         do {
             let page: CatalogListPage
@@ -146,10 +155,6 @@ class SearchViewModel {
             }
             guard !Task.isCancelled, myGeneration == generation else { return }
             let response = page.response
-            if let found = await matchedPeople {
-                guard !Task.isCancelled, myGeneration == generation else { return }
-                people = found
-            }
 
             if reset || page.startsOver {
                 results = response.items
@@ -167,7 +172,7 @@ class SearchViewModel {
             self.error = ErrorState(err)
             if reset {
                 results = []
-                people = []
+                cancelPeopleSearch()
                 total = 0
                 hasMore = false
                 continuation = nil
@@ -177,8 +182,30 @@ class SearchViewModel {
         isSearching = false
     }
 
+    /// Loads people for a new search on their own task, so titles publish as
+    /// soon as their page arrives. A later search or a reset discards the
+    /// result.
+    private func startPeopleSearch(for query: String, mediaScope: String?, generation searchGeneration: Int) {
+        peopleTask?.cancel()
+        guard includesPeople else { return }
+        isSearchingPeople = true
+        peopleTask = Task { @MainActor in
+            let found = await matchingPeople(for: query, mediaScope: mediaScope)
+            guard !Task.isCancelled, searchGeneration == generation else { return }
+            people = found
+            isSearchingPeople = false
+        }
+    }
+
+    private func cancelPeopleSearch() {
+        peopleTask?.cancel()
+        peopleTask = nil
+        people = []
+        isSearchingPeople = false
+    }
+
     /// Empty when the server cannot scope people search or the request
-    /// fails, so people never block or replace title results.
+    /// fails, so people never replace title results.
     private func matchingPeople(for query: String, mediaScope: String?) async -> [Person] {
         do {
             if peopleSearchSupported == nil {
@@ -197,7 +224,7 @@ class SearchViewModel {
     private func resetState() {
         generation += 1
         results = []
-        people = []
+        cancelPeopleSearch()
         isSearching = false
         error = nil
         hasSearched = false
