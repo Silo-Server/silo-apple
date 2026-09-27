@@ -142,11 +142,11 @@ struct SearchView: View {
 
     @ViewBuilder
     private var content: some View {
-        if viewModel.isSearching && viewModel.results.isEmpty {
+        if viewModel.isSearching && viewModel.results.isEmpty && viewModel.people.isEmpty {
             Color.clear
         } else if let error = viewModel.error {
             ErrorView(state: error, onRetry: { Task { await viewModel.performSearch() } })
-        } else if viewModel.hasSearched && viewModel.results.isEmpty {
+        } else if viewModel.hasSearched && viewModel.results.isEmpty && viewModel.people.isEmpty {
             VStack {
                 Spacer(minLength: 80)
                 EmptyStateView(
@@ -155,46 +155,78 @@ struct SearchView: View {
                     subtitle: "Try a different search term"
                 )
             }
-        } else if viewModel.results.isEmpty {
+        } else if viewModel.results.isEmpty && viewModel.people.isEmpty {
             VStack {
                 Spacer(minLength: 80)
                 EmptyStateView(
                     icon: "magnifyingglass",
                     title: "Search Silo",
-                    subtitle: "Find movies and series"
+                    subtitle: "Find movies, series, and people"
                 )
             }
         } else {
             VStack(alignment: .leading, spacing: SiloTheme.padding) {
-                Text("\(viewModel.total) result\(viewModel.total == 1 ? "" : "s")")
-                    .font(.siloCaption)
-                    .foregroundColor(.siloSecondaryText)
+                if !viewModel.people.isEmpty {
+                    peopleSection
+                }
+
+                if !viewModel.results.isEmpty {
+                    titleResults
+                }
+            }
+        }
+    }
+
+    /// Matching actors, directors, and other credited people. Each opens
+    /// the person's page.
+    private var peopleSection: some View {
+        let people = viewModel.people.map(CastMember.init(searchResult:))
+        let openPerson: (String) -> Void = { router.navigate(to: .personDetail(personId: $0)) }
+        #if os(tvOS)
+        return VStack(alignment: .leading, spacing: TVDetailLayout.sectionHeaderSpacing) {
+            TVSectionHeader(title: "People")
+            TVDetailCastRail(cast: people, onTap: openPerson)
+        }
+        #else
+        return VStack(alignment: .leading, spacing: 14) {
+            PhoneSectionHeader(title: "People")
+            PhoneCastRail(cast: people, onTap: openPerson)
+                // The rail insets its own cards, so let it scroll edge to edge.
+                .padding(.horizontal, -SiloTheme.padding)
+        }
+        #endif
+    }
+
+    private var titleResults: some View {
+        VStack(alignment: .leading, spacing: SiloTheme.padding) {
+            Text("\(viewModel.total) result\(viewModel.total == 1 ? "" : "s")")
+                .font(.siloCaption)
+                .foregroundColor(.siloSecondaryText)
 
 #if os(tvOS)
-                TVCatalogGrid(
-                    items: viewModel.results,
-                    isLoading: viewModel.isSearching,
-                    hasMore: viewModel.hasMore,
-                    onItemTap: { router.navigate(to: .itemDetail(browseItem: $0)) },
-                    onNearEnd: { _ in
-                        Task { await viewModel.loadMore() }
-                    },
-                    columnCount: 6,
-                    cardWidth: 220,
-                    prefersDefaultFocusOnFirstItem: true
-                )
+            TVCatalogGrid(
+                items: viewModel.results,
+                isLoading: viewModel.isSearching,
+                hasMore: viewModel.hasMore,
+                onItemTap: { router.navigate(to: .itemDetail(browseItem: $0)) },
+                onNearEnd: { _ in
+                    Task { await viewModel.loadMore() }
+                },
+                columnCount: 6,
+                cardWidth: 220,
+                prefersDefaultFocusOnFirstItem: true
+            )
 #else
-                CatalogGrid(
-                    items: viewModel.results,
-                    isLoading: viewModel.isSearching,
-                    hasMore: viewModel.hasMore,
-                    onItemTap: { router.navigate(to: .itemDetail(browseItem: $0)) },
-                    onLoadMore: {
-                        Task { await viewModel.loadMore() }
-                    }
-                )
+            CatalogGrid(
+                items: viewModel.results,
+                isLoading: viewModel.isSearching,
+                hasMore: viewModel.hasMore,
+                onItemTap: { router.navigate(to: .itemDetail(browseItem: $0)) },
+                onLoadMore: {
+                    Task { await viewModel.loadMore() }
+                }
+            )
 #endif
-            }
         }
     }
 
@@ -245,4 +277,21 @@ struct SearchView: View {
     /// centered pill rather than stretching across the whole search page.
     private var tvFilterWidth: CGFloat { 760 }
 #endif
+}
+
+private extension CastMember {
+    /// A people search result shown on a cast rail: no role, just the person.
+    init(searchResult person: Person) {
+        self.init(
+            name: person.name,
+            character: nil,
+            order: nil,
+            personId: person.id,
+            tmdbId: person.tmdbId,
+            tvdbId: person.tvdbId,
+            imdbId: person.imdbId,
+            photoUrl: person.photoUrl,
+            photoThumbhash: person.photoThumbhash
+        )
+    }
 }

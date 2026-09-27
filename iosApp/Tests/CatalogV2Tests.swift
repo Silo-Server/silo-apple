@@ -637,6 +637,32 @@ final class CatalogV2Tests: XCTestCase {
         XCTAssertEqual(stub.requests.count, 1)
     }
 
+    func testPeopleSearchSendsScopeAndIsFencedOnTheCapturedOwner() async throws {
+        let (api, tokens) = try await client()
+        let authValue = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(authValue)
+        stub.reply(200, #"{"items":[{"id":"137101642343383042","name":"Tom Hanks","photo_url":"/p/hanks.jpg"},{"id":"8","name":"Tom"}]}"#)
+        let people = try await api.searchPeople(query: "tom", limit: 20, mediaScope: "video", auth: auth)
+        XCTAssertEqual(people.map(\.id), ["137101642343383042", "8"], "IDs stay strings and keep the server's order")
+        XCTAssertEqual(people.first?.photoUrl, "https://catalog.example/p/hanks.jpg")
+        XCTAssertNil(people.last?.photoUrl)
+        let request = try XCTUnwrap(stub.requests.last)
+        XCTAssertEqual(request.path, "/api/v2/catalog/people")
+        XCTAssertEqual(request.query, ["q": "tom", "limit": "20", "media_scope": "video"])
+        XCTAssertEqual(request.header("x-profile-id"), "profile-one")
+
+        stub.reply(200, #"{"items":[]}"#)
+        _ = try await api.searchPeople(query: "tom", limit: 20, mediaScope: nil, auth: auth)
+        XCTAssertEqual(stub.requests.last?.query, ["q": "tom", "limit": "20"], "no scope searches every media type")
+
+        await tokens.setProfileToken("replacement")
+        do {
+            _ = try await api.searchPeople(query: "tom", limit: 20, mediaScope: nil, auth: auth)
+            XCTFail("a replaced owner cannot search people")
+        } catch HTTPError.requestIdentityChanged { }
+        XCTAssertEqual(stub.requests.count, 2)
+    }
+
     func testCatalogReadGateBlocksDispatch() async throws {
         let (api, _) = try await client(updateRequired: true)
         do { _ = try await api.catalogSeasons(seriesId: "series"); XCTFail("Expected gate") }
