@@ -41,6 +41,10 @@ actionable item can be a real focus target.
   first card returns to the top menu." Do not intercept normal in-zone movement.
 - Move focus geometry with layout (`padding`, `frame`, alignment), not
   `.offset`, because tvOS resolves focus from layout frames.
+- Focus can only reach views that are loaded. A `LazyHStack` unloads cards
+  outside its scroll view's bounds, so a row that pins the focused card to its
+  leading edge must extend the scroll view one card past the visible edge
+  (and mask the overflow) or the previous card is unreachable.
 
 Good local examples:
 
@@ -48,6 +52,7 @@ Good local examples:
 - `TVLibraryCollectionsView`
 - `TVForYouDropdown`
 - `TVProfileDropdown`
+- `TVEpisodeRail` (Series carousel: native cards pinned to the leading edge)
 
 ### Composite Focus Control
 
@@ -65,9 +70,9 @@ multiple highlighted rows or columns. A cascading selector is the main example.
 - Handle all D-pad movement for the composite with one `onMoveCommand`.
   The focus engine resolves the move first. If a focusable lies beyond the
   composite on an axis it owns, even diagonally or off screen, focus can
-  leave before the handler runs, especially on touch-surface swipes. Fence
-  that side with a focusable view that refuses focus
-  (`TVEpisodeRailEdgeFence`); the refused move still reaches `onMoveCommand`.
+  leave before the handler runs, especially on touch-surface swipes, and a
+  swipe can end with a stray orthogonal command. Prefer a native focus graph
+  for anything the focus engine can drive, such as a row of cards.
 - Commit the highlighted selection on Select, usually with `onTapGesture` on
   the focused container. Use `onExitCommand` for Menu/Back and
   `onPlayPauseCommand` for Play/Pause. Do not use `onKeyPress` for the Siri

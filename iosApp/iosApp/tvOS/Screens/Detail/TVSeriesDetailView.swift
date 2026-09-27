@@ -798,8 +798,6 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 cardHeightRatio: SiloTheme.thumbnailCardHeight / SiloTheme.thumbnailCardWidth,
                 cardSpacing: 40,
                 anchorsFocusedCard: true,
-                onMoveUp: focusSelectedMode,
-                onMoveDown: focusSupportingRail,
                 focusRequest: episodeRailFocusRequest,
                 focusTargetContentId: episodeRailFocusTarget,
                 scrollRequest: episodeScrollRequest,
@@ -824,15 +822,12 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             + 24
     }
 
-    private func focusSelectedMode() {
-        focusedModeId = selectedModeId
-    }
-
     private func focusSupportingRail() {
         guard primaryFocusRegion != .supporting else { return }
-        // The focus engine snapshots scroll eligibility before delivering the
-        // episode rail's move command. Unlock now, then request Cast on the
-        // next main-loop turn so its first focus update receives native reveal.
+        // Used by the season row while episodes are still loading. The focus
+        // engine snapshots scroll eligibility before delivering the move
+        // command. Unlock now, then request Cast on the next main-loop turn so
+        // its first focus update receives native reveal.
         pageScrollCoordinator.releasePrimary()
         primaryFocusRegion = .outside
         supportingRailFocusGeneration &+= 1

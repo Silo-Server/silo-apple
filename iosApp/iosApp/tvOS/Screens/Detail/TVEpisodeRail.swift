@@ -44,10 +44,6 @@ struct TVEpisodeRail: View {
     var cardHeightRatio: CGFloat = 9 / 16
     var cardSpacing: CGFloat = 54
     var anchorsFocusedCard = false
-    /// Anchored Series rails hand vertical exits back to the parent while
-    /// one composite control owns movement between episode cards.
-    var onMoveUp: (() -> Void)? = nil
-    var onMoveDown: (() -> Void)? = nil
     /// Non-zero changes restore focus to the current Series episode card.
     var focusRequest = 0
     var focusTargetContentId: String? = nil
@@ -63,15 +59,10 @@ struct TVEpisodeRail: View {
     var onRequestPrevious: (() -> Void)? = nil
     var onRequestNext: (() -> Void)? = nil
 
-    private struct PendingEdge: Equatable {
-        let contentId: String
-        let direction: Int
-    }
     private struct SeasonScrollUpdate: Equatable {
         let request: Int
         let episodeIds: [String]
     }
-    @State private var pendingEdge: PendingEdge?
     @State private var appliedScrollRequest = 0
     @State private var scrollViewport = ScrollViewport()
     @State private var focusTrace = TVEpisodeRailFocusTrace()
@@ -128,11 +119,11 @@ struct TVEpisodeRail: View {
             )
         }
 
-        /// Lazy layout can restore its previous content offset after a page
-        /// insertion. This composite owns scrolling, so reconcile that layout
-        /// write with the latest frame instead of starting a settling animation.
+        /// Lazy layout and the focus engine's own reveal can both write the
+        /// content offset. The rail owns the anchored position, so reconcile
+        /// those writes with the latest target instead of settling twice.
         func reconcileOffset() {
-            guard let intendedOffset, let scrollView,
+            guard motion == nil, let intendedOffset, let scrollView,
                   abs(scrollView.contentOffset.x - intendedOffset) > 0.5 else { return }
             setOffset(intendedOffset)
         }
@@ -151,34 +142,20 @@ struct TVEpisodeRail: View {
     }
 
     @FocusState private var focusedCardId: String?
-    @FocusState private var railHasFocus: Bool
-    @State private var anchoredFocusedContentId: String?
     @Namespace private var anchoredFocusScope
+    /// The card the anchored row is positioned on: the focused card while the
+    /// row has focus, otherwise the last one it selected or scrolled to.
     @State private var anchoredContentId: String?
-    @State private var actionFeedback = MediaActionFeedback()
-    @State private var anchoredPlayedOverrides: [String: Bool] = [:]
-    @State private var anchoredFavoriteOverrides: [String: Bool] = [:]
-    @State private var anchoredWatchlistOverrides: [String: Bool] = [:]
     @State private var uiCustomization = UICustomizationPreferences.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @ViewBuilder
     var body: some View {
-        Group {
-            if anchorsFocusedCard {
-                HStack(spacing: 0) {
-                    edgeFence
-                    anchoredRail
-                    edgeFence
-                }
-                // Keep the cards on the page's leading edge; the fence sits
-                // in the inset just outside it.
-                .padding(.leading, -1)
-            } else {
-                legacyRail
-            }
+        if anchorsFocusedCard {
+            anchoredRail
+        } else {
+            legacyRail
         }
-        .mediaActionFeedback(actionFeedback)
     }
 
     private var legacyRail: some View {
@@ -186,24 +163,9 @@ struct TVEpisodeRail: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(alignment: .top, spacing: cardSpacing) {
                     ForEach(episodes) { episode in
-                        TVEpisodeCard(
-                            episode: episode,
-                            isCurrent: currentContentId == episode.contentId,
-                            baseCardWidth: baseCardWidth,
-                            posterSize: uiCustomization.cardPresentation.posterSize,
-                            captionStyle: uiCustomization.cardPresentation.caption,
-                            onSelect: { onSelect(episode.contentId) },
-                            onPlay: onPlay,
-                            onSetWatched: onSetWatched,
-                            initialIsFavorite: currentContentId == episode.contentId
-                                ? currentContentIsFavorite
-                                : favoriteStates[episode.contentId] ?? false,
-                            onSetFavorite: onSetFavorite,
-                            onSetWatchlist: onSetWatchlist,
-                            initialInWatchlist: watchlistStates[episode.contentId] ?? false
-                        )
-                        .id(episode.contentId)
-                        .focused($focusedCardId, equals: episode.contentId)
+                        episodeCard(episode)
+                            .id(episode.contentId)
+                            .focused($focusedCardId, equals: episode.contentId)
                     }
                 }
                 .scrollTargetLayout()
@@ -235,8 +197,30 @@ struct TVEpisodeRail: View {
         }
     }
 
-    /// One composite focus owner keeps directional selection and scrolling in
-    /// sync even when the preceding episode is outside the lazy viewport.
+    private func episodeCard(_ episode: EpisodeListItem) -> TVEpisodeCard {
+        TVEpisodeCard(
+            episode: episode,
+            isCurrent: currentContentId == episode.contentId,
+            baseCardWidth: baseCardWidth,
+            posterSize: uiCustomization.cardPresentation.posterSize,
+            captionStyle: uiCustomization.cardPresentation.caption,
+            onSelect: { onSelect(episode.contentId) },
+            onPlay: onPlay,
+            onSetWatched: onSetWatched,
+            initialIsFavorite: currentContentId == episode.contentId
+                ? currentContentIsFavorite
+                : favoriteStates[episode.contentId] ?? false,
+            onSetFavorite: onSetFavorite,
+            onSetWatchlist: onSetWatchlist,
+            initialInWatchlist: watchlistStates[episode.contentId] ?? false,
+            cardHeightRatio: anchorsFocusedCard ? cardHeightRatio : 9 / 16,
+            usesAnchoredStyle: anchorsFocusedCard
+        )
+    }
+
+    /// Native per-card focus: the focus engine moves between episode buttons
+    /// and in and out of the row, and the rail only positions the focused card
+    /// at the leading slot. Entering the row lands on the anchored episode.
     private var anchoredRail: some View {
         GeometryReader { geometry in
             anchoredCards(viewportWidth: geometry.size.width)
@@ -246,25 +230,20 @@ struct TVEpisodeRail: View {
                 .task(id: SeasonScrollUpdate(request: scrollRequest, episodeIds: episodeIdentityKey)) {
                     // Resolve the current target after the new page layout mounts.
                     await Task.yield()
-                    guard !Task.isCancelled else { return }
-                    if scrollRequest > 0, scrollRequest != appliedScrollRequest,
-                       let scrollTargetContentId,
-                       let index = episodes.firstIndex(where: { $0.contentId == scrollTargetContentId }) {
-                        appliedScrollRequest = scrollRequest
-                        pendingEdge = nil
-                        anchoredContentId = episodes[index].contentId
-                        scrollToSelectedSeason(at: index, viewportWidth: geometry.size.width)
-                    }
-                    completePendingEdge()
+                    guard !Task.isCancelled,
+                          scrollRequest > 0, scrollRequest != appliedScrollRequest,
+                          let scrollTargetContentId,
+                          let index = episodes.firstIndex(where: { $0.contentId == scrollTargetContentId })
+                    else { return }
+                    appliedScrollRequest = scrollRequest
+                    anchoredContentId = episodes[index].contentId
+                    scrollToSelectedSeason(at: index, viewportWidth: geometry.size.width)
                 }
                 .onChange(of: episodeIdentityKey) { oldIds, newIds in
                     // Paging changes coordinates, not the user's selection.
                     // Preserve the visible position when seasons are prepended
                     // or evicted; appends must not restart an ongoing card slide.
-                    // Do this even when a season-pill jump is pending: its
-                    // destination uses the new coordinates, so its starting
-                    // viewport must be rebased before the task animates it.
-                    let id = anchoredFocusedContentId ?? anchoredContentId
+                    let id = focusedCardId ?? anchoredContentId
                     let oldIndex = id.flatMap { oldIds.firstIndex(of: $0) }
                     let newIndex = id.flatMap { newIds.firstIndex(of: $0) }
                     let shift: CGFloat
@@ -285,16 +264,15 @@ struct TVEpisodeRail: View {
                     // The season chip owns an explicit animated request.
                     // Its metadata update must not snap to the same target
                     // before that request gets a chance to run.
-                    guard anchoredFocusedContentId == nil, !isSelectingSeason else { return }
+                    guard focusedCardId == nil, !isSelectingSeason else { return }
                     seedAnchoredSelection(viewportWidth: geometry.size.width)
                 }
                 .onChange(of: selectionRequest) { _, request in
                     guard request > 0, let selectionTargetContentId,
                           episodes.contains(where: { $0.contentId == selectionTargetContentId }) else { return }
-                    pendingEdge = nil
-                    if railHasFocus {
+                    if focusedCardId != nil {
                         // Moving the focused card also reports it as the active episode.
-                        anchoredFocusedContentId = selectionTargetContentId
+                        focusedCardId = selectionTargetContentId
                     } else {
                         seedAnchoredSelection(
                             viewportWidth: geometry.size.width,
@@ -305,62 +283,23 @@ struct TVEpisodeRail: View {
                 .onChange(of: focusRequest) { _, request in
                     guard request > 0 else { return }
                     seedAnchoredSelection(viewportWidth: geometry.size.width, targetContentId: focusTargetContentId)
-                    railHasFocus = true
-                    anchoredFocusedContentId = anchoredEpisode?.contentId
+                    focusedCardId = anchoredContentId
                 }
-                .onChange(of: anchoredFocusedContentId) { _, contentId in
-                    if pendingEdge?.contentId != contentId { pendingEdge = nil }
+                .onChange(of: focusedCardId) { oldId, contentId in
+                    focusTrace.railFocusChanged(contentId != nil)
                     if let contentId,
                        let index = episodes.firstIndex(where: { $0.contentId == contentId }) {
-                        anchorFocusedSelection(at: index, viewportWidth: geometry.size.width)
+                        if let oldId, let oldIndex = episodes.firstIndex(where: { $0.contentId == oldId }) {
+                            focusTrace.recordMove(index - oldIndex)
+                        }
+                        anchoredContentId = contentId
+                        moveAnchoredScroll(to: index, viewportWidth: geometry.size.width, animated: true)
+                        requestEpisodesNearBoundary(at: index)
                     }
                     onFocusedEpisodeChange?(contentId)
                 }
         }
         .frame(height: anchoredRailHeight)
-        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { focusTrace.railFrame = $0 }
-        .focusScope(anchoredFocusScope)
-        .focusSection()
-        .background {
-            TVEpisodeHoldRepeat(isActive: railHasFocus, onMove: moveEpisode)
-                .frame(width: 0, height: 0)
-        }
-        .focusable()
-        .focused($railHasFocus)
-        .focusEffectDisabled()
-        .defaultFocus($railHasFocus, true)
-        .onChange(of: railHasFocus) { _, hasFocus in
-            focusTrace.railFocusChanged(hasFocus)
-            anchoredFocusedContentId = hasFocus ? anchoredEpisode?.contentId : nil
-        }
-        .onMoveCommand { direction in
-            switch direction {
-            case .up:
-                pendingEdge = nil
-                onMoveUp?()
-            case .down:
-                pendingEdge = nil
-                onMoveDown?()
-            case .left: moveEpisode(by: -1)
-            case .right: moveEpisode(by: 1)
-            default: break
-            }
-        }
-        .onTapGesture {
-            if let episode = anchoredEpisode { onSelect(episode.contentId) }
-        }
-        .contextMenu { anchoredContextActions }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(anchoredAccessibilityLabel)
-        .accessibilityValue("Episode \(anchoredEpisodeIndex + 1) of \(episodes.count)")
-        .accessibilityAddTraits(.isButton)
-        .accessibilityAdjustableAction { direction in
-            switch direction {
-            case .increment: moveEpisode(by: 1)
-            case .decrement: moveEpisode(by: -1)
-            @unknown default: break
-            }
-        }
         .onChange(of: isSelectingSeason) { _, ownsFocus in
             if !ownsFocus {
                 scrollViewport.stopScroll()
@@ -370,31 +309,35 @@ struct TVEpisodeRail: View {
             scrollViewport.stopScroll()
             scrollViewport.scrollView = nil
             focusTrace.stop()
-            pendingEdge = nil
             onFocusedEpisodeChange?(nil)
         }
     }
 
-    private var edgeFence: some View {
-        TVEpisodeRailEdgeFence(isActive: railHasFocus, onRefuse: focusTrace.recordFenceRefusal)
-            .frame(width: 1, height: anchoredRailHeight)
-            .accessibilityHidden(true)
+    /// The pinned card sits at the leading slot, so its predecessor is off
+    /// screen. A lazy stack only keeps cards inside its scroll view's bounds,
+    /// and focus can only reach loaded cards, so the scroll view extends one
+    /// card step past the visible leading edge. A mask keeps the visible crop.
+    private var anchoredLookbehind: CGFloat {
+        anchoredCardWidth + cardSpacing
     }
 
     private func anchoredCards(viewportWidth: CGFloat) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(alignment: .top, spacing: cardSpacing) {
                 ForEach(episodes) { episode in
-                    anchoredEpisodeLabel(episode)
-                        .zIndex(anchoredFocusedContentId == episode.contentId ? 1 : 0)
+                    episodeCard(episode)
+                        .focused($focusedCardId, equals: episode.contentId)
+                        .zIndex(focusedCardId == episode.contentId ? 1 : 0)
                 }
             }
-            .scrollTargetLayout()
             .background {
                 TVDetailScrollViewResolver { scrollViewport.attach($0) }
             }
             // Preserve the existing crop, hover clearance and trailing boundary.
-            .padding(.leading, EpisodeHomeHoverMetrics.leadingInset(for: anchoredCardWidth))
+            .padding(
+                .leading,
+                anchoredLookbehind + EpisodeHomeHoverMetrics.leadingInset(for: anchoredCardWidth)
+            )
             .padding(
                 .trailing,
                 anchoredTrailingInset(viewportWidth: viewportWidth)
@@ -406,57 +349,19 @@ struct TVEpisodeRail: View {
         } action: { _, _ in
             scrollViewport.reconcileOffset()
         }
+        .scrollClipDisabled()
+        .frame(width: viewportWidth + anchoredLookbehind, height: anchoredRailHeight)
+        .padding(.leading, -anchoredLookbehind)
         .frame(
             width: viewportWidth,
             height: anchoredRailHeight,
             alignment: .topLeading
         )
-        .clipped()
-    }
-
-    private func anchoredEpisodeLabel(_ episode: EpisodeListItem) -> some View {
-        EpisodeCardLabel(
-            episode: episode,
-            isPlayed: anchoredIsPlayed(episode),
-            isCurrent: currentContentId == episode.contentId,
-            cardWidth: anchoredCardWidth,
-            stillHeight: anchoredStillHeight,
-            stillCornerRadius: 18,
-            captionStyle: uiCustomization.cardPresentation.caption,
-            focusOverride: railHasFocus && anchoredContentId == episode.contentId,
-            hidesEpisodeTitle: true,
-            usesHomeHoverEffect: true,
-            showsFocusOutline: false,
-            showsCurrentOutline: false
-        )
-    }
-
-    private var anchoredEpisodeIndex: Int {
-        episodes.firstIndex(where: { $0.contentId == (anchoredFocusedContentId ?? anchoredContentId) }) ?? 0
-    }
-
-    private var anchoredAccessibilityLabel: String {
-        guard let episode = anchoredEpisode else { return "Episodes" }
-        return episodeRailAccessibilityLabel(
-            seasonNumber: episode.seasonNumber,
-            episodeNumber: episode.episodeNumber,
-            title: episode.title,
-            metadata: anchoredMetadataLine(for: episode),
-            isCurrent: currentContentId == episode.contentId,
-            isPlayed: anchoredIsPlayed(episode)
-        )
-    }
-
-    private func moveEpisode(by direction: Int) {
-        guard railHasFocus, let episode = anchoredEpisode else { return }
-        focusTrace.recordMove(direction)
-        let next = anchoredEpisodeIndex + direction
-        if episodes.indices.contains(next) {
-            pendingEdge = nil
-            anchoredFocusedContentId = episodes[next].contentId
-        } else {
-            requestEpisodesAtBoundary(from: episode.contentId, direction: direction)
-        }
+        .mask(Rectangle())
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { focusTrace.railFrame = $0 }
+        .focusSection()
+        .defaultFocus($focusedCardId, anchoredContentId ?? currentContentId, priority: .userInitiated)
+        .focusScope(anchoredFocusScope)
     }
 
     private var anchoredCardWidth: CGFloat {
@@ -471,10 +376,6 @@ struct TVEpisodeRail: View {
         anchoredStillHeight
             + (uiCustomization.cardPresentation.caption.showsTitle ? 46 : 0)
             + 24
-    }
-
-    private var anchoredEpisode: EpisodeListItem? {
-        episodes.first(where: { $0.contentId == (anchoredFocusedContentId ?? anchoredContentId) }) ?? episodes.first
     }
 
     private var episodeIdentityKey: [String] {
@@ -522,42 +423,21 @@ struct TVEpisodeRail: View {
         targetContentId: String? = nil,
         animated: Bool = false
     ) {
-        let target = targetContentId ?? anchoredFocusedContentId ?? currentContentId
-        let episode = episodes.first(where: { $0.contentId == target }) ?? anchoredEpisode
+        let target = targetContentId ?? focusedCardId ?? currentContentId
+        let episode = episodes.first(where: { $0.contentId == target })
+            ?? episodes.first(where: { $0.contentId == anchoredContentId })
+            ?? episodes.first
         guard let episode,
               let index = episodes.firstIndex(where: { $0.contentId == episode.contentId }) else { return }
         anchoredContentId = episode.contentId
         moveAnchoredScroll(to: index, viewportWidth: viewportWidth, animated: animated)
     }
 
-    private func requestEpisodesAtBoundary(from contentId: String, direction: Int) {
-        let boundary = direction < 0 ? episodes.first : episodes.last
-        guard boundary?.contentId == contentId,
-              let request = direction < 0 ? onRequestPrevious : onRequestNext else { return }
-        pendingEdge = PendingEdge(contentId: contentId, direction: direction)
-        request()
-    }
-
-    private func completePendingEdge() {
-        guard let pendingEdge, anchoredFocusedContentId == pendingEdge.contentId,
-              let index = episodes.firstIndex(where: { $0.contentId == pendingEdge.contentId }),
-              episodes.indices.contains(index + pendingEdge.direction) else { return }
-        let target = episodes[index + pendingEdge.direction].contentId
-        // The user's boundary press owns this handoff. Cancel it if another
-        // card or region took focus while the missing season was loading.
-        DispatchQueue.main.async {
-            guard self.pendingEdge == pendingEdge,
-                  anchoredFocusedContentId == pendingEdge.contentId,
-                  episodes.contains(where: { $0.contentId == target }) else { return }
-            self.pendingEdge = nil
-            anchoredFocusedContentId = target
-        }
-    }
-
-    private func anchorFocusedSelection(at index: Int, viewportWidth: CGFloat) {
-        guard episodes.indices.contains(index) else { return }
-        anchoredContentId = episodes[index].contentId
-        moveAnchoredScroll(to: index, viewportWidth: viewportWidth, animated: true)
+    /// Focus can only reach loaded cards, so ask for the neighbouring season
+    /// as soon as focus lands on either end of the loaded window.
+    private func requestEpisodesNearBoundary(at index: Int) {
+        if index == 0 { onRequestPrevious?() }
+        if index == episodes.count - 1 { onRequestNext?() }
     }
 
     private func scrollToSelectedSeason(at index: Int, viewportWidth: CGFloat) {
@@ -575,99 +455,31 @@ struct TVEpisodeRail: View {
             timing: animated && !reduceMotion ? .episode : nil
         )
     }
+}
 
-    private func anchoredIsPlayed(_ episode: EpisodeListItem) -> Bool {
-        anchoredPlayedOverrides[episode.contentId]
-            ?? episode.userData?.played
-            ?? false
-    }
-
-    private func anchoredIsFavorite(_ episode: EpisodeListItem) -> Bool {
-        anchoredFavoriteOverrides[episode.contentId]
-            ?? favoriteStates[episode.contentId]
-            ?? (currentContentId == episode.contentId && currentContentIsFavorite)
-    }
-
-    private func anchoredInWatchlist(_ episode: EpisodeListItem) -> Bool {
-        anchoredWatchlistOverrides[episode.contentId] ?? watchlistStates[episode.contentId] ?? false
-    }
-
-    private func anchoredMetadataLine(for episode: EpisodeListItem) -> String? {
-        var parts: [String] = []
-        if let airDate = DetailDateFormatting.abbreviatedDate(episode.airDate) {
-            parts.append(airDate)
-        }
-        if let runtime = episode.runtime, runtime > 0 {
-            parts.append(runtime >= 60
-                ? "\(runtime / 60)h \(runtime % 60)m"
-                : "\(runtime)m")
-        }
-        return parts.isEmpty ? nil : parts.joined(separator: "  ·  ")
-    }
-
-    @ViewBuilder
-    private var anchoredContextActions: some View {
-        if let episode = anchoredEpisode {
-            WatchPartyMenuButton(contentId: episode.contentId, title: episode.title ?? "Episode", type: "episode")
-            if let onPlay {
-                Button {
-                    onPlay(episode.contentId)
-                } label: {
-                    Label(
-                        "Play S\(episode.seasonNumber):E\(episode.episodeNumber)",
-                        systemImage: "play.fill"
-                    )
-                }
-            }
-
-            MediaStateMenuItems(
-                isWatched: anchoredIsPlayed(episode),
-                isFavorite: anchoredIsFavorite(episode),
-                inWatchlist: anchoredInWatchlist(episode),
-                watchedSubject: "Episode",
-                isUpdating: actionFeedback.isUpdating,
-                onToggleWatched: onSetWatched.map { update in
-                    {
-                        let value = !anchoredIsPlayed(episode)
-                        let previous = anchoredPlayedOverrides[episode.contentId]
-                        actionFeedback.perform {
-                            anchoredPlayedOverrides[episode.contentId] = value
-                            let outcome = await update(episode.contentId, value)
-                            if outcome != .applied { anchoredPlayedOverrides[episode.contentId] = previous }
-                            return outcome
-                        }
-                    }
-                },
-                onToggleFavorite: onSetFavorite.map { update in
-                    {
-                        let value = !anchoredIsFavorite(episode)
-                        let previous = anchoredFavoriteOverrides[episode.contentId]
-                        actionFeedback.perform {
-                            anchoredFavoriteOverrides[episode.contentId] = value
-                            let outcome = await update(episode.contentId, value)
-                            if outcome != .applied { anchoredFavoriteOverrides[episode.contentId] = previous }
-                            return outcome
-                        }
-                    }
-                },
-                onToggleWatchlist: onSetWatchlist.map { update in
-                    {
-                        let value = !anchoredInWatchlist(episode)
-                        let previous = anchoredWatchlistOverrides[episode.contentId]
-                        actionFeedback.perform {
-                            anchoredWatchlistOverrides[episode.contentId] = value
-                            let outcome = await update(episode.contentId, value)
-                            if outcome != .applied { anchoredWatchlistOverrides[episode.contentId] = previous }
-                            return outcome
-                        }
-                    }
-                }
+/// The anchored card draws its own Home-style lift in `EpisodeCardLabel`.
+private struct TVAnchoredEpisodeButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.96 : 1)
+            .focusEffectDisabled()
+            .animation(
+                .easeOut(duration: SiloTheme.fastDuration),
+                value: configuration.isPressed
             )
-        }
     }
 }
 
 private extension View {
+    @ViewBuilder
+    func applyEpisodeButtonStyle(anchored: Bool) -> some View {
+        if anchored {
+            buttonStyle(TVAnchoredEpisodeButtonStyle())
+        } else {
+            buttonStyle(TVCardFocusButtonStyle())
+        }
+    }
+
     @ViewBuilder
     func applyEpisodeScrollTargetBehavior(_ enabled: Bool) -> some View {
         if enabled {
@@ -765,6 +577,10 @@ struct TVEpisodeCard: View {
     var onSetWatchlist: ((_ contentId: String, _ inWatchlist: Bool) async -> PersonalStateOutcome)? = nil
 
     var initialInWatchlist = false
+    var cardHeightRatio: CGFloat = 9 / 16
+    /// The Series carousel's look: compact caption, Home's artwork-only
+    /// lift, and no focus or current outline.
+    var usesAnchoredStyle = false
 
     @State private var actionFeedback = MediaActionFeedback()
     @State private var playedOverride: Bool?
@@ -772,7 +588,7 @@ struct TVEpisodeCard: View {
     @State private var watchlistOverride: Bool?
 
     private var cardWidth: CGFloat { baseCardWidth * posterSize.scale }
-    private var stillHeight: CGFloat { cardWidth * 9 / 16 }
+    private var stillHeight: CGFloat { cardWidth * cardHeightRatio }
     private let stillCornerRadius: CGFloat = 18
 
     var body: some View {
@@ -784,10 +600,14 @@ struct TVEpisodeCard: View {
                 cardWidth: cardWidth,
                 stillHeight: stillHeight,
                 stillCornerRadius: stillCornerRadius,
-                captionStyle: captionStyle
+                captionStyle: captionStyle,
+                hidesEpisodeTitle: usesAnchoredStyle,
+                usesHomeHoverEffect: usesAnchoredStyle,
+                showsFocusOutline: !usesAnchoredStyle,
+                showsCurrentOutline: !usesAnchoredStyle
             )
         }
-        .buttonStyle(TVCardFocusButtonStyle())
+        .applyEpisodeButtonStyle(anchored: usesAnchoredStyle)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityDescription)
 
@@ -858,7 +678,12 @@ struct TVEpisodeCard: View {
             Button {
                 onPlay(episode.contentId)
             } label: {
-                Label("Play S\(episode.seasonNumber):E\(episode.episodeNumber)", systemImage: "play.fill")
+                // Verbatim so year-numbered seasons don't render as "S2,021".
+                Label {
+                    Text(verbatim: "Play S\(episode.seasonNumber):E\(episode.episodeNumber)")
+                } icon: {
+                    Image(systemName: "play.fill")
+                }
             }
         }
 
