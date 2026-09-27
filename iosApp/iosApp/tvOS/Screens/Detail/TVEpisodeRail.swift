@@ -318,6 +318,7 @@ struct TVEpisodeRail: View {
                 }
         }
         .frame(height: anchoredRailHeight)
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { focusTrace.railFrame = $0 }
         .focusScope(anchoredFocusScope)
         .focusSection()
         .background {

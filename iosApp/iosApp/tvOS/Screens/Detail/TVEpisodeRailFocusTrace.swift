@@ -17,12 +17,15 @@ final class TVEpisodeRailFocusTrace {
     private var lastMove: (direction: Int, at: ContinuousClock.Instant)?
     private var fenceRefusals = 0
     private var observer: NSObjectProtocol?
+    /// The carousel's frame in global (screen) coordinates.
+    var railFrame: CGRect = .null
 
     /// Mirrors the carousel's `railHasFocus`. SwiftUI can report a change
-    /// before or after the engine's own update notification, so the rail's
-    /// focus item is taken from whichever arrives first, and a loss leaves the
-    /// trace armed: the exit is logged from the engine's notification, which
-    /// disarms it.
+    /// before or after the engine's own update notification — a programmatic
+    /// `railHasFocus = true` reports it before the engine has moved focus at
+    /// all — so the rail's focus item is whichever candidate lies inside the
+    /// carousel's frame. A loss leaves the trace armed: the exit is logged
+    /// from the engine's notification, which disarms it.
     func railFocusChanged(_ hasFocus: Bool) {
         guard hasFocus else { return }
         isArmed = true
@@ -40,11 +43,7 @@ final class TVEpisodeRailFocusTrace {
                 MainActor.assumeIsolated { self?.focusDidUpdate(context) }
             }
         }
-        Task { @MainActor [weak self] in
-            await Task.yield()
-            guard let self, self.isArmed, self.railItem == nil else { return }
-            self.railItem = TVFocusSystemProbe.focusedItem()
-        }
+        adoptIfRailItem(TVFocusSystemProbe.focusedItem())
     }
 
     /// Called when the carousel leaves the screen.
@@ -65,7 +64,7 @@ final class TVEpisodeRailFocusTrace {
     private func focusDidUpdate(_ context: UIFocusUpdateContext) {
         guard isArmed else { return }
         guard let railItem else {
-            self.railItem = context.nextFocusedItem
+            adoptIfRailItem(context.nextFocusedItem)
             return
         }
         guard context.previouslyFocusedItem === railItem,
@@ -98,6 +97,13 @@ final class TVEpisodeRailFocusTrace {
         )
     }
 
+    private func adoptIfRailItem(_ item: UIFocusItem?) {
+        guard let item, !railFrame.isNull,
+              let frame = Self.screenFrame(of: item),
+              railFrame.minY...railFrame.maxY ~= frame.midY else { return }
+        railItem = item
+    }
+
     private var lastMoveSummary: String {
         guard let lastMove else { return "lastMove=none" }
         let elapsed = ContinuousClock.now - lastMove.at
@@ -105,11 +111,15 @@ final class TVEpisodeRailFocusTrace {
         return "lastMove=\(lastMove.direction < 0 ? "left" : "right") \(ms)ms"
     }
 
+    private static func screenFrame(of item: UIFocusItem) -> CGRect? {
+        guard let container = item.focusItemContainer,
+              let screen = TVFocusSystemProbe.keyWindowScreen else { return nil }
+        return container.coordinateSpace.convert(item.frame, to: screen.coordinateSpace)
+    }
+
     private static func geometry(of item: UIFocusItem?) -> String {
-        guard let item,
-              let container = item.focusItemContainer,
+        guard let item, let frame = screenFrame(of: item),
               let screen = TVFocusSystemProbe.keyWindowScreen else { return "frame=unknown" }
-        let frame = container.coordinateSpace.convert(item.frame, to: screen.coordinateSpace)
         let visibility = screen.bounds.contains(frame)
             ? "onScreen"
             : screen.bounds.intersects(frame) ? "partlyOffScreen" : "offScreen"
