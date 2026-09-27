@@ -305,13 +305,13 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
         if synopsisReservedHeight > 0 {
             Group {
                 if let overview, !overview.isEmpty {
-                    TVExpandableSynopsis(overview: overview)
+                    TVHeroSynopsis(overview: overview)
                 }
             }
             .frame(height: synopsisReservedHeight, alignment: .topLeading)
             .clipped()
         } else if let overview, !overview.isEmpty {
-            TVExpandableSynopsis(overview: overview)
+            TVHeroSynopsis(overview: overview)
         }
     }
 

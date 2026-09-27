@@ -312,7 +312,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             let previouslyInPage = context.previouslyFocusedView?.isDescendant(of: scrollView) == true
             let nextInPage = context.nextFocusedView?.isDescendant(of: scrollView) == true
             let directionalMove = !context.focusHeading.isEmpty && (previouslyInPage || nextInPage)
-            // Selecting the automatically focused synopsis can open a modal
+            // Selecting an automatically focused control can open a modal
             // without any directional movement. That interaction also wins.
             let leftPage = previouslyInPage && context.nextFocusedView != nil && !nextInPage
             guard directionalMove || leftPage else { return }
