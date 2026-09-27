@@ -28,6 +28,7 @@ struct TVActionPopoverMenu: View {
     let onClose: () -> Void
 
     @FocusState private var highlightedId: String?
+    @State private var crossAxisGate = TVCrossAxisGate()
     @Namespace private var optionFocusScope
 
     static let width: CGFloat = 560
@@ -54,7 +55,16 @@ struct TVActionPopoverMenu: View {
         .focusScope(optionFocusScope)
         .defaultFocus($highlightedId, initialOptionId, priority: .userInitiated)
         .onMoveCommand { direction in
-            if direction == .left || direction == .right { onClose() }
+            // A vertical swipe through the rows can end with a stray sideways
+            // command; only a deliberate Left/Right closes the menu.
+            guard direction == .left || direction == .right,
+                  crossAxisGate.allows(direction) else { return }
+            onClose()
+        }
+        .onChange(of: highlightedId) { oldId, newId in
+            if oldId != nil, newId != nil {
+                crossAxisGate.recordMove(.vertical)
+            }
         }
         .onExitCommand(perform: onClose)
         .background(

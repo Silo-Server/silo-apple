@@ -65,6 +65,7 @@ struct TVCascadeSelector: View {
     /// focus item; rows are passive labels so the native engine cannot race
     /// this internal selection.
     @State private var focus: Focus?
+    @State private var crossAxisGate = TVCrossAxisGate()
     /// The single real focus target for the entered cascade.
     @FocusState private var panelFocused: Bool
 
@@ -449,6 +450,14 @@ struct TVCascadeSelector: View {
 
     private func handleMoveCommand(_ direction: MoveCommandDirection) {
         guard entersPanel, panelFocused, let focus else { return }
+        // A swipe into the other column can end with a stray Up or Down, which
+        // would move the highlight off the entered row or close the panel.
+        switch TVCrossAxisGate.Axis(direction) {
+        case .horizontal:
+            crossAxisGate.recordMove(.horizontal)
+        case .vertical:
+            guard crossAxisGate.allows(direction) else { return }
+        }
 
         switch (focus, direction) {
         case (.library(let libraryId), .up):

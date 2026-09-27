@@ -79,10 +79,6 @@ struct TVBrowseControlRow: View {
             onMoveUp?()
         case .down:
             onMoveDown?()
-        case .left where control == .filter:
-            focusedControl = .sort
-        case .right where control == .sort:
-            focusedControl = .filter
         default:
             break
         }
@@ -195,6 +191,7 @@ struct TVBrowseFilterPanel: View {
     @State private var screen: Screen = .filters
     @State private var lastFacet: CatalogFacet?
     @FocusState private var focusedTarget: FocusTarget?
+    @State private var crossAxisGate = TVCrossAxisGate()
 
     private let availableFacets: [CatalogFacet]
 
@@ -247,8 +244,16 @@ struct TVBrowseFilterPanel: View {
         .focusSection()
         .onExitCommand(perform: handleExit)
         .onMoveCommand { direction in
-            if direction == .left, case .values = screen {
+            // Left has no native target in the one-column values list, so a
+            // stray Left at the end of a vertical swipe would leave it; only
+            // a deliberate Left goes back.
+            if direction == .left, case .values = screen, crossAxisGate.allows(direction) {
                 showFilterList()
+            }
+        }
+        .onChange(of: focusedTarget) { oldTarget, newTarget in
+            if oldTarget != nil, newTarget != nil {
+                crossAxisGate.recordMove(.vertical)
             }
         }
         .onChange(of: screen) { _, _ in claimFocus(defaultFocusTarget) }

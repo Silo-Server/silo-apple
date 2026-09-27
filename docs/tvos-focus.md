@@ -39,6 +39,10 @@ actionable item can be a real focus target.
 - Keep the focused subtree mounted and structurally stable while moving focus.
 - Attach `onMoveCommand` only at intentional boundaries, such as "Up from the
   first card returns to the top menu." Do not intercept normal in-zone movement.
+- A touch-surface swipe can end with a stray command on the other axis. When a
+  boundary handler moves focus or closes UI in code, gate it with
+  `TVCrossAxisGate`, which ignores that command shortly after a move on the
+  other axis unless a physical click produced it.
 - Move focus geometry with layout (`padding`, `frame`, alignment), not
   `.offset`, because tvOS resolves focus from layout frames.
 
