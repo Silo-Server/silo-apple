@@ -17,12 +17,27 @@ enum RequestDisplayState: Equatable {
     /// The title is in the library (or, from a server without `state`, the
     /// request completed). Emerald.
     case inLibrary
-    /// Declined or failed — shows the reason. Rose.
-    case needsAttention(reason: String?)
+    /// Declined or failed — shows the reason. Rose. Chips read "Needs
+    /// attention" for both; the detail page says which it is.
+    case needsAttention(Attention, reason: String?)
     /// Not requestable and no request exists (limit reached, requests off,
     /// blocked user, …). Neutral — the request affordance simply doesn't
     /// render. Also covers cancelled requests.
     case unavailable(reason: String?)
+
+    /// Why a request needs attention. A declined request and a failed one
+    /// need different things from the user, so the copy keeps them apart.
+    enum Attention: Equatable {
+        case declined
+        case failed
+
+        var title: String {
+            switch self {
+            case .declined: "Declined"
+            case .failed: "Request failed"
+            }
+        }
+    }
 
     var label: String {
         switch self {
@@ -50,6 +65,20 @@ enum RequestDisplayState: Equatable {
     /// answer is simpler than mirroring that rule client-side).
     var isCancelable: Bool {
         self == .pending
+    }
+
+    /// The request detail page's status line, which has room to say more
+    /// than the chip.
+    var detailTitle: String {
+        switch self {
+        case .pending: "Requested · Pending"
+        case .onTheWay: "On the way"
+        case .inLibrary: "In your library"
+        case .needsAttention(let attention, let reason):
+            RequestErrorCopy.message(forToken: reason).map { "\(attention.title) · \($0)" } ?? attention.title
+        case .unavailable(let reason):
+            RequestErrorCopy.message(forToken: reason) ?? "Unavailable"
+        }
     }
 
     /// The catalog item to open instead of the request, when there is
@@ -103,8 +132,10 @@ extension RequestDisplayState {
             self = .onTheWay
         case .available:
             self = .inLibrary
-        case .declined, .failed:
-            self = .needsAttention(reason: reason)
+        case .declined:
+            self = .needsAttention(.declined, reason: reason)
+        case .failed:
+            self = .needsAttention(.failed, reason: reason)
         case .cancelled:
             self = .unavailable(reason: reason)
         case .unknown:
@@ -118,8 +149,11 @@ extension RequestDisplayState {
     /// keeps its last status on the wire but is no longer in motion.
     init(status: RequestStatus, outcome: RequestOutcome, reason: String? = nil) {
         switch outcome {
-        case .declined, .failed:
-            self = .needsAttention(reason: reason)
+        case .declined:
+            self = .needsAttention(.declined, reason: reason)
+            return
+        case .failed:
+            self = .needsAttention(.failed, reason: reason)
             return
         case .cancelled:
             self = .unavailable(reason: reason)
@@ -138,7 +172,7 @@ extension RequestDisplayState {
         case .completed:
             self = .inLibrary
         case .failed:
-            self = .needsAttention(reason: reason)
+            self = .needsAttention(.failed, reason: reason)
         }
     }
 
@@ -150,8 +184,12 @@ extension RequestDisplayState {
     /// the library can have a request for its missing seasons, and the card
     /// must agree with My Requests about it. Without `state` (older servers),
     /// a title in the library reads as in library whatever its request says.
+    ///
+    /// `request.reason` says why the title can't be requested
+    /// (`already_requested`, `quota_exceeded`, …), not why a request failed
+    /// or was declined, so only a title with no request shows it.
     init?(availability: RequestAvailability, request: RequestState) {
-        if let state = request.state, let derived = RequestDisplayState(state: state, reason: request.reason) {
+        if let state = request.state, let derived = RequestDisplayState(state: state, reason: nil) {
             self = derived
             return
         }
@@ -160,7 +198,7 @@ extension RequestDisplayState {
             return
         }
         if let status = request.status {
-            self.init(status: status, outcome: .active, reason: request.reason)
+            self.init(status: status, outcome: .active, reason: nil)
             return
         }
         if request.requestable {

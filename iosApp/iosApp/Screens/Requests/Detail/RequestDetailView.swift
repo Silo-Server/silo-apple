@@ -311,19 +311,7 @@ struct RequestDetailView: View {
         case .request: viewModel.mediaType == .series ? "Request Series" : "Request Movie"
         case .submitting: "Requesting…"
         case .openInLibrary: "In Your Library · Open"
-        case .status(let state): statusTitle(state)
-        }
-    }
-
-    private func statusTitle(_ state: RequestDisplayState) -> String {
-        switch state {
-        case .pending: "Requested · Pending"
-        case .onTheWay: "On the way"
-        case .inLibrary: "In your library"
-        case .needsAttention(let reason):
-            RequestErrorCopy.message(forToken: reason).map { "Declined · \($0)" } ?? "Needs attention"
-        case .unavailable(let reason):
-            RequestErrorCopy.message(forToken: reason) ?? "Unavailable"
+        case .status(let state): state.detailTitle
         }
     }
 

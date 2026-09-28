@@ -193,7 +193,7 @@ struct MyRequestsView: View {
         } else {
             parts.append("requested \(record.createdAt.formatted(.dateTime.month(.abbreviated).day()))")
         }
-        if case .needsAttention(let reason) = rowState(record),
+        if case .needsAttention(_, let reason) = rowState(record),
            let copy = RequestErrorCopy.message(forToken: reason) {
             parts.append(copy)
         }

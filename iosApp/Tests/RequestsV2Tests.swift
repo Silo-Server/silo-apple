@@ -366,7 +366,7 @@ final class RequestsV2Tests: XCTestCase {
             (#"{"requestable":false,"reason":"already_requested","status":"completed","state":"partially_available"}"#,
              .status(.onTheWay)),
             (#"{"requestable":false,"reason":"already_requested","status":"queued","state":"failed"}"#,
-             .status(.needsAttention(reason: "already_requested"))),
+             .status(.needsAttention(.failed, reason: nil))),
             // A server without `state`: availability decides, as before.
             (#"{"requestable":false,"reason":"already_requested","status":"downloading"}"#,
              .openInLibrary(contentId: "series-1")),
