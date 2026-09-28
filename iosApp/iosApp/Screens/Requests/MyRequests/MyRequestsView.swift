@@ -179,7 +179,7 @@ struct MyRequestsView: View {
     // MARK: - Row derivation
 
     private func rowState(_ record: MediaRequest) -> RequestDisplayState {
-        RequestDisplayState(status: record.status, outcome: record.outcome, reason: record.lastError)
+        RequestDisplayState(record: record)
     }
 
     private func isCancelable(_ record: MediaRequest) -> Bool {

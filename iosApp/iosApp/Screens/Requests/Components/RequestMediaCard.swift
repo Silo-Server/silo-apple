@@ -31,11 +31,7 @@ struct RequestMediaCard: View {
         self.title = record.title
         self.year = record.year
         self.posterPath = record.posterPath
-        self.state = RequestDisplayState(
-            status: record.status,
-            outcome: record.outcome,
-            reason: record.lastError
-        )
+        self.state = RequestDisplayState(record: record)
         self.onTap = onTap
     }
 

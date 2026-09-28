@@ -31,12 +31,7 @@ enum MyRequestsBucket: CaseIterable {
     static func bucket(_ requests: [MediaRequest]) -> [(bucket: MyRequestsBucket, requests: [MediaRequest])] {
         var grouped: [MyRequestsBucket: [MediaRequest]] = [:]
         for request in requests {
-            let state = RequestDisplayState(
-                status: request.status,
-                outcome: request.outcome,
-                reason: request.lastError
-            )
-            guard let bucket = MyRequestsBucket(state) else { continue }
+            guard let bucket = MyRequestsBucket(RequestDisplayState(record: request)) else { continue }
             grouped[bucket, default: []].append(request)
         }
         return MyRequestsBucket.allCases.compactMap { bucket in

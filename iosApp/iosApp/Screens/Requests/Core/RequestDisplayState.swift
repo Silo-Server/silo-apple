@@ -11,9 +11,11 @@ import Foundation
 enum RequestDisplayState: Equatable {
     /// Submitted, awaiting approval. Amber. Cancelable by the requester.
     case pending
-    /// Approved / queued / downloading — somewhere in the pipeline. Sky.
+    /// Approved / queued / downloading — somewhere in the pipeline, including
+    /// a finished download the library hasn't picked up yet. Sky.
     case onTheWay
-    /// Completed, or the title was already in the library. Emerald.
+    /// The title is in the library (or, from a server without `state`, the
+    /// request completed). Emerald.
     case inLibrary
     /// Declined or failed — shows the reason. Rose.
     case needsAttention(reason: String?)
@@ -59,6 +61,49 @@ enum RequestStatusTint {
 
 extension RequestDisplayState {
     /// From a full request record (`/requests/mine`, detail-after-submit).
+    /// Every surface that shows a record — card ribbon, row chip, My
+    /// Requests bucket — derives it here, so they can't disagree.
+    init(record: MediaRequest) {
+        self.init(state: record.state, status: record.status, outcome: record.outcome, reason: record.lastError)
+    }
+
+    /// The server's `state` decides when present and recognized; `status`
+    /// and `outcome` decide otherwise, for servers that don't send it.
+    init(state: RequestUserState?, status: RequestStatus, outcome: RequestOutcome, reason: String? = nil) {
+        if let state, let derived = RequestDisplayState(state: state, reason: reason) {
+            self = derived
+        } else {
+            self.init(status: status, outcome: outcome, reason: reason)
+        }
+    }
+
+    /// From the server's user-facing state. Nil for `.unknown`, so a state
+    /// added by a newer server falls back to `status` and `outcome`.
+    private init?(state: RequestUserState, reason: String?) {
+        switch state {
+        case .pending:
+            self = .pending
+        case .approved, .processing:
+            self = .onTheWay
+        case .partiallyAvailable:
+            // Some requested seasons are in, the rest are still coming.
+            // `.inLibrary` would file the request under "Landed in your
+            // library" before it has landed, the mistake `state` exists to
+            // prevent; the web keeps it with the requests on their way too.
+            self = .onTheWay
+        case .available:
+            self = .inLibrary
+        case .declined, .failed:
+            self = .needsAttention(reason: reason)
+        case .cancelled:
+            self = .unavailable(reason: reason)
+        case .unknown:
+            return nil
+        }
+    }
+
+    /// The mapping for servers without `state`, which can't tell a finished
+    /// download from a title in the library: `completed` reads as in library.
     /// `outcome` wins over `status` for terminal states: a declined request
     /// keeps its last status on the wire but is no longer in motion.
     init(status: RequestStatus, outcome: RequestOutcome, reason: String? = nil) {
@@ -93,6 +138,10 @@ extension RequestDisplayState {
     init?(availability: RequestAvailability, request: RequestState) {
         if availability == .available {
             self = .inLibrary
+            return
+        }
+        if let state = request.state, let derived = RequestDisplayState(state: state, reason: request.reason) {
+            self = derived
             return
         }
         if let status = request.status {

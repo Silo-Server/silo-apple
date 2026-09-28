@@ -12,18 +12,20 @@ extension RequestState {
         case .active, .unknown:
             self.init(
                 status: record.status,
+                state: record.state,
                 requestable: false,
                 reason: nil,
                 requestId: record.id
             )
         case .cancelled:
-            self.init(status: nil, requestable: true, reason: nil, requestId: nil)
+            self.init(status: nil, state: nil, requestable: true, reason: nil, requestId: nil)
         case .declined, .failed:
             // Server allows re-requesting after decline/failure (failed rows
             // auto-clear on re-request), but keep the state visible so the
             // card explains itself; detail refetches authoritative state.
             self.init(
                 status: record.status,
+                state: record.state,
                 requestable: true,
                 reason: nil,
                 requestId: record.id

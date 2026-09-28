@@ -61,6 +61,31 @@ enum RequestOutcome: String, Codable, Hashable {
     }
 }
 
+/// The one state the server says to show a user for a request (v2 `state`),
+/// derived from its status, outcome, servers and library presence. It is
+/// what `status` and `outcome` can't say on their own: a finished download
+/// the library hasn't picked up yet is `processing`, not `available`. Older
+/// servers omit it, so the models carry it as optional; an unrecognized
+/// value decodes as `.unknown`, and both mean "fall back to `status` and
+/// `outcome`".
+enum RequestUserState: String, Codable, Hashable {
+    case pending
+    case approved
+    case processing
+    /// Some of a season request's seasons are in the library, not all.
+    case partiallyAvailable = "partially_available"
+    case available
+    case declined
+    case cancelled
+    case failed
+    case unknown
+
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = RequestUserState(rawValue: raw) ?? .unknown
+    }
+}
+
 enum RequestAvailability: String, Codable, Hashable {
     case missing
     case available
@@ -96,6 +121,8 @@ struct RequestsFeatureStatus: Decodable {
 /// never has to reason about duplicates or quotas itself.
 struct RequestState: Codable, Hashable {
     let status: RequestStatus?
+    /// The active request's user-facing state; absent on older servers.
+    let state: RequestUserState?
     let requestable: Bool
     /// Raw server token (`already_requested`, `quota_exceeded`, …) when not
     /// requestable. Translated to copy via `RequestErrorCopy` — never
@@ -202,6 +229,8 @@ struct MediaRequest: Codable, Identifiable, Hashable {
     let backdropPath: String?
     let status: RequestStatus
     let outcome: RequestOutcome
+    /// What to show the user; absent on older servers.
+    let state: RequestUserState?
     let targets: [RequestTarget]?
     let libraryContentId: String?
     let lastError: String?

@@ -41,7 +41,7 @@ final class RequestImageURLTests: XCTestCase {
             voteAverage: nil,
             availability: .missing,
             libraryContentId: nil,
-            request: RequestState(status: nil, requestable: true, reason: nil, requestId: nil)
+            request: RequestState(status: nil, state: nil, requestable: true, reason: nil, requestId: nil)
         )
     }
 
