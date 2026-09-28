@@ -492,7 +492,7 @@ enum LocalDownloadStatus: String, Codable, Sendable {
     /// Only an explicit user resume leaves this state — the pipeline and
     /// server reconciliation must never auto-restart it.
     case paused
-    /// Media file is local; fetching manifest/artwork/subtitles.
+    /// Fetching the manifest; the media transfer starts once it arrives.
     case fetchingAssets
     /// Everything is on disk and playable offline.
     case completed

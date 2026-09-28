@@ -49,9 +49,9 @@ final class DownloadLiveActivityController {
         activeRecords: [DownloadRecord],
         completedRecordIds: Set<String>,
         totalBytesPerSecond: Double,
-        awaitingRegistration: Bool = false,
-        transferredBytes: Int64 = 0,
-        rates: [String: Double] = [:]
+        awaitingRegistration: Bool,
+        transferredBytes: Int64,
+        rates: [String: Double]
     ) {
         adoptExistingActivityIfNeeded()
         sessionCompletedIds.formUnion(trackedActiveIds.intersection(completedRecordIds))
@@ -197,8 +197,6 @@ final class DownloadLiveActivityController {
         activeRecords: [DownloadRecord],
         totalBytesPerSecond: Double
     ) -> DownloadActivityAttributes.ContentState {
-        // `activeRecords` arrives newest-first; headline the transfer the
-        // user has been waiting on longest.
         let headline = Self.headline(of: activeRecords)
 
         let completedCount = sessionCompletedIds.count

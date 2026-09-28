@@ -50,7 +50,7 @@ struct DownloadsView: View {
             }
         }
         .siloPageBackground()
-        .navigationTitle(isSelecting ? "\(selection.count + liveActiveSelection.count) Selected" : "Downloads")
+        .navigationTitle(isSelecting ? "\(selectedCount) Selected" : "Downloads")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.large)
         #endif
@@ -66,10 +66,9 @@ struct DownloadsView: View {
             titleVisibility: .visible,
             presenting: pendingDeletion
         ) { pending in
+            let verb = pending.inProgressOnly ? "Cancel" : "Delete"
             Button(
-                pending.inProgressOnly
-                    ? (pending.count == 1 ? "Cancel Download" : "Cancel \(pending.count) Downloads")
-                    : (pending.count == 1 ? "Delete Download" : "Delete \(pending.count) Downloads"),
+                pending.count == 1 ? "\(verb) Download" : "\(verb) \(pending.count) Downloads",
                 role: .destructive
             ) {
                 // One that finished while the dialog was open keeps its file.
@@ -190,12 +189,12 @@ struct DownloadsView: View {
                     }
                     #if os(iOS)
                     if !isSelecting {
-                    Text("Downloads keep going when you leave Silo or lock your phone. Closing Silo from the app switcher pauses them until you open it again.")
-                        .font(.system(size: 12))
-                        .foregroundColor(.siloSecondaryText)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 20)
-                        .padding(.top, 2)
+                        Text("Downloads keep going when you leave Silo or lock your phone. Closing Silo from the app switcher pauses them until you open it again.")
+                            .font(.system(size: 12))
+                            .foregroundColor(.siloSecondaryText)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 20)
+                            .padding(.top, 2)
                     }
                     #endif
                 }
@@ -371,7 +370,7 @@ struct DownloadsView: View {
 
     @ViewBuilder
     private var bottomBar: some View {
-        if isSelecting && !(selection.isEmpty && liveActiveSelection.isEmpty) {
+        if isSelecting && selectedCount > 0 {
             Button {
                 pendingDeletion = PendingDeletion(
                     ids: selectedDownloadIds,
@@ -405,8 +404,12 @@ struct DownloadsView: View {
     }
 
     private var allSelected: Bool {
-        let everything = !listItems.isEmpty || !manager.activeRecords.isEmpty
-        return everything && Set(listItems.map(\.id)).isSubset(of: selection) && allActiveSelected
+        guard !listItems.isEmpty || !manager.activeRecords.isEmpty else { return false }
+        return Set(listItems.map(\.id)).isSubset(of: selection) && allActiveSelected
+    }
+
+    private var selectedCount: Int {
+        selection.count + liveActiveSelection.count
     }
 
     /// Selected downloads that are still in progress. One that finished or
@@ -421,14 +424,13 @@ struct DownloadsView: View {
     }
 
     private var bottomBarTitle: String {
-        let count = selection.count + liveActiveSelection.count
+        if selection.isEmpty {
+            return selectedCount == 1 ? "Cancel 1 Download" : "Cancel \(selectedCount) Downloads"
+        }
         let partialBytes = manager.activeRecords
             .filter { activeSelection.contains($0.id) }
             .reduce(Int64(0)) { $0 + $1.bytesDownloaded }
-        if selection.isEmpty {
-            return count == 1 ? "Cancel 1 Download" : "Cancel \(count) Downloads"
-        }
-        return "Delete \(count) · Free \(DownloadFormatting.bytes(selectedBytes + partialBytes))"
+        return "Delete \(selectedCount) · Free \(DownloadFormatting.bytes(selectedBytes + partialBytes))"
     }
 
     private var selectedItems: [DownloadListItem] {

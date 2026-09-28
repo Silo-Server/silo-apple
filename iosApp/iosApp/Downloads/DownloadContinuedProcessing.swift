@@ -65,7 +65,8 @@ final class DownloadContinuedProcessing {
         /// Holds the `BGContinuedProcessingTask`.
         case running(AnyObject, identifier: String)
         /// The user stopped the task. Nothing shows the queue's progress
-        /// until it empties or the user starts another download.
+        /// until it empties, Silo comes back on screen, or the user starts
+        /// another download.
         case dismissed
     }
 
@@ -76,8 +77,8 @@ final class DownloadContinuedProcessing {
     private var reportedId: String?
     /// Bytes downloaded, across every download, since the task started.
     /// Only ever grows: iOS counts progress only once it passes its previous
-    /// high, so a ring that stepped back (a new file starting, a finished one
-    /// leaving the queue) read as a stall and the task expired.
+    /// high, so a ring that steps back (a new file starting, a finished one
+    /// leaving the queue) reads as a stall and the task expires.
     private var sessionBytes: Int64 = 0
     /// Each download's bytes at the last update, to count what arrived since.
     private var lastBytes: [String: Int64] = [:]
@@ -123,7 +124,6 @@ final class DownloadContinuedProcessing {
         // Run now or not at all; Silo's own Live Activity covers the rest.
         request.strategy = .fail
         state = .submitted(identifier: identifier)
-        lastMovedAt = Date()
         #if compiler(>=6.4)
         // `submitTaskRequest` ships in the iOS 27 SDK (Xcode 27).
         if #available(iOS 27, *) {
@@ -247,8 +247,7 @@ final class DownloadContinuedProcessing {
     /// as the user's stop; otherwise the queue had stalled and nothing is
     /// hidden on purpose.
     private func expired(identifier: String) {
-        guard #available(iOS 26, *), case .running(let object, let current) = state, current == identifier,
-              object is BGContinuedProcessingTask else { return }
+        guard case .running(_, let current) = state, current == identifier else { return }
         let wasMoving = Date().timeIntervalSince(lastMovedAt) < Self.stallLimit
         endRun()
         if wasMoving {
@@ -293,9 +292,7 @@ final class DownloadContinuedProcessing {
     private func abandonIfNotStarted(identifier: String) {
         guard case .submitted(let submitted) = state, submitted == identifier else { return }
         Self.logger.notice("Continued processing request never started")
-        if #available(iOS 26, *) {
-            BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: identifier)
-        }
+        BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: identifier)
         state = .idle
         DownloadManager.shared.refreshLiveProgress()
     }
@@ -332,11 +329,9 @@ final class DownloadContinuedProcessing {
         remainingBytes = remaining
     }
 
-    /// The transfer whose own progress moves fastest for its size, which the
-    /// task reports: iOS judges the task by that one progress value, and a
-    /// file starved by its neighbours would look stalled. The choice sticks
-    /// while its file keeps moving fast enough, so the pill doesn't flip
-    /// between titles.
+    /// The transfer the task's text names: the one moving fastest for its
+    /// size. The choice sticks while its file keeps moving fast enough, so
+    /// the pill doesn't flip between titles.
     private func pickReported(active: [DownloadRecord], rates: [String: Double]) -> DownloadRecord? {
         let transferring = active.filter {
             $0.localStatus == .downloading && $0.taskIdentifier != nil && $0.fileSize > 0
@@ -357,9 +352,9 @@ final class DownloadContinuedProcessing {
         return chosen
     }
 
-    /// Reports the headline file's bytes, as its own row does. iOS expires a
-    /// task whose progress looks stalled, and a fraction of a whole queue
-    /// (or of a 50 GB file's neighbours) moves too little to count.
+    /// Reports the queue's bytes since the task started (`sessionBytes`) as
+    /// the task's progress, and names the headline file with its own byte
+    /// count in the text.
     @available(iOS 26, *)
     private func apply(
         _ content: DownloadActivityAttributes.ContentState, headline: DownloadRecord?, to task: BGContinuedProcessingTask

@@ -38,7 +38,7 @@ struct DownloadsSettingsView: View {
                     }
                 }
                 .onChange(of: settings.simultaneousDownloads) {
-                    DownloadManager.shared.applyTransferLimit()
+                    manager.applyTransferLimit()
                 }
                 if formats.count > 1 {
                     Picker("Quality", selection: $settings.preferredFormat) {

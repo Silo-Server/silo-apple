@@ -121,11 +121,13 @@ struct DownloadActiveRow: View {
     private var statusLine: String {
         switch record.localStatus {
         case .downloading:
-            if rateParts.isEmpty, let waitText {
-                return record.bytesDownloaded > 0 ? "\(waitText) · \(percentText)" : waitText
+            if rateParts.isEmpty {
+                if let waitText {
+                    return record.bytesDownloaded > 0 ? "\(waitText) · \(percentText)" : waitText
+                }
+                // Handed to iOS, which hasn't started the transfer yet.
+                if record.bytesDownloaded == 0 { return "Waiting…" }
             }
-            // Handed to iOS, which hasn't started the transfer yet.
-            if record.bytesDownloaded == 0, rateParts.isEmpty { return "Waiting…" }
             return ([percentText, sizeText] + rateParts).joined(separator: " · ")
         case .paused:
             return "Paused · \(percentText) · \(sizeText)"
@@ -139,14 +141,7 @@ struct DownloadActiveRow: View {
         }
     }
 
-    private var waitText: String? {
-        switch wait {
-        case .connection: return "Waiting for a connection"
-        case .wifi: return "Waiting for Wi-Fi"
-        case .storageLimit: return "Series storage limit reached"
-        case nil: return nil
-        }
-    }
+    private var waitText: String? { wait?.label }
 
     private var percentText: String {
         "\(Int((record.progressFraction * 100).rounded()))%"

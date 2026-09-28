@@ -141,10 +141,11 @@ private struct SeriesDownloadOptionsSheet: View {
     @Environment(\.dismiss) private var dismiss
     private var manager: DownloadManager { DownloadManager.shared }
     @State private var errorMessage: String?
-    @State private var isWorking = false
     /// The option being registered, which shows a spinner in its row.
     @State private var workingOption: String?
     @State private var finishedCount = 0
+
+    private var isWorking: Bool { workingOption != nil }
 
     var body: some View {
         NavigationStack {
@@ -262,7 +263,6 @@ private struct SeriesDownloadOptionsSheet: View {
     /// `try?` here made an offline/unauthenticated tap look like it worked.
     private func startDownload(option: String, _ work: @escaping () async throws -> Void) {
         guard !isWorking else { return }
-        isWorking = true
         workingOption = option
         Task {
             do {
@@ -272,7 +272,6 @@ private struct SeriesDownloadOptionsSheet: View {
             } catch {
                 errorMessage = error.localizedDescription
             }
-            isWorking = false
             workingOption = nil
         }
     }
@@ -285,7 +284,7 @@ private struct SeriesDownloadOptionsSheet: View {
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            optionLabel(title: title, detail: detail, icon: icon, isWorking: option != nil && workingOption == option)
+            optionLabel(title: title, detail: detail, icon: icon, showsSpinner: option != nil && workingOption == option)
         }
         .buttonStyle(.plain)
         .disabled(isWorking)
@@ -293,7 +292,7 @@ private struct SeriesDownloadOptionsSheet: View {
     }
 
     private func optionLabel(
-        title: String, detail: String, icon: String, isWorking: Bool = false, showsChevron: Bool = true
+        title: String, detail: String, icon: String, showsSpinner: Bool = false, showsChevron: Bool = true
     ) -> some View {
         HStack(spacing: 12) {
             Image(systemName: icon)
@@ -309,7 +308,7 @@ private struct SeriesDownloadOptionsSheet: View {
                     .foregroundColor(.siloSecondaryText)
             }
             Spacer(minLength: 8)
-            if isWorking {
+            if showsSpinner {
                 ProgressView()
             } else if showsChevron {
                 Image(systemName: "chevron.right")

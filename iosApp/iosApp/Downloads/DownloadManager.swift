@@ -55,8 +55,8 @@ final class DownloadManager {
         category: "Downloads"
     )
 
-    /// Records fetching their manifest and assets at once. Running transfers
-    /// are capped separately, by the Simultaneous Downloads setting.
+    /// Records fetching their manifest at once. Running transfers are capped
+    /// separately, by the Simultaneous Downloads setting.
     nonisolated private static let maxConcurrentPipelines = 3
     nonisolated private static let maxRetries = 4
     /// Bounds one flush at 10,000 queued items (100 per batch).
@@ -101,10 +101,9 @@ final class DownloadManager {
     /// held here and replayed by `releaseHeldSessionEvents()`.
     private var pendingSessionEvents: [DownloadSessionEvent] = []
     private var sessionEventsHeld = true
-    /// In-flight back-off timers keyed by record id, tracked so a foreground
-    /// reconcile doesn't re-queue a record that already has a scheduled
-    /// restart (double-starting the transfer) and so pause/delete can abort
-    /// the timer instead of leaving it to fire against a dead record.
+    /// In-flight back-off timers keyed by record id, tracked so pause/delete
+    /// can abort the timer instead of leaving it to fire against a dead
+    /// record. `restartOwners` is what keeps a reconcile off their records.
     private var retryTasks: [String: Task<Void, Never>] = [:]
     /// The pipelines and retries that may still start a record's transfer.
     /// A pipeline that lost ownership (superseded, deleted, or reset by a new
@@ -290,6 +289,7 @@ final class DownloadManager {
             return $0.id < $1.id
         }
     }
+
     var subscriptions: [DownloadSubscription] { file.subscriptions }
 
     var totalBytesUsed: Int64 { storageBytesUsed }
@@ -468,17 +468,9 @@ final class DownloadManager {
     func deleteDownloads(ids: [String]) {
         var removedIds: [String] = []
         for id in ids {
-            guard let record = file.records[id] else { continue }
-            if let taskId = record.taskIdentifier {
-                // The record goes below, so its task's failure event matches
-                // nothing; a stale ID can name another record's task.
-                sessionDelegate.cancel(taskId: taskId, ifDownloading: id)
-            }
-            cancelRetry(recordId: id)
-            abandonPipeline(recordId: id)
-            restartOwners.abandonAssets(id)
+            guard var record = file.records[id] else { continue }
+            stopActiveWork(on: &record)
             file.records.removeValue(forKey: id)
-            clearTransferRate(recordId: id)
             removedIds.append(id)
         }
         guard !removedIds.isEmpty else { return }
@@ -620,10 +612,7 @@ final class DownloadManager {
     /// back in the queue. Without this they would hold nothing but still
     /// wait for the next foreground reconcile.
     private func requeueOrphanedRecords() {
-        for task in retryTasks.values { task.cancel() }
-        retryTasks.removeAll()
-        restartOwners.removeAll()
-        updateHandoffBackgroundTask()
+        abandonAllRestarts()
         var records = file.records
         var changed = false
         for (id, record) in records where Self.isOrphaned(record) {
@@ -741,10 +730,8 @@ final class DownloadManager {
     private func deactivate() {
         pollTask?.cancel()
         pollTask = nil
-        for task in retryTasks.values { task.cancel() }
-        retryTasks.removeAll()
-        restartOwners.removeAll()
-        updateHandoffBackgroundTask()
+        abandonAllRestarts()
+        progressHighWater.removeAll()
         pendingPauseIds.removeAll()
         pendingResumeIds.removeAll()
         invalidatePendingRegistrations()
@@ -1204,7 +1191,6 @@ final class DownloadManager {
     /// full pipeline restart.
     /// Returns whether the record took a pipeline slot; a resume from
     /// captured data goes straight to the session.
-    @discardableResult
     private func startQueuedRecord(_ record: DownloadRecord) -> Bool {
         var record = record
         // Whatever was working on this record before is superseded.
@@ -1456,7 +1442,6 @@ final class DownloadManager {
 
     /// Returns whether the record was parked back in the queue to wait for
     /// a usable session or the network, rather than retried or failed.
-    @discardableResult
     private func handlePipelineError(_ error: Error, recordId: String) -> Bool {
         guard var record = file.records[recordId] else { return false }
         record.taskIdentifier = nil
@@ -1554,12 +1539,8 @@ final class DownloadManager {
     /// Whether a manifest request failed in transport (the connection dropped,
     /// timed out, or was never made) rather than being answered or cancelled.
     nonisolated static func isTransientPipelineFailure(_ error: Error) -> Bool {
-        let transport: Error
-        if case HTTPError.network(let underlying) = error {
-            transport = underlying
-        } else {
-            transport = error
-        }
+        var transport = error
+        if case HTTPError.network(let underlying) = error { transport = underlying }
         guard let urlError = transport as? URLError else { return false }
         return urlError.code != .cancelled
     }
@@ -1577,17 +1558,18 @@ final class DownloadManager {
                 .map(\.id)
         )
         let active = activeRecords
+        // Stalled transfers have no rate, so they add nothing.
+        let rates = active.reduce(into: [String: Double]()) { result, record in
+            if let rate = transferRate(id: record.id) { result[record.id] = rate }
+        }
         DownloadLiveActivityController.shared.sync(
             activeRecords: active,
             completedRecordIds: completedIds,
-            // Stalled transfers add nothing.
-            totalBytesPerSecond: active.compactMap { transferRate(id: $0.id) }.reduce(0, +),
+            totalBytesPerSecond: active.compactMap { rates[$0.id] }.reduce(0, +),
             awaitingRegistration: !pendingRegistrationContentIds.isEmpty,
             // Downloads of unknown size move too.
             transferredBytes: active.reduce(Int64(0)) { $0 + $1.bytesDownloaded },
-            rates: active.reduce(into: [String: Double]()) { rates, record in
-                if let rate = transferRate(id: record.id) { rates[record.id] = rate }
-            }
+            rates: rates
         )
         #endif
     }
@@ -1597,9 +1579,14 @@ final class DownloadManager {
         syncLiveActivity()
     }
 
-    /// What the active downloads wait for right now, if anything.
+    /// What the active downloads wait for right now, if anything, in the
+    /// system progress.
     func currentWaitingReason() -> String? {
-        queueWaitingReason(activeRecords)
+        if let wait = networkWait() { return wait.label }
+        if activeRecords.contains(where: { $0.localStatus == .preparing || $0.localStatus == .registering }) {
+            return "Preparing on server"
+        }
+        return nil
     }
 
     #if os(iOS)
@@ -1629,19 +1616,6 @@ final class DownloadManager {
         #endif
     }
 
-    /// What a queue that isn't moving waits for, in the system progress.
-    private func queueWaitingReason(_ active: [DownloadRecord]) -> String? {
-        switch networkWait() {
-        case .connection: return "Waiting for a connection"
-        case .wifi: return "Waiting for Wi-Fi"
-        case .storageLimit, nil: break
-        }
-        if active.contains(where: { $0.localStatus == .preparing || $0.localStatus == .registering }) {
-            return "Preparing on server"
-        }
-        return nil
-    }
-
     /// Why a record isn't moving, when that is something the user can see
     /// and act on.
     enum Wait: Equatable {
@@ -1651,6 +1625,14 @@ final class DownloadManager {
         case wifi
         /// The series' storage limit holds this download back.
         case storageLimit
+
+        var label: String {
+            switch self {
+            case .connection: return "Waiting for a connection"
+            case .wifi: return "Waiting for Wi-Fi"
+            case .storageLimit: return "Series storage limit reached"
+            }
+        }
     }
 
     func wait(for record: DownloadRecord) -> Wait? {
@@ -1815,6 +1797,7 @@ final class DownloadManager {
             processQueue()
             return
         }
+        progressHighWater[record.id] = nil
         record.mediaFilename = filename
         record.localStatus = .completed
         record.downloadedAt = Date()
@@ -1888,7 +1871,6 @@ final class DownloadManager {
             }
             record.retryCount += 1
             file.records[record.id] = record
-            persist()
             scheduleRetry(recordId: record.id, refreshToken: refreshToken)
         }
     }
@@ -1935,6 +1917,8 @@ final class DownloadManager {
     }
 
     private func scheduleRetry(recordId: String, refreshToken: Bool) {
+        // The caller's retry count survives the process ending in the back-off.
+        persist()
         let attempt = file.records[recordId]?.retryCount ?? 1
         let delaySeconds = min(120, Int(pow(2.0, Double(attempt))) * 5)
         retryTasks[recordId]?.cancel()
@@ -1976,8 +1960,9 @@ final class DownloadManager {
         }
     }
 
-    /// Stops the transfer, pipeline, and retry working on a record the server
-    /// no longer wants downloaded, so none of them brings it back.
+    /// Stops the transfer, pipeline, and retry working on a record being
+    /// deleted or that the server no longer wants downloaded, so none of
+    /// them brings it back.
     private func stopActiveWork(on record: inout DownloadRecord) {
         if let taskId = record.taskIdentifier {
             // Only this record's task: a stale ID can name another record's
@@ -1990,6 +1975,7 @@ final class DownloadManager {
         restartOwners.abandonAssets(record.id)
         cancelRetry(recordId: record.id)
         clearTransferRate(recordId: record.id)
+        progressHighWater[record.id] = nil
     }
 
     /// Whether a record is still the failed transfer a retry was scheduled
@@ -2003,6 +1989,15 @@ final class DownloadManager {
     private func cancelRetry(recordId: String) {
         retryTasks.removeValue(forKey: recordId)?.cancel()
         restartOwners.retryEnded(recordId)
+        updateHandoffBackgroundTask()
+    }
+
+    /// Cancels every scheduled retry and takes every record away from its
+    /// pipeline and asset fetch.
+    private func abandonAllRestarts() {
+        for task in retryTasks.values { task.cancel() }
+        retryTasks.removeAll()
+        restartOwners.removeAll()
         updateHandoffBackgroundTask()
     }
 
@@ -3201,6 +3196,7 @@ final class DownloadManager {
         // and an asset fetch would save the replaced revision's files.
         abandonPipeline(recordId: record.id)
         restartOwners.abandonAssets(record.id)
+        progressHighWater[record.id] = nil
         guard !scopeServerId.isEmpty else { return }
         DownloadFilePaths.removeDownloadDirectory(
             serverId: scopeServerId,

@@ -259,7 +259,6 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
         didFinishDownloadingTo location: URL
     ) {
         let taskId = downloadTask.taskIdentifier
-        lastProgressYield[taskId] = nil
         let statusCode = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? 0
 
         // A non-2xx "success" means the body is an error envelope, not media.
@@ -302,9 +301,10 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
         task: URLSessionTask,
         didCompleteWithError error: Error?
     ) {
+        // Every task ends here, including one that finished downloading.
+        lastProgressYield[task.taskIdentifier] = nil
         // Success path is handled in didFinishDownloadingTo. Only act on a
         // real transport error / cancellation here.
-        lastProgressYield[task.taskIdentifier] = nil
         guard let error else { return }
         let nsError = error as NSError
         let resumeData = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data

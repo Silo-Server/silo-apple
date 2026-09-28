@@ -66,7 +66,6 @@ enum DownloadFilePaths {
     /// Removes staged files older than `age`. A file is staged and moved
     /// within moments, so an old one was left by a process that ended in
     /// between, and nothing will claim it. Returns the bytes freed.
-    @discardableResult
     static func removeStaleStagingFiles(olderThan age: TimeInterval, root: URL = rootDirectory()) -> Int64 {
         let dir = root.appendingPathComponent("staging", isDirectory: true)
         let keys: [URLResourceKey] = [.contentModificationDateKey, .fileSizeKey]
