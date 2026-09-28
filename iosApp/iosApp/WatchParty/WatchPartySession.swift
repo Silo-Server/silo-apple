@@ -525,8 +525,10 @@ final class WatchPartySession {
             else if code == "bad_request" {
                 // The server refused a message this client sent. While a player
                 // waits for its attachment, the only message it sends is the
-                // attach, so a refusal then explains why the party is not
-                // syncing. Any other refusal, such as a report that raced the
+                // attach, so a refusal then is most likely the attach's and
+                // explains why the party is not syncing. (Errors carry no
+                // request id, so a late refusal of an earlier report can land
+                // here too.) Any other refusal, such as a report that raced the
                 // room back to its lobby, gives the viewer nothing to act on
                 // and would stay until the socket next reconnects, so it is only
                 // traced, as the web client only logs it.
