@@ -55,17 +55,16 @@ final class RequestDetailViewModel {
 
     var primaryAction: RequestPrimaryAction {
         guard let detail else { return .loading }
-        if detail.availability == .available, let contentId = detail.libraryContentId {
+        // The same state as the title's card: a title in the library opens
+        // it only when no active request says otherwise (missing seasons on
+        // their way, a failure).
+        let state = RequestDisplayState(availability: detail.availability, request: detail.request)
+        if let contentId = state?.libraryItemToOpen(contentId: detail.libraryContentId) {
             return .openInLibrary(contentId: contentId)
         }
         if isSubmitting { return .submitting }
         if isSubmissionUnconfirmed { return .status(.unavailable(reason: RequestErrorCopy.unconfirmedToken)) }
-        if let state = RequestDisplayState(availability: detail.availability, request: detail.request) {
-            if case .inLibrary = state, let contentId = detail.libraryContentId {
-                return .openInLibrary(contentId: contentId)
-            }
-            return .status(state)
-        }
+        if let state { return .status(state) }
         return .request
     }
 

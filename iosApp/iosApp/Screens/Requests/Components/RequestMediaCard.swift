@@ -3,7 +3,7 @@ import SwiftUI
 /// Poster card for the requests UI: TMDB artwork, an optional status
 /// ribbon, title + year below. A sibling of `MediaCard` rather than a reuse
 /// of it — request results have no `contentId`, no watched state, no
-/// overlays, and their tap routes by availability, so forcing them through
+/// overlays, and their tap routes by request state, so forcing them through
 /// `MediaCard` would bolt unrelated branches onto a heavily-used component.
 ///
 /// Two sources render through the same card: TMDB search/discover results
@@ -151,26 +151,35 @@ struct RequestMediaCard: View {
 
 // MARK: - Standard tap routing
 
-extension AppRouter {
-    /// The one routing rule for request cards: titles already in the
-    /// library open the real item detail; everything else opens the
-    /// request detail (including already-requested/blocked cards, so the
-    /// user can always see state and reason).
-    func openRequestResult(_ result: RequestMediaResult) {
-        if result.availability == .available, let contentId = result.libraryContentId {
-            navigate(to: .itemDetail(contentId: contentId))
-        } else {
-            navigate(to: .requestDetail(mediaType: result.mediaType, tmdbId: result.tmdbId))
+extension Route {
+    /// The one routing rule for request cards: a card whose chip reads "In
+    /// library" opens the real item detail; everything else opens the
+    /// request detail, so the user can always see state and reason. That
+    /// includes a title in the library with an active request, such as a
+    /// series with a request for its missing seasons.
+    static func requestDestination(for result: RequestMediaResult) -> Route {
+        let state = RequestDisplayState(availability: result.availability, request: result.request)
+        if let contentId = state?.libraryItemToOpen(contentId: result.libraryContentId) {
+            return .itemDetail(contentId: contentId)
         }
+        return .requestDetail(mediaType: result.mediaType, tmdbId: result.tmdbId)
     }
 
-    /// Same rule for the user's own request records: completed requests
-    /// open the real item, everything else opens the request detail.
-    func openRequestRecord(_ record: MediaRequest) {
-        if let contentId = record.libraryContentId, !contentId.isEmpty {
-            navigate(to: .itemDetail(contentId: contentId))
-        } else {
-            navigate(to: .requestDetail(mediaType: record.mediaType, tmdbId: record.tmdbId))
+    /// Same rule for the user's own request records.
+    static func requestDestination(for record: MediaRequest) -> Route {
+        if let contentId = RequestDisplayState(record: record).libraryItemToOpen(contentId: record.libraryContentId) {
+            return .itemDetail(contentId: contentId)
         }
+        return .requestDetail(mediaType: record.mediaType, tmdbId: record.tmdbId)
+    }
+}
+
+extension AppRouter {
+    func openRequestResult(_ result: RequestMediaResult) {
+        navigate(to: .requestDestination(for: result))
+    }
+
+    func openRequestRecord(_ record: MediaRequest) {
+        navigate(to: .requestDestination(for: record))
     }
 }

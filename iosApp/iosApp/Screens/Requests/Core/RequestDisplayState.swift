@@ -51,6 +51,16 @@ enum RequestDisplayState: Equatable {
     var isCancelable: Bool {
         self == .pending
     }
+
+    /// The catalog item to open instead of the request, when there is
+    /// nothing about the request left to show: only a state that reads "In
+    /// library", with a known item. A title in the library that still has an
+    /// active request (missing seasons, a failure) opens the request, as its
+    /// chip says.
+    func libraryItemToOpen(contentId: String?) -> String? {
+        guard self == .inLibrary, let contentId, !contentId.isEmpty else { return nil }
+        return contentId
+    }
 }
 
 enum RequestStatusTint {

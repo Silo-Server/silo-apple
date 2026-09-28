@@ -347,6 +347,38 @@ final class RequestsV2Tests: XCTestCase {
     }
 
     @MainActor
+    func testDetailOpensTheLibraryOnlyWithoutAnActiveRequest() async throws {
+        let tokens = try await tokens()
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        let model = RequestDetailViewModel(mediaType: .series, tmdbId: 1399, api: api)
+        // A title in the library, with the given request state.
+        func inLibrary(_ request: String) -> String {
+            Self.detail
+                .replacingOccurrences(of: #""availability":"missing""#,
+                    with: #""availability":"available","library_content_id":"series-1""#)
+                .replacingOccurrences(of: #""request":{"requestable":true}"#, with: #""request":\#(request)"#)
+        }
+        let cases: [(String, RequestPrimaryAction)] = [
+            (#"{"requestable":false,"reason":"already_available"}"#, .openInLibrary(contentId: "series-1")),
+            // A request for the missing seasons, on its way or failed.
+            (#"{"requestable":false,"reason":"already_requested","status":"downloading","state":"processing"}"#,
+             .status(.onTheWay)),
+            (#"{"requestable":false,"reason":"already_requested","status":"completed","state":"partially_available"}"#,
+             .status(.onTheWay)),
+            (#"{"requestable":false,"reason":"already_requested","status":"queued","state":"failed"}"#,
+             .status(.needsAttention(reason: "already_requested"))),
+            // A server without `state`: availability decides, as before.
+            (#"{"requestable":false,"reason":"already_requested","status":"downloading"}"#,
+             .openInLibrary(contentId: "series-1")),
+        ]
+        for (request, expected) in cases {
+            stub.reply(200, inLibrary(request))
+            await model.load()
+            XCTAssertEqual(model.primaryAction, expected, request)
+        }
+    }
+
+    @MainActor
     func testCreateInterruptedByAnOwnerChangeHoldsWithoutReReading() async throws {
         let tokens = try await tokens()
         let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
