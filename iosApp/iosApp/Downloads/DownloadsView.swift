@@ -13,6 +13,9 @@ struct DownloadsView: View {
 
     @State private var isSelecting = false
     @State private var selection: Set<String> = []
+    /// Selected in-progress downloads, by record id; `selection` holds the
+    /// finished list's items.
+    @State private var activeSelection: Set<String> = []
     @State private var showReclaim = false
     /// Confirmation gate for the bulk/context-menu deletes — downloads are
     /// costly to re-fetch, so a stray tap must not remove them outright.
@@ -22,6 +25,8 @@ struct DownloadsView: View {
         let id = UUID()
         let ids: [String]
         let endsSelection: Bool
+        /// Every id is a download still in progress.
+        var inProgressOnly = false
     }
 
     var body: some View {
@@ -39,7 +44,7 @@ struct DownloadsView: View {
             }
         }
         .siloPageBackground()
-        .navigationTitle(isSelecting ? "\(selection.count) Selected" : "Downloads")
+        .navigationTitle(isSelecting ? "\(selection.count + liveActiveSelection.count) Selected" : "Downloads")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.large)
         #endif
@@ -47,7 +52,7 @@ struct DownloadsView: View {
         .safeAreaInset(edge: .bottom) { bottomBar }
         .sheet(isPresented: $showReclaim) { DownloadReclaimSheet() }
         .confirmationDialog(
-            "Delete downloaded files?",
+            pendingDeletion?.inProgressOnly == true ? "Cancel downloads?" : "Delete downloaded files?",
             isPresented: Binding(
                 get: { pendingDeletion != nil },
                 set: { if !$0 { pendingDeletion = nil } }
@@ -56,13 +61,15 @@ struct DownloadsView: View {
             presenting: pendingDeletion
         ) { pending in
             Button(
-                pending.ids.count == 1 ? "Delete Download" : "Delete \(pending.ids.count) Downloads",
+                pending.inProgressOnly
+                    ? (pending.ids.count == 1 ? "Cancel Download" : "Cancel \(pending.ids.count) Downloads")
+                    : (pending.ids.count == 1 ? "Delete Download" : "Delete \(pending.ids.count) Downloads"),
                 role: .destructive
             ) {
                 manager.deleteDownloads(ids: pending.ids)
                 if pending.endsSelection { exitSelectMode() }
             }
-            Button("Cancel", role: .cancel) {}
+            Button("Keep", role: .cancel) {}
         }
         .siloToolbarColorSchemeDark()
     }
@@ -127,17 +134,62 @@ struct DownloadsView: View {
 
                 if !manager.activeRecords.isEmpty {
                     sectionLabel("In Progress", count: manager.activeRecords.count)
-                    ForEach(manager.activeRecords) { record in
-                        DownloadActiveRow(
-                            record: record,
-                            bytesPerSecond: manager.transferRate(id: record.id),
-                            onPauseResume: {
-                                if record.localStatus == .paused { manager.resumeDownload(id: record.id) }
-                                else { manager.pauseDownload(id: record.id) }
-                            },
-                            onCancel: { manager.deleteDownload(id: record.id) }
-                        )
+                    if isSelecting {
+                        Button(allActiveSelected ? "Clear In Progress" : "Select All In Progress") {
+                            if allActiveSelected { activeSelection.removeAll() }
+                            else { activeSelection = Set(manager.activeRecords.map(\.id)) }
+                        }
+                        .font(.system(size: 13, weight: .semibold))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 22)
                     }
+                    #if os(iOS)
+                    if manager.canShowProgressOnLockScreen, !isSelecting {
+                        Button {
+                            manager.showProgressOnLockScreen()
+                        } label: {
+                            Label("Show Progress on Lock Screen", systemImage: "lock.iphone")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(.siloOnSurface)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 7)
+                                .background(Capsule().fill(Color.siloChromeSelectedFill))
+                        }
+                        .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                    }
+                    #endif
+                    ForEach(manager.inProgressRecords) { record in
+                        // Re-reads the rate each second: a stalled transfer
+                        // sends no progress that would otherwise redraw the
+                        // row and clear its last speed.
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            DownloadActiveRow(
+                                record: record,
+                                bytesPerSecond: manager.transferRate(id: record.id, at: context.date),
+                                wait: manager.wait(for: record),
+                                selecting: isSelecting,
+                                selected: activeSelection.contains(record.id),
+                                onSelectToggle: { toggleActive(record.id) },
+                                onPauseResume: {
+                                    if record.localStatus == .paused { manager.resumeDownload(id: record.id) }
+                                    else { manager.pauseDownload(id: record.id) }
+                                },
+                                onCancel: { manager.deleteDownload(id: record.id) }
+                            )
+                        }
+                    }
+                    #if os(iOS)
+                    if !isSelecting {
+                    Text("Downloads keep going when you leave Silo or lock your phone. Closing Silo from the app switcher pauses them until you open it again.")
+                        .font(.system(size: 12))
+                        .foregroundColor(.siloSecondaryText)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 20)
+                        .padding(.top, 2)
+                    }
+                    #endif
                 }
 
                 let failed = manager.records.filter { $0.localStatus == .failed }
@@ -302,7 +354,7 @@ struct DownloadsView: View {
             ToolbarItem(placement: .primaryAction) {
                 Button("Done") { exitSelectMode() }
             }
-        } else if !listItems.isEmpty {
+        } else if !listItems.isEmpty || !manager.activeRecords.isEmpty {
             ToolbarItem(placement: .primaryAction) {
                 Button("Select") { isSelecting = true }
             }
@@ -311,13 +363,17 @@ struct DownloadsView: View {
 
     @ViewBuilder
     private var bottomBar: some View {
-        if isSelecting && !selection.isEmpty {
+        if isSelecting && !(selection.isEmpty && liveActiveSelection.isEmpty) {
             Button {
-                pendingDeletion = PendingDeletion(ids: selectedDownloadIds, endsSelection: true)
+                pendingDeletion = PendingDeletion(
+                    ids: selectedDownloadIds + Array(liveActiveSelection),
+                    endsSelection: true,
+                    inProgressOnly: selection.isEmpty
+                )
             } label: {
                 HStack(spacing: 9) {
-                    Image(systemName: "trash")
-                    Text("Delete \(selection.count) · Free \(DownloadFormatting.bytes(selectedBytes))")
+                    Image(systemName: selection.isEmpty ? "xmark.circle" : "trash")
+                    Text(bottomBarTitle)
                         .fontWeight(.bold)
                 }
                 .font(.system(size: 15))
@@ -340,7 +396,30 @@ struct DownloadsView: View {
     }
 
     private var allSelected: Bool {
-        !listItems.isEmpty && Set(listItems.map(\.id)).isSubset(of: selection)
+        let everything = !listItems.isEmpty || !manager.activeRecords.isEmpty
+        return everything && Set(listItems.map(\.id)).isSubset(of: selection) && allActiveSelected
+    }
+
+    /// Selected downloads that are still in progress. One that finished or
+    /// failed after it was selected drops out, so cancelling never deletes a
+    /// finished file.
+    private var liveActiveSelection: Set<String> {
+        activeSelection.intersection(manager.activeRecords.map(\.id))
+    }
+
+    private var allActiveSelected: Bool {
+        Set(manager.activeRecords.map(\.id)).isSubset(of: activeSelection)
+    }
+
+    private var bottomBarTitle: String {
+        let count = selection.count + liveActiveSelection.count
+        let partialBytes = manager.activeRecords
+            .filter { activeSelection.contains($0.id) }
+            .reduce(Int64(0)) { $0 + $1.bytesDownloaded }
+        if selection.isEmpty {
+            return count == 1 ? "Cancel 1 Download" : "Cancel \(count) Downloads"
+        }
+        return "Delete \(count) · Free \(DownloadFormatting.bytes(selectedBytes + partialBytes))"
     }
 
     private var selectedItems: [DownloadListItem] {
@@ -359,14 +438,24 @@ struct DownloadsView: View {
         if selection.contains(id) { selection.remove(id) } else { selection.insert(id) }
     }
 
+    private func toggleActive(_ id: String) {
+        if activeSelection.contains(id) { activeSelection.remove(id) } else { activeSelection.insert(id) }
+    }
+
     private func toggleSelectAll() {
-        if allSelected { selection.removeAll() }
-        else { selection = Set(listItems.map(\.id)) }
+        if allSelected {
+            selection.removeAll()
+            activeSelection.removeAll()
+        } else {
+            selection = Set(listItems.map(\.id))
+            activeSelection = Set(manager.activeRecords.map(\.id))
+        }
     }
 
     private func exitSelectMode() {
         isSelecting = false
         selection.removeAll()
+        activeSelection.removeAll()
     }
 
     // MARK: - Playback

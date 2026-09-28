@@ -4,17 +4,30 @@ import OSLog
 /// Events surfaced by the background download session, consumed by
 /// `DownloadManager` on the MainActor via an `AsyncStream`.
 enum DownloadSessionEvent: Sendable {
-    case progress(taskId: Int, bytesWritten: Int64, totalExpected: Int64)
+    /// `at` is when the delegate saw the bytes. Events can wait in the stream
+    /// (a busy main actor, or a cold launch holding them until the store
+    /// loads), so rates must use this time rather than the time they're handled.
+    case progress(taskId: Int, bytesWritten: Int64, totalExpected: Int64, at: Date)
     /// Media transfer succeeded (HTTP 2xx). `stagedURL` is a stable file in
     /// the staging directory — the volatile temp file has already been
     /// moved there synchronously inside the delegate callback.
     case finished(taskId: Int, stagedURL: URL, statusCode: Int)
     /// Transfer ended without a usable file: a network error, a
     /// cancellation, or a non-2xx server response (e.g. 409 revoked).
-    case failed(taskId: Int, statusCode: Int?, resumeData: Data?, message: String)
+    case failed(taskId: Int, statusCode: Int?, resumeData: Data?, message: String, cause: DownloadFailureCause)
     /// All background events for this launch have been delivered; the app
     /// may call the system-provided completion handler.
     case allEventsDelivered
+}
+
+/// Why a transfer ended without a file, where that changes what happens next.
+enum DownloadFailureCause: Sendable, Equatable {
+    case other
+    /// The user closed Silo from the app switcher, which cancels every
+    /// background transfer. Not the transfer's fault.
+    case forceQuit
+    /// The device ran out of space for the file. Retrying won't help.
+    case storageFull
 }
 
 /// Owns the app's single background `URLSession` used to transfer media
@@ -36,6 +49,13 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
     )
 
     private let continuation: AsyncStream<DownloadSessionEvent>.Continuation
+    /// When each task's progress was last passed on. Touched only on the
+    /// session's serial delegate queue.
+    private var lastProgressYield: [Int: Date] = [:]
+    /// Progress callbacks arrive many times a second per task; totals are
+    /// cumulative, so passing on the latest every half second loses nothing
+    /// and keeps a long queue from flooding the main actor.
+    private static let progressInterval: TimeInterval = 0.5
     let events: AsyncStream<DownloadSessionEvent>
 
     /// Set when iOS relaunches the app to deliver background events; called
@@ -56,6 +76,11 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
         config.isDiscretionary = false
         config.allowsCellularAccess = true
         config.httpMaximumConnectionsPerHost = 4
+        // The user asked for these files and watches them arrive. Without
+        // this, iOS carries background-session transfers in its background
+        // traffic class, whose receive-side LEDBAT keeps the window so small
+        // that a 70 ms path tops out near 1 MB/s even on a fast network.
+        config.networkServiceType = .responsiveData
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
 
@@ -95,6 +120,18 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
     func cancel(taskId: Int) {
         session.getAllTasks { tasks in
             tasks.first(where: { $0.taskIdentifier == taskId })?.cancel()
+        }
+    }
+
+    /// Cancels the task only if it is transferring `downloadId`'s file. An
+    /// identifier kept on a record can belong to another download's task
+    /// once a relaunched session has reused it.
+    func cancel(taskId: Int, ifDownloading downloadId: String) {
+        session.getAllTasks { tasks in
+            guard let task = tasks.first(where: { $0.taskIdentifier == taskId }),
+                  APIv2Client.downloadFileID(task.originalRequest?.url ?? task.currentRequest?.url) == downloadId
+            else { return }
+            task.cancel()
         }
     }
 
@@ -200,10 +237,19 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
         totalBytesWritten: Int64,
         totalBytesExpectedToWrite: Int64
     ) {
+        let now = Date()
+        // Always pass on the last write of a file of known length.
+        let finished = totalBytesExpectedToWrite > 0 && totalBytesWritten >= totalBytesExpectedToWrite
+        if !finished,
+           now.timeIntervalSince(lastProgressYield[downloadTask.taskIdentifier] ?? .distantPast) < Self.progressInterval {
+            return
+        }
+        lastProgressYield[downloadTask.taskIdentifier] = now
         continuation.yield(.progress(
             taskId: downloadTask.taskIdentifier,
             bytesWritten: totalBytesWritten,
-            totalExpected: totalBytesExpectedToWrite
+            totalExpected: totalBytesExpectedToWrite,
+            at: now
         ))
     }
 
@@ -213,6 +259,7 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
         didFinishDownloadingTo location: URL
     ) {
         let taskId = downloadTask.taskIdentifier
+        lastProgressYield[taskId] = nil
         let statusCode = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? 0
 
         // A non-2xx "success" means the body is an error envelope, not media.
@@ -222,7 +269,8 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
                 taskId: taskId,
                 statusCode: statusCode,
                 resumeData: nil,
-                message: "HTTP \(statusCode)"
+                message: "HTTP \(statusCode)",
+                cause: .other
             ))
             return
         }
@@ -233,6 +281,9 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
         try? FileManager.default.removeItem(at: staged)
         do {
             try FileManager.default.moveItem(at: location, to: staged)
+            // The move keeps the temp file's date; the stale-staging sweep
+            // must see when it was staged.
+            try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: staged.path)
             continuation.yield(.finished(taskId: taskId, stagedURL: staged, statusCode: statusCode))
         } catch {
             Self.logger.error("Failed to stage finished download \(taskId): \(String(describing: error), privacy: .public)")
@@ -240,7 +291,8 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
                 taskId: taskId,
                 statusCode: statusCode,
                 resumeData: nil,
-                message: "stage_failed"
+                message: "stage_failed",
+                cause: Self.isOutOfSpace(error) ? .storageFull : .other
             ))
         }
     }
@@ -252,22 +304,54 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
     ) {
         // Success path is handled in didFinishDownloadingTo. Only act on a
         // real transport error / cancellation here.
+        lastProgressYield[task.taskIdentifier] = nil
         guard let error else { return }
         let nsError = error as NSError
         let resumeData = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data
         let statusCode = (task.response as? HTTPURLResponse)?.statusCode
+        let cause: DownloadFailureCause
+        if (nsError.userInfo[NSURLErrorBackgroundTaskCancelledReasonKey] as? Int)
+            == NSURLErrorCancelledReasonUserForceQuitApplication {
+            cause = .forceQuit
+        } else if Self.isOutOfSpace(error) {
+            cause = .storageFull
+        } else {
+            cause = .other
+        }
         // A user-initiated cancel still surfaces here; the manager checks
         // its own intent and ignores cancellations it requested.
         continuation.yield(.failed(
             taskId: task.taskIdentifier,
             statusCode: statusCode,
             resumeData: resumeData,
-            message: error.localizedDescription
+            message: error.localizedDescription,
+            cause: cause
         ))
     }
 
     func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
         continuation.yield(.allEventsDelivered)
+    }
+
+    /// Whether a transfer or file move failed because the device is full.
+    static func isOutOfSpace(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain, nsError.code == NSFileWriteOutOfSpaceError { return true }
+        if nsError.domain == NSPOSIXErrorDomain, nsError.code == Int(ENOSPC) { return true }
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? Error, isOutOfSpace(underlying) { return true }
+        return false
+    }
+
+    /// Background sessions can stop delivering progress for running tasks
+    /// after the app comes back from the background or is relaunched
+    /// (Apple bug r. 32247561). Resuming a running task is harmless and,
+    /// per Apple, restores the callbacks.
+    func refreshProgressDelivery() {
+        session.getAllTasks { tasks in
+            for task in tasks where task.state == .running {
+                task.resume()
+            }
+        }
     }
 }
 
@@ -281,6 +365,7 @@ enum DownloadAuthHeaders {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.allowsCellularAccess = allowsCellular
+        request.networkServiceType = .responsiveData
 
         if let token = auth.accessToken {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")

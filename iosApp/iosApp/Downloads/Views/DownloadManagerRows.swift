@@ -10,14 +10,30 @@ import SwiftUI
 struct DownloadActiveRow: View {
     let record: DownloadRecord
     /// Smoothed transfer rate from the manager; nil until enough progress
-    /// deltas have landed for the estimate to be meaningful.
+    /// deltas have landed for the estimate to be meaningful, and again once
+    /// progress stops arriving.
     var bytesPerSecond: Double? = nil
+    /// What the download waits for, when it can't move right now.
+    var wait: DownloadManager.Wait? = nil
+    var selecting: Bool = false
+    var selected: Bool = false
+    var onSelectToggle: () -> Void = {}
     var onPauseResume: () -> Void = {}
     var onCancel: () -> Void = {}
 
     @State private var confirmingCancel = false
 
     var body: some View {
+        if selecting {
+            Button(action: onSelectToggle) { card }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 16)
+        } else {
+            actionableCard
+        }
+    }
+
+    private var actionableCard: some View {
         DownloadSwipeRevealContainer(actionLabel: "Cancel") {
             confirmingCancel = true
         } content: {
@@ -37,6 +53,7 @@ struct DownloadActiveRow: View {
 
     private var card: some View {
         HStack(spacing: 12) {
+            if selecting { DownloadSelectionCircle(selected: selected) }
             DownloadPosterThumb(
                 thumbhash: record.posterThumbhash,
                 fileURL: DownloadManager.shared.posterImageURL(for: record),
@@ -55,10 +72,11 @@ struct DownloadActiveRow: View {
             }
 
             Spacer(minLength: 8)
-            progressRing
+            if !selecting { progressRing }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+        .contentShape(Rectangle())
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(Color.siloSurfaceElevated)
@@ -103,15 +121,29 @@ struct DownloadActiveRow: View {
     private var statusLine: String {
         switch record.localStatus {
         case .downloading:
+            if rateParts.isEmpty, let waitText {
+                return record.bytesDownloaded > 0 ? "\(waitText) · \(percentText)" : waitText
+            }
+            // Handed to iOS, which hasn't started the transfer yet.
+            if record.bytesDownloaded == 0, rateParts.isEmpty { return "Waiting…" }
             return ([percentText, sizeText] + rateParts).joined(separator: " · ")
         case .paused:
             return "Paused · \(percentText) · \(sizeText)"
-        case .registering, .queued: return "Queued"
+        case .registering, .queued: return waitText ?? "Queued"
         case .preparing: return "Preparing on server…"
         case .fetchingAssets: return "Finishing…"
         case .completed: return DownloadFormatting.bytes(record.fileSize)
         case .failed: return "Failed"
         case .revoked: return "No longer available"
+        }
+    }
+
+    private var waitText: String? {
+        switch wait {
+        case .connection: return "Waiting for a connection"
+        case .wifi: return "Waiting for Wi-Fi"
+        case .storageLimit: return "Series storage limit reached"
+        case nil: return nil
         }
     }
 
@@ -269,9 +301,10 @@ struct DownloadAttentionRow: View {
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundColor(.siloOnSurface)
                     .lineLimit(1)
-                Text("Download failed")
+                Text(record.failureReason)
                     .font(.system(size: 12.5))
                     .foregroundColor(.siloError)
+                    .lineLimit(2)
             }
             Spacer(minLength: 8)
             Button(action: onRetry) {

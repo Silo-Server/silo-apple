@@ -390,6 +390,7 @@ struct ContentView: View {
             switch newPhase {
             case .active:
                 siloControl.appDidBecomeActive()
+                DownloadManager.shared.sceneDidBecomeActive()
             case .background:
                 siloControl.appDidEnterBackground()
                 // Keep series monitoring alive while backgrounded; only

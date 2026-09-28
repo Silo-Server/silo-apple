@@ -38,6 +38,10 @@ final class ConnectionMonitor {
 
     /// Device has a usable network path (Wi-Fi/cellular/wired).
     private(set) var isDeviceOnline = true
+    /// The path runs over Wi-Fi or wired Ethernet, which a Wi-Fi-only
+    /// download may use. Kept in memory only: like every property of the
+    /// path it can describe where the user is, so it's never logged.
+    private(set) var isOnWiFiOrWired = true
     private(set) var serverStatus: ServerStatus = .unknown
     private(set) var contractStatus: ServerContractStatus = .unknown
     /// Registry id of the server `contractStatus` describes. A verdict is
@@ -158,7 +162,9 @@ final class ConnectionMonitor {
     private init() {
         pathMonitor.pathUpdateHandler = { [weak self] path in
             let online = path.status == .satisfied
+            let wifiOrWired = online && (path.usesInterfaceType(.wifi) || path.usesInterfaceType(.wiredEthernet))
             Task { @MainActor in
+                if self?.isOnWiFiOrWired != wifiOrWired { self?.isOnWiFiOrWired = wifiOrWired }
                 self?.applyPathUpdate(online: online)
             }
         }

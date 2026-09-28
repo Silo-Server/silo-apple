@@ -480,7 +480,9 @@ enum LocalDownloadStatus: String, Codable, Sendable {
     case registering
     /// Server is producing a remux/transcode artifact (`preparing`).
     case preparing
-    /// Server row is `ready`; queued behind the concurrency cap.
+    /// Server row is `ready`; waiting for a pipeline slot, a place under the
+    /// Simultaneous Downloads limit, a network connection, or room under the
+    /// series storage limit.
     case queued
     /// Background `URLSession` task is transferring the media file.
     case downloading
@@ -573,6 +575,10 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     /// The latest local status event the server has not answered yet. A
     /// retry resends exactly this event.
     var pendingStatusEvent: DownloadStatusEvent? = nil
+    /// The media file's exact size from the manifest's integrity block, when
+    /// the server sends one. A finished transfer of any other size is
+    /// discarded and downloaded again.
+    var expectedBytes: Int64? = nil
 
     var isPlayableOffline: Bool {
         (localStatus == .completed || localStatus == .revoked) && mediaFilename != nil
@@ -585,6 +591,21 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     var progressFraction: Double {
         guard fileSize > 0 else { return 0 }
         return min(1, max(0, Double(bytesDownloaded) / Double(fileSize)))
+    }
+
+    /// Why a failed download failed, in words the user can act on.
+    var failureReason: String {
+        switch lastError {
+        case "storage_full": return "Not enough storage on this device"
+        case "size_mismatch": return "The file arrived incomplete"
+        case "move_failed": return "Couldn't save the file"
+        case "not_found", "removed_on_server": return "No longer available on the server"
+        case "forbidden": return "Not available to this profile"
+        case "unauthorized": return "Sign-in expired"
+        case "server_failed": return "The server couldn't prepare this download"
+        case let code? where code.hasPrefix("http_5") || code == "http_429": return "The server had a problem"
+        default: return "Download failed"
+        }
     }
 }
 

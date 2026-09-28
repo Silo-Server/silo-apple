@@ -41,6 +41,15 @@ final class DownloadSettings {
         didSet { defaults.set(keepWatchedDownloads, forKey: Keys.keepWatchedDownloads) }
     }
 
+    /// How many downloads transfer at once. Two keep a typical connection
+    /// busy while each file, and the first episode of a season, still
+    /// finishes soon; more split the bandwidth without adding much.
+    var simultaneousDownloads: Int {
+        didSet { defaults.set(simultaneousDownloads, forKey: Keys.simultaneousDownloads) }
+    }
+
+    static let simultaneousDownloadChoices = [1, 2, 3, 4]
+
     private let defaults: UserDefaults
 
     /// Internal so tests can verify the contract-known local preferences in an
@@ -54,6 +63,7 @@ final class DownloadSettings {
             Keys.defaultMaxStorageGB: 0,
             Keys.sortOption: DownloadSortOption.largestFirst.rawValue,
             Keys.keepWatchedDownloads: false,
+            Keys.simultaneousDownloads: 2,
         ])
         preferredFormat = defaults.string(forKey: Keys.preferredFormat) ?? DownloadFormat.original.rawValue
         wifiOnly = defaults.bool(forKey: Keys.wifiOnly)
@@ -62,6 +72,10 @@ final class DownloadSettings {
         sortOption = defaults.string(forKey: Keys.sortOption)
             .flatMap(DownloadSortOption.init(rawValue:)) ?? .largestFirst
         keepWatchedDownloads = defaults.bool(forKey: Keys.keepWatchedDownloads)
+        simultaneousDownloads = min(
+            max(1, defaults.integer(forKey: Keys.simultaneousDownloads)),
+            Self.simultaneousDownloadChoices.last ?? 4
+        )
     }
 
     /// The quality to actually request, given what the server offers right
@@ -83,5 +97,6 @@ final class DownloadSettings {
         static let defaultMaxStorageGB = "downloads.defaultMaxStorageGB"
         static let sortOption = "downloads.sortOption"
         static let keepWatchedDownloads = "downloads.keepWatchedDownloads"
+        static let simultaneousDownloads = "downloads.simultaneousDownloads"
     }
 }

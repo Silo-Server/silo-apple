@@ -27,7 +27,7 @@ enum DownloadNotifier {
     static func downloadFailed(_ record: DownloadRecord) {
         post(
             id: "download-failed-\(record.id)",
-            body: "Download failed: \(displayName(for: record))"
+            body: "\(displayName(for: record)) didn't download: \(record.failureReason)"
         )
     }
 

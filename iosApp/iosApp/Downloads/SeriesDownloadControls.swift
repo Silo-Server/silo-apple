@@ -142,6 +142,9 @@ private struct SeriesDownloadOptionsSheet: View {
     private var manager: DownloadManager { DownloadManager.shared }
     @State private var errorMessage: String?
     @State private var isWorking = false
+    /// The option being registered, which shows a spinner in its row.
+    @State private var workingOption: String?
+    @State private var finishedCount = 0
 
     var body: some View {
         NavigationStack {
@@ -157,21 +160,25 @@ private struct SeriesDownloadOptionsSheet: View {
                                 posterThumbhash: posterThumbhash
                             )
                         } label: {
+                            // The navigation link draws its own chevron.
                             optionLabel(
                                 title: "Choose Episodes",
                                 detail: "Open a season and select episodes",
-                                icon: "checklist"
+                                icon: "checklist",
+                                showsChevron: false
                             )
                         }
+                        .disabled(isWorking)
                     }
 
                     if canDownloadSeason, let selectedSeason {
                         optionButton(
                             title: "Download Season \(selectedSeason.seasonNumber)",
                             detail: "Original quality · \(selectedSeason.episodeCount) episode\(selectedSeason.episodeCount == 1 ? "" : "s")",
-                            icon: "arrow.down.square.on.square"
+                            icon: "square.and.arrow.down.on.square",
+                            option: "season"
                         ) {
-                            startDownload {
+                            startDownload(option: "season") {
                                 try await manager.downloadSeason(seriesId: seriesId, seasonNumber: selectedSeason.seasonNumber)
                             }
                         }
@@ -180,9 +187,10 @@ private struct SeriesDownloadOptionsSheet: View {
                     optionButton(
                         title: "Download All Episodes",
                         detail: "Original quality",
-                        icon: "arrow.down.circle"
+                        icon: "arrow.down.circle",
+                        option: "series"
                     ) {
-                        startDownload {
+                        startDownload(option: "series") {
                             try await manager.downloadSeries(seriesId: seriesId)
                         }
                     }
@@ -252,17 +260,20 @@ private struct SeriesDownloadOptionsSheet: View {
 
     /// Run a download request, dismissing only on success — a silent
     /// `try?` here made an offline/unauthenticated tap look like it worked.
-    private func startDownload(_ work: @escaping () async throws -> Void) {
+    private func startDownload(option: String, _ work: @escaping () async throws -> Void) {
         guard !isWorking else { return }
         isWorking = true
+        workingOption = option
         Task {
             do {
                 try await work()
+                finishedCount += 1
                 dismiss()
             } catch {
                 errorMessage = error.localizedDescription
             }
             isWorking = false
+            workingOption = nil
         }
     }
 
@@ -270,15 +281,20 @@ private struct SeriesDownloadOptionsSheet: View {
         title: String,
         detail: String,
         icon: String,
+        option: String? = nil,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            optionLabel(title: title, detail: detail, icon: icon)
+            optionLabel(title: title, detail: detail, icon: icon, isWorking: option != nil && workingOption == option)
         }
         .buttonStyle(.plain)
+        .disabled(isWorking)
+        .sensoryFeedback(.success, trigger: finishedCount)
     }
 
-    private func optionLabel(title: String, detail: String, icon: String) -> some View {
+    private func optionLabel(
+        title: String, detail: String, icon: String, isWorking: Bool = false, showsChevron: Bool = true
+    ) -> some View {
         HStack(spacing: 12) {
             Image(systemName: icon)
                 .font(.system(size: 17, weight: .semibold))
@@ -293,11 +309,17 @@ private struct SeriesDownloadOptionsSheet: View {
                     .foregroundColor(.siloSecondaryText)
             }
             Spacer(minLength: 8)
-            Image(systemName: "chevron.right")
-                .font(.system(size: 12, weight: .bold))
-                .foregroundColor(.siloSecondaryText)
+            if isWorking {
+                ProgressView()
+            } else if showsChevron {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(.siloSecondaryText)
+            }
         }
         .padding(.vertical, 4)
+        // The whole row answers a tap, not just its text and icons.
+        .contentShape(Rectangle())
     }
 }
 

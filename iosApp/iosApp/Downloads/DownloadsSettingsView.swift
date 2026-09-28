@@ -32,6 +32,14 @@ struct DownloadsSettingsView: View {
             Section {
                 Toggle("Download over Wi-Fi only", isOn: $settings.wifiOnly)
                     .tint(.siloAccent)
+                Picker("Simultaneous Downloads", selection: $settings.simultaneousDownloads) {
+                    ForEach(DownloadSettings.simultaneousDownloadChoices, id: \.self) { count in
+                        Text("\(count)").tag(count)
+                    }
+                }
+                .onChange(of: settings.simultaneousDownloads) {
+                    DownloadManager.shared.applyTransferLimit()
+                }
                 if formats.count > 1 {
                     Picker("Quality", selection: $settings.preferredFormat) {
                         ForEach(formats, id: \.self) { format in

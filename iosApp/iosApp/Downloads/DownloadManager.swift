@@ -1,6 +1,9 @@
 import Foundation
 import Observation
 import OSLog
+#if canImport(UIKit)
+import UIKit
+#endif
 
 enum DownloadError: LocalizedError {
     case unavailable
@@ -52,7 +55,9 @@ final class DownloadManager {
         category: "Downloads"
     )
 
-    private static let maxConcurrentTransfers = 3
+    /// Records fetching their manifest and assets at once. Running transfers
+    /// are capped separately, by the Simultaneous Downloads setting.
+    nonisolated private static let maxConcurrentPipelines = 3
     nonisolated private static let maxRetries = 4
     /// Bounds one flush at 10,000 queued items (100 per batch).
     private static let maxProgressBatchesPerFlush = 100
@@ -101,6 +106,16 @@ final class DownloadManager {
     /// restart (double-starting the transfer) and so pause/delete can abort
     /// the timer instead of leaving it to fire against a dead record.
     private var retryTasks: [String: Task<Void, Never>] = [:]
+    /// The pipelines and retries that may still start a record's transfer.
+    /// A pipeline that lost ownership (superseded, deleted, or reset by a new
+    /// revision) stops before it can start a second transfer of the file.
+    private var restartOwners = DownloadRestartOwners()
+    #if canImport(UIKit)
+    /// Keeps the app running while a transfer is on its way to the background
+    /// session. Without it, iOS suspends the app mid-pipeline and the record
+    /// waits for the next launch.
+    private var handoffBackgroundTask: UIBackgroundTaskIdentifier = .invalid
+    #endif
     /// Records whose pause is still waiting on the resume-data capture
     /// round-trip. A resume tapped inside that window is deferred to
     /// `finishPause` (via `pendingResumeIds`) so the captured data isn't
@@ -140,14 +155,32 @@ final class DownloadManager {
     /// from progress deltas so the UI never needs its own timer competing
     /// with the `@Observable` update path.
     private(set) var transferRates: [String: Double] = [:]
-    private var rateSamples: [String: (bytes: Int64, at: Date)] = [:]
-    private static let rateSampleInterval: TimeInterval = 0.5
-    private static let rateSmoothing = 0.3
+    private var rateSamples: [String: TransferRateSample] = [:]
+    nonisolated private static let rateSampleInterval: TimeInterval = 0.5
+    nonisolated private static let rateSmoothing = 0.3
+    /// Longer than this between progress callbacks means the app was
+    /// suspended or the transfer stalled. The bytes of that stretch say
+    /// nothing about the current speed, so the rate starts over.
+    nonisolated private static let rateMaxSampleGap: TimeInterval = 3
+    /// How long the background session's completion handler waits for this
+    /// wake's pipelines and retries to hand off their transfers. iOS gives a
+    /// background wake roughly 30 seconds.
+    private static let backgroundHandoffTimeout: TimeInterval = 20
+    /// Background time left for the system completion handler to run before
+    /// iOS suspends the app.
+    private static let backgroundTimeMargin: TimeInterval = 5
     /// Last time each record's byte counter was published into the
     /// `@Observable` `file` blob. Delegate callbacks arrive many times per
     /// second; UI counters should tick at a readable cadence instead.
     private var lastProgressPublish: [String: Date] = [:]
     private static let progressPublishInterval: TimeInterval = 1.0
+    /// The most bytes each record's transfers have reached in this process,
+    /// so a restart from zero isn't mistaken for recovery.
+    private var progressHighWater: [String: Int64] = [:]
+    private var staleStagingSwept = false
+    /// How far past its earlier best a transfer must get before its retries
+    /// reset.
+    private static let recoveredProgressBytes: Int64 = 8 << 20
     /// The one-shot removal of downloads saved by earlier versions. Every
     /// scope activation waits for it, so nothing reads or writes the store
     /// before it has run.
@@ -177,6 +210,19 @@ final class DownloadManager {
                 self.handleSessionEvent(event)
             }
         }
+        observeConnectivity()
+    }
+
+    /// Starts the queue again whenever the device regains a network path.
+    /// Offline, `processQueue` leaves queued downloads waiting rather than
+    /// spending their retries on requests that can't be sent.
+    private func observeConnectivity() {
+        let online = withObservationTracking {
+            ConnectionMonitor.shared.isDeviceOnline
+        } onChange: {
+            Task { @MainActor [weak self] in self?.observeConnectivity() }
+        }
+        if online { processQueue() }
     }
 
     // MARK: - Observable surface
@@ -216,6 +262,34 @@ final class DownloadManager {
     }
 
     var activeRecords: [DownloadRecord] { records.filter { $0.localStatus.isActive } }
+
+    /// Active records as the In Progress list shows them: what is moving
+    /// first, then what is about to, then the queue, then paused downloads.
+    var inProgressRecords: [DownloadRecord] { Self.sortedByActivity(activeRecords) }
+
+    /// Orders active records by how close they are to moving bytes, and in
+    /// queue order within each group, so a long queue never buries the
+    /// downloads actually transferring.
+    nonisolated static func sortedByActivity(_ records: [DownloadRecord]) -> [DownloadRecord] {
+        func rank(_ record: DownloadRecord) -> Int {
+            switch record.localStatus {
+            case .downloading:
+                if record.taskIdentifier == nil { return 2 }  // waiting to restart
+                return record.bytesDownloaded > 0 ? 0 : 1
+            case .fetchingAssets: return 1
+            case .registering, .preparing: return 3
+            case .queued: return 4
+            case .paused: return 5
+            case .completed, .failed, .revoked: return 6
+            }
+        }
+        return records.sorted {
+            let (a, b) = (rank($0), rank($1))
+            if a != b { return a < b }
+            if $0.registeredAt != $1.registeredAt { return $0.registeredAt < $1.registeredAt }
+            return $0.id < $1.id
+        }
+    }
     var subscriptions: [DownloadSubscription] { file.subscriptions }
 
     var totalBytesUsed: Int64 { storageBytesUsed }
@@ -298,8 +372,13 @@ final class DownloadManager {
         record.posterFilename.flatMap { absoluteFileURL(for: record, filename: $0) }
     }
 
-    func transferRate(id: String) -> Double? {
-        transferRates[id]
+    /// The record's current speed, or nil once its progress callbacks have
+    /// stopped for longer than `rateMaxSampleGap` (a stalled or not yet
+    /// started transfer), so the UI never keeps showing an old speed.
+    func transferRate(id: String, at now: Date = Date()) -> Double? {
+        guard let sample = rateSamples[id],
+              now.timeIntervalSince(sample.at) <= Self.rateMaxSampleGap else { return nil }
+        return transferRates[id]
     }
 
     /// Decode the on-disk offline manifest for a completed download. The file
@@ -394,8 +473,8 @@ final class DownloadManager {
                 intentionalCancels.insert(taskId)
                 sessionDelegate.cancel(taskId: taskId)
             }
-            retryTasks[id]?.cancel()
-            retryTasks[id] = nil
+            cancelRetry(recordId: id)
+            abandonPipeline(recordId: id)
             file.records.removeValue(forKey: id)
             clearTransferRate(recordId: id)
             removedIds.append(id)
@@ -500,6 +579,7 @@ final class DownloadManager {
             fileServerId = serverId
             fileProfileId = profileId
             adoptLegacySessionTasksIfNeeded()
+            requeueOrphanedRecords()
             if let released = releasedProgressClaims.removeValue(forKey: Self.progressClaimKey(serverId, profileId)),
                OfflineProgressQueue.releaseClaims(&file.progressQueue, ids: released) {
                 persist()
@@ -510,9 +590,59 @@ final class DownloadManager {
             scopeLoadProfileId = ""
         }
         releaseHeldSessionEvents()
+        // Downloads re-queued at install start now, even in a background wake.
+        processQueue()
+        removeStaleStagingFilesOnce()
         refreshStorageUsage()
         await backfillEpisodeMetadataIfNeeded()
         return true
+    }
+
+    /// Once per process, after held events have claimed their staged files.
+    private func removeStaleStagingFilesOnce() {
+        guard !staleStagingSwept else { return }
+        staleStagingSwept = true
+        Task { @MainActor in
+            let freed = await Task.detached(priority: .utility) {
+                DownloadFilePaths.removeStaleStagingFiles(olderThan: 60 * 60)
+            }.value
+            if freed > 0 {
+                Self.logger.notice("Removed \(freed, privacy: .public) bytes of abandoned staged downloads")
+            }
+        }
+    }
+
+    /// A freshly installed store has no pipeline or retry running for any of
+    /// its records: owners left from the previous scope are dropped, and
+    /// records a pipeline or retry was working on when the process ended go
+    /// back in the queue. Without this they would hold nothing but still
+    /// wait for the next foreground reconcile.
+    private func requeueOrphanedRecords() {
+        for task in retryTasks.values { task.cancel() }
+        retryTasks.removeAll()
+        restartOwners.removeAll()
+        updateHandoffBackgroundTask()
+        var records = file.records
+        var changed = false
+        for (id, record) in records where Self.isOrphaned(record) {
+            records[id]?.localStatus = .queued
+            changed = true
+        }
+        if changed {
+            file.records = records
+            persist()
+        }
+    }
+
+    /// Mid-pipeline, or waiting to restart a transfer, with nothing live.
+    /// A record with a task identifier is left to `reconnectActiveTasks`,
+    /// which knows whether the task still runs.
+    nonisolated static func isOrphaned(_ record: DownloadRecord) -> Bool {
+        switch record.localStatus {
+        case .fetchingAssets: return true
+        case .downloading: return record.taskIdentifier == nil
+        default: return false
+        }
     }
 
     /// Stops the pre-rename background session before any scope can start a
@@ -591,6 +721,7 @@ final class DownloadManager {
     /// whether the Downloads tab exists should not wait for the rest.
     func onAppActive(onCapabilityRefreshed: (() -> Void)? = nil) async {
         guard await activateScopeIfNeeded() else { return }
+        sessionDelegate.refreshProgressDelivery()
         await refreshCapability()
         onCapabilityRefreshed?()
         guard downloadsEnabled else { return }
@@ -610,6 +741,8 @@ final class DownloadManager {
         pollTask = nil
         for task in retryTasks.values { task.cancel() }
         retryTasks.removeAll()
+        restartOwners.removeAll()
+        updateHandoffBackgroundTask()
         pendingPauseIds.removeAll()
         pendingResumeIds.removeAll()
         invalidatePendingRegistrations()
@@ -735,11 +868,15 @@ final class DownloadManager {
         let capturedScopeGeneration = registrationScopeGeneration
         pendingRegistrationTokens[registrationContentId] = registrationToken
         pendingRegistrationContentIds.insert(registrationContentId)
+        beginContinuedProcessing(title: displayTitle)
         defer {
             finishPendingRegistration(
                 contentId: registrationContentId,
                 token: registrationToken
             )
+            // A registration that added nothing leaves the queue as it was;
+            // let the live progress settle on that.
+            syncLiveActivity()
         }
 
         guard let owner = await captureScopeOwner(), owner.generation == capturedScopeGeneration else {
@@ -916,8 +1053,7 @@ final class DownloadManager {
             // No live task: the record is waiting out a retry back-off.
             // Abort the timer and park the record so the pause control isn't
             // dead during the window; resume re-queues from scratch.
-            retryTasks[id]?.cancel()
-            retryTasks[id] = nil
+            cancelRetry(recordId: id)
             record.localStatus = .paused
             file.records[id] = record
             clearTransferRate(recordId: id)
@@ -946,6 +1082,7 @@ final class DownloadManager {
     /// unreadable, or was never produced.
     func resumeDownload(id: String) {
         guard var record = file.records[id], record.localStatus == .paused else { return }
+        beginContinuedProcessing(title: record.title)
         // The pause's resume-data capture is still in flight — flag the
         // intent and let `finishPause` re-queue with the data instead of
         // discarding the partial transfer.
@@ -984,6 +1121,7 @@ final class DownloadManager {
 
     func retryDownload(id: String) {
         guard var record = file.records[id], record.localStatus == .failed else { return }
+        beginContinuedProcessing(title: record.title)
         record.localStatus = .queued
         record.retryCount = 0
         record.lastError = nil
@@ -995,31 +1133,88 @@ final class DownloadManager {
     // MARK: - Pipeline
 
     private func processQueue() {
-        let activeCount = file.records.values.filter {
-            $0.localStatus == .downloading || $0.localStatus == .fetchingAssets
+        guard ConnectionMonitor.shared.isDeviceOnline else { return }
+        let transferring = file.records.values.filter {
+            $0.localStatus == .downloading && $0.taskIdentifier != nil
         }.count
-        var slots = max(0, Self.maxConcurrentTransfers - activeCount)
-        guard slots > 0 else { return }
+        var slots = Self.queueSlots(
+            runningPipelines: restartOwners.pipelineCount,
+            transferring: transferring,
+            limit: DownloadSettings.shared.simultaneousDownloads
+        )
+        guard slots.pipelines > 0, slots.transfers > 0 else { return }
 
         let queued = file.records.values
             .filter { $0.localStatus == .queued }
             .sorted { $0.registeredAt < $1.registeredAt }
 
-        for record in queued where slots > 0 {
-            // Reserve the slot synchronously so a second pass doesn't pick
+        for record in queued where slots.pipelines > 0 && slots.transfers > 0 {
+            // Reserve the slots synchronously so a second pass doesn't pick
             // the same record before its async pipeline flips the status.
             guard !exceedsStorageCap(for: record) else { continue }
-            slots -= 1
-            startQueuedRecord(record)
+            if startQueuedRecord(record) { slots.pipelines -= 1 }
+            slots.transfers -= 1
         }
+    }
+
+    /// How many more queued records may start now: a pipeline slot for the
+    /// manifest fetch, and room among the `limit` transfers the session runs
+    /// at once (counting pipelines about to start one). More transfers would
+    /// split the bandwidth so thinly that every file crawls, and their
+    /// progress callbacks alone keep the app busy. A retry waiting out its
+    /// back-off holds neither slot.
+    nonisolated static func queueSlots(
+        runningPipelines: Int, transferring: Int, limit: Int
+    ) -> (pipelines: Int, transfers: Int) {
+        (max(0, maxConcurrentPipelines - runningPipelines),
+         max(0, limit - transferring - runningPipelines))
+    }
+
+    /// Puts transfers beyond the simultaneous-downloads limit back in the
+    /// queue, newest first, keeping their resume data; they continue as the
+    /// others finish. Then starts whatever the limit allows.
+    func applyTransferLimit() {
+        let limit = DownloadSettings.shared.simultaneousDownloads
+        let transferring = file.records.values
+            .filter { $0.localStatus == .downloading && $0.taskIdentifier != nil }
+            .sorted { $0.registeredAt < $1.registeredAt }
+        for record in transferring.dropFirst(limit) {
+            // A pause whose resume was already requested lands back in the
+            // queue with its data (`finishPause`).
+            pendingResumeIds.insert(record.id)
+            pauseDownload(id: record.id)
+        }
+        // A running pipeline starts a transfer when it finishes, so it
+        // counts against the limit too (`queueSlots`).
+        let preparing = file.records.values
+            .filter { $0.localStatus == .fetchingAssets && restartOwners.hasPipeline($0.id) }
+            .sorted { $0.registeredAt < $1.registeredAt }
+        for record in preparing.dropFirst(max(0, limit - transferring.count)) {
+            abandonPipeline(recordId: record.id)
+            setLocalStatus(.queued, id: record.id)
+        }
+        processQueue()
     }
 
     /// Start one queued record, preferring its captured resume data (a
     /// paused transfer) so completed byte ranges aren't refetched; missing
     /// or unreadable data, or data for a retired file URL, falls back to the
     /// full pipeline restart.
-    private func startQueuedRecord(_ record: DownloadRecord) {
+    /// Returns whether the record took a pipeline slot; a resume from
+    /// captured data goes straight to the session.
+    @discardableResult
+    private func startQueuedRecord(_ record: DownloadRecord) -> Bool {
         var record = record
+        // Whatever was working on this record before is superseded.
+        abandonPipeline(recordId: record.id)
+        if let staleTask = record.taskIdentifier {
+            // A task still recorded for a queued record is stale. Stop it
+            // before starting the replacement so the two never both write.
+            intentionalCancels.insert(staleTask)
+            sessionDelegate.cancel(taskId: staleTask, ifDownloading: record.id)
+            record.taskIdentifier = nil
+            file.records[record.id] = record
+        }
         if let filename = record.resumeDataFilename,
            let url = absoluteFileURL(for: record, filename: filename) {
             let resumeData = try? Data(contentsOf: url)
@@ -1030,48 +1225,69 @@ final class DownloadManager {
                 record.localStatus = .downloading
                 file.records[record.id] = record
                 persist()
-                return
+                return false
             }
             record.bytesDownloaded = 0
             file.records[record.id] = record
         }
         setLocalStatus(.fetchingAssets, id: record.id)
-        Task { await self.startMediaPipeline(recordId: record.id) }
+        let token = claimPipeline(recordId: record.id)
+        Task { await self.startMediaPipeline(recordId: record.id, token: token) }
+        return true
     }
 
     /// Fetches the manifest and its assets, then starts the file transfer,
     /// all under the scope owner captured here. Once that scope is gone,
     /// nothing a request returns is applied: the record belongs to a store
-    /// that is no longer loaded.
-    private func startMediaPipeline(recordId: String) async {
-        guard file.records[recordId] != nil else { return }
+    /// that is no longer loaded. The pipeline runs only while it holds the
+    /// record's `token`, and releases it when it returns.
+    private func startMediaPipeline(recordId: String, token: UUID) async {
+        defer {
+            // A pipeline that parked its own record (no usable session, or
+            // no network) leaves it for the next activation or reconnect:
+            // starting the queue now would pick the same record right back up.
+            let parked = ownsPipeline(recordId, token) && file.records[recordId]?.localStatus == .queued
+            releasePipeline(recordId: recordId, token: token)
+            if !parked { processQueue() }
+        }
+        guard ownsPipeline(recordId, token), file.records[recordId] != nil else { return }
         guard let owner = await captureScopeOwner() else {
             // No usable session for this scope right now. Park the record;
             // the next queue pass or reconcile starts it again.
-            if file.records[recordId]?.localStatus == .fetchingAssets { setLocalStatus(.queued, id: recordId) }
+            if ownsPipeline(recordId, token), file.records[recordId]?.localStatus == .fetchingAssets {
+                setLocalStatus(.queued, id: recordId)
+            }
             return
         }
         do {
             let manifest = try await SiloAPI.shared.apiV2Client.downloadManifest(id: recordId, auth: owner.auth)
-            guard isCurrent(owner) else { return }
-            await persistManifest(manifest, recordId: recordId)
-            guard isCurrent(owner) else { return }
+            guard pipelineIsCurrent(recordId, token, owner) else { return }
+            await persistManifest(manifest, recordId: recordId, token: token)
+            guard pipelineIsCurrent(recordId, token, owner) else { return }
             applyManifestDisplay(manifest, recordId: recordId)
-            await fetchArtwork(manifest, recordId: recordId, owner: owner)
-            await fetchSubtitles(manifest, recordId: recordId, owner: owner)
-            guard isCurrent(owner) else { return }
-            await startMediaTransfer(recordId: recordId, owner: owner)
+            // The media transfer first, so bytes start moving at once; artwork
+            // and subtitles are small and follow while it runs.
+            await startMediaTransfer(recordId: recordId, owner: owner, token: token)
+            guard pipelineIsCurrent(recordId, token, owner),
+                  file.records[recordId]?.localStatus == .downloading else { return }
+            await fetchArtwork(manifest, recordId: recordId, owner: owner, token: token)
+            await fetchSubtitles(manifest, recordId: recordId, owner: owner, token: token)
         } catch {
-            guard isCurrent(owner) else { return }
+            // A reconcile may have failed or revoked the record meanwhile.
+            guard pipelineIsCurrent(recordId, token, owner),
+                  file.records[recordId]?.localStatus == .fetchingAssets else { return }
             handlePipelineError(error, recordId: recordId)
         }
     }
 
-    private func startMediaTransfer(recordId: String, owner: ScopeOwner) async {
+    private func startMediaTransfer(recordId: String, owner: ScopeOwner, token: UUID) async {
         // The owner's current credentials: a token rotated since the capture
         // is used, a different owner is not.
         let auth = await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: owner.auth)
-        guard isCurrent(owner), var record = file.records[recordId] else { return }
+        // Only the record's own pipeline, and only while the record still
+        // waits for it: a reconcile may have revoked or failed it meanwhile.
+        guard pipelineIsCurrent(recordId, token, owner), var record = file.records[recordId],
+              record.localStatus == .fetchingAssets, record.taskIdentifier == nil else { return }
         guard let auth else {
             handlePipelineError(HTTPError.requestIdentityChanged, recordId: recordId)
             return
@@ -1094,9 +1310,11 @@ final class DownloadManager {
         reportPendingStatusEvents()
     }
 
-    private func persistManifest(_ manifest: OfflineManifest, recordId: String) async {
+    private func persistManifest(_ manifest: OfflineManifest, recordId: String, token: UUID) async {
         guard let url = absoluteFileURLForNewAsset(recordId: recordId, filename: "manifest.json") else { return }
         await DownloadStore.shared.saveManifest(manifest, to: url)
+        // A delete or new revision during the save owns the record now.
+        guard ownsPipeline(recordId, token) else { return }
         if var record = file.records[recordId] {
             record.manifestFilename = "manifest.json"
             file.records[recordId] = record
@@ -1129,11 +1347,12 @@ final class DownloadManager {
             }
         }
         if record.fileSize <= 0, let size = manifest.fileSize { record.fileSize = size }
+        record.expectedBytes = manifest.integrity?.expectedBytes
         file.records[recordId] = record
         persist()
     }
 
-    private func fetchArtwork(_ manifest: OfflineManifest, recordId: String, owner: ScopeOwner) async {
+    private func fetchArtwork(_ manifest: OfflineManifest, recordId: String, owner: ScopeOwner, token: UUID) async {
         let kinds: [(kind: String, path: String?, filename: String)] = [
             ("poster", manifest.artworkUrls?.poster, "poster.jpg"),
             ("backdrop", manifest.artworkUrls?.backdrop, "backdrop.jpg"),
@@ -1152,7 +1371,7 @@ final class DownloadManager {
                 Self.logger.warning("download artwork fetch failed: \(String(describing: error), privacy: .public)")
                 continue
             }
-            guard isCurrent(owner) else { return }
+            guard pipelineIsCurrent(recordId, token, owner) else { return }
             guard !data.isEmpty,
                   let url = absoluteFileURLForNewAsset(recordId: recordId, filename: entry.filename) else {
                 continue
@@ -1170,7 +1389,7 @@ final class DownloadManager {
         persist()
     }
 
-    private func fetchSubtitles(_ manifest: OfflineManifest, recordId: String, owner: ScopeOwner) async {
+    private func fetchSubtitles(_ manifest: OfflineManifest, recordId: String, owner: ScopeOwner, token: UUID) async {
         guard let subtitles = manifest.subtitles, !subtitles.isEmpty else { return }
         for (index, subtitle) in subtitles.enumerated() {
             let ext = (subtitle.format ?? "srt").lowercased()
@@ -1183,7 +1402,7 @@ final class DownloadManager {
                 Self.logger.warning("download subtitle fetch failed: \(String(describing: error), privacy: .public)")
                 continue
             }
-            guard isCurrent(owner) else { return }
+            guard pipelineIsCurrent(recordId, token, owner) else { return }
             guard !data.isEmpty,
                   let url = absoluteFileURLForNewAsset(recordId: recordId, filename: filename) else {
                 continue
@@ -1225,7 +1444,7 @@ final class DownloadManager {
                 if record.retryCount < Self.maxRetries {
                     record.retryCount += 1
                     file.records[recordId] = record
-                    scheduleRetry(recordId: recordId, resumeData: nil, refreshToken: false)
+                    scheduleRetry(recordId: recordId, refreshToken: false)
                 } else {
                     record.localStatus = .failed
                     record.lastError = "http_\(statusCode)"
@@ -1238,6 +1457,20 @@ final class DownloadManager {
                 record.localStatus = .failed
                 record.lastError = "http_\(statusCode)"
             }
+        } else if Self.isTransientPipelineFailure(error), !ConnectionMonitor.shared.isDeviceOnline {
+            // No network: wait in the queue without spending a retry. The
+            // queue starts again when the device is back online.
+            record.localStatus = .queued
+            file.records[recordId] = record
+            persist()
+            return
+        } else if Self.isTransientPipelineFailure(error), record.retryCount < Self.maxRetries {
+            // Same bounded back-off as a 5xx: the request never got an
+            // answer, often because iOS suspended the app mid-request.
+            record.retryCount += 1
+            file.records[recordId] = record
+            scheduleRetry(recordId: recordId, refreshToken: false)
+            return
         } else {
             record.localStatus = .failed
             record.lastError = error.localizedDescription
@@ -1261,6 +1494,19 @@ final class DownloadManager {
         }
     }
 
+    /// Whether a manifest request failed in transport (the connection dropped,
+    /// timed out, or was never made) rather than being answered or cancelled.
+    nonisolated static func isTransientPipelineFailure(_ error: Error) -> Bool {
+        let transport: Error
+        if case HTTPError.network(let underlying) = error {
+            transport = underlying
+        } else {
+            transport = error
+        }
+        guard let urlError = transport as? URLError else { return false }
+        return urlError.code != .cancelled
+    }
+
     /// Mirror the active queue into the lock-screen Live Activity. Hooked
     /// into `file`'s `didSet` so every mutation flows through — including
     /// scope deactivation (empty blob ends the activity). The controller
@@ -1273,11 +1519,107 @@ final class DownloadManager {
                 .filter { $0.localStatus == .completed }
                 .map(\.id)
         )
+        let active = activeRecords
         DownloadLiveActivityController.shared.sync(
-            activeRecords: activeRecords,
+            activeRecords: active,
             completedRecordIds: completedIds,
-            totalBytesPerSecond: transferRates.values.reduce(0, +)
+            // Stalled transfers add nothing.
+            totalBytesPerSecond: active.compactMap { transferRate(id: $0.id) }.reduce(0, +),
+            awaitingRegistration: !pendingRegistrationContentIds.isEmpty,
+            // Downloads of unknown size move too.
+            transferredBytes: active.reduce(Int64(0)) { $0 + $1.bytesDownloaded },
+            rates: active.reduce(into: [String: Double]()) { rates, record in
+                if let rate = transferRate(id: record.id) { rates[record.id] = rate }
+            }
         )
+        #endif
+    }
+
+    /// Re-evaluates the live progress display after it changed hands.
+    func refreshLiveProgress() {
+        syncLiveActivity()
+    }
+
+    /// What the active downloads wait for right now, if anything.
+    func currentWaitingReason() -> String? {
+        queueWaitingReason(activeRecords)
+    }
+
+    #if os(iOS)
+    /// Whether the Downloads tab should offer to show live progress on the
+    /// Lock Screen: transfers are running and nothing shows them there.
+    var canShowProgressOnLockScreen: Bool {
+        guard #available(iOS 26, *) else { return false }
+        return !DownloadContinuedProcessing.shared.ownsProgress
+            && activeRecords.contains { $0.localStatus == .downloading }
+    }
+
+    /// Starts the system's live progress for the running downloads. Call
+    /// only from the user's tap.
+    func showProgressOnLockScreen() {
+        let headline = DownloadLiveActivityController.headline(of: activeRecords)
+        DownloadContinuedProcessing.shared.begin(title: headline?.title ?? "Downloads")
+        syncLiveActivity()
+    }
+    #endif
+
+    /// Silo is on screen: progress the user hid from the Lock Screen comes
+    /// back as Silo's own Live Activity, which only the foreground can start.
+    func sceneDidBecomeActive() {
+        #if os(iOS)
+        DownloadContinuedProcessing.shared.clearDismissal()
+        syncLiveActivity()
+        #endif
+    }
+
+    /// What a queue that isn't moving waits for, in the system progress.
+    private func queueWaitingReason(_ active: [DownloadRecord]) -> String? {
+        switch networkWait() {
+        case .connection: return "Waiting for a connection"
+        case .wifi: return "Waiting for Wi-Fi"
+        case .storageLimit, nil: break
+        }
+        if active.contains(where: { $0.localStatus == .preparing || $0.localStatus == .registering }) {
+            return "Preparing on server"
+        }
+        return nil
+    }
+
+    /// Why a record isn't moving, when that is something the user can see
+    /// and act on.
+    enum Wait: Equatable {
+        /// The device has no network.
+        case connection
+        /// Wi-Fi only is on and the device isn't on Wi-Fi.
+        case wifi
+        /// The series' storage limit holds this download back.
+        case storageLimit
+    }
+
+    func wait(for record: DownloadRecord) -> Wait? {
+        switch record.localStatus {
+        case .queued:
+            if exceedsStorageCap(for: record) { return .storageLimit }
+            return networkWait()
+        case .downloading, .fetchingAssets:
+            return networkWait()
+        default:
+            return nil
+        }
+    }
+
+    private func networkWait() -> Wait? {
+        let monitor = ConnectionMonitor.shared
+        if !monitor.isDeviceOnline { return .connection }
+        if DownloadSettings.shared.wifiOnly, !monitor.isOnWiFiOrWired { return .wifi }
+        return nil
+    }
+
+    /// Keeps Silo running with live system progress for a download the user
+    /// just started (iOS 26 and later). Call only from the user's action.
+    private func beginContinuedProcessing(title: String?) {
+        #if os(iOS)
+        DownloadContinuedProcessing.shared.begin(title: title ?? "Downloads")
         #endif
     }
 
@@ -1304,9 +1646,9 @@ final class DownloadManager {
             return
         }
         switch event {
-        case let .progress(taskId, written, total):
+        case let .progress(taskId, written, total, at):
             guard var record = recordByTask(taskId) else { return }
-            updateTransferRate(recordId: record.id, bytes: written)
+            updateTransferRate(recordId: record.id, bytes: written, at: at)
             // Publish to the observable blob at a readable cadence — the raw
             // callbacks fire many times per second and each reassignment
             // redraws every byte counter "live". Skipped ticks lose nothing:
@@ -1315,6 +1657,15 @@ final class DownloadManager {
             guard now.timeIntervalSince(lastProgressPublish[record.id] ?? .distantPast)
                 >= Self.progressPublishInterval else { return }
             lastProgressPublish[record.id] = now
+            // Past the furthest point any earlier attempt reached: the
+            // transfer has recovered, so its earlier failures stop counting
+            // against the retry limit. A restart from zero doesn't qualify
+            // until it gets further than before.
+            let furthest = max(progressHighWater[record.id] ?? record.bytesDownloaded, record.bytesDownloaded)
+            if record.retryCount > 0, written > furthest + Self.recoveredProgressBytes {
+                record.retryCount = 0
+            }
+            progressHighWater[record.id] = max(furthest, written)
             record.bytesDownloaded = written
             if total > 0 { record.fileSize = total }
             file.records[record.id] = record
@@ -1323,19 +1674,22 @@ final class DownloadManager {
         case let .finished(taskId, stagedURL, _):
             handleMediaFinished(taskId: taskId, stagedURL: stagedURL)
 
-        case let .failed(taskId, statusCode, resumeData, message):
-            handleMediaFailure(taskId: taskId, statusCode: statusCode, resumeData: resumeData, message: message)
+        case let .failed(taskId, statusCode, resumeData, message, cause):
+            handleMediaFailure(taskId: taskId, statusCode: statusCode, resumeData: resumeData, message: message,
+                cause: cause)
 
         case .allEventsDelivered:
-            // Flush queued store writes before handing control back — iOS
-            // can suspend the process as soon as the completion handler
-            // runs, and the `.finished`/`.failed` records handled above are
-            // still on the async save chain.
+            // iOS can suspend the process as soon as the completion handler
+            // runs. First let the pipelines and imminent retries this wake
+            // started (the next queued downloads) hand their transfers to the
+            // session, or they stop mid-pipeline until the app is next
+            // opened. Then flush the store writes still on the async save
+            // chain.
             guard let handler = sessionDelegate.backgroundCompletionHandler else { return }
             sessionDelegate.backgroundCompletionHandler = nil
-            let pendingSave = saveChain
             Task { @MainActor in
-                await pendingSave?.value
+                await self.waitForTransferHandoff(timeout: Self.backgroundHandoffTimeout)
+                await self.saveChain?.value
                 handler()
             }
         }
@@ -1347,8 +1701,10 @@ final class DownloadManager {
     private func releaseHeldSessionEvents() {
         guard sessionEventsHeld else { return }
         sessionEventsHeld = false
-        while !pendingSessionEvents.isEmpty {
-            handleSessionEvent(pendingSessionEvents.removeFirst())
+        let held = pendingSessionEvents
+        pendingSessionEvents = []
+        for event in held {
+            handleSessionEvent(event)
         }
     }
 
@@ -1359,6 +1715,31 @@ final class DownloadManager {
             return
         }
         clearTransferRate(recordId: record.id)
+        if let expected = record.expectedBytes, expected > 0 {
+            let actual = fileSizeOnDisk(stagedURL)
+            // The transfer's own length (from its response) also vouches for
+            // the file: a source replaced in place leaves the manifest's size
+            // stale until the server bumps the revision.
+            if actual != expected, actual != record.fileSize {
+                Self.logger.error("Finished download is \(actual, privacy: .public) bytes, expected \(expected, privacy: .public); downloading again")
+                try? FileManager.default.removeItem(at: stagedURL)
+                record.taskIdentifier = nil
+                record.bytesDownloaded = 0
+                if record.retryCount < Self.maxRetries {
+                    record.retryCount += 1
+                    file.records[record.id] = record
+                    scheduleRetry(recordId: record.id, refreshToken: false)
+                } else {
+                    record.localStatus = .failed
+                    record.lastError = "size_mismatch"
+                    file.records[record.id] = record
+                    persist()
+                    notifyTerminalFailure(record)
+                    processQueue()
+                }
+                return
+            }
+        }
         let ext = mediaExtension(for: record)
         let filename = "media.\(ext)"
         guard let destination = absoluteFileURLForNewAsset(recordId: record.id, filename: filename) else {
@@ -1370,8 +1751,9 @@ final class DownloadManager {
             try FileManager.default.moveItem(at: stagedURL, to: destination)
         } catch {
             Self.logger.error("Failed to move finished media: \(String(describing: error), privacy: .private)")
+            try? FileManager.default.removeItem(at: stagedURL)
             record.localStatus = .failed
-            record.lastError = "move_failed"
+            record.lastError = DownloadSessionDelegate.isOutOfSpace(error) ? "storage_full" : "move_failed"
             record.taskIdentifier = nil
             file.records[record.id] = record
             persist()
@@ -1400,13 +1782,31 @@ final class DownloadManager {
         // watched episode right after it reads the watch state in full.
     }
 
-    private func handleMediaFailure(taskId: Int, statusCode: Int?, resumeData: Data?, message: String) {
+    private func handleMediaFailure(
+        taskId: Int, statusCode: Int?, resumeData: Data?, message: String, cause: DownloadFailureCause
+    ) {
         if intentionalCancels.remove(taskId) != nil { return }
         guard var record = recordByTask(taskId) else { return }
         record.taskIdentifier = nil
         clearTransferRate(recordId: record.id)
 
-        switch Self.mediaFailureAction(statusCode: statusCode, retryCount: record.retryCount, message: message) {
+        let action = Self.mediaFailureAction(statusCode: statusCode, retryCount: record.retryCount, message: message,
+            cause: cause)
+        // Kept on disk rather than in memory, so a pause, a scope switch, or
+        // the process ending before the retry doesn't restart from zero.
+        let keepsPartialFile: Bool
+        switch action {
+        case let .retry(keepResumeData, _): keepsPartialFile = keepResumeData
+        case .fail: keepsPartialFile = cause == .storageFull
+        case .revoke: keepsPartialFile = false
+        }
+        if keepsPartialFile, let resumeData,
+           let url = absoluteFileURLForNewAsset(recordId: record.id, filename: "resume.bin"),
+           (try? resumeData.write(to: url, options: .atomic)) != nil {
+            record.resumeDataFilename = "resume.bin"
+        }
+
+        switch action {
         case .revoke:
             record.localStatus = .revoked
             record.serverStatus = "revoked"
@@ -1421,11 +1821,20 @@ final class DownloadManager {
             notifyTerminalFailure(record)
             processQueue()
         case let .retry(keepResumeData, refreshToken):
-            record.retryCount += 1
             if !keepResumeData { record.bytesDownloaded = 0 }
+            if cause == .forceQuit {
+                // Closing Silo from the app switcher cancels every transfer;
+                // that isn't the download failing. Resume it now.
+                record.localStatus = .queued
+                file.records[record.id] = record
+                persist()
+                processQueue()
+                return
+            }
+            record.retryCount += 1
             file.records[record.id] = record
-            scheduleRetry(recordId: record.id, resumeData: keepResumeData ? resumeData : nil,
-                refreshToken: refreshToken)
+            persist()
+            scheduleRetry(recordId: record.id, refreshToken: refreshToken)
         }
     }
 
@@ -1438,8 +1847,16 @@ final class DownloadManager {
         case retry(keepResumeData: Bool, refreshToken: Bool)
     }
 
-    /// Every retry is bounded by `maxRetries`, after which the record fails.
-    nonisolated static func mediaFailureAction(statusCode: Int?, retryCount: Int, message: String) -> MediaFailureAction {
+    /// Every retry is bounded by `maxRetries`, after which the record fails,
+    /// except a force-quit cancellation, which resumes without counting.
+    nonisolated static func mediaFailureAction(
+        statusCode: Int?, retryCount: Int, message: String, cause: DownloadFailureCause = .other
+    ) -> MediaFailureAction {
+        switch cause {
+        case .forceQuit: return .retry(keepResumeData: true, refreshToken: false)
+        case .storageFull: return .fail("storage_full")
+        case .other: break
+        }
         let canRetry = retryCount < maxRetries
         switch statusCode {
         case 409:
@@ -1462,41 +1879,145 @@ final class DownloadManager {
         }
     }
 
-    private func scheduleRetry(recordId: String, resumeData: Data?, refreshToken: Bool) {
+    private func scheduleRetry(recordId: String, refreshToken: Bool) {
         let attempt = file.records[recordId]?.retryCount ?? 1
         let delaySeconds = min(120, Int(pow(2.0, Double(attempt))) * 5)
         retryTasks[recordId]?.cancel()
+        restartOwners.retryScheduled(recordId, firesAt: Date().addingTimeInterval(TimeInterval(delaySeconds)))
+        updateHandoffBackgroundTask()
         retryTasks[recordId] = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(delaySeconds) * 1_000_000_000)
             guard !Task.isCancelled, let self, !self.scopeServerId.isEmpty else { return }
             self.retryTasks[recordId] = nil
+            self.restartOwners.retryEnded(recordId)
             // Fire only while the record still looks like the failure this
-            // retry was scheduled for — a pause, delete, revoke, or re-queue
-            // that landed during the back-off owns the record now, and
-            // restarting on top of it would run two transfers of one file.
-            guard let record = self.file.records[recordId],
-                  record.taskIdentifier == nil,
-                  record.localStatus == .downloading || record.localStatus == .fetchingAssets else { return }
+            // retry was scheduled for — a pause, delete, revoke, re-queue, or
+            // running pipeline owns the record now, and restarting on top of
+            // it would run two transfers of one file.
+            guard self.awaitsRestart(recordId), !self.restartOwners.hasPipeline(recordId) else {
+                self.updateHandoffBackgroundTask()
+                return
+            }
+            // The restart owns the record from here, so a reconcile during
+            // the token refresh below can't start a second transfer.
+            let token = self.claimPipeline(recordId: recordId)
             if refreshToken {
                 // Any authenticated v2 read runs HTTPClient's single-flight
                 // 401 refresh, so the next background request carries a
                 // fresh token.
                 await self.refreshCapability()
+                guard self.ownsPipeline(recordId, token), self.awaitsRestart(recordId) else {
+                    self.releasePipeline(recordId: recordId, token: token)
+                    return
+                }
             }
-            if let resumeData, let taskId = self.sessionDelegate.resume(data: resumeData) {
-                guard var rec = self.file.records[recordId] else { return }
-                rec.taskIdentifier = taskId
-                rec.localStatus = .downloading
-                self.file.records[recordId] = rec
-                self.persist()
-            } else {
-                // Restart from the manifest step — a pipeline failure may have
-                // been in the manifest/asset fetch, not the media transfer.
-                self.setLocalStatus(.fetchingAssets, id: recordId)
-                await self.startMediaPipeline(recordId: recordId)
-            }
+            // Restart from the manifest step (a pipeline failure may have
+            // been in the manifest/asset fetch, not the media transfer),
+            // through the queue so restarts share the pipeline cap. Resume
+            // data saved for the record is used from there.
+            self.releasePipeline(recordId: recordId, token: token)
+            self.setLocalStatus(.queued, id: recordId)
+            self.processQueue()
         }
     }
+
+    /// Stops the transfer, pipeline, and retry working on a record the server
+    /// no longer wants downloaded, so none of them brings it back.
+    private func stopActiveWork(on record: inout DownloadRecord) {
+        if let taskId = record.taskIdentifier {
+            intentionalCancels.insert(taskId)
+            sessionDelegate.cancel(taskId: taskId)
+            record.taskIdentifier = nil
+        }
+        abandonPipeline(recordId: record.id)
+        cancelRetry(recordId: record.id)
+        clearTransferRate(recordId: record.id)
+    }
+
+    /// Whether a record is still the failed transfer a retry was scheduled
+    /// for: nothing is transferring it, and it wasn't paused, deleted,
+    /// revoked, or re-queued since.
+    private func awaitsRestart(_ recordId: String) -> Bool {
+        guard let record = file.records[recordId], record.taskIdentifier == nil else { return false }
+        return record.localStatus == .downloading || record.localStatus == .fetchingAssets
+    }
+
+    private func cancelRetry(recordId: String) {
+        retryTasks.removeValue(forKey: recordId)?.cancel()
+        restartOwners.retryEnded(recordId)
+        updateHandoffBackgroundTask()
+    }
+
+    // MARK: - Transfer handoff
+
+    private func claimPipeline(recordId: String) -> UUID {
+        let token = restartOwners.claimPipeline(recordId)
+        updateHandoffBackgroundTask()
+        return token
+    }
+
+    private func ownsPipeline(_ recordId: String, _ token: UUID) -> Bool {
+        restartOwners.ownsPipeline(recordId, token)
+    }
+
+    private func pipelineIsCurrent(_ recordId: String, _ token: UUID, _ owner: ScopeOwner) -> Bool {
+        ownsPipeline(recordId, token) && isCurrent(owner)
+    }
+
+    private func releasePipeline(recordId: String, token: UUID) {
+        restartOwners.releasePipeline(recordId, token)
+        updateHandoffBackgroundTask()
+    }
+
+    /// Takes the record away from its running pipeline, which stops at its
+    /// next check without starting a transfer.
+    private func abandonPipeline(recordId: String) {
+        restartOwners.abandonPipeline(recordId)
+        updateHandoffBackgroundTask()
+    }
+
+    /// Waits, at most `timeout` and never into the last of the app's
+    /// background time, until no pipeline or imminent retry is still working
+    /// toward its transfer.
+    private func waitForTransferHandoff(timeout: TimeInterval) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while restartOwners.handoffPending(by: deadline), Date() < deadline, hasBackgroundTimeLeft() {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+    }
+
+    private func hasBackgroundTimeLeft() -> Bool {
+        #if canImport(UIKit)
+        // Effectively unlimited while the app is in the foreground.
+        return UIApplication.shared.backgroundTimeRemaining > Self.backgroundTimeMargin
+        #else
+        return true
+        #endif
+    }
+
+    /// Holds one background task while a transfer is on its way to the
+    /// session, ended when none is or when iOS reclaims the time.
+    private func updateHandoffBackgroundTask() {
+        #if canImport(UIKit)
+        let deadline = Date().addingTimeInterval(Self.backgroundHandoffTimeout)
+        if !restartOwners.handoffPending(by: deadline) {
+            endHandoffBackgroundTask()
+        } else if handoffBackgroundTask == .invalid {
+            handoffBackgroundTask = UIApplication.shared.beginBackgroundTask(withName: "SiloDownloadHandoff") {
+                // iOS calls this on the main thread.
+                MainActor.assumeIsolated { DownloadManager.shared.endHandoffBackgroundTask() }
+            }
+        }
+        #endif
+    }
+
+    #if canImport(UIKit)
+    private func endHandoffBackgroundTask() {
+        guard handoffBackgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(handoffBackgroundTask)
+        handoffBackgroundTask = .invalid
+    }
+    #endif
 
     // MARK: - Polling (preparing → ready)
 
@@ -1536,7 +2057,10 @@ final class DownloadManager {
         let rows = listed.filter { !pendingDeletes.contains($0.id) }
         let byId = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 
-        for (id, original) in file.records {
+        // One write for the whole pass: every write to `file` rebuilds indexes
+        // and the Live Activity, which is costly per record in a large store.
+        var records = file.records
+        for (id, original) in records {
             if let row = byId[id] {
                 var record = mergeExistingRecord(original, with: row)
                 switch row.status {
@@ -1548,24 +2072,28 @@ final class DownloadManager {
                     if record.localStatus == .completed {
                         record.localStatus = .revoked
                     } else if record.localStatus.isActive {
+                        stopActiveWork(on: &record)
                         record.localStatus = .revoked
                     }
                 case "failed":
                     if record.localStatus != .completed {
+                        if record.localStatus.isActive { stopActiveWork(on: &record) }
                         record.localStatus = .failed
                         record.lastError = "server_failed"
                     }
                 default:
                     break
                 }
-                file.records[id] = record
+                records[id] = record
             } else if original.localStatus.isActive {
                 var record = original
+                stopActiveWork(on: &record)
                 record.localStatus = .failed
                 record.lastError = "removed_on_server"
-                file.records[id] = record
+                records[id] = record
             }
         }
+        file.records = records
 
         // Pick up rows registered out-of-band (e.g. subscription sync).
         var legacyRowIds: [String] = []
@@ -1592,7 +2120,7 @@ final class DownloadManager {
 
         await reconnectActiveTasks()
         if triggerPipeline {
-            processQueue()
+            applyTransferLimit()
             ensurePolling()
         }
     }
@@ -1806,42 +2334,69 @@ final class DownloadManager {
     /// cancelled and its download re-queued, so it restarts from a fresh
     /// manifest instead of ending in a 410.
     private func reconnectActiveTasks() async {
+        // A transfer started while the live-task read is in flight may be
+        // missing from it; only identifiers held before the read are judged.
+        let taskIdsBeforeRead = file.records.compactMapValues(\.taskIdentifier)
         let (active, retired) = await sessionDelegate.liveTasks()
         for taskId in retired {
             intentionalCancels.insert(taskId)
             sessionDelegate.cancel(taskId: taskId)
         }
         for (id, record) in file.records {
-            var record = record
-            // Task identifiers are only unique within one URLSession
-            // instance — a recreated session hands the same small integers
-            // to new tasks, so a persisted id with no live task must be
-            // dropped before it can match (and misroute) another record's
-            // transfer. Pause round-trips keep theirs: the cancelled task
-            // may still deliver a final event that must find this record.
-            if let taskId = record.taskIdentifier,
-               !active.contains(taskId),
-               !pendingPauseIds.contains(id) {
+            let plan = Self.reconnectPlan(
+                status: record.localStatus,
+                taskIdentifier: record.taskIdentifier,
+                taskIdentifierBeforeRead: taskIdsBeforeRead[id],
+                liveTaskIds: active,
+                pausing: pendingPauseIds.contains(id),
+                restartOwned: restartOwners.ownsRestart(id)
+            )
+            if plan.dropTask {
+                var record = record
                 record.taskIdentifier = nil
                 file.records[id] = record
             }
-            // Records with a live back-off timer are owned by the retry;
-            // re-queuing them here would double-start the transfer when it
-            // fires.
-            guard retryTasks[id] == nil else { continue }
-            guard record.localStatus == .downloading || record.localStatus == .fetchingAssets else {
-                continue
+            if plan.requeue {
+                setLocalStatus(.queued, id: id)
             }
-            // `.fetchingAssets` records were mid-pipeline in a detached Task
-            // that did not survive the relaunch; re-queue them too so they
-            // aren't wedged (and don't keep occupying a concurrency slot
-            // forever).
-            if record.localStatus == .downloading,
-               let taskId = record.taskIdentifier, active.contains(taskId) {
-                continue
-            }
-            setLocalStatus(.queued, id: id)
         }
+    }
+
+    /// What reconnect does with one record.
+    struct ReconnectPlan: Equatable {
+        /// Forget the record's task identifier.
+        var dropTask: Bool
+        /// Put the record back in the queue to start its transfer again.
+        var requeue: Bool
+    }
+
+    /// Task identifiers are only unique within one URLSession instance — a
+    /// recreated session hands the same small integers to new tasks — so an
+    /// identifier with no live task is dropped before it can match (and
+    /// misroute) another record's transfer. Pause round-trips keep theirs:
+    /// the cancelled task may still deliver a final event for this record.
+    ///
+    /// A downloading record without a live task, or a `.fetchingAssets` one
+    /// whose pipeline didn't survive a relaunch, is re-queued. A record whose
+    /// retry or pipeline is still running in this process is left to it:
+    /// re-queuing would start a second transfer of the same file.
+    nonisolated static func reconnectPlan(
+        status: LocalDownloadStatus,
+        taskIdentifier: Int?,
+        taskIdentifierBeforeRead: Int?,
+        liveTaskIds: Set<Int>,
+        pausing: Bool,
+        restartOwned: Bool
+    ) -> ReconnectPlan {
+        if let taskIdentifier, taskIdentifier != taskIdentifierBeforeRead {
+            // Started after the read, so the read says nothing about it.
+            return ReconnectPlan(dropTask: false, requeue: false)
+        }
+        let taskIsLive = taskIdentifier.map(liveTaskIds.contains) ?? false
+        let dropTask = taskIdentifier != nil && !taskIsLive && !pausing
+        let requeue = !restartOwned
+            && (status == .fetchingAssets || (status == .downloading && !taskIsLive))
+        return ReconnectPlan(dropTask: dropTask, requeue: requeue)
     }
 
     // MARK: - Series monitoring
@@ -2583,6 +3138,8 @@ final class DownloadManager {
             intentionalCancels.insert(taskId)
             sessionDelegate.cancel(taskId: taskId)
         }
+        // A running pipeline would start the replaced revision's transfer.
+        abandonPipeline(recordId: record.id)
         guard !scopeServerId.isEmpty else { return }
         DownloadFilePaths.removeDownloadDirectory(
             serverId: scopeServerId,
@@ -2809,31 +3366,44 @@ final class DownloadManager {
 
     // MARK: - Transfer rate
 
+    /// The start of a record's current rate window.
+    struct TransferRateSample: Equatable {
+        var bytes: Int64
+        var at: Date
+    }
+
+    private func updateTransferRate(recordId: String, bytes: Int64, at: Date) {
+        let next = Self.nextTransferRate(
+            sample: rateSamples[recordId],
+            rate: transferRates[recordId],
+            bytes: bytes,
+            now: at
+        )
+        if next.sample != rateSamples[recordId] { rateSamples[recordId] = next.sample }
+        if next.rate != transferRates[recordId] { transferRates[recordId] = next.rate }
+    }
+
     /// Exponentially-smoothed rate from progress deltas. Samples at least
     /// `rateSampleInterval` apart so the burst-y delegate callbacks don't
-    /// produce jittery instantaneous rates.
-    private func updateTransferRate(recordId: String, bytes: Int64) {
-        let now = Date()
-        guard let sample = rateSamples[recordId] else {
-            rateSamples[recordId] = (bytes, now)
-            return
-        }
+    /// produce jittery instantaneous rates. Returns the window to keep and
+    /// the rate to publish (nil clears it).
+    nonisolated static func nextTransferRate(
+        sample: TransferRateSample?,
+        rate: Double?,
+        bytes: Int64,
+        now: Date
+    ) -> (sample: TransferRateSample, rate: Double?) {
+        let fresh = TransferRateSample(bytes: bytes, at: now)
+        guard let sample else { return (fresh, rate) }
         let elapsed = now.timeIntervalSince(sample.at)
-        guard elapsed >= Self.rateSampleInterval else { return }
-        // Resume-data restarts can report fewer bytes than the last sample;
-        // reset the window instead of publishing a negative rate.
-        guard bytes >= sample.bytes else {
-            rateSamples[recordId] = (bytes, now)
-            transferRates.removeValue(forKey: recordId)
-            return
-        }
+        guard elapsed >= rateSampleInterval else { return (sample, rate) }
+        // After a gap, the bytes would be averaged over time the transfer
+        // may have spent waiting; resume-data restarts can report fewer bytes
+        // than the last sample. Either way, start a fresh window instead of
+        // publishing a misleading (or negative) rate.
+        guard elapsed <= rateMaxSampleGap, bytes >= sample.bytes else { return (fresh, nil) }
         let instant = Double(bytes - sample.bytes) / elapsed
-        if let previous = transferRates[recordId] {
-            transferRates[recordId] = previous + Self.rateSmoothing * (instant - previous)
-        } else {
-            transferRates[recordId] = instant
-        }
-        rateSamples[recordId] = (bytes, now)
+        return (fresh, rate.map { $0 + rateSmoothing * (instant - $0) } ?? instant)
     }
 
     private func clearTransferRate(recordId: String) {

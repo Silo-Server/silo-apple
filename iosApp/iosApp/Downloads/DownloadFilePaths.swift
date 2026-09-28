@@ -63,6 +63,28 @@ enum DownloadFilePaths {
         return dir.appendingPathComponent("task-\(taskIdentifier).bin", isDirectory: false)
     }
 
+    /// Removes staged files older than `age`. A file is staged and moved
+    /// within moments, so an old one was left by a process that ended in
+    /// between, and nothing will claim it. Returns the bytes freed.
+    @discardableResult
+    static func removeStaleStagingFiles(olderThan age: TimeInterval, root: URL = rootDirectory()) -> Int64 {
+        let dir = root.appendingPathComponent("staging", isDirectory: true)
+        let keys: [URLResourceKey] = [.contentModificationDateKey, .fileSizeKey]
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]
+        ) else { return 0 }
+        let cutoff = Date().addingTimeInterval(-age)
+        var freed: Int64 = 0
+        for file in files {
+            guard let values = try? file.resourceValues(forKeys: Set(keys)),
+                  let modified = values.contentModificationDate, modified < cutoff else { continue }
+            if (try? FileManager.default.removeItem(at: file)) != nil {
+                freed += Int64(values.fileSize ?? 0)
+            }
+        }
+        return freed
+    }
+
     static func downloadDirectory(serverId: String, profileId: String, downloadId: String) -> URL {
         let dir = scopeDirectory(serverId: serverId, profileId: profileId)
             .appendingPathComponent(sanitize(downloadId), isDirectory: true)

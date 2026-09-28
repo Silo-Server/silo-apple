@@ -41,20 +41,44 @@ final class DownloadLiveActivityController {
     /// How long the final "complete" card lingers on the lock screen.
     private static let completedLinger: TimeInterval = 240
 
+    /// `awaitingRegistration` means a download the user started hasn't
+    /// reached the queue yet, so an empty queue isn't finished.
+    /// `transferredBytes` totals every active download's bytes, including
+    /// those of unknown size.
     func sync(
         activeRecords: [DownloadRecord],
         completedRecordIds: Set<String>,
-        totalBytesPerSecond: Double
+        totalBytesPerSecond: Double,
+        awaitingRegistration: Bool = false,
+        transferredBytes: Int64 = 0,
+        rates: [String: Double] = [:]
     ) {
         adoptExistingActivityIfNeeded()
         sessionCompletedIds.formUnion(trackedActiveIds.intersection(completedRecordIds))
         trackedActiveIds.formUnion(activeRecords.map(\.id))
 
+        let continued = DownloadContinuedProcessing.shared
         guard !activeRecords.isEmpty else {
+            if !awaitingRegistration { continued.finish(sessionCompletedIds.isEmpty ? .emptied : .completed) }
             finishActivity()
             return
         }
         let state = makeState(activeRecords: activeRecords, totalBytesPerSecond: totalBytesPerSecond)
+        // A paused queue makes no progress, and iOS expires a continued
+        // task that looks stalled; end it on Silo's terms instead.
+        if state.phase == .paused { continued.finish(.paused) }
+        if continued.ownsProgress {
+            // iOS shows the task's own Live Activity; don't add a second one.
+            continued.update(
+                state,
+                transferredBytes: transferredBytes,
+                headline: Self.headline(of: activeRecords),
+                active: activeRecords,
+                rates: rates
+            )
+            yieldToContinuedProcessing()
+            return
+        }
         guard state != lastState else { return }
         if let activity {
             lastState = state
@@ -132,6 +156,19 @@ final class DownloadLiveActivityController {
         }
     }
 
+    /// Ends Silo's own activity at once while the system shows the continued
+    /// processing task's.
+    private func yieldToContinuedProcessing() {
+        lastState = nil
+        guard let activity else { return }
+        self.activity = nil
+        let previous = activityChain
+        activityChain = Task {
+            await previous?.value
+            await activity.end(nil, dismissalPolicy: .immediate)
+        }
+    }
+
     /// A relaunch can find the previous run's activity still on the lock
     /// screen. Adopt it instead of stacking a duplicate; fold any extras
     /// (there should only ever be one).
@@ -148,15 +185,21 @@ final class DownloadLiveActivityController {
 
     // MARK: - State
 
+    /// The transfer the user has been waiting on longest: `activeRecords`
+    /// arrives newest-first.
+    static func headline(of activeRecords: [DownloadRecord]) -> DownloadRecord? {
+        activeRecords.reversed().first {
+            $0.localStatus == .downloading || $0.localStatus == .fetchingAssets
+        } ?? activeRecords.last
+    }
+
     private func makeState(
         activeRecords: [DownloadRecord],
         totalBytesPerSecond: Double
     ) -> DownloadActivityAttributes.ContentState {
         // `activeRecords` arrives newest-first; headline the transfer the
         // user has been waiting on longest.
-        let headline = activeRecords.reversed().first {
-            $0.localStatus == .downloading || $0.localStatus == .fetchingAssets
-        } ?? activeRecords.last
+        let headline = Self.headline(of: activeRecords)
 
         let completedCount = sessionCompletedIds.count
         let totalCount = completedCount + activeRecords.count
