@@ -730,6 +730,7 @@ struct PlayerNextUpScreen: View {
     @FocusState private var focusedTarget: PlayerNextUpFocusTarget?
     @State private var onDeckFocusRequest = 0
     @State private var didRequestInitialActionFocus = false
+    @State private var uiCustomization = UICustomizationPreferences.shared
 
     #if os(tvOS)
     @Namespace private var defaultFocusNamespace
@@ -841,12 +842,12 @@ struct PlayerNextUpScreen: View {
         #if os(tvOS)
         // Split the column on the On Deck card grid: the preview spans the
         // first two cards and the panel starts at the third.
-        let paneWidth = (columnWidth - tvCardSpacing) / 2
+        let previewWidth = onDeckCardWidth * 2 + tvCardSpacing
         HStack(alignment: .center, spacing: tvCardSpacing) {
             miniPlayerPane
-                .frame(width: paneWidth)
+                .frame(width: previewWidth)
             nextUpPanel
-                .frame(width: paneWidth, alignment: .leading)
+                .frame(width: columnWidth - previewWidth - tvCardSpacing, alignment: .leading)
         }
         .frame(width: columnWidth)
         #else
@@ -1270,10 +1271,18 @@ struct PlayerNextUpScreen: View {
     }
 
     /// One centered column shared by the hero and On Deck, as wide as four
-    /// default thumbnail cards so a full On Deck row fills it edge to edge.
+    /// On Deck cards so a full row fills it edge to edge. The cap leaves room
+    /// for MediaRow's inset; Large cards are too wide for four to fit, so the
+    /// fourth card runs past the column like any other rail.
     private func contentColumnWidth(for proxy: GeometryProxy) -> CGFloat {
-        let fourCards = SiloTheme.thumbnailCardWidth * 4 + tvCardSpacing * 3
-        return min(proxy.size.width - horizontalPadding * 2, fourCards)
+        let fourCards = onDeckCardWidth * 4 + tvCardSpacing * 3
+        let available = proxy.size.width - (horizontalPadding + SiloTheme.safePadding) * 2
+        return min(available, fourCards)
+    }
+
+    /// Matches EpisodeThumbCard, which scales with the Poster Size setting.
+    private var onDeckCardWidth: CGFloat {
+        SiloTheme.thumbnailCardWidth * uiCustomization.cardPresentation.posterSize.scale
     }
 
     private var isTV: Bool {
