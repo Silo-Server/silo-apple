@@ -124,6 +124,8 @@ final class DownloadContinuedProcessing {
         request.strategy = .fail
         state = .submitted(identifier: identifier)
         lastMovedAt = Date()
+        #if compiler(>=6.4)
+        // `submitTaskRequest` ships in the iOS 27 SDK (Xcode 27).
         if #available(iOS 27, *) {
             // Reports errors the older call can't, and must not run on main.
             nonisolated(unsafe) let request = request
@@ -137,14 +139,12 @@ final class DownloadContinuedProcessing {
                     }
                 }
             }
-        } else {
-            do {
-                try BGTaskScheduler.shared.submit(request)
-            } catch {
-                submitFailed(identifier: identifier, error: error)
-                return
-            }
+        } else if !submit(request, identifier: identifier) {
+            return
         }
+        #else
+        if !submit(request, identifier: identifier) { return }
+        #endif
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: Self.startDeadline)
             self?.abandonIfNotStarted(identifier: identifier)
@@ -276,6 +276,18 @@ final class DownloadContinuedProcessing {
         Self.logger.notice("Continued processing not started: \(String(describing: error), privacy: .public)")
         state = .idle
         DownloadManager.shared.refreshLiveProgress()
+    }
+
+    /// Submits on the main thread. Returns false when iOS refuses the request.
+    @available(iOS 26, *)
+    private func submit(_ request: BGContinuedProcessingTaskRequest, identifier: String) -> Bool {
+        do {
+            try BGTaskScheduler.shared.submit(request)
+            return true
+        } catch {
+            submitFailed(identifier: identifier, error: error)
+            return false
+        }
     }
 
     private func abandonIfNotStarted(identifier: String) {
