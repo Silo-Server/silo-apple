@@ -227,4 +227,28 @@ final class DownloadPipelineReliabilityTests: XCTestCase {
         XCTAssertEqual(next.sample, sample(0, at: 0))
         XCTAssertEqual(next.rate, 5_000_000)
     }
+
+    func testRetriesResetOnlyOnceATransferPassesItsFailedPeak() {
+        let mib: Int64 = 1 << 20
+        // An attempt failed at 100 MiB; the next one moves 2 MiB per sample.
+        var state = (retryCount: 4, furthest: 100 * mib)
+        var written = 100 * mib
+        for _ in 0..<4 {
+            written += 2 * mib
+            state = DownloadManager.recoveryProgress(retryCount: state.retryCount, furthest: state.furthest, written: written)
+        }
+        XCTAssertEqual(state.retryCount, 4, "8 MiB past the peak isn't recovery yet")
+        XCTAssertEqual(state.furthest, 100 * mib)
+        written += 2 * mib
+        state = DownloadManager.recoveryProgress(retryCount: state.retryCount, furthest: state.furthest, written: written)
+        XCTAssertEqual(state.retryCount, 0)
+        XCTAssertEqual(state.furthest, written)
+    }
+
+    func testRestartFromZeroKeepsItsRetriesUntilItPassesThePeak() {
+        let mib: Int64 = 1 << 20
+        let state = DownloadManager.recoveryProgress(retryCount: 2, furthest: 500 * mib, written: 400 * mib)
+        XCTAssertEqual(state.retryCount, 2)
+        XCTAssertEqual(state.furthest, 500 * mib)
+    }
 }

@@ -23,10 +23,16 @@ struct DownloadsView: View {
 
     private struct PendingDeletion: Identifiable {
         let id = UUID()
+        /// Finished downloads.
         let ids: [String]
+        /// Downloads in progress, cancelled only if they still are when the
+        /// user confirms.
+        var activeIds: [String] = []
         let endsSelection: Bool
         /// Every id is a download still in progress.
         var inProgressOnly = false
+
+        var count: Int { ids.count + activeIds.count }
     }
 
     var body: some View {
@@ -62,11 +68,13 @@ struct DownloadsView: View {
         ) { pending in
             Button(
                 pending.inProgressOnly
-                    ? (pending.ids.count == 1 ? "Cancel Download" : "Cancel \(pending.ids.count) Downloads")
-                    : (pending.ids.count == 1 ? "Delete Download" : "Delete \(pending.ids.count) Downloads"),
+                    ? (pending.count == 1 ? "Cancel Download" : "Cancel \(pending.count) Downloads")
+                    : (pending.count == 1 ? "Delete Download" : "Delete \(pending.count) Downloads"),
                 role: .destructive
             ) {
-                manager.deleteDownloads(ids: pending.ids)
+                // One that finished while the dialog was open keeps its file.
+                let stillActive = Set(manager.activeRecords.map(\.id))
+                manager.deleteDownloads(ids: pending.ids + pending.activeIds.filter(stillActive.contains))
                 if pending.endsSelection { exitSelectMode() }
             }
             Button("Keep", role: .cancel) {}
@@ -366,7 +374,8 @@ struct DownloadsView: View {
         if isSelecting && !(selection.isEmpty && liveActiveSelection.isEmpty) {
             Button {
                 pendingDeletion = PendingDeletion(
-                    ids: selectedDownloadIds + Array(liveActiveSelection),
+                    ids: selectedDownloadIds,
+                    activeIds: Array(liveActiveSelection),
                     endsSelection: true,
                     inProgressOnly: selection.isEmpty
                 )

@@ -1,14 +1,18 @@
 import Foundation
 
 /// What in this process may still start each record's transfer: a pipeline
-/// fetching the manifest and assets, or a retry waiting out its back-off.
-/// Either one survives an app suspension, so a reconcile must leave its
-/// record alone; re-queuing it would start a second transfer of the file.
+/// fetching the manifest, or a retry waiting out its back-off. Either one
+/// survives an app suspension, so a reconcile must leave its record alone;
+/// re-queuing it would start a second transfer of the file. Also tracks the
+/// artwork and subtitle fetch that follows a started transfer.
 struct DownloadRestartOwners: Equatable {
     /// Record id → token of the one pipeline allowed to start its transfer.
     private var pipelines: [String: UUID] = [:]
     /// Record id → when its scheduled retry fires.
     private var retries: [String: Date] = [:]
+    /// Record id → token of the one fetch allowed to save its artwork and
+    /// subtitles. It runs alongside the transfer and holds no queue slot.
+    private var assets: [String: UUID] = [:]
 
     /// Hands the record to a new pipeline. Any pipeline already running for
     /// it loses ownership and stops at its next check.
@@ -54,14 +58,37 @@ struct DownloadRestartOwners: Equatable {
         pipelines[recordId] != nil || retries[recordId] != nil
     }
 
-    /// Whether a transfer may still reach the background session by
-    /// `deadline`: a pipeline is running, or a retry fires by then.
+    /// Hands the record's artwork and subtitles to a new fetch. One already
+    /// running stops saving at its next check.
+    mutating func claimAssets(_ recordId: String) -> UUID {
+        let token = UUID()
+        assets[recordId] = token
+        return token
+    }
+
+    func ownsAssets(_ recordId: String, _ token: UUID) -> Bool {
+        assets[recordId] == token
+    }
+
+    mutating func releaseAssets(_ recordId: String, _ token: UUID) {
+        if assets[recordId] == token { assets[recordId] = nil }
+    }
+
+    /// Stops the record's asset fetch from saving anything more.
+    mutating func abandonAssets(_ recordId: String) {
+        assets[recordId] = nil
+    }
+
+    /// Whether work in this process may still need the network by
+    /// `deadline`: a pipeline or asset fetch is running, or a retry fires
+    /// by then.
     func handoffPending(by deadline: Date) -> Bool {
-        !pipelines.isEmpty || retries.values.contains { $0 <= deadline }
+        !pipelines.isEmpty || !assets.isEmpty || retries.values.contains { $0 <= deadline }
     }
 
     mutating func removeAll() {
         pipelines.removeAll()
         retries.removeAll()
+        assets.removeAll()
     }
 }

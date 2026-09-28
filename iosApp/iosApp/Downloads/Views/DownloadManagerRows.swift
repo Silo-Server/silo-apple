@@ -131,7 +131,8 @@ struct DownloadActiveRow: View {
             return "Paused · \(percentText) · \(sizeText)"
         case .registering, .queued: return waitText ?? "Queued"
         case .preparing: return "Preparing on server…"
-        case .fetchingAssets: return "Finishing…"
+        // Fetching the manifest, before the transfer starts.
+        case .fetchingAssets: return waitText ?? "Starting…"
         case .completed: return DownloadFormatting.bytes(record.fileSize)
         case .failed: return "Failed"
         case .revoked: return "No longer available"
