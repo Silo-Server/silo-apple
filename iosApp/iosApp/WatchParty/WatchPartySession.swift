@@ -522,6 +522,11 @@ final class WatchPartySession {
             if code == "connection_replaced" {
                 terminate("This profile joined the party on another device. Rejoin here to take over playback.", replaced: true)
             }
+            // The server refused a message this client sent, such as a report
+            // that raced the room back to its lobby. The viewer cannot act on
+            // it, and the banner would stay until the socket next reconnects,
+            // so it is only traced, as the web client only logs it.
+            else if code == "bad_request" { trace("server rejected a message: \(message)") }
             else { errorMessage = message }
         case .unknown: break
         }
