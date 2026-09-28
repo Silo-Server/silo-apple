@@ -135,13 +135,18 @@ extension RequestDisplayState {
     /// From a search/discover/detail card's compact annotations. Returns
     /// nil when the card has no state to show (missing, requestable, never
     /// requested) — that's the "Request" affordance state, not a chip.
+    ///
+    /// An active request's `state` comes before availability: a series in
+    /// the library can have a request for its missing seasons, and the card
+    /// must agree with My Requests about it. Without `state` (older servers),
+    /// a title in the library reads as in library whatever its request says.
     init?(availability: RequestAvailability, request: RequestState) {
-        if availability == .available {
-            self = .inLibrary
-            return
-        }
         if let state = request.state, let derived = RequestDisplayState(state: state, reason: request.reason) {
             self = derived
+            return
+        }
+        if availability == .available {
+            self = .inLibrary
             return
         }
         if let status = request.status {

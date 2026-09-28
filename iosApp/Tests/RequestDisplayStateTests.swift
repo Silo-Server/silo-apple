@@ -123,13 +123,53 @@ final class RequestDisplayStateTests: XCTestCase {
         )
     }
 
-    func testAvailableAlwaysWins() {
-        // In-library beats any request state — the card is a door, not a chip.
+    func testAvailableWinsOverStatusWithoutState() {
+        // A server without `state`: in-library beats the request's status —
+        // the card is a door, not a chip.
         let result = RequestDisplayState(
             availability: .available,
             request: state(status: .pending, requestable: false)
         )
         XCTAssertEqual(result, .inLibrary)
+    }
+
+    func testActiveRequestStateWinsOverLibraryAvailability() {
+        // A series in the library with a request for its missing seasons
+        // reads as My Requests shows it, not as "In library".
+        XCTAssertEqual(
+            RequestDisplayState(
+                availability: .available,
+                request: state(status: .downloading, state: .processing, requestable: false)
+            ),
+            .onTheWay
+        )
+        XCTAssertEqual(
+            RequestDisplayState(
+                availability: .available,
+                request: state(status: .completed, state: .partiallyAvailable, requestable: false)
+            ),
+            .onTheWay
+        )
+        XCTAssertEqual(
+            RequestDisplayState(
+                availability: .available,
+                request: state(status: .queued, state: .failed, requestable: false, reason: "already_requested")
+            ),
+            .needsAttention(reason: "already_requested")
+        )
+        // No request: still a door into the library.
+        XCTAssertEqual(
+            RequestDisplayState(availability: .available, request: state(requestable: false, reason: "already_available")),
+            .inLibrary
+        )
+        // A state this client doesn't know leaves availability in charge.
+        XCTAssertEqual(
+            RequestDisplayState(
+                availability: .available,
+                request: state(status: .downloading, state: .unknown, requestable: false)
+            ),
+            .inLibrary
+        )
     }
 
     func testActiveRequestOnMissingTitle() {
