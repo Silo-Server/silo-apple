@@ -750,7 +750,7 @@ struct PlayerNextUpScreen: View {
 
                 #if os(tvOS)
                 ScrollView(.vertical, showsIndicators: false) {
-                    screenContent(maxMainWidth: mainContentWidth(for: proxy))
+                    screenContent(columnWidth: contentColumnWidth(for: proxy))
                     .padding(.horizontal, horizontalPadding)
                     .padding(.top, verticalTopPadding)
                     .padding(.bottom, verticalBottomPadding)
@@ -801,15 +801,16 @@ struct PlayerNextUpScreen: View {
         #endif
     }
 
-    private func screenContent(maxMainWidth: CGFloat) -> some View {
+    private func screenContent(columnWidth: CGFloat) -> some View {
         let content = VStack(spacing: sectionSpacing) {
-            mainContent
-                .frame(maxWidth: maxMainWidth)
+            mainContent(columnWidth: columnWidth)
                 .id(playerNextUpMainScrollTarget)
 
             if !viewModel.nextUpCarouselItems.isEmpty {
+                // MediaRow insets its header and cards by the safe padding,
+                // so widen its frame by that inset to share the hero's edges.
                 onDeckSection
-                    .frame(maxWidth: carouselMaxWidth)
+                    .frame(width: columnWidth + SiloTheme.safePadding * 2)
                     .id(playerNextUpOnDeckScrollTarget)
             }
         }
@@ -836,14 +837,18 @@ struct PlayerNextUpScreen: View {
     }
 
     @ViewBuilder
-    private var mainContent: some View {
+    private func mainContent(columnWidth: CGFloat) -> some View {
         #if os(tvOS)
-        HStack(alignment: .center, spacing: 48) {
+        // Split the column on the On Deck card grid: the preview spans the
+        // first two cards and the panel starts at the third.
+        let paneWidth = (columnWidth - tvCardSpacing) / 2
+        HStack(alignment: .center, spacing: tvCardSpacing) {
             miniPlayerPane
-                .frame(width: 680)
+                .frame(width: paneWidth)
             nextUpPanel
-                .frame(maxWidth: 650, alignment: .leading)
+                .frame(width: paneWidth, alignment: .leading)
         }
+        .frame(width: columnWidth)
         #else
         EmptyView()
         #endif
@@ -1264,8 +1269,11 @@ struct PlayerNextUpScreen: View {
             .formatted(.units(allowed: [.hours, .minutes], width: .abbreviated))
     }
 
-    private func mainContentWidth(for proxy: GeometryProxy) -> CGFloat {
-        min(proxy.size.width - horizontalPadding * 2, isTV ? 1420 : 680)
+    /// One centered column shared by the hero and On Deck, as wide as four
+    /// default thumbnail cards so a full On Deck row fills it edge to edge.
+    private func contentColumnWidth(for proxy: GeometryProxy) -> CGFloat {
+        let fourCards = SiloTheme.thumbnailCardWidth * 4 + tvCardSpacing * 3
+        return min(proxy.size.width - horizontalPadding * 2, fourCards)
     }
 
     private var isTV: Bool {
@@ -1276,7 +1284,8 @@ struct PlayerNextUpScreen: View {
         #endif
     }
 
-    private var carouselMaxWidth: CGFloat { isTV ? 1580 : 680 }
+    /// Matches MediaRow's tvOS card spacing.
+    private let tvCardSpacing: CGFloat = 40
     private var horizontalPadding: CGFloat { isTV ? 80 : 24 }
     private var verticalTopPadding: CGFloat { isTV ? 112 : 24 }
     private var verticalBottomPadding: CGFloat { isTV ? 260 : 24 }
