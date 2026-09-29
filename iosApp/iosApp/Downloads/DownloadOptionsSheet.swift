@@ -322,7 +322,7 @@ struct DownloadOptionsSheet: View {
         case .original:
             return "Source quality, with compatibility fallback if needed"
         case .twentyMbps, .tenMbps, .fiveMbps, .twoMbps, .oneMbps:
-            return "Prepared on the server before download starts"
+            return "Prepared on the server when the original is larger"
         }
     }
 

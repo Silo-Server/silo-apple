@@ -14,6 +14,14 @@ struct DownloadsSettingsView: View {
         return available.isEmpty ? [.original] : available
     }
 
+    /// Mentions the resolution only when the server reports one; an older
+    /// server's presets are labelled by bitrate alone.
+    private var qualityFooter: String {
+        let base = "Original prefers source quality and may prepare a compatibility file if this device needs one. Bitrate presets are prepared on the server when the original is larger"
+        let showsResolution = manager.capability?.qualityOptions.contains { ($0.maxHeight ?? 0) > 0 } ?? false
+        return base + (showsResolution ? ", at up to the resolution shown." : ".")
+    }
+
     private var heldProgressFooter: String {
         let count = manager.heldProgressCount
         let subject = count == 1 ? "1 offline watch position" : "\(count) offline watch positions"
@@ -47,7 +55,7 @@ struct DownloadsSettingsView: View {
                 // quality picker, which is hidden when the server offers a
                 // single preset.
                 if formats.count > 1 {
-                    Text("Original prefers source quality and may prepare a compatibility file if this device needs one. Bitrate presets are prepared on the server before download starts, at up to the resolution shown.")
+                    Text(qualityFooter)
                 }
             }
             .listRowBackground(Color.siloGroupedCell)
