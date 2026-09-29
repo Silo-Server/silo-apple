@@ -220,18 +220,24 @@ struct IOSSettingsOverview: View {
     }
 
     private var experimentalSection: some View {
+        // A query naming the section shows every row; otherwise each row
+        // appears only for its own terms.
         Section("Experimental") {
-            SettingsOverviewToggleRow(
-                title: "Show Audiobooks",
-                subtitle: "Add Audiobooks to the main navigation",
-                systemImage: "book.closed.fill",
-                isOn: Binding(
-                    get: { navPrefs.showAudiobooks },
-                    set: { navPrefs.setShowAudiobooks($0) }
+            if matchesExperimentalName || matchesAudiobooks {
+                SettingsOverviewToggleRow(
+                    title: "Show Audiobooks",
+                    subtitle: "Add Audiobooks to the main navigation",
+                    systemImage: "book.closed.fill",
+                    isOn: Binding(
+                        get: { navPrefs.showAudiobooks },
+                        set: { navPrefs.setShowAudiobooks($0) }
+                    )
                 )
-            )
+            }
 
-            ForEach(ExperimentalFeature.allCases, id: \.self) { feature in
+            ForEach(ExperimentalFeature.allCases.filter {
+                matchesExperimentalName || matches($0.title, $0.subtitle)
+            }, id: \.self) { feature in
                 SettingsOverviewToggleRow(
                     title: feature.title,
                     subtitle: feature.subtitle,
@@ -354,8 +360,12 @@ struct IOSSettingsOverview: View {
         )
     }
 
-    private var matchesExperimentalSection: Bool {
+    private var matchesExperimentalName: Bool {
         matches("experimental", "beta", "testing")
+    }
+
+    private var matchesExperimentalSection: Bool {
+        matchesExperimentalName
             || matchesAudiobooks
             || ExperimentalFeature.allCases.contains { matches($0.title, $0.subtitle) }
     }
