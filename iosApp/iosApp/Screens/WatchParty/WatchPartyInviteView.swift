@@ -129,6 +129,7 @@ struct WatchPartyInviteView: View {
                             }
                             .buttonStyle(WatchPartyButtonStyle(kind: .secondary))
                         }
+                        .sensoryFeedback(.success, trigger: copied) { _, copied in copied != nil }
                     }
                     .padding(.top, 8)
                 }

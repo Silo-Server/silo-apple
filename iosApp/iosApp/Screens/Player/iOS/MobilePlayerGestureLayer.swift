@@ -49,6 +49,9 @@ struct MobilePlayerGestureLayer: View {
     /// Video-gravity mode announced after a pinch; shown briefly as a toast.
     @State private var gravityToast: VideoGravity?
     @State private var gravityToastHideTask: Task<Void, Never>?
+    /// Bumped only when a pinch actually changes the gravity, so pinching
+    /// past fit or stretch shows the toast without a haptic.
+    @State private var gravityChangeCount = 0
 
     /// Width of the brightness/volume strips along each screen edge.
     private static let edgeZoneWidth: CGFloat = 88
@@ -88,6 +91,15 @@ struct MobilePlayerGestureLayer: View {
                 feedbackOverlays(in: size)
             }
         }
+        // These gestures have no button under the finger, so a light haptic
+        // confirms each one landed.
+        .sensoryFeedback(trigger: skipFlash?.id) { _, id in
+            id == nil ? nil : .impact(weight: .light)
+        }
+        .sensoryFeedback(.impact(weight: .medium), trigger: viewModel.isHoldFastForwarding) { _, holding in
+            holding
+        }
+        .sensoryFeedback(.impact(weight: .light), trigger: gravityChangeCount)
         // The controls scrim should swallow touches while the overlay is up,
         // but SwiftUI tap recognizers on an occluded sibling can still track
         // touches — rapid presses on the overlay's skip buttons registered
@@ -177,15 +189,18 @@ struct MobilePlayerGestureLayer: View {
     private var videoGravityPinchGesture: some Gesture {
         MagnificationGesture()
             .onEnded { scale in
+                let current = viewModel.settings.videoGravity
+                let gravity: VideoGravity
                 if scale > 1.08 {
-                    let gravity = nextVideoGravity(after: viewModel.settings.videoGravity)
-                    viewModel.setVideoGravity(gravity)
-                    showGravityToast(gravity)
+                    gravity = nextVideoGravity(after: current)
                 } else if scale < 0.92 {
-                    let gravity = previousVideoGravity(before: viewModel.settings.videoGravity)
-                    viewModel.setVideoGravity(gravity)
-                    showGravityToast(gravity)
+                    gravity = previousVideoGravity(before: current)
+                } else {
+                    return
                 }
+                if gravity != current { gravityChangeCount += 1 }
+                viewModel.setVideoGravity(gravity)
+                showGravityToast(gravity)
             }
     }
 

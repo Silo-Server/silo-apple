@@ -33,6 +33,8 @@ struct RequestDetailView: View {
         .task(id: viewModel.tmdbId) {
             await viewModel.load()
         }
+        .sensoryFeedback(.success, trigger: viewModel.submittedCount)
+        .sensoryFeedback(.error, trigger: viewModel.actionErrorMessage) { _, message in message != nil }
         .onChange(of: RequestsEventBus.shared.lastUpdate) { _, update in
             if let update {
                 viewModel.applyRequestUpdate(update)

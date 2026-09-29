@@ -90,6 +90,7 @@ struct LoginView: View {
             .padding(22)
             .auroraGlass(cornerRadius: 24, emphasized: true)
             .animation(.easeInOut(duration: 0.2), value: viewModel.error)
+            .sensoryFeedback(.error, trigger: viewModel.error) { _, error in error != nil }
         }
         .navigationBarBackButtonHidden()
     }

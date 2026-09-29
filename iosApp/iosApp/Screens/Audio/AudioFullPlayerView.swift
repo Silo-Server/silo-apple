@@ -544,6 +544,9 @@ private struct AudioScrubberSection: View {
             #if !os(tvOS)
             .contentShape(Rectangle())
             .gesture(scrubGesture(trackWidth: geo.size.width))
+            .sensoryFeedback(trigger: scrubChapterIndex) { old, new in
+                old != nil && new != nil ? .selection : nil
+            }
             #endif
         }
         .frame(height: 30)
@@ -563,6 +566,13 @@ private struct AudioScrubberSection: View {
     }
 
     #if !os(tvOS)
+    /// Chapter under the scrub head, so crossing a tick mark plays a
+    /// selection haptic. Nil when not scrubbing.
+    private var scrubChapterIndex: Int? {
+        guard let scrubTime, player.chapters.count > 1 else { return nil }
+        return player.chapters.lastIndex { $0.startSeconds <= scrubTime } ?? -1
+    }
+
     private func scrubGesture(trackWidth: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 0, coordinateSpace: .local)
             .onChanged { value in

@@ -471,6 +471,11 @@ struct MobilePlayerControls: View {
                         viewModel.endScrub()
                     }
             )
+            // Tick as the scrub crosses a chapter mark, like the marks drawn
+            // on the bar. Nil outside a scrub, so starting or ending one is silent.
+            .sensoryFeedback(trigger: scrubChapterIndex) { old, new in
+                old != nil && new != nil ? .selection : nil
+            }
             .overlay(alignment: .topLeading) {
                 if viewModel.isScrubbing {
                     let previewInset: CGFloat = viewModel.scrubPreviewImage == nil ? 80 : 102
@@ -536,6 +541,13 @@ struct MobilePlayerControls: View {
         .padding(7)
         .siloPlayerGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .fixedSize()
+    }
+
+    /// Chapter under the scrub head, or -1 before the first chapter. Nil
+    /// when not scrubbing or the item has no chapters.
+    private var scrubChapterIndex: Int? {
+        guard viewModel.isScrubbing, !viewModel.chapters.isEmpty else { return nil }
+        return viewModel.chapters.lastIndex { $0.time <= viewModel.scrubPreviewTime } ?? -1
     }
 
     private func chapterTitle(at time: Double) -> String? {

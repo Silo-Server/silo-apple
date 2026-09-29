@@ -37,6 +37,8 @@ final class RequestDetailViewModel {
     /// Inline banner near the CTA for a failed create (already requested,
     /// quota, …) — informational, never a blocking alert.
     private(set) var actionErrorMessage: String?
+    /// Bumped when the server accepts a new request, for the success haptic.
+    private(set) var submittedCount = 0
     /// A create was sent but its outcome is unknown. Create is
     /// `non_retryable`, so the CTA stays held until a fresh detail read
     /// shows whether the request exists.
@@ -109,6 +111,7 @@ final class RequestDetailViewModel {
                 backdropPath: detail.backdropPath
             ))
             RequestsEventBus.shared.publish(record)
+            submittedCount += 1
             // Re-fetch so `request` reflects authoritative server state
             // (id, status, quota effects) rather than a local guess.
             await load()
