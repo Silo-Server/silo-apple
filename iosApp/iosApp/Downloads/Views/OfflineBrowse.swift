@@ -328,18 +328,18 @@ struct OfflineDownloadDetailView: View {
 
     // MARK: - Hero metadata
 
-    /// Episodes lead with the series and episode number, so the hero's
-    /// two-line metadata never truncates what identifies them.
+    /// Episodes lead with their episode number, then the series, so the
+    /// hero's two-line metadata never truncates what identifies them.
     private func factsLine(_ record: DownloadRecord) -> [PhoneHeroFactToken] {
         var tokens: [PhoneHeroFactToken] = []
         if record.type == "episode" {
-            if let series = record.seriesTitle ?? manifest?.seriesTitle, !series.isEmpty {
-                tokens.append(.text(series))
-            }
             let tag = [record.seasonNumber.map { "S\($0)" }, record.episodeNumber.map { "E\($0)" }]
                 .compactMap { $0 }
                 .joined(separator: " ")
             if !tag.isEmpty { tokens.append(.text(tag)) }
+            if let series = record.seriesTitle ?? manifest?.seriesTitle, !series.isEmpty {
+                tokens.append(.text(series))
+            }
         }
         if let year = manifest?.year, year > 0 { tokens.append(.text(String(year))) }
         if let runtime = manifest?.runtime, runtime > 0 {

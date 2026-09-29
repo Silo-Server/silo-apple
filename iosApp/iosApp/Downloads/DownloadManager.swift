@@ -1426,7 +1426,7 @@ final class DownloadManager {
             do {
                 try data.write(to: url, options: .atomic)
             } catch {
-                Self.logger.warning("download artwork write failed: \(String(describing: error), privacy: .private)")
+                Self.logger.warning("download artwork write failed")
                 continue
             }
             guard var record = file.records[recordId] else { continue }
