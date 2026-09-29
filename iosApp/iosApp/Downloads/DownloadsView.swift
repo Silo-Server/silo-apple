@@ -57,13 +57,15 @@ struct DownloadsView: View {
         .toolbar { toolbarContent }
         .safeAreaInset(edge: .bottom) { bottomBar }
         .sheet(isPresented: $showReclaim) { DownloadReclaimSheet() }
-        .confirmationDialog(
+        // An alert, not a confirmation dialog: on iPhone the dialog anchors
+        // to this whole page and appears at its top, far from the row or
+        // bottom bar that asked for it.
+        .alert(
             pendingDeletion?.inProgressOnly == true ? "Cancel downloads?" : "Delete downloaded files?",
             isPresented: Binding(
                 get: { pendingDeletion != nil },
                 set: { if !$0 { pendingDeletion = nil } }
             ),
-            titleVisibility: .visible,
             presenting: pendingDeletion
         ) { pending in
             let verb = pending.inProgressOnly ? "Cancel" : "Delete"

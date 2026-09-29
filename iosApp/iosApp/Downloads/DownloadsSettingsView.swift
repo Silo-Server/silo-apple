@@ -125,10 +125,11 @@ struct DownloadsSettingsView: View {
         #endif
         .settingsListChrome()
         .siloToolbarColorSchemeDark()
-        .confirmationDialog(
+        // Centered alert: a confirmation dialog anchors to the whole form
+        // and appears at the top of the page.
+        .alert(
             "Remove all downloaded files?",
-            isPresented: $showDeleteAllConfirm,
-            titleVisibility: .visible
+            isPresented: $showDeleteAllConfirm
         ) {
             Button("Remove All", role: .destructive) {
                 manager.deleteDownloads(ids: manager.records.map(\.id))
