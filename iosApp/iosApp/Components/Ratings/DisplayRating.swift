@@ -54,6 +54,19 @@ extension DisplayRating {
         Self.imdb(imdb) ?? Self.tmdb(tmdb)
     }
 
+    /// The most ratings a phone-width title page shows, all on one line.
+    /// Wider layouts show the server's whole list.
+    static let phoneLimit = 3
+
+    /// The rows a phone-width title page tries, longest first: the first
+    /// `phoneLimit` entries in server order, then one fewer at a time down to
+    /// one. The page shows the first row that fits on one line, so entries
+    /// drop from the end instead of wrapping.
+    static func phoneRowCandidates(_ ratings: [DisplayRating]) -> [[DisplayRating]] {
+        stride(from: min(ratings.count, phoneLimit), to: 0, by: -1)
+            .map { Array(ratings.prefix($0)) }
+    }
+
     /// One decimal with a period whatever the device locale: "8.5", never "8,5".
     static func oneDecimal(_ value: Double) -> String {
         String(format: "%.1f", locale: posixLocale, (value * 10).rounded() / 10)

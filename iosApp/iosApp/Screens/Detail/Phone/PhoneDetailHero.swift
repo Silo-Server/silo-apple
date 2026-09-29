@@ -273,7 +273,9 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     let ratingChip: String?
     let overview: String?
     let factsLine: [PhoneHeroFactToken]
-    /// External ratings in server order, shown as a row under the facts.
+    /// External ratings in server order, shown as a row under the facts: the
+    /// first `DisplayRating.phoneLimit` on one line in the compact layout,
+    /// all of them in the expanded one.
     var ratings: [DisplayRating] = []
     var creditText: String? = nil
     /// Retained at the call boundary for source compatibility. Detail artwork
@@ -324,7 +326,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
             compactArtwork
 
             VStack(spacing: 16) {
-                metadataBlock(alignment: .center, textAlignment: .center)
+                metadataBlock(alignment: .center, textAlignment: .center, isCompact: true)
 
                 actions()
                     .padding(.top, 2)
@@ -391,7 +393,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
                 titleBlock(textAlignment: .leading, logoHeight: 122)
                     .frame(maxWidth: 430, alignment: .leading)
 
-                metadataBlock(alignment: .leading, textAlignment: .leading)
+                metadataBlock(alignment: .leading, textAlignment: .leading, isCompact: false)
                 overviewBlock
                 creditBlock(alignment: .leading)
                 belowOverview()
@@ -523,7 +525,8 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     @ViewBuilder
     private func metadataBlock(
         alignment: Alignment,
-        textAlignment: TextAlignment
+        textAlignment: TextAlignment,
+        isCompact: Bool
     ) -> some View {
         let stackAlignment: HorizontalAlignment = textAlignment == .leading ? .leading : .center
         let hasFacts = !metadataTokens.isEmpty || ratingChip != nil
@@ -545,9 +548,15 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
                     }
                 }
                 if !ratings.isEmpty {
-                    RatingsRow(ratings: ratings, size: 15, alignment: stackAlignment)
-                        .foregroundStyle(Color.siloOnSurface)
-                        .frame(maxWidth: .infinity, alignment: alignment)
+                    Group {
+                        if isCompact {
+                            PhoneRatingsRow(ratings: ratings, size: 15)
+                        } else {
+                            RatingsRow(ratings: ratings, size: 15, alignment: stackAlignment)
+                        }
+                    }
+                    .foregroundStyle(Color.siloOnSurface)
+                    .frame(maxWidth: .infinity, alignment: alignment)
                 }
             }
         }

@@ -72,6 +72,30 @@ final class DisplayRatingTests: XCTestCase {
         XCTAssertEqual(cached.ratings, detail.ratings)
     }
 
+    // MARK: Phone row
+
+    func testPhoneRowShowsAtMostThreeAndDropsFromTheEnd() {
+        let five = [
+            DisplayRating(source: "imdb", name: "IMDb", score: 85, display: "8.5"),
+            DisplayRating(source: "tmdb", name: "TMDB", score: 82.5, display: "8.3"),
+            DisplayRating(source: "rt_critic", name: "RT", score: 93, display: "93%"),
+            DisplayRating(source: "rt_audience", name: "RT Audience", score: 95, display: "95%"),
+            DisplayRating(source: "metacritic", name: "Metacritic", score: 87, display: "87"),
+        ]
+        XCTAssertEqual(DisplayRating.phoneLimit, 3)
+        XCTAssertEqual(
+            DisplayRating.phoneRowCandidates(five).map { $0.map(\.source) },
+            [["imdb", "tmdb", "rt_critic"], ["imdb", "tmdb"], ["imdb"]],
+            "the first three in server order, then one fewer from the end"
+        )
+        XCTAssertEqual(
+            DisplayRating.phoneRowCandidates(Array(five.suffix(2))).map { $0.map(\.source) },
+            [["rt_audience", "metacritic"], ["rt_audience"]],
+            "server order decides, not the source"
+        )
+        XCTAssertEqual(DisplayRating.phoneRowCandidates([]), [])
+    }
+
     // MARK: Card summary
 
     func testPrimaryCardIsIMDbElseTMDB() {

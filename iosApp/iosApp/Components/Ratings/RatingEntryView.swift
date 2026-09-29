@@ -50,8 +50,9 @@ struct RatingEntryView: View {
     }
 }
 
-/// A title page's ratings in server order. Entries wrap onto another line
-/// when they run out of width rather than truncating a score.
+/// A wide title page's ratings (iPad, macOS): every entry in server order,
+/// wrapping onto another line when they run out of width rather than
+/// truncating a score.
 struct RatingsRow: View {
     let ratings: [DisplayRating]
     /// Point size of each score.
@@ -63,6 +64,28 @@ struct RatingsRow: View {
         FlowLayout(spacing: spacing, lineSpacing: (size * 0.45).rounded(), alignment: alignment) {
             ForEach(Array(ratings.enumerated()), id: \.offset) { _, rating in
                 RatingEntryView(rating: rating, size: size)
+            }
+        }
+    }
+}
+
+/// A phone-width title page's ratings: the first `DisplayRating.phoneLimit`
+/// entries in server order on one line. It never wraps; when the line is too
+/// narrow, entries drop from the end.
+struct PhoneRatingsRow: View {
+    let ratings: [DisplayRating]
+    /// Point size of each score.
+    let size: CGFloat
+    var spacing: CGFloat = 16
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            ForEach(Array(DisplayRating.phoneRowCandidates(ratings).enumerated()), id: \.offset) { _, row in
+                HStack(alignment: .firstTextBaseline, spacing: spacing) {
+                    ForEach(Array(row.enumerated()), id: \.offset) { _, rating in
+                        RatingEntryView(rating: rating, size: size)
+                    }
+                }
             }
         }
     }
