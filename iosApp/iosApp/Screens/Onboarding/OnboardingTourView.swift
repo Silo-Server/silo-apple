@@ -176,6 +176,8 @@ struct OnboardingTourView: View {
             )
             .font(.siloBody)
             .foregroundStyle(Color.auroraInk)
+            // The accent is near-white, which would hide an on switch's knob.
+            .tint(.siloSwitchOn)
             .disabled(viewModel.isSaving)
             .padding(14)
             .auroraGlass(cornerRadius: 20)
