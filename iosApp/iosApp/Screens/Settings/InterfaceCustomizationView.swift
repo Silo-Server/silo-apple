@@ -211,6 +211,10 @@ struct InterfaceCustomizationView: View {
                 Text("Choose which Home rows are visible and the order they appear in.")
             }
 
+            // iOS derives its tab bar from the profile's libraries
+            // (`appleFixedTabDestinations`); the synced primary menu still
+            // drives other clients.
+            #if !os(iOS)
             Section {
                 ForEach(visibleRows) { row in
                     let item = row.item
@@ -306,6 +310,7 @@ struct InterfaceCustomizationView: View {
                     }
                 }
             }
+            #endif
 
             if let message = preferences.syncErrorMessage,
                message != preferences.capabilityMessage,

@@ -17,6 +17,9 @@ enum Route: Hashable {
     case home
     case search
     case browse(libraryId: Int?)
+    /// Watch tab grid: one library, or every library of `kind` when `nil`.
+    case mediaBrowse(kind: MediaKind, libraryId: Int?)
+    case libraryCollections(libraryId: Int, title: String?)
     case library(libraryId: Int, title: String?)
     case libraryCollection(libraryId: Int, collectionId: String, title: String?, kind: LibraryCollectionKind?)
     case itemDetail(
@@ -55,6 +58,8 @@ enum Route: Hashable {
     case recommendations
     case serverList
     case downloads
+    /// Calendar as a page, for when it isn't in the iOS tab bar.
+    case calendar
 
     /// The active party or the create/join hub.
     case watchParty

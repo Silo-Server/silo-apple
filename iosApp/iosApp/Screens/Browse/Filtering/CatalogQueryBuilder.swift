@@ -27,7 +27,7 @@ enum CatalogQueryBuilder {
         q.match = state.matchAll ? "all" : "any"
         q.libraryId = libraryId.map(String.init)
         if state.mediaScope == nil, includeType {
-            q.type = mediaType.catalogTypeParam
+            q.type = libraryId == nil ? mediaType.crossLibraryTypeParam : mediaType.catalogTypeParam
         }
         q.namePrefix = state.namePrefix
 

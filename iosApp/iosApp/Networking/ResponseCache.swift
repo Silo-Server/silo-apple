@@ -111,8 +111,10 @@ enum CacheKey {
     /// distinct filter combinations never collide (the old genre+sort-only
     /// key did). `filterKey` is `CatalogFilterState.cacheKeyFragment`.
     /// Versioned with the wire: pages from the v2 catalog.
-    static func browse(libraryId: Int?, filterKey: String) -> String {
-        "browse:v2:\(libraryId.map(String.init) ?? "all"):\(filterKey)"
+    static func browse(libraryId: Int?, filterKey: String, scope: String? = nil) -> String {
+        let root = libraryId.map(String.init) ?? "all"
+        let scoped = scope.map { "\(root).\($0)" } ?? root
+        return "browse:v2:\(scoped):\(filterKey)"
     }
     /// Per-library facet vocabulary from `/catalog/filters`.
     static func catalogFilters(libraryId: Int?, includeTechnical: Bool = true) -> String {
@@ -151,5 +153,7 @@ enum CacheKey {
         // watch-status filters make a page profile-specific.
         "tvlibrary:",
         "catalogFilters:",
+        // Watch and Listen landing rows carry resume state.
+        "mediaHub:",
     ]
 }

@@ -6,6 +6,8 @@ struct BrowseView: View {
     var title: String? = "Browse"
     var showsSearchShortcut = true
     var libraryType: String? = nil
+    /// Cross-library media scope; see `BrowseViewModel.configure`.
+    var scope: BrowseMediaType? = nil
 
     @State private var viewModel = BrowseViewModel()
     @State private var showFilters = false
@@ -48,8 +50,12 @@ struct BrowseView: View {
         .sheet(isPresented: $showFilters) {
             FilterView(viewModel: viewModel)
         }
-        .task(id: BrowseConfigurationID(libraryId: libraryId, libraryType: libraryType)) {
-            guard await viewModel.configure(libraryId: libraryId, libraryType: libraryType) else { return }
+        .task(id: BrowseConfigurationID(libraryId: libraryId, libraryType: libraryType, scope: scope)) {
+            guard await viewModel.configure(
+                libraryId: libraryId,
+                libraryType: libraryType,
+                scope: scope
+            ) else { return }
             await viewModel.loadItems(reset: true)
             await viewModel.loadFacetsIfNeeded()
         }
@@ -104,7 +110,7 @@ struct BrowseView: View {
                     items: viewModel.items,
                     isLoading: viewModel.isLoading,
                     hasMore: viewModel.hasMore,
-                    forcesThreeColumnsOnPhone: libraryId != nil,
+                    forcesThreeColumnsOnPhone: libraryId != nil || scope != nil,
                     onItemTap: { router.navigate(to: .itemDetail(browseItem: $0, libraryId: libraryId)) },
                     onLoadMore: {
                         Task { await viewModel.loadItems() }
@@ -252,6 +258,7 @@ struct BrowseView: View {
 private struct BrowseConfigurationID: Hashable {
     let libraryId: Int?
     let libraryType: String?
+    let scope: BrowseMediaType?
 }
 
 enum LibraryPageTab: String, CaseIterable, Identifiable {
