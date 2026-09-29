@@ -17,9 +17,9 @@ struct DownloadsSettingsView: View {
     /// Mentions the resolution only when the server reports one; an older
     /// server's presets are labelled by bitrate alone.
     private var qualityFooter: String {
-        let base = "Original prefers source quality and may prepare a compatibility file if this device needs one. Bitrate presets are prepared on the server when the original is larger"
+        let base = "Original prefers source quality and may prepare a compatibility file if this device needs one. For single items, bitrate presets are prepared on the server when the original is larger"
         let showsResolution = manager.capability?.qualityOptions.contains { ($0.maxHeight ?? 0) > 0 } ?? false
-        return base + (showsResolution ? ", at up to the resolution shown." : ".")
+        return base + (showsResolution ? ", at up to the resolution shown." : ".") + " Series and season downloads use original quality."
     }
 
     private var heldProgressFooter: String {
