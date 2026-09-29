@@ -5,7 +5,12 @@ class LoginViewModel {
     var username: String = ""
     var password: String = ""
     var isLoading: Bool = false
-    var error: String?
+    var error: String? {
+        didSet { if error != nil { errorCount += 1 } }
+    }
+    /// Bumped on every error, so a repeated message still plays the error
+    /// haptic.
+    private(set) var errorCount = 0
 
     private let auth = AuthService.shared
 

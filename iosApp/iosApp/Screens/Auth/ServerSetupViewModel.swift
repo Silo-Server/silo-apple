@@ -24,7 +24,12 @@ class ServerSetupViewModel {
     var port: String = ""
     var showsAdvancedOptions: Bool = false
     var isLoading: Bool = false
-    var error: String?
+    var error: String? {
+        didSet { if error != nil { errorCount += 1 } }
+    }
+    /// Bumped on every error, so a repeated message still plays the error
+    /// haptic.
+    private(set) var errorCount = 0
 
     /// Probes one candidate URL and commits it on success.
     typealias ServerCheck = @Sendable (String) async throws -> APIv2SetupStatus
