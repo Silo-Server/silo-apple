@@ -22,6 +22,9 @@ struct PhoneLabeledAction: View {
     /// reads the same in both states tells a VoiceOver user neither what is
     /// true now nor what activating will do.
     var accessibilityLabelOverride: String? = nil
+    /// False for one-shot commands (Start Over, Delete), which have no
+    /// on/off state for VoiceOver to announce.
+    var isToggle = true
     let action: () -> Void
 
     private var resolvedIcon: String {
@@ -51,7 +54,7 @@ struct PhoneLabeledAction: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(accessibilityLabelOverride ?? label)
-        .accessibilityValue(isActive ? "On" : "Off")
+        .accessibilityValue(isToggle ? (isActive ? "On" : "Off") : "")
         .accessibilityAddTraits(isActive ? [.isSelected] : [])
     }
 }

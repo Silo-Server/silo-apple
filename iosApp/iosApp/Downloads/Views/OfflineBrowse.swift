@@ -186,9 +186,10 @@ struct OfflineSeriesBrowseView: View {
 
 // MARK: - Leaf detail (movie or episode)
 
-/// Offline leaf detail for one downloaded movie or episode: synopsis,
-/// resume, the audio/subtitle/quality baked into the stored manifest, and
-/// a single-item delete.
+/// Offline leaf detail for one downloaded movie or episode, built from the
+/// same hero as the online detail page: the downloaded backdrop (or poster)
+/// and title logo, metadata, Play/Resume, then what this download contains
+/// and a confirmed delete. Everything comes from the download bundle on disk.
 struct OfflineDownloadDetailView: View {
     let downloadId: String
 
@@ -197,6 +198,7 @@ struct OfflineDownloadDetailView: View {
     private var manager: DownloadManager { DownloadManager.shared }
 
     @State private var manifest: OfflineManifest?
+    @State private var confirmingDelete = false
 
     private var record: DownloadRecord? { manager.record(id: downloadId) }
 
@@ -206,13 +208,14 @@ struct OfflineDownloadDetailView: View {
                 content(record)
             } else {
                 EmptyStateView(icon: "arrow.down.circle", title: "Download Removed", subtitle: nil)
+                    .siloPageBackground()
             }
         }
-        .siloPageBackground()
         .navigationTitle("")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
+        .siloNavigationBarBackgroundHidden()
         .task {
             if manifest == nil, let record { manifest = await manager.loadManifest(for: record) }
         }
@@ -220,210 +223,148 @@ struct OfflineDownloadDetailView: View {
     }
 
     private func content(_ record: DownloadRecord) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                still(record)
-
-                VStack(alignment: .leading, spacing: 0) {
-                    if record.type == "episode" {
-                        Text(episodeEyebrow(record))
-                            .font(.system(size: 12, weight: .semibold))
-                            .tracking(0.4)
-                            .foregroundColor(.siloSecondaryText)
-                            .padding(.bottom, 5)
-                    }
-                    Text(record.title ?? record.contentId)
-                        .font(.system(size: 21, weight: .bold))
-                        .foregroundColor(.siloOnSurface)
-                    Text(metaLine(record))
-                        .font(.system(size: 12))
-                        .foregroundColor(.siloSecondaryText)
-                        .padding(.top, 4)
-
-                    availabilityChip(record)
-                        .padding(.top, 13)
-
-                    playRow(record)
-                        .padding(.top, 14)
-
-                    if let overview = manifest?.overview, !overview.isEmpty {
-                        Text(overview)
-                            .font(.system(size: 13))
-                            .foregroundColor(.siloSecondaryText)
-                            .lineSpacing(2)
-                            .padding(.top, 16)
-                    }
-
-                    facts(record)
-                        .padding(.top, 16)
-
-                    deleteButton(record)
-                        .padding(.top, 16)
+        let backdrop = manager.backdropImageURL(for: record)?.absoluteString
+        let poster = manager.posterImageURL(for: record)?.absoluteString
+        return PhoneDetailPageSurface(
+            backdropURL: backdrop ?? poster,
+            backdropThumbhash: backdrop != nil ? manifest?.backdropThumbhash : record.posterThumbhash,
+            enablesArtworkGlass: true
+        ) {
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 32) {
+                    hero(record, backdrop: backdrop, poster: poster)
+                    downloadSection(record)
+                        .padding(.horizontal, SiloTheme.safePadding)
                 }
-                .padding(.horizontal, 20)
-                .padding(.top, 16)
-
-                Color.clear.frame(height: 30)
+                .padding(.bottom, 40)
             }
+            .ignoresSafeArea(edges: .top)
+            .coordinateSpace(name: PhoneDetailScrollCoordinateSpace.name)
+        }
+        .alert("Delete this download?", isPresented: $confirmingDelete) {
+            Button("Delete", role: .destructive) {
+                manager.deleteDownload(id: record.id)
+                dismiss()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This frees \(DownloadFormatting.bytes(record.fileSize)) on this device.")
         }
     }
 
-    private func still(_ record: DownloadRecord) -> some View {
-        Button { play(record) } label: {
-            ZStack {
-                LinearGradient(
-                    colors: [Color.siloSurfaceElevated, Color.siloBackground],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                Image(systemName: "play.circle.fill")
-                    .font(.system(size: 50))
-                    .foregroundColor(.white.opacity(0.92))
-                if let fraction = resumeFraction(record) {
-                    VStack {
-                        Spacer()
-                        GeometryReader { geo in
-                            ZStack(alignment: .leading) {
-                                Color.siloOnSurface.opacity(0.22)
-                                Color.siloOnSurface.frame(width: geo.size.width * fraction)
-                            }
-                        }
-                        .frame(height: 4)
-                    }
-                }
-            }
-            .frame(height: 190)
-            .clipped()
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Play")
-    }
-
-    private func availabilityChip(_ record: DownloadRecord) -> some View {
-        HStack(spacing: 7) {
-            Image(systemName: "checkmark.circle")
-                .font(.system(size: 12, weight: .semibold))
-            Text(availabilityText(record))
-                .font(.system(size: 11.5, weight: .semibold))
-        }
-        .foregroundColor(.siloOnSurface)
-        .padding(.horizontal, 11)
-        .padding(.vertical, 6)
-        .background(
-            Capsule()
-                .fill(Color.siloChromeSelectedFill)
-                .overlay(Capsule().stroke(Color.siloChromeSelectedBorder, lineWidth: 1))
+    private func hero(_ record: DownloadRecord, backdrop: String?, poster: String?) -> some View {
+        PhoneDetailHero(
+            title: record.title ?? record.contentId,
+            // A series logo would misname an episode, so only movies use one.
+            logoUrl: record.type == "episode" ? nil : manager.logoImageURL(for: record)?.absoluteString,
+            posterUrl: poster,
+            posterThumbhash: record.posterThumbhash,
+            backdropUrl: backdrop,
+            backdropThumbhash: manifest?.backdropThumbhash,
+            // The series and episode number already lead the metadata line.
+            eyebrow: nil,
+            sourceTokens: sourceTokens(record),
+            ratingChip: ratingChip,
+            overview: manifest?.overview,
+            factsLine: factsLine,
+            enablesArtworkParallax: true,
+            actions: { actions(record) },
+            belowOverview: { EmptyView() }
         )
     }
 
-    private func playRow(_ record: DownloadRecord) -> some View {
-        HStack(spacing: 11) {
-            Button { play(record) } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "play.fill")
-                    Text(playLabel(record)).fontWeight(.bold)
-                }
-                .font(.system(size: 14.5))
-                .frame(maxWidth: .infinity)
-                .frame(height: 46)
-                .background(Color.siloOnSurface)
-                .foregroundColor(.black)
-                .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
-            }
-            .buttonStyle(.plain)
-
-            if resumeFraction(record) != nil {
-                Button { playFromStart(record) } label: {
-                    Image(systemName: "gobackward")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundColor(.siloOnSurface)
-                        .frame(width: 46, height: 46)
-                        .background(
-                            RoundedRectangle(cornerRadius: 13, style: .continuous)
-                                .fill(Color.siloChromeRestingFill)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 13, style: .continuous)
-                                        .stroke(Color.siloChromeRestingBorder, lineWidth: 1)
-                                )
-                        )
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Restart from beginning")
-            }
-        }
-    }
-
-    private func facts(_ record: DownloadRecord) -> some View {
-        VStack(spacing: 0) {
-            ForEach(factRows(record), id: \.0) { key, value in
-                HStack {
-                    Text(key)
-                        .font(.system(size: 12.5))
-                        .foregroundColor(.siloSecondaryText)
-                    Spacer()
-                    Text(value)
-                        .font(.system(size: 12.5, weight: .medium))
-                        .foregroundColor(.siloOnSurface)
-                }
-                .padding(.vertical, 11)
-                Divider().overlay(Color.siloDivider)
-            }
-        }
-        .overlay(Divider().overlay(Color.siloDivider), alignment: .top)
-    }
-
-    private func deleteButton(_ record: DownloadRecord) -> some View {
-        Button {
-            manager.deleteDownload(id: record.id)
-            dismiss()
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "trash")
-                Text("Delete download · Free \(DownloadFormatting.bytes(record.fileSize))")
-                    .fontWeight(.semibold)
-            }
-            .font(.system(size: 13.5))
-            .frame(maxWidth: .infinity)
-            .frame(height: 44)
-            .foregroundColor(.siloError)
-            .background(
-                RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    .fill(Color.siloChromeRestingFill)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 13, style: .continuous)
-                            .stroke(Color.siloChromeRestingBorder, lineWidth: 1)
-                    )
+    private func actions(_ record: DownloadRecord) -> some View {
+        VStack(spacing: 14) {
+            PhonePrimaryPillButton(
+                icon: "play.fill",
+                title: playLabel(record),
+                action: { play(record) },
+                fullWidth: true,
+                progress: resumeFraction(record)
             )
+
+            PhoneLabeledActionRow {
+                if resumeFraction(record) != nil {
+                    PhoneLabeledAction(icon: "gobackward", label: "Start Over", isToggle: false) {
+                        playFromStart(record)
+                    }
+                }
+                PhoneLabeledAction(icon: "trash", label: "Delete", isToggle: false) {
+                    confirmingDelete = true
+                }
+            }
         }
-        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
+    }
+
+    /// What this copy on the device contains, in the online page's
+    /// Details layout.
+    private func downloadSection(_ record: DownloadRecord) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            PhoneSectionHeader(title: "Download")
+            VStack(spacing: 0) {
+                ForEach(Array(factRows(record).enumerated()), id: \.element.0) { index, row in
+                    if index > 0 {
+                        Rectangle()
+                            .fill(Color.white.opacity(0.08))
+                            .frame(height: 1)
+                    }
+                    HStack(alignment: .top, spacing: 16) {
+                        Text(row.0.uppercased())
+                            .font(.system(size: 11, weight: .bold))
+                            .tracking(1.2)
+                            .foregroundColor(.siloOnSurface.opacity(0.5))
+                            .frame(width: 100, alignment: .leading)
+                        Text(row.1)
+                            .font(.system(size: 14))
+                            .foregroundColor(.siloOnSurface)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(.vertical, 12)
+                }
+            }
+        }
+    }
+
+    // MARK: - Hero metadata
+
+    private var factsLine: [PhoneHeroFactToken] {
+        var tokens: [PhoneHeroFactToken] = []
+        if let year = manifest?.year, year > 0 { tokens.append(.text(String(year))) }
+        if let runtime = manifest?.runtime, runtime > 0 {
+            tokens.append(.text(PhoneHeroMetadata.formatRuntime(runtime)))
+        }
+        if let resolution = manifest?.resolution, !resolution.isEmpty { tokens.append(.text(resolution)) }
+        if manifest?.hdr == true { tokens.append(.text("HDR")) }
+        return tokens
+    }
+
+    private func sourceTokens(_ record: DownloadRecord) -> [String] {
+        var tokens: [String] = []
+        if record.type == "episode" {
+            if let series = record.seriesTitle ?? manifest?.seriesTitle, !series.isEmpty {
+                tokens.append(series)
+            }
+            let tag = [record.seasonNumber.map { "S\($0)" }, record.episodeNumber.map { "E\($0)" }]
+                .compactMap { $0 }
+                .joined(separator: " ")
+            if !tag.isEmpty { tokens.append(tag) }
+        } else if let genres = manifest?.genres, !genres.isEmpty {
+            tokens.append(genres.prefix(2).joined(separator: ", "))
+        }
+        return tokens
+    }
+
+    private var ratingChip: String? {
+        guard let rating = manifest?.contentRating?.trimmingCharacters(in: .whitespaces),
+              !rating.isEmpty else { return nil }
+        return rating
     }
 
     // MARK: - Derived text
 
-    private func episodeEyebrow(_ record: DownloadRecord) -> String {
-        let series = (record.seriesTitle ?? manifest?.seriesTitle ?? "").uppercased()
-        let tag = [record.seasonNumber.map { "S\($0)" }, record.episodeNumber.map { "E\($0)" }]
-            .compactMap { $0 }
-            .joined(separator: " · ")
-        return [series, tag].filter { !$0.isEmpty }.joined(separator: " · ")
-    }
-
-    private func metaLine(_ record: DownloadRecord) -> String {
-        var parts: [String] = []
-        if let runtime = manifest?.runtime, runtime > 0 { parts.append("\(runtime) min") }
-        if let year = manifest?.year { parts.append(String(year)) }
-        return parts.joined(separator: " · ")
-    }
-
-    private func availabilityText(_ record: DownloadRecord) -> String {
-        var parts = ["Downloaded", DownloadFormatting.bytes(record.fileSize)]
-        if let resolution = manifest?.resolution, !resolution.isEmpty { parts.append(resolution) }
-        return parts.joined(separator: " · ")
-    }
-
     private func factRows(_ record: DownloadRecord) -> [(String, String)] {
-        var rows: [(String, String)] = []
+        var rows: [(String, String)] = [("Size", DownloadFormatting.bytes(record.fileSize))]
         if let audio = manifest?.codecAudio, !audio.isEmpty {
             rows.append(("Audio", audio.uppercased()))
         }
