@@ -195,7 +195,7 @@ struct FilterView: View {
                     .font(.siloBody)
                     .foregroundColor(.siloOnSurface)
             }
-            .tint(Color.siloAccent)
+            .tint(.siloSwitchOn)
             .listRowBackground(Color.clear)
             .filterListRowSeparatorHidden()
             .onChange(of: preserve) { _, newValue in

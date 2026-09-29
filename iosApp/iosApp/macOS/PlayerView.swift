@@ -239,6 +239,8 @@ struct PlayerView: View {
                     viewModel.retry()
                 }
                 .buttonStyle(.borderedProminent)
+                .tint(.siloOnSurface)
+                .foregroundStyle(Color.siloBackground)
 
                 Button("Close") {
                     dismiss()

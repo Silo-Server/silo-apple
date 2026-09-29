@@ -242,7 +242,7 @@ struct PlayerSettingsSheet: View {
                         viewModel.setSubtitleMatchesSystemAppearance(enabled)
                     }
                 ))
-                .tint(.siloAccent)
+                .tint(.siloSwitchOn)
 
                 Toggle("Save for this device and profile", isOn: Binding(
                     get: { viewModel.settings.subtitleUsesDeviceAppearanceOverride },
@@ -250,7 +250,7 @@ struct PlayerSettingsSheet: View {
                         Task { await viewModel.setSubtitleDeviceOverrideEnabled(enabled) }
                     }
                 ))
-                .tint(.siloAccent)
+                .tint(.siloSwitchOn)
                 .disabled(matchesSystem)
             } footer: {
                 Text(matchesSystem
@@ -278,7 +278,7 @@ struct PlayerSettingsSheet: View {
                 }
 
                 Toggle("Text outline", isOn: appearanceBoolBinding(\.textOutline))
-                    .tint(.siloAccent)
+                    .tint(.siloSwitchOn)
 
                 Picker("Outline color", selection: appearanceStringBinding(\.textOutlineColor)) {
                     ForEach(SubtitleAppearance.outlineColors, id: \.hex) { color in
@@ -341,7 +341,7 @@ struct PlayerSettingsSheet: View {
                 next.backgroundOpacity = percent
                 Task { await viewModel.setSubtitleAppearance(next) }
             }
-            .tint(.siloAccent)
+            .tint(.siloOnSurface)
             Text("\(Int(draftOpacity ?? committed))%")
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
@@ -384,7 +384,7 @@ struct PlayerSettingsSheet: View {
                     get: { viewModel.settings.autoPlayNextEpisode },
                     set: { viewModel.settings.setAutoPlayNextEpisode($0) }
                 ))
-                .tint(.siloAccent)
+                .tint(.siloSwitchOn)
             }
         }
     }
@@ -400,7 +400,7 @@ struct PlayerSettingsSheet: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                .tint(.siloAccent)
+                .tint(.siloSwitchOn)
             }
 
             NavigationLink {
@@ -567,7 +567,7 @@ struct PlayerSettingsSheet: View {
                     get: { viewModel.settings.autoPlayNextEpisode },
                     set: { viewModel.settings.setAutoPlayNextEpisode($0) }
                 ))
-                .tint(.siloAccent)
+                .tint(.siloSwitchOn)
             }
         }
     }
@@ -624,7 +624,7 @@ struct PlayerSettingsSheet: View {
                             viewModel.setSubtitleMatchesSystemAppearance(enabled)
                         }
                     ))
-                    .tint(.siloAccent)
+                    .tint(.siloSwitchOn)
 
                     Toggle("Save for this device and profile", isOn: Binding(
                         get: { viewModel.settings.subtitleUsesDeviceAppearanceOverride },
@@ -632,7 +632,7 @@ struct PlayerSettingsSheet: View {
                             Task { await viewModel.setSubtitleDeviceOverrideEnabled(enabled) }
                         }
                     ))
-                    .tint(.siloAccent)
+                    .tint(.siloSwitchOn)
                     .disabled(matchesSystem)
 
                     Group {
@@ -655,7 +655,7 @@ struct PlayerSettingsSheet: View {
                         }
 
                         Toggle("Text outline", isOn: appearanceBoolBinding(\.textOutline))
-                            .tint(.siloAccent)
+                            .tint(.siloSwitchOn)
 
                         Picker("Outline color", selection: appearanceStringBinding(\.textOutlineColor)) {
                             ForEach(SubtitleAppearance.outlineColors, id: \.hex) { color in

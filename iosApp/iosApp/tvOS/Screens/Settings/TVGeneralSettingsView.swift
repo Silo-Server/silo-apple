@@ -639,8 +639,9 @@ private struct TVHomeSectionsControlButtonBody: View {
             }
             .scaleEffect(configuration.isPressed ? 0.97 : (isFocused ? 1.04 : 1))
             .shadow(
-                color: isFocused ? Color.siloAccent.opacity(0.16) : .clear,
-                radius: 16
+                color: isFocused ? Color.black.opacity(0.5) : .clear,
+                radius: 16,
+                y: 6
             )
             .focusEffectDisabled()
             .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)

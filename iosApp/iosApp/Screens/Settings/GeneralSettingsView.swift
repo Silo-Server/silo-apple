@@ -8,18 +8,10 @@ struct GeneralSettingsView: View {
 
     var body: some View {
         List {
-            SettingsPageHeader(
-                title: "General",
-                subtitle: "Choose what happens when you open Silo on this device.",
-                systemImage: "gearshape.fill",
-                tint: .purple
-            )
-            .settingsPageHeaderRow()
-
             profileSection
         }
         .settingsListChrome()
-        .navigationTitle("")
+        .navigationTitle("General")
         .siloNavigationTitleDisplayMode(.inline)
         .siloToolbarColorSchemeDark()
     }
@@ -48,7 +40,7 @@ struct GeneralSettingsView: View {
             Text(launchPreferences.behavior.standardDescription)
                 .foregroundStyle(Color.siloSecondaryText)
         }
-        .listRowBackground(Color.siloSurfaceElevated)
+        .listRowBackground(Color.siloGroupedCell)
     }
 }
 #endif

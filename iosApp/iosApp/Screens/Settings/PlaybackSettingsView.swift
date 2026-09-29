@@ -9,13 +9,6 @@ struct PlaybackSettingsView: View {
 
     var body: some View {
         List {
-            SettingsPageHeader(
-                title: "Playback",
-                subtitle: "Quality, language, and episode behavior for this device.",
-                systemImage: "play.fill"
-            )
-            .settingsPageHeaderRow()
-
             if viewModel.hasHeldPlaybackChanges {
                 HeldSettingChangesSection(
                     retry: { await viewModel.retryHeldPlaybackChanges() },
@@ -32,7 +25,7 @@ struct PlaybackSettingsView: View {
             resetSection
         }
         .settingsListChrome()
-        .navigationTitle("")
+        .navigationTitle("Playback")
         .siloNavigationTitleDisplayMode(.inline)
         .siloToolbarColorSchemeDark()
     }
@@ -97,7 +90,7 @@ struct PlaybackSettingsView: View {
                 }
             ))
             .foregroundStyle(Color.siloOnSurface)
-            .tint(.siloAccent)
+            .tint(.siloSwitchOn)
 
             Toggle("Seek Cache", isOn: Binding(
                 get: { viewModel.seekCacheEnabled },
@@ -107,7 +100,7 @@ struct PlaybackSettingsView: View {
                 }
             ))
             .foregroundStyle(Color.siloOnSurface)
-            .tint(.siloAccent)
+            .tint(.siloSwitchOn)
 
             Picker("Buffer Ahead", selection: Binding(
                 get: { viewModel.bufferAhead },
@@ -135,7 +128,7 @@ struct PlaybackSettingsView: View {
                 }
             ))
             .foregroundStyle(Color.siloOnSurface)
-            .tint(.siloAccent)
+            .tint(.siloSwitchOn)
 
             Toggle("TrueHD Atmos", isOn: Binding(
                 get: { viewModel.trueHDAtmosEnabled },
@@ -145,7 +138,7 @@ struct PlaybackSettingsView: View {
                 }
             ))
             .foregroundStyle(Color.siloOnSurface)
-            .tint(.siloAccent)
+            .tint(.siloSwitchOn)
 
             Picker("Deinterlacing", selection: Binding(
                 get: { viewModel.deinterlaceMode },
@@ -195,7 +188,7 @@ struct PlaybackSettingsView: View {
                 }
             ))
             .foregroundStyle(Color.siloOnSurface)
-            .tint(.siloAccent)
+            .tint(.siloSwitchOn)
             #endif
         } header: {
             Text("Streaming")
@@ -204,25 +197,18 @@ struct PlaybackSettingsView: View {
             Text(streamingFooterText)
                 .foregroundStyle(Color.siloSecondaryText)
         }
-        .listRowBackground(Color.siloSurfaceElevated)
+        .listRowBackground(Color.siloGroupedCell)
     }
 
     private var streamingFooterText: String {
         // Leads with what the chosen quality actually means, since the preset
         // labels ("1080p High") name a tier without stating its bitrate.
-        var text = "\(viewModel.preferredQualityLabel). "
+        var text = "\(viewModel.preferredQualityLabel)."
         if let preset = SiloQualityPresets.preset(id: viewModel.preferredQualityPresetId) {
-            text = "\(preset.description) "
+            text = preset.description
         }
-        text += "Turn off Dolby Vision to play Dolby Vision titles as HDR10 instead. Profile 5 titles have no HDR10-compatible layer and always play in Dolby Vision."
-        text += " Seek Cache keeps recently streamed video in temporary storage during playback so skipping forward and back is instant; it is cleared when playback ends."
-        text += " Buffer Ahead controls how much video is downloaded ahead of the playhead; longer windows ride out network dropouts, and Unlimited buffers as much as fits in temporary storage, which is cleared when playback ends."
-        text += " Lossless Multichannel Audio delivers TrueHD and DTS-HD audio as lossless multichannel PCM, and needs a receiver or soundbar that accepts multichannel PCM over eARC. If surround plays as stereo, turn it off to use a surround-compatible Dolby Digital Plus bridge instead. For TrueHD tracks that carry Atmos, the TrueHD Atmos setting takes precedence."
-        text += " TrueHD Atmos converts TrueHD Atmos tracks so their height channels play: Silo decodes the track's Atmos objects, mixes them into a 7.1.4 speaker layout and plays that as Spatial Audio on AirPods and the built-in speakers. This is Silo's own conversion, not the original Atmos stream and not Dolby's decoder, and the result is compressed audio, so these tracks are no longer lossless. Turn it off to play them without heights, as lossless 7.1 when Lossless Multichannel Audio is on."
-        text += " Deinterlacing applies to interlaced sources such as DVDs and broadcast recordings; Automatic uses this device's hardware deinterlacer and falls back to software, while Software always deinterlaces on the CPU. Field Rate applies to the hardware deinterlacer only: Full Motion doubles the frame rate (50/60 fps), and Film keeps one frame per field pair."
-        #if os(iOS)
-        text += " Background Playback continues audio when the app moves to the background, including Picture in Picture; turning it off stops playback when you leave the app. Audiobooks always keep playing in the background."
-        #endif
+        text += " If surround plays as stereo, turn off Lossless Multichannel Audio."
+        text += " TrueHD Atmos adds height channels but plays those tracks as compressed audio."
         return text
     }
 
@@ -238,7 +224,7 @@ struct PlaybackSettingsView: View {
                 }
             ))
             .foregroundStyle(Color.siloOnSurface)
-            .tint(.siloAccent)
+            .tint(.siloSwitchOn)
 
             Picker("Show Next Up", selection: Binding(
                 get: { viewModel.nextUpPromptSeconds },
@@ -286,12 +272,12 @@ struct PlaybackSettingsView: View {
                 }
             ))
             .foregroundStyle(Color.siloOnSurface)
-            .tint(.siloAccent)
+            .tint(.siloSwitchOn)
         } header: {
             Text("Episodes")
                 .foregroundStyle(Color.siloSecondaryText)
         }
-        .listRowBackground(Color.siloSurfaceElevated)
+        .listRowBackground(Color.siloGroupedCell)
     }
 
     // MARK: - Refused change
@@ -308,7 +294,7 @@ struct PlaybackSettingsView: View {
             Text(SettingsViewModel.rejectedPlaybackChangeMessage)
                 .foregroundStyle(Color.siloSecondaryText)
         }
-        .listRowBackground(Color.siloSurfaceElevated)
+        .listRowBackground(Color.siloGroupedCell)
     }
 
     // MARK: - Reset
@@ -322,7 +308,7 @@ struct PlaybackSettingsView: View {
             Text("Resets playback choices for this device and profile back to the server fallback.")
                 .foregroundStyle(Color.siloSecondaryText)
         }
-        .listRowBackground(Color.siloSurfaceElevated)
+        .listRowBackground(Color.siloGroupedCell)
     }
 
     // MARK: - Options

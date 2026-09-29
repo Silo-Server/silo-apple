@@ -1,9 +1,10 @@
 #if os(iOS)
 import SwiftUI
 
-/// Searchable, card-based iOS Settings overview. Its information hierarchy
-/// intentionally mirrors the web client while navigation and controls remain
-/// native SwiftUI for Dynamic Type, VoiceOver, and predictable gestures.
+/// Searchable iOS Settings overview in the system Settings idiom: an
+/// inset-grouped list of one-line rows with graphite icon tiles. Search
+/// still matches each row's longer description, which VoiceOver reads as
+/// the row's hint.
 struct IOSSettingsOverview: View {
     @Bindable var viewModel: SettingsViewModel
     @Bindable var diagnosticsModel: DiagnosticsViewModel
@@ -17,90 +18,69 @@ struct IOSSettingsOverview: View {
     @State private var searchText = ""
 
     var body: some View {
-        ZStack {
-            SettingsBackdrop()
-
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 24) {
-                    pageHeader
-
-                    SettingsAccountCard(
-                        avatar: viewModel.activeProfile?.avatarEmoji,
-                        avatarImageUrl: viewModel.activeProfile?.avatarImageUrl,
-                        name: displayName,
-                        subtitle: subtitleLine,
-                        isAdministrator: viewModel.userInfo?.isAdmin == true,
-                        action: switchProfile
-                    )
-
-                    SettingsSearchField(text: $searchText)
-
-                    if hasSearchResults {
-                        preferencesSection
-                        playbackSection
-
-                        if diagnosticsModel.shouldShowSettings && matchesDiagnostics {
-                            diagnosticsSection
-                        }
-
-                        if matchesLibrarySection {
-                            librarySection
-                        }
-
-                        if matchesConnectionSection {
-                            connectionSection
-                        }
-
-                        if matchesExperimentalSection {
-                            experimentalSection
-                        }
-
-                        if matchesAboutSection {
-                            aboutSection
-                        }
-
-                        if matchesSignOut {
-                            signOutButton
-                        }
-                    } else {
-                        ContentUnavailableView.search
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 36)
-                    }
-                }
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
-                .padding(.bottom, 36)
-                .frame(maxWidth: 760, alignment: .leading)
-                .frame(maxWidth: .infinity)
+        List {
+            Section {
+                SettingsAccountCard(
+                    avatar: viewModel.activeProfile?.avatarEmoji,
+                    avatarImageUrl: viewModel.activeProfile?.avatarImageUrl,
+                    name: displayName,
+                    subtitle: subtitleLine,
+                    isAdministrator: viewModel.userInfo?.isAdmin == true,
+                    action: switchProfile
+                )
             }
-            .scrollDismissesKeyboard(.interactively)
+
+            SettingsSearchField(text: $searchText)
+                .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 0, trailing: 0))
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+
+            if hasSearchResults {
+                preferencesSection
+                playbackSection
+
+                if diagnosticsModel.shouldShowSettings && matchesDiagnostics {
+                    diagnosticsSection
+                }
+
+                if matchesConnectionSection {
+                    connectionSection
+                }
+
+                if matchesExperimentalSection {
+                    experimentalSection
+                }
+
+                if matchesAboutSection {
+                    aboutSection
+                }
+
+                if matchesSignOut {
+                    signOutSection
+                }
+            } else {
+                ContentUnavailableView.search
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 36)
+                    .listRowBackground(Color.clear)
+            }
         }
-        .navigationTitle("")
-        .siloNavigationTitleDisplayMode(.inline)
-        .siloNavigationBarBackgroundHidden()
+        .siloGroupedListStyle()
+        .siloScrollContentBackgroundHidden()
+        .scrollDismissesKeyboard(.interactively)
+        .frame(maxWidth: 760)
+        .frame(maxWidth: .infinity)
+        .background(Color.siloBackground.ignoresSafeArea())
+        .navigationTitle("Settings")
+        .siloNavigationTitleDisplayMode(.large)
         .siloToolbarColorSchemeDark()
         .onAppear(perform: navPrefs.refresh)
-    }
-
-    private var pageHeader: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text("Settings")
-                .font(.largeTitle)
-                .bold()
-                .foregroundStyle(Color.siloOnSurface)
-
-            Text("Make Silo work the way you like.")
-                .font(.subheadline)
-                .foregroundStyle(Color.siloSecondaryText)
-        }
-        .accessibilityElement(children: .combine)
     }
 
     @ViewBuilder
     private var preferencesSection: some View {
         if matchesGeneral || matchesInterface {
-            SettingsOverviewSection("Preferences") {
+            Section("Preferences") {
                 if matchesGeneral {
                     NavigationLink {
                         GeneralSettingsView()
@@ -109,15 +89,9 @@ struct IOSSettingsOverview: View {
                             title: "General",
                             subtitle: "Profile selection and app startup",
                             systemImage: "gearshape.fill",
-                            tint: .purple,
                             value: launchPreferences.behavior.title
                         )
                     }
-                    .buttonStyle(.plain)
-                }
-
-                if matchesGeneral && matchesInterface {
-                    SettingsOverviewDivider()
                 }
 
                 if matchesInterface {
@@ -128,11 +102,9 @@ struct IOSSettingsOverview: View {
                             title: "Interface",
                             subtitle: "Navigation, cards, and poster presentation",
                             systemImage: "rectangle.3.group.fill",
-                            tint: .indigo,
                             value: uiCustomization.cardPresentation.preset?.title ?? "Custom"
                         )
                     }
-                    .buttonStyle(.plain)
                 }
             }
         }
@@ -141,8 +113,8 @@ struct IOSSettingsOverview: View {
     @ViewBuilder
     private var playbackSection: some View {
         if matchesPlaybackSection {
-            SettingsOverviewSection("Playback") {
-                if matches("playback", "quality", "audio", "dolby vision", "episodes", "skipping", "skip interval", "rewind", "fast forward", "audiobooks") {
+            Section("Playback") {
+                if matchesPlayback {
                     NavigationLink {
                         PlaybackSettingsView(viewModel: viewModel)
                     } label: {
@@ -153,11 +125,6 @@ struct IOSSettingsOverview: View {
                             value: viewModel.preferredQualityLabel
                         )
                     }
-                    .buttonStyle(.plain)
-                }
-
-                if matchesPlayback && matchesSubtitles {
-                    SettingsOverviewDivider()
                 }
 
                 if matchesSubtitles {
@@ -168,18 +135,12 @@ struct IOSSettingsOverview: View {
                             title: "Subtitles",
                             subtitle: "Language, behavior, and appearance",
                             systemImage: "captions.bubble.fill",
-                            tint: .pink,
                             value: subtitleLanguageName(viewModel.prefs.subtitleLanguage)
                         )
                     }
-                    .buttonStyle(.plain)
                 }
 
                 if matchesDownloads {
-                    if matchesPlayback || matchesSubtitles {
-                        SettingsOverviewDivider()
-                    }
-
                     NavigationLink {
                         DownloadsSettingsView()
                     } label: {
@@ -189,14 +150,13 @@ struct IOSSettingsOverview: View {
                             systemImage: "arrow.down.circle.fill"
                         )
                     }
-                    .buttonStyle(.plain)
                 }
             }
         }
     }
 
     private var diagnosticsSection: some View {
-        SettingsOverviewSection("Support") {
+        Section("Support") {
             NavigationLink {
                 DiagnosticsSettingsView(
                     model: diagnosticsModel,
@@ -207,31 +167,14 @@ struct IOSSettingsOverview: View {
                     title: "Diagnostics",
                     subtitle: "Capture, review, and send support reports",
                     systemImage: "stethoscope",
-                    tint: .orange,
                     value: diagnosticsModel.featureState.title
                 )
             }
-            .buttonStyle(.plain)
-        }
-    }
-
-    private var librarySection: some View {
-        SettingsOverviewSection("Library & Data") {
-            SettingsOverviewToggleRow(
-                title: "Show Audiobooks",
-                subtitle: "Add Audiobooks to the main navigation",
-                systemImage: "book.closed.fill",
-                tint: .indigo,
-                isOn: Binding(
-                    get: { navPrefs.showAudiobooks },
-                    set: { navPrefs.setShowAudiobooks($0) }
-                )
-            )
         }
     }
 
     private var connectionSection: some View {
-        SettingsOverviewSection("Connection") {
+        Section("Connection") {
             Button {
                 router.navigate(to: .serverList)
             } label: {
@@ -239,38 +182,30 @@ struct IOSSettingsOverview: View {
                     title: "Server",
                     subtitle: "Manage this device's Silo connection",
                     systemImage: "server.rack",
-                    tint: .teal,
-                    value: viewModel.serverDisplayName
+                    value: viewModel.serverDisplayName,
+                    showsChevron: true
                 )
             }
-            .buttonStyle(.plain)
         }
     }
 
     private var aboutSection: some View {
-        SettingsOverviewSection("About") {
+        Section("About") {
             SettingsOverviewRow(
                 title: "Version",
                 subtitle: "Installed Silo app version",
                 systemImage: "info.circle.fill",
-                tint: .gray,
-                value: versionString,
-                showsChevron: false
+                value: versionString
             )
-
-            SettingsOverviewDivider()
 
             Link(destination: SiloLegalLinks.privacyPolicy) {
                 SettingsOverviewRow(
                     title: "Privacy Policy",
                     subtitle: "Learn how Silo handles your information",
                     systemImage: "hand.raised.fill",
-                    tint: .teal
+                    showsChevron: true
                 )
             }
-            .buttonStyle(.plain)
-
-            SettingsOverviewDivider()
 
             NavigationLink {
                 OpenSourceAcknowledgementsView()
@@ -278,25 +213,29 @@ struct IOSSettingsOverview: View {
                 SettingsOverviewRow(
                     title: "Open Source Licenses",
                     subtitle: "Acknowledgements, licenses, and exact source revisions",
-                    systemImage: "curlybraces",
-                    tint: .indigo
+                    systemImage: "curlybraces"
                 )
             }
-            .buttonStyle(.plain)
         }
     }
 
     private var experimentalSection: some View {
-        SettingsOverviewSection("Experimental") {
-            ForEach(Array(ExperimentalFeature.allCases.enumerated()), id: \.element) { index, feature in
-                if index > 0 {
-                    SettingsOverviewDivider()
-                }
+        Section("Experimental") {
+            SettingsOverviewToggleRow(
+                title: "Show Audiobooks",
+                subtitle: "Add Audiobooks to the main navigation",
+                systemImage: "book.closed.fill",
+                isOn: Binding(
+                    get: { navPrefs.showAudiobooks },
+                    set: { navPrefs.setShowAudiobooks($0) }
+                )
+            )
+
+            ForEach(ExperimentalFeature.allCases, id: \.self) { feature in
                 SettingsOverviewToggleRow(
                     title: feature.title,
                     subtitle: feature.subtitle,
                     systemImage: feature.systemImage,
-                    tint: .pink,
                     isOn: Binding(
                         get: { experimental.isEnabled(feature) },
                         set: { feature.setEnabled($0) }
@@ -306,21 +245,13 @@ struct IOSSettingsOverview: View {
         }
     }
 
-    private var signOutButton: some View {
-        Button(role: .destructive) {
-            showSignOutConfirm = true
-        } label: {
-            Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
-                .font(.headline)
-                .frame(maxWidth: .infinity, minHeight: 50)
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(Color.red)
-        .background(Color.red.opacity(0.09))
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16)
-                .strokeBorder(Color.red.opacity(0.18), lineWidth: 1)
+    private var signOutSection: some View {
+        Section {
+            Button("Sign Out", role: .destructive) {
+                showSignOutConfirm = true
+            }
+            .frame(maxWidth: .infinity)
+            .foregroundStyle(Color.red)
         }
     }
 
@@ -425,6 +356,7 @@ struct IOSSettingsOverview: View {
 
     private var matchesExperimentalSection: Bool {
         matches("experimental", "beta", "testing")
+            || matchesAudiobooks
             || ExperimentalFeature.allCases.contains { matches($0.title, $0.subtitle) }
     }
 
@@ -436,16 +368,11 @@ struct IOSSettingsOverview: View {
         matchesPlayback || matchesSubtitles || matchesDownloads
     }
 
-    private var matchesLibrarySection: Bool {
-        matchesAudiobooks
-    }
-
     private var hasSearchResults: Bool {
         matchesGeneral
             || matchesInterface
             || matchesPlaybackSection
             || (diagnosticsModel.shouldShowSettings && matchesDiagnostics)
-            || matchesLibrarySection
             || matchesConnectionSection
             || matchesExperimentalSection
             || matchesAboutSection

@@ -94,7 +94,7 @@ struct TVOpenSourceAcknowledgementsOverlay: View {
                         Text("OPEN SOURCE")
                             .font(.system(size: 15, weight: .semibold, design: .monospaced))
                             .tracking(2)
-                            .foregroundStyle(Color.siloAccent)
+                            .foregroundStyle(Color.siloSecondaryText)
 
                         Text("Licenses & Acknowledgements")
                             .font(.system(size: 38, weight: .semibold))

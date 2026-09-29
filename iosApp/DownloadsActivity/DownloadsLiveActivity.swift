@@ -20,13 +20,16 @@ struct DownloadsLiveActivity: Widget {
         ActivityConfiguration(for: DownloadActivityAttributes.self) { context in
             DownloadsLockScreenView(state: context.state, isStale: context.isStale)
                 .padding(16)
+                // The extension has no accent asset, so `.tint` would fall
+                // back to system blue; follow the lock screen's text color.
+                .tint(.primary)
                 .widgetURL(Self.deepLink)
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
                     Image(systemName: context.state.phase.symbolName)
                         .font(.title2)
-                        .foregroundStyle(.tint)
+                        .foregroundStyle(.white)
                         .padding(.leading, 4)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
@@ -52,6 +55,7 @@ struct DownloadsLiveActivity: Widget {
                     VStack(alignment: .leading, spacing: 4) {
                         ProgressView(value: context.state.fraction)
                             .progressViewStyle(.linear)
+                            .tint(.white)
                         Text(context.state.statusText(isStale: context.isStale))
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -61,15 +65,15 @@ struct DownloadsLiveActivity: Widget {
                 }
             } compactLeading: {
                 Image(systemName: context.state.phase.symbolName)
-                    .foregroundStyle(.tint)
+                    .foregroundStyle(.white)
             } compactTrailing: {
                 ProgressView(value: context.state.fraction)
                     .progressViewStyle(.circular)
-                    .tint(.blue)
+                    .tint(.white)
             } minimal: {
                 ProgressView(value: context.state.fraction)
                     .progressViewStyle(.circular)
-                    .tint(.blue)
+                    .tint(.white)
             }
             .widgetURL(Self.deepLink)
         }

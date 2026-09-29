@@ -2,8 +2,8 @@ import SwiftUI
 
 /// App settings screen.
 ///
-/// iOS: a searchable, card-based overview aligned with the web app's
-/// information hierarchy. macOS retains the compact native Settings list.
+/// iOS: a searchable, inset-grouped overview in the system Settings idiom.
+/// macOS retains the compact native Settings list.
 ///
 /// On tvOS this view delegates to ``TVSettingsView``, a root-menu Form
 /// with drill-in sub-screens tuned for the 10-foot experience.
@@ -331,7 +331,9 @@ struct SettingsRowLabel: View {
         .accessibilityElement(children: .combine)
     }
 }
+#endif
 
+#if !os(tvOS)
 /// Disclosure chevron for `Button` rows that act like navigation rows
 /// (`NavigationLink` rows draw their own).
 struct SettingsRowChevron: View {
@@ -342,5 +344,4 @@ struct SettingsRowChevron: View {
             .accessibilityHidden(true)
     }
 }
-
 #endif

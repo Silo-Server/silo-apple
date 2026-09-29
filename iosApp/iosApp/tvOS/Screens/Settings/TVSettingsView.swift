@@ -174,15 +174,7 @@ struct TVSettingsView: View {
     private var settingsContent: some View {
         HStack(alignment: .top, spacing: 52) {
             rail
-                .padding(24)
-                .background(
-                    RoundedRectangle(cornerRadius: 26)
-                        .fill(Color.siloSurface.opacity(0.74))
-                )
-                .overlay {
-                    RoundedRectangle(cornerRadius: 26)
-                        .strokeBorder(Color.siloOutline, lineWidth: 1)
-                }
+                .padding(.vertical, 24)
                 .frame(width: 490)
                 .disabled(
                     showSignOutConfirm
@@ -231,17 +223,11 @@ struct TVSettingsView: View {
 
     private var rail: some View {
         VStack(alignment: .leading, spacing: 6) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text("Settings")
-                    .font(.system(size: 42, weight: .bold))
-                    .foregroundStyle(Color.siloOnSurface)
-
-                Text("Make Silo work the way you like.")
-                    .font(.system(size: 18))
-                    .foregroundStyle(Color.siloSecondaryText)
-            }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 20)
+            Text("Settings")
+                .font(.system(size: 48, weight: .bold))
+                .foregroundStyle(Color.siloOnSurface)
+                .padding(.horizontal, 20)
+                .padding(.bottom, 20)
 
             profileRow
                 .padding(.bottom, 22)
@@ -255,8 +241,7 @@ struct TVSettingsView: View {
             signOutRow
 
             Text("Silo \(Self.versionString)")
-                .font(.system(size: 16, weight: .medium, design: .monospaced))
-                .tracking(1)
+                .font(.system(size: 18))
                 .foregroundColor(.siloSecondaryText.opacity(0.7))
                 .padding(.leading, 20)
                 .padding(.top, 10)
@@ -547,24 +532,18 @@ struct TVSettingsView: View {
     private var paneHeader: some View {
         HStack(alignment: .center, spacing: 20) {
             Image(systemName: selectedCategory.icon)
-                .font(.system(size: 27, weight: .medium))
-                .foregroundStyle(selectedCategory.tint)
-                .frame(width: 62, height: 62)
-                .background(selectedCategory.tint.opacity(0.13), in: Circle())
-                .overlay {
-                    Circle()
-                        .strokeBorder(selectedCategory.tint.opacity(0.22), lineWidth: 1)
-                }
+                .font(.system(size: 34, weight: .medium))
+                .foregroundStyle(.white)
+                .frame(width: 72, height: 72)
+                .background(
+                    Color.siloIconTile,
+                    in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+                )
                 .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 7) {
-                Text(selectedCategory.eyebrow)
-                    .font(.system(size: 15, weight: .semibold, design: .monospaced))
-                    .tracking(2)
-                    .foregroundStyle(selectedCategory.tint)
-
+            VStack(alignment: .leading, spacing: 5) {
                 Text(selectedCategory.title)
-                    .font(.system(size: 38, weight: .semibold))
+                    .font(.system(size: 42, weight: .bold))
                     .foregroundStyle(Color.siloOnSurface)
 
                 Text(selectedCategory.blurb)
@@ -780,14 +759,6 @@ enum TVSettingsCategory: String, CaseIterable, Identifiable {
         }
     }
 
-    var eyebrow: String {
-        switch self {
-        case .general, .playback, .subtitles: return "PREFERENCES"
-        case .diagnostics: return "SUPPORT"
-        case .server: return "CONNECTION"
-        }
-    }
-
     var blurb: String {
         switch self {
         case .general:
@@ -813,15 +784,5 @@ enum TVSettingsCategory: String, CaseIterable, Identifiable {
         }
     }
 
-    var tint: Color {
-        switch self {
-        case .general, .playback, .subtitles:
-            return .siloAccent
-        case .diagnostics:
-            return .orange
-        case .server:
-            return .teal
-        }
-    }
 }
 #endif

@@ -21,14 +21,27 @@ extension Color {
     /// Primary text color (#EDEDED)
     static let siloOnSurface = Color(hex: "#EDEDED")
 
-    /// Accent for enabled control states (toggle tracks, prominent buttons).
-    /// The monochrome palette made an on toggle a white knob on a white
-    /// track; this matches the web client's blue-theme primary.
-    static let siloAccent = Color(hex: "#78AEFC")
+    /// Track of an on switch. The monochrome palette would make an on switch
+    /// a white knob on a white track, so switches keep the system's dark-mode
+    /// green; every other control stays monochrome.
+    static let siloSwitchOn = Color(hex: "#30D158")
+
+    /// Row background of an inset-grouped list — the system's dark-mode
+    /// secondary grouped background, shared by Settings and Downloads.
+    static let siloGroupedCell = Color(hex: "#1C1C1E")
+
+    /// Graphite fill behind Settings row icons.
+    static let siloIconTile = Color(hex: "#3A3A3C")
 
     /// Orange sampled from the canonical Silo wordmark artwork. Reserved for
-    /// branded moments so ordinary signed-in controls retain `siloAccent`.
+    /// branded moments such as the storage breakdown.
     static let siloBrandOrange = Color(hex: "#FD7403")
+
+    /// Blue sampled from the Silo wordmark.
+    static let siloBrandBlue = Color(hex: "#0034FB")
+
+    /// Red sampled from the Silo wordmark.
+    static let siloBrandRed = Color(hex: "#F50B4F")
 
     /// Muted/secondary text — primary at 60% opacity (#99EDEDED)
     static let siloSecondaryText = Color(hex: "#99EDEDED")

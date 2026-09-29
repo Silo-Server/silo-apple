@@ -36,7 +36,7 @@ struct SiloControlModeButton: View {
     private func buttonLabel(isActive: Bool) -> some View {
         Image(systemName: isActive ? "appletvremote.gen4.fill" : "appletvremote.gen4")
             .font(.system(size: 18, weight: .semibold))
-            .foregroundStyle(isActive ? Color.siloAccent : Color.siloOnSurface)
+            .foregroundStyle(Color.siloOnSurface)
             .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
             .contentShape(Rectangle())
     }

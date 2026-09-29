@@ -653,7 +653,7 @@ struct MobilePlayerControls: View {
 
         return menu
         .buttonStyle(MobilePlayerGlassButtonStyle(
-            tint: viewModel.activeQualityId == ApplePlaybackQuality.autoId ? nil : .accentColor
+            tint: viewModel.activeQualityId == ApplePlaybackQuality.autoId ? nil : Color.white.opacity(0.22)
         ))
         .accessibilityLabel("Playback Quality")
         .accessibilityValue(qualityValueText)

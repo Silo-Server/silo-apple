@@ -170,26 +170,11 @@ private struct TVSettingsRailRowBody: View {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .fill(fill)
             )
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(
-                        isSelected && !isFocused
-                            ? Color.siloChromeSelectedBorder
-                            : Color.clear,
-                        lineWidth: 1
-                    )
-            )
-            .overlay(alignment: .leading) {
-                Capsule()
-                    .fill(Color.siloAccent)
-                    .frame(width: 4)
-                    .padding(.vertical, 12)
-                    .opacity(isSelected && !isFocused ? 1 : 0)
-            }
             .scaleEffect(configuration.isPressed ? 0.98 : (isFocused ? 1.012 : 1))
             .shadow(
-                color: isFocused ? Color.siloAccent.opacity(0.14) : .clear,
-                radius: 18
+                color: isFocused ? Color.black.opacity(0.5) : .clear,
+                radius: 18,
+                y: 8
             )
             .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
     }
@@ -204,7 +189,7 @@ private struct TVSettingsRailRowBody: View {
     private var fill: Color {
         if isDestructive && isFocused { return .siloError }
         if isFocused { return .siloOnSurface }
-        if isSelected { return .siloSurfaceElevated.opacity(0.92) }
+        if isSelected { return .siloChromeSelectedFill }
         return .clear
     }
 }
@@ -251,8 +236,9 @@ private struct TVSettingsPaneRowBody: View {
             )
             .scaleEffect(configuration.isPressed ? 0.98 : (isFocused ? 1.012 : 1))
             .shadow(
-                color: isFocused ? Color.siloAccent.opacity(0.16) : .clear,
-                radius: 18
+                color: isFocused ? Color.black.opacity(0.5) : .clear,
+                radius: 18,
+                y: 8
             )
             .focusEffectDisabled()
             .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
@@ -268,7 +254,7 @@ private struct TVSettingsPaneRowBody: View {
     private var backgroundFill: Color {
         if isFocused { return .siloOnSurface }
         if isSelected { return .siloChromeSelectedFill }
-        return .siloSurfaceElevated.opacity(0.84)
+        return .siloChromeRestingFill
     }
 
     private var borderColor: Color {
@@ -401,8 +387,7 @@ struct TVSettingsInfoRow: View {
 
 // MARK: - Section header / footer
 
-/// Mono uppercase section eyebrow, matching the Skyline dropdown and
-/// filter-panel header grammar.
+/// Uppercase gray section header in the system grouped-list style.
 struct TVSettingsSectionHeader: View {
     let title: String
 
@@ -410,9 +395,9 @@ struct TVSettingsSectionHeader: View {
 
     var body: some View {
         Text(title)
-            .font(.system(size: 15, weight: .semibold, design: .monospaced))
-            .tracking(2)
-            .foregroundStyle(Color.siloAccent.opacity(0.86))
+            .font(.system(size: 19, weight: .semibold))
+            .tracking(1.2)
+            .foregroundStyle(Color.siloSecondaryText)
             .padding(.horizontal, 24)
             .padding(.top, 26)
             .padding(.bottom, 6)
@@ -580,7 +565,7 @@ struct TVPrivacyPolicyOverlay: View {
                 VStack(alignment: .leading, spacing: 22) {
                     Image(systemName: "hand.raised.fill")
                         .font(.system(size: 38, weight: .semibold))
-                        .foregroundStyle(Color.siloAccent)
+                        .foregroundStyle(Color.siloOnSurface)
                         .accessibilityHidden(true)
 
                     Text("Privacy Policy")
@@ -594,7 +579,7 @@ struct TVPrivacyPolicyOverlay: View {
 
                     Text(SiloLegalLinks.privacyPolicy.absoluteString)
                         .font(.system(size: 20, weight: .medium, design: .monospaced))
-                        .foregroundStyle(Color.siloAccent)
+                        .foregroundStyle(Color.siloSecondaryText)
                         .accessibilityLabel("Privacy policy URL")
                         .accessibilityValue(SiloLegalLinks.privacyPolicy.absoluteString)
 
@@ -653,17 +638,6 @@ struct TVSettingsPickerSheet: View {
             ZStack {
                 Color.siloBackground.opacity(0.88)
                     .ignoresSafeArea()
-
-                RadialGradient(
-                    colors: [
-                        Color.siloAccent.opacity(0.08),
-                        Color.clear,
-                    ],
-                    center: .center,
-                    startRadius: 40,
-                    endRadius: 680
-                )
-                .ignoresSafeArea()
 
                 pickerCard(
                     width: min(760, geometry.size.width - 240),

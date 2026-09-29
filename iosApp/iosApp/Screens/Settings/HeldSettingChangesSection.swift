@@ -24,7 +24,7 @@ struct HeldSettingChangesSection: View {
             Text(message)
                 .foregroundStyle(Color.siloSecondaryText)
         }
-        .listRowBackground(Color.siloSurfaceElevated)
+        .listRowBackground(Color.siloGroupedCell)
     }
 }
 #endif

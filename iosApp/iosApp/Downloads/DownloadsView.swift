@@ -49,7 +49,7 @@ struct DownloadsView: View {
                 content
             }
         }
-        .siloPageBackground()
+        .background(Color.siloBackground.ignoresSafeArea())
         .navigationTitle(isSelecting ? "\(selectedCount) Selected" : "Downloads")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.large)
@@ -124,12 +124,13 @@ struct DownloadsView: View {
 
     private var content: some View {
         ScrollView {
-            LazyVStack(spacing: 10) {
+            LazyVStack(spacing: 0) {
                 DownloadsStorageHeader(
                     used: manager.totalBytesUsed,
                     breakdown: manager.storageBreakdown,
                     activeCount: manager.activeRecords.count
                 )
+                .downloadGroupedRow(showReclaimBanner ? .first : .only)
                 .padding(.top, 6)
 
                 if showReclaimBanner {
@@ -137,18 +138,20 @@ struct DownloadsView: View {
                         episodeCount: manager.reclaimableRecords.count,
                         bytes: manager.reclaimableBytes
                     ) { showReclaim = true }
+                    .downloadGroupedRow(.last, separatorInset: 16)
                 }
 
                 if !manager.activeRecords.isEmpty {
-                    sectionLabel("In Progress", count: manager.activeRecords.count)
+                    DownloadSectionHeader(title: "Downloading", count: manager.activeRecords.count)
                     if isSelecting {
                         Button(allActiveSelected ? "Clear In Progress" : "Select All In Progress") {
                             if allActiveSelected { activeSelection.removeAll() }
                             else { activeSelection = Set(manager.activeRecords.map(\.id)) }
                         }
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.subheadline.weight(.semibold))
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 22)
+                        .padding(.horizontal, 32)
+                        .padding(.bottom, 8)
                     }
                     #if os(iOS)
                     if manager.canShowProgressOnLockScreen, !isSelecting {
@@ -156,7 +159,7 @@ struct DownloadsView: View {
                             manager.showProgressOnLockScreen()
                         } label: {
                             Label("Show Progress on Lock Screen", systemImage: "lock.iphone")
-                                .font(.system(size: 13, weight: .semibold))
+                                .font(.subheadline.weight(.semibold))
                                 .foregroundColor(.siloOnSurface)
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 7)
@@ -165,9 +168,11 @@ struct DownloadsView: View {
                         .buttonStyle(.plain)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 16)
+                        .padding(.bottom, 10)
                     }
                     #endif
-                    ForEach(manager.inProgressRecords) { record in
+                    let inProgress = manager.inProgressRecords
+                    ForEach(Array(inProgress.enumerated()), id: \.element.id) { index, record in
                         // Re-reads the rate each second: a stalled transfer
                         // sends no progress that would otherwise redraw the
                         // row and clear its last speed.
@@ -178,6 +183,7 @@ struct DownloadsView: View {
                                 wait: manager.wait(for: record),
                                 selecting: isSelecting,
                                 selected: activeSelection.contains(record.id),
+                                groupPosition: DownloadGroupPosition(index: index, count: inProgress.count),
                                 onSelectToggle: { toggleActive(record.id) },
                                 onPauseResume: {
                                     if record.localStatus == .paused { manager.resumeDownload(id: record.id) }
@@ -186,37 +192,41 @@ struct DownloadsView: View {
                                 onCancel: { manager.deleteDownload(id: record.id) }
                             )
                         }
+                        .downloadGroupInset()
                     }
                     #if os(iOS)
                     if !isSelecting {
                         Text("Downloads keep going when you leave Silo or lock your phone. Closing Silo from the app switcher pauses them until you open it again.")
-                            .font(.system(size: 12))
+                            .font(.footnote)
                             .foregroundColor(.siloSecondaryText)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 20)
-                            .padding(.top, 2)
+                            .padding(.horizontal, 32)
+                            .padding(.top, 7)
                     }
                     #endif
                 }
 
                 let failed = manager.records.filter { $0.localStatus == .failed }
                 if !failed.isEmpty {
-                    sectionLabel("Needs Attention", count: failed.count)
-                    ForEach(failed) { record in
+                    DownloadSectionHeader(title: "Needs attention", count: failed.count)
+                    ForEach(Array(failed.enumerated()), id: \.element.id) { index, record in
                         DownloadAttentionRow(
                             record: record,
                             onRetry: { manager.retryDownload(id: record.id) },
                             onDelete: { manager.deleteDownload(id: record.id) }
                         )
+                        .downloadGroupedRow(DownloadGroupPosition(index: index, count: failed.count))
                     }
                 }
 
-                if !listItems.isEmpty {
-                    DownloadSortControl(option: $settings.sortOption, itemCount: listItems.count)
+                let items = listItems
+                if !items.isEmpty {
+                    DownloadSortControl(option: $settings.sortOption, itemCount: items.count)
                 }
 
-                ForEach(listItems) { item in
-                    row(for: item)
+                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                    row(for: item, position: DownloadGroupPosition(index: index, count: items.count))
+                        .downloadGroupInset()
                 }
 
                 monitoredOnlySection
@@ -228,8 +238,10 @@ struct DownloadsView: View {
         }
     }
 
+    /// One list row, drawn as its slice of the group inside the context menu
+    /// so the lifted preview keeps the cell's shape.
     @ViewBuilder
-    private func row(for item: DownloadListItem) -> some View {
+    private func row(for item: DownloadListItem, position: DownloadGroupPosition) -> some View {
         switch item {
         case .series(let group):
             DownloadSeriesRow(
@@ -242,6 +254,7 @@ struct DownloadsView: View {
                 onPlayEpisode: { play($0) },
                 onDeleteEpisode: { manager.deleteDownload(id: $0.id) }
             )
+            .downloadGroupSlice(position)
             .contextMenu {
                 if !isSelecting {
                     Button(role: .destructive) {
@@ -265,6 +278,7 @@ struct DownloadsView: View {
                     else { router.navigate(to: .offlineDownloadDetail(downloadId: record.id)) }
                 }
             )
+            .downloadGroupSlice(position)
             .contextMenu {
                 if !isSelecting {
                     Button(role: .destructive) {
@@ -284,14 +298,18 @@ struct DownloadsView: View {
         let groupedSeriesIds = Set(manager.seriesGroups.map(\.seriesId))
         let pending = manager.subscriptions.filter { !groupedSeriesIds.contains($0.seriesId) }
         if !pending.isEmpty {
-            sectionLabel("Monitoring", count: pending.count)
-            ForEach(pending) { subscription in
-                monitoredRow(subscription)
+            DownloadSectionHeader(title: "Monitoring", count: pending.count)
+            ForEach(Array(pending.enumerated()), id: \.element.id) { index, subscription in
+                monitoredRow(subscription, position: DownloadGroupPosition(index: index, count: pending.count))
+                    .downloadGroupInset()
             }
         }
     }
 
-    private func monitoredRow(_ subscription: DownloadSubscription) -> some View {
+    private func monitoredRow(
+        _ subscription: DownloadSubscription,
+        position: DownloadGroupPosition
+    ) -> some View {
         HStack(spacing: 12) {
             Image(systemName: "antenna.radiowaves.left.and.right")
                 .font(.system(size: 17))
@@ -299,26 +317,18 @@ struct DownloadsView: View {
                 .frame(width: 40, height: 40)
             VStack(alignment: .leading, spacing: 3) {
                 Text(subscription.seriesTitle ?? subscription.seriesId)
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.system(size: 16, weight: .semibold))
                     .foregroundColor(.siloOnSurface)
                     .lineLimit(1)
                 Text(SubscriptionMode(rawValue: subscription.mode)?.displayName ?? subscription.mode)
-                    .font(.system(size: 12))
+                    .font(.subheadline)
                     .foregroundColor(.siloSecondaryText)
             }
             Spacer(minLength: 8)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color.siloSurfaceVariant)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(Color.siloOutline, lineWidth: 1)
-                )
-        )
-        .padding(.horizontal, 16)
+        .downloadGroupSlice(position)
         .contextMenu {
             Button(role: .destructive) {
                 Task { await manager.deleteSubscription(id: subscription.id) }
@@ -326,22 +336,6 @@ struct DownloadsView: View {
                 Label("Stop Monitoring", systemImage: "xmark.circle")
             }
         }
-    }
-
-    private func sectionLabel(_ text: String, count: Int) -> some View {
-        HStack {
-            Text(text.uppercased())
-                .font(.system(size: 12.5, weight: .semibold))
-                .tracking(0.3)
-                .foregroundColor(.siloSecondaryText)
-            Spacer()
-            Text("\(count)")
-                .font(.system(size: 12.5))
-                .foregroundColor(.siloOnSurface.opacity(0.38))
-        }
-        .padding(.horizontal, 22)
-        .padding(.top, 14)
-        .padding(.bottom, 2)
     }
 
     // MARK: - Toolbar & select mode

@@ -1,11 +1,117 @@
 #if !os(tvOS)
 import SwiftUI
 
-// MARK: - Storage hero
+// MARK: - Inset-grouped rows
 
-/// The storage hero at the top of the Downloads Manager: a big "used of
-/// device" figure with a typed breakdown bar (series / movies / in
-/// progress / other).
+/// Where a row sits in an inset-grouped block of the Manager. Rows stay
+/// direct children of the Manager's `LazyVStack`, so long lists stay lazy,
+/// and each draws its own slice of the group: rounded outer corners on the
+/// ends and a hairline separator above every row but the first.
+enum DownloadGroupPosition {
+    case only, first, middle, last
+
+    init(index: Int, count: Int) {
+        switch (index, count) {
+        case (_, 1): self = .only
+        case (0, _): self = .first
+        case (count - 1, _): self = .last
+        default: self = .middle
+        }
+    }
+
+    var roundsTop: Bool { self == .only || self == .first }
+    var roundsBottom: Bool { self == .only || self == .last }
+    var hasSeparator: Bool { self == .middle || self == .last }
+}
+
+private struct DownloadGroupedRowModifier: ViewModifier {
+    let position: DownloadGroupPosition
+    let separatorInset: CGFloat
+    @Environment(\.displayScale) private var displayScale
+
+    private static let cornerRadius: CGFloat = 26
+
+    func body(content: Content) -> some View {
+        let shape = UnevenRoundedRectangle(
+            topLeadingRadius: position.roundsTop ? Self.cornerRadius : 0,
+            bottomLeadingRadius: position.roundsBottom ? Self.cornerRadius : 0,
+            bottomTrailingRadius: position.roundsBottom ? Self.cornerRadius : 0,
+            topTrailingRadius: position.roundsTop ? Self.cornerRadius : 0,
+            style: .continuous
+        )
+        content
+            .background(Color.siloGroupedCell)
+            .overlay(alignment: .top) {
+                if position.hasSeparator {
+                    Rectangle()
+                        .fill(Color.siloDivider)
+                        .frame(height: 1 / displayScale)
+                        .padding(.leading, separatorInset)
+                }
+            }
+            .clipShape(shape)
+            #if os(iOS)
+            .contentShape(.contextMenuPreview, shape)
+            #endif
+    }
+}
+
+extension View {
+    /// Draws this row as one slice of an inset-grouped block: background,
+    /// rounded ends, and separator. Apply it inside any `.contextMenu` so the
+    /// lifted preview keeps the cell's shape, then inset the result with
+    /// `downloadGroupInset()`. The default separator inset lines up with the
+    /// text beside a 40-point poster.
+    func downloadGroupSlice(
+        _ position: DownloadGroupPosition,
+        separatorInset: CGFloat = 68
+    ) -> some View {
+        modifier(DownloadGroupedRowModifier(position: position, separatorInset: separatorInset))
+    }
+
+    /// Horizontal margin between an inset group and the screen edges.
+    func downloadGroupInset() -> some View {
+        padding(.horizontal, 16)
+    }
+
+    /// `downloadGroupSlice` plus the group margin, for rows without a
+    /// context menu.
+    func downloadGroupedRow(
+        _ position: DownloadGroupPosition,
+        separatorInset: CGFloat = 68
+    ) -> some View {
+        downloadGroupSlice(position, separatorInset: separatorInset)
+            .downloadGroupInset()
+    }
+}
+
+/// Sentence-case header above an inset group, with an optional trailing
+/// count, matching the system grouped-list headers in Settings.
+struct DownloadSectionHeader: View {
+    let title: String
+    var count: Int? = nil
+
+    var body: some View {
+        HStack {
+            Text(title)
+            Spacer()
+            if let count {
+                Text("\(count)")
+            }
+        }
+        .font(.subheadline.weight(.medium))
+        .foregroundColor(.siloSecondaryText)
+        .padding(.horizontal, 32)
+        .padding(.top, 22)
+        .padding(.bottom, 7)
+    }
+}
+
+// MARK: - Storage summary
+
+/// The storage card at the top of the Downloads Manager: a big "used of
+/// device" figure over a breakdown bar in the Silo wordmark's colors
+/// (series / movies / in progress / other).
 struct DownloadsStorageHeader: View {
     let used: Int64
     let breakdown: DownloadStorageBreakdown
@@ -13,20 +119,25 @@ struct DownloadsStorageHeader: View {
 
     @State private var device = DownloadFilePaths.deviceStorage()
 
+    private static let seriesColor = Color.siloBrandBlue
+    private static let moviesColor = Color.siloBrandRed
+    private static let inProgressColor = Color.siloBrandOrange
+    private static let otherColor = Color.siloOnSurface.opacity(0.3)
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 13) {
+        VStack(alignment: .leading, spacing: 12) {
             (
                 Text(DownloadFormatting.bytes(used))
-                    .font(.system(size: 26, weight: .bold))
+                    .font(.title2.bold())
                     .foregroundColor(.siloOnSurface)
                 + Text(contextSuffix)
-                    .font(.system(size: 14))
+                    .font(.subheadline)
                     .foregroundColor(.siloSecondaryText)
             )
 
             if activeCount > 0 {
                 Text(inProgressLine)
-                    .font(.system(size: 12.5))
+                    .font(.footnote)
                     .foregroundColor(.siloSecondaryText)
             }
 
@@ -37,15 +148,6 @@ struct DownloadsStorageHeader: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
-        .background(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(Color.siloSurfaceElevated)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .stroke(Color.siloOutline, lineWidth: 1)
-                )
-        )
-        .padding(.horizontal, 16)
     }
 
     private var contextSuffix: String {
@@ -70,50 +172,58 @@ struct DownloadsStorageHeader: View {
             let total = max(CGFloat(breakdown.total), 1)
             let width = geo.size.width
             HStack(spacing: 2) {
-                segment(width: width * CGFloat(breakdown.series) / total, opacity: 1)
-                segment(width: width * CGFloat(breakdown.movies) / total, opacity: 0.52)
-                segment(width: width * CGFloat(breakdown.inProgress) / total, opacity: 0.34)
-                segment(width: width * CGFloat(breakdown.other) / total, opacity: 0.18)
+                segment(width: width * CGFloat(breakdown.series) / total, color: Self.seriesColor)
+                segment(width: width * CGFloat(breakdown.movies) / total, color: Self.moviesColor)
+                segment(width: width * CGFloat(breakdown.inProgress) / total, color: Self.inProgressColor)
+                segment(width: width * CGFloat(breakdown.other) / total, color: Self.otherColor)
             }
         }
-        .frame(height: 10)
-        .clipShape(Capsule())
+        .frame(height: 18)
+        .background(Color.siloChromeRestingFill)
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 
-    private func segment(width: CGFloat, opacity: Double) -> some View {
-        Color.siloOnSurface.opacity(opacity).frame(width: max(0, width))
+    private func segment(width: CGFloat, color: Color) -> some View {
+        color.frame(width: max(0, width))
     }
 
-    @ViewBuilder private var legend: some View {
-        HStack(spacing: 16) {
-            legendItem(opacity: 1, bytes: breakdown.series, label: "Series")
-            legendItem(opacity: 0.52, bytes: breakdown.movies, label: "Movies")
-            legendItem(opacity: 0.34, bytes: breakdown.inProgress, label: "In progress")
-            legendItem(opacity: 0.18, bytes: breakdown.other, label: "Other")
+    /// Two columns, so four categories fit a phone width without wrapping
+    /// inside a label.
+    private var legend: some View {
+        LazyVGrid(
+            columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)],
+            alignment: .leading,
+            spacing: 6
+        ) {
+            legendItem(color: Self.seriesColor, bytes: breakdown.series, label: "Series")
+            legendItem(color: Self.moviesColor, bytes: breakdown.movies, label: "Movies")
+            legendItem(color: Self.inProgressColor, bytes: breakdown.inProgress, label: "In progress")
+            legendItem(color: Self.otherColor, bytes: breakdown.other, label: "Other")
         }
     }
 
-    @ViewBuilder private func legendItem(opacity: Double, bytes: Int64, label: String) -> some View {
+    @ViewBuilder private func legendItem(color: Color, bytes: Int64, label: String) -> some View {
         if bytes > 0 {
             HStack(spacing: 6) {
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(Color.siloOnSurface.opacity(opacity))
-                    .frame(width: 9, height: 9)
-                Text(DownloadFormatting.bytes(bytes))
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(.siloOnSurface)
+                Circle()
+                    .fill(color)
+                    .frame(width: 8, height: 8)
                 Text(label)
-                    .font(.system(size: 12))
                     .foregroundColor(.siloSecondaryText)
+                Text(DownloadFormatting.bytes(bytes))
+                    .fontWeight(.semibold)
+                    .foregroundColor(.siloOnSurface)
             }
+            .font(.footnote)
+            .lineLimit(1)
         }
     }
 }
 
-// MARK: - Reclaim banner
+// MARK: - Reclaim suggestion
 
-/// "Free up X — N watched episodes" suggestion. Tapping opens the reclaim
-/// review sheet.
+/// "Free up X · N watched" row under the storage summary. Tapping opens the
+/// reclaim review sheet.
 struct DownloadReclaimBanner: View {
     let episodeCount: Int
     let bytes: Int64
@@ -122,59 +232,36 @@ struct DownloadReclaimBanner: View {
     var body: some View {
         Button(action: onReview) {
             HStack(spacing: 12) {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color.siloChromeSelectedFill)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .stroke(Color.siloChromeSelectedBorder, lineWidth: 1)
-                    )
-                    .frame(width: 34, height: 34)
-                    .overlay(
-                        Image(systemName: "sparkles")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundColor(.siloOnSurface)
-                    )
-
-                VStack(alignment: .leading, spacing: 2) {
+                (
                     Text("Free up \(DownloadFormatting.bytes(bytes))")
-                        .font(.system(size: 14, weight: .semibold))
                         .foregroundColor(.siloOnSurface)
-                    Text("\(episodeCount) item\(episodeCount == 1 ? "" : "s") you've finished")
-                        .font(.system(size: 12.5))
+                    + Text(" · \(episodeCount) watched")
                         .foregroundColor(.siloSecondaryText)
-                }
+                )
+                .font(.subheadline)
+                .lineLimit(1)
 
                 Spacer(minLength: 8)
 
                 Text("Review")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.subheadline.weight(.semibold))
                     .foregroundColor(.siloOnSurface)
-                    .padding(.horizontal, 13)
+                    .padding(.horizontal, 14)
                     .padding(.vertical, 7)
-                    .background(
-                        Capsule().fill(Color.siloChromeSelectedFill)
-                            .overlay(Capsule().stroke(Color.siloChromeSelectedBorder, lineWidth: 1))
-                    )
+                    .background(Capsule().fill(Color.siloChromeSelectedFill))
             }
-            .padding(13)
-            .background(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(Color.siloSurfaceVariant)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .stroke(Color.siloChromeSelectedBorder, lineWidth: 1)
-                    )
-            )
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, 16)
+        .accessibilityHint("Reviews \(episodeCount) item\(episodeCount == 1 ? "" : "s") you've finished")
     }
 }
 
 // MARK: - Sort control
 
-/// "Sort: Largest first ▾   N items" row above the Manager list.
+/// "Largest First ▾   N items" row above the Manager list.
 struct DownloadSortControl: View {
     @Binding var option: DownloadSortOption
     let itemCount: Int
@@ -190,9 +277,9 @@ struct DownloadSortControl: View {
             } label: {
                 HStack(spacing: 5) {
                     Text(option.displayName)
-                        .font(.system(size: 13.5, weight: .semibold))
+                        .font(.subheadline.weight(.semibold))
                     Image(systemName: "chevron.down")
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(.caption.weight(.semibold))
                 }
                 .foregroundColor(.siloOnSurface)
             }
@@ -200,12 +287,12 @@ struct DownloadSortControl: View {
             Spacer()
 
             Text("\(itemCount) item\(itemCount == 1 ? "" : "s")")
-                .font(.system(size: 12.5))
-                .foregroundColor(.siloOnSurface.opacity(0.38))
+                .font(.footnote)
+                .foregroundColor(.siloSecondaryText)
         }
-        .padding(.horizontal, 22)
-        .padding(.top, 8)
-        .padding(.bottom, 2)
+        .padding(.horizontal, 32)
+        .padding(.top, 22)
+        .padding(.bottom, 8)
     }
 }
 
@@ -258,28 +345,6 @@ struct DownloadPosterThumb: View {
         }
         .frame(width: width, height: width * 1.5)
         .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
-    }
-}
-
-/// "MOVIE" / "SERIES" capsule chip used in Manager rows.
-struct DownloadKindChip: View {
-    let text: String
-
-    var body: some View {
-        Text(text.uppercased())
-            .font(.system(size: 9.5, weight: .semibold))
-            .tracking(0.4)
-            .foregroundColor(.siloSecondaryText)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(Color.siloChromeRestingFill)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .stroke(Color.siloChromeRestingBorder, lineWidth: 1)
-                    )
-            )
     }
 }
 #endif

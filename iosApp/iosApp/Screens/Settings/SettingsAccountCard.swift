@@ -1,6 +1,8 @@
 #if os(iOS)
 import SwiftUI
 
+/// The active profile at the top of the Settings list; tapping it opens the
+/// profile switcher.
 struct SettingsAccountCard: View {
     let avatar: String?
     /// Server-resolved avatar image URL (`avatar_url`), preferred over the
@@ -14,20 +16,16 @@ struct SettingsAccountCard: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 14) {
-                ProfileAvatarView(avatar: avatar, imageUrl: avatarImageUrl, name: name, size: 54)
+                ProfileAvatarView(avatar: avatar, imageUrl: avatarImageUrl, name: name, size: 56)
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Current profile")
-                        .font(.caption)
-                        .foregroundStyle(Color.siloSecondaryText)
-
+                VStack(alignment: .leading, spacing: 2) {
                     Text(name)
-                        .font(.headline)
+                        .font(.title3.weight(.semibold))
                         .foregroundStyle(Color.siloOnSurface)
                         .lineLimit(1)
 
                     Text(subtitle)
-                        .font(.footnote)
+                        .font(.subheadline)
                         .foregroundStyle(Color.siloSecondaryText)
                         .lineLimit(1)
                 }
@@ -36,30 +34,17 @@ struct SettingsAccountCard: View {
 
                 if isAdministrator {
                     Text("Admin")
-                        .font(.caption)
-                        .bold()
-                        .foregroundStyle(Color.siloAccent)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Color.siloSecondaryText)
                         .padding(.horizontal, 9)
-                        .padding(.vertical, 5)
-                        .background(Color.siloAccent.opacity(0.12), in: Capsule())
+                        .padding(.vertical, 4)
+                        .background(Color.siloChromeSelectedFill, in: Capsule())
                 }
 
-                Image(systemName: "chevron.right")
-                    .font(.footnote)
-                    .bold()
-                    .foregroundStyle(Color.siloSecondaryText)
-                    .accessibilityHidden(true)
+                SettingsRowChevron()
             }
-            .padding(15)
-            .frame(maxWidth: .infinity, minHeight: 80, alignment: .leading)
+            .padding(.vertical, 6)
             .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .background(Color.siloSurfaceElevated.opacity(0.9))
-        .clipShape(RoundedRectangle(cornerRadius: 18))
-        .overlay {
-            RoundedRectangle(cornerRadius: 18)
-                .strokeBorder(Color.siloOutline, lineWidth: 1)
         }
         .accessibilityHint("Switches to a different profile")
     }

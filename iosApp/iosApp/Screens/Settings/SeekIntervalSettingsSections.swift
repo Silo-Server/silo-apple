@@ -44,7 +44,7 @@ struct SeekIntervalSettingsSections: View {
             Text(footerText(footer, media: media))
                 .foregroundStyle(Color.siloSecondaryText)
         }
-        .listRowBackground(Color.siloSurfaceElevated)
+        .listRowBackground(Color.siloGroupedCell)
     }
 
     private func picker(

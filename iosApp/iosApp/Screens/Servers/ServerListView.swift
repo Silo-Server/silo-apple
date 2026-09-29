@@ -41,7 +41,7 @@ struct ServerListView: View {
         #else
         contentList
             .disabled(isResolvingServer)
-            .navigationTitle("")
+            .navigationTitle("Servers")
             .siloNavigationTitleDisplayMode(.inline)
             .alert(
                 "Remove this server?",
@@ -176,14 +176,6 @@ struct ServerListView: View {
     #if !os(tvOS)
     private var contentList: some View {
         List {
-            SettingsPageHeader(
-                title: "Servers",
-                subtitle: "Manage saved Silo connections for this device.",
-                systemImage: "server.rack",
-                tint: .teal
-            )
-            .settingsPageHeaderRow()
-
             Section {
                 ForEach(registry.sortedEntries) { entry in
                     row(for: entry)
@@ -192,7 +184,7 @@ struct ServerListView: View {
                 Text("Saved servers")
                     .foregroundColor(.siloSecondaryText)
             }
-            .listRowBackground(Color.siloSurfaceElevated)
+            .listRowBackground(Color.siloGroupedCell)
 
             Section {
                 Button {
@@ -202,7 +194,7 @@ struct ServerListView: View {
                         .foregroundColor(.siloOnSurface)
                 }
             }
-            .listRowBackground(Color.siloSurfaceElevated)
+            .listRowBackground(Color.siloGroupedCell)
         }
         .settingsListChrome()
     }

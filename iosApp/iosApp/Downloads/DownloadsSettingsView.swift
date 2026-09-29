@@ -22,16 +22,9 @@ struct DownloadsSettingsView: View {
 
     var body: some View {
         Form {
-            SettingsPageHeader(
-                title: "Downloads",
-                subtitle: "Offline quality, cleanup, and storage preferences.",
-                systemImage: "arrow.down.circle.fill"
-            )
-            .settingsPageHeaderRow()
-
             Section {
                 Toggle("Download over Wi-Fi only", isOn: $settings.wifiOnly)
-                    .tint(.siloAccent)
+                    .tint(.siloSwitchOn)
                 Picker("Simultaneous Downloads", selection: $settings.simultaneousDownloads) {
                     ForEach(DownloadSettings.simultaneousDownloadChoices, id: \.self) { count in
                         Text("\(count)").tag(count)
@@ -57,11 +50,11 @@ struct DownloadsSettingsView: View {
                     Text("Original prefers source quality and may prepare a compatibility file if this device needs one. Bitrate presets are prepared on the server before download starts.")
                 }
             }
-            .listRowBackground(Color.siloSurfaceElevated.opacity(0.92))
+            .listRowBackground(Color.siloGroupedCell)
 
             Section("Series Monitoring Defaults") {
                 Toggle("Delete watched episodes", isOn: $settings.defaultDeleteWatched)
-                    .tint(.siloAccent)
+                    .tint(.siloSwitchOn)
                 Stepper(
                     settings.defaultMaxStorageGB == 0
                         ? "Storage limit: Unlimited"
@@ -71,17 +64,17 @@ struct DownloadsSettingsView: View {
                     step: 5
                 )
             }
-            .listRowBackground(Color.siloSurfaceElevated.opacity(0.92))
+            .listRowBackground(Color.siloGroupedCell)
 
             Section {
                 Toggle("Keep watched downloads", isOn: $settings.keepWatchedDownloads)
-                    .tint(.siloAccent)
+                    .tint(.siloSwitchOn)
             } header: {
                 Text("Cleanup")
             } footer: {
                 Text("When off, the Downloads tab suggests freeing up space by removing items you've finished watching.")
             }
-            .listRowBackground(Color.siloSurfaceElevated.opacity(0.92))
+            .listRowBackground(Color.siloGroupedCell)
 
             Section("Storage") {
                 HStack {
@@ -98,7 +91,7 @@ struct DownloadsSettingsView: View {
                     }
                 }
             }
-            .listRowBackground(Color.siloSurfaceElevated.opacity(0.92))
+            .listRowBackground(Color.siloGroupedCell)
 
             if manager.heldProgressCount > 0 {
                 Section {
@@ -110,10 +103,10 @@ struct DownloadsSettingsView: View {
                 } footer: {
                     Text(heldProgressFooter)
                 }
-                .listRowBackground(Color.siloSurfaceElevated.opacity(0.92))
+                .listRowBackground(Color.siloGroupedCell)
             }
         }
-        .navigationTitle("")
+        .navigationTitle("Downloads")
         .task {
             // The quality picker is hidden when the cached capability only
             // offers one preset; re-fetch so permission changes show up here
