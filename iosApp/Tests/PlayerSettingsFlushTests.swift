@@ -578,7 +578,9 @@ final class PlayerSettingsFlushTests: XCTestCase {
         try await waitUntil("the automatic retry lands") { transport.writes().count == 2 }
         let writes = transport.writes()
         XCTAssertEqual(writes[1].value, .bool(false))
-        XCTAssertFalse(flusher.hasPendingWrites, "a successful retry clears the queue")
+        // The transport records the write before the flusher settles it, so
+        // wait for the queue rather than asserting the instant it lands.
+        try await waitUntil("a successful retry clears the queue") { !flusher.hasPendingWrites }
     }
 
     func testAContractRejectionDropsTheWriteInsteadOfRetryingForever() async throws {
