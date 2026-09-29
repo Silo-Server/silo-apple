@@ -81,6 +81,9 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     /// (year / runtime / maturity) and outlined quality chips
     /// (4K / HDR / ATMOS / CC).
     let factsLine: [TVHeroFactToken]
+    /// External ratings in server order, shown inline after the facts and
+    /// before the genre labels.
+    var ratings: [DisplayRating] = []
     /// Optional "Starring A, B, C" line floated on the right of the hero
     /// at mid-height. Hidden when nil.
     let starringText: String?
@@ -352,7 +355,7 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
 
     @ViewBuilder
     private var factsRow: some View {
-        if !factsLine.isEmpty || !sourceTokens.isEmpty || ratingChip != nil {
+        if !factsLine.isEmpty || !ratings.isEmpty || !sourceTokens.isEmpty || ratingChip != nil {
             HStack(spacing: 14) {
                 if let ratingChip, !ratingChip.isEmpty {
                     ratingBadge(ratingChip)
@@ -364,11 +367,21 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
                     factsItem(token)
                 }
 
-                ForEach(Array(sourceTokens.enumerated()), id: \.offset) { index, token in
+                ForEach(Array(ratings.enumerated()), id: \.offset) { index, rating in
                     if !factsLine.isEmpty || index > 0 { metadataDivider }
+                    RatingEntryView(rating: rating, size: 24)
+                        .foregroundColor(.white)
+                }
+
+                ForEach(Array(sourceTokens.enumerated()), id: \.offset) { index, token in
+                    if !factsLine.isEmpty || !ratings.isEmpty || index > 0 { metadataDivider }
                     Text(token)
                         .font(.system(size: 24, weight: .medium))
                         .foregroundColor(Color.white.opacity(0.90))
+                        .lineLimit(1)
+                        // Genres give way first when a long ratings row
+                        // leaves too little width; a score never truncates.
+                        .layoutPriority(-1)
                 }
             }
         }

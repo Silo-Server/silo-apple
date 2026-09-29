@@ -966,6 +966,7 @@ struct TVItemDetailView: View {
                 ratingTmdb: item.ratingTmdb,
                 ratingRtCritic: item.ratingRtCritic,
                 ratingRtAudience: item.ratingRtAudience,
+                ratings: item.ratings,
                 imdbId: item.imdbId,
                 tmdbId: item.tmdbId,
                 tvdbId: item.tvdbId,

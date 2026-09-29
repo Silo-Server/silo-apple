@@ -73,9 +73,6 @@ enum PhoneHeroMetadata {
         ), runtime > 0 {
             tokens.append(.text(formatRuntime(runtime)))
         }
-        if let imdb = detail.ratingImdb {
-            tokens.append(.text(String(format: "★ %.1f", imdb)))
-        }
         tokens.append(contentsOf: qualityTokens(from: detail, version: selectedVersion))
         return tokens
     }
@@ -85,9 +82,6 @@ enum PhoneHeroMetadata {
         if let year = detail.year, year > 0 { tokens.append(.text(String(year))) }
         if let count = detail.seasonCount, count > 0 {
             tokens.append(.text("\(count) Season\(count == 1 ? "" : "s")"))
-        }
-        if let imdb = detail.ratingImdb {
-            tokens.append(.text(String(format: "★ %.1f", imdb)))
         }
         tokens.append(contentsOf: qualityTokens(from: detail))
         return tokens

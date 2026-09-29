@@ -35,6 +35,9 @@ extension ItemDetail {
         self.ratingTmdb = value.ratingTmdb
         self.ratingRtCritic = try value.ratingRtCritic.map { try catalogLegacyInt($0) }
         self.ratingRtAudience = try value.ratingRtAudience.map { try catalogLegacyInt($0) }
+        self.ratings = value.ratings?.map {
+            DisplayRating(source: $0.source, name: $0.name, score: $0.score, display: $0.display)
+        }
         self.imdbId = value.imdbId
         self.tmdbId = value.tmdbId
         self.tvdbId = value.tvdbId

@@ -2,16 +2,16 @@ import SwiftUI
 
 /// Renders an overlay icon. SF Symbol-backed glyphs cover the generic
 /// set ("monitor", "star", "tv", …). Brand marks (HDR10, DV, Atmos,
-/// AV1, RT tomato) are drawn as small text tags inside a tinted
-/// background so they read at 10-pt — full SVG marks would be lost at
-/// that size and ship a binary surface we don't otherwise need.
+/// AV1) are drawn as small text tags inside a tinted background so they
+/// read at 10-pt — full SVG marks would be lost at that size and ship a
+/// binary surface we don't otherwise need. Rating badges draw no icon:
+/// their label carries the source's text mark.
 struct OverlayIcon: View {
     let iconId: OverlayIconId
     let size: CGFloat
-    /// Tint applied to SF Symbol glyphs and brand text. Brand marks
-    /// keep their official color tag when `tint == nil` (e.g. Tomato
-    /// red), but follow the preset's foreground when a tint is given
-    /// (e.g. `.minimal` paints everything in the accent color).
+    /// Tint applied to SF Symbol glyphs and brand text; white when nil.
+    /// A preset passes one to paint marks in its own foreground (e.g.
+    /// `.minimal` paints everything in the accent color).
     let tint: Color?
 
     var body: some View {
@@ -21,10 +21,6 @@ struct OverlayIcon: View {
         case .dolbyVision:  BrandBadge(text: "DV",    fallbackBackground: .clear, fallbackForeground: tint ?? .white, size: size)
         case .atmos:        BrandBadge(text: "ATMOS", fallbackBackground: .clear, fallbackForeground: tint ?? .white, size: size)
         case .av1:          BrandBadge(text: "AV1",   fallbackBackground: .clear, fallbackForeground: tint ?? .white, size: size)
-        case .tomato:
-            Image(systemName: "fork.knife.circle.fill")
-                .font(.system(size: size, weight: .semibold))
-                .foregroundColor(tint ?? Color(red: 0.98, green: 0.20, blue: 0.04))
         default:
             Image(systemName: symbolName(for: iconId))
                 .font(.system(size: size, weight: .semibold))

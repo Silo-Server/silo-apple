@@ -227,12 +227,17 @@ private extension OverlayRegistry {
 
 private extension OverlayRegistry {
 
-    static func formatRating(_ value: Double?) -> String? {
-        value.map { String(format: "%.1f", $0) }
+    // A rating badge carries its source's mark in the label ("IMDb 8.5",
+    // "RT 93%"), the same plain-text mark title pages use, so a score never
+    // shows without its source. Badges draw no source artwork, so they are
+    // not icon-capable and the per-badge icon toggle does not apply. (TMDB's
+    // logo is too wide for a badge; title pages use it instead.)
+    static func ratingLabel(_ mark: String, _ value: Double?) -> String? {
+        value.map { "\(mark) \(DisplayRating.oneDecimal($0))" }
     }
 
-    static func formatPercent(_ value: Int?) -> String? {
-        value.map { "\($0)%" }
+    static func ratingLabel(_ mark: String, _ value: Int?) -> String? {
+        value.map { "\(mark) \($0)%" }
     }
 
     static let ratings: [OverlayDef] = [
@@ -240,37 +245,33 @@ private extension OverlayRegistry {
             id: .ratingImdb,
             defaultPosition: .topRight,
             defaultEnabled: false,
-            iconId: .star,
             defaultAccent: "#f5c518",
-            iconCapable: true,
-            getValue: { formatRating($0.ratingImdb) }
+            iconCapable: false,
+            getValue: { ratingLabel("IMDb", $0.ratingImdb) }
         ),
         OverlayDef(
             id: .ratingTmdb,
             defaultPosition: .topRight,
             defaultEnabled: false,
-            iconId: .star,
             defaultAccent: "#01b4e4",
-            iconCapable: true,
-            getValue: { formatRating($0.ratingTmdb) }
+            iconCapable: false,
+            getValue: { ratingLabel("TMDB", $0.ratingTmdb) }
         ),
         OverlayDef(
             id: .ratingRt,
             defaultPosition: .topRight,
             defaultEnabled: false,
-            iconId: .tomato,
             defaultAccent: "#fa320a",
-            iconCapable: true,
-            getValue: { formatPercent($0.ratingRtCritic) }
+            iconCapable: false,
+            getValue: { ratingLabel("RT", $0.ratingRtCritic) }
         ),
         OverlayDef(
             id: .ratingRtAudience,
             defaultPosition: .topRight,
             defaultEnabled: false,
-            iconId: .tomato,
             defaultAccent: "#fa6400",
-            iconCapable: true,
-            getValue: { formatPercent($0.ratingRtAudience) }
+            iconCapable: false,
+            getValue: { ratingLabel("RT Audience", $0.ratingRtAudience) }
         ),
         OverlayDef(
             id: .contentRating,
@@ -403,10 +404,10 @@ private extension OverlayRegistry {
             id: .rtCertifiedFresh,
             defaultPosition: .topRight,
             defaultEnabled: false,
-            iconId: .tomato,
             defaultAccent: "#fa320a",
-            iconCapable: true,
-            getValue: { $0.rtCertifiedFresh == true ? "Certified Fresh" : nil }
+            // Same rule as the rating badges: the source's text mark, no artwork.
+            iconCapable: false,
+            getValue: { $0.rtCertifiedFresh == true ? "RT Certified Fresh" : nil }
         ),
     ]
 }

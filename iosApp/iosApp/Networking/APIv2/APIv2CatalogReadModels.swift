@@ -63,6 +63,9 @@ enum APIv2CatalogRead {
         let ratingRtAudience: Int64?
         let ratingRtCritic: Int64?
         let ratingTmdb: Double?
+        /// The external ratings a title page shows, chosen, ordered and
+        /// formatted by the server. Absent from servers that predate it.
+        let ratings: [CatalogRating]?
         let recap: Marker?
         let releaseDate: String?
         let runtime: Int64?
@@ -195,6 +198,13 @@ enum APIv2CatalogRead {
     struct AudiobookSeriesGroup: Decodable {
         let entries: [AudiobookRelatedItem]
         let name: String?
+    }
+
+    struct CatalogRating: Decodable {
+        let display: String
+        let name: String
+        let score: Double
+        let source: String
     }
 
     struct CastCredit: Decodable {

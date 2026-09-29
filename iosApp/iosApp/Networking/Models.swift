@@ -452,6 +452,10 @@ struct ItemDetail: Codable {
     let ratingTmdb: Double?
     let ratingRtCritic: Int?
     let ratingRtAudience: Int?
+    /// The ratings row the server chose for this title, in display order.
+    /// Nil from a server that predates it; read `displayRatings`, which
+    /// falls back to IMDb and TMDB, rather than this directly.
+    var ratings: [DisplayRating]? = nil
     let imdbId: String?
     let tmdbId: String?
     let tvdbId: String?

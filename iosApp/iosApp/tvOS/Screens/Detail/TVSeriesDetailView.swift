@@ -364,6 +364,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             ratingChip: TVHeroMetadata.contentRatingChip(from: detail),
             overview: heroOverview,
             factsLine: heroFactsLine,
+            ratings: heroRatings,
             // Series cast is intentionally painted once across Show, Season,
             // and episode focus. Episode credits are almost always identical;
             // retaining this value avoids a blank/load/change flash in the
@@ -448,6 +449,16 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             playbackDetail: matchingPlaybackDetail,
             selectedVersion: effectiveNextUpVersion
         )
+    }
+
+    /// The show's ratings in Show mode. With an episode focused, the row
+    /// follows the facts and shows that episode's own ratings once its detail
+    /// has loaded; the fixed metadata slot keeps the layout still meanwhile.
+    private var heroRatings: [DisplayRating] {
+        guard !isShowingSeriesOverview, displayedEpisode != nil else {
+            return detail.displayRatings
+        }
+        return matchingPlaybackDetail?.displayRatings ?? []
     }
 
     // MARK: - Show mode actions

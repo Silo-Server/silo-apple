@@ -104,6 +104,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
             ratingChip: PhoneHeroMetadata.contentRatingChip(from: detail),
             overview: detail.overview,
             factsLine: PhoneHeroMetadata.movieFactsLine(from: detail, version: effectiveVersion),
+            ratings: detail.displayRatings,
             creditText: PhoneHeroMetadata.creditText(from: detail),
             overlayData: OverlayData.from(detail),
             enablesArtworkParallax: SiloMediaType.isMovieLibrary(detail.type),

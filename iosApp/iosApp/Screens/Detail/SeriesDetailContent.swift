@@ -170,6 +170,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             ratingChip: PhoneHeroMetadata.contentRatingChip(from: detail),
             overview: detail.overview,
             factsLine: PhoneHeroMetadata.seriesFactsLine(from: detail),
+            ratings: detail.displayRatings,
             creditText: PhoneHeroMetadata.creditText(from: detail),
             overlayData: OverlayData.from(detail),
             enablesArtworkParallax: true,

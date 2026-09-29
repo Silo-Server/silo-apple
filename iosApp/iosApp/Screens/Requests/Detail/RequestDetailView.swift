@@ -130,6 +130,11 @@ struct RequestDetailView: View {
                         .font(.siloCaption)
                         .foregroundColor(.siloSecondaryText)
                         .lineLimit(2)
+
+                    if let tmdb = DisplayRating.tmdb(detail.voteAverage) {
+                        RatingEntryView(rating: tmdb, size: 14)
+                            .foregroundColor(.siloOnSurface)
+                    }
                 }
                 .padding(.bottom, 4)
             }
@@ -185,6 +190,11 @@ struct RequestDetailView: View {
                     .font(.siloCaption)
                     .foregroundColor(.siloSecondaryText)
                     .lineLimit(1)
+
+                if let tmdb = DisplayRating.tmdb(detail.voteAverage) {
+                    RatingEntryView(rating: tmdb, size: 26)
+                        .foregroundColor(.siloOnSurface)
+                }
 
                 if let overview = detail.overview, !overview.isEmpty {
                     Text(overview)
@@ -367,9 +377,7 @@ struct RequestDetailView: View {
         } else if let creators = detail.creators, !creators.isEmpty {
             parts.append(creators.prefix(2).joined(separator: ", "))
         }
-        if let rating = detail.voteAverage, rating > 0 {
-            parts.append(String(format: "TMDB %.1f", rating))
-        }
+        // The TMDB score renders separately as a rating entry (logo + score).
         return parts.joined(separator: " · ")
     }
 

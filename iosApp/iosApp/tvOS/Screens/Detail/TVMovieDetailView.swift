@@ -74,6 +74,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                             ratingChip: TVHeroMetadata.contentRatingChip(from: detail),
                             overview: detail.overview,
                             factsLine: TVHeroMetadata.movieFactsLine(from: detail, version: currentVersion),
+                            ratings: detail.displayRatings,
                             starringText: TVHeroMetadata.starringText(from: detail),
                             playbackSummary: TVPlaybackSelectionSummary.make(
                                 currentVersion: currentVersion,

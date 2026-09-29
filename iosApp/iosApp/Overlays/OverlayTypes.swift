@@ -152,8 +152,8 @@ struct OverlayDef {
 }
 
 /// Typed icon identifiers. Lucide icons map to SF Symbols in
-/// ``OverlayIcon``; brand marks (HDR10, DV, Atmos, AV1, Tomato) render
-/// from inline shape views.
+/// ``OverlayIcon``; brand marks (HDR10, DV, Atmos, AV1) render from
+/// inline shape views.
 enum OverlayIconId: String, Hashable {
     // generic
     case star
@@ -177,7 +177,6 @@ enum OverlayIconId: String, Hashable {
     case dolbyVision = "dolby-vision"
     case atmos
     case av1
-    case tomato
 
     /// The text a wordmark icon already spells out as the mark itself.
     /// Mirrors web's `WORDMARK_TEXT`: when a badge's label matches its
