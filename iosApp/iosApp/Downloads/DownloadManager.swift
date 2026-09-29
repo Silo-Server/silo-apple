@@ -373,14 +373,23 @@ final class DownloadManager {
     }
 
     /// On-disk backdrop, fetched by the same asset pass as the poster; nil
-    /// when the server's bundle carried none.
+    /// when the server's bundle carried none or the file is missing.
     func backdropImageURL(for record: DownloadRecord) -> URL? {
-        record.backdropFilename.flatMap { absoluteFileURL(for: record, filename: $0) }
+        existingFileURL(for: record, filename: record.backdropFilename)
     }
 
-    /// On-disk title logo, when the server's bundle carried one.
+    /// On-disk title logo, when the server's bundle carried one and the file
+    /// exists.
     func logoImageURL(for record: DownloadRecord) -> URL? {
-        record.logoFilename.flatMap { absoluteFileURL(for: record, filename: $0) }
+        existingFileURL(for: record, filename: record.logoFilename)
+    }
+
+    /// Older builds recorded artwork filenames even when the write failed, so
+    /// a recorded name alone does not prove the file is there.
+    private func existingFileURL(for record: DownloadRecord, filename: String?) -> URL? {
+        guard let url = filename.flatMap({ absoluteFileURL(for: record, filename: $0) }),
+              FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return url
     }
 
     /// The record's current speed, or nil once its progress callbacks have
@@ -1417,7 +1426,7 @@ final class DownloadManager {
             do {
                 try data.write(to: url, options: .atomic)
             } catch {
-                Self.logger.warning("download artwork write failed: \(String(describing: error), privacy: .public)")
+                Self.logger.warning("download artwork write failed: \(String(describing: error), privacy: .private)")
                 continue
             }
             guard var record = file.records[recordId] else { continue }

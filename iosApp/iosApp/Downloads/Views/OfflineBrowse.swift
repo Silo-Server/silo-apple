@@ -266,7 +266,7 @@ struct OfflineDownloadDetailView: View {
             sourceTokens: sourceTokens(record),
             ratingChip: ratingChip,
             overview: manifest?.overview,
-            factsLine: factsLine,
+            factsLine: factsLine(record),
             enablesArtworkParallax: true,
             actions: { actions(record) },
             belowOverview: { EmptyView() }
@@ -328,8 +328,19 @@ struct OfflineDownloadDetailView: View {
 
     // MARK: - Hero metadata
 
-    private var factsLine: [PhoneHeroFactToken] {
+    /// Episodes lead with the series and episode number, so the hero's
+    /// two-line metadata never truncates what identifies them.
+    private func factsLine(_ record: DownloadRecord) -> [PhoneHeroFactToken] {
         var tokens: [PhoneHeroFactToken] = []
+        if record.type == "episode" {
+            if let series = record.seriesTitle ?? manifest?.seriesTitle, !series.isEmpty {
+                tokens.append(.text(series))
+            }
+            let tag = [record.seasonNumber.map { "S\($0)" }, record.episodeNumber.map { "E\($0)" }]
+                .compactMap { $0 }
+                .joined(separator: " ")
+            if !tag.isEmpty { tokens.append(.text(tag)) }
+        }
         if let year = manifest?.year, year > 0 { tokens.append(.text(String(year))) }
         if let runtime = manifest?.runtime, runtime > 0 {
             tokens.append(.text(PhoneHeroMetadata.formatRuntime(runtime)))
@@ -340,19 +351,8 @@ struct OfflineDownloadDetailView: View {
     }
 
     private func sourceTokens(_ record: DownloadRecord) -> [String] {
-        var tokens: [String] = []
-        if record.type == "episode" {
-            if let series = record.seriesTitle ?? manifest?.seriesTitle, !series.isEmpty {
-                tokens.append(series)
-            }
-            let tag = [record.seasonNumber.map { "S\($0)" }, record.episodeNumber.map { "E\($0)" }]
-                .compactMap { $0 }
-                .joined(separator: " ")
-            if !tag.isEmpty { tokens.append(tag) }
-        } else if let genres = manifest?.genres, !genres.isEmpty {
-            tokens.append(genres.prefix(2).joined(separator: ", "))
-        }
-        return tokens
+        guard record.type != "episode", let genres = manifest?.genres, !genres.isEmpty else { return [] }
+        return [genres.prefix(2).joined(separator: ", ")]
     }
 
     private var ratingChip: String? {
