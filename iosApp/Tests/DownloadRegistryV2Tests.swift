@@ -94,6 +94,20 @@ final class DownloadRegistryV2Tests: XCTestCase {
         } catch {}
     }
 
+    func testCapabilityLabelsPresetsWithTheServerResolutionCeiling() async throws {
+        let (api, _, auth) = try await client()
+        stub.reply(200, #"{"state":"available","allowed":true,"revision":"r1","enabled":true,"download_allowed":true,"quality_presets":["original","20mbps","1mbps"],"quality_options":[{"preset":"original"},{"preset":"20mbps","bitrate_kbps":20000,"max_height":2160},{"preset":"1mbps","bitrate_kbps":1000,"max_height":480}],"transcode_enabled":true,"transcode_user_allowed":true,"season_download":true,"series_monitoring":false,"monitoring_modes":[],"bounded_creation":true,"subscription_mutations":true,"bounded_subscription_sync":true,"subscription_reads":true,"bounded_manifests":true,"file_delivery":true,"proxy_delivery":false,"ordered_status":true}"#)
+        let capability = try await api.downloadCapability(auth: auth)
+        XCTAssertEqual(capability.label(for: .original), "Original")
+        XCTAssertEqual(capability.label(for: .twentyMbps), "20 Mbps · up to 4K")
+        XCTAssertEqual(capability.label(for: .oneMbps), "1 Mbps · up to 480p")
+        XCTAssertEqual(capability.label(for: .tenMbps), "10 Mbps", "a preset the server does not describe keeps its bitrate label")
+
+        // The ceiling survives the on-disk capability cache.
+        let cached = try JSONDecoder().decode(DownloadCapability.self, from: JSONEncoder().encode(capability))
+        XCTAssertEqual(cached.label(for: .oneMbps), "1 Mbps · up to 480p")
+    }
+
     func testCapabilityCachedWithoutStateReadsAsUnusable() throws {
         let cached = #"{"enabled":true,"downloadAllowed":true,"qualityPresets":["original"],"transcodeEnabled":false,"transcodeUserAllowed":false,"seasonDownload":false,"seriesMonitoring":false,"monitoringModes":[]}"#
         let capability = try JSONDecoder().decode(DownloadCapability.self, from: Data(cached.utf8))

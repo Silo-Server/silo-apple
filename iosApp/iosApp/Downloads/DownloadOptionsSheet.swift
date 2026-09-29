@@ -157,7 +157,7 @@ struct DownloadOptionsSheet: View {
     }
 
     private var summaryDetail: String {
-        let qualityLabel = DownloadFormat(rawValue: quality)?.displayName ?? quality
+        let qualityLabel = DownloadFormat(rawValue: quality).map(label(for:)) ?? quality
         let versionLabel = effectiveVersion.map(DetailPlaybackFormatting.versionPrimaryText)
             ?? (fileId == nil ? "Auto version" : "Selected version")
         var parts = [versionLabel, qualityLabel]
@@ -291,7 +291,7 @@ struct DownloadOptionsSheet: View {
             if formats.count > 1 {
                 ForEach(formats, id: \.self) { format in
                     optionButton(
-                        title: format.displayName,
+                        title: label(for: format),
                         detail: qualityDetail(for: format),
                         isSelected: quality == format.rawValue
                     ) {
@@ -300,7 +300,7 @@ struct DownloadOptionsSheet: View {
                 }
             } else {
                 optionButton(
-                    title: formats.first?.displayName ?? DownloadFormat.original.displayName,
+                    title: label(for: formats.first ?? .original),
                     detail: qualityDetail(for: formats.first ?? .original),
                     isSelected: true,
                     isEnabled: false
@@ -311,6 +311,10 @@ struct DownloadOptionsSheet: View {
         } footer: {
             Text("This starts from your global Downloads default. Changing it here applies only to this download.")
         }
+    }
+
+    private func label(for format: DownloadFormat) -> String {
+        manager.capability?.label(for: format) ?? format.displayName
     }
 
     private func qualityDetail(for format: DownloadFormat) -> String {

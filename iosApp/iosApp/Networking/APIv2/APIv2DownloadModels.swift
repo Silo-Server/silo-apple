@@ -13,11 +13,21 @@ struct APIv2DownloadCapability: Decodable, Sendable {
     let enabled: Bool
     let downloadAllowed: Bool
     let qualityPresets: [String]
+    /// One entry per `qualityPresets` value, in the same order.
+    let qualityOptions: [APIv2DownloadQualityOption]?
     let transcodeEnabled: Bool
     let transcodeUserAllowed: Bool
     let seasonDownload: Bool
     let seriesMonitoring: Bool
     let monitoringModes: [String]
+}
+
+/// `DownloadQualityOption`: a preset's video bitrate cap and the tallest
+/// output it can produce on this server. Both are absent for `original`.
+struct APIv2DownloadQualityOption: Decodable, Sendable {
+    let preset: String
+    let bitrateKbps: Int?
+    let maxHeight: Int?
 }
 
 /// `DownloadEntry`: one row of this device's download registry.

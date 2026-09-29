@@ -36,7 +36,7 @@ struct DownloadsSettingsView: View {
                 if formats.count > 1 {
                     Picker("Quality", selection: $settings.preferredFormat) {
                         ForEach(formats, id: \.self) { format in
-                            Text(format.displayName).tag(format.rawValue)
+                            Text(manager.capability?.label(for: format) ?? format.displayName).tag(format.rawValue)
                         }
                     }
                 }
@@ -47,7 +47,7 @@ struct DownloadsSettingsView: View {
                 // quality picker, which is hidden when the server offers a
                 // single preset.
                 if formats.count > 1 {
-                    Text("Original prefers source quality and may prepare a compatibility file if this device needs one. Bitrate presets are prepared on the server before download starts.")
+                    Text("Original prefers source quality and may prepare a compatibility file if this device needs one. Bitrate presets are prepared on the server before download starts, at up to the resolution shown.")
                 }
             }
             .listRowBackground(Color.siloGroupedCell)
