@@ -82,7 +82,8 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     /// (4K / HDR / ATMOS / CC).
     let factsLine: [TVHeroFactToken]
     /// External ratings in server order, shown inline after the facts and
-    /// before the genre labels.
+    /// before the genre labels. The row stays on one line: entries that
+    /// don't fit drop from the end.
     var ratings: [DisplayRating] = []
     /// Optional "Starring A, B, C" line floated on the right of the hero
     /// at mid-height. Hidden when nil.
@@ -357,20 +358,15 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     private var factsRow: some View {
         if !factsLine.isEmpty || !ratings.isEmpty || !sourceTokens.isEmpty || ratingChip != nil {
             HStack(spacing: 14) {
-                if let ratingChip, !ratingChip.isEmpty {
-                    ratingBadge(ratingChip)
-                        .fixedSize(horizontal: true, vertical: false)
-                }
-
-                ForEach(Array(factsLine.enumerated()), id: \.offset) { index, token in
-                    if index > 0 { metadataDivider }
-                    factsItem(token)
-                }
-
-                ForEach(Array(ratings.enumerated()), id: \.offset) { index, rating in
-                    if !factsLine.isEmpty || index > 0 { metadataDivider }
-                    RatingEntryView(rating: rating, size: 24)
-                        .foregroundColor(.white)
+                if hasLeadingFacts {
+                    // The row never wraps. When the ratings don't all fit,
+                    // whole entries drop from the end of the server's list;
+                    // genres give way before any rating does.
+                    ViewThatFits(in: .horizontal) {
+                        ForEach(Array(factsRowRatingCandidates.enumerated()), id: \.offset) { _, shown in
+                            leadingFacts(ratings: shown)
+                        }
+                    }
                 }
 
                 ForEach(Array(sourceTokens.enumerated()), id: \.offset) { index, token in
@@ -383,6 +379,37 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
                         // leaves too little width; a score never truncates.
                         .layoutPriority(-1)
                 }
+            }
+        }
+    }
+
+    private var hasLeadingFacts: Bool {
+        !(ratingChip ?? "").isEmpty || !factsLine.isEmpty || !ratings.isEmpty
+    }
+
+    /// Every rating first, then one fewer at a time. A single empty row
+    /// keeps the chip and facts when there are no ratings.
+    private var factsRowRatingCandidates: [[DisplayRating]] {
+        ratings.isEmpty ? [[]] : DisplayRating.rowCandidates(ratings)
+    }
+
+    /// The rating chip, facts and the given ratings, none of which truncate.
+    private func leadingFacts(ratings shown: [DisplayRating]) -> some View {
+        HStack(spacing: 14) {
+            if let ratingChip, !ratingChip.isEmpty {
+                ratingBadge(ratingChip)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+
+            ForEach(Array(factsLine.enumerated()), id: \.offset) { index, token in
+                if index > 0 { metadataDivider }
+                factsItem(token)
+            }
+
+            ForEach(Array(shown.enumerated()), id: \.offset) { index, rating in
+                if !factsLine.isEmpty || index > 0 { metadataDivider }
+                RatingEntryView(rating: rating, size: 24)
+                    .foregroundColor(.white)
             }
         }
     }

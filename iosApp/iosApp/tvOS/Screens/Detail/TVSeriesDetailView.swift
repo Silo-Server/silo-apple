@@ -201,6 +201,9 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     let selectedNextUpAudioTrackIndex: Int?
     let selectedNextUpSubtitleTrackIndex: Int?
     let nextUpPlaybackDetail: ItemDetail?
+    /// The next-up episode's catalog item, kept when its playback details
+    /// fail to load so the hero can still show the episode's ratings.
+    let nextUpCatalogDetail: ItemDetail?
     var nextUpSubtitleOverrideCleared = false
     let trailerEntries: [TrailerRailEntry]
     let onSelectTrailer: (TrailerRailEntry) -> Void
@@ -458,7 +461,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         guard !isShowingSeriesOverview, displayedEpisode != nil else {
             return detail.displayRatings
         }
-        return matchingPlaybackDetail?.displayRatings ?? []
+        return (matchingPlaybackDetail ?? matchingCatalogDetail)?.displayRatings ?? []
     }
 
     // MARK: - Show mode actions
@@ -985,6 +988,14 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             return nil
         }
         return nextUpPlaybackDetail
+    }
+
+    private var matchingCatalogDetail: ItemDetail? {
+        guard let playbackEpisode,
+              nextUpCatalogDetail?.contentId == playbackEpisode.contentId else {
+            return nil
+        }
+        return nextUpCatalogDetail
     }
 
     private var nextUpVersions: [FileVersion] {

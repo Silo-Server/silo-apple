@@ -25,6 +25,9 @@ struct TVItemDetailView: View {
     @State private var didClearSubtitleOverride = false
     @State private var didClearNextUpSubtitleOverride = false
     @State private var nextUpPlaybackDetail: ItemDetail?
+    /// The next-up episode's catalog item. The hero reads its ratings when
+    /// the playback details for that episode could not be loaded.
+    @State private var nextUpCatalogDetail: ItemDetail?
     /// Series owns one in-place episode selection. `nil` means the Show tab
     /// and its suggested next episode are active.
     @State private var activeSeriesEpisodeContentId: String?
@@ -137,6 +140,7 @@ struct TVItemDetailView: View {
             didClearSubtitleOverride = false
             didClearNextUpSubtitleOverride = false
             nextUpPlaybackDetail = nil
+            nextUpCatalogDetail = nil
             if !isReturning {
                 activeSeriesEpisodeContentId = entryContext?.episodeContentId
             }
@@ -297,6 +301,7 @@ struct TVItemDetailView: View {
                 selectedNextUpAudioTrackIndex: preferredNextUpAudioTrackIndex,
                 selectedNextUpSubtitleTrackIndex: preferredNextUpSubtitleTrackIndex,
                 nextUpPlaybackDetail: nextUpPlaybackDetail,
+                nextUpCatalogDetail: nextUpCatalogDetail,
                 nextUpSubtitleOverrideCleared: didClearNextUpSubtitleOverride,
                 trailerEntries: trailerEntries(for: detail),
                 onSelectTrailer: playTrailer,
@@ -756,6 +761,7 @@ struct TVItemDetailView: View {
     private func loadSeriesNextUpPlaybackDetail(for detail: ItemDetail) async {
         guard let nextUp = seriesNextUpEpisode(for: detail) else {
             nextUpPlaybackDetail = nil
+            nextUpCatalogDetail = nil
             isLoadingNextUpPlaybackDetail = false
             didLoadNextUpPlaybackDetail = false
             preferredNextUpFileId = nil
@@ -770,6 +776,7 @@ struct TVItemDetailView: View {
         )
         let usableCached = cached?.versions?.isEmpty == false ? cached : nil
         nextUpPlaybackDetail = usableCached
+        nextUpCatalogDetail = nil
         isLoadingNextUpPlaybackDetail = true
         didLoadNextUpPlaybackDetail = usableCached != nil
         preferredNextUpFileId = nil
@@ -793,6 +800,7 @@ struct TVItemDetailView: View {
             }
             let item = try await MetadataRequestPool.shared.itemDetail(contentId: nextUp.contentId, libraryId: libraryId)
             guard !Task.isCancelled else { return }
+            nextUpCatalogDetail = item
             let enriched = await enrichPlaybackMetadata(for: item, contentId: nextUp.contentId)
             guard !Task.isCancelled else { return }
             let resolved: ItemDetail?

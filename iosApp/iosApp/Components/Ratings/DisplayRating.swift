@@ -63,7 +63,14 @@ extension DisplayRating {
     /// one. The page shows the first row that fits on one line, so entries
     /// drop from the end instead of wrapping.
     static func phoneRowCandidates(_ ratings: [DisplayRating]) -> [[DisplayRating]] {
-        stride(from: min(ratings.count, phoneLimit), to: 0, by: -1)
+        rowCandidates(ratings, limit: phoneLimit)
+    }
+
+    /// The rows a one-line ratings row tries, longest first: at most `limit`
+    /// entries in server order, then one fewer at a time down to one. Empty
+    /// when there are no ratings.
+    static func rowCandidates(_ ratings: [DisplayRating], limit: Int = .max) -> [[DisplayRating]] {
+        stride(from: min(ratings.count, limit), to: 0, by: -1)
             .map { Array(ratings.prefix($0)) }
     }
 

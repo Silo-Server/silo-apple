@@ -96,6 +96,23 @@ final class DisplayRatingTests: XCTestCase {
         XCTAssertEqual(DisplayRating.phoneRowCandidates([]), [])
     }
 
+    func testTVRowTriesEveryPrefixLongestFirst() {
+        let four = ["imdb", "tmdb", "rt_critic", "mdblist"].map {
+            DisplayRating(source: $0, name: $0, score: 80, display: "8.0")
+        }
+        XCTAssertEqual(
+            DisplayRating.rowCandidates(four).map { $0.map(\.source) },
+            [
+                ["imdb", "tmdb", "rt_critic", "mdblist"],
+                ["imdb", "tmdb", "rt_critic"],
+                ["imdb", "tmdb"],
+                ["imdb"],
+            ],
+            "no limit: the whole list first, then whole entries drop from the end"
+        )
+        XCTAssertEqual(DisplayRating.rowCandidates([]), [])
+    }
+
     // MARK: Card summary
 
     func testPrimaryCardIsIMDbElseTMDB() {
