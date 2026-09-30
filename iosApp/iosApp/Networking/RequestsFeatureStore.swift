@@ -43,28 +43,29 @@ final class RequestsFeatureStore {
         let gen = generation
         let status = try? await api.requestsStatus()
         guard gen == generation else { return }
-        if let status {
-            isEnabled = status.isAvailable
-        }
-        guard isEnabled else {
-            canModerate = false
-            return
-        }
-        do {
-            let moderation = try await api.adminRequestCapabilities()
-            guard gen == generation else { return }
-            canModerate = moderation.available
-        } catch APIv2Error.problem {
-            // The server answered: not an admin, not the primary profile, or
-            // no integration configured.
-            guard gen == generation else { return }
-            canModerate = false
-        } catch {
-            // Transport trouble: keep the previous value, like `isEnabled`.
-        }
         // On error, keep the previous value: a transient failure shouldn't
         // yank an already-visible entry point, and foreground/auth-state
         // transitions retry naturally.
+        let enabled = status?.isAvailable ?? isEnabled
+        var moderates = canModerate
+        if !enabled {
+            moderates = false
+        } else {
+            do {
+                moderates = try await api.adminRequestCapabilities().available
+            } catch APIv2Error.problem {
+                // The server answered: not an admin, not the primary
+                // profile, or no integration configured.
+                moderates = false
+            } catch {
+                // Transport trouble: keep the previous value.
+            }
+            guard gen == generation else { return }
+        }
+        // Published together, moderation first: a screen that appears when
+        // Requests does already knows whether to load the approval queue.
+        canModerate = moderates
+        isEnabled = enabled
     }
 
     func reset() {

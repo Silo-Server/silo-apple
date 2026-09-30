@@ -154,7 +154,7 @@ struct RequestDetailView: View {
     #if os(iOS)
     private var topControls: some View {
         let showsClose = onClose != nil
-        let showsBack = !showsClose && !router.itemDetailPath.isEmpty
+        let showsBack = !showsClose && (!router.itemDetailPath.isEmpty || !router.path.isEmpty)
         return PhoneDetailTopChrome(
             title: viewModel.detail?.title ?? "",
             isScrollGlassEnabled: UIDevice.current.userInterfaceIdiom == .phone

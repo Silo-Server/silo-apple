@@ -22,6 +22,13 @@ final class RequestsEventBus {
     }
 
     func publishModeration(_ request: MediaRequest) {
+        let cache = RequestDetailCache.shared
+        cache.unpinModeration(request)
+        // An admin deciding on their own request: their own lists update too.
+        let key = RequestDetailCache.Key(mediaType: request.mediaType, tmdbId: request.tmdbId)
+        if cache.ownRecord(key)?.id == request.id {
+            publish(request)
+        }
         lastModeration = request
     }
 

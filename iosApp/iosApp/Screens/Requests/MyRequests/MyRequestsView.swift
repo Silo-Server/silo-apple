@@ -82,6 +82,10 @@ private struct PhoneMyRequestsView: View {
         .onChange(of: RequestsEventBus.shared.lastModeration) { _, record in
             if let record { approvals.applyModeration(record) }
         }
+        .onChange(of: RequestsFeatureStore.shared.canModerate) { _, canModerate in
+            // Moderation can be confirmed after the page's first load.
+            if canModerate { Task { await approvals.load() } }
+        }
         .onChange(of: viewModel.buckets.map(\.bucket)) { _, buckets in
             // A filter whose last request moved on would leave a blank list.
             if let filter, !buckets.contains(filter) { self.filter = nil }

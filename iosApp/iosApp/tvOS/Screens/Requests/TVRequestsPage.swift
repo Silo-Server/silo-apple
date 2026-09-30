@@ -66,6 +66,11 @@ struct TVRequestsPage: View {
             guard let record else { return }
             approvals.applyModeration(record)
         }
+        .onChange(of: RequestsFeatureStore.shared.canModerate) { _, canModerate in
+            // Moderation can be confirmed after the page's first load.
+            guard canModerate, hasLoaded, mode != .mine else { return }
+            Task { await approvals.load() }
+        }
         .overlay(alignment: .bottomLeading) {
             if let message = actionMessage {
                 Text(message)
@@ -483,7 +488,13 @@ struct TVRequestsPage: View {
             progress = recordProgress
             statusText = RequestRowCopy.status(record, progress: recordProgress)
         case .result(let result):
+            // Like the detail page: a title that can't be requested has no
+            // track to show.
             progress = RequestProgress(availability: result.availability, request: result.request)
+                .flatMap { progress in
+                    if case .unavailable = progress.display { return nil }
+                    return progress
+                }
             statusText = progress?.longLabel
             if let rating = result.voteAverage, rating > 0 {
                 meta.append(String(format: "TMDB %.1f", rating))

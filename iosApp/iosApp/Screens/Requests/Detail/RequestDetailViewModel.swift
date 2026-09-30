@@ -244,10 +244,11 @@ final class RequestDetailViewModel {
         async let failedRead = api.adminRequests(outcome: .failed, mediaType: mediaType, tmdbId: tmdbId)
         let (pending, failed) = try await (pendingRead, failedRead)
         let matches = (pending + failed).filter { $0.mediaType == mediaType && $0.tmdbId == tmdbId }
-        // Several users can have failed requests for one title: keep the
-        // exact request the admin opened, while it still needs a decision.
-        if let current = moderationRecord?.id, let same = matches.first(where: { $0.id == current }) {
-            return ModerationLookup(record: same)
+        // Several users can have failed requests for one title: stay on the
+        // exact request the admin opened. Once it's decided, offer nothing
+        // rather than another requester's request.
+        if let current = moderationRecord?.id {
+            return ModerationLookup(record: matches.first(where: { $0.id == current }))
         }
         return ModerationLookup(record: matches.first)
     }

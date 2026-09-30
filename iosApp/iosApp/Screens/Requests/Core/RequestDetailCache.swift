@@ -39,6 +39,9 @@ final class RequestDetailCache {
     /// Titles waiting to be warmed, shared by every list that asked.
     private var prefetchQueue: [(key: Key, api: SiloAPI)] = []
     private var prefetchTask: Task<Void, Never>?
+    /// Bumped by `clear()`: a drain from the previous session stops at its
+    /// next step instead of consuming the next session's queue.
+    private var generation = 0
 
     /// Bounded so a long browsing session can't grow without limit.
     private static let detailLimit = 80
@@ -111,10 +114,20 @@ final class RequestDetailCache {
             if next[key] == nil { next[key] = record }
         }
         moderationRecords = next
+        // A complete read no longer listing a pinned request means someone
+        // already decided on it; its pin must not bring the buttons back.
+        let queued = Set(records.map(\.id))
+        pinnedModeration = pinnedModeration.filter { queued.contains($0.value.id) }
     }
 
     func pinModeration(_ record: MediaRequest) {
         pinnedModeration[Key(mediaType: record.mediaType, tmdbId: record.tmdbId)] = record
+    }
+
+    /// Drops the pin once the request has been decided on.
+    func unpinModeration(_ record: MediaRequest) {
+        let key = Key(mediaType: record.mediaType, tmdbId: record.tmdbId)
+        if pinnedModeration[key]?.id == record.id { pinnedModeration.removeValue(forKey: key) }
     }
 
     func seed(_ result: RequestMediaResult) {
@@ -122,6 +135,7 @@ final class RequestDetailCache {
     }
 
     func clear() {
+        generation &+= 1
         prefetchTask?.cancel()
         prefetchTask = nil
         prefetchQueue.removeAll()
@@ -162,16 +176,17 @@ final class RequestDetailCache {
     }
 
     private func drainPrefetchQueue() async {
-        while !Task.isCancelled, !prefetchQueue.isEmpty {
+        let session = generation
+        while !Task.isCancelled, session == generation, !prefetchQueue.isEmpty {
             let (key, api) = prefetchQueue.removeFirst()
             guard details[key] == nil,
                   let detail = try? await api.requestsDetail(mediaType: key.mediaType, tmdbId: key.tmdbId),
-                  !Task.isCancelled else { continue }
+                  !Task.isCancelled, session == generation else { continue }
             store(detail)
             Self.warmArtwork([(detail.backdropPath, .backdrop)])
         }
         // `clear()` already dropped a cancelled task; a new one may run.
-        if !Task.isCancelled { prefetchTask = nil }
+        if !Task.isCancelled, session == generation { prefetchTask = nil }
     }
 
     /// Pulls artwork bytes into the shared disk cache, so the detail hero

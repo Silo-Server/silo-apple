@@ -56,6 +56,10 @@ private struct PhoneRequestsHubView: View {
         .onChange(of: RequestsEventBus.shared.lastModeration) { _, _ in
             viewModel.applyModeration()
         }
+        .onChange(of: RequestsFeatureStore.shared.canModerate) { _, _ in
+            // Moderation can be confirmed after the hub's first load.
+            viewModel.applyModeration()
+        }
     }
 
     // MARK: - Content
