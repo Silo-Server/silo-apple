@@ -67,6 +67,7 @@ final class RequestDetailViewModel {
 
     private let api: SiloAPI
     private let cache: RequestDetailCache
+    private let holdLifetime: Duration
     /// Opened from an approval queue: the page describes that exact
     /// request, even when the admin also has a request for the title.
     let openedForModeration: Bool
@@ -83,12 +84,14 @@ final class RequestDetailViewModel {
         mediaType: RequestMediaType,
         tmdbId: Int,
         api: SiloAPI = .shared,
-        cache: RequestDetailCache = .shared
+        cache: RequestDetailCache = .shared,
+        holdLifetime: Duration = .seconds(ModerationHold.lifetime)
     ) {
         self.mediaType = mediaType
         self.tmdbId = tmdbId
         self.api = api
         self.cache = cache
+        self.holdLifetime = holdLifetime
         // First frame from what the app already knows — the finished page
         // when this title was read before, the tapped card or record
         // otherwise — and the status from the user's own records. `load()`
@@ -240,7 +243,7 @@ final class RequestDetailViewModel {
                 moderationRecord = moderation.record
                 // An unchanged request doesn't show what a lost call did.
                 if let hold = moderationHold, hold.isSettled(by: moderation.record) {
-                    moderationHold = nil
+                    releaseModerationHold()
                 }
             }
             // The server's answer now decides the CTA; release the hold.
@@ -316,13 +319,31 @@ final class RequestDetailViewModel {
             await load()
         } catch where RequestMutationFailure.isUncertain(error) {
             // Never resend: hide the decision until a read shows it landed.
-            moderationHold = ModerationHold(request: moderationRecord)
+            holdModeration(moderationRecord)
             actionErrorMessage = RequestErrorCopy.unconfirmedModerationMessage
             if !RequestMutationFailure.isOwnerChanged(error) { await load() }
         } catch {
             actionErrorMessage = RequestErrorCopy.message(for: error)
         }
         isModerating = false
+    }
+
+    /// Ends the hold when its lifetime runs out even if no read settles it
+    /// (`ModerationHold`); a newer hold keeps its own clock.
+    private func holdModeration(_ request: MediaRequest) {
+        let hold = ModerationHold(request: request)
+        moderationHold = hold
+        Task { [weak self, holdLifetime] in
+            try? await Task.sleep(for: holdLifetime)
+            guard let self, self.moderationHold == hold else { return }
+            self.releaseModerationHold()
+            await self.load()
+        }
+    }
+
+    private func releaseModerationHold() {
+        moderationHold = nil
+        if actionErrorMessage == RequestErrorCopy.unconfirmedModerationMessage { actionErrorMessage = nil }
     }
 
     func cancel() async {
