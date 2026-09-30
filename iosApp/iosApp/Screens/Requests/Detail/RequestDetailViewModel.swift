@@ -38,6 +38,10 @@ final class RequestDetailViewModel {
     /// the stage timestamps, per-quality targets, and the id to cancel.
     private(set) var record: MediaRequest?
     private(set) var isCancelling = false
+    /// A cancel was sent without a usable answer. Cancel is
+    /// `non_retryable`, so it stays hidden until a successful read of the
+    /// user's requests shows the result.
+    private(set) var isCancelUnconfirmed = false
     /// A pending or failed request for this title that the signed-in admin
     /// can decide on. Nil for everyone who can't moderate.
     private(set) var moderationRecord: MediaRequest?
@@ -83,7 +87,7 @@ final class RequestDetailViewModel {
         let key = RequestDetailCache.Key(mediaType: mediaType, tmdbId: tmdbId)
         detail = cache.firstFrameDetail(key)
         record = cache.ownRecord(key)
-        moderationRecord = cache.moderationRecord(key)
+        moderationRecord = cache.pinnedModerationRecord(key) ?? cache.moderationRecord(key)
     }
 
     var primaryAction: RequestPrimaryAction {
@@ -152,7 +156,7 @@ final class RequestDetailViewModel {
 
     /// Cancel is offered on the page while the request is still pending.
     var canCancel: Bool {
-        guard let record, !isCancelling else { return false }
+        guard let record, !isCancelling, !isCancelUnconfirmed else { return false }
         return RequestDisplayState(record: record).isCancelable
     }
 
@@ -203,6 +207,11 @@ final class RequestDetailViewModel {
     private func loadOwnRecord() async -> MediaRequest? {
         guard let mine = try? await api.myRequests() else { return record }
         cache.storeOwnRecords(mine)
+        // The list now shows what the held cancel did.
+        if isCancelUnconfirmed {
+            isCancelUnconfirmed = false
+            if actionErrorMessage == RequestErrorCopy.unconfirmedCancelMessage { actionErrorMessage = nil }
+        }
         return mine
             .filter { $0.mediaType == mediaType && $0.tmdbId == tmdbId && $0.outcome != .cancelled }
             .max { $0.createdAt < $1.createdAt }
@@ -215,7 +224,13 @@ final class RequestDetailViewModel {
         guard RequestsFeatureStore.shared.canModerate else { return ModerationLookup(record: nil) }
         let pending = try await api.adminRequests(status: .pending, outcome: .active)
         let failed = try await api.adminRequests(outcome: .failed)
-        return ModerationLookup(record: (pending + failed).first { $0.mediaType == mediaType && $0.tmdbId == tmdbId })
+        let matches = (pending + failed).filter { $0.mediaType == mediaType && $0.tmdbId == tmdbId }
+        // Several users can have failed requests for one title: keep the
+        // exact request the admin opened, while it still needs a decision.
+        if let current = moderationRecord?.id, let same = matches.first(where: { $0.id == current }) {
+            return ModerationLookup(record: same)
+        }
+        return ModerationLookup(record: matches.first)
     }
 
     private struct ModerationLookup {
@@ -261,6 +276,8 @@ final class RequestDetailViewModel {
             RequestsEventBus.shared.publish(updated)
             await load()
         } catch where RequestMutationFailure.isUncertain(error) {
+            // Never resend: hold Cancel until a fresh read shows the result.
+            isCancelUnconfirmed = true
             actionErrorMessage = RequestErrorCopy.unconfirmedCancelMessage
             if !RequestMutationFailure.isOwnerChanged(error) { await load() }
         } catch {

@@ -364,7 +364,7 @@ struct TVRequestsPage: View {
                     }
                 }
         case .approval(let record):
-            RequestMediaCard(record: record, onTap: { router.openRequestRecord(record) })
+            RequestMediaCard(record: record, onTap: { router.openModerationRecord(record) })
                 .cardWidth(SiloTheme.Skyline.densePosterCardWidth)
                 .focused($focusedKey, id: key)
                 .contextMenu {

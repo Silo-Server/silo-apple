@@ -104,18 +104,31 @@ extension APIv2Client {
     }
 
     /// Every request matching the filter, across all users, newest first.
-    /// Follows `page.next_cursor` like `myRequests()`; a partial list fails.
+    /// Like `myRequests()`: every page runs under the one owner captured at
+    /// the start, and a failed page, a missing or repeated cursor, or the
+    /// page bound fails the whole load instead of returning a partial list.
     func adminRequests(status: RequestStatus?, outcome: RequestOutcome?) async throws -> [MediaRequest] {
+        guard let auth = await tokenStore.captureOrdinaryRequestAuth(),
+              let profile = auth.profileId else { throw HTTPError.requestIdentityChanged }
+        let identity = Self.requestIdentity(auth, profile: profile)
         var records: [MediaRequest] = []
         var cursor: String?
         var seen: Set<String> = []
         for _ in 0..<40 {
+            try await gate()
             var query = ["limit": "50"]
             if let status { query["status"] = status.rawValue }
             if let outcome { query["outcome"] = outcome.rawValue }
             if let cursor { query["cursor"] = cursor }
-            let response: APIv2RequestsPage = try await requestsCall(
-                "GET", path: "/api/v2/admin/requests", query: query, status: 200)
+            let requestQuery = query
+            let raw = try await tokenStore.withOwnerFence(auth) {
+                try await mapErrors {
+                    try await http.requestData(method: "GET", path: "/api/v2/admin/requests",
+                        query: requestQuery, requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+                }
+            }
+            guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
+            let response = try HTTPClient.makeJSONDecoder().decode(APIv2RequestsPage.self, from: raw.data)
             records.append(contentsOf: response.items)
             guard let page = response.page, page.hasMore else { return records }
             guard let next = page.nextCursor, !next.isEmpty, seen.insert(next).inserted else {

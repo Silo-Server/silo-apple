@@ -1241,11 +1241,15 @@ struct TVFocusMarquee: View {
         let fallbackRuntime = content.runtimeText == nil
             ? (enrichment?.runtimeText ?? "")
             : ""
-        let parts = [content.eyebrow, content.title, rating]
-            + content.metaParts
-            + [fallbackRuntime]
-            + [content.synopsis ?? "", enrichment?.detailLine ?? ""]
-            + [content.requestStatusText ?? content.requestProgress?.longLabel ?? ""]
+        let requestStatus: String = content.requestStatusText ?? content.requestProgress?.longLabel ?? ""
+        // Built in typed steps: one long `+` chain of optionals and literals
+        // exceeds the type checker's time limit on CI.
+        var parts: [String] = [content.eyebrow, content.title, rating]
+        parts += content.metaParts
+        parts.append(fallbackRuntime)
+        parts.append(content.synopsis ?? "")
+        parts.append(enrichment?.detailLine ?? "")
+        parts.append(requestStatus)
         return parts
             .filter { !$0.isEmpty }
             .joined(separator: ", ")

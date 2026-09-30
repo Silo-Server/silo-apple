@@ -418,6 +418,30 @@ final class RequestsV2Tests: XCTestCase {
     }
 
     @MainActor
+    func testUncertainCancelOnTheDetailPageIsNeverResent() async throws {
+        let tokens = try await tokens()
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        let model = RequestDetailViewModel(mediaType: .movie, tmdbId: 949, api: api, cache: RequestDetailCache())
+        let pendingDetail = Self.detail.replacingOccurrences(of: #""request":{"requestable":true}"#,
+            with: #""request":{"requestable":false,"status":"pending","reason":"already_requested","request_id":"request-one"}"#)
+        stub.sequence([
+            .json(200, pendingDetail),
+            .json(200, #"{"items":[\#(Self.record)]}"#),
+            .failure(URLError(.networkConnectionLost)),
+            // The refresh after the uncertain cancel fails too.
+            .failure(URLError(.notConnectedToInternet)),
+        ])
+        await model.load()
+        XCTAssertTrue(model.canCancel)
+
+        await model.cancel()
+        XCTAssertFalse(model.canCancel, "an unconfirmed cancel holds until a fresh read")
+        XCTAssertEqual(model.actionErrorMessage, RequestErrorCopy.unconfirmedCancelMessage)
+        await model.cancel()
+        XCTAssertEqual(stub.requests.filter { $0.method == "POST" }.count, 1, "held cancel is never resent")
+    }
+
+    @MainActor
     func testCreateInterruptedByAnOwnerChangeHoldsWithoutReReading() async throws {
         let tokens = try await tokens()
         let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)

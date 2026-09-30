@@ -32,6 +32,9 @@ final class RequestDetailCache {
     private var detailOrder: [Key] = []
     private var ownRecords: [Key: MediaRequest] = [:]
     private var moderationRecords: [Key: MediaRequest] = [:]
+    /// The exact request an admin opened from the approval queue, which
+    /// wins over any other request for the same title.
+    private var pinnedModeration: [Key: MediaRequest] = [:]
     private var seeds: [Key: RequestMediaResult] = [:]
     private var prefetchTask: Task<Void, Never>?
 
@@ -45,6 +48,7 @@ final class RequestDetailCache {
     func detail(_ key: Key) -> RequestMediaDetail? { details[key] }
     func ownRecord(_ key: Key) -> MediaRequest? { ownRecords[key] }
     func moderationRecord(_ key: Key) -> MediaRequest? { moderationRecords[key] }
+    func pinnedModerationRecord(_ key: Key) -> MediaRequest? { pinnedModeration[key] }
 
     /// A page to show before the detail read answers: the cached detail, or
     /// one built from what a card or record already carried.
@@ -99,6 +103,10 @@ final class RequestDetailCache {
         moderationRecords = next
     }
 
+    func pinModeration(_ record: MediaRequest) {
+        pinnedModeration[Key(mediaType: record.mediaType, tmdbId: record.tmdbId)] = record
+    }
+
     func seed(_ result: RequestMediaResult) {
         seeds[Key(mediaType: result.mediaType, tmdbId: result.tmdbId)] = result
     }
@@ -110,6 +118,7 @@ final class RequestDetailCache {
         detailOrder.removeAll()
         ownRecords.removeAll()
         moderationRecords.removeAll()
+        pinnedModeration.removeAll()
         seeds.removeAll()
     }
 

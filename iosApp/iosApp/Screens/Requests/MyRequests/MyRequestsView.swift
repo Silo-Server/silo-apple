@@ -183,6 +183,10 @@ private struct PhoneMyRequestsView: View {
 
     @ViewBuilder
     private var mineContent: some View {
+        // Independent of the admin's own list: an admin with no requests of
+        // their own still needs the way into the queue.
+        approvalsCard
+
         if let error = viewModel.error, viewModel.buckets.isEmpty {
             fullRow { ErrorView(state: error, onRetry: { Task { await viewModel.load() } }).padding(.top, 60) }
         } else if viewModel.isLoading && viewModel.buckets.isEmpty {
@@ -197,7 +201,6 @@ private struct PhoneMyRequestsView: View {
                 .padding(.top, 80)
             }
         } else {
-            approvalsCard
 
             if let message = viewModel.actionErrorMessage {
                 fullRow {
@@ -292,7 +295,7 @@ private struct PhoneMyRequestsView: View {
                             phase: approvals.phase(for: record),
                             actionError: approvals.rowErrors[record.id],
                             shakeTrigger: approvals.failureCounts[record.id] ?? 0,
-                            onOpen: { router.openRequestRecord(record) },
+                            onOpen: { router.openModerationRecord(record) },
                             onApprove: { Task { await approvals.perform(.approve, on: record) } },
                             onDecline: { pendingDecline = record }
                         )
@@ -312,7 +315,7 @@ private struct PhoneMyRequestsView: View {
                             actionPhase: approvals.phase(for: record),
                             actionError: approvals.rowErrors[record.id],
                             shakeTrigger: approvals.failureCounts[record.id] ?? 0,
-                            onOpen: { router.openRequestRecord(record) },
+                            onOpen: { router.openModerationRecord(record) },
                             onRetry: { Task { await approvals.perform(.retry, on: record) } }
                         )
                         .listRowBackground(Color.siloGroupedCell)

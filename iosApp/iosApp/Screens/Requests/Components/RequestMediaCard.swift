@@ -235,6 +235,14 @@ extension AppRouter {
         navigate(to: .requestDestination(for: result))
     }
 
+    /// Opens someone else's request from an approval queue: the detail page
+    /// decides on that exact request, not another one for the same title.
+    @MainActor
+    func openModerationRecord(_ record: MediaRequest) {
+        RequestDetailCache.shared.pinModeration(record)
+        navigate(to: .requestDestination(for: record))
+    }
+
     @MainActor
     func openRequestRecord(_ record: MediaRequest) {
         navigate(to: .requestDestination(for: record))
