@@ -457,11 +457,13 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     /// The show's ratings in Show mode. With an episode focused, the row
     /// follows the facts and shows that episode's own ratings once its detail
     /// has loaded; the fixed metadata slot keeps the layout still meanwhile.
+    /// A fresh catalog detail is authoritative, even when its list is empty;
+    /// the playback detail may be a cached copy kept only for its selectors.
     private var heroRatings: [DisplayRating] {
         guard !isShowingSeriesOverview, displayedEpisode != nil else {
             return detail.displayRatings
         }
-        return (matchingPlaybackDetail ?? matchingCatalogDetail)?.displayRatings ?? []
+        return (matchingCatalogDetail ?? matchingPlaybackDetail)?.displayRatings ?? []
     }
 
     // MARK: - Show mode actions
