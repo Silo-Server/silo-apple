@@ -5000,8 +5000,10 @@ class PlayerViewModel {
     }
 
     /// Skips forward by `seconds`, or by the configured interval when nil.
-    func skipForward(_ seconds: Double? = nil, revealingControls: Bool = true) {
-        guard !refusesSeekAtEndOfFile else { return }
+    /// Returns false when the player refuses the skip.
+    @discardableResult
+    func skipForward(_ seconds: Double? = nil, revealingControls: Bool = true) -> Bool {
+        guard !refusesSeekAtEndOfFile else { return false }
         let seconds = seconds ?? Double(skipIntervals.forward)
         Self.logger.info(
             "[CMP-SEEK] skip forward requested seconds=\(seconds, privacy: .public) current=\(self.currentTime, privacy: .public) preview=\(self.scrubPreviewTime, privacy: .public) isScrubbing=\(self.isScrubbing, privacy: .public)"
@@ -5010,11 +5012,14 @@ class PlayerViewModel {
         if revealingControls || showControls {
             scheduleHideControls()
         }
+        return true
     }
 
     /// Skips backward by `seconds`, or by the configured interval when nil.
-    func skipBackward(_ seconds: Double? = nil, revealingControls: Bool = true) {
-        guard !refusesSeekAtEndOfFile else { return }
+    /// Returns false when the player refuses the skip.
+    @discardableResult
+    func skipBackward(_ seconds: Double? = nil, revealingControls: Bool = true) -> Bool {
+        guard !refusesSeekAtEndOfFile else { return false }
         let seconds = seconds ?? Double(skipIntervals.backward)
         Self.logger.info(
             "[CMP-SEEK] skip backward requested seconds=\(seconds, privacy: .public) current=\(self.currentTime, privacy: .public) preview=\(self.scrubPreviewTime, privacy: .public) isScrubbing=\(self.isScrubbing, privacy: .public)"
@@ -5023,6 +5028,7 @@ class PlayerViewModel {
         if revealingControls || showControls {
             scheduleHideControls()
         }
+        return true
     }
 
     /// The intro pill's action: past the intro for `ask`, back to its start

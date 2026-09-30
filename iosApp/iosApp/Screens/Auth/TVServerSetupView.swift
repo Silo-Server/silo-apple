@@ -238,7 +238,7 @@ struct TVServerSetupView: View {
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
-            if let error = viewModel.error {
+            if let error = viewModel.error?.message {
                 HStack(spacing: 10) {
                     Image(systemName: "exclamationmark.circle.fill")
                         .foregroundStyle(Color.requestRose)

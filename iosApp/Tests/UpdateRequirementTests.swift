@@ -184,7 +184,7 @@ final class UpdateRequirementTests: XCTestCase {
         })
         viewModel.host = "silo.example"
         await viewModel.connect(router: AppRouter())
-        return viewModel.error
+        return viewModel.error?.message
     }
 
     @MainActor

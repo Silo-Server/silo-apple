@@ -34,7 +34,11 @@ struct RequestDetailView: View {
             await viewModel.load()
         }
         .sensoryFeedback(.success, trigger: viewModel.submittedCount)
-        .sensoryFeedback(.error, trigger: viewModel.actionErrorMessage) { _, message in message != nil }
+        .sensoryFeedback(trigger: viewModel.actionErrorMessage) { _, message in
+            guard message != nil else { return nil }
+            // An unconfirmed create may still have landed, so it warns.
+            return viewModel.isSubmissionUnconfirmed ? .warning : .error
+        }
         .onChange(of: RequestsEventBus.shared.lastUpdate) { _, update in
             if let update {
                 viewModel.applyRequestUpdate(update)

@@ -62,6 +62,14 @@ enum PersonalStateNotice: Equatable {
         }
     }
 
+    /// A held change may still have landed, so it warns instead of erroring.
+    var haptic: SensoryFeedback {
+        switch self {
+        case .failed: return .error
+        case .held: return .warning
+        }
+    }
+
     var message: String {
         switch self {
         case .failed(nil): return "Your change wasn't saved. Please try again."
@@ -99,7 +107,7 @@ private struct PersonalStateNoticeAlert: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .sensoryFeedback(.error, trigger: notice) { _, notice in notice != nil }
+            .sensoryFeedback(trigger: notice) { _, notice in notice?.haptic }
             .alert(
                 notice?.title ?? "",
                 isPresented: Binding(

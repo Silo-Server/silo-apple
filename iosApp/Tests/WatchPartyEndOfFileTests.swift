@@ -76,6 +76,9 @@ final class WatchPartyEndOfFileTests: XCTestCase {
 
         player.seekTo(seconds: 300)
         player.beginScrub(fraction: 0.5)
+        // The double-tap gesture shows no skip flash or haptic for these.
+        XCTAssertFalse(player.skipForward(10, revealingControls: false))
+        XCTAssertFalse(player.skipBackward(10, revealingControls: false))
 
         XCTAssertEqual(player.currentTime, 1_200)
         XCTAssertFalse(player.isScrubbing)

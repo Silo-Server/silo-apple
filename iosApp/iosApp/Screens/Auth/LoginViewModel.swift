@@ -5,23 +5,18 @@ class LoginViewModel {
     var username: String = ""
     var password: String = ""
     var isLoading: Bool = false
-    var error: String? {
-        didSet { if error != nil { errorCount += 1 } }
-    }
-    /// Bumped on every error, so a repeated message still plays the error
-    /// haptic.
-    private(set) var errorCount = 0
+    private(set) var error: FormError?
 
     private let auth = AuthService.shared
 
     /// Authenticate with username and password.
     func login(router: AppRouter) async {
         guard !username.trimmingCharacters(in: .whitespaces).isEmpty else {
-            error = "Please enter your username."
+            error = FormError("Please enter your username.")
             return
         }
         guard !password.isEmpty else {
-            error = "Please enter your password."
+            error = FormError("Please enter your password.")
             return
         }
 
@@ -34,7 +29,7 @@ class LoginViewModel {
             await StartupContentPrefetcher.prefetchProfiles()
             router.showProfileSelection()
         } catch let loginError {
-            self.error = Self.message(for: loginError)
+            self.error = FormError(Self.message(for: loginError))
         }
     }
 

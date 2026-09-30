@@ -544,19 +544,22 @@ private struct AudioScrubberSection: View {
             #if !os(tvOS)
             .contentShape(Rectangle())
             .gesture(scrubGesture(trackWidth: geo.size.width))
-            .sensoryFeedback(trigger: scrubChapterIndex) { old, new in
-                old != nil && new != nil ? .selection : nil
-            }
+            .scrubTickFeedback(tickTimes: chapterTickTimes, scrubTime: scrubTime)
             #endif
         }
         .frame(height: 30)
         .animation(.easeOut(duration: 0.15), value: trackHeight)
     }
 
+    /// The first chapter opens the book, so it gets no tick mark.
+    private var tickedChapters: ArraySlice<AudioPlaybackChapter> {
+        player.chapters.dropFirst()
+    }
+
     @ViewBuilder
     private func chapterTicks(width: CGFloat) -> some View {
-        if player.duration > 0, player.chapters.count > 1 {
-            ForEach(player.chapters.dropFirst()) { chapter in
+        if player.duration > 0 {
+            ForEach(tickedChapters) { chapter in
                 Rectangle()
                     .fill(.black.opacity(0.45))
                     .frame(width: 1.5, height: trackHeight)
@@ -566,11 +569,8 @@ private struct AudioScrubberSection: View {
     }
 
     #if !os(tvOS)
-    /// Chapter under the scrub head, so crossing a tick mark plays a
-    /// selection haptic. Nil when not scrubbing.
-    private var scrubChapterIndex: Int? {
-        guard let scrubTime, player.chapters.count > 1 else { return nil }
-        return player.chapters.lastIndex { $0.startSeconds <= scrubTime } ?? -1
+    private var chapterTickTimes: [Double] {
+        tickedChapters.map(\.startSeconds)
     }
 
     private func scrubGesture(trackWidth: CGFloat) -> some Gesture {

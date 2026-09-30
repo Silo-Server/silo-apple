@@ -342,7 +342,7 @@ struct TVLoginView: View {
                     }
                 }
 
-                if let error = loginVM.error {
+                if let error = loginVM.error?.message {
                     HStack(spacing: 10) {
                         Image(systemName: "exclamationmark.circle.fill")
                             .foregroundStyle(Color.requestRose)

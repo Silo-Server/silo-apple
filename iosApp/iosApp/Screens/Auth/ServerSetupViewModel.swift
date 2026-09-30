@@ -24,12 +24,7 @@ class ServerSetupViewModel {
     var port: String = ""
     var showsAdvancedOptions: Bool = false
     var isLoading: Bool = false
-    var error: String? {
-        didSet { if error != nil { errorCount += 1 } }
-    }
-    /// Bumped on every error, so a repeated message still plays the error
-    /// haptic.
-    private(set) var errorCount = 0
+    private(set) var error: FormError?
 
     /// Probes one candidate URL and commits it on success.
     typealias ServerCheck = @Sendable (String) async throws -> APIv2SetupStatus
@@ -47,7 +42,7 @@ class ServerSetupViewModel {
     /// Validate the server URL and determine whether setup or login is needed.
     func connect(router: AppRouter) async {
         guard !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            error = "Please enter a server host."
+            error = FormError("Please enter a server host.")
             return
         }
 
@@ -55,10 +50,10 @@ class ServerSetupViewModel {
         do {
             candidates = try buildCandidateURLs()
         } catch let validationError as ServerSetupValidationError {
-            error = validationError.localizedDescription
+            error = FormError(validationError.localizedDescription)
             return
         } catch {
-            self.error = error.localizedDescription
+            self.error = FormError(error.localizedDescription)
             return
         }
 
@@ -95,7 +90,7 @@ class ServerSetupViewModel {
         Self.logger.error(
             "Server autodiscovery failed candidates=\(attempted.joined(separator: ", "), privacy: .public) lastError=\(String(describing: lastError), privacy: .public)"
         )
-        self.error = updateRequirement?.message ?? "Could not reach a Silo server at that address."
+        self.error = FormError(updateRequirement?.message ?? "Could not reach a Silo server at that address.")
     }
 
     func buildCandidateURLs() throws -> [String] {

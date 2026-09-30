@@ -70,6 +70,9 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     @State private var isUpdatingWatched = false
     @State private var watchedUpdateFailed = false
     @State private var watchedNotice: PersonalStateNotice?
+    /// Bumped when a season or episode watched change lands, so the success
+    /// haptic confirms it after the context menu has closed.
+    @State private var watchedAppliedCount = 0
     private struct PendingEpisodePlayRequest: Equatable {
         let seasonNumber: Int?
     }
@@ -143,6 +146,8 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             guard !isLoading, nextUpEpisode == nil else { return }
             pendingEpisodePlayRequest = nil
         }
+        .sensoryFeedback(.success, trigger: watchedAppliedCount)
+        .sensoryFeedback(.error, trigger: watchedUpdateFailed) { _, failed in failed }
         .alert("Couldn't Update Watched Status", isPresented: $watchedUpdateFailed) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -365,7 +370,8 @@ struct SeriesDetailContent<BelowOverview: View>: View {
 
     private func reportWatchedOutcome(_ outcome: PersonalStateOutcome) {
         switch outcome {
-        case .applied, .skipped: break
+        case .applied: watchedAppliedCount += 1
+        case .skipped: break
         // An update requirement uses the shared notice, which names the update
         // instead of asking the viewer to check the connection.
         case .failed(nil): watchedUpdateFailed = true

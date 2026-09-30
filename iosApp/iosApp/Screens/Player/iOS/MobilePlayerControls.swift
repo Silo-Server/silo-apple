@@ -31,6 +31,9 @@ struct MobilePlayerControls: View {
     /// it is purely presentation, and kept outside the `showControls` gate
     /// below so the auto-hide takes the transport away without it.
     @State private var showsStats = false
+    /// True only while a finger drags the scrub bar. Skip buttons and
+    /// hold-seek also set `isScrubbing`, but they shouldn't play chapter ticks.
+    @GestureState private var isDraggingScrubBar = false
 
 
     var body: some View {
@@ -459,6 +462,7 @@ struct MobilePlayerControls: View {
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0)
+                    .updating($isDraggingScrubBar) { _, dragging, _ in dragging = true }
                     .onChanged { value in
                         let fraction = min(max(value.location.x / width, 0), 1)
                         if viewModel.isScrubbing {
@@ -471,11 +475,10 @@ struct MobilePlayerControls: View {
                         viewModel.endScrub()
                     }
             )
-            // Tick as the scrub crosses a chapter mark, like the marks drawn
-            // on the bar. Nil outside a scrub, so starting or ending one is silent.
-            .sensoryFeedback(trigger: scrubChapterIndex) { old, new in
-                old != nil && new != nil ? .selection : nil
-            }
+            .scrubTickFeedback(
+                tickTimes: viewModel.chapters.map(\.time),
+                scrubTime: isDraggingScrubBar ? viewModel.scrubPreviewTime : nil
+            )
             .overlay(alignment: .topLeading) {
                 if viewModel.isScrubbing {
                     let previewInset: CGFloat = viewModel.scrubPreviewImage == nil ? 80 : 102
@@ -541,13 +544,6 @@ struct MobilePlayerControls: View {
         .padding(7)
         .siloPlayerGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .fixedSize()
-    }
-
-    /// Chapter under the scrub head, or -1 before the first chapter. Nil
-    /// when not scrubbing or the item has no chapters.
-    private var scrubChapterIndex: Int? {
-        guard viewModel.isScrubbing, !viewModel.chapters.isEmpty else { return nil }
-        return viewModel.chapters.lastIndex { $0.time <= viewModel.scrubPreviewTime } ?? -1
     }
 
     private func chapterTitle(at time: Double) -> String? {
