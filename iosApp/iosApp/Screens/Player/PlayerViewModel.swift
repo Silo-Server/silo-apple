@@ -331,6 +331,9 @@ class PlayerViewModel {
     private enum NextUpPresentationSource {
         case automatic
         case hud
+        /// Skip Credits reached the end of the file. The credits keep playing
+        /// in the preview while a fixed countdown runs.
+        case credits
     }
     private var nextUpPresentationSource: NextUpPresentationSource = .automatic
     private var serverProvidedChapters: [PlayerChapterInfo] = []
@@ -799,6 +802,15 @@ class PlayerViewModel {
     var canRequestSeek: Bool { !isWatchPartyPlayback || watchPartyAdapter?.canSeek == true }
     var effectivePlaybackSpeed: Double { isWatchPartyPlayback ? watchPartyCorrectionRate : settings.playbackSpeed }
     private var autoSkippedCreditsKey: String?
+    /// Skip Credits reached the end of the file while playback continued.
+    /// The viewer chose to finish the item, so it completes even after Keep
+    /// Watching, until a seek leaves the credits.
+    private var didSkipCreditsToEnd = false
+    private var skippedCreditsToEnd: Bool {
+        guard didSkipCreditsToEnd else { return false }
+        guard let creditsRange else { return true }
+        return currentTime >= creditsRange.start
+    }
     private var staleSessionRecoverySessionId: String?
     struct LoadRequest {
         var libraryId: Int? = nil
@@ -2628,7 +2640,7 @@ class PlayerViewModel {
             return
         }
 
-        if !nextUpScreenVideoEnded {
+        if !nextUpScreenVideoEnded && nextUpPresentationSource != .credits {
             updateNextUpCountdownForActivePlayback(at: currentTime)
             return
         }
@@ -2653,6 +2665,7 @@ class PlayerViewModel {
         guard showNextUpScreen,
               !isNextUpTransitioning,
               !nextUpScreenVideoEnded,
+              nextUpPresentationSource != .credits,
               settings.autoPlayNextEpisode,
               nextUpEpisode != nil,
               !nextUpAutoplayCancelled,
@@ -2822,7 +2835,8 @@ class PlayerViewModel {
             hasReachedEndOfFile: hasReachedEndOfFile,
             currentTime: currentTime,
             duration: duration,
-            promptSeconds: settings.nextUpPromptSeconds
+            promptSeconds: settings.nextUpPromptSeconds,
+            skippedCredits: skippedCreditsToEnd
         )
     }
 
@@ -3955,6 +3969,7 @@ class PlayerViewModel {
         currentSelectedVersion = nil
         activePreparedProtocolV3 = nil
         autoSkippedCreditsKey = nil
+        didSkipCreditsToEnd = false
         selectedAudioId = nil
         selectedSubtitleId = nil
         selectedSecondarySubtitleId = nil
@@ -5506,11 +5521,37 @@ class PlayerViewModel {
         if duration.isFinite,
            duration > 0,
            target >= duration - 0.5 {
+            if presentNextUpOverCredits() { return }
             currentTime = duration
             handleEndOfFile()
             return
         }
         seekTo(seconds: target)
+    }
+
+    /// Credits that run to the end of the file leave nothing to seek to.
+    /// When Next Up has something to offer, open it now and let the credits
+    /// keep playing in its preview instead of stopping on a frozen frame.
+    /// Returns false when the caller should finish the item at EOF instead.
+    private func presentNextUpOverCredits() -> Bool {
+        guard !isWatchPartyPlayback,
+              canShowNextUpScreen,
+              !hasReachedEndOfFile,
+              !isNextUpTransitioning,
+              let epoch = activeAetherLoadEpoch,
+              startedAetherLoadEpoch == epoch else {
+            return false
+        }
+        didSkipCreditsToEnd = true
+        if showNextUpScreen {
+            // Auto-skip can fire under a prompt that is already open. Switch
+            // it to the credits countdown rather than waiting out the tail.
+            nextUpPresentationSource = .credits
+            startNextUpCountdownIfNeeded()
+        } else {
+            beginNextUpPostroll(videoEnded: false, source: .credits)
+        }
+        return true
     }
 
     /// Identifies an intro across seeks and stream reloads of the same file.
@@ -6475,7 +6516,8 @@ class PlayerViewModel {
             hasReachedEndOfFile: hasReachedEndOfFile,
             currentTime: currentTime,
             duration: duration,
-            promptSeconds: settings.nextUpPromptSeconds
+            promptSeconds: settings.nextUpPromptSeconds,
+            skippedCredits: skippedCreditsToEnd
         )
         recordCurrentPlaybackMutation()
         // The server counts an episode watched past its threshold, which is
@@ -6517,6 +6559,7 @@ class PlayerViewModel {
         markerReconciledSessionId = nil
         introSkipPrompt.reset()
         autoSkippedCreditsKey = nil
+        didSkipCreditsToEnd = false
         knownExternalSubtitles = []
         locallyRegisteredSidecarSubtitleTracks = []
         localProtocolV3SubtitleSelection = nil
@@ -6585,7 +6628,8 @@ class PlayerViewModel {
                 hasReachedEndOfFile: hasReachedEndOfFile,
                 currentTime: currentTime,
                 duration: duration,
-                promptSeconds: settings.nextUpPromptSeconds
+                promptSeconds: settings.nextUpPromptSeconds,
+                skippedCredits: skippedCreditsToEnd
             )
             // Strong capture on purpose: this is the last write of the
             // resume point and must not be dropped because the VM was

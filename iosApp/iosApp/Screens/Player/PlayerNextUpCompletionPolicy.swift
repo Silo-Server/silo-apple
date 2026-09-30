@@ -32,14 +32,18 @@ enum PlayerNextUpCompletionPolicy {
         return remaining >= 0 && remaining <= Double(promptSeconds)
     }
 
+    /// `skippedCredits` means the viewer skipped credits that run to the end
+    /// of the file. The credits keep playing, but the item is finished, as a
+    /// jump to EOF would have made it.
     static func shouldFinalizeAsCompleted(
         isNextUpPresented: Bool,
         hasReachedEndOfFile: Bool,
         currentTime: Double,
         duration: Double,
-        promptSeconds: Int
+        promptSeconds: Int,
+        skippedCredits: Bool = false
     ) -> Bool {
-        if hasReachedEndOfFile {
+        if hasReachedEndOfFile || skippedCredits {
             return true
         }
         guard isNextUpPresented else { return false }
@@ -55,7 +59,8 @@ enum PlayerNextUpCompletionPolicy {
         hasReachedEndOfFile: Bool,
         currentTime: Double,
         duration: Double,
-        promptSeconds: Int
+        promptSeconds: Int,
+        skippedCredits: Bool = false
     ) -> Double {
         guard duration.isFinite, duration > 0 else {
             return currentTime
@@ -65,7 +70,8 @@ enum PlayerNextUpCompletionPolicy {
             hasReachedEndOfFile: hasReachedEndOfFile,
             currentTime: currentTime,
             duration: duration,
-            promptSeconds: promptSeconds
+            promptSeconds: promptSeconds,
+            skippedCredits: skippedCredits
         ) ? duration : currentTime
     }
 }
