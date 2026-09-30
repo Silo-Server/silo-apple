@@ -11,12 +11,16 @@ final class RequestsHubViewModel {
     // Discover + own-requests strip
     private(set) var carousels: [RequestCarousel] = []
     private(set) var myRequests: [MediaRequest] = []
+    /// Requests waiting on this admin's decision; zero for everyone else.
+    private(set) var pendingApprovals = 0
     var isLoading = false
     var error: ErrorState?
 
     // Search
     var query = ""
     private(set) var searchResults: [RequestMediaResult] = []
+    /// TMDB's total for the query, for the "N results" line.
+    private(set) var searchTotal = 0
     private(set) var isSearching = false
     private(set) var hasSearched = false
 
@@ -41,6 +45,9 @@ final class RequestsHubViewModel {
             let (sections, requests) = try await (discover, mine)
             carousels = RequestCarouselMerge.carousels(from: sections)
             myRequests = MyRequestsBucket.bucket(requests).flatMap(\.requests)
+            RequestDetailCache.shared.storeOwnRecords(requests)
+            RequestDetailCache.shared.prefetch(myRequests, api: api)
+            await loadPendingApprovals()
         } catch {
             // Keep any prior content on a transient failure; only surface
             // the error when there's nothing to show instead.
@@ -49,6 +56,31 @@ final class RequestsHubViewModel {
             }
         }
         isLoading = false
+    }
+
+    /// The hub's approvals row is a nudge, not a list: a failed read hides it.
+    private func loadPendingApprovals() async {
+        guard RequestsFeatureStore.shared.canModerate else {
+            pendingApprovals = 0
+            return
+        }
+        let pending = try? await api.adminRequests(status: .pending, outcome: .active)
+        pendingApprovals = pending?.count ?? 0
+    }
+
+    /// Bus consumer for admin decisions made anywhere in the app.
+    func applyModeration() {
+        Task { await loadPendingApprovals() }
+    }
+
+    /// Counts for the summary row: requests still moving, and ones that
+    /// need the user.
+    var inProgressCount: Int {
+        myRequests.filter { MyRequestsBucket(RequestDisplayState(record: $0)) == .inMotion }.count
+    }
+
+    var needsAttentionCount: Int {
+        myRequests.filter { MyRequestsBucket(RequestDisplayState(record: $0)) == .needsAttention }.count
     }
 
     /// Debounced TMDB search, mirroring `SearchViewModel`'s 300ms feel.
@@ -80,6 +112,7 @@ final class RequestsHubViewModel {
                 return
             }
             searchResults = page.results.filter { $0.mediaType != .unknown }
+            searchTotal = max(page.totalResults, searchResults.count)
             hasSearched = true
         } catch {
             guard !Task.isCancelled else {

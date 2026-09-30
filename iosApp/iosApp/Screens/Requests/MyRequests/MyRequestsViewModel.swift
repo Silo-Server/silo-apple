@@ -34,6 +34,8 @@ final class MyRequestsViewModel {
         do {
             let requests = try await api.myRequests()
             buckets = MyRequestsBucket.bucket(requests)
+            RequestDetailCache.shared.storeOwnRecords(requests)
+            RequestDetailCache.shared.prefetch(buckets.flatMap(\.requests), api: api)
             hasLoaded = true
             // The server's list now shows each held cancel's result.
             if !unconfirmedCancelIds.isEmpty {

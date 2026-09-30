@@ -2920,6 +2920,8 @@ struct MainTabView: View {
             RequestDetailView(mediaType: mediaType, tmdbId: tmdbId)
         case .myRequests:
             MyRequestsView()
+        case .requestApprovals:
+            MyRequestsView(initialScope: .everyone)
         case .search:
             #if os(iOS)
             SearchView(seededQuery: $siriSearchRequest)
@@ -3064,6 +3066,20 @@ private struct ItemDetailSheet: View {
 
     @ViewBuilder
     private func detailPage(contentID: String, width: CGFloat, height: CGFloat) -> some View {
+        if let request = presentation.request, contentID == presentation.contentId {
+            RequestDetailView(
+                mediaType: request.mediaType,
+                tmdbId: request.tmdbId,
+                onClose: router.dismissItemDetail
+            )
+            .frame(width: width, height: height)
+        } else {
+            itemDetailPage(contentID: contentID, width: width, height: height)
+        }
+    }
+
+    @ViewBuilder
+    private func itemDetailPage(contentID: String, width: CGFloat, height: CGFloat) -> some View {
         let shape = UnevenRoundedRectangle(
             topLeadingRadius: 28, bottomLeadingRadius: 0,
             bottomTrailingRadius: 0, topTrailingRadius: 28, style: .continuous
@@ -3133,6 +3149,8 @@ private struct ItemDetailSheet: View {
             ItemDetailView(contentId: contentId, libraryId: libraryId, resumeContext: context)
         case .personDetail(let personId):
             PersonDetailView(personId: personId)
+        case .requestDetail(let mediaType, let tmdbId):
+            RequestDetailView(mediaType: mediaType, tmdbId: tmdbId)
         default:
             EmptyView()
         }

@@ -10,6 +10,7 @@ enum RequestErrorCopy {
     static let unconfirmedToken = "request_unconfirmed"
     static let unconfirmedSubmitMessage = "We couldn't confirm the request. Check My Requests before trying again."
     static let unconfirmedCancelMessage = "We couldn't confirm the cancellation. Reopen My Requests to check it."
+    static let unconfirmedModerationMessage = "We couldn't confirm that decision. Refresh to see where the request stands."
 
     static func message(forToken token: String?) -> String? {
         guard let token, !token.isEmpty else { return nil }

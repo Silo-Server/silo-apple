@@ -71,6 +71,9 @@ enum Route: Hashable {
     /// The signed-in user's own request queue, bucketed by state.
     case myRequests
 
+    /// Everyone's requests awaiting a decision (admins who can moderate).
+    case requestApprovals
+
     /// Offline playback of a completed download. Distinct from `.player`
     /// so the player reads the local file + stored manifest instead of
     /// starting a server session.

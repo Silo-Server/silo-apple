@@ -39,10 +39,10 @@ final class MyRequestsBucketTests: XCTestCase {
             record(id: "e", status: .queued, outcome: .failed),
         ])
 
-        XCTAssertEqual(buckets.map(\.bucket), [.inMotion, .landed, .needsAttention])
+        XCTAssertEqual(buckets.map(\.bucket), [.inMotion, .needsAttention, .landed])
         XCTAssertEqual(buckets[0].requests.map(\.id).sorted(), ["a", "b"])
-        XCTAssertEqual(buckets[1].requests.map(\.id), ["c"])
-        XCTAssertEqual(buckets[2].requests.map(\.id).sorted(), ["d", "e"])
+        XCTAssertEqual(buckets[1].requests.map(\.id).sorted(), ["d", "e"])
+        XCTAssertEqual(buckets[2].requests.map(\.id), ["c"])
     }
 
     func testCancelledRequestsDropOffEntirely() {

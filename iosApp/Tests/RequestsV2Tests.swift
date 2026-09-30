@@ -323,9 +323,10 @@ final class RequestsV2Tests: XCTestCase {
     func testUncertainCreateHoldsTheActionUntilAFreshRead() async throws {
         let tokens = try await tokens()
         let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
-        let model = RequestDetailViewModel(mediaType: .movie, tmdbId: 949, api: api)
+        let model = RequestDetailViewModel(mediaType: .movie, tmdbId: 949, api: api, cache: RequestDetailCache())
         stub.sequence([
             .json(200, Self.detail),
+            .json(200, #"{"items":[]}"#),
             .failure(URLError(.networkConnectionLost)),
             .failure(URLError(.notConnectedToInternet)),
         ])
@@ -350,7 +351,7 @@ final class RequestsV2Tests: XCTestCase {
     func testDetailOpensTheLibraryOnlyWithoutAnActiveRequest() async throws {
         let tokens = try await tokens()
         let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
-        let model = RequestDetailViewModel(mediaType: .series, tmdbId: 1399, api: api)
+        let model = RequestDetailViewModel(mediaType: .series, tmdbId: 1399, api: api, cache: RequestDetailCache())
         // A title in the library, with the given request state.
         func inLibrary(_ request: String) -> String {
             Self.detail
@@ -379,10 +380,48 @@ final class RequestsV2Tests: XCTestCase {
     }
 
     @MainActor
+    func testFinishedDownloadTheTitleAnnotationMissedIsNotRequestableAgain() async throws {
+        let tokens = try await tokens()
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        let model = RequestDetailViewModel(mediaType: .movie, tmdbId: 949, api: api, cache: RequestDetailCache())
+        // The title reads as requestable, but the user's own request has
+        // finished downloading and waits on the library.
+        let downloaded = Self.record
+            .replacingOccurrences(of: #""status":"pending""#, with: #""status":"completed","state":"processing""#)
+        stub.sequence([
+            .json(200, Self.detail),
+            .json(200, #"{"items":[\#(downloaded)]}"#),
+        ])
+        await model.load()
+        XCTAssertEqual(model.primaryAction, .status(.onTheWay))
+        XCTAssertEqual(model.progress?.shortLabel, "Adding to library")
+        XCTAssertFalse(model.canCancel)
+    }
+
+    @MainActor
+    func testAFailedRequestIsTheStatusAndTheActionReadsRequestAgain() async throws {
+        let tokens = try await tokens()
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        let model = RequestDetailViewModel(mediaType: .movie, tmdbId: 949, api: api, cache: RequestDetailCache())
+        // The server calls the title requestable again: the user's request
+        // failed, so it no longer blocks a new one.
+        let failed = Self.record
+            .replacingOccurrences(of: #""outcome":"active""#, with: #""outcome":"failed","state":"failed""#)
+        stub.sequence([
+            .json(200, Self.detail),
+            .json(200, #"{"items":[\#(failed)]}"#),
+        ])
+        await model.load()
+        XCTAssertEqual(model.primaryAction, .request)
+        XCTAssertEqual(model.endedRequest?.id, "request-one")
+        XCTAssertEqual(model.progress?.display, .needsAttention(.failed, reason: nil))
+    }
+
+    @MainActor
     func testCreateInterruptedByAnOwnerChangeHoldsWithoutReReading() async throws {
         let tokens = try await tokens()
         let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
-        let model = RequestDetailViewModel(mediaType: .movie, tmdbId: 949, api: api)
+        let model = RequestDetailViewModel(mediaType: .movie, tmdbId: 949, api: api, cache: RequestDetailCache())
         stub.reply(200, Self.detail)
         await model.load()
         XCTAssertEqual(model.primaryAction, .request)
@@ -397,7 +436,8 @@ final class RequestsV2Tests: XCTestCase {
 
         XCTAssertEqual(model.primaryAction, .status(.unavailable(reason: RequestErrorCopy.unconfirmedToken)))
         XCTAssertEqual(model.actionErrorMessage, RequestErrorCopy.unconfirmedSubmitMessage)
-        XCTAssertEqual(stub.requests.map(\.method), ["GET", "POST"], "no re-read under the replaced owner")
+        // The title read, then the user's own requests; nothing after the POST.
+        XCTAssertEqual(stub.requests.map(\.method), ["GET", "GET", "POST"], "no re-read under the replaced owner")
         await model.submitRequest()
         XCTAssertEqual(stub.requests.filter { $0.method == "POST" }.count, 1, "held create is never resent")
     }

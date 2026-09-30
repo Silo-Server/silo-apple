@@ -15,6 +15,19 @@ struct APIv2RequestsPage: Decodable {
     let page: APIv2Page?
 }
 
+/// `GET /api/v2/admin/requests/capabilities`: whether the request
+/// integration is configured on this server.
+struct AdminRequestCapabilities: Decodable {
+    let available: Bool
+}
+
+/// Moderation actions an admin can take on someone's request.
+enum AdminRequestAction: String {
+    case approve
+    case decline
+    case retry
+}
+
 /// Requests-specific failures: refusals raised before a call leaves the
 /// device, and a mutation whose owner changed while it was underway.
 enum APIv2RequestsError: LocalizedError, Equatable {

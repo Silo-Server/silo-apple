@@ -11,14 +11,25 @@ final class RequestsEventBus {
     static let shared = RequestsEventBus()
 
     private(set) var lastUpdate: MediaRequest?
+    /// The most recent admin decision (approve/decline/retry) on anyone's
+    /// request. Kept apart from `lastUpdate`, whose consumers treat every
+    /// record as the signed-in user's own.
+    private(set) var lastModeration: MediaRequest?
 
     func publish(_ request: MediaRequest) {
+        RequestDetailCache.shared.storeOwnRecord(request)
         lastUpdate = request
+    }
+
+    func publishModeration(_ request: MediaRequest) {
+        lastModeration = request
     }
 
     /// Sign-out / profile switch: don't leak one account's last mutation
     /// into the next session's `.onChange` observers.
     func reset() {
         lastUpdate = nil
+        lastModeration = nil
+        RequestDetailCache.shared.clear()
     }
 }
