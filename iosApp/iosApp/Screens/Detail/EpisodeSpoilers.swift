@@ -81,7 +81,10 @@ struct EpisodeSpoilerSettings: Codable, Hashable, Sendable {
 
 extension SectionItem {
     var isEpisodeItem: Bool {
-        type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "episode"
+        switch type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "episode", "episodes": return true
+        default: return false
+        }
     }
 }
 

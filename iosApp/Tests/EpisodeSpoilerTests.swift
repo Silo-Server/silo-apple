@@ -69,9 +69,12 @@ final class EpisodeSpoilerSettingsTests: XCTestCase {
 
     func testOnlyEpisodeSectionItemsAreHidden() throws {
         let all = EpisodeSpoilerSettings(hidesImages: true, hidesOverviews: true)
-        XCTAssertTrue(all.hidesImage(for: try episodeItem()))
-        XCTAssertTrue(all.hidesOverview(for: try episodeItem()))
-        XCTAssertTrue(all.hidesImage(for: try episodeItem(type: " Episode ")))
+        for type in ["episode", " Episode ", "episodes", " Episodes "] {
+            let item = try episodeItem(type: type)
+            XCTAssertTrue(SiloMediaType.isSupportedSectionItem(type))
+            XCTAssertTrue(all.hidesImage(for: item), type)
+            XCTAssertTrue(all.hidesOverview(for: item), type)
+        }
         for type in ["movie", "series", "season"] {
             XCTAssertFalse(all.hidesImage(for: try episodeItem(type: type)), type)
             XCTAssertFalse(all.hidesOverview(for: try episodeItem(type: type)), type)
@@ -425,6 +428,42 @@ final class EpisodeSpoilerMarqueeTests: XCTestCase {
         XCTAssertNil(model.content?.synopsis)
         model.suspend()
     }
+
+    @MainActor
+    func testLateSpoilerSettingsPreservePendingBackdropRest() async throws {
+        let contentId = "spoiler-rest-\(UUID().uuidString)"
+        let backdrop = "https://img.example/series.jpg"
+        let detail = try JSONDecoder().decode(ItemDetail.self, from: Data("""
+            {"contentId":"\(contentId)","type":"episode","title":"Pilot","backdropUrl":"\(backdrop)"}
+            """.utf8))
+        let cacheKey = CacheKey.itemDetail(contentId)
+        ResponseCache.shared.set(detail, for: cacheKey)
+        let model = TVFocusMarqueeModel()
+        defer {
+            model.suspend()
+            ResponseCache.shared.remove(cacheKey)
+        }
+
+        let prior = try episodeItem(type: "movie", backdropUrl: "https://img.example/prior.jpg")
+        model.seed(TVMarqueeContent(item: prior, rowId: "next-up", rowTitle: "Next Up"))
+        XCTAssertEqual(model.backdropURL, prior.backdropUrl)
+
+        let episode = try episodeItem(contentId: contentId, overview: "The twist.")
+        model.preview(TVMarqueeContent(item: episode, rowId: "next-up", rowTitle: "Next Up"))
+        // The settings answer changes presentation while this selection is
+        // still waiting for its focus debounce; it must keep that rest pending.
+        model.replaceContent(TVMarqueeContent(
+            item: episode,
+            rowId: "next-up",
+            rowTitle: "Next Up",
+            spoilers: EpisodeSpoilerSettings(hidesImages: true, hidesOverviews: true)
+        ))
+        try await Task.sleep(for: .milliseconds(400))
+
+        XCTAssertNil(model.content?.synopsis)
+        XCTAssertEqual(model.enrichment?.backdropUrl, backdrop)
+        XCTAssertEqual(model.backdropURL, backdrop)
+    }
 }
 #endif
 
@@ -435,6 +474,7 @@ private func userData(_ json: String) throws -> LeafItemUserData {
 }
 
 private func episodeItem(
+    contentId: String = "episode-1",
     type: String = "episode",
     played: Bool? = nil,
     positionSeconds: Double? = nil,
@@ -443,7 +483,7 @@ private func episodeItem(
     posterUrl: String? = nil
 ) throws -> SectionItem {
     var fields: [String: Any] = [
-        "contentId": "episode-1",
+        "contentId": contentId,
         "type": type,
         "title": "Pilot",
         "seriesId": "series-1",

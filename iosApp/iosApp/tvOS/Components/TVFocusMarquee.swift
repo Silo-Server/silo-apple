@@ -759,8 +759,9 @@ final class TVFocusMarqueeModel {
         backdropTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(SiloTheme.Skyline.marqueeRestDebounceMilliseconds))
             guard !Task.isCancelled, let self,
-                  self.isActive, self.content == candidate else { return }
-            self.rest(on: candidate)
+                  self.isActive, let content = self.content,
+                  content.id == candidate.id else { return }
+            self.rest(on: content)
         }
     }
 
