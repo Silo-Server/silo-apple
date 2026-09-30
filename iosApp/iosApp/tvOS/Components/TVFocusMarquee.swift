@@ -1247,11 +1247,15 @@ struct TVFocusMarquee: View {
         let fallbackRuntime = content.runtimeText == nil
             ? (enrichment?.runtimeText ?? "")
             : ""
-        let parts = [content.eyebrow, content.title, rating]
-            + content.metaParts
-            + [fallbackRuntime, content.rating?.accessibilityText ?? ""]
-            + content.trailingMetaParts
-            + [content.synopsis ?? "", enrichment?.detailLine ?? ""]
+        // Built in steps: one long `+` chain of arrays is too slow for the
+        // compiler to type-check.
+        var parts: [String] = [content.eyebrow, content.title, rating]
+        parts += content.metaParts
+        parts.append(fallbackRuntime)
+        parts.append(content.rating?.accessibilityText ?? "")
+        parts += content.trailingMetaParts
+        parts.append(content.synopsis ?? "")
+        parts.append(enrichment?.detailLine ?? "")
         return parts
             .filter { !$0.isEmpty }
             .joined(separator: ", ")
