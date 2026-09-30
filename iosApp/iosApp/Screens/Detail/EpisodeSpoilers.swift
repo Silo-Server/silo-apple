@@ -4,7 +4,7 @@
 //
 //  Spoiler protection for unwatched episodes
 //  (`catalog.hide_unwatched_episode_{images,overviews}`, contract revision
-//  15). The server never changes catalog responses; each surface that shows a
+//  16). Image provenance is profile-independent; each surface that shows a
 //  specific episode's still or description asks these helpers whether to hide
 //  it. The observable store that reads and writes the two profile settings
 //  lives in EpisodeSpoilerPreferences.swift.
@@ -46,6 +46,10 @@ struct EpisodeWatchState: Hashable, Sendable {
         )
     }
 
+    init(browseItem item: BrowseItem) {
+        self.init(played: item.userState?.played ?? false)
+    }
+
     var isUnwatched: Bool {
         !played && isInProgress != true && (positionSeconds ?? 0) <= 0
     }
@@ -77,6 +81,15 @@ struct EpisodeSpoilerSettings: Codable, Hashable, Sendable {
     func hidesOverview(for item: SectionItem, playedOverride: Bool? = nil) -> Bool {
         item.isEpisodeItem
             && hidesOverview(for: EpisodeWatchState(sectionItem: item, playedOverride: playedOverride))
+    }
+}
+
+extension BrowseItem {
+    var isEpisodeItem: Bool {
+        switch type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "episode", "episodes": return true
+        default: return false
+        }
     }
 }
 

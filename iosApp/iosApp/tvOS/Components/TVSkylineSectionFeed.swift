@@ -110,6 +110,17 @@ struct TVSkylineSectionFeed: View {
             seedMarqueeFromFirstItem()
             if let pending = pendingFocusRequest { requestEntryFocus(pending) }
         }
+        .onChange(of: sections.map(\.items)) { _, _ in
+            guard let source = marqueeSource,
+                  let section = sections.first(where: { $0.id == source.section.id }),
+                  let item = section.items.first(where: { $0.contentId == source.item.contentId }) else {
+                marqueeSource = nil
+                seedMarqueeFromFirstItem()
+                return
+            }
+            marqueeSource = (item, section)
+            marqueeModel.replaceContent(marqueeContent(for: item, in: section))
+        }
         .onChange(of: EpisodeSpoilerPreferences.shared.settings) { _, _ in
             guard let source = marqueeSource else { return }
             marqueeModel.replaceContent(marqueeContent(for: source.item, in: source.section))

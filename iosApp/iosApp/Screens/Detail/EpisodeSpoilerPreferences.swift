@@ -7,7 +7,7 @@
 //  description reads `settings` from here, so a change reaches open screens
 //  without a reload.
 //
-//  Servers below contract revision 15 do not serve the keys: both switches
+//  Servers below contract revision 16 do not serve the keys: both switches
 //  read as off, the settings rows stay hidden, and the server never receives
 //  a write. The switches have never been stored on the device.
 //

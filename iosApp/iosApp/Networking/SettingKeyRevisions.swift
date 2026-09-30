@@ -54,6 +54,8 @@ extension SettingKey {
         case .homeHideWatchedItems:
             return 12
         case .catalogHideUnwatchedEpisodeImages, .catalogHideUnwatchedEpisodeOverviews:
+            return 16
+        case .requestsWatchlistAutoRequest:
             return 15
         case .catalogMetadataLanguage, .downloadsDefaultQuality, .downloadsKeepWatched,
              .downloadsWifiOnly, .navShowAudiobooks, .playbackAudioLanguage,

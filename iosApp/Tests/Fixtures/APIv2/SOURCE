@@ -1,8 +1,8 @@
 Source: silo-server contracts/api/v2/fixtures (plus contracts/api/v2/fixtures.schema.json)
-Server ref: 07f58fd30c449d9ea80f1c21c6cb88522fbd315b
-Server commit: 07f58fd30c449d9ea80f1c21c6cb88522fbd315b (2026-09-30)
+Server ref: b7f5b7d1270b35e861a30cd75ffd3036fe1c50ea
+Server commit: b7f5b7d1270b35e861a30cd75ffd3036fe1c50ea (2026-09-30)
 
-Written by scripts/sync-apiv2-fixtures.sh 07f58fd30c449d9ea80f1c21c6cb88522fbd315b. Every vendored byte is read
+Written by scripts/sync-apiv2-fixtures.sh b7f5b7d1270b35e861a30cd75ffd3036fe1c50ea. Every vendored byte is read
 with git show <commit>:<path> from the server repository, never from a
 working tree. Do not hand-edit the vendored files; re-run the script at a
 new server commit instead, then cd iosApp && xcodegen generate.

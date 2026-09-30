@@ -21,7 +21,11 @@ final class CatalogV2Tests: XCTestCase {
         XCTAssertEqual(try EpisodeListItem(catalog: row).stillIsEpisodeStill, false)
         let card = Data(#"{"content_id":"e1","type":"episode","title":"Pilot","poster_is_episode_still":false,"backdrop_is_episode_still":true}"#.utf8)
         XCTAssertEqual(try decoder.decode(SectionItem.self, from: card).posterIsEpisodeStill, false)
-        XCTAssertEqual(try decoder.decode(BrowseItem.self, from: card).backdropIsEpisodeStill, true)
+        let browse = try decoder.decode(BrowseItem.self, from: card)
+        XCTAssertEqual(browse.backdropIsEpisodeStill, true)
+        let seed = TVItemDetailRouteSeed(browse)
+        XCTAssertEqual(seed.backdropIsEpisodeStill, true)
+        XCTAssertTrue(try XCTUnwrap(seed.episodeWatchState).isUnwatched)
     }
 
     private let terminal = #"{"items":[],"page":{"has_more":false},"total":10000,"total_exact":false,"window_cursor":"window"}"#

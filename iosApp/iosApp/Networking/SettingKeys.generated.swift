@@ -113,6 +113,8 @@ public enum SettingKey: String, CaseIterable, Sendable {
     case playerVideoSkipBackSeconds = "player.video_skip_back_seconds"
     /// Video fast-forward interval
     case playerVideoSkipForwardSeconds = "player.video_skip_forward_seconds"
+    /// Request titles I add to my watchlist
+    case requestsWatchlistAutoRequest = "requests.watchlist_auto_request"
     /// Search scope
     case searchMediaScope = "search.media_scope"
     /// Match device caption settings
@@ -162,7 +164,7 @@ public enum SettingKey: String, CaseIterable, Sendable {
 }
 
 public extension SettingKey {
-    static let revision = 15
+    static let revision = 16
 
     /// Keys the server stores. The rest never leave the device.
     static let remote: [SettingKey] = [
@@ -203,6 +205,7 @@ public extension SettingKey {
         .playerVideoGravity,
         .playerVideoSkipBackSeconds,
         .playerVideoSkipForwardSeconds,
+        .requestsWatchlistAutoRequest,
         .searchMediaScope,
         .uiCardOverlays,
         .uiCardOverlaysEnabled,

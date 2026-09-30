@@ -19,6 +19,7 @@ private struct WatchPartyMediaChoice: Hashable {
     /// Set when `backdropURL` may be this episode's still and `overview` is
     /// its description, so spoiler protection can hide them on this page.
     /// The lobby preview is shared with the room and is left as it is.
+    private(set) var posterIsEpisodeStill: Bool?
     private(set) var backdropIsEpisodeStill: Bool?
     private(set) var episodeWatchState: EpisodeWatchState?
     /// The lobby hero's wording differs from this page's: an episode leads
@@ -47,8 +48,11 @@ private struct WatchPartyMediaChoice: Hashable {
         title = item.title
         subtitle = nil
         posterURL = item.posterUrl
+        posterIsEpisodeStill = item.posterIsEpisodeStill
         posterThumbhash = item.posterThumbhash
         backdropURL = item.backdropUrl
+        backdropIsEpisodeStill = item.backdropIsEpisodeStill
+        episodeWatchState = item.isEpisodeItem ? EpisodeWatchState(browseItem: item) : nil
         backdropThumbhash = item.backdropThumbhash
         overview = item.overview
         facts = item.watchPartyFacts
@@ -62,6 +66,7 @@ private struct WatchPartyMediaChoice: Hashable {
         title = series.title
         subtitle = "S\(episode.seasonNumber) · E\(episode.episodeNumber)" + (episode.title.map { " · \($0)" } ?? "")
         posterURL = series.posterUrl
+        posterIsEpisodeStill = false
         posterThumbhash = series.posterThumbhash
         backdropURL = episode.stillUrl ?? series.backdropUrl
         backdropThumbhash = episode.stillUrl != nil ? episode.stillThumbhash : series.backdropThumbhash
@@ -86,6 +91,7 @@ private struct WatchPartyMediaChoice: Hashable {
             subtitle = item.seriesTitle != nil ? item.title : nil
         }
         posterURL = item.posterUrl
+        posterIsEpisodeStill = item.posterIsEpisodeStill
         posterThumbhash = item.posterThumbhash
         backdropURL = item.backdropUrl
         backdropThumbhash = item.backdropThumbhash
@@ -114,6 +120,7 @@ private struct WatchPartyMediaChoice: Hashable {
         title = series.title
         subtitle = "S\(nextUp.seasonNumber) · E\(nextUp.episodeNumber)" + (nextUp.title.map { " · \($0)" } ?? "")
         posterURL = series.posterUrl
+        posterIsEpisodeStill = false
         posterThumbhash = series.posterThumbhash
         backdropURL = series.backdropUrl
         backdropThumbhash = series.backdropThumbhash
@@ -1044,8 +1051,9 @@ private struct WatchPartyMediaChoiceView: View {
     private var spoilers: EpisodeSpoilerSettings { EpisodeSpoilerPreferences.shared.settings }
 
     private var hidesStill: Bool {
-        guard choice.backdropURL != nil, let state = choice.episodeWatchState else { return false }
-        return spoilers.hidesImage(for: state, isEpisodeStill: choice.backdropIsEpisodeStill)
+        guard let state = choice.episodeWatchState else { return false }
+        let provenance = choice.backdropURL?.isEmpty == false ? choice.backdropIsEpisodeStill : choice.posterIsEpisodeStill
+        return spoilers.hidesImage(for: state, isEpisodeStill: provenance)
     }
 
     private var visibleOverview: String? {
@@ -1063,6 +1071,7 @@ private struct WatchPartyMediaChoiceView: View {
                 VStack(alignment: .leading, spacing: WatchPartyMetrics.body * 1.4) {
                     HStack(alignment: .bottom, spacing: WatchPartyMetrics.body) {
                         WatchPartyPoster(url: choice.posterURL, thumbhash: choice.posterThumbhash, width: posterWidth)
+                            .episodeSpoilerBlur(choice.episodeWatchState.map { spoilers.hidesImage(for: $0, isEpisodeStill: choice.posterIsEpisodeStill) } ?? false)
                             .shadow(color: .black.opacity(0.6), radius: 16, y: 10)
                         VStack(alignment: .leading, spacing: 8) {
                             WatchPartyEyebrow(text: purpose == .suggest ? "Suggest to the party" : "Watch together")

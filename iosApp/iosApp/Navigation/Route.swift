@@ -148,8 +148,8 @@ struct TVItemDetailRouteSeed: Hashable {
         posterThumbhash = item.posterThumbhash
         backdropUrl = item.backdropUrl
         backdropThumbhash = item.backdropThumbhash
-        backdropIsEpisodeStill = nil
-        episodeWatchState = nil
+        backdropIsEpisodeStill = item.backdropIsEpisodeStill
+        episodeWatchState = item.isEpisodeItem ? EpisodeWatchState(browseItem: item) : nil
     }
 
     /// Continue Watching episodes open their parent Series. Keep the immediate
