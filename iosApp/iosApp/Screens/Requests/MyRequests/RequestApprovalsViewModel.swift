@@ -3,6 +3,33 @@ import Foundation
 /// Where one row's admin action is, so the row can animate it: the button
 /// spins while `working`, shows its result while `succeeded`, then the row
 /// leaves the list.
+/// An approve, decline, or retry sent without a usable answer. Moderation
+/// is `non_retryable`, and a timed-out call can still be running on the
+/// server when the next read comes back, so an unchanged request proves
+/// nothing: the hold lasts until the request changes or leaves the queue.
+/// It lapses after `lifetime`, by which point the lost call has finished
+/// either way, so a call that never arrived doesn't lock the row forever.
+struct ModerationHold: Equatable {
+    let requestId: String
+    let updatedAt: Date
+    let since: Date
+
+    static let lifetime: TimeInterval = 60
+
+    init(request: MediaRequest, since: Date = Date()) {
+        requestId = request.id
+        updatedAt = request.updatedAt
+        self.since = since
+    }
+
+    /// Whether a complete read (`current` is the request's entry in it, or
+    /// nil when it's gone) shows what the held call did.
+    func isSettled(by current: MediaRequest?, now: Date = Date()) -> Bool {
+        guard let current, current.id == requestId else { return true }
+        return current.updatedAt != updatedAt || now.timeIntervalSince(since) >= Self.lifetime
+    }
+}
+
 enum RequestRowActionPhase: Equatable {
     case working(AdminRequestAction)
     case succeeded(AdminRequestAction)
@@ -23,9 +50,9 @@ final class RequestApprovalsViewModel {
     private(set) var actionErrorMessage: String?
     /// Bumped on every accepted action, for the success haptic.
     private(set) var completedActions = 0
-    /// Requests whose decision was sent without a usable answer. Moderation
-    /// is `non_retryable`, so these offer no action until a fresh read.
-    private(set) var unconfirmedIds: Set<String> = []
+    /// Decisions sent without a usable answer, by request id; those rows
+    /// offer no action until a read shows the result (`ModerationHold`).
+    private(set) var holds: [String: ModerationHold] = [:]
     /// Per-row animation state for actions in flight or just finished.
     private(set) var phases: [String: RequestRowActionPhase] = [:]
     /// Per-row count of outright failures; a row's button shakes when its
@@ -63,10 +90,16 @@ final class RequestApprovalsViewModel {
             hasLoaded = true
             RequestDetailCache.shared.storeModerationRecords(awaitingApproval + failed)
             RequestDetailCache.shared.prefetch(awaitingApproval + failed, api: api)
-            // The server's list now shows each held decision's result.
-            if !unconfirmedIds.isEmpty {
-                unconfirmedIds.removeAll()
-                actionErrorMessage = nil
+            // Release the holds this read settles; an unchanged request
+            // keeps its hold.
+            if !holds.isEmpty {
+                let listed = awaitingApproval + failed
+                holds = holds.filter { id, hold in
+                    !hold.isSettled(by: listed.first { $0.id == id })
+                }
+                if holds.isEmpty, actionErrorMessage == RequestErrorCopy.unconfirmedModerationMessage {
+                    actionErrorMessage = nil
+                }
             }
         } catch {
             if !hasLoaded {
@@ -79,7 +112,7 @@ final class RequestApprovalsViewModel {
     /// Whether a row may offer its decision: not while its own action runs
     /// or is held. Rows act independently of each other.
     func canAct(on request: MediaRequest) -> Bool {
-        phases[request.id] == nil && !unconfirmedIds.contains(request.id)
+        phases[request.id] == nil && holds[request.id] == nil
     }
 
     func phase(for request: MediaRequest) -> RequestRowActionPhase? {
@@ -106,9 +139,9 @@ final class RequestApprovalsViewModel {
         } catch where RequestMutationFailure.isUncertain(error) {
             phases[request.id] = nil
             // Never resend: hold the row until a fresh read shows the result.
-            unconfirmedIds.insert(request.id)
+            holds[request.id] = ModerationHold(request: request)
             if !RequestMutationFailure.isOwnerChanged(error) { await load() }
-            if !unconfirmedIds.isEmpty {
+            if !holds.isEmpty {
                 actionErrorMessage = RequestErrorCopy.unconfirmedModerationMessage
             }
         } catch {

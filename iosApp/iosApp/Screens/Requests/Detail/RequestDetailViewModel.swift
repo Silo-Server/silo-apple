@@ -48,7 +48,8 @@ final class RequestDetailViewModel {
     private(set) var isModerating = false
     /// A decision was sent without a usable answer. Moderation is
     /// `non_retryable`, so the buttons stay hidden until a fresh read.
-    private(set) var isModerationUnconfirmed = false
+    private var moderationHold: ModerationHold?
+    var isModerationUnconfirmed: Bool { moderationHold != nil }
     /// Bumped on every accepted admin decision, for the success haptic.
     private(set) var moderatedCount = 0
     var isLoading = false
@@ -98,7 +99,8 @@ final class RequestDetailViewModel {
         let pinned = cache.pinnedModerationRecord(key)
         moderationRecord = pinned ?? cache.moderationRecord(key)
         openedForModeration = pinned != nil
-        selectedModerationId = pinned?.id
+        // Whatever request the page shows first is the one it decides on.
+        selectedModerationId = moderationRecord?.id
     }
 
     var primaryAction: RequestPrimaryAction {
@@ -236,7 +238,10 @@ final class RequestDetailViewModel {
             record = await own
             if let moderation = await moderationLookup {
                 moderationRecord = moderation.record
-                isModerationUnconfirmed = false
+                // An unchanged request doesn't show what a lost call did.
+                if let hold = moderationHold, hold.isSettled(by: moderation.record) {
+                    moderationHold = nil
+                }
             }
             // The server's answer now decides the CTA; release the hold.
             if isSubmissionUnconfirmed {
@@ -310,8 +315,8 @@ final class RequestDetailViewModel {
             RequestsEventBus.shared.publishModeration(updated)
             await load()
         } catch where RequestMutationFailure.isUncertain(error) {
-            // Never resend: hide the decision until a fresh read shows it.
-            isModerationUnconfirmed = true
+            // Never resend: hide the decision until a read shows it landed.
+            moderationHold = ModerationHold(request: moderationRecord)
             actionErrorMessage = RequestErrorCopy.unconfirmedModerationMessage
             if !RequestMutationFailure.isOwnerChanged(error) { await load() }
         } catch {
