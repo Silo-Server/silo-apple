@@ -442,6 +442,25 @@ final class RequestsV2Tests: XCTestCase {
     }
 
     @MainActor
+    func testAnApprovalPinOpensOneModerationPageOnly() async throws {
+        let tokens = try await tokens()
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        let cache = RequestDetailCache()
+        let queued = try HTTPClient.makeJSONDecoder().decode(MediaRequest.self, from: Data(Self.record.utf8))
+        cache.pinModeration(queued)
+        stub.reply(200, Self.detail)
+
+        let fromQueue = RequestDetailViewModel(mediaType: .movie, tmdbId: 949, api: api, cache: cache)
+        XCTAssertTrue(fromQueue.openedForModeration)
+        await fromQueue.load()
+
+        // Backing out and reopening the title from anywhere else is an
+        // ordinary page, not a moderation page for someone else's request.
+        let later = RequestDetailViewModel(mediaType: .movie, tmdbId: 949, api: api, cache: cache)
+        XCTAssertFalse(later.openedForModeration)
+    }
+
+    @MainActor
     func testCreateInterruptedByAnOwnerChangeHoldsWithoutReReading() async throws {
         let tokens = try await tokens()
         let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)

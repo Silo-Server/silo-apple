@@ -55,6 +55,11 @@ final class RequestDetailCache {
     func moderationRecord(_ key: Key) -> MediaRequest? { moderationRecords[key] }
     func pinnedModerationRecord(_ key: Key) -> MediaRequest? { pinnedModeration[key] }
 
+    /// Any other way into the title opens an ordinary page.
+    func unpinModeration(_ key: Key) {
+        pinnedModeration.removeValue(forKey: key)
+    }
+
     /// A page to show before the detail read answers: the cached detail, or
     /// one built from what a card or record already carried.
     func firstFrameDetail(_ key: Key) -> RequestMediaDetail? {

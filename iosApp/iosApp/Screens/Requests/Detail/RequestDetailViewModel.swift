@@ -69,6 +69,11 @@ final class RequestDetailViewModel {
     /// Opened from an approval queue: the page describes that exact
     /// request, even when the admin also has a request for the title.
     let openedForModeration: Bool
+    /// The one request this page decides on, once chosen. Kept apart from
+    /// `moderationRecord`, which goes nil when the request is decided, so a
+    /// later refresh can never move the buttons to another requester.
+    private var selectedModerationId: String?
+    private var hasConsumedPin = false
     /// In-flight bus-triggered reload; cancelled and replaced on the next
     /// event so a slow earlier response can't overwrite a newer one.
     private var reloadTask: Task<Void, Never>?
@@ -93,6 +98,7 @@ final class RequestDetailViewModel {
         let pinned = cache.pinnedModerationRecord(key)
         moderationRecord = pinned ?? cache.moderationRecord(key)
         openedForModeration = pinned != nil
+        selectedModerationId = pinned?.id
     }
 
     var primaryAction: RequestPrimaryAction {
@@ -208,6 +214,13 @@ final class RequestDetailViewModel {
     }
 
     func load() async {
+        // The pin is for this one opening; the next visit to the title from
+        // anywhere else is an ordinary page. Consumed here, by the page on
+        // screen, not in `init`, which SwiftUI may run for throwaway copies.
+        if openedForModeration, let pinned = moderationRecord, !hasConsumedPin {
+            hasConsumedPin = true
+            cache.unpinModeration(pinned)
+        }
         isLoading = detail == nil
         error = nil
         do {
@@ -266,9 +279,10 @@ final class RequestDetailViewModel {
         // Several users can have failed requests for one title: stay on the
         // exact request the admin opened. Once it's decided, offer nothing
         // rather than another requester's request.
-        if let current = moderationRecord?.id {
-            return ModerationLookup(record: matches.first(where: { $0.id == current }))
+        if let selected = selectedModerationId {
+            return ModerationLookup(record: matches.first(where: { $0.id == selected }))
         }
+        selectedModerationId = matches.first?.id
         return ModerationLookup(record: matches.first)
     }
 

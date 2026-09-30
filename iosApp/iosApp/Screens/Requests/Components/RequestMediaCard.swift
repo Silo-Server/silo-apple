@@ -232,6 +232,7 @@ extension AppRouter {
     func openRequestResult(_ result: RequestMediaResult) {
         // The card already knows the title and its status: seed the page.
         RequestDetailCache.shared.seed(result)
+        RequestDetailCache.shared.unpinModeration(.init(mediaType: result.mediaType, tmdbId: result.tmdbId))
         navigate(to: .requestDestination(for: result))
     }
 
@@ -245,6 +246,7 @@ extension AppRouter {
 
     @MainActor
     func openRequestRecord(_ record: MediaRequest) {
+        RequestDetailCache.shared.unpinModeration(.init(mediaType: record.mediaType, tmdbId: record.tmdbId))
         navigate(to: .requestDestination(for: record))
     }
 }
