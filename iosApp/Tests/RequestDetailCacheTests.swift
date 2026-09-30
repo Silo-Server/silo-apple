@@ -69,7 +69,7 @@ final class ModerationHoldTests: XCTestCase {
         XCTAssertTrue(hold.isSettled(by: nil, now: start))
     }
 
-    func testTheHoldLapsesOnceTheLostCallMustHaveFinished() {
+    func testAnUnchangedRequestReleasesItOnceTheLifetimeEnds() {
         let start = Date(timeIntervalSince1970: 1_000)
         let hold = ModerationHold(request: record(), since: start)
         XCTAssertTrue(hold.isSettled(by: record(), now: start.addingTimeInterval(ModerationHold.lifetime)))
