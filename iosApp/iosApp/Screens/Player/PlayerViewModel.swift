@@ -6511,6 +6511,10 @@ class PlayerViewModel {
         watchPartyAdapter = nil
         partyAdapter?.playerDidExit()
         Self.logger.info("PlayerViewModel.cleanup()")
+        // Resolve the credits latch against the current position now: the
+        // teardown below clears `creditsRange` before the final progress
+        // flush reads the latch.
+        didSkipCreditsToEnd = skippedCreditsToEnd
         let currentItemCompleted = PlayerNextUpCompletionPolicy.shouldFinalizeAsCompleted(
             isNextUpPresented: showNextUpScreen,
             hasReachedEndOfFile: hasReachedEndOfFile,
@@ -6559,7 +6563,6 @@ class PlayerViewModel {
         markerReconciledSessionId = nil
         introSkipPrompt.reset()
         autoSkippedCreditsKey = nil
-        didSkipCreditsToEnd = false
         knownExternalSubtitles = []
         locallyRegisteredSidecarSubtitleTracks = []
         localProtocolV3SubtitleSelection = nil
