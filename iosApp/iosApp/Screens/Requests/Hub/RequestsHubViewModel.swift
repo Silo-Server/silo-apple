@@ -26,9 +26,13 @@ final class RequestsHubViewModel {
 
     private var searchTask: Task<Void, Never>?
     private let api: SiloAPI
+    /// False where the page reads the full approval queue itself (tvOS), so
+    /// the hub doesn't read it a second time just to count it.
+    private let countsPendingApprovals: Bool
 
-    init(api: SiloAPI = .shared) {
+    init(api: SiloAPI = .shared, countsPendingApprovals: Bool = true) {
         self.api = api
+        self.countsPendingApprovals = countsPendingApprovals
     }
 
     /// True while the hub should show discover content (no active query).
@@ -36,18 +40,24 @@ final class RequestsHubViewModel {
         query.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
-    func load() async {
+    /// Returns whether discover and the user's requests read successfully.
+    @discardableResult
+    func load() async -> Bool {
         isLoading = carousels.isEmpty && myRequests.isEmpty
         error = nil
+        // The admin queue can take many pages; it fills its row when it
+        // lands instead of holding the hub on placeholders.
+        async let approvals: Void = loadPendingApprovals()
         async let discover = api.requestsDiscover()
         async let mine = api.myRequests()
+        var succeeded = false
         do {
             let (sections, requests) = try await (discover, mine)
             carousels = RequestCarouselMerge.carousels(from: sections)
             myRequests = MyRequestsBucket.bucket(requests).flatMap(\.requests)
             RequestDetailCache.shared.storeOwnRecords(requests)
             RequestDetailCache.shared.prefetch(myRequests, api: api)
-            await loadPendingApprovals()
+            succeeded = true
         } catch {
             // Keep any prior content on a transient failure; only surface
             // the error when there's nothing to show instead.
@@ -56,11 +66,13 @@ final class RequestsHubViewModel {
             }
         }
         isLoading = false
+        await approvals
+        return succeeded
     }
 
     /// The hub's approvals row is a nudge, not a list: a failed read hides it.
     private func loadPendingApprovals() async {
-        guard RequestsFeatureStore.shared.canModerate else {
+        guard countsPendingApprovals, RequestsFeatureStore.shared.canModerate else {
             pendingApprovals = 0
             return
         }

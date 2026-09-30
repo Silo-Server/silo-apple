@@ -29,7 +29,8 @@ struct TVRequestsPage: View {
     /// Up from the first row. Nil on pushed pages, which have no top bar.
     var onTopMenuFocusRequest: (() -> Void)? = nil
 
-    @State private var hub = RequestsHubViewModel()
+    /// The page reads the approval queue itself, so the hub doesn't count it.
+    @State private var hub = RequestsHubViewModel(countsPendingApprovals: false)
     @State private var mine = MyRequestsViewModel()
     @State private var approvals = RequestApprovalsViewModel()
     @State private var marquee = TVFocusMarqueeModel()
@@ -54,8 +55,12 @@ struct TVRequestsPage: View {
         .task { await load() }
         .onChange(of: RequestsEventBus.shared.lastUpdate) { _, update in
             guard let update else { return }
-            hub.applyRequestUpdate(update)
-            mine.applyRequestUpdate(update)
+            // Only the model this page shows; the others stay unread.
+            switch mode {
+            case .hub: hub.applyRequestUpdate(update)
+            case .mine: mine.applyRequestUpdate(update)
+            case .approvals: break
+            }
         }
         .onChange(of: RequestsEventBus.shared.lastModeration) { _, record in
             guard let record else { return }
@@ -225,7 +230,7 @@ struct TVRequestsPage: View {
     private func load() async {
         switch mode {
         case .hub:
-            async let discover: Void = hub.load()
+            async let discover = hub.load()
             async let moderation: Void = loadApprovalsIfModerating()
             _ = await (discover, moderation)
         case .mine:
@@ -355,8 +360,11 @@ struct TVRequestsPage: View {
                     if RequestDisplayState(record: record).isCancelable, !mine.isCancelUnconfirmed(record) {
                         Button(role: .destructive) {
                             Task {
-                                await mine.cancel(record)
-                                await hub.load()
+                                if mode == .mine {
+                                    await mine.cancel(record)
+                                } else {
+                                    await mine.cancel(record, refresh: { await hub.load() })
+                                }
                             }
                         } label: {
                             Label("Cancel Request", systemImage: "xmark.circle")

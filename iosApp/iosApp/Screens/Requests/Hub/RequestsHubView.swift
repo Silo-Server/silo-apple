@@ -127,7 +127,10 @@ private struct PhoneRequestsHubView: View {
     }
 
     private var searchCardWidth: CGFloat {
-        AdaptiveColumns.fittedPosterWidth(
+        // Before the first measurement, a standard poster: the uncapped fit
+        // below would return its infinite maximum.
+        guard gridWidth > 0 else { return SiloTheme.posterCardWidth }
+        return AdaptiveColumns.fittedPosterWidth(
             containerWidth: gridWidth,
             columnCount: searchColumns.count,
             spacing: Self.gridSpacing,

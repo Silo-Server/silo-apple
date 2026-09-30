@@ -121,7 +121,7 @@ final class RequestDetailViewModel {
     /// one an admin is deciding on. The page shows it as the status; the
     /// requester's one way forward is to request again.
     var endedRequest: MediaRequest? {
-        for candidate in [record, moderationRecord].compactMap({ $0 }) {
+        for candidate in [currentOwnRecord, moderationRecord].compactMap({ $0 }) {
             if case .needsAttention = RequestDisplayState(record: candidate) { return candidate }
         }
         return nil
@@ -140,12 +140,13 @@ final class RequestDetailViewModel {
     /// view of someone else's, otherwise the title annotation. Nil for a
     /// title nobody has requested, including one that can't be requested.
     var progress: RequestProgress? {
-        if record == nil, let moderationRecord {
+        let own = currentOwnRecord
+        if own == nil, let moderationRecord {
             return RequestProgress(record: moderationRecord)
         }
-        if let record,
-           activeRecordState != nil || endedRequest?.id == record.id || detail?.request.requestId == record.id {
-            return RequestProgress(record: record)
+        if let own,
+           activeRecordState != nil || endedRequest?.id == own.id || detail?.request.requestId == own.id {
+            return RequestProgress(record: own)
         }
         guard let detail,
               let progress = RequestProgress(availability: detail.availability, request: detail.request)
@@ -158,6 +159,19 @@ final class RequestDetailViewModel {
     var canCancel: Bool {
         guard let record, !isCancelling, !isCancelUnconfirmed else { return false }
         return RequestDisplayState(record: record).isCancelable
+    }
+
+    /// The user's record while it's still the latest word on the title. A
+    /// failed or declined one stops counting once the title is in the
+    /// library or another request for it is under way.
+    private var currentOwnRecord: MediaRequest? {
+        guard let record else { return nil }
+        guard record.outcome != .active, let detail else { return record }
+        if RequestDisplayState(availability: detail.availability, request: detail.request) == .inLibrary {
+            return nil
+        }
+        if let current = detail.request.requestId, current != record.id { return nil }
+        return record
     }
 
     private var activeRecordState: RequestDisplayState? {
@@ -182,10 +196,13 @@ final class RequestDetailViewModel {
             detail = fresh
             hasFreshDetail = true
             cache.store(fresh)
-            // Supporting reads run after the title: each keeps its previous
-            // value on failure, so a slow list never blocks the page.
-            record = await loadOwnRecord()
-            if let moderation = try? await loadModerationRecord() {
+            // Supporting reads run after the title, side by side: each keeps
+            // its previous value on failure, so a slow list never blocks
+            // the page.
+            async let own = loadOwnRecord()
+            async let moderationLookup = try? loadModerationRecord()
+            record = await own
+            if let moderation = await moderationLookup {
                 moderationRecord = moderation.record
                 isModerationUnconfirmed = false
             }
@@ -202,8 +219,9 @@ final class RequestDetailViewModel {
         isLoading = false
     }
 
-    /// The newest of the user's requests for this title. A failed read
-    /// leaves the page on the title annotation alone.
+    /// The user's current request for this title (see
+    /// `RequestDetailCache.currentRecord`). A failed read keeps what the
+    /// page has.
     private func loadOwnRecord() async -> MediaRequest? {
         guard let mine = try? await api.myRequests() else { return record }
         cache.storeOwnRecords(mine)
@@ -212,9 +230,7 @@ final class RequestDetailViewModel {
             isCancelUnconfirmed = false
             if actionErrorMessage == RequestErrorCopy.unconfirmedCancelMessage { actionErrorMessage = nil }
         }
-        return mine
-            .filter { $0.mediaType == mediaType && $0.tmdbId == tmdbId && $0.outcome != .cancelled }
-            .max { $0.createdAt < $1.createdAt }
+        return RequestDetailCache.currentRecord(among: mine.filter { $0.mediaType == mediaType && $0.tmdbId == tmdbId })
     }
 
     /// Admins see the decision on the page they open from Approvals.
@@ -222,8 +238,11 @@ final class RequestDetailViewModel {
     /// `record` means nothing for this title awaits a decision.
     private func loadModerationRecord() async throws -> ModerationLookup {
         guard RequestsFeatureStore.shared.canModerate else { return ModerationLookup(record: nil) }
-        let pending = try await api.adminRequests(status: .pending, outcome: .active)
-        let failed = try await api.adminRequests(outcome: .failed)
+        // Filtered to this title on the server: one short page each, not
+        // the whole queue and every failure on record.
+        async let pendingRead = api.adminRequests(status: .pending, outcome: .active, mediaType: mediaType, tmdbId: tmdbId)
+        async let failedRead = api.adminRequests(outcome: .failed, mediaType: mediaType, tmdbId: tmdbId)
+        let (pending, failed) = try await (pendingRead, failedRead)
         let matches = (pending + failed).filter { $0.mediaType == mediaType && $0.tmdbId == tmdbId }
         // Several users can have failed requests for one title: keep the
         // exact request the admin opened, while it still needs a decision.

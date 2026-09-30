@@ -107,7 +107,14 @@ extension APIv2Client {
     /// Like `myRequests()`: every page runs under the one owner captured at
     /// the start, and a failed page, a missing or repeated cursor, or the
     /// page bound fails the whole load instead of returning a partial list.
-    func adminRequests(status: RequestStatus?, outcome: RequestOutcome?) async throws -> [MediaRequest] {
+    /// `tmdbId` narrows the list to one title through `q`, which also
+    /// matches titles containing the number, so callers still match the id.
+    func adminRequests(
+        status: RequestStatus?,
+        outcome: RequestOutcome?,
+        mediaType: RequestMediaType? = nil,
+        tmdbId: Int? = nil
+    ) async throws -> [MediaRequest] {
         guard let auth = await tokenStore.captureOrdinaryRequestAuth(),
               let profile = auth.profileId else { throw HTTPError.requestIdentityChanged }
         let identity = Self.requestIdentity(auth, profile: profile)
@@ -119,6 +126,8 @@ extension APIv2Client {
             var query = ["limit": "50"]
             if let status { query["status"] = status.rawValue }
             if let outcome { query["outcome"] = outcome.rawValue }
+            if let mediaType, mediaType == .movie || mediaType == .series { query["media_type"] = mediaType.rawValue }
+            if let tmdbId { query["q"] = String(tmdbId) }
             if let cursor { query["cursor"] = cursor }
             let requestQuery = query
             let raw = try await tokenStore.withOwnerFence(auth) {

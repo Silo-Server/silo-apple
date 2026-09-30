@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Request management. On iOS/macOS: the signed-in user's requests as an
 /// inset-grouped list in the Downloads manager's shape — a stage track on
-/// every row, swipe to cancel, Play once a title lands, and a filter menu in
+/// every row, swipe to cancel, Open once a title lands, and a filter menu in
 /// the navigation bar. Admins get a card into the approval queue, which is
 /// its own page (`.everyone`). tvOS renders the same data as a Skyline page
 /// (`TVRequestsPage`).
@@ -219,7 +219,7 @@ private struct PhoneMyRequestsView: View {
                             isBusy: viewModel.cancellingId == record.id,
                             isDimmed: viewModel.cancellingId == record.id,
                             onOpen: { router.openRequestRecord(record) },
-                            onPlay: record.libraryContentId.map { id in
+                            onOpenInLibrary: record.libraryContentId.map { id in
                                 { router.navigate(to: .itemDetail(contentId: id)) }
                             }
                         )
@@ -351,7 +351,7 @@ private struct PhoneMyRequestsView: View {
 // MARK: - Rows
 
 /// One request in the grouped list: poster, title, meta line, the stage
-/// track, and a status line. The trailing slot is Play (in the library),
+/// track, and a status line. The trailing slot is Open (in the library),
 /// Retry (admin, failed), or a disclosure chevron.
 struct MyRequestRow: View {
     let record: MediaRequest
@@ -365,7 +365,7 @@ struct MyRequestRow: View {
     var actionError: String? = nil
     var shakeTrigger = 0
     let onOpen: () -> Void
-    var onPlay: (() -> Void)? = nil
+    var onOpenInLibrary: (() -> Void)? = nil
     var onRetry: (() -> Void)? = nil
 
     private var progress: RequestProgress { RequestProgress(record: record) }
@@ -431,8 +431,8 @@ struct MyRequestRow: View {
                 shakeTrigger: shakeTrigger,
                 onTap: onRetry
             )
-        } else if let onPlay, progress.display == .inLibrary {
-            RequestRowCapsuleButton(title: "Play", systemImage: "play.fill", action: onPlay)
+        } else if let onOpenInLibrary, progress.display == .inLibrary {
+            RequestRowCapsuleButton(title: "Open", systemImage: "arrow.up.right", action: onOpenInLibrary)
         } else {
             Image(systemName: "chevron.right")
                 .font(.footnote.weight(.semibold))

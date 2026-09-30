@@ -465,4 +465,77 @@ final class RequestsV2Tests: XCTestCase {
         await model.submitRequest()
         XCTAssertEqual(stub.requests.filter { $0.method == "POST" }.count, 1, "held create is never resent")
     }
+
+    // MARK: Which request speaks for a title
+
+    private static func record(_ id: String, outcome: String, createdAt: String, status: String = "pending") -> String {
+        Self.record
+            .replacingOccurrences(of: #""id":"request-one""#, with: #""id":"\#(id)""#)
+            .replacingOccurrences(of: #""status":"pending""#, with: #""status":"\#(status)""#)
+            .replacingOccurrences(of: #""outcome":"active""#, with: #""outcome":"\#(outcome)""#)
+            .replacingOccurrences(of: #""created_at":"2026-01-02T03:04:05.000Z""#, with: #""created_at":"\#(createdAt)""#)
+    }
+
+    @MainActor
+    func testCancellingANewerRequestDoesNotBringBackAnOlderDecline() async throws {
+        let tokens = try await tokens()
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        let cache = RequestDetailCache()
+        let model = RequestDetailViewModel(mediaType: .movie, tmdbId: 949, api: api, cache: cache)
+        // Declined, requested again, then that second request cancelled.
+        let declined = Self.record("declined", outcome: "declined", createdAt: "2026-01-02T03:04:05.000Z")
+        let cancelled = Self.record("cancelled", outcome: "cancelled", createdAt: "2026-02-02T03:04:05.000Z")
+        stub.sequence([
+            .json(200, Self.detail),
+            .json(200, #"{"items":[\#(declined),\#(cancelled)]}"#),
+        ])
+        await model.load()
+        XCTAssertNil(model.record)
+        XCTAssertNil(model.endedRequest)
+        XCTAssertEqual(model.primaryAction, .request)
+        XCTAssertNil(cache.ownRecord(.init(mediaType: .movie, tmdbId: 949)), "the next first frame agrees")
+    }
+
+    @MainActor
+    func testAnOldFailureDoesNotOverrideATitleNowInTheLibrary() async throws {
+        let tokens = try await tokens()
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        let model = RequestDetailViewModel(mediaType: .movie, tmdbId: 949, api: api, cache: RequestDetailCache())
+        let inLibrary = Self.detail
+            .replacingOccurrences(of: #""availability":"missing""#,
+                with: #""availability":"available","library_content_id":"movie-1""#)
+            .replacingOccurrences(of: #""request":{"requestable":true}"#,
+                with: #""request":{"requestable":false,"reason":"already_available"}"#)
+        let failed = Self.record("failed", outcome: "failed", createdAt: "2026-01-02T03:04:05.000Z")
+        stub.sequence([
+            .json(200, inLibrary),
+            .json(200, #"{"items":[\#(failed)]}"#),
+        ])
+        await model.load()
+        XCTAssertEqual(model.primaryAction, .openInLibrary(contentId: "movie-1"))
+        XCTAssertNil(model.endedRequest)
+        XCTAssertEqual(model.progress?.display, .inLibrary)
+    }
+
+    @MainActor
+    func testApprovalCacheKeepsThePendingRequestOverAFailedOne() throws {
+        let decoder = HTTPClient.makeJSONDecoder()
+        let pending = try decoder.decode(MediaRequest.self, from: Data(Self.record("pending", outcome: "active",
+            createdAt: "2026-02-02T03:04:05.000Z").utf8))
+        let failed = try decoder.decode(MediaRequest.self, from: Data(Self.record("failed", outcome: "failed",
+            createdAt: "2026-01-02T03:04:05.000Z").utf8))
+        let cache = RequestDetailCache()
+        // Approvals stores its queue as `awaitingApproval + failed`.
+        cache.storeModerationRecords([pending, failed])
+        XCTAssertEqual(cache.moderationRecord(.init(mediaType: .movie, tmdbId: 949))?.id, "pending")
+    }
+
+    func testAdminReadForOneTitleFiltersOnTheServer() async throws {
+        let (client, _) = try await client()
+        stub.reply(200, #"{"items":[],"page":{"has_more":false}}"#)
+        _ = try await client.adminRequests(status: .pending, outcome: .active, mediaType: .movie, tmdbId: 949)
+        XCTAssertEqual(stub.requests.first?.path, "/api/v2/admin/requests")
+        XCTAssertEqual(stub.requests.first?.query,
+            ["limit": "50", "status": "pending", "outcome": "active", "media_type": "movie", "q": "949"])
+    }
 }

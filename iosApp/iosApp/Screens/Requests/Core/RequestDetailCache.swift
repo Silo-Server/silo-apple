@@ -36,6 +36,8 @@ final class RequestDetailCache {
     /// wins over any other request for the same title.
     private var pinnedModeration: [Key: MediaRequest] = [:]
     private var seeds: [Key: RequestMediaResult] = [:]
+    /// Titles waiting to be warmed, shared by every list that asked.
+    private var prefetchQueue: [(key: Key, api: SiloAPI)] = []
     private var prefetchTask: Task<Void, Never>?
 
     /// Bounded so a long browsing session can't grow without limit.
@@ -76,14 +78,18 @@ final class RequestDetailCache {
     /// A complete `/requests/mine` read. Replaces what was known, so a
     /// cancelled request no longer seeds a page.
     func storeOwnRecords(_ records: [MediaRequest]) {
-        var next: [Key: MediaRequest] = [:]
-        for record in records where record.outcome != .cancelled {
-            let key = Key(mediaType: record.mediaType, tmdbId: record.tmdbId)
-            // Newest wins when a title was requested more than once.
-            if let existing = next[key], existing.createdAt > record.createdAt { continue }
-            next[key] = record
-        }
-        ownRecords = next
+        let byTitle = Dictionary(grouping: records) { Key(mediaType: $0.mediaType, tmdbId: $0.tmdbId) }
+        ownRecords = byTitle.compactMapValues(Self.currentRecord)
+    }
+
+    /// The one of a title's requests that speaks for it: the newest active
+    /// one, otherwise the newest overall. Nil when that newest one was
+    /// cancelled, so an older decline or failure doesn't come back.
+    static func currentRecord(among records: [MediaRequest]) -> MediaRequest? {
+        let older: (MediaRequest, MediaRequest) -> Bool = { $0.createdAt < $1.createdAt }
+        if let active = records.filter({ $0.outcome == .active }).max(by: older) { return active }
+        guard let newest = records.max(by: older), newest.outcome != .cancelled else { return nil }
+        return newest
     }
 
     func storeOwnRecord(_ record: MediaRequest) {
@@ -95,10 +101,14 @@ final class RequestDetailCache {
         }
     }
 
+    /// Records in priority order: the first per title wins, so a pending
+    /// request listed before a failed one is the one the page decides on,
+    /// as the detail read picks it.
     func storeModerationRecords(_ records: [MediaRequest]) {
         var next: [Key: MediaRequest] = [:]
         for record in records {
-            next[Key(mediaType: record.mediaType, tmdbId: record.tmdbId)] = record
+            let key = Key(mediaType: record.mediaType, tmdbId: record.tmdbId)
+            if next[key] == nil { next[key] = record }
         }
         moderationRecords = next
     }
@@ -114,6 +124,7 @@ final class RequestDetailCache {
     func clear() {
         prefetchTask?.cancel()
         prefetchTask = nil
+        prefetchQueue.removeAll()
         details.removeAll()
         detailOrder.removeAll()
         ownRecords.removeAll()
@@ -126,30 +137,41 @@ final class RequestDetailCache {
 
     /// Warms detail and artwork for the first rows of a list, one read at a
     /// time and only for titles not already cached, so opening any of them
-    /// lands on the finished page. Replaces an earlier prefetch in flight.
+    /// lands on the finished page. Lists that load together share one
+    /// queue, so a later list adds its titles instead of dropping an
+    /// earlier list's.
     func prefetch(_ records: [MediaRequest], api: SiloAPI = .shared) {
         let keys = records
             .map { Key(mediaType: $0.mediaType, tmdbId: $0.tmdbId) }
             .filter { details[$0] == nil && ($0.mediaType == .movie || $0.mediaType == .series) }
         var unique: [Key] = []
         for key in keys where !unique.contains(key) { unique.append(key) }
-        let batch = Array(unique.prefix(Self.prefetchCount))
+        let batch = unique.prefix(Self.prefetchCount).filter { key in
+            !prefetchQueue.contains { $0.key == key }
+        }
         guard !batch.isEmpty else { return }
 
         Self.warmArtwork(records.prefix(Self.prefetchCount).flatMap {
             [($0.backdropPath, .backdrop), ($0.posterPath, .poster)]
         })
-        prefetchTask?.cancel()
+        prefetchQueue.append(contentsOf: batch.map { (key: $0, api: api) })
+        guard prefetchTask == nil else { return }
         prefetchTask = Task { [weak self] in
-            for key in batch {
-                guard !Task.isCancelled else { return }
-                guard self?.details[key] == nil,
-                      let detail = try? await api.requestsDetail(mediaType: key.mediaType, tmdbId: key.tmdbId),
-                      !Task.isCancelled else { continue }
-                self?.store(detail)
-                Self.warmArtwork([(detail.backdropPath, .backdrop)])
-            }
+            await self?.drainPrefetchQueue()
         }
+    }
+
+    private func drainPrefetchQueue() async {
+        while !Task.isCancelled, !prefetchQueue.isEmpty {
+            let (key, api) = prefetchQueue.removeFirst()
+            guard details[key] == nil,
+                  let detail = try? await api.requestsDetail(mediaType: key.mediaType, tmdbId: key.tmdbId),
+                  !Task.isCancelled else { continue }
+            store(detail)
+            Self.warmArtwork([(detail.backdropPath, .backdrop)])
+        }
+        // `clear()` already dropped a cancelled task; a new one may run.
+        if !Task.isCancelled { prefetchTask = nil }
     }
 
     /// Pulls artwork bytes into the shared disk cache, so the detail hero

@@ -52,8 +52,13 @@ extension SiloAPI {
         try await apiV2Client.adminRequestCapabilities()
     }
 
-    func adminRequests(status: RequestStatus? = nil, outcome: RequestOutcome? = nil) async throws -> [MediaRequest] {
-        try await apiV2Client.adminRequests(status: status, outcome: outcome)
+    func adminRequests(
+        status: RequestStatus? = nil,
+        outcome: RequestOutcome? = nil,
+        mediaType: RequestMediaType? = nil,
+        tmdbId: Int? = nil
+    ) async throws -> [MediaRequest] {
+        try await apiV2Client.adminRequests(status: status, outcome: outcome, mediaType: mediaType, tmdbId: tmdbId)
     }
 
     func adminRequestAction(id: String, action: AdminRequestAction, reason: String? = nil) async throws -> MediaRequest {

@@ -458,7 +458,7 @@ struct RequestDetailView: View {
                 .controlSize(.small)
                 .tint(.siloSecondaryText)
         case .openInLibrary:
-            Image(systemName: "play.fill")
+            Image(systemName: "arrow.up.right")
         case .status(let state):
             Circle()
                 .fill(state.tint.color)
@@ -473,7 +473,7 @@ struct RequestDetailView: View {
         case .loading: ""
         case .request: viewModel.endedRequest == nil ? "Request" : "Request Again"
         case .submitting: "Requesting…"
-        case .openInLibrary: "Play"
+        case .openInLibrary: "Open in Library"
         case .status(let state):
             viewModel.progress.map { state == $0.display && state != .pending ? $0.longLabel : state.detailTitle }
                 ?? state.detailTitle
