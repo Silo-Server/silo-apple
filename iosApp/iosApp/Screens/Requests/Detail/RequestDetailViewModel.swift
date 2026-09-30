@@ -66,6 +66,9 @@ final class RequestDetailViewModel {
 
     private let api: SiloAPI
     private let cache: RequestDetailCache
+    /// Opened from an approval queue: the page describes that exact
+    /// request, even when the admin also has a request for the title.
+    let openedForModeration: Bool
     /// In-flight bus-triggered reload; cancelled and replaced on the next
     /// event so a slow earlier response can't overwrite a newer one.
     private var reloadTask: Task<Void, Never>?
@@ -87,7 +90,9 @@ final class RequestDetailViewModel {
         let key = RequestDetailCache.Key(mediaType: mediaType, tmdbId: tmdbId)
         detail = cache.firstFrameDetail(key)
         record = cache.ownRecord(key)
-        moderationRecord = cache.pinnedModerationRecord(key) ?? cache.moderationRecord(key)
+        let pinned = cache.pinnedModerationRecord(key)
+        moderationRecord = pinned ?? cache.moderationRecord(key)
+        openedForModeration = pinned != nil
     }
 
     var primaryAction: RequestPrimaryAction {
@@ -101,6 +106,9 @@ final class RequestDetailViewModel {
         }
         if isSubmitting { return .submitting }
         if isSubmissionUnconfirmed { return .status(.unavailable(reason: RequestErrorCopy.unconfirmedToken)) }
+        if openedForModeration, let moderationRecord {
+            return .status(RequestDisplayState(record: moderationRecord))
+        }
         if let state { return .status(state) }
         // The title annotation drops a request whose download finished but
         // hasn't reached the library, and would offer a duplicate request;
@@ -121,7 +129,10 @@ final class RequestDetailViewModel {
     /// one an admin is deciding on. The page shows it as the status; the
     /// requester's one way forward is to request again.
     var endedRequest: MediaRequest? {
-        for candidate in [currentOwnRecord, moderationRecord].compactMap({ $0 }) {
+        let order = openedForModeration
+            ? [moderationRecord, currentOwnRecord]
+            : [currentOwnRecord, moderationRecord]
+        for candidate in order.compactMap({ $0 }) {
             if case .needsAttention = RequestDisplayState(record: candidate) { return candidate }
         }
         return nil
@@ -141,7 +152,7 @@ final class RequestDetailViewModel {
     /// title nobody has requested, including one that can't be requested.
     var progress: RequestProgress? {
         let own = currentOwnRecord
-        if own == nil, let moderationRecord {
+        if let moderationRecord, openedForModeration || own == nil {
             return RequestProgress(record: moderationRecord)
         }
         if let own,
@@ -155,9 +166,17 @@ final class RequestDetailViewModel {
         return progress
     }
 
+    /// The request whose steps and timestamps the page shows.
+    var displayedRecord: MediaRequest? {
+        if openedForModeration, let moderationRecord { return moderationRecord }
+        return record ?? moderationRecord
+    }
+
     /// Cancel is offered on the page while the request is still pending.
     var canCancel: Bool {
-        guard let record, !isCancelling, !isCancelUnconfirmed else { return false }
+        // Cancel is the requester's action; a page describing someone
+        // else's request doesn't offer the admin's own.
+        guard !openedForModeration, let record, !isCancelling, !isCancelUnconfirmed else { return false }
         return RequestDisplayState(record: record).isCancelable
     }
 

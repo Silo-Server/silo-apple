@@ -197,7 +197,7 @@ struct RequestDetailView: View {
             }
 
             if let progress = viewModel.progress, progress.display != .inLibrary {
-                RequestStatusCard(progress: progress, record: viewModel.record)
+                RequestStatusCard(progress: progress, record: viewModel.displayedRecord)
             }
 
             if !viewModel.moderationActions.isEmpty {
@@ -343,7 +343,7 @@ struct RequestDetailView: View {
             VStack(alignment: .leading, spacing: 18) {
                 HStack(alignment: .top, spacing: 8) {
                     summaryField("STATUS", value: progress.longLabel, tint: progress.tint)
-                    if let record = viewModel.record {
+                    if let record = viewModel.displayedRecord {
                         summaryField("REQUESTED", value: record.createdAt.formatted(.dateTime.month(.abbreviated).day()))
                         if let quality = RequestTargetSummary.text(for: record.targets)
                             ?? RequestTargetSummary.qualities(for: record.targets) {
@@ -512,7 +512,7 @@ struct RequestDetailView: View {
     /// Where the title stands, in the slot a library title uses for its
     /// editorial eyebrow.
     private func eyebrow(_ detail: RequestMediaDetail) -> String? {
-        if viewModel.moderationRecord != nil, viewModel.record == nil {
+        if viewModel.moderationRecord != nil, viewModel.openedForModeration || viewModel.record == nil {
             return "Requested by someone on this server"
         }
         guard let display = viewModel.progress?.display else { return "Not in your library" }
