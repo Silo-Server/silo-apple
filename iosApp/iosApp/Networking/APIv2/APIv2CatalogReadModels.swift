@@ -5,6 +5,8 @@ import Foundation
 /// strings; instants use the common HTTP decoder. Unknown enum values stay strings.
 enum APIv2CatalogRead {
     struct CatalogItemDetail: Decodable {
+        let posterIsEpisodeStill: Bool?
+        let backdropIsEpisodeStill: Bool?
         let addedAt: Date?
         let airDate: String?
         let airTime: String?
@@ -108,6 +110,7 @@ enum APIv2CatalogRead {
     }
 
     struct Episode: Decodable {
+        let stillIsEpisodeStill: Bool?
         let airDate: String?
         let contentId: String
         let episodeNumber: Int64

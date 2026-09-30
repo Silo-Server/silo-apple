@@ -19,6 +19,7 @@ private struct WatchPartyMediaChoice: Hashable {
     /// Set when `backdropURL` may be this episode's still and `overview` is
     /// its description, so spoiler protection can hide them on this page.
     /// The lobby preview is shared with the room and is left as it is.
+    private(set) var backdropIsEpisodeStill: Bool?
     private(set) var episodeWatchState: EpisodeWatchState?
     /// The lobby hero's wording differs from this page's: an episode leads
     /// with its own title and puts the series and code underneath.
@@ -65,6 +66,7 @@ private struct WatchPartyMediaChoice: Hashable {
         backdropURL = episode.stillUrl ?? series.backdropUrl
         backdropThumbhash = episode.stillUrl != nil ? episode.stillThumbhash : series.backdropThumbhash
         overview = episode.overview
+        backdropIsEpisodeStill = episode.stillUrl != nil ? episode.stillIsEpisodeStill : false
         episodeWatchState = EpisodeWatchState(episode.userData)
         if let runtime = episode.runtime, runtime > 0 { facts = [WatchPartyFacts.runtime(runtime)] }
         lobbyTitle = episode.title ?? "Episode \(episode.episodeNumber)"
@@ -88,6 +90,7 @@ private struct WatchPartyMediaChoice: Hashable {
         backdropURL = item.backdropUrl
         backdropThumbhash = item.backdropThumbhash
         overview = item.overview
+        backdropIsEpisodeStill = item.backdropIsEpisodeStill
         episodeWatchState = EpisodeWatchState(sectionItem: item)
         if let runtime = item.runtime, runtime > 0 { facts = [WatchPartyFacts.runtime(runtime)] }
         lobbyTitle = item.title
@@ -948,7 +951,7 @@ private struct WatchPartyEpisodePicker: View {
                         .overlay { Image(systemName: "tv").foregroundStyle(Color.siloSecondaryText) }
                 }
             }
-            .episodeSpoilerBlur(spoilers.hidesImage(for: EpisodeWatchState(episode.userData)))
+            .episodeSpoilerBlur(spoilers.hidesImage(for: EpisodeWatchState(episode.userData), isEpisodeStill: episode.stillIsEpisodeStill))
             .frame(width: Self.stillWidth, height: Self.stillWidth * 9 / 16)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             VStack(alignment: .leading, spacing: 4) {
@@ -1042,7 +1045,7 @@ private struct WatchPartyMediaChoiceView: View {
 
     private var hidesStill: Bool {
         guard choice.backdropURL != nil, let state = choice.episodeWatchState else { return false }
-        return spoilers.hidesImage(for: state)
+        return spoilers.hidesImage(for: state, isEpisodeStill: choice.backdropIsEpisodeStill)
     }
 
     private var visibleOverview: String? {

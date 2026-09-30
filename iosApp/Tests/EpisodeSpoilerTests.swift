@@ -82,6 +82,24 @@ final class EpisodeSpoilerSettingsTests: XCTestCase {
         XCTAssertFalse(all.hidesImage(for: try episodeItem(), playedOverride: true))
     }
 
+    func testProvenancePreservesSeriesArtworkAndProtectsLegacyPayloads() throws {
+        let all = EpisodeSpoilerSettings(hidesImages: true, hidesOverviews: true)
+        var item = try episodeItem()
+        item.backdropUrl = "https://example.invalid/series.jpg"
+        item.backdropIsEpisodeStill = false
+        XCTAssertFalse(all.hidesImage(for: item))
+        XCTAssertTrue(all.hidesOverview(for: item))
+        item.backdropIsEpisodeStill = true
+        XCTAssertTrue(all.hidesImage(for: item))
+        item.backdropIsEpisodeStill = nil
+        XCTAssertTrue(all.hidesImage(for: item))
+        item.backdropUrl = nil
+        item.posterIsEpisodeStill = false
+        XCTAssertFalse(all.hidesImage(for: item))
+        item.posterIsEpisodeStill = true
+        XCTAssertTrue(all.hidesImage(for: item))
+    }
+
     func testSubscriptReadsAndWritesEachSwitch() {
         var settings = EpisodeSpoilerSettings.off
         settings[.overviews] = true
@@ -373,6 +391,27 @@ final class EpisodeSpoilerPreferencesTests: XCTestCase {
 
 #if os(tvOS)
 final class EpisodeSpoilerMarqueeTests: XCTestCase {
+    func testProvenancePreservesSeriesArtworkInEitherSlot() throws {
+        var item = try episodeItem(
+            overview: "The twist.",
+            backdropUrl: "https://example.invalid/series.jpg",
+            posterUrl: "https://example.invalid/still.jpg"
+        )
+        item.backdropIsEpisodeStill = false
+        item.posterIsEpisodeStill = true
+        let spoilers = EpisodeSpoilerSettings(hidesImages: true, hidesOverviews: true)
+        let content = TVMarqueeContent(item: item, rowTitle: "Next Up", spoilers: spoilers)
+        XCTAssertNil(content.synopsis)
+        XCTAssertEqual(content.backdropUrl, item.backdropUrl)
+        XCTAssertNil(content.fallbackArtworkUrl)
+
+        item.backdropIsEpisodeStill = true
+        item.posterIsEpisodeStill = false
+        let fallback = TVMarqueeContent(item: item, rowTitle: "Next Up", spoilers: spoilers)
+        XCTAssertNil(fallback.backdropUrl)
+        XCTAssertEqual(fallback.fallbackArtworkUrl, item.posterUrl)
+    }
+
     func testHiddenEpisodeDropsItsStillSynopsisAndPosterFallback() throws {
         let item = try episodeItem(
             overview: "The twist.",

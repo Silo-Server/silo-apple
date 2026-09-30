@@ -598,7 +598,7 @@ struct TVEpisodeCard: View {
                 episode: episode,
                 isPlayed: isPlayed,
                 hidesStill: EpisodeSpoilerPreferences.shared.settings.hidesImage(
-                    for: EpisodeWatchState(episode.userData, playedOverride: playedOverride)
+                    for: EpisodeWatchState(episode.userData, playedOverride: playedOverride), isEpisodeStill: episode.stillIsEpisodeStill
                 ),
                 isCurrent: isCurrent,
                 cardWidth: cardWidth,

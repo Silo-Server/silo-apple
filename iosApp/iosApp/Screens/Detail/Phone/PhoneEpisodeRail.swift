@@ -261,7 +261,7 @@ private struct PhoneEpisodeCard: View {
                 contentMode: .fill
             )
             .frame(width: cardWidth, height: stillHeight)
-            .episodeSpoilerBlur(spoilers.hidesImage(for: watchState))
+            .episodeSpoilerBlur(spoilers.hidesImage(for: watchState, isEpisodeStill: episode.stillIsEpisodeStill))
             .clipped()
 
             if episode.userData?.played == true {

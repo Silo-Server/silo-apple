@@ -28,7 +28,7 @@ struct TVItemDetailLoadingView: View {
     /// applies to it and to the episode description.
     private var hidesEpisodeStill: Bool {
         guard let state = seed?.episodeWatchState else { return false }
-        return EpisodeSpoilerPreferences.shared.settings.hidesImage(for: state)
+        return EpisodeSpoilerPreferences.shared.settings.hidesImage(for: state, isEpisodeStill: seed?.backdropIsEpisodeStill)
     }
 
     private var hidesEpisodeOverview: Bool {

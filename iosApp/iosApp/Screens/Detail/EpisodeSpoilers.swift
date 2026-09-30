@@ -58,8 +58,8 @@ struct EpisodeSpoilerSettings: Codable, Hashable, Sendable {
 
     static let off = EpisodeSpoilerSettings(hidesImages: false, hidesOverviews: false)
 
-    func hidesImage(for state: EpisodeWatchState) -> Bool {
-        hidesImages && state.isUnwatched
+    func hidesImage(for state: EpisodeWatchState, isEpisodeStill: Bool? = nil) -> Bool {
+        hidesImages && state.isUnwatched && isEpisodeStill != false
     }
 
     func hidesOverview(for state: EpisodeWatchState) -> Bool {
@@ -69,8 +69,9 @@ struct EpisodeSpoilerSettings: Codable, Hashable, Sendable {
     /// Section rows mix episodes with movies and series; only an episode's
     /// own still or description is ever hidden.
     func hidesImage(for item: SectionItem, playedOverride: Bool? = nil) -> Bool {
-        item.isEpisodeItem
-            && hidesImage(for: EpisodeWatchState(sectionItem: item, playedOverride: playedOverride))
+        let provenance = item.backdropUrl?.isEmpty == false ? item.backdropIsEpisodeStill : item.posterIsEpisodeStill
+        return item.isEpisodeItem
+            && hidesImage(for: EpisodeWatchState(sectionItem: item, playedOverride: playedOverride), isEpisodeStill: provenance)
     }
 
     func hidesOverview(for item: SectionItem, playedOverride: Bool? = nil) -> Bool {

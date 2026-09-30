@@ -7,6 +7,23 @@ import XCTest
 /// membership mutation. Screen and view-model behavior is not covered here;
 /// it arrives with the gate 3 read surfaces.
 final class CatalogV2Tests: XCTestCase {
+    func testImageProvenanceSurvivesWireDecodingAndProjection() throws {
+        let decoder = HTTPClient.makeJSONDecoder()
+        var body = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(detailJSON.utf8)) as? [String: Any])
+        body["poster_is_episode_still"] = true
+        body["backdrop_is_episode_still"] = false
+        let wire = try decoder.decode(APIv2CatalogRead.CatalogItemDetail.self, from: JSONSerialization.data(withJSONObject: body))
+        let detail = try ItemDetail(catalog: wire)
+        XCTAssertEqual(detail.posterIsEpisodeStill, true)
+        XCTAssertEqual(detail.backdropIsEpisodeStill, false)
+
+        let row = try decoder.decode(APIv2CatalogRead.Episode.self, from: Data(#"{"content_id":"e1","season_number":1,"episode_number":1,"title":"Pilot","runtime":42,"still_is_episode_still":false}"#.utf8))
+        XCTAssertEqual(try EpisodeListItem(catalog: row).stillIsEpisodeStill, false)
+        let card = Data(#"{"content_id":"e1","type":"episode","title":"Pilot","poster_is_episode_still":false,"backdrop_is_episode_still":true}"#.utf8)
+        XCTAssertEqual(try decoder.decode(SectionItem.self, from: card).posterIsEpisodeStill, false)
+        XCTAssertEqual(try decoder.decode(BrowseItem.self, from: card).backdropIsEpisodeStill, true)
+    }
+
     private let terminal = #"{"items":[],"page":{"has_more":false},"total":10000,"total_exact":false,"window_cursor":"window"}"#
     private var stub = APIv2TestStub()
 

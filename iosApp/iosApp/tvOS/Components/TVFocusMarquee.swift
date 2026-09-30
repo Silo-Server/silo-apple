@@ -131,14 +131,13 @@ extension TVMarqueeContent {
         isContinueWatching: Bool = false,
         spoilers: EpisodeSpoilerSettings = .off
     ) {
-        let isEpisode = item.type.lowercased() == "episode"
-        // Spoiler protection: drop an unwatched episode's description, and
-        // its still so the hero resolves the Series backdrop from detail
-        // enrichment instead. The poster fallback goes too: a section row
-        // falls back to the still as its poster when the season and series
-        // have none.
+        let isEpisode = item.isEpisodeItem
+        // Drop the unwatched episode's description and stills. Keep series
+        // artwork in either slot while detail enrichment resolves the hero.
         let hidesSynopsis = spoilers.hidesOverview(for: item)
-        let hidesStill = spoilers.hidesImage(for: item)
+        let state = EpisodeWatchState(sectionItem: item)
+        let hidesBackdrop = isEpisode && spoilers.hidesImage(for: state, isEpisodeStill: item.backdropIsEpisodeStill)
+        let hidesPoster = isEpisode && spoilers.hidesImage(for: state, isEpisodeStill: item.posterIsEpisodeStill)
         let isSeries = SiloMediaType.isSeries(item.type)
 
         var meta: [String] = []
@@ -189,10 +188,10 @@ extension TVMarqueeContent {
             runtimeMetaIndex: runtimeMetaIndex,
             runtimeText: runtimeText,
             synopsis: hidesSynopsis ? nil : item.overview,
-            backdropUrl: hidesStill ? nil : Self.nonEmpty(item.backdropUrl),
-            backdropThumbhash: hidesStill ? nil : item.backdropThumbhash,
-            fallbackArtworkUrl: hidesStill ? nil : Self.nonEmpty(item.posterUrl),
-            fallbackArtworkThumbhash: hidesStill ? nil : item.posterThumbhash,
+            backdropUrl: hidesBackdrop ? nil : Self.nonEmpty(item.backdropUrl),
+            backdropThumbhash: hidesBackdrop ? nil : item.backdropThumbhash,
+            fallbackArtworkUrl: hidesPoster ? nil : Self.nonEmpty(item.posterUrl),
+            fallbackArtworkThumbhash: hidesPoster ? nil : item.posterThumbhash,
             baseOverlayData: OverlayData.from(item),
             contentRatingBadge: contentRatingBadge,
             progressUpdatedAt: item.progressUpdatedAt,
