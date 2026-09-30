@@ -31,6 +31,9 @@ struct MobilePlayerControls: View {
     /// it is purely presentation, and kept outside the `showControls` gate
     /// below so the auto-hide takes the transport away without it.
     @State private var showsStats = false
+    /// True only while a finger drags the scrub bar. Skip buttons and
+    /// hold-seek also set `isScrubbing`, but they shouldn't play chapter ticks.
+    @GestureState private var isDraggingScrubBar = false
 
 
     var body: some View {
@@ -459,6 +462,7 @@ struct MobilePlayerControls: View {
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0)
+                    .updating($isDraggingScrubBar) { _, dragging, _ in dragging = true }
                     .onChanged { value in
                         let fraction = min(max(value.location.x / width, 0), 1)
                         if viewModel.isScrubbing {
@@ -470,6 +474,10 @@ struct MobilePlayerControls: View {
                     .onEnded { _ in
                         viewModel.endScrub()
                     }
+            )
+            .scrubTickFeedback(
+                tickTimes: viewModel.chapters.map(\.time),
+                scrubTime: isDraggingScrubBar ? viewModel.scrubPreviewTime : nil
             )
             .overlay(alignment: .topLeading) {
                 if viewModel.isScrubbing {

@@ -7,9 +7,6 @@ import SwiftUI
 /// fallback.
 struct SubtitleSettingsView: View {
     @Bindable var viewModel: SettingsViewModel
-    /// Slider position while the user is dragging; committed (and saved
-    /// to the server) once the drag ends.
-    @State private var draftOpacity: Double?
 
     var body: some View {
         List {
@@ -162,7 +159,7 @@ struct SubtitleSettingsView: View {
                 .foregroundStyle(Color.siloSecondaryText)
         } footer: {
             if !manualEditingDisabled && viewModel.subtitleAppearance.isLowLegibilityRisk {
-                Text("Low contrast — dark text without a box or outline can be hard to read.")
+                Text("Low legibility — very transparent or dark text without a box or outline can be hard to read.")
                     .foregroundStyle(Color.siloError)
             }
         }
@@ -242,6 +239,21 @@ struct SubtitleSettingsView: View {
                 colors: SubtitleAppearance.fontColors,
                 selection: appearanceBinding(\.fontColor)
             )
+
+            if viewModel.offersSubtitleTextOpacity {
+                PercentField(
+                    label: "Opacity",
+                    accessibilityLabelText: "Text Opacity",
+                    min: 1,
+                    value: viewModel.subtitleAppearance.textOpacity
+                ) { newValue in
+                    var next = viewModel.subtitleAppearance
+                    if next.textOpacity == newValue { return }
+                    next.textOpacity = newValue
+                    Task { await viewModel.setSubtitleAppearance(next) }
+                }
+                .foregroundStyle(Color.siloOnSurface)
+            }
 
             Toggle("Text Outline", isOn: appearanceBinding(\.textOutline))
                 .foregroundStyle(Color.siloOnSurface)
@@ -333,35 +345,18 @@ struct SubtitleSettingsView: View {
     }
 
     private var opacityRow: some View {
-        let committed = Double(viewModel.subtitleAppearance.backgroundOpacity)
-        return HStack(spacing: 12) {
-            Text("Opacity")
-                .foregroundStyle(Color.siloOnSurface)
-            Slider(
-                value: Binding(
-                    get: { draftOpacity ?? committed },
-                    set: { draftOpacity = $0 }
-                ),
-                in: 0...100,
-                step: 5
-            ) { editing in
-                guard !editing, let value = draftOpacity else { return }
-                draftOpacity = nil
-                var next = viewModel.subtitleAppearance
-                let percent = Int(value)
-                if next.backgroundOpacity == percent { return }
-                next.backgroundOpacity = percent
-                Task { await viewModel.setSubtitleAppearance(next) }
-            }
-            .tint(.siloOnSurface)
-            Text("\(Int(draftOpacity ?? committed))%")
-                .monospacedDigit()
-                .foregroundStyle(Color.siloSecondaryText)
-                .frame(minWidth: 44, alignment: .trailing)
+        PercentField(
+            label: "Opacity",
+            accessibilityLabelText: "Background Opacity",
+            min: 0,
+            value: viewModel.subtitleAppearance.backgroundOpacity
+        ) { newValue in
+            var next = viewModel.subtitleAppearance
+            if next.backgroundOpacity == newValue { return }
+            next.backgroundOpacity = newValue
+            Task { await viewModel.setSubtitleAppearance(next) }
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Background Opacity")
-        .accessibilityValue("\(Int(draftOpacity ?? committed)) percent")
+        .foregroundStyle(Color.siloOnSurface)
     }
 
     private func appearanceBinding<Value: Equatable>(

@@ -75,6 +75,11 @@ final class SettingsViewModel {
         PlayerSettings.shared.effectiveSubtitleAppearance
     }
 
+    /// False only when the server is known to predate subtitle text opacity.
+    var offersSubtitleTextOpacity: Bool {
+        PlayerSettings.shared.offersSubtitleTextOpacity
+    }
+
     /// Profile-scoped preferences written through the canonical settings API.
     let prefs = ProfilePrefsEditor()
 

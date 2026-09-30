@@ -64,6 +64,15 @@ struct CompanionPairingCard: View {
                 .stroke(Color.white.opacity(0.10), lineWidth: 1)
         )
         .animation(.spring(response: 0.35, dampingFraction: 0.9), value: coordinator?.state)
+        .sensoryFeedback(trigger: coordinator?.state) { _, state in
+            switch state {
+            case let .finished(signedIn, failed):
+                if signedIn.isEmpty { return .error }
+                return failed.isEmpty ? .success : .warning
+            case .error: return .error
+            default: return nil
+            }
+        }
         .animation(.spring(response: 0.35, dampingFraction: 0.9), value: started)
     }
 

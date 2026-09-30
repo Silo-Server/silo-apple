@@ -415,16 +415,25 @@ final class SettingValuesAPITests: XCTestCase {
     /// A binding refresh must not turn every settings feature off on a server
     /// one revision behind: only the keys that revision lacks are gated.
     func testCapabilitiesFromThePreviousRevisionGateOnlyTheKeysItLacks() async throws {
-        SettingsStubProtocol.reset(mode: .previousContractRevision)
+        // The newest key isn't necessarily introduced at the head revision: a
+        // revision can bump for widening an existing key's schema with no new
+        // key of its own, as here. "One revision behind" means one behind
+        // whichever revision most recently introduced a key, not one behind
+        // head, or this test would have no gated key to check against.
+        let latestKeyRevision = SettingKey.allCases.map(\.introducedIn).max() ?? SettingKey.revision
+        let newest = SettingKey.allCases.filter { $0.introducedIn == latestKeyRevision }
+        XCTAssertFalse(newest.isEmpty)
+
+        SettingsStubProtocol.reset(mode: .pinnedToRevision(latestKeyRevision - 1))
         let api = await makeStubbedAPI()
 
         guard case .available(let capabilities) = await api.getContractCapabilities() else {
             return XCTFail("a server one revision behind must still report capabilities")
         }
-        XCTAssertEqual(capabilities.manifestRevision, SettingKey.revision - 1)
+        XCTAssertEqual(capabilities.manifestRevision, latestKeyRevision - 1)
         XCTAssertTrue(capabilities.supports(.playbackSubtitleLanguage))
         XCTAssertTrue(capabilities.supports(.playbackIntroSkipMode))
-        for key in SettingKey.allCases where key.introducedIn == SettingKey.revision {
+        for key in newest {
             XCTAssertFalse(capabilities.supports(key), "\(key.rawValue) is newer than the server")
         }
     }
@@ -2321,14 +2330,21 @@ final class SettingValuesAPITests: XCTestCase {
     }
 
     func testGetEffectiveValuesFromThePreviousRevisionServesOnlyKeysItKnows() async throws {
-        SettingsStubProtocol.reset(mode: .previousContractRevision)
+        // The newest key isn't necessarily introduced at the head revision: a
+        // revision can bump for widening an existing key's schema (a new
+        // property on an object-valued setting, say) with no new key of its
+        // own. So "one revision behind" here means one behind whichever
+        // revision most recently introduced a key, not one behind head.
+        let latestKeyRevision = SettingKey.allCases.map(\.introducedIn).max() ?? SettingKey.revision
+        let newest = SettingKey.allCases.filter { $0.introducedIn == latestKeyRevision }
+        XCTAssertFalse(newest.isEmpty)
+
+        SettingsStubProtocol.reset(mode: .pinnedToRevision(latestKeyRevision - 1))
         let api = await makeStubbedAPI()
 
         let response = try await api.getEffectiveValues(keys: [.playbackSubtitleLanguage])
-        XCTAssertEqual(response.revision, SettingKey.revision - 1)
+        XCTAssertEqual(response.revision, latestKeyRevision - 1)
 
-        let newest = SettingKey.allCases.filter { $0.introducedIn == SettingKey.revision }
-        XCTAssertFalse(newest.isEmpty)
         do {
             _ = try await api.getEffectiveValues(keys: [.playbackSubtitleLanguage] + newest)
             XCTFail("a resolution for keys the server does not know is only the default")
@@ -2546,6 +2562,11 @@ final class SettingsStubProtocol: URLProtocol {
         case belowMinimumContractRevision
         /// A server one manifest revision behind the generated bindings.
         case previousContractRevision
+        /// A server answering at an explicit revision, for scenarios that need
+        /// a revision other than "one behind head" — e.g. one behind whichever
+        /// revision most recently introduced a key, which is not always head
+        /// itself: a revision can bump for a schema widening with no new key.
+        case pinnedToRevision(Int)
         /// Two expired scoped requests race one rotating account refresh.
         case concurrentScopedRefresh
         /// A scoped request owns refresh while an ordinary 401 joins it.
@@ -2795,6 +2816,8 @@ final class SettingsStubProtocol: URLProtocol {
             responseRevision = SettingKey.minimumServerRevision - 1
         case .previousContractRevision:
             responseRevision = SettingKey.revision - 1
+        case .pinnedToRevision(let revision):
+            responseRevision = revision
         default:
             responseRevision = SettingKey.revision
         }

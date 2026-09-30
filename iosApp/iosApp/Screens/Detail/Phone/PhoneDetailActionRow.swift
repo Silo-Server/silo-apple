@@ -27,13 +27,18 @@ struct PhoneLabeledAction: View {
     var isToggle = true
     let action: () -> Void
 
+    @State private var toggleCount = 0
+
     private var resolvedIcon: String {
         if isActive, let iconActive { return iconActive }
         return icon
     }
 
     var body: some View {
-        Button(action: action) {
+        Button {
+            if isToggle { toggleCount += 1 }
+            action()
+        } label: {
             VStack(spacing: 6) {
                 Image(systemName: resolvedIcon)
                     .font(.system(size: 19, weight: .regular))
@@ -53,6 +58,9 @@ struct PhoneLabeledAction: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // Lands with the optimistic icon flip; a failed change reverts the
+        // icon and raises the page's notice alert instead.
+        .sensoryFeedback(.impact(weight: .light), trigger: toggleCount)
         .accessibilityLabel(accessibilityLabelOverride ?? label)
         .accessibilityValue(isToggle ? (isActive ? "On" : "Off") : "")
         .accessibilityAddTraits(isActive ? [.isSelected] : [])

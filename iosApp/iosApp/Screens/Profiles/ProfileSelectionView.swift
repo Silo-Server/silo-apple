@@ -10,6 +10,7 @@ struct ProfileSelectionView: View {
     @State private var viewModel = ProfileSelectionViewModel()
     @State private var launchPreferences = ProfileLaunchPreferences.shared
     @State private var pinEntryContext: PINEntryContext?
+    @State private var wrongPINCount = 0
     @State private var showCreateProfile: Bool = false
     @State private var showSignOutConfirm: Bool = false
     @Namespace private var profileFocusNamespace
@@ -81,6 +82,7 @@ struct ProfileSelectionView: View {
                 .presentationDetents([.medium])
         }
         #endif
+        .sensoryFeedback(.error, trigger: wrongPINCount)
     }
 
     // MARK: - Background
@@ -390,6 +392,9 @@ struct ProfileSelectionView: View {
                 }
             } catch {
                 await MainActor.run {
+                    // Only a PIN the server rejected buzzes; other failures
+                    // just show their error.
+                    if case ProfileTransitionError.incorrectPIN = error { wrongPINCount += 1 }
                     viewModel.error = ErrorState(error)
                 }
             }

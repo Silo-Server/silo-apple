@@ -1,29 +1,45 @@
 import SwiftUI
 
-/// Poster card for the requests UI: TMDB artwork, an optional status
-/// ribbon, title + year below. A sibling of `MediaCard` rather than a reuse
-/// of it — request results have no `contentId`, no watched state, no
-/// overlays, and their tap routes by request state, so forcing them through
-/// `MediaCard` would bolt unrelated branches onto a heavily-used component.
+/// Poster card for the requests UI: TMDB artwork with title and a second
+/// caption line, in the same grammar as `MediaCard`. A sibling of
+/// `MediaCard` rather than a reuse of it — request results have no
+/// `contentId`, no watched state, no overlays, and their tap routes by
+/// request state, so forcing them through `MediaCard` would bolt unrelated
+/// branches onto a heavily-used component.
 ///
 /// Two sources render through the same card: TMDB search/discover results
 /// (`RequestMediaResult`) and the user's own request records
-/// (`MediaRequest`). Tap routing is owned by the caller via `onTap`; use
+/// (`MediaRequest`). A record's second caption line is its status (dot +
+/// label); a discovery result keeps its year there and shows a small corner
+/// badge only when the title is already requested or in the library. Tap
+/// routing is owned by the caller via `onTap`; use
 /// `AppRouter.openRequestResult(_:)` / `openRequestRecord(_:)` for the
 /// standard in-library-vs-request-detail behavior.
 struct RequestMediaCard: View {
     let title: String
     let year: Int?
     let posterPath: String?
-    let state: RequestDisplayState?
+    let progress: RequestProgress?
+    /// Whether the status is the caption (own requests) or a poster badge
+    /// (discovery).
+    let showsStatusInCaption: Bool
     let onTap: () -> Void
+    #if os(tvOS)
+    /// Page-level focus state, when a Skyline page seeds and observes focus
+    /// (entry, marquee preview). Movement stays with the focus engine.
+    private var focusBinding: FocusState<String?>.Binding?
+    private var focusId: String?
+    #endif
+    /// Overrides `RequestsUI.cardWidth` (Skyline rows use dense posters).
+    private var widthOverride: CGFloat?
     @State private var uiCustomization = UICustomizationPreferences.shared
 
     init(result: RequestMediaResult, onTap: @escaping () -> Void) {
         self.title = result.title
         self.year = result.year
         self.posterPath = result.posterPath
-        self.state = RequestDisplayState(availability: result.availability, request: result.request)
+        self.progress = RequestProgress(availability: result.availability, request: result.request)
+        self.showsStatusInCaption = false
         self.onTap = onTap
     }
 
@@ -31,19 +47,35 @@ struct RequestMediaCard: View {
         self.title = record.title
         self.year = record.year
         self.posterPath = record.posterPath
-        self.state = RequestDisplayState(record: record)
+        self.progress = RequestProgress(record: record)
+        self.showsStatusInCaption = true
         self.onTap = onTap
+    }
+
+    #if os(tvOS)
+    func focused(_ binding: FocusState<String?>.Binding, id: String) -> RequestMediaCard {
+        var copy = self
+        copy.focusBinding = binding
+        copy.focusId = id
+        return copy
+    }
+    #endif
+
+    func cardWidth(_ width: CGFloat) -> RequestMediaCard {
+        var copy = self
+        copy.widthOverride = width
+        return copy
     }
 
     private var accessibilityTitle: String {
         var label = title
         if let year, year > 0 { label += ", \(year)" }
-        if let state { label += ", \(state.label)" }
+        if let progress { label += ", \(progress.shortLabel)" }
         return label
     }
 
     private var width: CGFloat {
-        RequestsUI.cardWidth * uiCustomization.cardPresentation.posterSize.scale
+        widthOverride ?? RequestsUI.cardWidth * uiCustomization.cardPresentation.posterSize.scale
     }
 
     private var height: CGFloat {
@@ -57,6 +89,7 @@ struct RequestMediaCard: View {
                 posterImage
             }
             .buttonStyle(.card)
+            .modifier(OptionalCardFocus(binding: focusBinding, id: focusId))
             // The caption lives outside the button (so the .card style
             // lifts only the poster) — without an explicit label VoiceOver
             // would announce an image-only "Button".
@@ -97,12 +130,14 @@ struct RequestMediaCard: View {
                 posterPlaceholder
             }
 
-            if let state {
-                RequestPosterRibbon(state: state)
-                    .padding(ribbonInset)
-            }
         }
         .frame(width: width, height: height)
+        .overlay(alignment: .bottomTrailing) {
+            if !showsStatusInCaption, let progress {
+                RequestPosterBadge(state: progress.display)
+                    .padding(badgeInset)
+            }
+        }
         .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
     }
 
@@ -131,7 +166,9 @@ struct RequestMediaCard: View {
                 .lineLimit(2, reservesSpace: true)
                 #endif
 
-            if uiCustomization.cardPresentation.caption.showsMetadata, let year, year > 0 {
+            if showsStatusInCaption, let progress {
+                RequestStatusLabel(progress: progress)
+            } else if uiCustomization.cardPresentation.caption.showsMetadata, let year, year > 0 {
                 Text(String(year))
                     .font(.siloCaption)
                     .foregroundColor(.siloSecondaryText)
@@ -140,7 +177,7 @@ struct RequestMediaCard: View {
         .frame(width: width, alignment: .leading)
     }
 
-    private var ribbonInset: CGFloat {
+    private var badgeInset: CGFloat {
         #if os(tvOS)
         14
         #else
@@ -148,6 +185,22 @@ struct RequestMediaCard: View {
         #endif
     }
 }
+
+#if os(tvOS)
+private struct OptionalCardFocus: ViewModifier {
+    let binding: FocusState<String?>.Binding?
+    let id: String?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let binding, let id {
+            content.focused(binding, equals: id)
+        } else {
+            content
+        }
+    }
+}
+#endif
 
 // MARK: - Standard tap routing
 
@@ -175,11 +228,25 @@ extension Route {
 }
 
 extension AppRouter {
+    @MainActor
     func openRequestResult(_ result: RequestMediaResult) {
+        // The card already knows the title and its status: seed the page.
+        RequestDetailCache.shared.seed(result)
+        RequestDetailCache.shared.unpinModeration(.init(mediaType: result.mediaType, tmdbId: result.tmdbId))
         navigate(to: .requestDestination(for: result))
     }
 
+    /// Opens someone else's request from an approval queue: the detail page
+    /// decides on that exact request, not another one for the same title.
+    @MainActor
+    func openModerationRecord(_ record: MediaRequest) {
+        RequestDetailCache.shared.pinModeration(record)
+        navigate(to: .requestDestination(for: record))
+    }
+
+    @MainActor
     func openRequestRecord(_ record: MediaRequest) {
+        RequestDetailCache.shared.unpinModeration(.init(mediaType: record.mediaType, tmdbId: record.tmdbId))
         navigate(to: .requestDestination(for: record))
     }
 }

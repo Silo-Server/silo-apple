@@ -29,12 +29,16 @@ public enum SettingKey: String, CaseIterable, Sendable {
     case catalogMetadataLanguage = "catalog.metadata_language"
     /// Metadata language exceptions
     case catalogMetadataLanguageOverrides = "catalog.metadata_language_overrides"
+    /// Show advisory age
+    case catalogShowAdvisoryAge = "catalog.show_advisory_age"
     /// Download quality
     case downloadsDefaultQuality = "downloads.default_quality"
     /// Keep watched downloads
     case downloadsKeepWatched = "downloads.keep_watched"
     /// Download over Wi-Fi only
     case downloadsWifiOnly = "downloads.wifi_only"
+    /// Hide watched items from Home
+    case homeHideWatchedItems = "home.hide_watched_items"
     /// Primary menu
     case navPrimaryMenu = "nav.primary_menu"
     /// Navigation shortcuts
@@ -145,17 +149,23 @@ public enum SettingKey: String, CaseIterable, Sendable {
     case uiTextWeight = "ui.text_weight"
     /// Theme
     case uiTheme = "ui.theme"
+    /// Theme music
+    case uiThemeMusicEnabled = "ui.theme_music_enabled"
+    /// Loop theme music
+    case uiThemeMusicLoop = "ui.theme_music_loop"
     /// Time format
     case uiTimeFormat = "ui.time_format"
 }
 
 public extension SettingKey {
-    static let revision = 9
+    static let revision = 14
 
     /// Keys the server stores. The rest never leave the device.
     static let remote: [SettingKey] = [
         .catalogMetadataLanguage,
         .catalogMetadataLanguageOverrides,
+        .catalogShowAdvisoryAge,
+        .homeHideWatchedItems,
         .navPrimaryMenu,
         .navShortcuts,
         .playbackAudioLanguage,
@@ -206,6 +216,8 @@ public extension SettingKey {
         .uiTextScale,
         .uiTextWeight,
         .uiTheme,
+        .uiThemeMusicEnabled,
+        .uiThemeMusicLoop,
         .uiTimeFormat,
     ]
 
@@ -225,6 +237,9 @@ public extension SettingKey {
     /// at write time, so editing either would rewrite the other.
     static let deprecated: Set<SettingKey> = [
         .playbackAutoSkipIntro,
+        .uiCustomCss,
+        .uiCustomThemeVars,
+        .uiTheme,
     ]
 }
 

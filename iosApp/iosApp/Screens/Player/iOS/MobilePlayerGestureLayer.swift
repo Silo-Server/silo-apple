@@ -49,6 +49,9 @@ struct MobilePlayerGestureLayer: View {
     /// Video-gravity mode announced after a pinch; shown briefly as a toast.
     @State private var gravityToast: VideoGravity?
     @State private var gravityToastHideTask: Task<Void, Never>?
+    /// Bumped only when a pinch actually changes the gravity, so pinching
+    /// past fit or stretch shows the toast without a haptic.
+    @State private var gravityChangeCount = 0
 
     /// Width of the brightness/volume strips along each screen edge.
     private static let edgeZoneWidth: CGFloat = 88
@@ -88,6 +91,15 @@ struct MobilePlayerGestureLayer: View {
                 feedbackOverlays(in: size)
             }
         }
+        // These gestures have no button under the finger, so a light haptic
+        // confirms each one landed.
+        .sensoryFeedback(trigger: skipFlash?.id) { _, id in
+            id == nil ? nil : .impact(weight: .light)
+        }
+        .sensoryFeedback(.impact(weight: .medium), trigger: viewModel.isHoldFastForwarding) { _, holding in
+            holding
+        }
+        .sensoryFeedback(.impact(weight: .light), trigger: gravityChangeCount)
         // The controls scrim should swallow touches while the overlay is up,
         // but SwiftUI tap recognizers on an occluded sibling can still track
         // touches — rapid presses on the overlay's skip buttons registered
@@ -121,14 +133,18 @@ struct MobilePlayerGestureLayer: View {
             // revealingControls: false — the flash below is the feedback;
             // summoning the overlay would drop its scrim on top of this
             // layer and swallow the next double-tap.
+            // A refused skip (parked at end of file) shows no flash, so its
+            // haptic doesn't confirm a skip that never happened.
             if x < size.width * Self.skipZoneFraction {
                 let seconds = viewModel.skipIntervals.backward
-                viewModel.skipBackward(Double(seconds), revealingControls: false)
-                showSkipFlash(forward: false, seconds: seconds)
+                if viewModel.skipBackward(Double(seconds), revealingControls: false) {
+                    showSkipFlash(forward: false, seconds: seconds)
+                }
             } else if x > size.width * (1 - Self.skipZoneFraction) {
                 let seconds = viewModel.skipIntervals.forward
-                viewModel.skipForward(Double(seconds), revealingControls: false)
-                showSkipFlash(forward: true, seconds: seconds)
+                if viewModel.skipForward(Double(seconds), revealingControls: false) {
+                    showSkipFlash(forward: true, seconds: seconds)
+                }
             } else {
                 viewModel.togglePlayPause()
             }
@@ -177,15 +193,18 @@ struct MobilePlayerGestureLayer: View {
     private var videoGravityPinchGesture: some Gesture {
         MagnificationGesture()
             .onEnded { scale in
+                let current = viewModel.settings.videoGravity
+                let gravity: VideoGravity
                 if scale > 1.08 {
-                    let gravity = nextVideoGravity(after: viewModel.settings.videoGravity)
-                    viewModel.setVideoGravity(gravity)
-                    showGravityToast(gravity)
+                    gravity = nextVideoGravity(after: current)
                 } else if scale < 0.92 {
-                    let gravity = previousVideoGravity(before: viewModel.settings.videoGravity)
-                    viewModel.setVideoGravity(gravity)
-                    showGravityToast(gravity)
+                    gravity = previousVideoGravity(before: current)
+                } else {
+                    return
                 }
+                if gravity != current { gravityChangeCount += 1 }
+                viewModel.setVideoGravity(gravity)
+                showGravityToast(gravity)
             }
     }
 

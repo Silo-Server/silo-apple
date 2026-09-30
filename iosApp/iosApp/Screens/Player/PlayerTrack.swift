@@ -194,7 +194,7 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
         return locale.localizedString(forLanguageCode: code)?.capitalized ?? code.uppercased()
     }
 
-    private static func normalizedText(_ value: String?) -> String? {
+    static func normalizedText(_ value: String?) -> String? {
         guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
               !trimmed.isEmpty else {
             return nil

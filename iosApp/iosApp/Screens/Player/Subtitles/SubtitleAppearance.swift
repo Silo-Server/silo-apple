@@ -221,6 +221,10 @@ struct SubtitleAppearance: Codable, Equatable {
     var backgroundColor: String
     var backgroundStyle: SubtitleBackgroundStylePreset
     var backgroundOpacity: Int
+    /// Opacity of the subtitle text itself, 1-100. Independent of
+    /// `backgroundOpacity` and distinct from the runtime-only `fontOpacity`
+    /// below: this one is a synced, server-backed user preference.
+    var textOpacity: Int
     var textOutline: Bool
     var textOutlineColor: String
     var position: SubtitlePositionPreset
@@ -243,6 +247,7 @@ struct SubtitleAppearance: Codable, Equatable {
         backgroundColor: String,
         backgroundStyle: SubtitleBackgroundStylePreset,
         backgroundOpacity: Int,
+        textOpacity: Int = 100,
         textOutline: Bool,
         textOutlineColor: String,
         position: SubtitlePositionPreset,
@@ -260,6 +265,7 @@ struct SubtitleAppearance: Codable, Equatable {
         self.backgroundColor = backgroundColor
         self.backgroundStyle = backgroundStyle
         self.backgroundOpacity = backgroundOpacity
+        self.textOpacity = textOpacity
         self.textOutline = textOutline
         self.textOutlineColor = textOutlineColor
         self.position = position
@@ -292,6 +298,7 @@ struct SubtitleAppearance: Codable, Equatable {
         ("#d946ef", "Magenta"),
         ("#ef4444", "Red"),
         ("#3b82f6", "Blue"),
+        ("#9ca3af", "Gray"),
         ("#000000", "Black"),
     ]
 
@@ -312,6 +319,7 @@ struct SubtitleAppearance: Codable, Equatable {
         case backgroundColor
         case backgroundStyle
         case backgroundOpacity
+        case textOpacity
         case textOutline
         case textOutlineColor
         case position
@@ -325,6 +333,7 @@ struct SubtitleAppearance: Codable, Equatable {
         self.backgroundColor = try container.decodeIfPresent(String.self, forKey: .backgroundColor) ?? Self.default.backgroundColor
         self.backgroundStyle = try container.decodeIfPresent(SubtitleBackgroundStylePreset.self, forKey: .backgroundStyle) ?? Self.default.backgroundStyle
         self.backgroundOpacity = try container.decodeIfPresent(Int.self, forKey: .backgroundOpacity) ?? Self.default.backgroundOpacity
+        self.textOpacity = try container.decodeIfPresent(Int.self, forKey: .textOpacity) ?? Self.default.textOpacity
         self.textOutline = try container.decodeIfPresent(Bool.self, forKey: .textOutline) ?? Self.default.textOutline
         self.textOutlineColor = try container.decodeIfPresent(String.self, forKey: .textOutlineColor) ?? Self.default.textOutlineColor
         self.position = try container.decodeIfPresent(SubtitlePositionPreset.self, forKey: .position) ?? Self.default.position
@@ -363,6 +372,7 @@ struct SubtitleAppearance: Codable, Equatable {
         if !Self.isValidHex(copy.textOutlineColor) { copy.textOutlineColor = Self.default.textOutlineColor }
         if !Self.isValidHex(copy.captionWindowColor) { copy.captionWindowColor = "#000000" }
         copy.backgroundOpacity = max(0, min(100, copy.backgroundOpacity))
+        copy.textOpacity = max(1, min(100, copy.textOpacity))
         copy.fontOpacity = max(0, min(100, copy.fontOpacity))
         copy.captionWindowOpacity = max(0, min(100, copy.captionWindowOpacity))
         if let scale = copy.systemRelativeFontScale {
@@ -381,6 +391,21 @@ struct SubtitleAppearance: Codable, Equatable {
         return copy
     }
 
+    /// Values for a stepped opacity picker: `lowest` up to 100 in `step`
+    /// increments, plus `current` when another client stored a value between
+    /// them. Without `current`, a D-pad picker shows no selection, focus lands
+    /// on the first option, and Select silently overwrites the real value.
+    ///
+    /// `lowest` must be a multiple of `step` so 100 stays reachable.
+    static func opacityPickerValues(current: Int, lowest: Int, step: Int) -> [Int] {
+        var values = Array(stride(from: lowest, through: 100, by: step))
+        if !values.contains(current) {
+            values.append(current)
+            values.sort()
+        }
+        return values
+    }
+
     /// One-word style descriptor for summary rows ("Large · Box · Bottom").
     var styleDescription: String {
         if backgroundStyle == .box { return "Box" }
@@ -389,9 +414,14 @@ struct SubtitleAppearance: Codable, Equatable {
         return "Plain"
     }
 
-    /// True when the configuration risks unreadable text: a dark font
-    /// color with no box behind it and no outline around it.
+    /// True when the configuration risks unreadable text: a dark font color
+    /// with no box behind it and no outline around it, or text faint enough
+    /// that no background style would save it.
     var isLowLegibilityRisk: Bool {
+        // Below this, text is faint enough to risk illegibility regardless of
+        // what's behind it — a box or outline gives the shape contrast, not
+        // the fill itself back its opacity.
+        if textOpacity < 30 { return true }
         guard backgroundStyle != .box || backgroundOpacity == 0 else { return false }
         guard !textOutline && backgroundStyle != .outline else { return false }
         let trimmed = fontColor.hasPrefix("#") ? String(fontColor.dropFirst()) : fontColor

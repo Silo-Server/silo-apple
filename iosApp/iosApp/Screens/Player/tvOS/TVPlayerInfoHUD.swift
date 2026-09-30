@@ -1155,6 +1155,7 @@ private struct SubtitleAppearanceDialog: View {
         case font
         case size
         case textColor
+        case textOpacity
         case outlineToggle
         case outlineColor
         case backgroundColor
@@ -1278,6 +1279,29 @@ private struct SubtitleAppearanceDialog: View {
                         .focused($focusedField, equals: .textColor)
                         .id(Field.textColor)
 
+                        if viewModel.settings.offersSubtitleTextOpacity {
+                            HUDSettingRow(label: "Text Opacity", value: textOpacityLabel) {
+                                presentPicker(
+                                    for: .textOpacity,
+                                    HUDPickerPresentation(
+                                        title: "Text Opacity",
+                                        options: Self.opacityOptions(
+                                            current: viewModel.settings.subtitleAppearance.textOpacity,
+                                            lowest: 25
+                                        ),
+                                        selection: String(viewModel.settings.subtitleAppearance.textOpacity),
+                                        onSelect: { value in
+                                            if let opacity = Int(value) {
+                                                updateAppearance { $0.textOpacity = opacity }
+                                            }
+                                        }
+                                    )
+                                )
+                            }
+                            .focused($focusedField, equals: .textOpacity)
+                            .id(Field.textOpacity)
+                        }
+
                         HUDToggleRow(
                             label: "Text outline",
                             isOn: viewModel.settings.subtitleAppearance.textOutline
@@ -1351,7 +1375,10 @@ private struct SubtitleAppearanceDialog: View {
                                 for: .opacity,
                                 HUDPickerPresentation(
                                     title: "Background Opacity",
-                                    options: Self.opacityOptions,
+                                    options: Self.opacityOptions(
+                                        current: viewModel.settings.subtitleAppearance.backgroundOpacity,
+                                        lowest: 0
+                                    ),
                                     selection: String(viewModel.settings.subtitleAppearance.backgroundOpacity),
                                     onSelect: { value in
                                         if let opacity = Int(value) {
@@ -1461,6 +1488,10 @@ private struct SubtitleAppearanceDialog: View {
         return "\(viewModel.settings.subtitleAppearance.backgroundOpacity)%"
     }
 
+    private var textOpacityLabel: String {
+        "\(viewModel.settings.subtitleAppearance.textOpacity)%"
+    }
+
     private func label(for id: String, in options: [HUDDropdownOption]) -> String {
         options.first { $0.id.caseInsensitiveCompare(id) == .orderedSame }?.label ?? id
     }
@@ -1477,8 +1508,13 @@ private struct SubtitleAppearanceDialog: View {
     private static let positionOptions: [HUDDropdownOption] =
         SubtitlePositionPreset.allCases.map { .init(id: $0.rawValue, label: $0.label) }
 
-    private static let opacityOptions: [HUDDropdownOption] =
-        stride(from: 0, through: 100, by: 25).map { .init(id: String($0), label: $0 == 0 ? "Off" : "\($0)%") }
+    /// 25-point steps from `lowest`, plus the current value when another
+    /// client stored one between them. Text opacity starts at 25 (the schema's
+    /// floor is 1, which is invisible); background opacity starts at Off.
+    private static func opacityOptions(current: Int, lowest: Int) -> [HUDDropdownOption] {
+        SubtitleAppearance.opacityPickerValues(current: current, lowest: lowest, step: 25)
+            .map { .init(id: String($0), label: $0 == 0 ? "Off" : "\($0)%") }
+    }
 
     private static let fontColorOptions: [HUDDropdownOption] =
         SubtitleAppearance.fontColors.map { .init(id: $0.hex, label: $0.label, colorHex: $0.hex) }

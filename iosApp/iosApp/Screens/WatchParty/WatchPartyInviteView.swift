@@ -7,6 +7,7 @@ struct WatchPartyInviteView: View {
     @Environment(\.dismiss) private var dismiss
     #if os(iOS)
     @State private var copied: String?
+    @State private var copyCount = 0
     #endif
 
     var body: some View {
@@ -117,6 +118,7 @@ struct WatchPartyInviteView: View {
                             Button {
                                 UIPasteboard.general.string = url.absoluteString
                                 copied = "link"
+                                copyCount += 1
                             } label: {
                                 Label(copied == "link" ? "Copied" : "Copy link", systemImage: copied == "link" ? "checkmark" : "link")
                             }
@@ -124,11 +126,13 @@ struct WatchPartyInviteView: View {
                             Button {
                                 UIPasteboard.general.string = room.code
                                 copied = "code"
+                                copyCount += 1
                             } label: {
                                 Label(copied == "code" ? "Copied" : "Copy code", systemImage: copied == "code" ? "checkmark" : "doc.on.doc")
                             }
                             .buttonStyle(WatchPartyButtonStyle(kind: .secondary))
                         }
+                        .sensoryFeedback(.success, trigger: copyCount)
                     }
                     .padding(.top, 8)
                 }

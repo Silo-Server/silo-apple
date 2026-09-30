@@ -359,6 +359,13 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
 
     private var lifecycleObservers: [NSObjectProtocol] = []
 
+    /// The connected server's manifest revision, from the last successful
+    /// ``effectiveValues(keys:)`` since ``forgetManifestRevision()``.
+    private var manifestRevision: Int?
+    /// Bumped by ``forgetManifestRevision()`` so a read that was already in
+    /// flight for the previous server cannot record that server's revision.
+    private var manifestRevisionGeneration: UInt64 = 0
+
     init(
         transport: PlayerSettingsTransport,
         debounce: Duration = PlayerSettingsFlusher.defaultDebounce,
@@ -462,8 +469,49 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     /// On the flusher rather than reached for directly so ``PlayerSettings``
     /// has one seam to fake in tests, and so the read and the writes cannot
     /// drift onto different transports.
+    ///
+    /// A successful read also records the server's manifest revision, which
+    /// decides at send time what a key with ``SettingKey/revisionGatedMembers``
+    /// may carry.
     func effectiveValues(keys: [SettingKey]) async throws -> EffectiveSettingValuesResponse {
-        try await transport.effectiveValues(keys: keys)
+        let generation = lock.withLock { manifestRevisionGeneration }
+        let response = try await transport.effectiveValues(keys: keys)
+        lock.withLock {
+            if manifestRevisionGeneration == generation {
+                manifestRevision = response.revision
+            }
+        }
+        return response
+    }
+
+    /// The manifest revision the last successful ``effectiveValues(keys:)``
+    /// reported, or `nil` when none has succeeded since the last
+    /// ``forgetManifestRevision()``.
+    var knownManifestRevision: Int? {
+        lock.withLock { manifestRevision }
+    }
+
+    /// Stop trusting the recorded revision, because the server or profile the
+    /// next read answers for may be a different one. Writes that depend on the
+    /// revision wait until a read records it again.
+    func forgetManifestRevision() {
+        lock.withLock {
+            manifestRevision = nil
+            manifestRevisionGeneration &+= 1
+        }
+    }
+
+    /// True while a write for a key with ``SettingKey/revisionGatedMembers``
+    /// is queued and not yet attempted — typically one that waited because it
+    /// was made before ``knownManifestRevision`` was known. Ops on the backoff
+    /// schedule or held are left to their own triggers.
+    var hasRevisionGatedWrites: Bool {
+        lock.withLock {
+            pending.contains { key, write in
+                guard !write.isHeld, write.failedAttempts == 0, case .set = write.operation else { return false }
+                return !key.revisionGatedMembers.isEmpty
+            }
+        }
     }
 
     /// Re-read the journal and adopt anything it still owes.
@@ -947,7 +995,19 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
         do {
             switch write.operation {
             case .set(let value):
-                try await transport.putValue(key: key, value: value, profileId: write.profileId)
+                var wireValue = value
+                if !key.revisionGatedMembers.isEmpty {
+                    // Decided here rather than at enqueue: the queued value
+                    // keeps every member, so a write queued before the revision
+                    // was known is neither sent to an older server with members
+                    // it rejects nor stripped for a server that stores them.
+                    guard let revision = knownManifestRevision else {
+                        log(key, "server manifest revision not known yet", kept: true)
+                        return .retryOnNextTrigger
+                    }
+                    wireValue = key.wireValue(value, forServerRevision: revision)
+                }
+                try await transport.putValue(key: key, value: wireValue, profileId: write.profileId)
             case .delete:
                 try await transport.deleteValue(key: key, profileId: write.profileId)
             }

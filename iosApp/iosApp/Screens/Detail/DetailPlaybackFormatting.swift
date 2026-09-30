@@ -601,7 +601,7 @@ enum DetailPlaybackFormatting {
         if codec == "ass" || codec.contains("ass") { return "ASS" }
         if codec == "ssa" || codec.contains("ssa") { return "SSA" }
         if codec == "vtt" || codec.contains("webvtt") { return "WebVTT" }
-        if codec.contains("pgs") || codec.contains("hdmv") { return "PGS" }
+        if codec == "sup" || codec.contains("pgs") || codec.contains("hdmv") { return "PGS" }
         if codec.contains("dvd") || codec.contains("vobsub") { return "VobSub" }
         if codec.contains("mov_text") || codec.contains("tx3g") { return "TX3G" }
         return codec.uppercased()

@@ -718,6 +718,7 @@ enum TVSettingsDetailFocus: Hashable {
     case subtitleFontSize
     case subtitleFontFamily
     case subtitleFontColor
+    case subtitleTextOpacity
     case subtitleOutlineColor
     case subtitleBackgroundStyle
     case subtitleBackgroundOpacity

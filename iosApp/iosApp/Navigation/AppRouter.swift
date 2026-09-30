@@ -174,6 +174,14 @@ class AppRouter {
         let browseSource: ItemDetailBrowseSource?
         let libraryId: Int?
         let resumeContext: SeriesDetailContext?
+        /// Set when the card opens on a request detail (a TMDB title) rather
+        /// than a catalog item; `contentId` is then only a page identity.
+        let request: RequestRoot?
+
+        struct RequestRoot: Equatable {
+            let mediaType: RequestMediaType
+            let tmdbId: Int
+        }
 
         init(contentId: String, libraryId: Int? = nil, browseSource: ItemDetailBrowseSource? = nil,
              resumeContext: SeriesDetailContext? = nil) {
@@ -181,6 +189,15 @@ class AppRouter {
             self.browseSource = browseSource
             self.libraryId = libraryId
             self.resumeContext = resumeContext
+            self.request = nil
+        }
+
+        init(request: RequestRoot) {
+            self.contentId = "request:\(request.mediaType.rawValue):\(request.tmdbId)"
+            self.browseSource = nil
+            self.libraryId = nil
+            self.resumeContext = nil
+            self.request = request
         }
     }
 
@@ -558,6 +575,20 @@ class AppRouter {
         #if os(iOS)
         if case .itemDetail(let contentId, _, let libraryId, let context) = route {
             presentItemDetail(contentId: contentId, libraryId: libraryId, resumeContext: context)
+            return
+        }
+        // Request detail opens in the same bottom card as a library title,
+        // with its pull-down dismissal and nested navigation.
+        if case .requestDetail(let mediaType, let tmdbId) = route {
+            recordScreenBreadcrumb(target: route.diagnosticsTarget, action: "present")
+            if presentedItemDetail == nil {
+                itemDetailPath = NavigationPath()
+                presentedItemDetail = ItemDetailPresentation(
+                    request: .init(mediaType: mediaType, tmdbId: tmdbId)
+                )
+            } else {
+                itemDetailPath.append(route)
+            }
             return
         }
         #endif
@@ -945,6 +976,8 @@ private extension Route {
             return "requestDetail"
         case .myRequests:
             return "myRequests"
+        case .requestApprovals:
+            return "requestApprovals"
         case .offlinePlayer:
             return "offlinePlayer"
         case .offlineSeriesBrowse:

@@ -702,6 +702,7 @@ class PlayerViewModel {
     private struct OfflinePlaybackContext {
         let downloadId: String
         let mediaItemId: String
+        let isServerPreparedFile: Bool
     }
     private var offlinePlaybackContext: OfflinePlaybackContext?
     /// Mirrors the server's default watched threshold (90%) so an offline
@@ -3015,10 +3016,17 @@ class PlayerViewModel {
                     try AetherEngine.probe(url: localURL)
                 }.value
                 try requireCurrentStreamLoad(expectedStreamLoadGeneration)
-                guard probe.audioTracks.indices.contains(ordinal) else {
-                    throw AetherLoadSpec.ValidationError.invalidAudioTrackIndex(ordinal)
+                audioStreamIndex = AetherLoadSpec.offlineAudioStreamIndex(
+                    manifestOrdinal: ordinal,
+                    probedTrackIDs: probe.audioTracks.map(\.id)
+                )
+                if audioStreamIndex == nil {
+                    // A download has no server to replan against, so a stale
+                    // manifest ordinal must not fail playback outright.
+                    Self.logger.warning(
+                        "Offline audio ordinal \(ordinal, privacy: .public) is outside the file's \(probe.audioTracks.count, privacy: .public) audio tracks; using the file default"
+                    )
                 }
-                audioStreamIndex = Int32(probe.audioTracks[ordinal].id)
             } else {
                 audioStreamIndex = nil
             }
@@ -3196,19 +3204,37 @@ class PlayerViewModel {
                 srcId: ordinal
             )
         }
-        audioTracks = ApplePlaybackV3PlanAdapter.audioPickerTracks(
+        let isServerPreparedFile = offlinePlaybackContext?.isServerPreparedFile == true
+        let pickerAudioTracks = ApplePlaybackV3PlanAdapter.audioPickerTracks(
             aetherTracks: aetherAudioTracks,
             plan: activePreparedProtocolV3?.plan,
             version: currentSelectedVersion
         )
-        let aetherSubtitleTracks = engine.subtitleTracks.map { track in
+        audioTracks = isServerPreparedFile
+            ? OfflinePreparedTrackInventory.audioTracks(
+                pickerAudioTracks,
+                manifestTracks: currentSelectedVersion?.audioTracks
+            )
+            : pickerAudioTracks
+        let probedSubtitleTracks = engine.subtitleTracks.map { track in
             let appTrackID = aetherPlaybackController.appSubtitleID(forAetherID: track.id)
+            let sidecarIndex = track.isExternal
+                ? SubtitleTrackIdSpace.sidecarIndex(from: appTrackID)
+                : nil
+            let codec = track.isExternal
+                ? SubtitleCodecClassifier.externalTrackCodec(
+                    engineCodec: track.codec,
+                    declaredFormat: sidecarIndex.flatMap { index in
+                        knownExternalSubtitles.first { $0.index == index }?.codec
+                    }
+                )
+                : track.codec
             return PlayerTrack(
                 trackId: appTrackID,
                 kind: .sub,
                 title: track.name,
                 lang: track.language,
-                codec: track.codec,
+                codec: codec,
                 audioChannelCount: nil,
                 bitrate: nil,
                 isDefault: track.isDefault,
@@ -3217,11 +3243,12 @@ class PlayerViewModel {
                 isExternal: track.isExternal,
                 isSelected: engine.activeSubtitleTrackIndex == track.id,
                 ffIndex: track.isExternal ? nil : track.id,
-                srcId: track.isExternal
-                    ? SubtitleTrackIdSpace.sidecarIndex(from: appTrackID)
-                    : nil
+                srcId: sidecarIndex
             )
         }
+        let aetherSubtitleTracks = isServerPreparedFile
+            ? OfflinePreparedTrackInventory.subtitleTracks(probedSubtitleTracks)
+            : probedSubtitleTracks
         // V3 inventory is an authoritative menu, not a preload list. Aether
         // receives only the current plan's artifact; presenting its probed
         // embedded tracks alongside every server sidecar would create two
@@ -4245,7 +4272,8 @@ class PlayerViewModel {
                     )
                     preparedOfflineContext = OfflinePlaybackContext(
                         downloadId: offline.downloadId,
-                        mediaItemId: offline.mediaItemId
+                        mediaItemId: offline.mediaItemId,
+                        isServerPreparedFile: offline.isServerPreparedFile
                     )
                     preparedOfflineArtworkURL = offline.posterFileURL
                     prepared = offline.prepared
@@ -4972,8 +5000,10 @@ class PlayerViewModel {
     }
 
     /// Skips forward by `seconds`, or by the configured interval when nil.
-    func skipForward(_ seconds: Double? = nil, revealingControls: Bool = true) {
-        guard !refusesSeekAtEndOfFile else { return }
+    /// Returns false when the player refuses the skip.
+    @discardableResult
+    func skipForward(_ seconds: Double? = nil, revealingControls: Bool = true) -> Bool {
+        guard !refusesSeekAtEndOfFile else { return false }
         let seconds = seconds ?? Double(skipIntervals.forward)
         Self.logger.info(
             "[CMP-SEEK] skip forward requested seconds=\(seconds, privacy: .public) current=\(self.currentTime, privacy: .public) preview=\(self.scrubPreviewTime, privacy: .public) isScrubbing=\(self.isScrubbing, privacy: .public)"
@@ -4982,11 +5012,14 @@ class PlayerViewModel {
         if revealingControls || showControls {
             scheduleHideControls()
         }
+        return true
     }
 
     /// Skips backward by `seconds`, or by the configured interval when nil.
-    func skipBackward(_ seconds: Double? = nil, revealingControls: Bool = true) {
-        guard !refusesSeekAtEndOfFile else { return }
+    /// Returns false when the player refuses the skip.
+    @discardableResult
+    func skipBackward(_ seconds: Double? = nil, revealingControls: Bool = true) -> Bool {
+        guard !refusesSeekAtEndOfFile else { return false }
         let seconds = seconds ?? Double(skipIntervals.backward)
         Self.logger.info(
             "[CMP-SEEK] skip backward requested seconds=\(seconds, privacy: .public) current=\(self.currentTime, privacy: .public) preview=\(self.scrubPreviewTime, privacy: .public) isScrubbing=\(self.isScrubbing, privacy: .public)"
@@ -4995,6 +5028,7 @@ class PlayerViewModel {
         if revealingControls || showControls {
             scheduleHideControls()
         }
+        return true
     }
 
     /// The intro pill's action: past the intro for `ask`, back to its start

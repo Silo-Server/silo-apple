@@ -121,8 +121,20 @@ enum TVSettingsOptions {
     static let backgroundStyle: [TVSettingsOption] =
         SubtitleBackgroundStylePreset.selectableCases.map { .init(id: $0.rawValue, label: $0.label) }
 
-    static let backgroundOpacity: [TVSettingsOption] =
-        stride(from: 0, through: 100, by: 5).map { .init(id: String($0), label: "\($0)%") }
+    /// 5-point steps from `from`, plus the current value when another client
+    /// stored one between them (see ``SubtitleAppearance/opacityPickerValues(current:lowest:step:)``).
+    private static func opacityOptions(current: Int, from: Int) -> [TVSettingsOption] {
+        SubtitleAppearance.opacityPickerValues(current: current, lowest: from, step: 5)
+            .map { .init(id: String($0), label: "\($0)%") }
+    }
+
+    static func backgroundOpacity(current: Int) -> [TVSettingsOption] {
+        opacityOptions(current: current, from: 0)
+    }
+
+    static func textOpacity(current: Int) -> [TVSettingsOption] {
+        opacityOptions(current: current, from: 5)
+    }
 
     static let backgroundColor: [TVSettingsOption] =
         SubtitleAppearance.backgroundColors.map { .init(id: $0.hex, label: $0.label) }

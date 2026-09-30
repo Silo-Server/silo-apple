@@ -182,8 +182,12 @@ struct SectionRow: View {
         let outcome = await MediaCardWatchedSync.setWatched(
             contentId: item.contentId, played: played, seriesId: item.seriesId
         )
-        watchedFeedback.report(outcome)
-        guard outcome == .applied else { return false }
+        // The card confirms an applied change itself; reporting it here too
+        // would play the success haptic twice.
+        guard outcome == .applied else {
+            watchedFeedback.report(outcome)
+            return false
+        }
         NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil)
         return true
     }

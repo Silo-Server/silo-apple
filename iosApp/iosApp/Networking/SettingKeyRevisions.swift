@@ -47,6 +47,12 @@ extension SettingKey {
         case .playerVideoSkipBackSeconds, .playerVideoSkipForwardSeconds,
              .playerAudiobookSkipBackSeconds, .playerAudiobookSkipForwardSeconds:
             return 9
+        case .catalogShowAdvisoryAge:
+            return 10
+        case .uiThemeMusicEnabled, .uiThemeMusicLoop:
+            return 11
+        case .homeHideWatchedItems:
+            return 12
         case .catalogMetadataLanguage, .downloadsDefaultQuality, .downloadsKeepWatched,
              .downloadsWifiOnly, .navShowAudiobooks, .playbackAudioLanguage,
              .playbackAutoPlayNext, .playbackAutoPlayNextPreview, .playbackAutoSkipCredits,
@@ -70,5 +76,36 @@ extension SettingKey {
     /// Whether a server answering at `revision` knows this key.
     func isServed(atRevision revision: Int) -> Bool {
         revision >= Self.minimumServerRevision && revision >= introducedIn
+    }
+
+    /// The manifest revision that added `textOpacity` to
+    /// `playback.subtitle_appearance`'s object schema.
+    static let subtitleTextOpacityRevision = 14
+
+    /// Object members added to this key's value schema after the key itself,
+    /// with the revision that added each.
+    ///
+    /// ``introducedIn`` cannot gate these: the key is served, but its schema is
+    /// `additionalProperties: false`, so an older server rejects the *whole*
+    /// write for one member it does not know. The flusher removes them at send
+    /// time for such a server, and holds the write while the server's revision
+    /// is not yet known.
+    var revisionGatedMembers: [String: Int] {
+        switch self {
+        case .playbackSubtitleAppearance:
+            return ["textOpacity": Self.subtitleTextOpacityRevision]
+        default:
+            return [:]
+        }
+    }
+
+    /// `value` as a server answering at `revision` accepts it: object members
+    /// newer than that revision are removed, everything else is untouched.
+    func wireValue(_ value: SettingJSONValue, forServerRevision revision: Int) -> SettingJSONValue {
+        guard case .object(var fields) = value else { return value }
+        for (member, introducedIn) in revisionGatedMembers where revision < introducedIn {
+            fields.removeValue(forKey: member)
+        }
+        return .object(fields)
     }
 }

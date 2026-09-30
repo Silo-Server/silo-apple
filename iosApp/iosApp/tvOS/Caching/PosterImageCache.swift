@@ -101,6 +101,20 @@ enum PosterImageCache {
         prefetcher.startPrefetching(with: urls)
     }
 
+    /// Warm artwork bytes into the disk cache only. Display requests decode
+    /// at their own size, so a memory-cache warm would miss their key; the
+    /// shared data cache serves every size locally.
+    static func prefetchArtworkData(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        dataPrefetcher.startPrefetching(with: urls)
+    }
+
+    private static let dataPrefetcher: ImagePrefetcher = {
+        let p = ImagePrefetcher(pipeline: ImagePipeline.shared, destination: .diskCache)
+        p.priority = .low
+        return p
+    }()
+
     #if os(tvOS)
     /// A movie's cast rail is part of the first detail viewport, but its
     /// portraits used to begin loading only after SwiftUI mounted each card.

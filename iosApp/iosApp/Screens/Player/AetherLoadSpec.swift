@@ -162,6 +162,15 @@ struct AetherLoadSpec {
     /// Also Aether's own default; see `PlayerSettings.deinterlaceFieldRate`.
     static let defaultDeinterlaceFieldRate: DeinterlaceFieldRate = .field
 
+    /// Resolve a download manifest's audio ordinal (`selected_audio_track_index`,
+    /// a position among the delivered file's audio streams) to the stream id
+    /// Aether selects by. Nil when the ordinal is outside the probed file, so
+    /// the load falls back to the file's default track.
+    static func offlineAudioStreamIndex(manifestOrdinal: Int, probedTrackIDs: [Int]) -> Int32? {
+        guard probedTrackIDs.indices.contains(manifestOrdinal) else { return nil }
+        return Int32(exactly: probedTrackIDs[manifestOrdinal])
+    }
+
     @MainActor
     init(
         offlineURL: URL,

@@ -237,6 +237,13 @@ struct MediaRequest: Codable, Identifiable, Hashable {
     let createdAt: Date
     let updatedAt: Date
     let completedAt: Date?
+    /// When an admin (or auto-approval) approved it; drives the detail
+    /// page's stage timestamps. Defaulted so fixtures can omit it.
+    var approvedAt: Date? = nil
+    /// Who asked for it. Admin lists show the requester; `/requests/mine`
+    /// always names the signed-in user.
+    var requestedByUserId: String? = nil
+    var requestedByProfileId: String? = nil
 }
 
 // MARK: - Mutations

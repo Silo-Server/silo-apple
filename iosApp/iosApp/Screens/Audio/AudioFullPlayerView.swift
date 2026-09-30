@@ -544,16 +544,22 @@ private struct AudioScrubberSection: View {
             #if !os(tvOS)
             .contentShape(Rectangle())
             .gesture(scrubGesture(trackWidth: geo.size.width))
+            .scrubTickFeedback(tickTimes: chapterTickTimes, scrubTime: scrubTime)
             #endif
         }
         .frame(height: 30)
         .animation(.easeOut(duration: 0.15), value: trackHeight)
     }
 
+    /// The first chapter opens the book, so it gets no tick mark.
+    private var tickedChapters: ArraySlice<AudioPlaybackChapter> {
+        player.chapters.dropFirst()
+    }
+
     @ViewBuilder
     private func chapterTicks(width: CGFloat) -> some View {
-        if player.duration > 0, player.chapters.count > 1 {
-            ForEach(player.chapters.dropFirst()) { chapter in
+        if player.duration > 0 {
+            ForEach(tickedChapters) { chapter in
                 Rectangle()
                     .fill(.black.opacity(0.45))
                     .frame(width: 1.5, height: trackHeight)
@@ -563,6 +569,10 @@ private struct AudioScrubberSection: View {
     }
 
     #if !os(tvOS)
+    private var chapterTickTimes: [Double] {
+        tickedChapters.map(\.startSeconds)
+    }
+
     private func scrubGesture(trackWidth: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 0, coordinateSpace: .local)
             .onChanged { value in

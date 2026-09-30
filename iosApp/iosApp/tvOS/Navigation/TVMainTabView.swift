@@ -465,6 +465,13 @@ struct TVMainTabView: View {
                 isTopMenuFocused: menuOwnsFocus,
                 onTopMenuFocusRequest: { focusTopMenuIfVisible() }
             )
+        case .requests:
+            TVRequestsPage(
+                mode: .hub,
+                focusRequest: contentFocusRequest,
+                isTopMenuFocused: menuOwnsFocus,
+                onTopMenuFocusRequest: { focusTopMenuIfVisible() }
+            )
         }
     }
 
@@ -531,7 +538,7 @@ struct TVMainTabView: View {
             switch root {
             case .libraryType, .libraryShortcut, .recommendations:
                 return .root(root)
-            case .home, .calendar:
+            case .home, .calendar, .requests:
                 return nil
             }
         }
@@ -657,7 +664,7 @@ struct TVMainTabView: View {
                 )
             case .recommendations:
                 forYouPanel(isActive: isActive)
-            case .home, .calendar:
+            case .home, .calendar, .requests:
                 EmptyView()
             }
         case .profile:
@@ -731,7 +738,6 @@ struct TVMainTabView: View {
             onWatchlist: { closePanel(then: { navigateFromBar(.watchlist) }) },
             onFavorites: { closePanel(then: { navigateFromBar(.favorites) }) },
             onHistory: { closePanel(then: { navigateFromBar(.history) }) },
-            onRequests: { closePanel(then: { navigateFromBar(.requestsHub) }) },
             onWatchParty: { closePanel(then: { navigateFromBar(.watchParty) }) },
             onSettings: { closePanel(then: { navigateFromBar(.settings) }) },
             onSwitchServer: { closePanel(then: { navigateFromBar(.serverList) }) },
@@ -1017,6 +1023,9 @@ struct TVMainTabView: View {
             if let root, !roots.contains(root) { roots.append(root) }
         }
         if !roots.contains(.home) { roots.insert(.home, at: 0) }
+        // Requests is a server capability, not a customizable menu item: it
+        // trails the content tabs whenever the server has it enabled.
+        if RequestsFeatureStore.shared.isEnabled { roots.append(.requests) }
         return roots
     }
 
@@ -1421,6 +1430,8 @@ struct TVMainTabView: View {
             RequestDetailView(mediaType: mediaType, tmdbId: tmdbId)
         case .myRequests:
             MyRequestsView()
+        case .requestApprovals:
+            MyRequestsView(initialScope: .everyone)
         case .search:
             SearchView(usesTVTopMenuInset: false, seededQuery: $siriSearchRequest)
         case .settings:

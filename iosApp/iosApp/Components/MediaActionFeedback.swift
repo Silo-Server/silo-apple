@@ -7,6 +7,9 @@ import SwiftUI
 final class MediaActionFeedback {
     private(set) var isUpdating = false
     var notice: PersonalStateNotice?
+    /// Bumped when a change lands, so the card can confirm it with a haptic
+    /// after the context menu has already closed.
+    private(set) var appliedCount = 0
 
     func perform(
         reportsFailure: Bool = true,
@@ -25,7 +28,8 @@ final class MediaActionFeedback {
     /// `reportsFailure: false`; a held change is always offered for discard.
     func report(_ outcome: PersonalStateOutcome, reportsFailure: Bool = true) {
         switch outcome {
-        case .applied, .skipped: break
+        case .applied: appliedCount += 1
+        case .skipped: break
         case .failed(let requirement): if reportsFailure { notice = .failed(requirement) }
         case .held(let change): notice = .held(change)
         }
@@ -58,6 +62,14 @@ enum PersonalStateNotice: Equatable {
         }
     }
 
+    /// A held change may still have landed, so it warns instead of erroring.
+    var haptic: SensoryFeedback {
+        switch self {
+        case .failed: return .error
+        case .held: return .warning
+        }
+    }
+
     var message: String {
         switch self {
         case .failed(nil): return "Your change wasn't saved. Please try again."
@@ -84,7 +96,9 @@ private struct MediaActionFeedbackModifier: ViewModifier {
     @Bindable var feedback: MediaActionFeedback
 
     func body(content: Content) -> some View {
-        content.personalStateNoticeAlert($feedback.notice)
+        content
+            .personalStateNoticeAlert($feedback.notice)
+            .sensoryFeedback(.success, trigger: feedback.appliedCount)
     }
 }
 
@@ -92,22 +106,24 @@ private struct PersonalStateNoticeAlert: ViewModifier {
     @Binding var notice: PersonalStateNotice?
 
     func body(content: Content) -> some View {
-        content.alert(
-            notice?.title ?? "",
-            isPresented: Binding(
-                get: { notice != nil },
-                set: { if !$0 { notice = nil } }
-            ),
-            presenting: notice
-        ) { presented in
-            if case .held(let change) = presented {
-                Button("Discard Held Change", role: .destructive) {
-                    PersonalStateHolds.shared.discard(change)
+        content
+            .sensoryFeedback(trigger: notice) { _, notice in notice?.haptic }
+            .alert(
+                notice?.title ?? "",
+                isPresented: Binding(
+                    get: { notice != nil },
+                    set: { if !$0 { notice = nil } }
+                ),
+                presenting: notice
+            ) { presented in
+                if case .held(let change) = presented {
+                    Button("Discard Held Change", role: .destructive) {
+                        PersonalStateHolds.shared.discard(change)
+                    }
                 }
+                Button("OK", role: .cancel) { }
+            } message: { presented in
+                Text(presented.message)
             }
-            Button("OK", role: .cancel) { }
-        } message: { presented in
-            Text(presented.message)
-        }
     }
 }

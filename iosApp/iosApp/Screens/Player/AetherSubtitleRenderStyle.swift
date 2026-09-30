@@ -76,7 +76,10 @@ struct AetherSubtitleRenderStyle: Equatable {
             fontFamily = .custom(appearance.fontFamily.assFontName)
         }
         foreground = RGB(hex: appearance.fontColor, fallback: .white)
-        foregroundOpacity = Self.fraction(appearance.fontOpacity)
+        // System accessibility opacity and the user's synced text opacity are
+        // independent axes; combine them rather than letting either replace
+        // the other.
+        foregroundOpacity = Self.fraction(appearance.fontOpacity) * Self.fraction(appearance.textOpacity)
         drawsBox = appearance.backgroundStyle == .box && appearance.backgroundOpacity > 0
         boxColor = RGB(hex: appearance.backgroundColor, fallback: .black)
         boxOpacity = Self.fraction(appearance.backgroundOpacity)

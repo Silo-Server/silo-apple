@@ -133,6 +133,8 @@ final class SubtitleDisplayOrderTests: XCTestCase {
         XCTAssertLessThan(SubtitleDisplayOrder.formatRank("hdmv_pgs_subtitle"), SubtitleDisplayOrder.formatRank("dvd_subtitle"))
         XCTAssertLessThan(SubtitleDisplayOrder.formatRank("dvd_subtitle"), SubtitleDisplayOrder.formatRank(nil))
         XCTAssertEqual(SubtitleDisplayOrder.formatRank("srt"), SubtitleDisplayOrder.formatRank("subrip"))
+        // Offline manifests name PGS sidecars by their `sup` file format.
+        XCTAssertEqual(SubtitleDisplayOrder.formatRank("sup"), SubtitleDisplayOrder.formatRank("pgssub"))
     }
 
     func testCanonicalLanguageKey() {

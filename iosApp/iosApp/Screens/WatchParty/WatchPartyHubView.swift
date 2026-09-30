@@ -47,6 +47,7 @@ struct WatchPartyHubView: View {
         .onChange(of: session.isEngaged) { _, engaged in
             if !engaged, session.connection != .ended { Task { await checkSupport() } }
         }
+        .sensoryFeedback(.success, trigger: session.isEngaged) { _, engaged in engaged }
         .task {
             if !session.isEngaged, session.connection != .ended || session.capabilities == nil { await checkSupport() }
             #if DEBUG

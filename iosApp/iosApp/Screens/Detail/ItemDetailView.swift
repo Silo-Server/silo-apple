@@ -56,15 +56,16 @@ private struct ControlRequestBox: Identifiable {
 
 /// Static top-control layout. Scroll progress is read only by the tiny opacity
 /// leaves below, so changing chrome never rebuilds buttons or their actions.
-private struct PhoneDetailTopChrome: View {
+/// Shared with the request detail card, which has no trailing control.
+struct PhoneDetailTopChrome: View {
     let title: String
     let isScrollGlassEnabled: Bool
     let scrollState: PhoneDetailScrollState
     let leadingSystemName: String?
     let leadingAccessibilityLabel: String?
     let onLeadingTap: () -> Void
-    let trailingSystemName: String
-    let onTrailingTap: () -> Void
+    let trailingSystemName: String?
+    let onTrailingTap: (() -> Void)?
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -93,11 +94,13 @@ private struct PhoneDetailTopChrome: View {
 
                 Spacer(minLength: 20)
 
-                Button(action: onTrailingTap) {
-                    controlIcon(systemName: trailingSystemName, size: 16)
+                if let trailingSystemName, let onTrailingTap {
+                    Button(action: onTrailingTap) {
+                        controlIcon(systemName: trailingSystemName, size: 16)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Remote Control")
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Remote Control")
             }
             .padding(.horizontal, 18)
             .padding(.top, 9)

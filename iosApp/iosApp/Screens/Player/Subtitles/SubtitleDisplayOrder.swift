@@ -104,7 +104,7 @@ enum SubtitleDisplayOrder {
         if codec.contains("ssa") { return 2 }
         if codec == "vtt" || codec.contains("webvtt") { return 3 }
         if codec.contains("mov_text") || codec.contains("movtext") || codec.contains("tx3g") { return 4 }
-        if codec.contains("pgs") || codec.contains("hdmv") { return 5 }
+        if codec == "sup" || codec.contains("pgs") || codec.contains("hdmv") { return 5 }
         if codec.contains("dvd") || codec.contains("vobsub") || codec.contains("dvb") { return 6 }
         return 7
     }

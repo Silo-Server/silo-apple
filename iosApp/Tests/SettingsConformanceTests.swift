@@ -414,6 +414,31 @@ final class SettingsConformanceTests: XCTestCase {
         }
     }
 
+    /// Object members added after their key are gated by a hand-kept revision
+    /// too. The manifest records that revision only in the definition's notes
+    /// ("Revision N adds the optional <member> property"), so the sentence is
+    /// what ties the gate to the contract.
+    func testRevisionGatedMembersMatchTheVendoredManifest() throws {
+        let definitions = try rawDefinitions()
+        let manifestRevision = try loadManifest().revision
+        let gatedKeys = SettingKey.allCases.filter { !$0.revisionGatedMembers.isEmpty }
+        XCTAssertFalse(gatedKeys.isEmpty)
+        for key in gatedKeys {
+            let definition = try XCTUnwrap(definitions[key.rawValue], key.rawValue)
+            let defaults = try XCTUnwrap(definition["default_value"] as? [String: Any], key.rawValue)
+            let notes = try XCTUnwrap(definition["notes"] as? String, key.rawValue)
+            for (member, revision) in key.revisionGatedMembers {
+                XCTAssertNotNil(defaults[member], "\(key.rawValue) default_value has no \(member)")
+                XCTAssertTrue(
+                    notes.contains("Revision \(revision) adds the optional \(member) property"),
+                    "\(key.rawValue) notes do not say revision \(revision) added \(member)"
+                )
+                XCTAssertGreaterThan(revision, key.introducedIn, "\(key.rawValue).\(member)")
+                XCTAssertLessThanOrEqual(revision, manifestRevision, "\(key.rawValue).\(member)")
+            }
+        }
+    }
+
     /// A batch read fails as a whole when one of its keys is newer than the
     /// server, so a feature with no per-key fallback must only read keys
     /// every accepted server serves. The player batch carries

@@ -229,6 +229,15 @@ struct OfflineManifest: Codable, Hashable, Sendable {
     /// the former public `format` name.
     var format: String { quality }
 
+    /// Whether the downloaded file is the server's remux/transcode output
+    /// rather than the original source file.
+    var isServerPreparedFile: Bool {
+        guard let delivery = deliveryFormat?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased(), !delivery.isEmpty else { return false }
+        return delivery != "original"
+    }
+
     private enum CodingKeys: String, CodingKey {
         case downloadId
         case contentId
@@ -416,6 +425,7 @@ struct OfflineAudioTrack: Codable, Hashable, Sendable {
 /// origin (`external:{index}` or `downloaded:{id}`).
 struct OfflineSubtitle: Codable, Hashable, Sendable {
     let language: String?
+    let title: String?
     let format: String?
     let forced: Bool?
     let hearingImpaired: Bool?

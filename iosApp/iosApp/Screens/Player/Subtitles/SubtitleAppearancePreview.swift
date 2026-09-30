@@ -84,7 +84,7 @@ struct SubtitleAppearancePreview: View {
             .multilineTextAlignment(.center)
             .foregroundStyle(
                 Color(hex: appearance.fontColor)
-                    .opacity(Double(appearance.fontOpacity) / 100)
+                    .opacity(Double(appearance.fontOpacity) / 100 * Double(appearance.textOpacity) / 100)
             )
             .shadow(color: outlineColor, radius: 0, x: outlineOffset, y: outlineOffset)
             .shadow(color: outlineColor, radius: 0, x: -outlineOffset, y: outlineOffset)

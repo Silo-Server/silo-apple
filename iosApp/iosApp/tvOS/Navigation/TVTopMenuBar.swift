@@ -84,10 +84,13 @@ enum TVRootDestination: Hashable {
     case libraryType(TVLibraryTabType)
     case libraryShortcut(libraryId: Int, label: String)
     case calendar
+    /// Media requests; present only while the server has requests enabled.
+    case requests
 
     static func == (lhs: TVRootDestination, rhs: TVRootDestination) -> Bool {
         switch (lhs, rhs) {
-        case (.home, .home), (.recommendations, .recommendations), (.calendar, .calendar):
+        case (.home, .home), (.recommendations, .recommendations), (.calendar, .calendar),
+             (.requests, .requests):
             return true
         case (.libraryType(let lhsType), .libraryType(let rhsType)):
             return lhsType == rhsType
@@ -112,6 +115,8 @@ enum TVRootDestination: Hashable {
             hasher.combine(libraryId)
         case .calendar:
             hasher.combine(4)
+        case .requests:
+            hasher.combine(5)
         }
     }
 
@@ -122,6 +127,7 @@ enum TVRootDestination: Hashable {
         case .libraryType(let type): return type.title
         case .libraryShortcut(_, let label): return label
         case .calendar: return "Calendar"
+        case .requests: return "Requests"
         }
     }
 }
@@ -496,7 +502,7 @@ struct TVTopMenuBar: View {
             return TVLibraryMenuRootKind.directShortcut.hasSectionCascade ? .root(root) : nil
         case .recommendations:
             return .root(root)
-        case .home, .calendar:
+        case .home, .calendar, .requests:
             return nil
         }
     }
@@ -509,7 +515,7 @@ struct TVTopMenuBar: View {
             return "Rest to choose a section"
         case .recommendations:
             return "Rest to choose Watchlist, Favorites, or Recommendations"
-        case .home, .calendar:
+        case .home, .calendar, .requests:
             return ""
         }
     }
@@ -1115,7 +1121,6 @@ private enum TVProfileAction: Hashable {
     case watchlist
     case favorites
     case history
-    case requests
     case watchParty
     case settings
     case switchServer
@@ -1146,7 +1151,6 @@ struct TVProfileDropdown: View {
     let onWatchlist: () -> Void
     let onFavorites: () -> Void
     let onHistory: () -> Void
-    let onRequests: () -> Void
     let onWatchParty: () -> Void
     let onSettings: () -> Void
     let onSwitchServer: () -> Void
@@ -1154,12 +1158,6 @@ struct TVProfileDropdown: View {
 
     @FocusState private var focusedAction: TVProfileAction?
     @State private var lastAppliedEntryGeneration = 0
-
-    /// Capability-gated: the Requests row only exists (and only takes a
-    /// focus slot) when the server reports `requests_enabled`.
-    private var showRequests: Bool {
-        RequestsFeatureStore.shared.isEnabled
-    }
 
     var body: some View {
         panel
@@ -1195,9 +1193,6 @@ struct TVProfileDropdown: View {
             actionButton("Watchlist", systemImage: "bookmark.fill", id: .watchlist, action: onWatchlist)
             actionButton("Favorites", systemImage: "heart.fill", id: .favorites, action: onFavorites)
             actionButton("History", systemImage: "clock.fill", id: .history, action: onHistory)
-            if showRequests {
-                actionButton("Requests", systemImage: "sparkles", id: .requests, action: onRequests)
-            }
             if WatchPartyEntry.isAvailable {
                 actionButton(WatchPartySession.shared.isEngaged ? "Return to Watch Party" : "Watch Party", systemImage: "person.3", id: .watchParty, action: onWatchParty)
             }

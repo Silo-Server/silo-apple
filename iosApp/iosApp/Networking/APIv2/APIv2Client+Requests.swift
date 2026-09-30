@@ -94,6 +94,67 @@ extension APIv2Client {
         return try await requestsCall("POST", path: path, body: try Self.encode(CancelRequestBody(reason: reason)), status: 200)
     }
 
+    // MARK: Admin moderation (acting admin)
+
+    /// `GET /api/v2/admin/requests/capabilities`. Answers only for an admin
+    /// acting as the account's primary profile; anyone else gets a
+    /// permission problem, which callers read as "no approvals".
+    func adminRequestCapabilities() async throws -> AdminRequestCapabilities {
+        try await requestsCall("GET", path: "/api/v2/admin/requests/capabilities", status: 200)
+    }
+
+    /// Every request matching the filter, across all users, newest first.
+    /// Like `myRequests()`: every page runs under the one owner captured at
+    /// the start, and a failed page, a missing or repeated cursor, or the
+    /// page bound fails the whole load instead of returning a partial list.
+    /// `tmdbId` narrows the list to one title through `q`, which also
+    /// matches titles containing the number, so callers still match the id.
+    func adminRequests(
+        status: RequestStatus?,
+        outcome: RequestOutcome?,
+        mediaType: RequestMediaType? = nil,
+        tmdbId: Int? = nil
+    ) async throws -> [MediaRequest] {
+        guard let auth = await tokenStore.captureOrdinaryRequestAuth(),
+              let profile = auth.profileId else { throw HTTPError.requestIdentityChanged }
+        let identity = Self.requestIdentity(auth, profile: profile)
+        var records: [MediaRequest] = []
+        var cursor: String?
+        var seen: Set<String> = []
+        for _ in 0..<40 {
+            try await gate()
+            var query = ["limit": "50"]
+            if let status { query["status"] = status.rawValue }
+            if let outcome { query["outcome"] = outcome.rawValue }
+            if let mediaType, mediaType == .movie || mediaType == .series { query["media_type"] = mediaType.rawValue }
+            if let tmdbId { query["q"] = String(tmdbId) }
+            if let cursor { query["cursor"] = cursor }
+            let requestQuery = query
+            let raw = try await tokenStore.withOwnerFence(auth) {
+                try await mapErrors {
+                    try await http.requestData(method: "GET", path: "/api/v2/admin/requests",
+                        query: requestQuery, requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+                }
+            }
+            guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
+            let response = try HTTPClient.makeJSONDecoder().decode(APIv2RequestsPage.self, from: raw.data)
+            records.append(contentsOf: response.items)
+            guard let page = response.page, page.hasMore else { return records }
+            guard let next = page.nextCursor, !next.isEmpty, seen.insert(next).inserted else {
+                throw APIv2Error.incompleteRequestList
+            }
+            cursor = next
+        }
+        throw APIv2Error.incompleteRequestList
+    }
+
+    /// `POST /api/v2/admin/requests/{id}/{approve|decline|retry}`
+    /// (non_retryable). Decline carries an optional reason.
+    func adminRequestAction(id: String, action: AdminRequestAction, reason: String?) async throws -> MediaRequest {
+        let path = "/api/v2/admin/requests/\(try catalogPathSegment(id))/\(action.rawValue)"
+        return try await requestsCall("POST", path: path, body: try Self.encode(CancelRequestBody(reason: reason)), status: 200)
+    }
+
     // MARK: Transport
 
     private func requestsCall<T: Decodable>(_ method: String, path: String, query: [String: String] = [:],
