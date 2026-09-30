@@ -53,6 +53,8 @@ extension SettingKey {
             return 11
         case .homeHideWatchedItems:
             return 12
+        case .catalogHideUnwatchedEpisodeImages, .catalogHideUnwatchedEpisodeOverviews:
+            return 15
         case .catalogMetadataLanguage, .downloadsDefaultQuality, .downloadsKeepWatched,
              .downloadsWifiOnly, .navShowAudiobooks, .playbackAudioLanguage,
              .playbackAutoPlayNext, .playbackAutoPlayNextPreview, .playbackAutoSkipCredits,

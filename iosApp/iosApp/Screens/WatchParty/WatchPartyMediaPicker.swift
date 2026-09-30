@@ -16,6 +16,10 @@ private struct WatchPartyMediaChoice: Hashable {
     var backdropThumbhash: String?
     var overview: String?
     var facts: [String] = []
+    /// Set when `backdropURL` may be this episode's still and `overview` is
+    /// its description, so spoiler protection can hide them on this page.
+    /// The lobby preview is shared with the room and is left as it is.
+    private(set) var episodeWatchState: EpisodeWatchState?
     /// The lobby hero's wording differs from this page's: an episode leads
     /// with its own title and puts the series and code underneath.
     private var lobbyTitle: String?
@@ -61,6 +65,7 @@ private struct WatchPartyMediaChoice: Hashable {
         backdropURL = episode.stillUrl ?? series.backdropUrl
         backdropThumbhash = episode.stillUrl != nil ? episode.stillThumbhash : series.backdropThumbhash
         overview = episode.overview
+        episodeWatchState = EpisodeWatchState(episode.userData)
         if let runtime = episode.runtime, runtime > 0 { facts = [WatchPartyFacts.runtime(runtime)] }
         lobbyTitle = episode.title ?? "Episode \(episode.episodeNumber)"
         lobbySubtitle = "\(series.title) · S\(episode.seasonNumber):E\(episode.episodeNumber)"
@@ -83,6 +88,7 @@ private struct WatchPartyMediaChoice: Hashable {
         backdropURL = item.backdropUrl
         backdropThumbhash = item.backdropThumbhash
         overview = item.overview
+        episodeWatchState = EpisodeWatchState(sectionItem: item)
         if let runtime = item.runtime, runtime > 0 { facts = [WatchPartyFacts.runtime(runtime)] }
         lobbyTitle = item.title
         seasonNumber = item.seasonNumber
@@ -752,6 +758,8 @@ private struct WatchPartyEpisodePicker: View {
     @FocusState private var focusedSeasonNumber: Int?
     #endif
 
+    private var spoilers: EpisodeSpoilerSettings { EpisodeSpoilerPreferences.shared.settings }
+
     var body: some View {
         content
             .navigationDestination(item: $chosen) { choice in
@@ -775,6 +783,15 @@ private struct WatchPartyEpisodePicker: View {
         episodes.first { $0.contentId == focusedEpisodeId }
     }
 
+    /// A focused episode's description, or the series overview before any
+    /// episode has focus. A hidden description stays blank rather than
+    /// falling back to the series text, so the line does not jump.
+    private var focusedOverview: String {
+        guard let episode = focusedEpisode else { return series.overview ?? "" }
+        if spoilers.hidesOverview(for: EpisodeWatchState(episode.userData)) { return "" }
+        return episode.overview ?? series.overview ?? ""
+    }
+
     private var tvBody: some View {
         ZStack {
             WatchPartyBackdrop(url: series.backdropUrl ?? series.posterUrl,
@@ -794,7 +811,7 @@ private struct WatchPartyEpisodePicker: View {
                     Text(focusedEpisode.map(episodeLine) ?? (series.year.map(String.init) ?? ""))
                         .font(.system(size: WatchPartyMetrics.body, weight: .medium))
                         .foregroundStyle(Color.siloSecondaryText)
-                    Text(focusedEpisode?.overview ?? series.overview ?? "")
+                    Text(focusedOverview)
                         .font(.system(size: WatchPartyMetrics.body))
                         .foregroundStyle(Color.siloSecondaryText)
                         .lineLimit(3)
@@ -931,6 +948,7 @@ private struct WatchPartyEpisodePicker: View {
                         .overlay { Image(systemName: "tv").foregroundStyle(Color.siloSecondaryText) }
                 }
             }
+            .episodeSpoilerBlur(spoilers.hidesImage(for: EpisodeWatchState(episode.userData)))
             .frame(width: Self.stillWidth, height: Self.stillWidth * 9 / 16)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             VStack(alignment: .leading, spacing: 4) {
@@ -943,7 +961,8 @@ private struct WatchPartyEpisodePicker: View {
                         .font(.caption)
                         .foregroundStyle(Color.siloSecondaryText)
                 }
-                if let overview = episode.overview, !overview.isEmpty {
+                if !spoilers.hidesOverview(for: EpisodeWatchState(episode.userData)),
+                   let overview = episode.overview, !overview.isEmpty {
                     Text(overview)
                         .font(.caption)
                         .foregroundStyle(Color.siloSecondaryText)
@@ -1019,11 +1038,24 @@ private struct WatchPartyMediaChoiceView: View {
         #endif
     }
 
+    private var spoilers: EpisodeSpoilerSettings { EpisodeSpoilerPreferences.shared.settings }
+
+    private var hidesStill: Bool {
+        guard choice.backdropURL != nil, let state = choice.episodeWatchState else { return false }
+        return spoilers.hidesImage(for: state)
+    }
+
+    private var visibleOverview: String? {
+        if let state = choice.episodeWatchState, spoilers.hidesOverview(for: state) { return nil }
+        return choice.overview
+    }
+
     var body: some View {
         ZStack {
             WatchPartyBackdrop(url: choice.backdropURL ?? choice.posterURL,
                                thumbhash: choice.backdropURL != nil ? choice.backdropThumbhash : choice.posterThumbhash,
-                               isPoster: choice.backdropURL == nil)
+                               isPoster: choice.backdropURL == nil,
+                               hidesStill: hidesStill)
             ScrollView {
                 VStack(alignment: .leading, spacing: WatchPartyMetrics.body * 1.4) {
                     HStack(alignment: .bottom, spacing: WatchPartyMetrics.body) {
@@ -1045,7 +1077,7 @@ private struct WatchPartyMediaChoiceView: View {
                             }
                         }
                     }
-                    if let overview = choice.overview, !overview.isEmpty {
+                    if let overview = visibleOverview, !overview.isEmpty {
                         Text(overview)
                             .font(.system(size: WatchPartyMetrics.body))
                             .foregroundStyle(Color.siloSecondaryText)

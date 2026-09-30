@@ -6,6 +6,7 @@ import SwiftUI
 /// and footers for the fine print.
 struct PlaybackSettingsView: View {
     @Bindable var viewModel: SettingsViewModel
+    @State private var spoilers = EpisodeSpoilerPreferences.shared
 
     var body: some View {
         List {
@@ -21,9 +22,14 @@ struct PlaybackSettingsView: View {
             }
             streamingSection
             behaviorSection
+            // Hidden entirely on servers that do not serve the two keys.
+            if spoilers.showsSettings {
+                EpisodeSpoilerSettingsSection(store: spoilers)
+            }
             SeekIntervalSettingsSections()
             resetSection
         }
+        .task { await spoilers.refresh() }
         .settingsListChrome()
         .navigationTitle("Playback")
         .siloNavigationTitleDisplayMode(.inline)

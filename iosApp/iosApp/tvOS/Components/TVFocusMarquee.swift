@@ -128,9 +128,17 @@ extension TVMarqueeContent {
         item: SectionItem,
         rowId: String? = nil,
         rowTitle: String,
-        isContinueWatching: Bool = false
+        isContinueWatching: Bool = false,
+        spoilers: EpisodeSpoilerSettings = .off
     ) {
         let isEpisode = item.type.lowercased() == "episode"
+        // Spoiler protection: drop an unwatched episode's description, and
+        // its still so the hero resolves the Series backdrop from detail
+        // enrichment instead. The poster fallback goes too: a section row
+        // falls back to the still as its poster when the season and series
+        // have none.
+        let hidesSynopsis = spoilers.hidesOverview(for: item)
+        let hidesStill = spoilers.hidesImage(for: item)
         let isSeries = SiloMediaType.isSeries(item.type)
 
         var meta: [String] = []
@@ -180,11 +188,11 @@ extension TVMarqueeContent {
             metaParts: meta,
             runtimeMetaIndex: runtimeMetaIndex,
             runtimeText: runtimeText,
-            synopsis: item.overview,
-            backdropUrl: Self.nonEmpty(item.backdropUrl),
-            backdropThumbhash: item.backdropThumbhash,
-            fallbackArtworkUrl: Self.nonEmpty(item.posterUrl),
-            fallbackArtworkThumbhash: item.posterThumbhash,
+            synopsis: hidesSynopsis ? nil : item.overview,
+            backdropUrl: hidesStill ? nil : Self.nonEmpty(item.backdropUrl),
+            backdropThumbhash: hidesStill ? nil : item.backdropThumbhash,
+            fallbackArtworkUrl: hidesStill ? nil : Self.nonEmpty(item.posterUrl),
+            fallbackArtworkThumbhash: hidesStill ? nil : item.posterThumbhash,
             baseOverlayData: OverlayData.from(item),
             contentRatingBadge: contentRatingBadge,
             progressUpdatedAt: item.progressUpdatedAt,
@@ -705,6 +713,17 @@ final class TVFocusMarqueeModel {
         guard isActive, content == nil else { return }
         content = candidate
         restImmediately(on: candidate)
+    }
+
+    /// Swap in a rebuilt copy of the displayed selection, for example after
+    /// the spoiler switches load or change. The debounce, the rested
+    /// backdrop gate, and enrichment carry over; only the presentation
+    /// (synopsis, section artwork) changes. A candidate for any other
+    /// selection is ignored.
+    func replaceContent(_ candidate: TVMarqueeContent) {
+        guard let content, content.id == candidate.id, content != candidate else { return }
+        self.content = candidate
+        updateBackdropIfReady()
     }
 
     /// Keep foreground information responsive while rapid focus movement

@@ -491,6 +491,14 @@ struct HomeStillCard: View {
         return (item.posterUrl ?? "", item.posterThumbhash)
     }
 
+    /// An episode row's backdrop is its still (the server falls back to the
+    /// series backdrop); the poster fallback is series or season art and is
+    /// never hidden.
+    private var hidesStill: Bool {
+        guard let backdrop = item.backdropUrl, !backdrop.isEmpty else { return false }
+        return EpisodeSpoilerPreferences.shared.settings.hidesImage(for: item, playedOverride: playedOverride)
+    }
+
     var body: some View {
         HomeCardTap(
             contentId: item.contentId,
@@ -524,6 +532,7 @@ struct HomeStillCard: View {
                 contentMode: .fill
             )
             .frame(width: width, height: height)
+            .episodeSpoilerBlur(hidesStill)
             .clipped()
 
             // Scrim so the play affordance and rail stay legible over bright

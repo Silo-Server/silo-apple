@@ -186,6 +186,7 @@ struct EpisodeThumbCard: View {
                 contentMode: .fill
             )
             .frame(width: cardWidth, height: cardHeight)
+            .episodeSpoilerBlur(hidesStill)
             .clipped()
             .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
 
@@ -273,6 +274,14 @@ struct EpisodeThumbCard: View {
             return backdrop
         }
         return item.posterUrl ?? ""
+    }
+
+    /// An episode row's backdrop is its still (the server falls back to the
+    /// series backdrop); the poster fallback is series or season art and is
+    /// never hidden.
+    private var hidesStill: Bool {
+        guard let backdrop = item.backdropUrl, !backdrop.isEmpty else { return false }
+        return EpisodeSpoilerPreferences.shared.settings.hidesImage(for: item, playedOverride: playedOverride)
     }
 
     /// Series title for episodes, otherwise the item title.

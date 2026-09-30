@@ -113,6 +113,9 @@ struct TVItemDetailRouteSeed: Hashable {
     let posterThumbhash: String?
     let backdropUrl: String?
     let backdropThumbhash: String?
+    /// Set only for an episode seed, whose backdrop is the episode still, so
+    /// the loading frame can apply spoiler protection.
+    let episodeWatchState: EpisodeWatchState?
 
     init(_ item: SectionItem) {
         mediaType = item.type
@@ -127,6 +130,7 @@ struct TVItemDetailRouteSeed: Hashable {
         posterThumbhash = item.posterThumbhash
         backdropUrl = item.backdropUrl
         backdropThumbhash = item.backdropThumbhash
+        episodeWatchState = item.isEpisodeItem ? EpisodeWatchState(sectionItem: item) : nil
     }
 
     init(_ item: BrowseItem) {
@@ -142,6 +146,7 @@ struct TVItemDetailRouteSeed: Hashable {
         posterThumbhash = item.posterThumbhash
         backdropUrl = item.backdropUrl
         backdropThumbhash = item.backdropThumbhash
+        episodeWatchState = nil
     }
 
     /// Continue Watching episodes open their parent Series. Keep the immediate
@@ -161,6 +166,7 @@ struct TVItemDetailRouteSeed: Hashable {
         posterThumbhash = episode.posterThumbhash
         backdropUrl = nil
         backdropThumbhash = nil
+        episodeWatchState = nil
     }
 
     static func destination(
