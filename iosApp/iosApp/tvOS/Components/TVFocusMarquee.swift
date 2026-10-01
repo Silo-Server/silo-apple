@@ -115,6 +115,8 @@ struct TVMarqueeContent: Equatable {
     /// root hero upgrades to the series backdrop from detail enrichment rather
     /// than blowing the still up full-width.
     let isEpisode: Bool
+    /// Rebuilt from the current section watch state and profile preference.
+    let protectsEpisodeImages: Bool
     /// Series hierarchy to warm while this card is resting under focus. A
     /// Series card points at itself; a Continue Watching episode points at its
     /// parent Series and current season. Other episode rows deliberately leave
@@ -197,6 +199,7 @@ extension TVMarqueeContent {
             progressUpdatedAt: item.progressUpdatedAt,
             prefersLastUsedPlaybackMetadata: isContinueWatching,
             isEpisode: isEpisode,
+            protectsEpisodeImages: isEpisode && spoilers.hidesImage(for: state),
             seriesContextId: isSeries
                 ? item.contentId
                 : (isEpisode && isContinueWatching ? item.seriesId : nil),
@@ -237,6 +240,7 @@ extension TVMarqueeContent {
             progressUpdatedAt: nil,
             prefersLastUsedPlaybackMetadata: false,
             isEpisode: false,
+            protectsEpisodeImages: false,
             seriesContextId: nil,
             seriesContextSeasonNumber: nil
         )
@@ -559,15 +563,17 @@ struct TVMarqueeEnrichment: Equatable {
     /// Item-detail runtime fills section payloads that omit it (notably some
     /// recommendation and library rows).
     let runtimeText: String?
-    /// The detail-level backdrop. For episodes this is the series backdrop —
-    /// far higher-res than the episode still the section payload carries — so
-    /// the root hero swaps to it once enrichment arrives.
+    /// The detail-level backdrop may be an episode still or fallback series
+    /// artwork. Its provenance follows it through hero resolution.
     let backdropUrl: String?
     let backdropThumbhash: String?
+
+    let backdropIsEpisodeStill: Bool?
 
     init(detail: ItemDetail) {
         backdropUrl = detail.backdropUrl
         backdropThumbhash = detail.backdropThumbhash
+        backdropIsEpisodeStill = detail.backdropIsEpisodeStill
         let trimmedRating = detail.contentRating?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         contentRatingBadge = trimmedRating?.isEmpty == false
@@ -645,6 +651,7 @@ final class TVFocusMarqueeModel {
     /// collections, which have no detail lookup).
     private var resolvedArtwork: TVHeroArtwork? {
         guard let content else { return nil }
+        let hidesEnrichedBackdrop = content.protectsEpisodeImages && enrichment?.backdropIsEpisodeStill != false
         return TVHeroArtworkResolver.resolve(
             sectionBackdrop: TVHeroArtwork(
                 url: content.backdropUrl,
@@ -658,8 +665,8 @@ final class TVFocusMarqueeModel {
             canLoadEnrichment: content.contentId != nil,
             enrichmentState: enrichmentState,
             enrichedBackdrop: TVHeroArtwork(
-                url: enrichment?.backdropUrl,
-                thumbhash: enrichment?.backdropThumbhash
+                url: hidesEnrichedBackdrop ? nil : enrichment?.backdropUrl,
+                thumbhash: hidesEnrichedBackdrop ? nil : enrichment?.backdropThumbhash
             )
         )
     }

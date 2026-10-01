@@ -61,6 +61,8 @@ final class WatchPartySession {
     @ObservationIgnored private var suggestionsTask: Task<Void, Never>?
     @ObservationIgnored private var suggestionsTaskID = UUID()
     @ObservationIgnored private var selectedItemTask: Task<Void, Never>?
+    /// Positive local playback belongs to the current selected content/library.
+    @ObservationIgnored private var locallyStartedPosition: Double?
     @ObservationIgnored private var pickerRequestID = UUID()
     @ObservationIgnored private var memberStateRequestID = UUID()
     @ObservationIgnored private weak var adapter: WatchPartyPlaybackAdapter?
@@ -738,6 +740,16 @@ final class WatchPartySession {
                   adapter.context == playbackContext else { return }
             let snapshot = adapter.snapshot
             if snapshot.isReady { playableSession = session }
+            if snapshot.isReady, snapshot.sourceTime.isFinite, snapshot.sourceTime > 0,
+               snapshot.fileId == context?.fileId, context?.contentId == room.selectedContentId {
+                locallyStartedPosition = snapshot.sourceTime
+                if selectedItem?.contentId == room.selectedContentId {
+                    selectedItem?.recordPlaybackProgress(snapshot.sourceTime)
+                }
+                if selectionPreview?.contentId == room.selectedContentId {
+                    selectionPreview?.recordPlaybackProgress(snapshot.sourceTime)
+                }
+            }
             if !attachmentConfirmed {
                 // Attach as soon as the stream has a committed session, as the
                 // web client does. The start barrier only waits for attached
@@ -1031,6 +1043,7 @@ final class WatchPartySession {
 
     private func refreshSelectedItem(_ room: WatchPartyRoom) {
         selectedItemTask?.cancel()
+        locallyStartedPosition = nil
         selectedItem = nil
         selectedItemUnavailable = false
         if let preview = selectionPreview, let contentId = room.selectedContentId, contentId != preview.contentId {
@@ -1052,6 +1065,7 @@ final class WatchPartySession {
                 }
                 guard await self.validateIdentity(), owner == self.engagement, self.isEngaged, !Task.isCancelled,
                       self.room?.selectedContentId == contentId, self.room?.selectedLibraryId == room.selectedLibraryId else { return }
+                if let position = self.locallyStartedPosition { item.recordPlaybackProgress(position) }
                 self.selectedItem = item
                 if self.selectionPreview?.contentId == contentId { self.selectionPreview = nil }
                 self.recentRoom?.selectedTitle = detail.title

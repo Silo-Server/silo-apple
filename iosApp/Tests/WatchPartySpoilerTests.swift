@@ -63,6 +63,19 @@ final class WatchPartySpoilerTests: XCTestCase {
         XCTAssertEqual(item.visibleOverview(with: enabled), "Episode description")
     }
 
+    func testPositivePlaybackUnhidesTheRetainedLobbyItem() throws {
+        var item = WatchPartySelectedItem(try catalog())
+        item.recordPlaybackProgress(0)
+        item.recordPlaybackProgress(.nan)
+        XCTAssertNil(item.visibleOverview(with: enabled))
+        item.recordPlaybackProgress(2)
+        XCTAssertFalse(item.hidesPoster(with: enabled))
+        XCTAssertFalse(item.hidesBackdrop(with: enabled))
+        XCTAssertEqual(item.visibleOverview(with: enabled), "Episode description")
+        item.recordPlaybackProgress(0)
+        XCTAssertFalse(item.hidesBackdrop(with: enabled))
+    }
+
     private func catalog(userData: [String: Any]? = nil, extra: [String: Any] = [:]) throws -> APIv2CatalogRead.CatalogItemDetail {
         var body: [String: Any] = [
             "content_id": "episode:1", "type": "episode", "title": "Pilot", "status": "",

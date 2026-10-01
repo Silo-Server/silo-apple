@@ -20,7 +20,7 @@ struct WatchPartySelectedItem: Equatable, Sendable {
     let backdropUrl: String?
     let backdropThumbhash: String?
     let backdropIsEpisodeStill: Bool?
-    let episodeWatchState: EpisodeWatchState?
+    var episodeWatchState: EpisodeWatchState?
     let year: Int?
     let runtimeMinutes: Int?
     let contentRating: String?
@@ -97,6 +97,13 @@ struct WatchPartySelectedItem: Equatable, Sendable {
     func visibleOverview(with spoilers: EpisodeSpoilerSettings) -> String? {
         if let episodeWatchState, spoilers.hidesOverview(for: episodeWatchState) { return nil }
         return overview
+    }
+
+    mutating func recordPlaybackProgress(_ positionSeconds: Double) {
+        guard positionSeconds.isFinite, positionSeconds > 0, var state = episodeWatchState else { return }
+        state.isInProgress = true
+        state.positionSeconds = max(state.positionSeconds ?? 0, positionSeconds)
+        episodeWatchState = state
     }
 
     private static func isEpisode(_ type: String) -> Bool {

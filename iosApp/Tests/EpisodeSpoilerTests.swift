@@ -469,6 +469,30 @@ final class EpisodeSpoilerMarqueeTests: XCTestCase {
     }
 
     @MainActor
+    func testEnrichedBackdropUsesProvenanceAndCurrentSpoilerDecision() throws {
+        for provenance: Bool? in [true, false, nil] {
+            let contentId = "enriched-spoiler-\(UUID().uuidString)"
+            let backdrop = "https://img.example/enriched.jpg"
+            var fields: [String: Any] = ["contentId": contentId, "type": "episode", "title": "Pilot", "backdropUrl": backdrop]
+            if let provenance { fields["backdropIsEpisodeStill"] = provenance }
+            let detail = try JSONDecoder().decode(ItemDetail.self, from: JSONSerialization.data(withJSONObject: fields))
+            let key = CacheKey.itemDetail(contentId)
+            ResponseCache.shared.set(detail, for: key)
+            let model = TVFocusMarqueeModel()
+            defer { model.suspend(); ResponseCache.shared.remove(key) }
+            let episode = try episodeItem(contentId: contentId)
+            let settings = EpisodeSpoilerSettings(hidesImages: true, hidesOverviews: true)
+            model.seed(TVMarqueeContent(item: episode, rowTitle: "Next Up", spoilers: settings))
+            XCTAssertEqual(model.backdropURL, provenance == false ? backdrop : nil)
+            model.replaceContent(TVMarqueeContent(item: episode, rowTitle: "Next Up", spoilers: .off))
+            XCTAssertEqual(model.backdropURL, backdrop)
+            let started = try episodeItem(contentId: contentId, played: true)
+            model.replaceContent(TVMarqueeContent(item: started, rowTitle: "Next Up", spoilers: settings))
+            XCTAssertEqual(model.backdropURL, backdrop)
+        }
+    }
+
+    @MainActor
     func testRemovingSelectionCancelsPendingRestAndAllowsReseeding() async throws {
         let model = TVFocusMarqueeModel()
         defer { model.suspend() }
@@ -491,7 +515,7 @@ final class EpisodeSpoilerMarqueeTests: XCTestCase {
         let contentId = "spoiler-rest-\(UUID().uuidString)"
         let backdrop = "https://img.example/series.jpg"
         let detail = try JSONDecoder().decode(ItemDetail.self, from: Data("""
-            {"contentId":"\(contentId)","type":"episode","title":"Pilot","backdropUrl":"\(backdrop)"}
+            {"contentId":"\(contentId)","type":"episode","title":"Pilot","backdropUrl":"\(backdrop)","backdropIsEpisodeStill":false}
             """.utf8))
         let cacheKey = CacheKey.itemDetail(contentId)
         ResponseCache.shared.set(detail, for: cacheKey)
