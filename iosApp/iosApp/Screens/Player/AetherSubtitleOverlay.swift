@@ -9,6 +9,10 @@ struct AetherSubtitleOverlay: View {
     let sourceTime: Double
     let primaryUsesMovieTimeline: Bool
     let secondaryUsesMovieTimeline: Bool
+    /// The selected tracks, so each slot's left-to-right authoring evidence
+    /// starts over when its track changes.
+    let primaryTrackID: Int64?
+    let secondaryTrackID: Int64?
     let livePrimaryCues: [LiveSubtitleCue]
     let liveSecondaryCues: [LiveSubtitleCue]
     let appearance: SubtitleAppearance
@@ -17,6 +21,8 @@ struct AetherSubtitleOverlay: View {
     @State private var primary: [SubtitleCue] = []
     @State private var secondary: [SubtitleCue] = []
     @State private var aetherSourceTime: Double = 0
+    @State private var primaryTrack = LTRAuthoredSubtitles.Track()
+    @State private var secondaryTrack = LTRAuthoredSubtitles.Track()
 
     private var renderStyle: AetherSubtitleRenderStyle {
         AetherSubtitleRenderStyle(appearance: appearance)
@@ -44,8 +50,12 @@ struct AetherSubtitleOverlay: View {
         }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
-        .onReceive(engine.$subtitleCues) { primary = $0 }
-        .onReceive(engine.$secondarySubtitleCues) { secondary = $0 }
+        .onReceive(engine.$subtitleCues) {
+            primary = primaryTrack.laidOutAsAuthored($0, trackID: primaryTrackID)
+        }
+        .onReceive(engine.$secondarySubtitleCues) {
+            secondary = secondaryTrack.laidOutAsAuthored($0, trackID: secondaryTrackID)
+        }
         .onReceive(engine.clock.$sourceTime) { aetherSourceTime = $0 }
     }
 
