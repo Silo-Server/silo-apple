@@ -1048,6 +1048,7 @@ final class WatchPartySession {
                                                       libraryId: room.selectedLibraryId, auth: auth) {
                     item.posterUrl = poster.url
                     item.posterThumbhash = poster.thumbhash
+                    item.posterIsEpisodeStill = false
                 }
                 guard await self.validateIdentity(), owner == self.engagement, self.isEngaged, !Task.isCancelled,
                       self.room?.selectedContentId == contentId, self.room?.selectedLibraryId == room.selectedLibraryId else { return }

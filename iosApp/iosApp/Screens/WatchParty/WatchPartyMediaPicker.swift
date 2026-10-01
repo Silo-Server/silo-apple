@@ -18,7 +18,6 @@ private struct WatchPartyMediaChoice: Hashable {
     var facts: [String] = []
     /// Set when `backdropURL` may be this episode's still and `overview` is
     /// its description, so spoiler protection can hide them on this page.
-    /// The lobby preview is shared with the room and is left as it is.
     private(set) var posterIsEpisodeStill: Bool?
     private(set) var backdropIsEpisodeStill: Bool?
     private(set) var episodeWatchState: EpisodeWatchState?
@@ -39,7 +38,10 @@ private struct WatchPartyMediaChoice: Hashable {
         WatchPartySelectedItem(previewContentId: contentId, type: type, title: lobbyTitle ?? title,
                                subtitle: lobbySubtitle, posterUrl: posterURL, posterThumbhash: posterThumbhash,
                                backdropUrl: backdropURL, backdropThumbhash: backdropThumbhash,
-                               year: year, runtimeMinutes: runtimeMinutes, overview: overview)
+                               year: year, runtimeMinutes: runtimeMinutes, overview: overview,
+                               posterIsEpisodeStill: posterIsEpisodeStill,
+                               backdropIsEpisodeStill: backdropIsEpisodeStill,
+                               episodeWatchState: episodeWatchState)
     }
 
     init(item: BrowseItem) {

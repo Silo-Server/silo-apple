@@ -16,8 +16,11 @@ struct WatchPartySelectedItem: Equatable, Sendable {
     /// the season or series poster so the lobby's 2:3 slot gets portrait art.
     var posterUrl: String?
     var posterThumbhash: String?
+    var posterIsEpisodeStill: Bool?
     let backdropUrl: String?
     let backdropThumbhash: String?
+    let backdropIsEpisodeStill: Bool?
+    let episodeWatchState: EpisodeWatchState?
     let year: Int?
     let runtimeMinutes: Int?
     let contentRating: String?
@@ -34,8 +37,15 @@ struct WatchPartySelectedItem: Equatable, Sendable {
         } else { subtitle = item.seriesTitle }
         posterUrl = item.posterUrl
         posterThumbhash = item.posterThumbhash
+        posterIsEpisodeStill = item.posterIsEpisodeStill
         backdropUrl = item.backdropUrl
         backdropThumbhash = item.backdropThumbhash
+        backdropIsEpisodeStill = item.backdropIsEpisodeStill
+        episodeWatchState = Self.isEpisode(item.type) ? EpisodeWatchState(
+            played: item.userData?.played ?? item.userState?.played ?? false,
+            isInProgress: item.userData?.isInProgress,
+            positionSeconds: item.userData?.positionSeconds ?? item.positionSeconds
+        ) : nil
         year = item.year.flatMap { Int(exactly: $0) }
         runtimeMinutes = item.runtime.flatMap { Int(exactly: $0) }
         contentRating = item.contentRating?.trimmingCharacters(in: .whitespaces).nilIfEmpty
@@ -54,20 +64,43 @@ struct WatchPartySelectedItem: Equatable, Sendable {
     /// The lobby lays out from this while the room and catalog reads run.
     init(previewContentId contentId: String, type: String, title: String, subtitle: String? = nil,
          posterUrl: String?, posterThumbhash: String? = nil, backdropUrl: String?, backdropThumbhash: String? = nil,
-         year: Int? = nil, runtimeMinutes: Int? = nil, overview: String? = nil) {
+         year: Int? = nil, runtimeMinutes: Int? = nil, overview: String? = nil,
+         posterIsEpisodeStill: Bool? = nil, backdropIsEpisodeStill: Bool? = nil,
+         episodeWatchState: EpisodeWatchState? = nil) {
         self.contentId = contentId
         self.type = type
         self.title = title
         self.subtitle = subtitle
         self.posterUrl = posterUrl
         self.posterThumbhash = posterThumbhash
+        self.posterIsEpisodeStill = posterIsEpisodeStill
         self.backdropUrl = backdropUrl
         self.backdropThumbhash = backdropThumbhash
+        self.backdropIsEpisodeStill = backdropIsEpisodeStill
+        self.episodeWatchState = Self.isEpisode(type) ? (episodeWatchState ?? EpisodeWatchState(played: false)) : nil
         self.year = year
         self.runtimeMinutes = runtimeMinutes
         contentRating = nil
         qualityChips = []
         self.overview = overview
+    }
+
+    func hidesPoster(with spoilers: EpisodeSpoilerSettings) -> Bool {
+        episodeWatchState.map { spoilers.hidesImage(for: $0, isEpisodeStill: posterIsEpisodeStill) } ?? false
+    }
+
+    func hidesBackdrop(with spoilers: EpisodeSpoilerSettings) -> Bool {
+        let provenance = backdropUrl?.isEmpty == false ? backdropIsEpisodeStill : posterIsEpisodeStill
+        return episodeWatchState.map { spoilers.hidesImage(for: $0, isEpisodeStill: provenance) } ?? false
+    }
+
+    func visibleOverview(with spoilers: EpisodeSpoilerSettings) -> String? {
+        if let episodeWatchState, spoilers.hidesOverview(for: episodeWatchState) { return nil }
+        return overview
+    }
+
+    private static func isEpisode(_ type: String) -> Bool {
+        ["episode", "episodes"].contains(type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
     }
 
     /// "2024 · 2h 46m" style facts for the hero.
@@ -86,7 +119,10 @@ extension WatchPartySelectedItem {
         self.init(previewContentId: detail.contentId, type: detail.type, title: detail.title,
                   posterUrl: detail.posterUrl, posterThumbhash: detail.posterThumbhash,
                   backdropUrl: detail.backdropUrl, backdropThumbhash: detail.backdropThumbhash,
-                  year: detail.year, runtimeMinutes: detail.runtime, overview: detail.overview)
+                  year: detail.year, runtimeMinutes: detail.runtime, overview: detail.overview,
+                  posterIsEpisodeStill: detail.posterIsEpisodeStill,
+                  backdropIsEpisodeStill: detail.backdropIsEpisodeStill,
+                  episodeWatchState: EpisodeWatchState(detail.userData, playedOverride: detail.userData?.played ?? detail.userState?.played))
     }
 
     /// Shaped like the loaded episode: series and code as the subtitle, and
@@ -100,7 +136,9 @@ extension WatchPartySelectedItem {
                   posterUrl: seasonPoster ?? series.posterUrl,
                   posterThumbhash: seasonPoster != nil ? season?.posterThumbhash : series.posterThumbhash,
                   backdropUrl: series.backdropUrl, backdropThumbhash: series.backdropThumbhash,
-                  runtimeMinutes: episode.runtime, overview: episode.overview)
+                  runtimeMinutes: episode.runtime, overview: episode.overview,
+                  posterIsEpisodeStill: false, backdropIsEpisodeStill: false,
+                  episodeWatchState: EpisodeWatchState(episode.userData))
     }
 }
 

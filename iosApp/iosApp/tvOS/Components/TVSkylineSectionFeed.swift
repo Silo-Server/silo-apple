@@ -115,6 +115,7 @@ struct TVSkylineSectionFeed: View {
                   let section = sections.first(where: { $0.id == source.section.id }),
                   let item = section.items.first(where: { $0.contentId == source.item.contentId }) else {
                 marqueeSource = nil
+                marqueeModel.clearSelection()
                 seedMarqueeFromFirstItem()
                 return
             }

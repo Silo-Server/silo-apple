@@ -714,6 +714,20 @@ final class TVFocusMarqueeModel {
         restImmediately(on: candidate)
     }
 
+    /// The selected card was removed from the feed. Cancel its pending
+    /// work before allowing the feed to seed a replacement.
+    func clearSelection() {
+        let wasActive = isActive
+        suspend()
+        content = nil
+        enrichment = nil
+        enrichmentState = .notStarted
+        displayedArtwork = nil
+        tintColor = .siloBackground
+        pendingNeighborBackdropURLs = []
+        if wasActive { resume() }
+    }
+
     /// Swap in a rebuilt copy of the displayed selection, for example after
     /// the spoiler switches load or change. The debounce, the rested
     /// backdrop gate, and enrichment carry over; only the presentation

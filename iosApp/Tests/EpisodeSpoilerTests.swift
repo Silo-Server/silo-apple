@@ -469,6 +469,24 @@ final class EpisodeSpoilerMarqueeTests: XCTestCase {
     }
 
     @MainActor
+    func testRemovingSelectionCancelsPendingRestAndAllowsReseeding() async throws {
+        let model = TVFocusMarqueeModel()
+        defer { model.suspend() }
+        let old = try episodeItem(type: "movie", backdropUrl: "https://img.example/old.jpg")
+        model.seed(TVMarqueeContent(item: old, rowId: "next-up", rowTitle: "Next Up"))
+        let pending = try episodeItem(contentId: "pending", type: "movie", backdropUrl: "https://img.example/pending.jpg")
+        model.preview(TVMarqueeContent(item: pending, rowId: "next-up", rowTitle: "Next Up"))
+        model.clearSelection()
+        XCTAssertNil(model.content)
+        XCTAssertNil(model.backdropURL)
+        let replacement = try episodeItem(contentId: "replacement", type: "movie", backdropUrl: "https://img.example/replacement.jpg")
+        model.seed(TVMarqueeContent(item: replacement, rowId: "next-up", rowTitle: "Next Up"))
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(model.content?.contentId, replacement.contentId)
+        XCTAssertEqual(model.backdropURL, replacement.backdropUrl)
+    }
+
+    @MainActor
     func testLateSpoilerSettingsPreservePendingBackdropRest() async throws {
         let contentId = "spoiler-rest-\(UUID().uuidString)"
         let backdrop = "https://img.example/series.jpg"
