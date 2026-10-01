@@ -14,6 +14,7 @@ struct WatchlistView: View {
     @State private var uiCustomization = UICustomizationPreferences.shared
     #if os(iOS)
     @State private var selectedSection: IOSPersonalMediaSection = .movies
+    @State private var listFilter = PersonalListFilter()
     #endif
     @Environment(AppRouter.self) private var router
     @Environment(\.horizontalSizeClass) private var hSize
@@ -106,18 +107,32 @@ struct WatchlistView: View {
             VStack(spacing: 16) {
                 IOSPersonalMediaSectionPicker(selection: $selectedSection)
 
-                if filteredIOSItems.isEmpty {
+                if sectionIOSItems.isEmpty {
                     iosSelectedSectionEmptyState
                 } else {
-                    IOSPersonalMediaPosterLayout(items: filteredIOSItems) { item, state in
-                        guard !state.inWatchlist else { return }
-                        withAnimation {
-                            items.removeAll { $0.contentId == item.contentId }
+                    IOSPersonalListFilterBar(
+                        filter: $listFilter,
+                        availableGenres: availableIOSGenres
+                    )
+
+                    if filteredIOSItems.isEmpty {
+                        IOSPersonalListNoMatchesView {
+                            withAnimation { listFilter.clearFilters() }
+                        }
+                    } else {
+                        IOSPersonalMediaPosterLayout(items: filteredIOSItems) { item, state in
+                            guard !state.inWatchlist else { return }
+                            withAnimation {
+                                items.removeAll { $0.contentId == item.contentId }
+                            }
                         }
                     }
                 }
             }
             .padding(SiloTheme.padding)
+        }
+        .onChange(of: selectedSection) { _, _ in
+            listFilter.pruneGenres(to: availableIOSGenres)
         }
         .reportsPageChromeScroll()
         #else
@@ -220,8 +235,16 @@ struct WatchlistView: View {
         focusedContentId = firstId
     }
     #elseif os(iOS)
-    private var filteredIOSItems: [BrowseItem] {
+    private var sectionIOSItems: [BrowseItem] {
         items.filter(selectedSection.includes)
+    }
+
+    private var filteredIOSItems: [BrowseItem] {
+        listFilter.apply(to: sectionIOSItems)
+    }
+
+    private var availableIOSGenres: [String] {
+        PersonalListFilter.availableGenres(in: sectionIOSItems)
     }
 
     private var iosSelectedSectionEmptyState: some View {
