@@ -106,12 +106,17 @@ struct PersonalListFilter: Equatable {
         return sorted(filtered)
     }
 
-    /// Stable sort: ties, and items missing the sort value, keep list order.
+    /// Every item takes part in the sort. Ties, and items missing the sort
+    /// value (which go last), fall back to title order, then list order.
     private func sorted(_ items: [BrowseItem]) -> [BrowseItem] {
         guard sort != .listOrder else { return items }
         return items.enumerated()
             .sorted { lhs, rhs in
-                switch Self.compare(lhs.element, rhs.element, by: sort) {
+                var result = Self.compare(lhs.element, rhs.element, by: sort)
+                if result == .orderedSame, sort != .title {
+                    result = Self.compare(lhs.element, rhs.element, by: .title)
+                }
+                switch result {
                 case .orderedAscending: return true
                 case .orderedDescending: return false
                 case .orderedSame: return lhs.offset < rhs.offset
@@ -132,15 +137,29 @@ struct PersonalListFilter: Equatable {
             return lhs.title.localizedStandardCompare(rhs.title)
         case .releaseYear:
             // Newest first; items without a year go last.
-            return descendingNilsLast(lhs.year, rhs.year)
+            return descendingNilsLast(year(of: lhs), year(of: rhs))
         case .rating:
             // Highest first; items without a rating go last.
             return descendingNilsLast(rating(of: lhs), rating(of: rhs))
         }
     }
 
+    /// The card year, or the year of the release date when the server sent
+    /// only a date.
+    private static func year(of item: BrowseItem) -> Int? {
+        if let year = item.year, year > 0 { return year }
+        guard let date = item.releaseDate, date.count >= 4 else { return nil }
+        return Int(date.prefix(4))
+    }
+
+    /// A 0-10 rating from the first source the item has. Rotten Tomatoes
+    /// scores are 0-100, so they are scaled down to match.
     private static func rating(of item: BrowseItem) -> Double? {
-        item.ratingImdb ?? item.ratingTmdb
+        if let imdb = item.ratingImdb { return imdb }
+        if let tmdb = item.ratingTmdb { return tmdb }
+        if let audience = item.ratingRtAudience { return Double(audience) / 10 }
+        if let critic = item.ratingRtCritic { return Double(critic) / 10 }
+        return nil
     }
 
     private static func descendingNilsLast<T: Comparable>(_ lhs: T?, _ rhs: T?) -> ComparisonResult {

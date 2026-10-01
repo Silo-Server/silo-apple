@@ -10,6 +10,8 @@ final class PersonalListFilterTests: XCTestCase {
         genres: [String]? = nil,
         imdb: Double? = nil,
         tmdb: Double? = nil,
+        rtAudience: Int? = nil,
+        releaseDate: String? = nil,
         played: Bool? = nil
     ) throws -> BrowseItem {
         var json: [String: Any] = ["contentId": id, "type": "movie", "title": title ?? id]
@@ -17,6 +19,8 @@ final class PersonalListFilterTests: XCTestCase {
         if let genres { json["genres"] = genres }
         if let imdb { json["ratingImdb"] = imdb }
         if let tmdb { json["ratingTmdb"] = tmdb }
+        if let rtAudience { json["ratingRtAudience"] = rtAudience }
+        if let releaseDate { json["releaseDate"] = releaseDate }
         if let played {
             json["userState"] = ["played": played, "isFavorite": false, "inWatchlist": true]
         }
@@ -82,6 +86,38 @@ final class PersonalListFilterTests: XCTestCase {
 
         filter.sort = .rating
         XCTAssertEqual(filter.apply(to: items).map(\.contentId), ["noYear", "old", "mid", "new"])
+    }
+
+    func testItemsMissingTheSortValueAreSortedByTitleAtTheEnd() throws {
+        let items = try [
+            item("z", title: "Zodiac"),
+            item("rated", title: "Heat", imdb: 8.3),
+            item("a", title: "Alien"),
+            item("m", title: "Memento"),
+        ]
+        var filter = PersonalListFilter()
+
+        filter.sort = .rating
+        XCTAssertEqual(filter.apply(to: items).map(\.contentId), ["rated", "a", "m", "z"])
+
+        filter.sort = .releaseYear
+        XCTAssertEqual(filter.apply(to: items).map(\.contentId), ["a", "rated", "m", "z"])
+    }
+
+    func testYearFallsBackToReleaseDateAndRatingToRottenTomatoes() throws {
+        let items = try [
+            item("old", year: 1990),
+            item("dated", releaseDate: "2021-05-01"),
+            item("rt", rtAudience: 91),
+            item("imdb", imdb: 7.0),
+        ]
+        var filter = PersonalListFilter()
+
+        filter.sort = .releaseYear
+        XCTAssertEqual(filter.apply(to: items).prefix(2).map(\.contentId), ["dated", "old"])
+
+        filter.sort = .rating
+        XCTAssertEqual(filter.apply(to: items).prefix(2).map(\.contentId), ["rt", "imdb"])
     }
 
     func testTitleSortIsNaturalAndStable() throws {
