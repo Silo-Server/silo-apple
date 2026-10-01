@@ -12,15 +12,19 @@ struct WatchlistView: View {
     @State private var isLoading = false
     @State private var error: ErrorState?
     @State private var uiCustomization = UICustomizationPreferences.shared
+    #if os(iOS) || os(tvOS)
+    @State private var listFilter = PersonalListFilter()
+    #endif
     #if os(iOS)
     @State private var selectedSection: IOSPersonalMediaSection = .movies
-    @State private var listFilter = PersonalListFilter()
     #endif
     @Environment(AppRouter.self) private var router
     @Environment(\.horizontalSizeClass) private var hSize
 
     #if os(tvOS)
     @FocusState private var focusedContentId: String?
+    @FocusState private var focusedListControl: TVPersonalListControl?
+    @State private var openListPanel: TVPersonalListPanel?
     @State private var lastAppliedFocusRequest = 0
     #endif
 
@@ -177,44 +181,79 @@ struct WatchlistView: View {
                         .foregroundStyle(Color.siloOnSurface)
                 }
 
-                LazyVGrid(columns: columns, alignment: .leading, spacing: 60) {
-                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                        MediaCard(
-                            title: item.title,
-                            posterUrl: item.posterUrl ?? "",
-                            thumbhash: item.posterThumbhash,
-                            year: item.year,
-                            userState: item.userState,
-                            overlayData: OverlayData.from(item),
-                            action: {
-                                router.navigate(to: .itemDetail(contentId: item.contentId))
-                            },
-                            playAction: playAction(for: item),
-                            focusedItemId: $focusedContentId,
-                            contentId: item.contentId,
-                            cardWidthOverride: tvCardWidthOverride,
-                            onUserStateChanged: { state in
-                                guard !state.inWatchlist else { return }
-                                withAnimation(.easeInOut(duration: SiloTheme.normalDuration)) {
-                                    items.removeAll { $0.contentId == item.contentId }
+                controlRow
+
+                if filteredItems.isEmpty {
+                    TVPersonalListNoMatchesView()
+                } else {
+                    LazyVGrid(columns: columns, alignment: .leading, spacing: 60) {
+                        ForEach(filteredItems) { item in
+                            MediaCard(
+                                title: item.title,
+                                posterUrl: item.posterUrl ?? "",
+                                thumbhash: item.posterThumbhash,
+                                year: item.year,
+                                userState: item.userState,
+                                overlayData: OverlayData.from(item),
+                                action: {
+                                    router.navigate(to: .itemDetail(contentId: item.contentId))
+                                },
+                                playAction: playAction(for: item),
+                                focusedItemId: $focusedContentId,
+                                contentId: item.contentId,
+                                cardWidthOverride: tvCardWidthOverride,
+                                onUserStateChanged: { state in
+                                    guard !state.inWatchlist else { return }
+                                    withAnimation(.easeInOut(duration: SiloTheme.normalDuration)) {
+                                        items.removeAll { $0.contentId == item.contentId }
+                                    }
                                 }
-                            }
-                        )
-                        .frame(maxWidth: .infinity)
-                        .onMoveCommand { direction in
-                            if direction == .up, index < columns.count {
-                                onTopMenuFocusRequest?()
-                            }
+                            )
+                            .frame(maxWidth: .infinity)
                         }
                     }
+                    .focusSection()
                 }
-                .focusSection()
             }
             .padding(.horizontal, SiloTheme.safePadding)
             .padding(.top, usesTVTopMenu ? TVTopMenuLayout.contentTopInset : SiloTheme.smallPadding)
             .padding(.bottom, SiloTheme.safePadding)
         }
         .modifier(TVMenuEntryScroll(request: focusRequest, isTopMenuFocused: isTopMenuFocused, onReady: applyFocusRequest))
+        .tvPersonalListPanels(
+            openPanel: $openListPanel,
+            filter: $listFilter,
+            availableGenres: availableGenres,
+            focusedControl: $focusedListControl
+        )
+    }
+
+    /// Sort and Filter pills above the grid. Down reaches the grid and Up
+    /// from the grid's first row lands here natively; Up from this row
+    /// returns to the top menu.
+    private var controlRow: some View {
+        HStack(spacing: 0) {
+            TVPersonalListControls(
+                filter: listFilter,
+                focusedControl: $focusedListControl,
+                onOpen: { openListPanel = $0 }
+            )
+            Spacer(minLength: 0)
+        }
+        .focusSection()
+        .onMoveCommand { direction in
+            if direction == .up {
+                onTopMenuFocusRequest?()
+            }
+        }
+    }
+
+    private var filteredItems: [BrowseItem] {
+        listFilter.apply(to: items)
+    }
+
+    private var availableGenres: [String] {
+        PersonalListFilter.availableGenres(in: items)
     }
 
     /// Keep the final poster width stable even when the global poster-size
@@ -230,9 +269,9 @@ struct WatchlistView: View {
               request > 0,
               request != lastAppliedFocusRequest,
               !isTopMenuFocused,
-              let firstId = items.first?.contentId else { return }
+              !items.isEmpty else { return }
         lastAppliedFocusRequest = request
-        focusedContentId = firstId
+        focusedListControl = .sort
     }
     #elseif os(iOS)
     private var sectionIOSItems: [BrowseItem] {
