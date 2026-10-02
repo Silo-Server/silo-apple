@@ -1622,6 +1622,8 @@ private struct SubtitlesPane: View {
     private enum Option: Hashable {
         case translate
         case search
+        case syncTiming
+        case resetTiming
         case delay
         case save
         case size
@@ -1680,6 +1682,20 @@ private struct SubtitlesPane: View {
             overlayActive = presented
         }
         .onDisappear { overlayActive = false }
+        .onAppear { viewModel.refreshStoredSubtitleSync() }
+        // A refusal (403) swaps the Sync row for its unfocusable variant, and
+        // a reset removes the Reset row; hand focus to a neighbour then.
+        .onChange(of: timingFocusTargets) { _, targets in
+            guard let focused = focusedOption, focused == .syncTiming || focused == .resetTiming,
+                  !targets.contains(focused) else { return }
+            if let neighbour = targets.first {
+                focusedOption = neighbour
+            } else if viewModel.backendCapabilities.supportsSubtitleDelay {
+                focusedOption = .delay
+            } else {
+                entryTrackFocused = true
+            }
+        }
         .onChange(of: showSubtitleSearchMenu) { _, presented in
             if !presented {
                 // Restore after the HUD becomes visible and focusable again.
@@ -1777,7 +1793,7 @@ private struct SubtitlesPane: View {
                 ForEach(viewModel.orderedSubtitleTracks) { track in
                     HUDTrackRow(
                         name: track.primaryLabel,
-                        attributes: track.attributesLabel,
+                        attributes: attributes(for: track),
                         isSelected: viewModel.selectedSubtitleId == track.trackId
                     ) {
                         viewModel.selectSubtitle(track)
@@ -1811,6 +1827,79 @@ private struct SubtitlesPane: View {
                             viewModel.selectSecondarySubtitle(track)
                         }
                     }
+                }
+            }
+        }
+    }
+
+    /// The track's attributes, followed by its sync status when it is a
+    /// stored subtitle ("Synced −3.2 s").
+    private func attributes(for track: PlayerTrack) -> String? {
+        let parts = [track.attributesLabel, viewModel.storedSubtitleStatus(for: track)].compactMap { $0 }.filter { !$0.isEmpty }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// The selected stored track's sync entry, when timing actions apply.
+    private var storedTiming: (id: String, entry: StoredSubtitleSyncModel.Entry, canSync: Bool)? {
+        let sync = viewModel.storedSubtitleSync
+        guard let id = viewModel.selectedStoredSubtitleId, let entry = sync.entry(for: id),
+              sync.showsTimingControls(entry) else { return nil }
+        return (id, entry, sync.canSync(entry))
+    }
+
+    /// The timing rows that can hold focus right now.
+    private var timingFocusTargets: [Option] {
+        guard let timing = storedTiming, !timing.entry.isForbidden else { return [] }
+        var targets: [Option] = []
+        if timing.canSync || timing.entry.error != nil { targets.append(.syncTiming) }
+        if timing.entry.canReset { targets.append(.resetTiming) }
+        return targets
+    }
+
+    /// "Sync Subtitle" and "Reset Timing" for the selected stored track.
+    /// Rows stay enabled while a request runs, so focus never lands on a row
+    /// that just went inert; a press during a running job does nothing.
+    @ViewBuilder
+    private var timingRows: some View {
+        if let timing = storedTiming {
+            let entry = timing.entry
+            let sync = viewModel.storedSubtitleSync
+            if entry.isForbidden {
+                HUDSettingRow(
+                    label: "Sync Subtitle",
+                    value: "",
+                    detail: StoredSubtitleSyncModel.forbiddenMessage,
+                    systemImage: "waveform",
+                    action: {}
+                )
+                .disabled(true)
+                .opacity(0.35)
+                .id(Option.syncTiming)
+            } else {
+                if timing.canSync || entry.error != nil {
+                    HUDSettingRow(
+                        label: "Sync Subtitle",
+                        value: entry.isInProgress ? "Syncing…" : "",
+                        detail: entry.error ?? entry.statusLabel,
+                        systemImage: "waveform"
+                    ) {
+                        guard timing.canSync, !entry.isBusy, !entry.isInProgress else { return }
+                        Task { await sync.requestSync(id: timing.id) }
+                    }
+                    .focused($focusedOption, equals: .syncTiming)
+                    .id(Option.syncTiming)
+                }
+                if entry.canReset {
+                    HUDSettingRow(
+                        label: "Reset Timing",
+                        value: "",
+                        systemImage: "arrow.uturn.backward"
+                    ) {
+                        guard !entry.isBusy, !entry.isInProgress else { return }
+                        Task { await sync.resetTiming(id: timing.id) }
+                    }
+                    .focused($focusedOption, equals: .resetTiming)
+                    .id(Option.resetTiming)
                 }
             }
         }
@@ -1877,6 +1966,7 @@ private struct SubtitlesPane: View {
                     .id(Option.search)
                 }
             }
+            timingRows
             if viewModel.backendCapabilities.supportsSubtitleDelay {
                 HUDSettingRow(label: "Delay", value: delayText) {
                     presentPicker(

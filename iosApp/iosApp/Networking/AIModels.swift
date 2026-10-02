@@ -157,6 +157,10 @@ struct DownloadedSubtitle: Identifiable, Equatable {
     let score: Double?
     let hearingImpaired: Bool?
     let createdAt: String?
+    /// The stored timing correction every delivery path applies.
+    let timing: SubtitleTiming
+    /// The latest sync job, when the row was ever synced.
+    let sync: SubtitleSyncJob?
 
     /// Memberwise init for tests / synthesis.
     init(
@@ -168,7 +172,9 @@ struct DownloadedSubtitle: Identifiable, Equatable {
         releaseName: String = "",
         score: Double? = nil,
         hearingImpaired: Bool? = nil,
-        createdAt: String? = nil
+        createdAt: String? = nil,
+        timing: SubtitleTiming = .identity,
+        sync: SubtitleSyncJob? = nil
     ) {
         self.id = id
         self.mediaFileId = mediaFileId
@@ -179,6 +185,8 @@ struct DownloadedSubtitle: Identifiable, Equatable {
         self.score = score
         self.hearingImpaired = hearingImpaired
         self.createdAt = createdAt
+        self.timing = timing
+        self.sync = sync
     }
 }
 

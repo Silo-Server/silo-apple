@@ -97,7 +97,10 @@ struct MacPlayerOptionsPanel: View {
                         .padding(.horizontal, 12)
                         .padding(.top, 4)
                 }
+
+                storedTimingControls
             }
+            .onAppear { viewModel.refreshStoredSubtitleSync() }
         case .chapters:
             optionList {
                 if viewModel.chapters.isEmpty {
@@ -240,7 +243,52 @@ struct MacPlayerOptionsPanel: View {
             parts.append(attributes)
         }
         parts.append(track.isExternal ? "External" : "Embedded")
+        if let status = viewModel.storedSubtitleStatus(for: track) {
+            parts.append(status)
+        }
         return parts.joined(separator: " · ")
+    }
+
+    /// "Sync Subtitle" and "Reset Timing" for the selected stored track. The
+    /// server allows them only for the account that added it or an admin.
+    @ViewBuilder
+    private var storedTimingControls: some View {
+        let sync = viewModel.storedSubtitleSync
+        if let id = viewModel.selectedStoredSubtitleId, let entry = sync.entry(for: id),
+           sync.showsTimingControls(entry) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Timing")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.62))
+                if entry.isForbidden {
+                    Text(StoredSubtitleSyncModel.forbiddenMessage)
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.58))
+                } else {
+                    HStack(spacing: 8) {
+                        if sync.canSync(entry) {
+                            Button(entry.isInProgress ? "Syncing…" : "Sync Subtitle") {
+                                Task { await sync.requestSync(id: id) }
+                            }
+                        }
+                        if entry.canReset {
+                            Button("Reset Timing") {
+                                Task { await sync.resetTiming(id: id) }
+                            }
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(entry.isBusy || entry.isInProgress)
+                }
+                if let error = entry.error {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+        }
     }
 
     private func speedLabel(_ speed: Double) -> String {

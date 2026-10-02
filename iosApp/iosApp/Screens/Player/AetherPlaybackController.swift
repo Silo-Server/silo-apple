@@ -127,6 +127,9 @@ final class AetherPlaybackController {
     private var muted = false
     private var aetherSubtitleIDByAppID: [Int64: Int] = [:]
     private var appSubtitleIDByAetherID: [Int: Int64] = [:]
+    /// What each sidecar alias was registered with, so it can be registered
+    /// again to fetch its file anew (see `reloadExternalSubtitleTrack`).
+    private var externalSubtitleSources: [Int64: ExternalSubtitleSource] = [:]
     private var isRegisteringExternalSubtitle = false
     private var externalPlaybackObservation: NSKeyValueObservation?
     private var observedExternalPlaybackPlayer: AVPlayer?
@@ -185,6 +188,7 @@ final class AetherPlaybackController {
             spec.externalSubtitleAppTrackIDs,
             declaredTrackCount: spec.options.externalSubtitles.count
         )
+        externalSubtitleSources = Self.declaredExternalSubtitleSources(spec)
         if let alias = spec.embeddedSubtitleAlias {
             aetherSubtitleIDByAppID[alias.appTrackID] = alias.streamIndex
             appSubtitleIDByAetherID[alias.streamIndex] = alias.appTrackID
@@ -226,6 +230,7 @@ final class AetherPlaybackController {
             replacementExternalPlaybackPolicy = nil
             aetherSubtitleIDByAppID = [:]
             appSubtitleIDByAetherID = [:]
+            externalSubtitleSources = [:]
             configureExternalPlaybackPolicy()
             refreshExternalPlaybackState()
             publishSystemMediaChanged()
@@ -238,6 +243,7 @@ final class AetherPlaybackController {
             replacementExternalPlaybackPolicy = nil
             aetherSubtitleIDByAppID = [:]
             appSubtitleIDByAetherID = [:]
+            externalSubtitleSources = [:]
             configureExternalPlaybackPolicy()
             refreshExternalPlaybackState()
             publishSystemMediaChanged()
@@ -472,6 +478,7 @@ final class AetherPlaybackController {
         }
         aetherSubtitleIDByAppID[appTrackID] = streamIndex
         appSubtitleIDByAetherID[streamIndex] = appTrackID
+        externalSubtitleSources[appTrackID] = nil
         return true
     }
 
@@ -491,6 +498,7 @@ final class AetherPlaybackController {
         let registered = engine.addExternalSubtitleTrack(track)
         aetherSubtitleIDByAppID[appTrackID] = registered.id
         appSubtitleIDByAetherID[registered.id] = appTrackID
+        externalSubtitleSources[appTrackID] = ExternalSubtitleSource(track: track, fontRequest: fontRequest)
         if let fontRequest {
             assSubtitles.registerFontRequest(fontRequest, trackID: registered.id,
                                             authorization: activeSpec?.subtitleRequestAuthorization(for: fontRequest.url))
@@ -498,6 +506,51 @@ final class AetherPlaybackController {
         isRegisteringExternalSubtitle = false
         publish(.inventoryChanged)
         return appTrackID
+    }
+
+    /// Registers the sidecar behind `appTrackID` again under a new Aether id
+    /// and moves the given selections to it, so Aether fetches the file
+    /// again. Selecting the old id again is not enough: a track declared at
+    /// load is backfilled from the copy Aether already decoded. The app id
+    /// stays the same, so the picker does not change. Returns false when the
+    /// id names no registered sidecar, or when an unselected track cannot be
+    /// registered again without risking an automatic selection.
+    @discardableResult
+    func reloadExternalSubtitleTrack(appTrackID: Int64, primary: Bool, secondary: Bool) -> Bool {
+        guard let previousID = aetherSubtitleIDByAppID[appTrackID],
+              let source = externalSubtitleSources[appTrackID] else { return false }
+        // Registering a track runs Aether's preferred-language selection when
+        // nothing is selected; an unselected reload must not turn subtitles on.
+        if !primary, !secondary, activeSpec?.options.preferredSubtitleLanguages.isEmpty == false {
+            return false
+        }
+        isRegisteringExternalSubtitle = true
+        let registered = engine.addExternalSubtitleTrack(source.track)
+        aetherSubtitleIDByAppID[appTrackID] = registered.id
+        appSubtitleIDByAetherID.removeValue(forKey: previousID)
+        appSubtitleIDByAetherID[registered.id] = appTrackID
+        if let fontRequest = source.fontRequest {
+            assSubtitles.registerFontRequest(fontRequest, trackID: registered.id,
+                                            authorization: activeSpec?.subtitleRequestAuthorization(for: fontRequest.url))
+        }
+        isRegisteringExternalSubtitle = false
+        // Select the new id before dropping the old one: removing a selected
+        // track clears that selection.
+        if primary { engine.selectSubtitleTrack(index: registered.id) }
+        if secondary { engine.selectSecondarySubtitleTrack(index: registered.id) }
+        engine.removeExternalSubtitleTrack(id: previousID)
+        publish(.inventoryChanged)
+        return true
+    }
+
+    private static func declaredExternalSubtitleSources(_ spec: AetherLoadSpec) -> [Int64: ExternalSubtitleSource] {
+        guard spec.externalSubtitleAppTrackIDs.count == spec.options.externalSubtitles.count else { return [:] }
+        var sources: [Int64: ExternalSubtitleSource] = [:]
+        for (appID, track) in zip(spec.externalSubtitleAppTrackIDs, spec.options.externalSubtitles) {
+            guard let appID else { continue }
+            sources[appID] = ExternalSubtitleSource(track: track, fontRequest: spec.subtitleFontRequests[appID])
+        }
+        return sources
     }
 
     func seek(toSourceTime sourceSeconds: Double) async -> SeekResult {
@@ -553,6 +606,7 @@ final class AetherPlaybackController {
         configureExternalPlaybackPolicy()
         aetherSubtitleIDByAppID = [:]
         appSubtitleIDByAetherID = [:]
+        externalSubtitleSources = [:]
         didPublishFirstFrame = false
         didPublishEnd = false
     }
@@ -928,4 +982,9 @@ extension AetherAudioSessionOwnership.Claim {
             }
         })
     }
+}
+
+private struct ExternalSubtitleSource {
+    let track: ExternalSubtitleTrack
+    let fontRequest: URLRequest?
 }

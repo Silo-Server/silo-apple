@@ -32,11 +32,14 @@ struct TrackSelectionSheet: View {
                     }
                 }
 
+                storedTimingSection
+
                 if aiSubtitlesAvailable || viewModel.subtitleSearchVisible {
                     subtitleToolsSection
                 }
             }
             .listStyle(.insetGrouped)
+            .onAppear { viewModel.refreshStoredSubtitleSync() }
             .navigationTitle("Audio & Subtitles")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -119,6 +122,7 @@ struct TrackSelectionSheet: View {
                 detail: track.languageFirstDetailLabel,
                 attributes: pills.isEmpty ? nil : pills.joined(separator: " · "),
                 pills: pills,
+                status: viewModel.storedSubtitleStatus(for: track),
                 isSelected: isSelected,
                 isDisabled: isDisabled
             ) {
@@ -127,6 +131,49 @@ struct TrackSelectionSheet: View {
                 } else {
                     viewModel.selectSubtitle(track)
                 }
+            }
+        }
+    }
+
+    /// "Sync Subtitle" and "Reset Timing" for the selected stored track.
+    /// Retiming changes the subtitle for everyone watching the file, so the
+    /// server allows it only for the account that added it or an admin; a
+    /// refusal replaces the actions with a short explanation.
+    @ViewBuilder
+    private var storedTimingSection: some View {
+        let sync = viewModel.storedSubtitleSync
+        if let id = viewModel.selectedStoredSubtitleId, let entry = sync.entry(for: id),
+           sync.showsTimingControls(entry) {
+            Section {
+                if entry.isForbidden {
+                    Text(StoredSubtitleSyncModel.forbiddenMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } else {
+                    if sync.canSync(entry) {
+                        Button {
+                            Task { await sync.requestSync(id: id) }
+                        } label: {
+                            Label(entry.isInProgress ? "Syncing…" : "Sync Subtitle", systemImage: "waveform")
+                        }
+                        .disabled(entry.isBusy || entry.isInProgress)
+                    }
+                    if entry.canReset {
+                        Button {
+                            Task { await sync.resetTiming(id: id) }
+                        } label: {
+                            Label("Reset Timing", systemImage: "arrow.uturn.backward")
+                        }
+                        .disabled(entry.isBusy || entry.isInProgress)
+                    }
+                }
+                if let error = entry.error {
+                    Text(error)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
+            } header: {
+                Text("Timing")
             }
         }
     }
@@ -165,6 +212,8 @@ private struct TrackSelectionRow: View {
     var detail: String? = nil
     let attributes: String?
     var pills: [String] = []
+    /// A stored subtitle's sync status ("Synced −3.2 s").
+    var status: String? = nil
     let isSelected: Bool
     var isDisabled: Bool = false
     let action: () -> Void
@@ -189,6 +238,12 @@ private struct TrackSelectionRow: View {
                         pillRow
                     } else if let attributes {
                         Text(attributes)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if let status {
+                        Text(status)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
