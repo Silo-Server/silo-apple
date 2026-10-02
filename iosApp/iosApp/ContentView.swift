@@ -790,8 +790,10 @@ struct ContentView: View {
         deepLinkRevision &+= 1
         pendingDeepLink = nil
         #if os(iOS)
-        // A TV approval waiting for a sign-in is an older intent too.
+        // A TV approval waiting for a sign-in, or its card on screen, is an
+        // older intent too. A newer approval link presents its own card.
         _ = router.takePendingDeviceApproval()
+        deviceApprovalLink = nil
         #endif
         playDeepLinkTask?.cancel()
         playDeepLinkTask = nil
