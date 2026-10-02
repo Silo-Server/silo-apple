@@ -23,6 +23,11 @@ struct AetherSubtitleOverlay: View {
     @State private var aetherSourceTime: Double = 0
     @State private var primaryTrack = LTRAuthoredSubtitles.Track()
     @State private var secondaryTrack = LTRAuthoredSubtitles.Track()
+    /// The engine's cues as published. Selecting a track can publish its cues
+    /// before this view sees the new track ID, so a track change re-runs the
+    /// classification over these.
+    @State private var publishedPrimary: [SubtitleCue] = []
+    @State private var publishedSecondary: [SubtitleCue] = []
 
     private var renderStyle: AetherSubtitleRenderStyle {
         AetherSubtitleRenderStyle(appearance: appearance)
@@ -51,10 +56,18 @@ struct AetherSubtitleOverlay: View {
         .allowsHitTesting(false)
         .accessibilityHidden(true)
         .onReceive(engine.$subtitleCues) {
+            publishedPrimary = $0
             primary = primaryTrack.laidOutAsAuthored($0, trackID: primaryTrackID)
         }
         .onReceive(engine.$secondarySubtitleCues) {
+            publishedSecondary = $0
             secondary = secondaryTrack.laidOutAsAuthored($0, trackID: secondaryTrackID)
+        }
+        .onChange(of: primaryTrackID) { _, trackID in
+            primary = primaryTrack.laidOutAsAuthored(publishedPrimary, trackID: trackID)
+        }
+        .onChange(of: secondaryTrackID) { _, trackID in
+            secondary = secondaryTrack.laidOutAsAuthored(publishedSecondary, trackID: trackID)
         }
         .onReceive(engine.clock.$sourceTime) { aetherSourceTime = $0 }
     }

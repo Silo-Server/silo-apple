@@ -151,7 +151,11 @@ enum LTRAuthoredSubtitles {
         return false
     }
 
-    private static let sentencePunctuation: Set<Character> = [".", "…", "!", "?", ","]
+    /// Weak or neutral punctuation an LTR author moves. The Arabic comma is
+    /// weak like the ASCII one; the Arabic question mark and full stop are
+    /// strong right-to-left characters, already land on the correct side in
+    /// either layout, and so are never moved.
+    private static let sentencePunctuation: Set<Character> = [".", "…", "!", "?", ",", "،"]
 
     // MARK: - Direction
 

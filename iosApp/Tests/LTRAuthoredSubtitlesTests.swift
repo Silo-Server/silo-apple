@@ -71,6 +71,22 @@ final class LTRAuthoredSubtitlesTests: XCTestCase {
         XCTAssertFalse(track.isLTRAuthored)
     }
 
+    /// Selecting a track can publish its cues while the overlay still holds
+    /// the previous track's ID. Re-running them under the new ID must drop the
+    /// previous track's evidence, even when the stores reuse cue IDs.
+    func testCuesFirstSeenUnderTheOldTrackAreReclassifiedForTheNewOne() {
+        var track = LTRAuthoredSubtitles.Track()
+        _ = track.laidOutAsAuthored(cues(ltrAuthored), trackID: 1)
+        let newTrackCues = cues(logical)
+        _ = track.laidOutAsAuthored(newTrackCues, trackID: 1)
+        XCTAssertEqual(track.laidOutAsAuthored(newTrackCues, trackID: 2).compactMap(\.text), logical)
+    }
+
+    func testArabicCommaMovedToTheStartCountsAsLTRAuthored() {
+        let lines = ["،ثم ذهبنا إلى البيت", "،وبعد ذلك", "،لكنه لم يأت", "لا أعرف"]
+        XCTAssertEqual(laidOut(cues(lines)), lines.map { lrm + $0 })
+    }
+
     func testStyledRunsGetTheMarkWhereEachLineStarts() {
         let runs = [
             SubtitleTextRun(text: "ماذا حدث", color: nil, isItalic: true),
