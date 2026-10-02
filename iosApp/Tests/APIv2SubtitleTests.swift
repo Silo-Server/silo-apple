@@ -656,6 +656,74 @@ final class APIv2SubtitleTests: XCTestCase {
         XCTAssertTrue(stub.requests.isEmpty)
     }
 
+    // MARK: Stored subtitle sync
+
+    /// A stored row from a server without subtitle sync: no `timing`, no `sync`.
+    private static let plainRow =
+        #"{"id":"7","media_file_id":"42","provider":"upload","language":"en","format":"srt","release_name":"R","score":0,"hearing_impaired":false,"created_at":"2026-01-02T03:04:05.678Z"}"#
+
+    private static let syncedRow =
+        #"{"id":"7","media_file_id":"42","provider":"upload","language":"en","format":"srt","release_name":"R","score":0,"hearing_impaired":false,"created_at":"2026-01-02T03:04:05.678Z","timing":{"offset_ms":-3200,"scale":1},"sync":{"id":"3","subtitle_id":"7","status":"synced","trigger":"auto","confidence":0.75,"result":{"offset_ms":-3200,"scale":1},"created_at":"2026-01-02T03:04:05.678Z","finished_at":"2026-01-02T03:04:09.000Z"}}"#
+
+    func testStoredFixtureCarriesTimingAndSyncState() throws {
+        let wire = try HTTPClient.makeJSONDecoder().decode(APIv2StoredSubtitles.self, from: fixture("subtitles_stored"))
+        let player = try XCTUnwrap(wire.playerValues(mediaFileID: 42).first)
+        XCTAssertEqual(player.timing, .identity)
+        XCTAssertNil(player.sync)
+
+        let synced = try HTTPClient.makeJSONDecoder().decode(APIv2StoredSubtitle.self,
+            from: Data(Self.syncedRow.utf8)).playerValue(mediaFileID: 42)
+        XCTAssertEqual(synced.timing, SubtitleTiming(offsetMs: -3200, scale: 1))
+        XCTAssertEqual(synced.sync?.status, "synced")
+        XCTAssertEqual(synced.sync?.result, synced.timing)
+        XCTAssertFalse(synced.sync?.isInProgress ?? true)
+    }
+
+    /// A server without subtitle sync sends neither field; its rows still list.
+    func testStoredRowWithoutTimingReadsAsUncorrected() throws {
+        let row = try HTTPClient.makeJSONDecoder().decode(APIv2StoredSubtitles.self,
+            from: Data(#"{"subtitles":[\#(Self.plainRow)]}"#.utf8))
+        XCTAssertEqual(try row.playerValues(mediaFileID: 42).first?.timing, .identity)
+    }
+
+    func testSyncRequestReturnsTheJobAndRefusalsKeepTheirStatus() async throws {
+        let (api, _) = try await client()
+        stub.reply(202, #"{"job":{"id":"4","subtitle_id":"7","status":"pending","trigger":"manual","confidence":null,"created_at":"2026-01-02T03:04:05.678Z","finished_at":null}}"#)
+        let job = try await api.requestStoredSubtitleSync(id: "7")
+        XCTAssertTrue(job.isInProgress)
+        let request = try XCTUnwrap(stub.requests.first)
+        XCTAssertEqual(request.method, "POST")
+        XCTAssertEqual(request.path, "/api/v2/subtitles/stored/7/sync")
+
+        stub.reset()
+        stub.reply(403, Self.problem("forbidden", 403, "Not yours."))
+        do {
+            _ = try await api.requestStoredSubtitleSync(id: "7")
+            XCTFail("A refused sync succeeded")
+        } catch {
+            XCTAssertEqual(StoredSubtitleSyncModel.httpStatus(of: error), 403)
+        }
+    }
+
+    /// Reset reads the metadata validator first and sends it as `If-Match`.
+    func testTimingResetSendsTheMetadataValidator() async throws {
+        let (api, _) = try await client()
+        stub.sequence([
+            .json(200, Self.plainRow, headers: ["ETag": #""abc.1""#]),
+            .json(200, #"{"subtitle":\#(Self.syncedRow.replacingOccurrences(of: #""offset_ms":-3200"#, with: #""offset_ms":0"#))}"#),
+        ])
+        let subtitle = try await api.setStoredSubtitleTiming(id: "7", mediaFileID: 42, timing: .identity)
+        XCTAssertEqual(subtitle.timing.offsetMs, 0)
+        XCTAssertEqual(stub.requests.map(\.method), ["GET", "PUT"])
+        XCTAssertEqual(stub.requests.first?.path, "/api/v2/subtitles/stored/7/metadata")
+        let put = try XCTUnwrap(stub.requests.last)
+        XCTAssertEqual(put.path, "/api/v2/subtitles/stored/7/timing")
+        XCTAssertEqual(put.header("If-Match"), #""abc.1""#)
+        let body = try XCTUnwrap(put.body.flatMap { try JSONSerialization.jsonObject(with: $0) as? [String: Any] })
+        XCTAssertEqual(body["offset_ms"] as? Int, 0)
+        XCTAssertEqual(body["scale"] as? Double, 1)
+    }
+
     // MARK: Provider status
 
     func testProviderStatusIsAvailableOnlyWhenAllowedAvailableAndEnabled() async throws {

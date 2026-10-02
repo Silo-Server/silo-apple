@@ -138,6 +138,25 @@ actor SiloAI {
                           auth: CapturedOrdinaryRequestAuth) async throws -> DownloadedSubtitle {
         try await v2.downloadSubtitle(body, auth: auth)
     }
+
+    // MARK: - Stored subtitle sync
+
+    /// Whether this server can align stored subtitles to the file's audio.
+    func subtitleSyncStatus() async throws -> APIv2SubtitleSyncStatus {
+        try await v2.subtitleSyncStatus()
+    }
+
+    func storedSubtitleSync(id: String, mediaFileId: Int) async throws -> DownloadedSubtitle {
+        try await v2.storedSubtitleSync(id: id, mediaFileID: mediaFileId)
+    }
+
+    func requestStoredSubtitleSync(id: String) async throws -> SubtitleSyncJob {
+        try await v2.requestStoredSubtitleSync(id: id)
+    }
+
+    func resetStoredSubtitleTiming(id: String, mediaFileId: Int) async throws -> DownloadedSubtitle {
+        try await v2.setStoredSubtitleTiming(id: id, mediaFileID: mediaFileId, timing: .identity)
+    }
 }
 
 /// What makes two subtitle job requests the same request: the owner, the

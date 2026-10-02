@@ -66,6 +66,11 @@ struct DownloadRestartOwners: Equatable {
         return token
     }
 
+    /// Whether an asset fetch for the record is running.
+    func fetchesAssets(_ recordId: String) -> Bool {
+        assets[recordId] != nil
+    }
+
     func ownsAssets(_ recordId: String, _ token: UUID) -> Bool {
         assets[recordId] == token
     }

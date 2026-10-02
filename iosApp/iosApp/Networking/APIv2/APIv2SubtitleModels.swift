@@ -58,13 +58,19 @@ struct APIv2StoredSubtitle: Decodable {
     let score: Double
     let hearingImpaired: Bool
     let createdAt: String
+    /// Optional on the wire here so a server without subtitle sync still
+    /// lists its rows; such a server serves every row uncorrected.
+    let timing: SubtitleTiming?
+    /// The latest sync job; absent when the row was never synced.
+    let sync: SubtitleSyncJob?
 
     /// The ID stays opaque; only the file must be the one asked for.
     func playerValue(mediaFileID: Int) throws -> DownloadedSubtitle {
         guard !id.isEmpty, mediaFileId == String(mediaFileID) else { throw APIv2Error.invalidSubtitleResponse }
         return DownloadedSubtitle(id: id, mediaFileId: mediaFileID, provider: provider,
             language: language, format: format, releaseName: releaseName, score: score,
-            hearingImpaired: hearingImpaired, createdAt: createdAt)
+            hearingImpaired: hearingImpaired, createdAt: createdAt,
+            timing: timing ?? .identity, sync: sync)
     }
 }
 

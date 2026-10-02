@@ -56,6 +56,9 @@ enum PlaybackRealtimeEventName: Codable, Equatable {
     case subtitleTranslationCompleted
     case subtitleTranslationFailed
     case subtitleReady
+    /// A stored subtitle of the file was retimed (sync or a manual timing
+    /// change). Its stream URL is unchanged and already serves the new timing.
+    case subtitleTimingChanged
     /// Any event name not recognized above. Carries the raw wire string so
     /// nothing is lost; current consumers ignore it.
     case unknown(String)
@@ -70,6 +73,7 @@ enum PlaybackRealtimeEventName: Codable, Equatable {
         case .subtitleTranslationCompleted: return "subtitle_translation_completed"
         case .subtitleTranslationFailed: return "subtitle_translation_failed"
         case .subtitleReady: return "subtitle_ready"
+        case .subtitleTimingChanged: return "subtitle_timing_changed"
         case .unknown(let raw): return raw
         }
     }
@@ -83,6 +87,7 @@ enum PlaybackRealtimeEventName: Codable, Equatable {
         case "subtitle_translation_completed": self = .subtitleTranslationCompleted
         case "subtitle_translation_failed": self = .subtitleTranslationFailed
         case "subtitle_ready": self = .subtitleReady
+        case "subtitle_timing_changed": self = .subtitleTimingChanged
         default: self = .unknown(rawValue)
         }
     }
@@ -313,6 +318,25 @@ struct PlaybackRealtimeMarkersUpdatedPayload: Equatable {
         creditsUpdate = payload.markerRangeUpdate(forKey: "credits")
         self.intro = introUpdate.range
         self.credits = creditsUpdate.range
+    }
+}
+
+/// `subtitle_timing_changed`: `{session_id, file_id, subtitle_id, track?}`.
+/// The stored subtitle id is all a player needs; `track` is not read.
+struct PlaybackRealtimeSubtitleTimingChangedPayload: Equatable {
+    let sessionId: String?
+    let fileId: Int
+    let subtitleId: String
+
+    init?(payload: PlaybackRealtimePayload) {
+        guard let fileId = payload.int(forKeys: "file_id", "fileId"),
+              let subtitleId = payload.int(forKeys: "subtitle_id", "subtitleId"),
+              subtitleId > 0 else {
+            return nil
+        }
+        sessionId = payload.string(forKeys: "session_id", "sessionId")
+        self.fileId = fileId
+        self.subtitleId = String(subtitleId)
     }
 }
 
