@@ -81,6 +81,19 @@ struct SessionExpiryEvent: Equatable, Sendable {
     let disposition: RejectedRefreshDisposition
 }
 
+/// Nonsecret notification payload naming the account and profile whose
+/// verification proof the server stopped accepting. The account session is
+/// still valid; only the profile needs selecting and verifying again.
+struct ProfileVerificationRequiredEvent: Equatable, Sendable {
+    let account: RefreshAccountIdentity
+    let profileID: String
+    /// `TokenStore`'s process-local generation for the selection that sent
+    /// the rejected proof. It names that installation without carrying the
+    /// proof, so recovery can leave a later selection of the same profile
+    /// alone.
+    let profileSelection: UUID
+}
+
 struct TemporaryAuthScope: Equatable, Sendable {
     /// Stable for this installed credential overlay and replaced whenever a
     /// new remote-playback handoff is activated.
@@ -208,6 +221,11 @@ actor TokenStore {
     /// selected by `activeServerId`. Refresh rotation leaves it unchanged;
     /// every session replacement or routing boundary installs a fresh epoch.
     private var persistentCredentialGenerationID = UUID()
+    /// Process-local identity for one installation of the persistent profile
+    /// ID and proof. Every activation, deactivation, or direct profile write
+    /// replaces it, so selecting the same profile again with the same proof
+    /// (or with none) is still a new selection.
+    private var profileSelectionGeneration = UUID()
     /// Playback-scoped credentials received by a TV through remote handoff.
     /// They are process-only and never written into normal per-server slots.
     private var temporaryScope: TemporaryAuthScope?
@@ -430,6 +448,25 @@ actor TokenStore {
             return nil
         }
         return current
+    }
+
+    /// The current profile selection generation, only while the persistent
+    /// account still sends exactly the identity in `expected`. Nil while a
+    /// temporary scope owns requests or the identity has changed.
+    func profileSelectionGeneration(
+        matchingIdentityOf expected: CapturedOrdinaryRequestAuth
+    ) -> UUID? {
+        guard temporaryScope == nil,
+              currentOrdinaryRequestAuth(matchingIdentityOf: expected) != nil else {
+            return nil
+        }
+        return profileSelectionGeneration
+    }
+
+    /// Whether `generation` is still the installed persistent profile
+    /// selection.
+    func isCurrentProfileSelection(_ generation: UUID) -> Bool {
+        temporaryScope == nil && profileSelectionGeneration == generation
     }
 
     /// Ownership fence for one awaited operation.
@@ -1263,6 +1300,7 @@ actor TokenStore {
             return
         }
         defaults.set(profileId, forKey: profileIdDefaultsKey)
+        profileSelectionGeneration = UUID()
     }
 
     func getProfileToken() -> String? {
@@ -1287,6 +1325,7 @@ actor TokenStore {
         }
         guard persisted else { return false }
         cachedProfileToken = token
+        profileSelectionGeneration = UUID()
         mirrorActiveTokensForExtension()
         return true
     }
@@ -1362,6 +1401,7 @@ actor TokenStore {
             clearApplePushDisplayToken()
         }
         defaults.set(profileID, forKey: profileIdDefaultsKey)
+        profileSelectionGeneration = UUID()
         mirrorActiveTokensForExtension()
         return true
     }
@@ -1371,7 +1411,8 @@ actor TokenStore {
     /// profiles without forcing another sign-in.
     func deactivateProfile(
         expectedAccount: RefreshAccountIdentity?,
-        expectedProfileID: String? = nil
+        expectedProfileID: String? = nil,
+        expectedProfileSelection: UUID? = nil
     ) -> Bool {
         guard temporaryScope == nil else { return false }
         if let expectedAccount,
@@ -1382,6 +1423,10 @@ actor TokenStore {
            defaults.string(forKey: profileIdDefaultsKey) != expectedProfileID {
             return false
         }
+        if let expectedProfileSelection,
+           profileSelectionGeneration != expectedProfileSelection {
+            return false
+        }
         ensureLoaded()
         if !activeServerId.isEmpty,
            !profileKeychain.delete(profileTokenKey) {
@@ -1389,6 +1434,7 @@ actor TokenStore {
         }
         defaults.removeObject(forKey: profileIdDefaultsKey)
         cachedProfileToken = nil
+        profileSelectionGeneration = UUID()
         clearApplePushDisplayToken()
         mirrorActiveTokensForExtension()
         return true

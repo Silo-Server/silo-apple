@@ -9,7 +9,7 @@ import Foundation
 /// `ProfileLaunchPreferences`.
 final class AuthService: @unchecked Sendable {
     static let shared = AuthService()
-    private let defaults = SharedDefaults.shared
+    private let defaults: SharedDefaults
     private let serverIdentityResolver: ServerIdentityResolver
     private let serverRegistry: ServerRegistry
     private let launchPreferences: ProfileLaunchPreferences
@@ -50,6 +50,7 @@ final class AuthService: @unchecked Sendable {
         apiV2Client: APIv2Client = SiloAPI.shared.apiV2Client,
         httpClient: HTTPClient = .shared,
         tokenStore: TokenStore = .shared,
+        defaults: SharedDefaults = .shared,
         sessionPersistence: AccountSessionPersistence = AccountSessionPersistence(keychain: SharedKeychain()),
         purgeDiagnostics: @escaping @Sendable (String) async -> Bool = { serverID in
             #if os(iOS) || os(tvOS)
@@ -67,6 +68,7 @@ final class AuthService: @unchecked Sendable {
         self.apiV2Client = apiV2Client
         self.httpClient = httpClient
         self.tokenStore = tokenStore
+        self.defaults = defaults
         self.sessionPersistence = sessionPersistence
         self.purgeDiagnostics = purgeDiagnostics
     }
@@ -584,23 +586,57 @@ final class AuthService: @unchecked Sendable {
         await recoverFromInvalidProfile(expectedProfileID: activeProfileID)
     }
 
+    /// Recovery for `HTTPClient`'s `.siloProfileVerificationRequired`: the
+    /// server stopped accepting the active profile's proof (for example after
+    /// an admin changed the account's access), but the account session is
+    /// still valid. Delivery is asynchronous, so the event is applied only
+    /// while the account that sent the rejected request is still current,
+    /// and only to the selection that sent it.
+    func recoverFromProfileVerificationRequired(_ event: ProfileVerificationRequiredEvent) async {
+        guard await tokenStore.refreshAccountIdentity() == event.account else { return }
+        await recoverFromInvalidProfile(
+            expectedProfileID: event.profileID,
+            expectedProfileSelection: event.profileSelection
+        )
+    }
+
     /// Recover from the server's profile-specific 403/404 responses. The
     /// expected ID prevents a late failed request from clearing a profile the
-    /// user selected after that request started.
-    func recoverFromInvalidProfile(expectedProfileID: String) async {
+    /// user selected after that request started. A caller that knows which
+    /// selection was rejected also passes `expectedProfileSelection`, so a
+    /// recovery that waited behind the user selecting the same profile again
+    /// leaves that new selection in place.
+    func recoverFromInvalidProfile(
+        expectedProfileID: String,
+        expectedProfileSelection: UUID? = nil
+    ) async {
         guard profileId == expectedProfileID else { return }
         let serverID = serverRegistry.activeServerId
-        let expectedAccount = await TokenStore.shared.refreshAccountIdentity()
-        guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
+        let expectedAccount = await tokenStore.refreshAccountIdentity()
+        guard let transitionLease = await httpClient.beginIdentityTransition() else {
+            return
+        }
+        // Several failures can start a recovery for the same profile (the
+        // Home prefetch and the global 403 signal, or one observer per
+        // window). Leases queue, so a later caller gets here only after the
+        // first finished; it must not cancel the requests Who's Watching has
+        // started since, nor clear a selection made meanwhile.
+        var isStillCurrent = profileId == expectedProfileID
+        if isStillCurrent, let expectedProfileSelection {
+            isStillCurrent = await tokenStore.isCurrentProfileSelection(expectedProfileSelection)
+        }
+        guard isStillCurrent else {
+            await httpClient.endIdentityTransition(transitionLease)
             return
         }
         #if os(iOS) || os(tvOS)
         DiagnosticsCoordinator.activeProfileWillChange()
         #endif
-        await HTTPClient.shared.cancelInFlightRequests()
-        let committed = await TokenStore.shared.deactivateProfile(
+        await httpClient.cancelInFlightRequests()
+        let committed = await tokenStore.deactivateProfile(
             expectedAccount: expectedAccount,
-            expectedProfileID: expectedProfileID
+            expectedProfileID: expectedProfileID,
+            expectedProfileSelection: expectedProfileSelection
         )
         if committed {
             if let serverID {
@@ -608,7 +644,7 @@ final class AuthService: @unchecked Sendable {
             }
             await clearPerProfileCaches()
         }
-        await HTTPClient.shared.endIdentityTransition(transitionLease)
+        await httpClient.endIdentityTransition(transitionLease)
         #if os(iOS) || os(tvOS)
         DiagnosticsCoordinator.activeProfileDidChange()
         #endif

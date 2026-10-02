@@ -170,11 +170,22 @@ struct ContentView: View {
                 router.expiredSession()
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .siloProfileVerificationRequired)) { notification in
+            guard let event = notification.object as? ProfileVerificationRequiredEvent else { return }
+            Task { await AuthService.shared.recoverFromProfileVerificationRequired(event) }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .siloProfileSelectionRequired)) { _ in
             guard shouldPresentProfileSelectionAfterRecovery(
                 isLoggedIn: AuthService.shared.isLoggedIn,
                 activeProfileID: AuthService.shared.profileId
             ) else { return }
+            // The profile that owned any open player is gone. Close video and
+            // audio as the background-return policy does, so neither keeps
+            // reporting progress without a profile nor reopens after the
+            // user verifies again. The account, downloads and server stay.
+            router.presentedPlayer = nil
+            audioStore.dismissFullPlayer()
+            Task { await audioStore.player.close() }
             router.showProfileSelection()
         }
         .onChange(of: serverRegistry.activeServerId) { previousServerID, activeServerID in

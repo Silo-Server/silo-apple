@@ -68,6 +68,15 @@ extension Notification.Name {
     static let siloProfileSelectionRequired = Notification.Name(
         "siloProfileSelectionRequired"
     )
+    /// Posted by `HTTPClient` when the server answers 403
+    /// `profile_verification_required` to a request that carried the active
+    /// profile's current proof. The object is a
+    /// ``ProfileVerificationRequiredEvent``. `ContentView` hands it to
+    /// `AuthService`, which runs the invalid-profile recovery and then posts
+    /// ``siloProfileSelectionRequired``.
+    static let siloProfileVerificationRequired = Notification.Name(
+        "siloProfileVerificationRequired"
+    )
 }
 
 /// Central navigation controller for the Silo iOS app.

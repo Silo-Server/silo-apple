@@ -127,6 +127,15 @@ actor HTTPClient {
     private var inFlightRefreshes: [RefreshAccountIdentity: RefreshFlight] = [:]
     private var mediaRefreshBackoff: (auth: CapturedOrdinaryRequestAuth, until: ContinuousClock.Instant)?
     private var proactiveMediaRefreshes: [RefreshAccountIdentity: (id: UUID, task: Task<Void, Never>)] = [:]
+    /// The profile proof the last `.siloProfileVerificationRequired` was
+    /// posted for (access token dropped), with the `TokenStore` selection
+    /// generation it was installed under. A burst of rejected requests posts
+    /// once; a new proof, profile, or selection of the same profile posts
+    /// again.
+    private var lastProfileVerificationSignal: (
+        auth: CapturedOrdinaryRequestAuth,
+        selection: UUID
+    )?
 
     /// A flight's value is the update requirement its refresh answer proved,
     /// if any. Success and every other failure are read back from
@@ -553,6 +562,7 @@ actor HTTPClient {
                 )
                 #endif
             }
+            await signalProfileVerificationIfRequired(data, response, sent: request, auth: auth.ordinaryIdentity)
             // Scoped adapters may inspect documented error headers (for example
             // Retry-After). All other callers retain the standard non-2xx error
             // translation.
@@ -1069,6 +1079,7 @@ actor HTTPClient {
                     dispatchRevision: dispatchRevision,
                     dispatchRecord: dispatchRecord
                 )
+                await signalProfileVerificationIfRequired(retryData, retryResponse, sent: retry, auth: refreshedAuth)
                 try ensureSuccess(retryData, retryResponse, method: method, quietStatuses: quietStatuses)
                 return (retryData, retryResponse)
             }
@@ -1084,8 +1095,99 @@ actor HTTPClient {
             #endif
         }
 
+        await signalProfileVerificationIfRequired(data, response, sent: request, auth: capturedAuth)
         try ensureSuccess(data, response, method: method, quietStatuses: quietStatuses)
         return (data, response)
+    }
+
+    /// v2 problem type for a declared profile the server no longer accepts as
+    /// verified: a PIN-locked profile whose `X-Profile-Token` is missing,
+    /// expired, or was minted before the account's access policy changed.
+    static let profileVerificationRequiredProblem = "profile_verification_required"
+
+    /// Tell the app that the active profile must be verified again.
+    ///
+    /// Only a 403 `profile_verification_required` counts, and only when the
+    /// request carried the active profile and its proof exactly as `auth`
+    /// captured them, from the persistent account. A request addressed to a
+    /// different profile through extra headers, a temporary playback handoff,
+    /// or a request whose profile or proof has since been replaced (the user
+    /// already re-verified, or switched profile) does not trigger recovery.
+    /// A burst of rejected requests for one proof posts once per selection:
+    /// picking the same profile again (even with the same proof, or none)
+    /// starts a new selection, and its rejection posts again.
+    private func signalProfileVerificationIfRequired(
+        _ data: Data,
+        _ response: HTTPURLResponse,
+        sent request: URLRequest,
+        auth: CapturedOrdinaryRequestAuth?
+    ) async {
+        guard response.statusCode == 403,
+              let auth,
+              case .persistentServer = auth.credentialOwner,
+              let profileID = auth.profileId, !profileID.isEmpty,
+              request.value(forHTTPHeaderField: "X-Profile-Id") == profileID,
+              request.value(forHTTPHeaderField: "X-Profile-Token") == auth.profileToken,
+              Self.problemIdentifier(in: data) == Self.profileVerificationRequiredProblem else {
+            return
+        }
+        let signal = CapturedOrdinaryRequestAuth(
+            account: auth.account,
+            credentialOwner: auth.credentialOwner,
+            accessToken: nil,
+            profileId: profileID,
+            profileToken: auth.profileToken
+        )
+        guard let selection = await tokenStore.profileSelectionGeneration(matchingIdentityOf: signal),
+              !isProfileVerificationSignaled(signal, selection: selection) else {
+            return
+        }
+        lastProfileVerificationSignal = (signal, selection)
+        Self.logger.notice("Active profile verification rejected; requesting profile selection")
+        #if os(iOS) || os(tvOS)
+        // Essential: the user is about to land on Who's Watching without
+        // having asked to, and this is the only line that says which request
+        // the server refused.
+        DiagTrace.log(
+            .essential,
+            level: .warning,
+            category: .network,
+            tag: "Auth",
+            message: "profile verification required",
+            attrs: [
+                "method": .string(request.httpMethod ?? "GET"),
+                "path": .string(HTTPDiagnosticsPath.attribute(for: response.url)),
+                "status": .int(403),
+            ]
+        )
+        #endif
+        let event = ProfileVerificationRequiredEvent(
+            account: auth.account,
+            profileID: profileID,
+            profileSelection: selection
+        )
+        await MainActor.run {
+            NotificationCenter.default.post(name: .siloProfileVerificationRequired, object: event)
+        }
+    }
+
+    private func isProfileVerificationSignaled(
+        _ signal: CapturedOrdinaryRequestAuth,
+        selection: UUID
+    ) -> Bool {
+        guard let last = lastProfileVerificationSignal else { return false }
+        return last.selection == selection && last.auth.sameCredentialIdentity(as: signal)
+    }
+
+    /// The stable identifier of an `application/problem+json` body: the final
+    /// segment of its `type` URI. Nil for any other body.
+    static func problemIdentifier(in data: Data) -> String? {
+        struct ProblemType: Decodable { let type: String }
+        guard let type = try? JSONDecoder().decode(ProblemType.self, from: data).type,
+              let identifier = type.split(separator: "/").last else {
+            return nil
+        }
+        return String(identifier)
     }
 
     private static func apply(_ headers: [String: String], to request: inout URLRequest) {
