@@ -207,20 +207,49 @@ final class TVApprovalModel {
             phase = .approved(request, tvSignedIn: false)
             watch(request, bearer: bearer)
         } catch {
-            // An approval is sent once. A lost answer may hide one the
-            // server took, so read the request back before calling it
-            // failed. A 404 after a successful lookup means the request
-            // expired in between.
-            if error is URLError,
-               let status = try? await api.lookup(serverURL: server.url, bearer: bearer, code: code).status,
-               status == "approved" || status == "consumed" {
-                phase = .approved(request, tvSignedIn: status == "consumed")
-                if status == "approved" { watch(request, bearer: bearer) }
+            // An approval is sent once. A 404 after a successful lookup
+            // means the request expired in between.
+            guard error is URLError else {
+                phase = failure(for: error, notFound: .expired)
                 return
             }
-            phase = failure(for: error, notFound: .expired)
+            await confirmLostApproval(request, bearer: bearer)
         }
     }
+
+    /// The approve answer was lost, so the server may have taken the
+    /// approval or still be applying it. Stay in `.approving` (the card
+    /// offers nothing to tap) and read the request back a few times. Never
+    /// call it failed while it may still land; the server applies an
+    /// approval once, and repeating it for the same account is a no-op.
+    private func confirmLostApproval(_ request: TVApprovalRequest, bearer: String) async {
+        for attempt in 0..<Self.lostApprovalReads {
+            if attempt > 0 { try? await Task.sleep(for: watchInterval) }
+            switch try? await api.lookup(serverURL: server.url, bearer: bearer, code: code).status {
+            case "approved"?:
+                phase = .approved(request, tvSignedIn: false)
+                watch(request, bearer: bearer)
+                return
+            case "consumed"?:
+                phase = .approved(request, tvSignedIn: true)
+                return
+            case "denied"?:
+                phase = .declinedElsewhere
+                return
+            case "canceled"?:
+                phase = .canceled
+                return
+            case "expired"?:
+                phase = .expired
+                return
+            default: // still pending, or unreadable
+                continue
+            }
+        }
+        phase = .failed("Couldn't confirm that \(serverName) approved the TV. If the TV is still waiting, approve its code again.")
+    }
+
+    private static let lostApprovalReads = 3
 
     /// "Not now": deny the request. The TV stops waiting and says the
     /// sign-in was declined. `declined` shows only once the server took it.

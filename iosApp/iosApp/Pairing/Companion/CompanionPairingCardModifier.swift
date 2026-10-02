@@ -32,7 +32,8 @@ struct CompanionPairingCardModifier: ViewModifier {
     /// False while the app is in the background: discovery is stopped and
     /// `browser.found` is empty, which says nothing about the TV.
     @State private var isBrowsing = true
-    /// Numbers `refreshSignedIn` reads; only the newest one publishes.
+    /// Numbers `refreshSignedIn` reads and auth changes; only a read that
+    /// is still the newest publishes.
     @State private var signedInGeneration = 0
     @Environment(\.scenePhase) private var scenePhase
 
@@ -43,6 +44,10 @@ struct CompanionPairingCardModifier: ViewModifier {
                 // The candidate may have been discovered while signed out;
                 // a new token changes `candidate`, which latches it.
                 await refreshSignedIn()
+            }
+            .onChange(of: authState) {
+                // Reads begun under the previous state no longer publish.
+                signedInGeneration += 1
             }
             .onChange(of: scenePhase) { _, phase in
                 switch phase {
@@ -134,13 +139,14 @@ struct CompanionPairingCardModifier: ViewModifier {
         active = offer
     }
 
-    /// Auth changes and returns to the foreground both refresh; a slower,
-    /// older read never overwrites a newer one.
+    /// Auth changes and returns to the foreground both refresh. A read
+    /// publishes only if nothing replaced it and auth hasn't changed since
+    /// it began; a slower, older read never overwrites a newer one.
     private func refreshSignedIn() async {
         signedInGeneration += 1
         let generation = signedInGeneration
         let servers = await CompanionPairingCoordinator.serversWithTokens()
-        guard generation == signedInGeneration else { return }
+        guard !Task.isCancelled, generation == signedInGeneration else { return }
         if servers != signedIn { signedIn = servers }
     }
 }

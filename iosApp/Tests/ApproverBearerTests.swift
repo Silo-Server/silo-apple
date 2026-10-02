@@ -173,6 +173,30 @@ final class ApproverBearerTests: XCTestCase {
         XCTAssertEqual(stored?.refreshToken, "refresh-2")
     }
 
+    /// A slot this path can't renew (a legacy record with only an access
+    /// token) hands out its bearer only while it is valid; an expired one
+    /// asks for a fresh sign-in.
+    func testUnrenewableSlotNeverReleasesAnExpiredBearer() async throws {
+        let name = "ApproverBearerTests.legacy.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: name))
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
+        let keys = SharedKeychain(service: name, accessGroup: nil)
+        let tokens = TokenStore(keychain: keys, defaults: SharedDefaults(suite: suite, standard: suite))
+        await tokens.switchActiveServer(serverId: Self.active)
+        let http = HTTPClient(session: stub.makeSession(), tokenStore: tokens)
+        let legacy = keys.withAudience(.userIndependent)
+
+        let valid = Self.token("valid", expiresIn: 3600)
+        legacy.set(valid, for: TokenStore.accessTokenKey(for: Self.other))
+        var bearer = await http.freshAccessToken(serverId: Self.other)
+        XCTAssertEqual(bearer, .token(valid))
+
+        legacy.set(Self.token("expired", expiresIn: -60), for: TokenStore.accessTokenKey(for: Self.other))
+        bearer = await http.freshAccessToken(serverId: Self.other)
+        XCTAssertEqual(bearer, .rejected)
+        XCTAssertTrue(refreshes.isEmpty)
+    }
+
     /// The slot was signed in again while the refresh was in flight: the
     /// newer session stays, and the rotated pair is dropped unused.
     func testRenewalNeverOverwritesASlotThatChanged() async throws {

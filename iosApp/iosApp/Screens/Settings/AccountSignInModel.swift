@@ -44,18 +44,15 @@ final class AccountSignInModel {
 
     private let api: APIv2Client
     private let tokenStore: TokenStore
-    private let serverURL: @Sendable () -> String
     private let link: @Sendable (APIv2AuthProvider, String) async throws -> Void
 
     init(
         api: APIv2Client,
         tokenStore: TokenStore,
-        serverURL: @escaping @Sendable () -> String,
         link: @escaping @Sendable (APIv2AuthProvider, String) async throws -> Void
     ) {
         self.api = api
         self.tokenStore = tokenStore
-        self.serverURL = serverURL
         self.link = link
     }
 
@@ -76,7 +73,9 @@ final class AccountSignInModel {
             isSupported = false
             return
         }
-        let url = serverURL()
+        // The account's own server, so providers and identities never come
+        // from two different servers.
+        let url = account.serverURL
         async let providersRead = try? api.authProviders(serverURL: url)
         async let oauthRead = try? api.oauthCapabilities(serverURL: url)
         async let capabilitiesRead = try? api.externalSignInCapabilities(expectedAccount: account)
@@ -256,7 +255,6 @@ extension AccountSignInModel {
         AccountSignInModel(
             api: SiloAPI.shared.apiV2Client,
             tokenStore: .shared,
-            serverURL: { AuthService.shared.serverUrl },
             link: { provider, password in
                 try await ExternalSignInService.live.link(provider: provider, password: password)
             }

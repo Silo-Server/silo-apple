@@ -2387,8 +2387,12 @@ actor HTTPClient {
         return .token(tokens.accessToken)
     }
 
+    /// The stored bearer when this path cannot renew it (no refreshable
+    /// session, or a temporary scope). Expired, it is no bearer: the server
+    /// would refuse it, so the person signs in to that server again.
     private func storedBearer(serverId: String) async -> ApproverBearer {
-        guard let token = await tokenStore.getAccessToken(for: serverId), !token.isEmpty else { return .rejected }
+        guard let token = await tokenStore.getAccessToken(for: serverId), !token.isEmpty,
+              !Self.hasExpired(token) else { return .rejected }
         return .token(token)
     }
 

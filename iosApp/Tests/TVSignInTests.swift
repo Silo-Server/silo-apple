@@ -350,30 +350,32 @@ final class TVSignInTests: XCTestCase {
         guard case .approved = model.phase else { return XCTFail("\(model.phase)") }
     }
 
-    /// An approval whose answer was lost is read back before the card calls
-    /// it failed: the server may have taken it.
+    /// An approval whose answer was lost is read back before the card says
+    /// anything: the server may have taken it, or still be applying it. A
+    /// request that stays pending is reported as unconfirmed, not failed.
     @MainActor
     func testLostApprovalAnswerIsReadBack() async {
-        func approve(after readBack: String) async -> TVApprovalModel.Phase {
+        func approve(after readBack: [String]) async -> TVApprovalModel.Phase {
             let api = FakeTVApprovalAPI()
-            api.lookups = [
-                DeviceLookupResponse(matchCode: "w", deviceName: "TV", devicePlatform: "tvos", status: "pending"),
-                DeviceLookupResponse(matchCode: "w", deviceName: "TV", devicePlatform: "tvos", status: readBack),
-            ]
+            api.lookups = (["pending"] + readBack).map {
+                DeviceLookupResponse(matchCode: "w", deviceName: "TV", devicePlatform: "tvos", status: $0)
+            }
             api.approveError = URLError(.networkConnectionLost)
-            let model = TVApprovalModel(server: Self.home, code: "48217730", api: api, watchInterval: .seconds(60))
+            let model = TVApprovalModel(server: Self.home, code: "48217730", api: api,
+                watchInterval: .milliseconds(1), watchLimit: 0)
             await model.lookUp()
             await model.approve()
-            model.stop()
             XCTAssertEqual(api.approved.count, 1, "an approval is sent once")
             return model.phase
         }
-        var phase = await approve(after: "approved")
+        var phase = await approve(after: ["approved"])
         guard case .approved(_, tvSignedIn: false) = phase else { return XCTFail("\(phase)") }
-        phase = await approve(after: "consumed")
+        phase = await approve(after: ["consumed"])
         guard case .approved(_, tvSignedIn: true) = phase else { return XCTFail("\(phase)") }
-        phase = await approve(after: "pending")
-        XCTAssertEqual(phase, .failed("Couldn't reach Home. Check this device's connection."))
+        phase = await approve(after: ["pending", "approved"])
+        guard case .approved = phase else { return XCTFail("a late approval still lands: \(phase)") }
+        phase = await approve(after: ["pending"])
+        XCTAssertEqual(phase, .failed("Couldn't confirm that Home approved the TV. If the TV is still waiting, approve its code again."))
     }
 
     /// "Not now" reads as declined only once the server took the denial,

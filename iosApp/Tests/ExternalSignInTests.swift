@@ -1167,7 +1167,7 @@ final class ExternalSignInTests: XCTestCase {
         let (_, _, tokens) = try await makeService(runner: runner, signedIn: true)
         let api = APIv2Client(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens,
             isUpdateRequired: { false })
-        let model = AccountSignInModel(api: api, tokenStore: tokens, serverURL: { "http://192.0.2.10:8432" },
+        let model = AccountSignInModel(api: api, tokenStore: tokens,
             link: { _, _ in XCTFail("browser link used") })
         let providers = #"{"items":[{"id":"local","display_name":"Local","mode":"credentials","default":true},"#
             + #"{"id":"plugin:6:ldap","display_name":"Directory","mode":"credentials","default":false,"#
@@ -1194,7 +1194,7 @@ final class ExternalSignInTests: XCTestCase {
         let (_, _, tokens) = try await makeService(runner: runner, signedIn: true)
         let api = APIv2Client(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens,
             isUpdateRequired: { false })
-        let model = AccountSignInModel(api: api, tokenStore: tokens, serverURL: { "http://192.0.2.10:8432" },
+        let model = AccountSignInModel(api: api, tokenStore: tokens,
             link: { _, _ in XCTFail("browser link used for a directory") })
         let ldap = Self.provider(id: "plugin:6:ldap", name: "Directory", mode: "credentials", installation: "6", startPath: nil)
 
