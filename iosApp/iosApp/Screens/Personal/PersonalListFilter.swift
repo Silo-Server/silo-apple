@@ -152,14 +152,11 @@ struct PersonalListFilter: Equatable {
         return Int(date.prefix(4))
     }
 
-    /// A 0-10 rating from the first source the item has. Rotten Tomatoes
-    /// scores are 0-100, so they are scaled down to match.
+    /// The rating the card shows: IMDb, or TMDB when there is no usable
+    /// IMDb score. Never Rotten Tomatoes, which can be stored even when an
+    /// administrator has turned it off.
     private static func rating(of item: BrowseItem) -> Double? {
-        if let imdb = item.ratingImdb { return imdb }
-        if let tmdb = item.ratingTmdb { return tmdb }
-        if let audience = item.ratingRtAudience { return Double(audience) / 10 }
-        if let critic = item.ratingRtCritic { return Double(critic) / 10 }
-        return nil
+        DisplayRating.primaryCard(imdb: item.ratingImdb, tmdb: item.ratingTmdb)?.score
     }
 
     private static func descendingNilsLast<T: Comparable>(_ lhs: T?, _ rhs: T?) -> ComparisonResult {

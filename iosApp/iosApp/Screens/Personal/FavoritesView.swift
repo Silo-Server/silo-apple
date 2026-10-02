@@ -271,8 +271,8 @@ struct FavoritesView: View {
             }
             .padding(SiloTheme.padding)
         }
-        .onChange(of: selectedSection) { _, _ in
-            listFilter.pruneGenres(to: availableIOSGenres)
+        .onChange(of: availableIOSGenres) { _, genres in
+            listFilter.pruneGenres(to: genres)
         }
         .reportsPageChromeScroll()
     }
@@ -438,8 +438,8 @@ struct FavoritesView: View {
             availableGenres: availableGenres,
             focusedControl: $focusedListControl
         )
-        .onChange(of: selectedSection) { _, _ in
-            listFilter.pruneGenres(to: availableGenres)
+        .onChange(of: availableGenres) { _, genres in
+            listFilter.pruneGenres(to: genres)
         }
     }
 

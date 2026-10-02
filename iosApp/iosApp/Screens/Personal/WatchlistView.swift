@@ -135,8 +135,8 @@ struct WatchlistView: View {
             }
             .padding(SiloTheme.padding)
         }
-        .onChange(of: selectedSection) { _, _ in
-            listFilter.pruneGenres(to: availableIOSGenres)
+        .onChange(of: availableIOSGenres) { _, genres in
+            listFilter.pruneGenres(to: genres)
         }
         .reportsPageChromeScroll()
         #else
@@ -226,6 +226,9 @@ struct WatchlistView: View {
             availableGenres: availableGenres,
             focusedControl: $focusedListControl
         )
+        .onChange(of: availableGenres) { _, genres in
+            listFilter.pruneGenres(to: genres)
+        }
     }
 
     /// Sort and Filter pills above the grid. Down reaches the grid and Up

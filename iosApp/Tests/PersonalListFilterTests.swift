@@ -104,20 +104,34 @@ final class PersonalListFilterTests: XCTestCase {
         XCTAssertEqual(filter.apply(to: items).map(\.contentId), ["a", "rated", "m", "z"])
     }
 
-    func testYearFallsBackToReleaseDateAndRatingToRottenTomatoes() throws {
+    func testYearFallsBackToReleaseDate() throws {
         let items = try [
             item("old", year: 1990),
             item("dated", releaseDate: "2021-05-01"),
-            item("rt", rtAudience: 91),
-            item("imdb", imdb: 7.0),
+            item("zeroYear", year: 0, releaseDate: "2005-01-01"),
         ]
         var filter = PersonalListFilter()
-
         filter.sort = .releaseYear
-        XCTAssertEqual(filter.apply(to: items).prefix(2).map(\.contentId), ["dated", "old"])
+        XCTAssertEqual(filter.apply(to: items).map(\.contentId), ["dated", "zeroYear", "old"])
+    }
 
+    /// Rating follows the card rule: IMDb, then TMDB, never Rotten Tomatoes.
+    func testRatingUsesCardRatingAndIgnoresRottenTomatoes() throws {
+        let items = try [
+            item("rtOnly", title: "A", rtAudience: 99),
+            item("zeroImdb", title: "B", imdb: 0, tmdb: 6.0),
+            item("imdb", title: "C", imdb: 7.0, tmdb: 9.9),
+        ]
+        var filter = PersonalListFilter()
         filter.sort = .rating
-        XCTAssertEqual(filter.apply(to: items).prefix(2).map(\.contentId), ["rt", "imdb"])
+        XCTAssertEqual(filter.apply(to: items).map(\.contentId), ["imdb", "zeroImdb", "rtOnly"])
+    }
+
+    func testGenreFilterMatchesTrimmedItemGenres() throws {
+        let items = try [item("padded", genres: [" Comedy "]), item("other", genres: ["Drama"])]
+        var filter = PersonalListFilter()
+        filter.toggleGenre("Comedy")
+        XCTAssertEqual(filter.apply(to: items).map(\.contentId), ["padded"])
     }
 
     func testTitleSortIsNaturalAndStable() throws {
