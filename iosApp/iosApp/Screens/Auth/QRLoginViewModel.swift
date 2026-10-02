@@ -556,9 +556,14 @@ class QRLoginViewModel: NearbySignInCodeSource {
 
     private func loadCapability(_ account: RefreshAccountIdentity) async {
         do {
-            capability = try await auth.deviceLoginCapability(expectedAccount: account)
+            let read = try await auth.deviceLoginCapability(expectedAccount: account)
+            // A stopped run's late answer, or one for an account this screen
+            // has since left, must not stand in for the current one.
+            guard !Task.isCancelled, expectedAccount == account else { return }
+            capability = read
             capabilityLoaded = true
         } catch {
+            guard !Task.isCancelled, expectedAccount == account else { return }
             // An older server without the document still offers device
             // sign-in. A transient failure is read again after the next
             // successful start.

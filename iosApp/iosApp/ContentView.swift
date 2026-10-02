@@ -292,17 +292,25 @@ struct ContentView: View {
             #if DEBUG
             await maybeAutoPlayForDebug()
             #endif
+            #if os(iOS)
+            if router.authState == .authenticated || router.authState == .needsProfile {
+                // A TV approval that waited for this sign-in ("Sign in",
+                // "Not you? Switch account", or a newly added server).
+                // Approval is account-level, so it reopens before a profile
+                // is picked; other links still wait for one.
+                if let link = router.takePendingDeviceApproval() {
+                    pendingDeepLink = link.url
+                }
+                if router.authState == .needsProfile, let url = pendingDeepLink, DeviceApprovalLink(url: url) != nil {
+                    pendingDeepLink = nil
+                    handleDeepLink(url, revision: deepLinkRevision)
+                }
+            }
+            #endif
             if router.authState == .authenticated {
                 #if DEBUG && (os(iOS) || os(tvOS))
                 if CommandLine.arguments.contains("-debugWatchParty") || CommandLine.arguments.contains("-debugWatchPartyCode") {
                     router.navigate(to: .watchParty)
-                }
-                #endif
-                #if os(iOS)
-                // A TV approval that waited for this sign-in ("Not you?
-                // Switch account", or a signed-out saved server).
-                if let link = router.takePendingDeviceApproval() {
-                    pendingDeepLink = link.url
                 }
                 #endif
                 let hasPendingDeepLink = pendingDeepLink != nil

@@ -36,6 +36,9 @@ final class SystemWebAuthenticationRunner: NSObject, WebAuthenticationRunning, A
     /// app redirect that arrives through URL routing must carry it as
     /// `state` to end the flow.
     private var pendingState: String?
+    /// Numbers each `authenticate` call. A cancellation or session answer
+    /// from an earlier flow names its own attempt and never ends a newer one.
+    private var attempt: UInt = 0
 
     init(makeSession: @escaping MakeSession = SystemWebAuthenticationRunner.systemSession) {
         self.makeSession = makeSession
@@ -51,19 +54,25 @@ final class SystemWebAuthenticationRunner: NSObject, WebAuthenticationRunning, A
 
     func authenticate(url: URL, callbackScheme: String) async throws -> URL {
         cancelCurrent()
+        attempt &+= 1
+        let attempt = attempt
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
+                guard !Task.isCancelled else {
+                    continuation.resume(throwing: ExternalSignInError.canceled)
+                    return
+                }
                 self.continuation = continuation
                 self.pendingState = Self.queryValue("app_state", in: url)
                 let session = makeSession(url, callbackScheme, self) { [weak self] callbackURL, error in
                     Task { @MainActor in
                         if let callbackURL {
-                            self?.finish(.success(callbackURL))
+                            self?.finish(.success(callbackURL), attempt: attempt)
                         } else if let authError = error as? ASWebAuthenticationSessionError,
                                   authError.code == .canceledLogin {
-                            self?.finish(.failure(ExternalSignInError.canceled))
+                            self?.finish(.failure(ExternalSignInError.canceled), attempt: attempt)
                         } else {
-                            self?.finish(.failure(ExternalSignInError.browserUnavailable))
+                            self?.finish(.failure(ExternalSignInError.browserUnavailable), attempt: attempt)
                         }
                     }
                 }
@@ -73,7 +82,7 @@ final class SystemWebAuthenticationRunner: NSObject, WebAuthenticationRunning, A
                 }
             }
         } onCancel: {
-            Task { @MainActor in self.cancelCurrent() }
+            Task { @MainActor in self.finish(.failure(ExternalSignInError.canceled), attempt: attempt) }
         }
     }
 
@@ -100,6 +109,12 @@ final class SystemWebAuthenticationRunner: NSObject, WebAuthenticationRunning, A
 
     private func cancelCurrent() {
         finish(.failure(ExternalSignInError.canceled))
+    }
+
+    /// Ends the flow only while `attempt` is still the one in progress.
+    private func finish(_ result: Result<URL, Error>, attempt: UInt) {
+        guard attempt == self.attempt else { return }
+        finish(result)
     }
 
     private func finish(_ result: Result<URL, Error>) {

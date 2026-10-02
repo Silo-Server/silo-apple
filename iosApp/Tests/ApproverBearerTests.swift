@@ -150,6 +150,29 @@ final class ApproverBearerTests: XCTestCase {
     {"type":"https://siloserver.org/docs/api/v2/problems/provider_unavailable","title":"Provider unavailable","status":503,"detail":"d"}
     """#
 
+    /// Two approvals for the same saved server renew its slot once: the
+    /// second waits for the first renewal rather than sending the same
+    /// refresh token again, and both get the rotated bearer.
+    func testConcurrentRenewalsOfOneSlotShareOneRefresh() async throws {
+        let (http, tokens) = try await harness(access: Self.token("old", expiresIn: -60))
+        let fresh = Self.token("fresh", expiresIn: 3600)
+        stub.reply(path: Self.refreshPath, 200, Self.refreshed(fresh))
+        stub.hold(path: Self.refreshPath)
+        let first = Task { await http.freshAccessToken(serverId: Self.other) }
+        await stub.waitUntilHeld()
+        let second = Task { await http.freshAccessToken(serverId: Self.other) }
+        // Give the second caller time to reach the renewal in flight; an
+        // unshared renewal would send its refresh unheld meanwhile.
+        try await Task.sleep(for: .milliseconds(200))
+        stub.release()
+
+        let bearers = await [first.value, second.value]
+        XCTAssertEqual(bearers, [.token(fresh), .token(fresh)])
+        XCTAssertEqual(refreshes.count, 1)
+        let stored = await tokens.inactiveServerSession(for: Self.other)
+        XCTAssertEqual(stored?.refreshToken, "refresh-2")
+    }
+
     /// The slot was signed in again while the refresh was in flight: the
     /// newer session stays, and the rotated pair is dropped unused.
     func testRenewalNeverOverwritesASlotThatChanged() async throws {

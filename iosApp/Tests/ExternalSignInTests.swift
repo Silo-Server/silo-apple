@@ -1,5 +1,8 @@
 import Foundation
 import XCTest
+#if !os(tvOS)
+import AuthenticationServices
+#endif
 @testable import Silo
 
 /// External sign-in in the apps: provider discovery and the password-form
@@ -1356,6 +1359,7 @@ extension ExternalSignInTests {
     @MainActor
     private final class Sessions {
         var made: [FakeSession] = []
+        var completions: [@Sendable (URL?, Error?) -> Void] = []
     }
 
     /// On macOS the redirect can reach the app through URL routing instead
@@ -1392,6 +1396,39 @@ extension ExternalSignInTests {
         XCTAssertEqual(returned, own, "no stray URL resumed the flow")
         XCTAssertTrue(session.canceled)
         XCTAssertFalse(runner.receiveExternalCallback(own), "nothing is pending once the flow ended")
+    }
+
+    /// A new sign-in replaces the open one. The replaced flow's late answers
+    /// (its session reporting the cancel, its task's cancellation) end only
+    /// that flow, never the one that replaced it.
+    @MainActor
+    func testAReplacedSignInNeverEndsTheOneThatReplacedIt() async throws {
+        let sessions = Sessions()
+        let runner = SystemWebAuthenticationRunner { _, _, _, completion in
+            sessions.completions.append(completion)
+            return FakeSession()
+        }
+        let firstStart = try XCTUnwrap(URL(string: Self.startURL + "?code_challenge=c&app_state=first"))
+        let secondStart = try XCTUnwrap(URL(string: Self.startURL + "?code_challenge=c&app_state=second"))
+        let first = Task { try await runner.authenticate(url: firstStart, callbackScheme: NativeSignIn.callbackScheme) }
+        while sessions.completions.isEmpty { await Task.yield() }
+        let second = Task { try await runner.authenticate(url: secondStart, callbackScheme: NativeSignIn.callbackScheme) }
+        while sessions.completions.count < 2 { await Task.yield() }
+
+        do {
+            _ = try await first.value
+            XCTFail("the replaced flow ends canceled")
+        } catch {
+            XCTAssertEqual(error as? ExternalSignInError, .canceled)
+        }
+        sessions.completions[0](nil, ASWebAuthenticationSessionError(.canceledLogin))
+        first.cancel()
+        for _ in 0..<20 { await Task.yield() }
+
+        let own = Self.callback(["code": "c", "state": "second", "server": Self.serverId])
+        XCTAssertTrue(runner.receiveExternalCallback(own), "the newer flow is still open")
+        let returned = try await second.value
+        XCTAssertEqual(returned, own)
     }
 }
 #endif

@@ -88,7 +88,6 @@ final class AccountSignInModel {
             connectable = []
             return
         }
-        isSupported = true
         do {
             let page = try await api.accountIdentities(expectedAccount: account)
             identities = page.items
@@ -99,6 +98,8 @@ final class AccountSignInModel {
         }
         connectable = Self.connectable(providers: providers?.items ?? [], oauth: oauth,
             credentialsLinking: capabilities.supportsCredentialsLinking, linked: identities)
+        // Last, so the entry never shows before the state it leads to.
+        isSupported = true
     }
 
     /// The external providers the account has no identity at, with how each

@@ -137,6 +137,10 @@ final class TVApprovalModel {
     private let watchInterval: Duration
     private let watchLimit: Int
     private var watchTask: Task<Void, Never>?
+    /// The bearer the review was read with. Approving with another one (it
+    /// was renewed, or the saved session changed) first checks that it still
+    /// signs in the account the card showed.
+    private var reviewedBearer: String?
 
     init(
         server: ServerEntry,
@@ -169,6 +173,7 @@ final class TVApprovalModel {
                 async let account = api.accountName(serverURL: serverURL, bearer: bearer)
                 async let accountSwitch = api.accountSwitch(serverURL: serverURL)
                 self.accountSwitch = await accountSwitch
+                reviewedBearer = bearer
                 phase = .review(request(from: lookup, account: await account))
             case "approved", "consumed":
                 phase = .alreadyUsed
@@ -188,13 +193,31 @@ final class TVApprovalModel {
         guard case .review(let request) = phase else { return }
         phase = .approving(request)
         guard let bearer = await bearerOrFailure() else { return }
+        if bearer != reviewedBearer {
+            // The TV gets a session for whoever this bearer belongs to. If
+            // that is not the account the card showed, show the card again.
+            let account = await api.accountName(serverURL: server.url, bearer: bearer)
+            guard let account, account == request.accountName else {
+                await lookUp()
+                return
+            }
+        }
         do {
             try await api.approve(serverURL: server.url, bearer: bearer, code: code)
             phase = .approved(request, tvSignedIn: false)
             watch(request, bearer: bearer)
         } catch {
-            // An approval is sent once. A 404 after a successful lookup
-            // means the request expired in between.
+            // An approval is sent once. A lost answer may hide one the
+            // server took, so read the request back before calling it
+            // failed. A 404 after a successful lookup means the request
+            // expired in between.
+            if error is URLError,
+               let status = try? await api.lookup(serverURL: server.url, bearer: bearer, code: code).status,
+               status == "approved" || status == "consumed" {
+                phase = .approved(request, tvSignedIn: status == "consumed")
+                if status == "approved" { watch(request, bearer: bearer) }
+                return
+            }
             phase = failure(for: error, notFound: .expired)
         }
     }

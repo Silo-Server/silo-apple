@@ -314,6 +314,68 @@ final class TVSignInTests: XCTestCase {
         XCTAssertEqual(model.phase, .canceled)
     }
 
+    /// The TV gets a session for whoever the approving bearer belongs to.
+    /// When the saved session changed after the card was read, approving
+    /// sends nothing and shows the card again for the account signed in now.
+    @MainActor
+    func testApprovalWaitsForAnotherReviewWhenTheAccountChanged() async {
+        let api = FakeTVApprovalAPI()
+        api.lookups = [DeviceLookupResponse(matchCode: "w", deviceName: "TV", devicePlatform: "tvos", status: "pending")]
+        let model = TVApprovalModel(server: Self.home, code: "48217730", api: api)
+        await model.lookUp()
+        guard case .review(let reviewed) = model.phase else { return XCTFail("\(model.phase)") }
+        XCTAssertEqual(reviewed.accountName, "laura")
+
+        api.bearerValue = .token("other-session")
+        api.accountNameValue = "maria"
+        await model.approve()
+        XCTAssertTrue(api.approved.isEmpty)
+        guard case .review(let again) = model.phase else { return XCTFail("\(model.phase)") }
+        XCTAssertEqual(again.accountName, "maria")
+
+        await model.approve()
+        XCTAssertEqual(api.approved, ["48217730"], "the second review was for the account that approves")
+    }
+
+    /// A renewed bearer for the same account approves without another review.
+    @MainActor
+    func testApprovalWithARenewedBearerForTheSameAccountGoesThrough() async {
+        let api = FakeTVApprovalAPI()
+        api.lookups = [DeviceLookupResponse(matchCode: "w", deviceName: "TV", devicePlatform: "tvos", status: "pending")]
+        let model = TVApprovalModel(server: Self.home, code: "48217730", api: api)
+        await model.lookUp()
+        api.bearerValue = .token("renewed")
+        await model.approve()
+        XCTAssertEqual(api.approved, ["48217730"])
+        guard case .approved = model.phase else { return XCTFail("\(model.phase)") }
+    }
+
+    /// An approval whose answer was lost is read back before the card calls
+    /// it failed: the server may have taken it.
+    @MainActor
+    func testLostApprovalAnswerIsReadBack() async {
+        func approve(after readBack: String) async -> TVApprovalModel.Phase {
+            let api = FakeTVApprovalAPI()
+            api.lookups = [
+                DeviceLookupResponse(matchCode: "w", deviceName: "TV", devicePlatform: "tvos", status: "pending"),
+                DeviceLookupResponse(matchCode: "w", deviceName: "TV", devicePlatform: "tvos", status: readBack),
+            ]
+            api.approveError = URLError(.networkConnectionLost)
+            let model = TVApprovalModel(server: Self.home, code: "48217730", api: api, watchInterval: .seconds(60))
+            await model.lookUp()
+            await model.approve()
+            model.stop()
+            XCTAssertEqual(api.approved.count, 1, "an approval is sent once")
+            return model.phase
+        }
+        var phase = await approve(after: "approved")
+        guard case .approved(_, tvSignedIn: false) = phase else { return XCTFail("\(phase)") }
+        phase = await approve(after: "consumed")
+        guard case .approved(_, tvSignedIn: true) = phase else { return XCTFail("\(phase)") }
+        phase = await approve(after: "pending")
+        XCTAssertEqual(phase, .failed("Couldn't reach Home. Check this device's connection."))
+    }
+
     /// "Not now" reads as declined only once the server took the denial,
     /// and says so when it could not be sent.
     @MainActor
@@ -453,6 +515,8 @@ private final class FakeTVApprovalAPI: TVApprovalAPI, @unchecked Sendable {
     var lookups: [DeviceLookupResponse] = []
     var lookupError: Error?
     var denyError: Error?
+    var approveError: Error?
+    var accountNameValue: String? = "laura"
     var accountSwitchValue = TVApprovalAccountSwitch.signOut
     private(set) var choiceQueries: [String] = []
     private(set) var bearerRequests: [String] = []
@@ -471,12 +535,15 @@ private final class FakeTVApprovalAPI: TVApprovalAPI, @unchecked Sendable {
         return lookups.count > 1 ? lookups.removeFirst() : lookups[0]
     }
 
-    func approve(serverURL: String, bearer: String, code: String) async throws { approved.append(code) }
+    func approve(serverURL: String, bearer: String, code: String) async throws {
+        approved.append(code)
+        if let approveError { throw approveError }
+    }
     func deny(serverURL: String, bearer: String, code: String) async throws {
         if let denyError { throw denyError }
         denied.append(code)
     }
-    func accountName(serverURL: String, bearer: String) async -> String? { "laura" }
+    func accountName(serverURL: String, bearer: String) async -> String? { accountNameValue }
     func accountSwitch(serverURL: String) async -> TVApprovalAccountSwitch {
         choiceQueries.append(serverURL)
         return accountSwitchValue

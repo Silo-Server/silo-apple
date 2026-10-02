@@ -29,6 +29,11 @@ struct CompanionPairingCardModifier: ViewModifier {
     @State private var signedIn: [ServerEntry] = []
     /// True once the active offer's TV no longer advertises that offer.
     @State private var offerWithdrawn = false
+    /// False while the app is in the background: discovery is stopped and
+    /// `browser.found` is empty, which says nothing about the TV.
+    @State private var isBrowsing = true
+    /// Numbers `refreshSignedIn` reads; only the newest one publishes.
+    @State private var signedInGeneration = 0
     @Environment(\.scenePhase) private var scenePhase
 
     func body(content: Content) -> some View {
@@ -43,8 +48,11 @@ struct CompanionPairingCardModifier: ViewModifier {
                 switch phase {
                 case .active:
                     browser.start()
+                    isBrowsing = true
                     Task { await refreshSignedIn() }
-                case .background: browser.stop()
+                case .background:
+                    browser.stop()
+                    isBrowsing = false
                 default: break
                 }
             }
@@ -62,6 +70,8 @@ struct CompanionPairingCardModifier: ViewModifier {
                 // A TV that changed state or session is withdrawn at once; one
                 // that vanished gets a short grace period for Bonjour flaps.
                 guard let offer = active else { offerWithdrawn = false; return }
+                // Reassessed once discovery resumes in the foreground.
+                guard isBrowsing else { return }
                 switch Self.advertStatus(of: offer.tv, in: browser.found) {
                 case .same:
                     offerWithdrawn = false
@@ -96,7 +106,8 @@ struct CompanionPairingCardModifier: ViewModifier {
     /// changes. `DiscoveredTV` equality is id-only, so `found` alone won't do.
     private var offerSignature: String {
         let offer = active.map { "\($0.tv.id)|\($0.tv.state.rawValue)|\($0.tv.sid ?? "")" } ?? ""
-        return ([offer] + browser.found.map { "\($0.id)|\($0.state.rawValue)|\($0.sid ?? "")" }).joined(separator: ",")
+        let adverts = browser.found.map { "\($0.id)|\($0.state.rawValue)|\($0.sid ?? "")" }
+        return ([isBrowsing ? "browsing" : "paused", offer] + adverts).joined(separator: ",")
     }
 
     enum AdvertStatus: Equatable { case same, changed, gone }
@@ -123,8 +134,13 @@ struct CompanionPairingCardModifier: ViewModifier {
         active = offer
     }
 
+    /// Auth changes and returns to the foreground both refresh; a slower,
+    /// older read never overwrites a newer one.
     private func refreshSignedIn() async {
+        signedInGeneration += 1
+        let generation = signedInGeneration
         let servers = await CompanionPairingCoordinator.serversWithTokens()
+        guard generation == signedInGeneration else { return }
         if servers != signedIn { signedIn = servers }
     }
 }

@@ -520,7 +520,9 @@ struct TVLoginView: View {
 
     /// Leave for the profiles once, however the sign-in finished.
     private func goToProfiles() {
-        guard !navigatedAfterApproval else { return }
+        // "Change server" during the approval pause has already left this
+        // screen; don't pull the app back to profiles.
+        guard !navigatedAfterApproval, router.authState == route else { return }
         navigatedAfterApproval = true
         router.showProfileSelection()
     }

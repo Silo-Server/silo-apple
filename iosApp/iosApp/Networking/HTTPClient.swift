@@ -127,6 +127,11 @@ actor HTTPClient {
     private var inFlightRefreshes: [RefreshAccountIdentity: RefreshFlight] = [:]
     private var mediaRefreshBackoff: (auth: CapturedOrdinaryRequestAuth, until: ContinuousClock.Instant)?
     private var proactiveMediaRefreshes: [RefreshAccountIdentity: (id: UUID, task: Task<Void, Never>)] = [:]
+    /// Approver-bearer renewals of saved servers that are not active
+    /// (`freshAccessToken(serverId:)`), keyed by server. A caller holding the
+    /// same refresh token joins the renewal in flight instead of sending that
+    /// token a second time.
+    private var inactiveServerRenewals: [String: (refreshToken: String, task: Task<ApproverBearer, Never>)] = [:]
 
     /// A flight's value is the failure its refresh answer proved that the
     /// waiting requests must see, if any. Success and every other failure are
@@ -2293,9 +2298,10 @@ actor HTTPClient {
     ///
     /// The active server renews through the shared refresh flight. Another
     /// saved server renews its own slot once, compare-and-set against the
-    /// session the refresh was sent with. A failed renewal returns the stored
-    /// bearer while it is still valid. Once it has expired the result says
-    /// why: `.rejected` only when the server refused the session
+    /// session the refresh was sent with; callers that arrive meanwhile with
+    /// the same refresh token wait for that renewal. A failed renewal returns
+    /// the stored bearer while it is still valid. Once it has expired the
+    /// result says why: `.rejected` only when the server refused the session
     /// (`shouldInvalidateSessionAfterRefreshFailure`) or there is none,
     /// `.providerUnavailable` for 503 `provider_unavailable`, and
     /// `.unreachable` for anything else, which leaves the session in place.
@@ -2345,6 +2351,22 @@ actor HTTPClient {
             return await storedBearer(serverId: serverId)
         }
         guard MediaAccessTokenExpiry.shouldRefresh(access, now: Date()) else { return .token(access) }
+        if let flight = inactiveServerRenewals[serverId], flight.refreshToken == refresh {
+            return await flight.task.value
+        }
+        let task = Task { await renewInactiveServer(serverId, stored: stored, access: access, refresh: refresh, origin: origin) }
+        inactiveServerRenewals[serverId] = (refresh, task)
+        let bearer = await task.value
+        if inactiveServerRenewals[serverId]?.refreshToken == refresh {
+            inactiveServerRenewals[serverId] = nil
+        }
+        return bearer
+    }
+
+    /// One renewal of an inactive saved server's slot, compare-and-set
+    /// against `stored` (see `freshAccessToken(serverId:)`).
+    private func renewInactiveServer(_ serverId: String, stored: CanonicalAccountSession, access: String,
+                                     refresh: String, origin: String) async -> ApproverBearer {
         func fallback(_ failure: ApproverBearer) -> ApproverBearer {
             Self.hasExpired(access) ? failure : .token(access)
         }

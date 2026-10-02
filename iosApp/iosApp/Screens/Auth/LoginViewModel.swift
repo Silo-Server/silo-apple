@@ -9,6 +9,8 @@ class LoginViewModel {
     var error: FormError?
     /// What this server offers, once discovery answered.
     var discovery: SignInDiscovery = .loading
+    /// Numbers `loadSignInOptions` reads; only the newest one publishes.
+    @ObservationIgnored private var discoveryReads = 0
     /// The provider whose browser sign-in is running.
     var providerInFlight: String?
 
@@ -64,9 +66,12 @@ class LoginViewModel {
     /// refreshes behind the current screen (returning to the app) and keeps
     /// loaded options when that read fails.
     func loadSignInOptions(showsLoading: Bool = true) async {
+        discoveryReads += 1
+        let read = discoveryReads
         if showsLoading { discovery = .loading }
         let options = await auth.signInOptions()
-        guard !Task.isCancelled else { return }
+        // A slower, older read never replaces a newer one.
+        guard !Task.isCancelled, read == discoveryReads else { return }
         if let options {
             discovery = .loaded(options)
         } else if showsLoading || discovery.options == nil {
