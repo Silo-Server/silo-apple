@@ -27,25 +27,31 @@ enum LTRAuthoredSubtitles {
     private static let minimumSignals = 3
     private static let dominanceRatio = 3
 
-    /// One track's evidence, gathered across cue publishes. An embedded track
-    /// reaches the overlay as a window around the playhead, so each cue counts
-    /// once and a decision, once reached, holds for the rest of the track.
+    /// One engine subtitle channel's evidence, gathered across cue publishes.
+    /// An embedded track reaches the overlay as a window around the playhead,
+    /// so each cue counts once and evidence that leaves the window still counts.
+    ///
+    /// The engine clears a channel's cues whenever it selects a track, so an
+    /// empty publication starts over. The one switch that skips the clear, a
+    /// backfill from an already-decoded store, sets the engine's active track
+    /// index first, so a different `trackID` starts over as well.
     struct Track {
-        private var trackID: Int64?
+        private var trackID: Int?
         private var countedCueIDs: Set<Int> = []
         private var ltrSignals = 0
         private var logicalSignals = 0
-        private(set) var isLTRAuthored = false
 
-        init(trackID: Int64? = nil) {
-            self.trackID = trackID
+        var isLTRAuthored: Bool {
+            ltrSignals >= minimumSignals && ltrSignals > dominanceRatio * logicalSignals
         }
 
         /// The cues as their author laid them out: unchanged unless the track
-        /// is LTR-authored. A different `trackID` starts a new track.
-        mutating func laidOutAsAuthored(_ cues: [SubtitleCue], trackID: Int64?) -> [SubtitleCue] {
-            if trackID != self.trackID {
-                self = Track(trackID: trackID)
+        /// is LTR-authored. Pass the engine's track identity for the channel
+        /// when it has one.
+        mutating func laidOutAsAuthored(_ cues: [SubtitleCue], trackID: Int? = nil) -> [SubtitleCue] {
+            if cues.isEmpty || trackID != self.trackID {
+                self = Track()
+                self.trackID = trackID
             }
             for cue in cues where countedCueIDs.insert(cue.id).inserted {
                 guard let text = cue.text else { continue }
@@ -54,9 +60,6 @@ enum LTRAuthoredSubtitles {
                     if hasLTRAuthoredPunctuation(trimmed) { ltrSignals += 1 }
                     if hasLogicalPunctuation(trimmed) { logicalSignals += 1 }
                 }
-            }
-            if !isLTRAuthored {
-                isLTRAuthored = ltrSignals >= minimumSignals && ltrSignals > dominanceRatio * logicalSignals
             }
             guard isLTRAuthored else { return cues }
             return cues.map { cue in
@@ -145,8 +148,7 @@ enum LTRAuthoredSubtitles {
             return true
         }
         if let last = line.last, sentencePunctuation.contains(last) {
-            let rest = line.reversed().drop { sentencePunctuation.contains($0) }
-            return rest.first.map { !$0.isWhitespace } ?? false
+            return line.dropLast().contains { !$0.isWhitespace && !sentencePunctuation.contains($0) }
         }
         return false
     }

@@ -71,15 +71,36 @@ final class LTRAuthoredSubtitlesTests: XCTestCase {
         XCTAssertFalse(track.isLTRAuthored)
     }
 
-    /// Selecting a track can publish its cues while the overlay still holds
-    /// the previous track's ID. Re-running them under the new ID must drop the
-    /// previous track's evidence, even when the stores reuse cue IDs.
-    func testCuesFirstSeenUnderTheOldTrackAreReclassifiedForTheNewOne() {
+    /// The engine clears a channel's cues when it selects a track. The next
+    /// track's evidence starts from nothing, even when its cue IDs repeat.
+    func testAnEmptyPublicationStartsOver() {
+        var track = LTRAuthoredSubtitles.Track()
+        _ = track.laidOutAsAuthored(cues(ltrAuthored))
+        _ = track.laidOutAsAuthored([])
+        XCTAssertEqual(track.laidOutAsAuthored(cues(logical)).compactMap(\.text), logical)
+    }
+
+    /// A backfill from an already-decoded store replaces the cues without a
+    /// clear but under a new engine track index.
+    func testANewEngineTrackIndexStartsOverWithRepeatedCueIDs() {
         var track = LTRAuthoredSubtitles.Track()
         _ = track.laidOutAsAuthored(cues(ltrAuthored), trackID: 1)
-        let newTrackCues = cues(logical)
-        _ = track.laidOutAsAuthored(newTrackCues, trackID: 1)
-        XCTAssertEqual(track.laidOutAsAuthored(newTrackCues, trackID: 2).compactMap(\.text), logical)
+        XCTAssertEqual(track.laidOutAsAuthored(cues(logical), trackID: 2).compactMap(\.text), logical)
+    }
+
+    /// An early run of moved-looking lines does not lock the track in once
+    /// the logical-order evidence outweighs it.
+    func testLaterEvidenceCorrectsAnEarlyClassification() {
+        var track = LTRAuthoredSubtitles.Track()
+        _ = track.laidOutAsAuthored(cues(["...ثم", "...وبعد ذلك", "...لكن"]))
+        XCTAssertTrue(track.isLTRAuthored)
+        let later = cues(Array(repeating: "- لقد انفجر", count: 4), firstID: 100)
+        XCTAssertEqual(track.laidOutAsAuthored(later).compactMap(\.text), later.compactMap(\.text))
+    }
+
+    func testSentenceEndAfterASpaceCountsAsLogicalOrder() {
+        let lines = ["...ثم", "...وبعد ذلك", "...لكن", "مرحبا ...", "نعم !"]
+        XCTAssertEqual(laidOut(cues(lines)), lines)
     }
 
     func testArabicCommaMovedToTheStartCountsAsLTRAuthored() {
