@@ -145,19 +145,18 @@ struct DownloadCaps: Encodable, Sendable {
     /// Passthrough is this surface's own claim, since a download is decided
     /// long before there is an output route to ask.
     static func current() -> DownloadCaps {
-        let isSimulator = AppleDecodeCapabilities.isSimulator
-        return DownloadCaps(
+        DownloadCaps(
             clientFeatures: [PlaybackProtocolV3.softwareVideoDecodeFeature],
             videoEvidence: PlaybackProtocolV3.Evidence.platformAttested,
             codecsVideo: AppleDecodeCapabilities.hardwareVideoCodecs,
             codecsAudio: AppleDecodeCapabilities.audioCodecs,
-            audioPassthroughCodecs: isSimulator ? [] : ["ac3", "eac3"],
+            audioPassthroughCodecs: ["ac3", "eac3"],
             containers: AppleDecodeCapabilities.containers,
             // Old servers understand only this coarse field. Keep it at the
             // software ceiling; a new server uses the detailed hardware entry
             // to preserve safe 4K originals on physical devices.
             maxResolution: "1080p",
-            hdr: !isSimulator,
+            hdr: true,
             videoDecode: AppleDecodeCapabilities.playbackV3VideoDecodeAttestation()
         )
     }

@@ -116,17 +116,12 @@ enum DiagnosticsCapabilityProbe {
             maxResolution = .string("not_collected")
             hdr = .string("not_collected")
         } else {
-            #if targetEnvironment(simulator)
-            maxResolution = .string("1080p")
-            hdr = .bool(false)
-            #else
             maxResolution = .string(capabilities.maxResolution?.rawValue ?? "unknown")
             hdr = .bool(
                 capabilities.supportsHDR10
                     || capabilities.supportsHLG
                     || capabilities.supportsDolbyVision
             )
-            #endif
         }
 
         return .array(codecs.map { codec in

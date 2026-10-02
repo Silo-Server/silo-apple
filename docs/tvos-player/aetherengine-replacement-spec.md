@@ -260,8 +260,9 @@ persistent-artifact constraints:
 - Apple TV HD stays on the bounded `platform_attested` policy because it has
   materially less software-decode headroom and Aether does not yet emit a
   typed decoder-underperforming signal;
-- simulators, iOS, and macOS also retain `platform_attested` until their rollout
-  policy is changed explicitly;
+- iPhone and iPad use the same declared policy as Apple TV 4K; macOS retains
+  `platform_attested` until its rollout policy is changed explicitly;
+- a simulator follows the policy of the device model it simulates;
 - downloads retain the bounded attestation because an offline artifact cannot
   ask the server for a different plan.
 

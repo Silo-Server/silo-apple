@@ -13,14 +13,7 @@ struct ApplePlaybackHDRAvailability: Equatable {
     }
 
     static func probe() -> ApplePlaybackHDRAvailability {
-        #if targetEnvironment(simulator)
-        return ApplePlaybackHDRAvailability(
-            hdrPlaybackEligible: false,
-            supportsHDR10: false,
-            supportsHLG: false,
-            supportsDolbyVision: false
-        )
-        #elseif os(macOS)
+        #if os(macOS)
         let eligible = AVPlayer.eligibleForHDRPlayback
         return ApplePlaybackHDRAvailability(
             hdrPlaybackEligible: eligible,

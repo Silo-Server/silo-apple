@@ -1022,15 +1022,15 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             "the server rejects the whole request if a client executor entry lacks this flag"
         )
         XCTAssertEqual(
-            ApplePlaybackV3Capabilities.deviceClientTransformations.map(\.name),
+            ApplePlaybackV3Capabilities.clientTransformations.map(\.name),
             ["client_dv7_to_dv81", "client_dv7_to_hdr10"]
         )
         XCTAssertEqual(
-            Set(ApplePlaybackV3Capabilities.deviceClientTransformations.map(\.executor)),
+            Set(ApplePlaybackV3Capabilities.clientTransformations.map(\.executor)),
             ["client"]
         )
         XCTAssertEqual(
-            ApplePlaybackV3Capabilities.deviceClientTransformations.first?.validatedClaims,
+            ApplePlaybackV3Capabilities.clientTransformations.first?.validatedClaims,
             [
                 "profile7_rpu_converted_to_profile81",
                 "hdr10_base_layer_preserved",
@@ -1038,7 +1038,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             ]
         )
         XCTAssertEqual(
-            ApplePlaybackV3Capabilities.deviceClientTransformations.last?.validatedClaims,
+            ApplePlaybackV3Capabilities.clientTransformations.last?.validatedClaims,
             [
                 "dolby_vision_metadata_removed",
                 "hdr10_base_layer_preserved",
@@ -1046,18 +1046,11 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             ]
         )
 
-        // The snapshot itself is device-gated: the simulator has no real panel
-        // or hardware HEVC decoder, so it declares nothing.
         let snapshot = ApplePlaybackV3Capabilities.snapshot()
         let original = try XCTUnwrap(
             snapshot.context.deliveries[PlaybackProtocolV3.DeliveryClass.originalHTTP]
         )
-        XCTAssertEqual(
-            original.transformations,
-            AppleDecodeCapabilities.isSimulator
-                ? []
-                : ApplePlaybackV3Capabilities.deviceClientTransformations
-        )
+        XCTAssertEqual(original.transformations, ApplePlaybackV3Capabilities.clientTransformations)
         for deliveryClass in [
             PlaybackProtocolV3.DeliveryClass.progressive,
             PlaybackProtocolV3.DeliveryClass.hls
@@ -1496,12 +1489,11 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         )
     }
 
-    func testSimulatorCapabilitiesAreNeutralAttestedAndOutputScoped() throws {
-        try XCTSkipUnless(
-            AppleDecodeCapabilities.isSimulator,
-            "Attested codec and HDR values are device-specific; this vector pins the simulator profile."
-        )
-        let snapshot = ApplePlaybackV3Capabilities.snapshot()
+    /// The attested profile Apple TV HD and macOS send. Hardware codecs and
+    /// HDR come from the platform probes, so only the parts that do not
+    /// depend on the test host are pinned here.
+    func testPlatformAttestedCapabilitiesAreNeutralAndOutputScoped() throws {
+        let snapshot = ApplePlaybackV3Capabilities.snapshot(videoCapabilityMode: .platformAttested)
         XCTAssertEqual(snapshot.context.protocolVersion, 3)
         #if os(tvOS)
         XCTAssertEqual(snapshot.context.device.platform, "tvos")
@@ -1524,8 +1516,6 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             snapshot.capabilities.audioEvidence,
             PlaybackProtocolV3.Evidence.declared
         )
-        XCTAssertEqual(snapshot.capabilities.codecsVideo, ["h264", "av1", "vp9", "mpeg2video", "vc1"])
-        XCTAssertEqual(snapshot.capabilities.codecsVideoHardware, ["h264"])
         XCTAssertTrue(
             ApplePlaybackV3Capabilities.features.contains(
                 PlaybackProtocolV3.softwareVideoDecodeFeature
@@ -1541,16 +1531,12 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             snapshot.context.deliveries[PlaybackProtocolV3.DeliveryClass.progressive]?.videoCodecs,
             AppleDecodeCapabilities.packagedVideoCodecs
         )
-        XCTAssertNil(snapshot.capabilities.audioPassthrough)
-        XCTAssertNil(snapshot.context.output.audioPassthrough)
         XCTAssertTrue(snapshot.outputContextId?.hasPrefix("apple:") == true)
-        XCTAssertFalse(snapshot.capabilities.hdr)
         XCTAssertTrue(snapshot.outputDiagnosticsLogFields.contains("hdrOutputEligible="))
         XCTAssertTrue(snapshot.outputDiagnosticsLogFields.contains("dvModes="))
         XCTAssertFalse(snapshot.outputDiagnosticsLogFields.contains("output."))
 
         let hdrDetails = try XCTUnwrap(snapshot.capabilities.hdrDetails)
-        XCTAssertFalse(hdrDetails.claimsAnyHDR)
         for (name, delivery) in snapshot.context.deliveries {
             XCTAssertEqual(delivery.hdrDetails, hdrDetails, "delivery \(name) disagrees on HDR")
             XCTAssertEqual(delivery.audioPassthroughCodecs, [])
@@ -1565,7 +1551,6 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         for delivery in snapshot.context.deliveries.values {
             XCTAssertEqual(delivery.features, [])
             XCTAssertFalse(delivery.authHeaderRefresh)
-            XCTAssertEqual(delivery.transformations, [])
         }
     }
 
