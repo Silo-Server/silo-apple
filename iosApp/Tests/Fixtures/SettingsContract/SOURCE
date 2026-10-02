@@ -1,6 +1,6 @@
 repository=https://github.com/Silo-Server/silo-server
 path=contracts/settings/v1
-manifest_revision=14
+manifest_revision=16
 fixture_version=1
 
 Both files are byte-identical copies of the server's canonical settings
@@ -14,10 +14,10 @@ vendored manifest's revision, and the generated SettingKey.revision stop
 agreeing, which is the whole point of carrying the pair rather than the
 fixture alone.
 
-conformance.json commit=86ea1a1baf9bae2ce02b17f915817b2c76aae2b9
-manifest.json    commit=86ea1a1baf9bae2ce02b17f915817b2c76aae2b9
-copied from      commit=86ea1a1baf9bae2ce02b17f915817b2c76aae2b9
-generated with   commit=86ea1a1baf9bae2ce02b17f915817b2c76aae2b9 (cmd/settingsgen -lang swift)
+conformance.json commit=b7f5b7d1270b35e861a30cd75ffd3036fe1c50ea
+manifest.json    commit=b7f5b7d1270b35e861a30cd75ffd3036fe1c50ea
+copied from      commit=b7f5b7d1270b35e861a30cd75ffd3036fe1c50ea
+generated with   commit=b7f5b7d1270b35e861a30cd75ffd3036fe1c50ea (cmd/settingsgen -lang swift)
 
 manifest.json is vendored whole, including the maintainer `notes` the server
 strips before serving /api/v1/settings/contract. Keeping it byte-identical is
@@ -32,5 +32,4 @@ contract rather than by a hand-copied table.
 
 Android vendors the same pair at
 shared/src/commonTest/resources/settings/v1/ in silo-android; the two SOURCE
-notes are meant to stay in step. Android moves to revision 14 in its matching
-text-opacity change.
+notes are meant to stay in step. Both clients now vendor revision 16.

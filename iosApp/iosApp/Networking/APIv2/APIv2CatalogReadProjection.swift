@@ -78,6 +78,8 @@ extension ItemDetail {
         self.userState = value.userState.map {
             MediaItemUserState(played: $0.played, isFavorite: $0.isFavorite, inWatchlist: $0.inWatchlist)
         }
+        self.posterIsEpisodeStill = value.posterIsEpisodeStill
+        self.backdropIsEpisodeStill = value.backdropIsEpisodeStill
         self.posterUrl = value.posterUrl
         self.backdropUrl = value.backdropUrl
         self.logoUrl = value.logoUrl
@@ -137,6 +139,7 @@ extension EpisodeListItem {
         self.stillThumbhash = value.stillThumbhash
         self.userData = try value.userData.map { try LeafItemUserData(catalog: $0) }
         self.files = try value.files.map { try $0.map { try EpisodeFile(catalog: $0) } }
+        self.stillIsEpisodeStill = value.stillIsEpisodeStill
         self.stillUrl = value.stillUrl
     }
 }

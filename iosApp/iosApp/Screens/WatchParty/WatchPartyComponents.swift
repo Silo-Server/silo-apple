@@ -59,6 +59,8 @@ struct WatchPartyBackdrop: View {
     let url: String?
     var thumbhash: String? = nil
     var isPoster = false
+    /// Spoiler protection for an unwatched episode's still.
+    var hidesStill = false
 
     var body: some View {
         GeometryReader { geometry in
@@ -68,7 +70,7 @@ struct WatchPartyBackdrop: View {
                     AsyncImageView(url: url, thumbhash: thumbhash, contentMode: .fill, placeholderStyle: .clear)
                         .frame(width: geometry.size.width, height: geometry.size.height)
                         .clipped()
-                        .blur(radius: isPoster ? 28 : 0)
+                        .blur(radius: isPoster ? 28 : (hidesStill ? EpisodeSpoilerBlur.radius : 0))
                         .opacity(isPoster ? 0.7 : 1)
                         .transition(.opacity)
                 }

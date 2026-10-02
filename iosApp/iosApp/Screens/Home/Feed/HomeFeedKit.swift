@@ -370,6 +370,9 @@ struct HomePosterCard: View {
             contentMode: .fill
         )
         .frame(width: width, height: height)
+        .episodeSpoilerBlur(item.isEpisodeItem && EpisodeSpoilerPreferences.shared.settings.hidesImage(
+            for: EpisodeWatchState(sectionItem: item, playedOverride: playedOverride), isEpisodeStill: item.posterIsEpisodeStill
+        ))
         .clipped()
         .clipShape(RoundedRectangle(cornerRadius: HomeFeedMetrics.posterRadius, style: .continuous))
         // A hairline lifts the poster off a pure-black background. Without
@@ -491,6 +494,11 @@ struct HomeStillCard: View {
         return (item.posterUrl ?? "", item.posterThumbhash)
     }
 
+    /// Protect the selected episode still while preserving fallback artwork.
+    private var hidesStill: Bool {
+        return EpisodeSpoilerPreferences.shared.settings.hidesImage(for: item, playedOverride: playedOverride)
+    }
+
     var body: some View {
         HomeCardTap(
             contentId: item.contentId,
@@ -524,6 +532,7 @@ struct HomeStillCard: View {
                 contentMode: .fill
             )
             .frame(width: width, height: height)
+            .episodeSpoilerBlur(hidesStill)
             .clipped()
 
             // Scrim so the play affordance and rail stay legible over bright

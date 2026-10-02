@@ -304,6 +304,7 @@ struct ContentView: View {
                 await CurrentProfileStore.shared.refresh()
                 await uiCustomization.refresh()
                 await SeekIntervalPreferences.shared.refresh()
+                await EpisodeSpoilerPreferences.shared.refresh()
                 #if os(iOS)
                 await ApplePushRegistrationCoordinator.shared.prepareForAuthenticatedProfile()
                 #endif
@@ -352,6 +353,7 @@ struct ContentView: View {
             if router.authState == .authenticated {
                 await uiCustomization.refresh()
                 await SeekIntervalPreferences.shared.refresh()
+                await EpisodeSpoilerPreferences.shared.refresh()
                 // The one hydration whose outcome is never optional: `clear()`
                 // above guarantees a real fetch, so the wrapper's
                 // short-circuit case cannot apply here and a failure leaves
@@ -370,6 +372,7 @@ struct ContentView: View {
             if router.authState == .authenticated {
                 await uiCustomization.refresh()
                 await SeekIntervalPreferences.shared.refresh()
+                await EpisodeSpoilerPreferences.shared.refresh()
                 #if os(iOS) || os(tvOS)
                 await diagnosticsModel.handleForeground()
                 #endif
@@ -465,6 +468,7 @@ struct ContentView: View {
             Task { await SubtitleProvidersStore.shared.refresh() }
             Task { await uiCustomization.refresh() }
             Task { await SeekIntervalPreferences.shared.refresh() }
+            Task { await EpisodeSpoilerPreferences.shared.refresh() }
             #if os(iOS)
             Task {
                 await ApplePushRegistrationCoordinator.shared.prepareForAuthenticatedProfile()

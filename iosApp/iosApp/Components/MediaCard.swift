@@ -59,6 +59,8 @@ struct MediaCard: View {
     let title: String
     let posterUrl: String
     var thumbhash: String? = nil
+    var episodeWatchState: EpisodeWatchState? = nil
+    var imageIsEpisodeStill: Bool? = nil
     var year: Int? = nil
     /// Secondary caption line drawn in place of the year — episode cards pass
     /// "S01E02 · Pilot" so the code and episode title sit under the series
@@ -352,6 +354,12 @@ struct MediaCard: View {
 
     // MARK: - Subviews
 
+    private var hidesEpisodeStill: Bool {
+        guard var state = episodeWatchState else { return false }
+        state.played = playedOverride ?? state.played
+        return EpisodeSpoilerPreferences.shared.settings.hidesImage(for: state, isEpisodeStill: imageIsEpisodeStill)
+    }
+
     private var posterImage: some View {
         ZStack(alignment: .bottom) {
             AsyncImageView(
@@ -360,6 +368,7 @@ struct MediaCard: View {
                 targetSize: CGSize(width: cardWidth, height: cardHeight),
                 contentMode: .fill
             )
+                .episodeSpoilerBlur(hidesEpisodeStill)
                 .frame(width: cardWidth, height: cardHeight)
                 .clipped()
                 .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))

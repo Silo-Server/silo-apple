@@ -20,63 +20,6 @@
 
 import Foundation
 
-// MARK: - Transport
-
-/// The slice of the settings API the seek intervals need. The write scope is
-/// baked in at `profile`, the only scope the contract allows for these keys.
-protocol SeekIntervalTransport: AnyObject, Sendable {
-    func contractCapabilities(
-        requestIdentity: HTTPRequestIdentity
-    ) async -> SettingsCapabilitiesResult
-    func effectiveValues(
-        keys: [SettingKey],
-        requestIdentity: HTTPRequestIdentity
-    ) async throws -> EffectiveSettingValuesResponse
-    func putProfileValue(
-        key: SettingKey,
-        value: SettingJSONValue,
-        requestIdentity: HTTPRequestIdentity
-    ) async throws
-}
-
-final class SiloSeekIntervalTransport: SeekIntervalTransport {
-    private let api: SiloAPI
-
-    init(api: SiloAPI = .shared) {
-        self.api = api
-    }
-
-    func contractCapabilities(
-        requestIdentity: HTTPRequestIdentity
-    ) async -> SettingsCapabilitiesResult {
-        await api.getContractCapabilities(requestIdentity: requestIdentity)
-    }
-
-    func effectiveValues(
-        keys: [SettingKey],
-        requestIdentity: HTTPRequestIdentity
-    ) async throws -> EffectiveSettingValuesResponse {
-        try await api.getEffectiveValues(
-            keys: keys,
-            requestIdentity: requestIdentity
-        )
-    }
-
-    func putProfileValue(
-        key: SettingKey,
-        value: SettingJSONValue,
-        requestIdentity: HTTPRequestIdentity
-    ) async throws {
-        try await api.putValue(
-            key: key,
-            scope: .profile,
-            value: value,
-            profileId: requestIdentity.profileId,
-            requestIdentity: requestIdentity
-        )
-    }
-}
-
 // MARK: - State
 
 enum SeekIntervalSyncState: Equatable, Sendable {
@@ -121,7 +64,7 @@ final class SeekIntervalPreferences {
     var statusMessage: String? { readErrorMessage ?? syncState.userMessage }
 
     @ObservationIgnored private let defaults: SharedDefaults
-    @ObservationIgnored private let transport: SeekIntervalTransport
+    @ObservationIgnored private let transport: ProfileScopedSettingTransport
     @ObservationIgnored private let requestIdentity: @MainActor () -> HTTPRequestIdentity?
     @ObservationIgnored private var loadedCacheKey: String?
     /// Last value the server confirmed per key; a failed write rolls back to
@@ -157,7 +100,7 @@ final class SeekIntervalPreferences {
 
     init(
         defaults: SharedDefaults = .shared,
-        transport: SeekIntervalTransport = SiloSeekIntervalTransport(),
+        transport: ProfileScopedSettingTransport = SiloProfileScopedSettingTransport(),
         requestIdentity: @escaping @MainActor () -> HTTPRequestIdentity? =
             SeekIntervalPreferences.activeRequestIdentity
     ) {

@@ -9,11 +9,16 @@ struct TVPlaybackSettingsPane: View {
     let detailFocus: FocusState<TVSettingsDetailFocus?>.Binding
     let presentPicker: (TVSettingsPickerRequest) -> Void
     @State private var seekIntervals = SeekIntervalPreferences.shared
+    @State private var spoilers = EpisodeSpoilerPreferences.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             streamingSection
             episodesSection
+            // Hidden entirely on servers that do not serve the two keys.
+            if spoilers.showsSettings {
+                spoilersSection
+            }
             if viewModel.hasHeldPlaybackChanges {
                 TVHeldSettingChangesRows(
                     retry: { await viewModel.retryHeldPlaybackChanges() },
@@ -29,6 +34,7 @@ struct TVPlaybackSettingsPane: View {
             resetSection
         }
         .task { await seekIntervals.refresh() }
+        .task { await spoilers.refresh() }
     }
 
     // MARK: - Sections
@@ -154,6 +160,44 @@ struct TVPlaybackSettingsPane: View {
             viewModel.skipCredits = value
             Task { await viewModel.setSkipCredits(value) }
         }
+    }
+
+    /// Profile-wide spoiler switches. The row has no description slot, so the
+    /// footer carries both descriptions and the scope note.
+    @ViewBuilder
+    private var spoilersSection: some View {
+        TVSettingsSectionHeader("SPOILERS")
+
+        ForEach(EpisodeSpoilerSetting.allCases, id: \.self) { setting in
+            TVSettingsToggleRow(
+                title: setting == .images
+                    ? "Blur unwatched episode images"
+                    : "Hide unwatched episode descriptions",
+                isOn: spoilers.settings[setting]
+            ) {
+                spoilers.set(setting, to: !spoilers.settings[setting])
+            }
+            .disabled(!spoilers.allowsEditing)
+        }
+
+        TVSettingsFooter(spoilersFooter)
+    }
+
+    private var spoilersFooter: String {
+        var lines = [
+            "Blur an episode's thumbnail until you start watching it, so the image does not give away the story.",
+            "Hide an episode's description until you start watching it.",
+            "Applies to episodes you have not started, on every device that uses this profile.",
+        ]
+        if let status = spoilers.statusMessage {
+            lines.append(status)
+        }
+        for setting in EpisodeSpoilerSetting.allCases {
+            if let error = spoilers.writeErrors[setting.key] {
+                lines.append(error)
+            }
+        }
+        return lines.joined(separator: " ")
     }
 
     /// "Video" and "Audiobooks" groups. The values belong to the profile on

@@ -20,6 +20,8 @@ struct BrowseItem: Codable, Identifiable, Hashable {
     let networks: [String]?
     let showStatus: String?
     let overview: String?
+    var posterIsEpisodeStill: Bool? = nil
+    var backdropIsEpisodeStill: Bool? = nil
     @ArtworkURL var posterUrl: String? = nil
     let posterThumbhash: String?
     @ArtworkURL var backdropUrl: String? = nil
@@ -50,6 +52,8 @@ struct BrowseItem: Codable, Identifiable, Hashable {
         networks = try c.decodeIfPresent([String].self, forKey: .networks)
         showStatus = try c.decodeIfPresent(String.self, forKey: .showStatus)
         overview = try c.decodeIfPresent(String.self, forKey: .overview)
+        posterIsEpisodeStill = try c.decodeIfPresent(Bool.self, forKey: .posterIsEpisodeStill)
+        backdropIsEpisodeStill = try c.decodeIfPresent(Bool.self, forKey: .backdropIsEpisodeStill)
         posterUrl = try c.decode(ArtworkURL.self, forKey: .posterUrl).wrappedValue
         posterThumbhash = try c.decodeIfPresent(String.self, forKey: .posterThumbhash)
         backdropUrl = try c.decode(ArtworkURL.self, forKey: .backdropUrl).wrappedValue
@@ -163,6 +167,8 @@ struct SectionItem: Codable, Identifiable, Hashable {
     let positionSeconds: Double?
     let durationSeconds: Double?
     let progressUpdatedAt: String?
+    var posterIsEpisodeStill: Bool? = nil
+    var backdropIsEpisodeStill: Bool? = nil
     @ArtworkURL var posterUrl: String? = nil
     let posterThumbhash: String?
     @ArtworkURL var backdropUrl: String? = nil
@@ -200,6 +206,8 @@ struct SectionItem: Codable, Identifiable, Hashable {
         self.positionSeconds = positionSeconds
         self.durationSeconds = durationSeconds
         progressUpdatedAt = nil
+        posterIsEpisodeStill = item.posterIsEpisodeStill
+        backdropIsEpisodeStill = item.backdropIsEpisodeStill
         posterUrl = item.posterUrl
         posterThumbhash = item.posterThumbhash
         backdropUrl = item.backdropUrl
@@ -236,6 +244,8 @@ struct SectionItem: Codable, Identifiable, Hashable {
         positionSeconds = try c.decodeIfPresent(Double.self, forKey: .positionSeconds)
         durationSeconds = try c.decodeIfPresent(Double.self, forKey: .durationSeconds)
         progressUpdatedAt = try c.decodeIfPresent(String.self, forKey: .progressUpdatedAt)
+        posterIsEpisodeStill = try c.decodeIfPresent(Bool.self, forKey: .posterIsEpisodeStill)
+        backdropIsEpisodeStill = try c.decodeIfPresent(Bool.self, forKey: .backdropIsEpisodeStill)
         posterUrl = try c.decode(ArtworkURL.self, forKey: .posterUrl).wrappedValue
         posterThumbhash = try c.decodeIfPresent(String.self, forKey: .posterThumbhash)
         backdropUrl = try c.decode(ArtworkURL.self, forKey: .backdropUrl).wrappedValue
@@ -467,6 +477,8 @@ struct ItemDetail: Codable {
     let releaseDate: String?
     let firstAirDate: String?
     let lastAirDate: String?
+    var posterIsEpisodeStill: Bool? = nil
+    var backdropIsEpisodeStill: Bool? = nil
     @ArtworkURL var posterUrl: String? = nil
     let posterThumbhash: String?
     @ArtworkURL var backdropUrl: String? = nil
@@ -787,6 +799,7 @@ struct EpisodeListItem: Codable, Identifiable, Hashable {
     let imdbId: String?
     let tmdbId: String?
     let tvdbId: String?
+    var stillIsEpisodeStill: Bool? = nil
     @ArtworkURL var stillUrl: String? = nil
     let stillThumbhash: String?
     let userData: LeafItemUserData?

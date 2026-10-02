@@ -63,6 +63,9 @@ struct PlayerNextUpEpisode: Identifiable, Hashable {
     let stillUrl: String?
     let stillThumbhash: String?
     let airDate: String?
+    /// The profile's watch state for the next episode, so the Up Next screen
+    /// can apply spoiler protection.
+    let watchState: EpisodeWatchState
 
     var id: String { contentId }
     var episodeLabel: String { "S\(seasonNumber):E\(episodeNumber)" }
@@ -84,6 +87,7 @@ struct PlayerNextUpEpisode: Identifiable, Hashable {
         stillUrl = episode.stillUrl
         stillThumbhash = episode.stillThumbhash
         airDate = episode.airDate
+        watchState = EpisodeWatchState(episode.userData)
     }
 }
 

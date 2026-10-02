@@ -1,8 +1,8 @@
 Source: silo-server docs/design/schemas/client-diagnostics/v1
-Server ref: 83ac7a9b3da25914a04176185fe4f3a0a98eab45
-Server commit: 83ac7a9b3da25914a04176185fe4f3a0a98eab45 (2026-09-26)
+Server ref: b7f5b7d1270b35e861a30cd75ffd3036fe1c50ea
+Server commit: b7f5b7d1270b35e861a30cd75ffd3036fe1c50ea (2026-09-30)
 
-Written by scripts/sync-apiv2-fixtures.sh 83ac7a9b3da25914a04176185fe4f3a0a98eab45, which mirrors the server
+Written by scripts/sync-apiv2-fixtures.sh b7f5b7d1270b35e861a30cd75ffd3036fe1c50ea, which mirrors the server
 directory with git show <commit>:<path>. README.md and this SOURCE are the
 only files not copied from the server. Do not hand-edit the rest.
 
