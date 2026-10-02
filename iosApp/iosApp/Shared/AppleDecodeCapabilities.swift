@@ -37,10 +37,12 @@ enum AppleDecodeCapabilities {
     /// `uname` reports the host architecture, so it reads the model it
     /// simulates instead and gets that device's capability policy.
     static let machineIdentifier: String = {
+        #if targetEnvironment(simulator)
         if let simulated = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"],
            !simulated.isEmpty {
             return simulated
         }
+        #endif
         var systemInfo = utsname()
         uname(&systemInfo)
         return withUnsafeBytes(of: &systemInfo.machine) { raw in
