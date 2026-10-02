@@ -1790,7 +1790,7 @@ actor HTTPClient {
     /// Matched by suffix: `buildRequest` keeps the server URL's base path, so
     /// the path seen at header-attachment time may be `/prefix/api/v2/...`.
     private static func isPublicAuthPath(_ path: String) -> Bool {
-        publicAuthPathSuffixes.contains { path.hasSuffix($0) }
+        publicAuthPathSuffixes.contains { path.hasSuffix($0) } || NetworkSignIn.isAPIPath(path)
     }
 
     private static let publicAuthPathSuffixes = [
@@ -1830,11 +1830,12 @@ actor HTTPClient {
             && !(method == "POST" && path.hasPrefix("/api/v2/catalog/people/") && path.hasSuffix("/refresh"))
             && !(path == "/api/v2/profiles" && method == "POST")
             // A link ticket and a link code are single use, and a credentials
-            // link checks two passwords: the first attempt may already have
-            // spent them.
+            // or network link checks the password: the first attempt may
+            // already have spent them.
             && !(method == "POST" && (path == "/api/v2/account/identities/link-ticket"
                 || path == "/api/v2/account/identities/link-complete"
-                || path == "/api/v2/account/identities/link-credentials"))
+                || path == "/api/v2/account/identities/link-credentials"
+                || path == "/api/v2/account/identities/link-network"))
             // A journaled own-profile PATCH has one dispatch, even when a
             // refresh could obtain another bearer for the same account.
             && !(method == "PATCH" && path.hasPrefix("/api/v2/profiles/")

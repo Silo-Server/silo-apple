@@ -250,9 +250,10 @@ class QRLoginViewModel: NearbySignInCodeSource {
 
     // MARK: - Password single-flight
 
-    /// Call before sending a password sign-in. Stops polling, letting a poll
-    /// already in flight finish. Returns false when the phone approval won
-    /// (the session is installed; the caller must not sign in again).
+    /// Call before sending a password or network identity sign-in. Stops
+    /// polling, letting a poll already in flight finish. Returns false when
+    /// the phone approval won (the session is installed; the caller must not
+    /// sign in again).
     func suspendForPasswordSignIn() async -> Bool {
         passwordHold = true
         napTask?.cancel()
@@ -261,8 +262,9 @@ class QRLoginViewModel: NearbySignInCodeSource {
         return true
     }
 
-    /// The password sign-in finished. On success the pending code is
-    /// withdrawn; on failure polling resumes (renewing an expired code).
+    /// The password or network identity sign-in finished. On success the
+    /// pending code is withdrawn; on failure polling resumes (renewing an
+    /// expired code).
     func finishPasswordSignIn(succeeded: Bool) {
         passwordHold = false
         if succeeded {

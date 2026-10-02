@@ -142,8 +142,9 @@ struct AccountSignInView: View {
 }
 
 /// Re-enters the Silo password, then either runs the provider sign-in that
-/// links the account (OIDC) or sends the directory username and password
-/// (LDAP).
+/// links the account (OIDC), sends the directory username and password
+/// (LDAP), or links who owns this device on the provider's network
+/// (network identity, such as Tailscale).
 private struct ConnectProviderSheet: View {
     let item: AccountSignInModel.Connectable
     @Bindable var model: AccountSignInModel
@@ -156,6 +157,9 @@ private struct ConnectProviderSheet: View {
     private enum Field: Hashable { case directoryUsername, directoryPassword, password }
 
     private var isDirectory: Bool { item.method == .directory }
+    /// Directory and network links finish in this sheet; only OIDC goes on
+    /// to the browser.
+    private var linksWithoutBrowser: Bool { item.method != .browser }
 
     private var canSubmit: Bool {
         !password.isEmpty && (!isDirectory
@@ -212,7 +216,7 @@ private struct ConnectProviderSheet: View {
                     if model.isBusy {
                         ProgressView()
                     } else {
-                        Button(isDirectory ? "Connect" : "Continue", action: connect)
+                        Button(linksWithoutBrowser ? "Connect" : "Continue", action: connect)
                             .disabled(!canSubmit)
                             .accessibilityIdentifier("accountSignIn.continue")
                     }
@@ -228,6 +232,10 @@ private struct ConnectProviderSheet: View {
     private var footer: String {
         if isDirectory {
             return "Enter your Silo password to confirm. After connecting, you sign in with your \(item.name) username and password instead."
+        }
+        if item.method == .network {
+            let who = item.provider.networkIdentity?.name.map { "\($0), " } ?? ""
+            return "Enter your Silo password to confirm. This connects \(who)the \(item.name) account this device belongs to. After connecting, you sign in with \(item.name) instead of your password."
         }
         return "Confirm your Silo password, then sign in with \(item.name). After connecting, you sign in with \(item.name) instead of your password."
     }

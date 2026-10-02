@@ -11,8 +11,11 @@ class LoginViewModel {
     var discovery: SignInDiscovery = .loading
     /// Numbers `loadSignInOptions` reads; only the newest one publishes.
     @ObservationIgnored private var discoveryReads = 0
-    /// The provider whose browser sign-in is running.
+    /// The provider whose browser or network sign-in is running.
     var providerInFlight: String?
+    /// Why the last network sign-in ("Continue as …") failed, shown under its
+    /// button rather than in the password form.
+    var networkSignInError: FormError?
 
     private let auth = AuthService.shared
 
@@ -30,6 +33,10 @@ class LoginViewModel {
     }
 
     var browserProviders: [APIv2AuthProvider] { signInOptions?.browserProviders ?? [] }
+
+    /// Network providers ("Continue as …"); discovery lists one only when this
+    /// device reached the server through that provider's network.
+    var networkProviders: [APIv2AuthProvider] { signInOptions?.networkProviders ?? [] }
 
     /// Whether the screen offers a phone route (device sign-in) beside the
     /// password form. The TV turns it off on a server without device
@@ -94,6 +101,7 @@ class LoginViewModel {
 
         isLoading = true
         error = nil
+        networkSignInError = nil
         defer { isLoading = false }
 
         do {
@@ -104,6 +112,28 @@ class LoginViewModel {
         } catch let loginError {
             self.error = FormError(Self.message(for: loginError, browserProviders: browserProviders,
                 phoneHint: phoneHint, offersPhoneRoute: offersPhoneRoute))
+            return false
+        }
+    }
+
+    /// Signs this device's owner in through a network provider ("Continue
+    /// as …"), then routes on like a password sign-in. Returns whether it
+    /// succeeded. A refusal shows under the button (`networkSignInError`).
+    @MainActor
+    @discardableResult
+    func signInWithNetworkIdentity(_ provider: APIv2AuthProvider, router: AppRouter) async -> Bool {
+        guard !isBusy else { return false }
+        providerInFlight = provider.id
+        error = nil
+        networkSignInError = nil
+        defer { providerInFlight = nil }
+        do {
+            try await auth.signInWithNetworkIdentity(provider)
+            await StartupContentPrefetcher.prefetchProfiles()
+            router.showProfileSelection()
+            return true
+        } catch {
+            networkSignInError = NetworkSignIn.signInMessage(for: error, provider: provider).map(FormError.init)
             return false
         }
     }
@@ -122,6 +152,7 @@ class LoginViewModel {
             afterSignOut: prompt.isRequested(serverId: serverId))
         providerInFlight = provider.id
         error = nil
+        networkSignInError = nil
         defer { providerInFlight = nil }
         do {
             try await ExternalSignInService.live.signIn(with: provider, selectAccount: selectAccount)
@@ -240,5 +271,5 @@ class LoginViewModel {
         #endif
     }
 
-    private static let rateLimitedMessage = "Too many sign-in attempts. Wait a moment, then try again."
+    static let rateLimitedMessage = "Too many sign-in attempts. Wait a moment, then try again."
 }

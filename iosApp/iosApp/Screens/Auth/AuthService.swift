@@ -246,14 +246,34 @@ final class AuthService: @unchecked Sendable {
     /// that verified account id. A v1-only server is refused before the
     /// request leaves the device (`APIv2Error.serverUpdateRequired`).
     func login(username: String, password: String) async throws {
+        try await signIn { [apiV2Client] expectedAccount in
+            try await apiV2Client.login(username: username, password: password, expectedAccount: expectedAccount)
+        }
+    }
+
+    /// Network identity sign-in (`signInWithNetworkIdentity`) through
+    /// `provider`, a network provider discovery listed for the active server:
+    /// `{}` posted to its sign-in path on the saved base URL, with no password
+    /// and no bearer. The provider's network says who owns this device. The
+    /// token pair is installed exactly as a password sign-in's.
+    func signInWithNetworkIdentity(_ provider: APIv2AuthProvider) async throws {
+        guard let apiPath = NetworkSignIn.apiPath(of: provider) else {
+            throw HTTPError.invalidURL(provider.networkSignInPath ?? "")
+        }
+        try await signIn { [apiV2Client] expectedAccount in
+            try await apiV2Client.signInWithNetworkIdentity(apiPath: apiPath, expectedAccount: expectedAccount)
+        }
+    }
+
+    /// A sign-in that answers a token pair for the active server, installed
+    /// under the account identity captured before the request was sent.
+    private func signIn(
+        _ request: (RefreshAccountIdentity) async throws -> APIv2LoginTokens
+    ) async throws {
         guard let expectedAccount = await tokenStore.refreshAccountIdentity() else {
             throw HTTPError.serverUrlNotConfigured
         }
-        let tokens = try await apiV2Client.login(
-            username: username,
-            password: password,
-            expectedAccount: expectedAccount
-        )
+        let tokens = try await request(expectedAccount)
         try await installSession(
             accessToken: tokens.accessToken,
             refreshToken: tokens.refreshToken,

@@ -98,8 +98,8 @@ SELECTED=(
   get_device_login_capability_ok
   notification_apple_push_display
   # External sign-in: provider discovery, the native OAuth completion, account
-  # identities (browser and directory linking) and the refresh a provider
-  # re-check refuses.
+  # identities (browser, directory and network linking), network identity
+  # sign-in, and the refresh a provider re-check refuses.
   list_auth_providers_ok
   get_oauth_handshake_capabilities_ok
   get_external_sign_in_capabilities_ok
@@ -112,6 +112,9 @@ SELECTED=(
   delete_account_identity_last_sign_in_method
   link_account_identity_with_credentials_ok
   link_account_identity_with_credentials_directory_refused
+  sign_in_with_network_identity_ok
+  sign_in_with_network_identity_off_overlay
+  link_account_identity_with_network_ok
   refresh_session_provider_unavailable
 )
 

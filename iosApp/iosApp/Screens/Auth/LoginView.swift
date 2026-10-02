@@ -58,6 +58,17 @@ struct LoginView: View {
                     .padding(.vertical, 12)
                 }
 
+                if !viewModel.networkProviders.isEmpty {
+                    networkButtons
+                    if let error = viewModel.networkSignInError {
+                        AuroraErrorLabel(error.message)
+                            .accessibilityIdentifier("login.networkError")
+                    }
+                    if !viewModel.browserProviders.isEmpty || viewModel.showsPasswordForm {
+                        orDivider
+                    }
+                }
+
                 if !viewModel.browserProviders.isEmpty {
                     providerButtons
                     if viewModel.offersAccountChoice {
@@ -90,8 +101,10 @@ struct LoginView: View {
             .padding(22)
             .auroraGlass(cornerRadius: 24, emphasized: true)
             .animation(.easeInOut(duration: 0.2), value: viewModel.error)
+            .animation(.easeInOut(duration: 0.2), value: viewModel.networkSignInError)
             .animation(.easeInOut(duration: 0.2), value: viewModel.discovery)
             .sensoryFeedback(.error, trigger: viewModel.error) { _, error in error != nil }
+            .sensoryFeedback(.error, trigger: viewModel.networkSignInError) { _, error in error != nil }
         }
         .navigationBarBackButtonHidden()
         .task {
@@ -149,12 +162,50 @@ struct LoginView: View {
         }
     }
 
-    /// One button per browser provider. Without a password form the first is
-    /// the screen's primary action.
+    /// "Continue as <name>" per network provider: this device's owner signs
+    /// in with no password and no browser. Discovery lists one only when the
+    /// app reached the server through that provider's network, so when it
+    /// shows it is the quickest way in and leads the screen.
+    private var networkButtons: some View {
+        VStack(spacing: 12) {
+            ForEach(viewModel.networkProviders, id: \.id) { provider in
+                let inFlight = viewModel.providerInFlight == provider.id
+                Button {
+                    signInWithNetworkIdentity(provider)
+                } label: {
+                    HStack(spacing: 10) {
+                        if !inFlight {
+                            ProviderIconView(url: SignInOptions.iconURL(for: provider, serverURL: AuthService.shared.serverUrl))
+                        }
+                        VStack(spacing: 2) {
+                            Text(inFlight ? "Signing in…" : NetworkSignIn.buttonTitle(for: provider))
+                                .lineLimit(2)
+                                .multilineTextAlignment(.center)
+                            if !inFlight, let via = NetworkSignIn.viaLine(for: provider) {
+                                Text(via)
+                                    .font(.siloCaption)
+                                    .opacity(0.75)
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+                }
+                .buttonStyle(AuroraPrimaryButtonStyle(isLoading: inFlight))
+                .disabled(viewModel.isBusy)
+                .accessibilityLabel(inFlight ? "Signing in…" : NetworkSignIn.accessibilityLabel(for: provider))
+                .accessibilityIdentifier("login.network.\(provider.id)")
+            }
+        }
+    }
+
+    /// One button per browser provider. Without a password form or a
+    /// network sign-in the first is the screen's primary action.
     private var providerButtons: some View {
         VStack(spacing: 12) {
             ForEach(Array(viewModel.browserProviders.enumerated()), id: \.element.id) { index, provider in
-                let isPrimary = index == 0 && !viewModel.showsPasswordForm
+                let isPrimary = index == 0 && !viewModel.showsPasswordForm && viewModel.networkProviders.isEmpty
                 let inFlight = viewModel.providerInFlight == provider.id
                 Button {
                     signIn(with: provider)
@@ -230,6 +281,12 @@ struct LoginView: View {
     private func signIn() {
         guard !viewModel.isBusy else { return }
         Task { await viewModel.login(router: router) }
+    }
+
+    private func signInWithNetworkIdentity(_ provider: APIv2AuthProvider) {
+        guard !viewModel.isBusy else { return }
+        focusedField = nil
+        Task { await viewModel.signInWithNetworkIdentity(provider, router: router) }
     }
 
     private func signIn(with provider: APIv2AuthProvider, choosingAccount: Bool = false) {

@@ -14,6 +14,9 @@ final class AccountSignInModel {
             case browser
             /// LDAP: local password plus the directory username and password.
             case directory
+            /// A network identity provider (Tailscale): local password only;
+            /// the provider's network says who owns this device.
+            case network
         }
 
         let provider: APIv2AuthProvider
@@ -96,7 +99,8 @@ final class AccountSignInModel {
             errorMessage = Self.message(for: error, action: .load)
         }
         connectable = Self.connectable(providers: providers?.items ?? [], oauth: oauth,
-            credentialsLinking: capabilities.supportsCredentialsLinking, linked: identities)
+            credentialsLinking: capabilities.supportsCredentialsLinking,
+            networkLinking: capabilities.supportsNetworkSignIn, linked: identities)
         // Last, so the entry never shows before the state it leads to.
         isSupported = true
     }
@@ -104,10 +108,12 @@ final class AccountSignInModel {
     /// The external providers the account has no identity at, with how each
     /// connects. A browser provider needs the handshake document's app
     /// linking (`linking`); a directory needs the external sign-in
-    /// document's `credentials_linking`. Servers without them list nothing
-    /// to connect.
+    /// document's `credentials_linking`, and a network provider its
+    /// `network_sign_in`. Servers without them list nothing to connect.
+    /// Discovery lists a network provider only over its own network, so it
+    /// is offered only while this device reaches the server that way.
     nonisolated static func connectable(providers: [APIv2AuthProvider], oauth: APIv2OAuthCapabilities?,
-                                        credentialsLinking: Bool,
+                                        credentialsLinking: Bool, networkLinking: Bool = false,
                                         linked: [APIv2AccountIdentity]) -> [Connectable] {
         let linkedInstallations = Set(linked.map(\.installationId))
         return providers.compactMap { provider in
@@ -120,13 +126,17 @@ final class AccountSignInModel {
             if provider.isCredentials, credentialsLinking {
                 return Connectable(provider: provider, method: .directory)
             }
+            if provider.isNetwork, networkLinking {
+                return Connectable(provider: provider, method: .network)
+            }
             return nil
         }
     }
 
     /// Connects `provider` after the local password is re-entered: through
-    /// the browser for OIDC, with `directory` credentials for LDAP. Closing
-    /// the browser sheet is not an error.
+    /// the browser for OIDC, with `directory` credentials for LDAP, and with
+    /// the password alone for a network provider. Closing the browser sheet
+    /// is not an error.
     @discardableResult
     func connect(_ provider: APIv2AuthProvider, password: String,
                  directory: DirectoryCredentials? = nil) async -> Bool {
@@ -149,6 +159,8 @@ final class AccountSignInModel {
         do {
             if provider.isCredentials, let directory {
                 try await linkDirectory(provider, password: password, directory: directory)
+            } else if provider.isNetwork {
+                try await linkNetwork(provider, password: password)
             } else {
                 try await link(provider, password)
             }
@@ -160,7 +172,9 @@ final class AccountSignInModel {
         } catch is CancellationError {
             return false
         } catch {
-            errorMessage = Self.message(for: error, action: .connect)
+            errorMessage = provider.isNetwork
+                ? NetworkSignIn.linkMessage(for: error, provider: provider)
+                : Self.message(for: error, action: .connect)
             return false
         }
     }
@@ -175,6 +189,17 @@ final class AccountSignInModel {
             installationId: installationId, password: password,
             username: directory.username.trimmingCharacters(in: .whitespaces),
             directoryPassword: directory.password, expectedAccount: account)
+    }
+
+    /// Links the network identity of this device. The server asks the
+    /// provider who owns the device that sent the request.
+    private func linkNetwork(_ provider: APIv2AuthProvider, password: String) async throws {
+        guard let installationId = provider.installationId,
+              let account = await tokenStore.refreshAccountIdentity() else {
+            throw HTTPError.serverUrlNotConfigured
+        }
+        _ = try await api.linkIdentityWithNetwork(installationId: installationId, password: password,
+            expectedAccount: account)
     }
 
     /// Disconnects `identity`; the server refuses the account's last way to
@@ -204,6 +229,9 @@ final class AccountSignInModel {
     /// account screen's note when the server says so up front (`can_unlink`).
     nonisolated static let onlySignInMethodMessage = "This is your only way to sign in, so it can't be disconnected. Ask an administrator to set a password for your account first."
 
+    /// The provider is not (or no longer) an enabled provider of its kind.
+    nonisolated static let providerGoneMessage = "The sign-in provider is no longer available on this server."
+
     /// Copy for a failed action. Problem identifiers name the server's
     /// refusals; the problem's own text is never shown for these.
     nonisolated static func message(for error: Error, action: Action) -> String {
@@ -228,7 +256,7 @@ final class AccountSignInModel {
                 // The link ticket answers a plain conflict for the same case.
                 return "Your account has no Silo password to confirm with. Ask an administrator to connect the provider."
             case (.connect, _, 404):
-                return "The sign-in provider is no longer available on this server."
+                return providerGoneMessage
             case (.disconnect, _, 404):
                 return "That connection no longer exists."
             case (_, "provider_unavailable", _), (_, _, 503):

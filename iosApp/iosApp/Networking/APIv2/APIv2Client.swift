@@ -1149,8 +1149,9 @@ struct APIv2Client: Sendable {
     }
 
     /// One public dispatch that answers a login token pair (`login`,
-    /// `completeOAuthLogin`): refused when the active account changed while
-    /// it ran, and when the pair or its account is missing.
+    /// `completeOAuthLogin`, `signInWithNetworkIdentity`): refused when the
+    /// active account changed while it ran, and when the pair or its account
+    /// is missing.
     func postForLoginTokens(path: String, body: Data,
                             expectedAccount: RefreshAccountIdentity) async throws -> APIv2LoginTokens {
         try await gate()
