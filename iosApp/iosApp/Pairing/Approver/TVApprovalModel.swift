@@ -106,6 +106,10 @@ final class TVApprovalModel {
         case approving(TVApprovalRequest)
         /// Approved. `tvSignedIn` flips once the TV collected its session.
         case approved(TVApprovalRequest, tvSignedIn: Bool)
+        /// The approve answer was lost: the server may have taken it or still
+        /// be applying it. The card follows the request until the server
+        /// says, and this model approves nothing else meanwhile.
+        case unconfirmed(TVApprovalRequest)
         /// "Not now" is being sent.
         case declining(TVApprovalRequest)
         /// This device declined the request.
@@ -158,7 +162,17 @@ final class TVApprovalModel {
 
     private var serverName: String { server.displayName }
 
+    /// Whether an approval's outcome is unknown: sent and not answered, or
+    /// answered with nothing. No lookup reopens the review meanwhile.
+    private var approvalInDoubt: Bool {
+        switch phase {
+        case .approving, .unconfirmed: return true
+        default: return false
+        }
+    }
+
     func lookUp() async {
+        guard !approvalInDoubt else { return }
         phase = .lookingUp
         guard let bearer = await bearerOrFailure() else { return }
         do {
@@ -198,6 +212,8 @@ final class TVApprovalModel {
             // that is not the account the card showed, show the card again.
             let account = await api.accountName(serverURL: server.url, bearer: bearer)
             guard let account, account == request.accountName else {
+                // Nothing was sent, so the review can be read again.
+                phase = .lookingUp
                 await lookUp()
                 return
             }
@@ -213,43 +229,13 @@ final class TVApprovalModel {
                 phase = failure(for: error, notFound: .expired)
                 return
             }
-            await confirmLostApproval(request, bearer: bearer)
+            // The answer was lost, not the approval: follow the request
+            // until the server says what happened. The phone never sends
+            // approve again by itself.
+            phase = .unconfirmed(request)
+            watch(request, bearer: bearer)
         }
     }
-
-    /// The approve answer was lost, so the server may have taken the
-    /// approval or still be applying it. Stay in `.approving` (the card
-    /// offers nothing to tap) and read the request back a few times. Never
-    /// call it failed while it may still land; the server applies an
-    /// approval once, and repeating it for the same account is a no-op.
-    private func confirmLostApproval(_ request: TVApprovalRequest, bearer: String) async {
-        for attempt in 0..<Self.lostApprovalReads {
-            if attempt > 0 { try? await Task.sleep(for: watchInterval) }
-            switch try? await api.lookup(serverURL: server.url, bearer: bearer, code: code).status {
-            case "approved"?:
-                phase = .approved(request, tvSignedIn: false)
-                watch(request, bearer: bearer)
-                return
-            case "consumed"?:
-                phase = .approved(request, tvSignedIn: true)
-                return
-            case "denied"?:
-                phase = .declinedElsewhere
-                return
-            case "canceled"?:
-                phase = .canceled
-                return
-            case "expired"?:
-                phase = .expired
-                return
-            default: // still pending, or unreadable
-                continue
-            }
-        }
-        phase = .failed("Couldn't confirm that \(serverName) approved the TV. If the TV is still waiting, approve its code again.")
-    }
-
-    private static let lostApprovalReads = 3
 
     /// "Not now": deny the request. The TV stops waiting and says the
     /// sign-in was declined. `declined` shows only once the server took it.
@@ -271,7 +257,9 @@ final class TVApprovalModel {
     }
 
     /// Follow the request until the TV collected its session, so the card
-    /// can say "Your TV is signed in." Bounded; lookups are rate-limited.
+    /// can say "Your TV is signed in", or, after a lost approve answer,
+    /// until the server shows whether it took the approval. Bounded;
+    /// lookups are rate-limited.
     private func watch(_ request: TVApprovalRequest, bearer: String) {
         watchTask?.cancel()
         let api = self.api, server = self.server, code = self.code
@@ -281,8 +269,15 @@ final class TVApprovalModel {
                 try? await Task.sleep(for: interval)
                 guard !Task.isCancelled else { return }
                 let status = try? await api.lookup(serverURL: server.url, bearer: bearer, code: code).status
-                guard let self, case .approved = self.phase else { return }
+                guard let self else { return }
+                switch self.phase {
+                case .approved, .unconfirmed: break
+                default: return
+                }
                 switch status {
+                case "approved"?:
+                    if case .unconfirmed = self.phase { self.phase = .approved(request, tvSignedIn: false) }
+                    continue
                 case "consumed"?:
                     self.phase = .approved(request, tvSignedIn: true)
                     return

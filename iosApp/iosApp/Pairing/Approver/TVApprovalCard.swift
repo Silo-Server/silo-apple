@@ -42,6 +42,11 @@ struct TVApprovalCard: View {
                     detail: signedIn ? "\(request.deviceName) can choose a profile now." : nil
                 )
                 closeButton("Done")
+            case .unconfirmed:
+                result(symbol: "questionmark.circle", tint: .orange,
+                       title: "Couldn't confirm the approval yet.",
+                       detail: "Check the TV. This updates when \(model.server.displayName) confirms it.")
+                closeButton("Close")
             case .declined:
                 result(symbol: "xmark.circle", tint: .secondary, title: "Sign-in declined.",
                        detail: "The TV shows that you declined.")

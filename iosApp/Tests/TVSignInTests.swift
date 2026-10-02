@@ -350,32 +350,55 @@ final class TVSignInTests: XCTestCase {
         guard case .approved = model.phase else { return XCTFail("\(model.phase)") }
     }
 
-    /// An approval whose answer was lost is read back before the card says
-    /// anything: the server may have taken it, or still be applying it. A
-    /// request that stays pending is reported as unconfirmed, not failed.
+    /// An approval whose answer was lost is never reported as failed: the
+    /// server may have taken it or still be applying it. The card follows
+    /// the request until the server says, and nothing reopens the review
+    /// meanwhile.
     @MainActor
-    func testLostApprovalAnswerIsReadBack() async {
-        func approve(after readBack: [String]) async -> TVApprovalModel.Phase {
+    func testLostApprovalAnswerIsFollowedUntilTheServerSays() async throws {
+        func approve(after readBack: [String], waitingUpTo wait: TimeInterval = 5,
+                     until done: (TVApprovalModel.Phase) -> Bool) async throws -> TVApprovalModel.Phase {
             let api = FakeTVApprovalAPI()
             api.lookups = (["pending"] + readBack).map {
                 DeviceLookupResponse(matchCode: "w", deviceName: "TV", devicePlatform: "tvos", status: $0)
             }
             api.approveError = URLError(.networkConnectionLost)
             let model = TVApprovalModel(server: Self.home, code: "48217730", api: api,
-                watchInterval: .milliseconds(1), watchLimit: 0)
+                watchInterval: .milliseconds(5), watchLimit: 6)
             await model.lookUp()
             await model.approve()
+            guard case .unconfirmed = model.phase else {
+                XCTFail("a lost answer is not a failure: \(model.phase)")
+                return model.phase
+            }
+            // A lookup while the outcome is unknown doesn't reopen the review.
+            await model.lookUp()
+            guard case .unconfirmed = model.phase else {
+                XCTFail("the review reopened: \(model.phase)")
+                return model.phase
+            }
+            let deadline = Date().addingTimeInterval(wait)
+            while Date() < deadline, !done(model.phase) {
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            model.stop()
             XCTAssertEqual(api.approved.count, 1, "an approval is sent once")
             return model.phase
         }
-        var phase = await approve(after: ["approved"])
-        guard case .approved(_, tvSignedIn: false) = phase else { return XCTFail("\(phase)") }
-        phase = await approve(after: ["consumed"])
+        var phase = try await approve(after: ["pending", "pending", "approved"]) { Self.isApproved($0) }
+        guard case .approved(_, tvSignedIn: false) = phase else { return XCTFail("a late approval lands: \(phase)") }
+        phase = try await approve(after: ["consumed"]) { Self.isApproved($0) }
         guard case .approved(_, tvSignedIn: true) = phase else { return XCTFail("\(phase)") }
-        phase = await approve(after: ["pending", "approved"])
-        guard case .approved = phase else { return XCTFail("a late approval still lands: \(phase)") }
-        phase = await approve(after: ["pending"])
-        XCTAssertEqual(phase, .failed("Couldn't confirm that Home approved the TV. If the TV is still waiting, approve its code again."))
+        phase = try await approve(after: ["expired"]) { $0 == .expired }
+        XCTAssertEqual(phase, .expired)
+        // Still pending or unreadable once following ends: unconfirmed, never failed.
+        phase = try await approve(after: ["pending"], waitingUpTo: 0.3) { _ in false }
+        guard case .unconfirmed = phase else { return XCTFail("\(phase)") }
+    }
+
+    private static func isApproved(_ phase: TVApprovalModel.Phase) -> Bool {
+        if case .approved = phase { return true }
+        return false
     }
 
     /// "Not now" reads as declined only once the server took the denial,

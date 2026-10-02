@@ -40,6 +40,11 @@ struct ContentView: View {
     /// intent. Async play lookups must still own this revision before they can
     /// present anything.
     @State private var deepLinkRevision: UInt = 0
+    #if os(iOS)
+    /// `deepLinkRevision` when a TV approval was set aside for a sign-in. A
+    /// link accepted after that is newer and wins; the approval is dropped.
+    @State private var deferredApprovalRevision: UInt?
+    #endif
     @State private var playDeepLinkTask: Task<Void, Never>?
     /// `downloadsEnabled == false` is ambiguous until the current scope's
     /// capability refresh finishes. Keep Downloads links queued during that
@@ -123,9 +128,11 @@ struct ContentView: View {
             }, onSignIn: { server, pending in
                 // Sign in to that saved server again, then come back here.
                 deviceApprovalLink = nil
+                deferredApprovalRevision = deepLinkRevision
                 router.signIn(forTVApproval: pending, on: server)
             }, onSwitchAccount: { server, pending, choosingAccount in
                 deviceApprovalLink = nil
+                deferredApprovalRevision = deepLinkRevision
                 router.switchAccount(forTVApproval: pending, on: server, choosingAccount: choosingAccount)
             }, onClose: { deviceApprovalLink = nil })
         }
@@ -298,9 +305,10 @@ struct ContentView: View {
                 // "Not you? Switch account", or a newly added server).
                 // Approval is account-level, so it reopens before a profile
                 // is picked; other links still wait for one.
-                if let link = router.takePendingDeviceApproval() {
+                if let link = router.takePendingDeviceApproval(), deferredApprovalRevision == deepLinkRevision {
                     pendingDeepLink = link.url
                 }
+                deferredApprovalRevision = nil
                 if router.authState == .needsProfile, let url = pendingDeepLink, DeviceApprovalLink(url: url) != nil {
                     pendingDeepLink = nil
                     handleDeepLink(url, revision: deepLinkRevision)
