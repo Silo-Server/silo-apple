@@ -584,6 +584,12 @@ struct TVMainTabView: View {
                 anchor: UnitPoint(x: anchorX, y: 0)
             )
             .allowsHitTesting(isActive)
+            // Hidden panels stay mounted but must not take part in focus.
+            // Opacity and `allowsHitTesting` don't stop the tvOS focus engine
+            // treating their frames as occluders, so rows of a page panel
+            // drawn beneath them (the Watchlist/Favorites Sort panel's
+            // "Title" row) could never receive focus.
+            .disabled(!isActive)
             .accessibilityHidden(!isActive)
             .animation(
                 reduceMotion ? nil : .easeOut(duration: SiloTheme.Skyline.topMenuPanelOpenDuration),
