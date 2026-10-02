@@ -738,6 +738,7 @@ final class DownloadManager {
         guard downloadsEnabled else { return }
         await reconcileWithServer(triggerPipeline: true)
         await runMonitoringAndProgressSync()
+        await revalidateStoredSubtitles()
     }
 
     /// Sign-out: stop active transfers and drop in-memory state. On-disk
@@ -1447,9 +1448,13 @@ final class DownloadManager {
             let ext = (subtitle.format ?? "srt").lowercased()
             let filename = "sub_\(index).\(ext)"
             let data: Data
+            let entityTag: String?
             do {
-                data = try await SiloAPI.shared.apiV2Client.downloadAsset(path: subtitle.fetchUrl, downloadId: recordId,
-                    auth: owner.auth)
+                let result = try await SiloAPI.shared.apiV2Client.revalidateDownloadSubtitle(
+                    path: subtitle.fetchUrl, downloadId: recordId, entityTag: nil, auth: owner.auth)
+                guard case .changed(let body, let tag) = result else { continue }
+                data = body
+                entityTag = tag
             } catch {
                 Self.logger.warning("download subtitle fetch failed: \(String(describing: error), privacy: .public)")
                 continue
@@ -1462,9 +1467,80 @@ final class DownloadManager {
             try? data.write(to: url, options: .atomic)
             guard var record = file.records[recordId] else { continue }
             record.subtitleFilenames[subtitle.fetchUrl] = filename
+            if Self.isStoredSubtitleReference(subtitle.fetchUrl) {
+                record.setSubtitleEntityTag(entityTag, for: subtitle.fetchUrl)
+            }
             file.records[recordId] = record
         }
         persist()
+    }
+
+    /// When saved stored subtitles were last revalidated in this process.
+    private var lastStoredSubtitleRevalidation: Date?
+    private static let storedSubtitleRevalidationInterval: TimeInterval = 15 * 60
+
+    /// Fetches again each stored (`downloaded:{id}`) subtitle of a finished
+    /// download whose timing changed on the server since it was saved. The
+    /// server applies a subtitle's timing correction when it delivers the
+    /// file, and a sync or a manual adjustment changes those bytes under the
+    /// same reference. A subtitle that did not change answers 304; external
+    /// subtitles never change and are not asked about.
+    private func revalidateStoredSubtitles() async {
+        if let last = lastStoredSubtitleRevalidation,
+           Date().timeIntervalSince(last) < Self.storedSubtitleRevalidationInterval { return }
+        guard let owner = await captureScopeOwner() else { return }
+        lastStoredSubtitleRevalidation = Date()
+        var changed = false
+        var failed = false
+        let candidates = file.records.values
+            .filter { $0.localStatus == .completed && !restartOwners.fetchesAssets($0.id) }
+            .sorted { $0.id < $1.id }
+        for record in candidates {
+            let references = record.subtitleFilenames
+                .filter { Self.isStoredSubtitleReference($0.key) }
+                .sorted { $0.key < $1.key }
+            // A pipeline may have taken the record over while earlier records
+            // were being checked; never take its assets from it.
+            guard !references.isEmpty, file.records[record.id]?.localStatus == .completed,
+                  !restartOwners.fetchesAssets(record.id) else { continue }
+            let assets = restartOwners.claimAssets(record.id)
+            defer { restartOwners.releaseAssets(record.id, assets) }
+            for (fetchUrl, filename) in references {
+                let result: DownloadSubtitleRevalidation
+                do {
+                    result = try await SiloAPI.shared.apiV2Client.revalidateDownloadSubtitle(
+                        path: fetchUrl, downloadId: record.id,
+                        entityTag: file.records[record.id]?.subtitleEntityTags?[fetchUrl], auth: owner.auth)
+                } catch {
+                    Self.logger.warning("stored subtitle revalidation failed: \(String(describing: error), privacy: .public)")
+                    failed = true
+                    continue
+                }
+                guard assetsAreCurrent(record.id, assets, owner) else { break }
+                guard case .changed(let data, let entityTag) = result, !data.isEmpty,
+                      var current = file.records[record.id], current.subtitleFilenames[fetchUrl] == filename,
+                      let url = absoluteFileURL(for: current, filename: filename) else { continue }
+                do {
+                    try data.write(to: url, options: .atomic)
+                } catch {
+                    Self.logger.warning("stored subtitle rewrite failed")
+                    continue
+                }
+                current.setSubtitleEntityTag(entityTag, for: fetchUrl)
+                file.records[record.id] = current
+                changed = true
+            }
+        }
+        if changed { persist() }
+        // Offline or interrupted: ask again on the next activation.
+        if failed { lastStoredSubtitleRevalidation = nil }
+    }
+
+    /// Whether a manifest `fetch_url` names a stored subtitle
+    /// (`.../subtitles/downloaded:{id}`), whose bytes follow its timing.
+    static func isStoredSubtitleReference(_ fetchUrl: String) -> Bool {
+        guard let last = URLComponents(string: fetchUrl)?.path.split(separator: "/").last else { return false }
+        return last.hasPrefix("downloaded:")
     }
 
     /// Returns whether the record was parked back in the queue to wait for

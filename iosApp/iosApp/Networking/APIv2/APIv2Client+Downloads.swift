@@ -193,6 +193,35 @@ extension APIv2Client {
         return response.data
     }
 
+    /// Fetches a subtitle file the entry's manifest names unless the saved
+    /// copy still matches `entityTag`. A stored (`downloaded:{id}`) subtitle
+    /// is delivered with its timing correction applied, so the server
+    /// revalidates it: its ETag follows the subtitle's revision.
+    func revalidateDownloadSubtitle(path: String, downloadId: String, entityTag: String?,
+                                    auth: CapturedOrdinaryRequestAuth) async throws -> DownloadSubtitleRevalidation {
+        guard let assetPath = Self.downloadAssetPath(path, downloadId: downloadId) else {
+            throw DownloadRegistryError.invalidRequest
+        }
+        let response: HTTPRawResponse
+        do {
+            response = try await downloadRegistryRequest(method: "GET", path: assetPath,
+                headers: entityTag.map { ["If-None-Match": $0] } ?? [:], auth: auth)
+        } catch APIv2Error.httpStatus(304) {
+            return .unchanged
+        }
+        let tag = response.header("ETag")
+        switch response.statusCode {
+        case 304:
+            return .unchanged
+        case 200 where entityTag != nil && tag == entityTag:
+            return .unchanged
+        case 200:
+            return .changed(response.data, entityTag: tag)
+        default:
+            throw APIv2Error.httpStatus(response.statusCode)
+        }
+    }
+
     /// The percent-encoded path of `path` when it is exactly
     /// `/api/v2/downloads/{downloadId}/artwork/{kind}` or
     /// `.../subtitles/{ref}`, the only references the server mints.
@@ -310,4 +339,9 @@ extension APIv2Client {
             }
         }
     }
+}
+
+enum DownloadSubtitleRevalidation: Equatable {
+    case unchanged
+    case changed(Data, entityTag: String?)
 }

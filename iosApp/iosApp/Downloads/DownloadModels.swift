@@ -583,6 +583,17 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     var logoFilename: String?
     /// Manifest `fetch_url` → relative on-disk filename.
     var subtitleFilenames: [String: String]
+    /// Manifest `fetch_url` → ETag of the saved bytes, for stored
+    /// (`downloaded:{id}`) subtitles, whose bytes change with their timing
+    /// correction. Optional keeps stores written before it decodable.
+    var subtitleEntityTags: [String: String]? = nil
+
+    /// Records the ETag of a saved subtitle's bytes; `nil` forgets it.
+    mutating func setSubtitleEntityTag(_ entityTag: String?, for fetchUrl: String) {
+        var tags = subtitleEntityTags ?? [:]
+        tags[fetchUrl] = entityTag
+        subtitleEntityTags = tags
+    }
     /// Persisted `cancel(byProducingResumeData:)` blob for a paused
     /// transfer. Default `nil` keeps Codable backward-compatible with
     /// stores written before pause existed.
