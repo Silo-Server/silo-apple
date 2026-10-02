@@ -92,8 +92,27 @@ SELECTED=(
   start_device_login_ok
   get_device_login_ok
   poll_device_login_ok
+  poll_device_login_opened
+  cancel_device_login_ok
+  cancel_device_login_not_found
   get_device_login_capability_ok
   notification_apple_push_display
+  # External sign-in: provider discovery, the native OAuth completion, account
+  # identities (browser and directory linking) and the refresh a provider
+  # re-check refuses.
+  list_auth_providers_ok
+  get_oauth_handshake_capabilities_ok
+  get_external_sign_in_capabilities_ok
+  complete_oauth_login_native_ok
+  complete_oauth_login_invalid_grant
+  list_account_identities_ok
+  create_account_identity_link_ticket_ok
+  create_account_identity_link_ticket_wrong_password
+  complete_account_identity_link_invalid_grant
+  delete_account_identity_last_sign_in_method
+  link_account_identity_with_credentials_ok
+  link_account_identity_with_credentials_directory_refused
+  refresh_session_provider_unavailable
 )
 
 # Fixtures written by hand from the server OpenAPI document, for cases the

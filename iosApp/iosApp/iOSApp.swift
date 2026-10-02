@@ -40,8 +40,20 @@ struct SiloApp: App {
         WindowGroup {
             ContentView()
                 .onOpenURL { url in
+                    // The browser sign-in's app redirect is never a deep
+                    // link: it goes to the flow in progress, or nowhere.
+                    if NativeSignIn.isCallback(url) {
+                        #if !os(tvOS)
+                        SystemWebAuthenticationRunner.shared.receiveExternalCallback(url)
+                        #endif
+                        return
+                    }
                     SiloDeepLinkCoordinator.shared.receive(url)
                 }
+                #if os(macOS)
+                // Deliver URLs to this window instead of opening a new one.
+                .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
+                #endif
         }
     }
 }

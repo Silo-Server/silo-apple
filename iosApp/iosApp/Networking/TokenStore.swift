@@ -897,12 +897,13 @@ actor TokenStore {
         guard !serverId.isEmpty else { return nil }
         if serverId == activeServerId {
             ensureLoaded()
+            if let canonicalSession, !Self.session(canonicalSession, belongsTo: serverId) { return nil }
             return cachedAccessToken
         }
         guard !runtimeBlockedServers.contains(serverId) else { return nil }
         do {
             switch try sessions.load(serverId) {
-            case .session(let value): return value.accessToken
+            case .session(let value): return Self.session(value, belongsTo: serverId) ? value.accessToken : nil
             case .signedOut: return nil
             case .legacy: return accountKeychain.get(Self.accessTokenKey(for: serverId))
             }
@@ -914,6 +915,56 @@ actor TokenStore {
             )
             return nil
         }
+    }
+
+    /// A saved server's stored session when that server is NOT the active
+    /// one: what an approving phone needs to renew the bearer of a server it
+    /// is not currently using. Nil for the active server (its credentials
+    /// rotate through `HTTPClient`'s single refresh flight), a blocked slot,
+    /// a signed-out slot, or a legacy record without a canonical session.
+    func inactiveServerSession(for serverId: String) -> CanonicalAccountSession? {
+        guard !serverId.isEmpty, serverId != activeServerId, temporaryScope?.serverId != serverId,
+              !runtimeBlockedServers.contains(serverId) else { return nil }
+        guard case .session(let value)? = try? sessions.load(serverId), !value.signedOut,
+              Self.session(value, belongsTo: serverId),
+              value.accessToken?.isEmpty == false, value.refreshToken?.isEmpty == false else { return nil }
+        return value
+    }
+
+    /// Whether a stored session is bound to the address its slot is keyed
+    /// by. A registry id is derived from the saved server's URL
+    /// (`ServerRegistry.serverId(for:)`), so the id itself names the one
+    /// origin a bearer read for another device may send the session to. A
+    /// record bound elsewhere, or an id that names no URL, releases nothing.
+    static func session(_ value: CanonicalAccountSession, belongsTo serverId: String) -> Bool {
+        guard let address = ServerRegistry.url(forServerId: serverId), let origin = value.origin else { return false }
+        return ServerRegistry.normalize(url: origin) == address
+    }
+
+    /// Store a rotated token pair for an inactive server, but only when that
+    /// slot still holds exactly the session the refresh was sent with. A slot
+    /// that became active, was signed out, or rotated meanwhile keeps what it
+    /// has; the caller then reports the approval as needing a fresh sign-in
+    /// rather than writing over newer credentials.
+    func saveInactiveServerRefresh(
+        accessToken: String,
+        refreshToken: String,
+        replacing captured: CanonicalAccountSession,
+        for serverId: String
+    ) -> Bool {
+        guard !accessToken.isEmpty, !refreshToken.isEmpty,
+              inactiveServerSession(for: serverId) == captured else {
+            recordSessionEvent(phase: "tokenRefresh", outcome: "discarded", reason: "inactiveSlotChanged")
+            return false
+        }
+        let rotated = CanonicalAccountSession(version: 1, signedOut: false, origin: captured.origin,
+            accountID: captured.accountID, epoch: captured.epoch, accessToken: accessToken, refreshToken: refreshToken)
+        do { try sessions.save(rotated, serverID: serverId) } catch {
+            recordSessionEvent(phase: "tokenRefresh", outcome: "failed", reason: Self.persistenceFailureReason(error))
+            return false
+        }
+        recordSessionEvent(phase: "tokenRefresh", outcome: "succeeded", reason: "inactiveServer")
+        return true
     }
 
     /// Minimal launch-time check for whether the active server has a stored

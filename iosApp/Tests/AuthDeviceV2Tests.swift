@@ -159,7 +159,10 @@ final class AuthDeviceV2Tests: XCTestCase {
 
         let lookup = try await api.deviceLookup(code: "ABCD-1234", identity: identity,
             expectedAccount: auth.account, expectedAuth: auth)
-        XCTAssertEqual(lookup.matchCode, "42")
+        XCTAssertEqual(lookup.matchCode, "warm pony")
+        XCTAssertEqual(lookup.serverName, "Silo")
+        XCTAssertEqual(lookup.serverId, "3f2a9d5e-6b1c-4c7e-9a0d-2f4b8c1e7a35")
+        XCTAssertEqual(lookup.userCode, "4821-7730")
         XCTAssertEqual(lookup.clientPurpose, "remote_playback")
         XCTAssertEqual(lookup.temporary, true)
         try await api.decideDeviceLogin(code: "ABCD-1234", approveHandoff: true, identity: identity,
@@ -256,7 +259,8 @@ final class AuthDeviceV2Tests: XCTestCase {
         stub.reply(201, Self.start_device_login_ok)
         let start = try await api.startDeviceLogin(.init(deviceName: "TV", devicePlatform: "tvos"), expectedAccount: identity)
         XCTAssertEqual(start.deviceCode, "dev-1")
-        XCTAssertEqual(start.userCode, "ABCD-1234")
+        XCTAssertEqual(start.userCode, "4821-7730")
+        XCTAssertEqual(start.verificationUriComplete, "https://silo.example.test/activate?code=48217730")
         XCTAssertEqual(stub.requestedPaths, ["/api/v2/auth/device/start", "/api/v2/auth/device/start"])
     }
 
@@ -366,19 +370,20 @@ final class AuthDeviceV2Tests: XCTestCase {
 
     // MARK: QR sign-in
 
-    /// The tvOS QR poll ends on a v1-only server, a 410 upgrade answer, or a
-    /// removed request, and keeps polling through transient failures.
-    func testQRPollFailuresFollowTheV2Answer() async throws {
+    /// A failed poll ends the attempt on a v1-only server or a 410 upgrade
+    /// answer, shows a new code for a removed request, and backs off (rate
+    /// limited or transient) otherwise.
+    func testQRPollResultsFollowTheV2Answer() async throws {
         let (api, tokens) = try await harness()
         let identityValue = await tokens.refreshAccountIdentity()
         let identity = try XCTUnwrap(identityValue)
-        func pollFailure() async -> QRLoginViewModel.PollFailure? {
+        func pollResult() async -> QRLoginViewModel.PollResult? {
             do {
                 _ = try await api.pollDeviceLogin(deviceCode: "secret", expectedAccount: identity)
                 XCTFail("poll failure expected")
                 return nil
             } catch {
-                return QRLoginViewModel.pollFailure(for: error)
+                return QRLoginViewModel.pollResult(for: error)
             }
         }
         func problem(_ status: Int, _ type: String) -> String {
@@ -387,20 +392,23 @@ final class AuthDeviceV2Tests: XCTestCase {
 
         // Go's plain 404 on a /api/v2 route is a v1-only server, not an expired code.
         stub.reply(404, "404 page not found\n")
-        let legacy = await pollFailure()
-        XCTAssertEqual(legacy, .terminal(message: UpdateRequirement.serverMessage))
+        let legacy = await pollResult()
+        XCTAssertEqual(legacy, .finished(.updateRequired(message: UpdateRequirement.serverMessage)))
         stub.reply(404, problem(404, "not_found"))
-        let removed = await pollFailure()
-        XCTAssertEqual(removed, .terminal(message: "This sign-in request has expired."))
+        let removed = await pollResult()
+        XCTAssertEqual(removed, .expired)
         stub.reply(410, problem(410, "client_upgrade_required"))
-        let upgrade = await pollFailure()
-        XCTAssertEqual(upgrade, .terminal(message: UpdateRequirement.appMessage))
+        let upgrade = await pollResult()
+        XCTAssertEqual(upgrade, .finished(.updateRequired(message: UpdateRequirement.appMessage)))
+        stub.reply(429, problem(429, "rate_limited"))
+        let limited = await pollResult()
+        XCTAssertEqual(limited, .rateLimited)
         stub.reply(503, problem(503, "service_unavailable"))
-        let unavailable = await pollFailure()
-        XCTAssertEqual(unavailable, .keepPolling)
+        let unavailable = await pollResult()
+        XCTAssertEqual(unavailable, .transient)
         stub.fail(.timedOut)
-        let offline = await pollFailure()
-        XCTAssertEqual(offline, .keepPolling)
+        let offline = await pollResult()
+        XCTAssertEqual(offline, .transient)
         XCTAssertEqual(Set(stub.requestedPaths), ["/api/v2/auth/device/poll"])
     }
 
@@ -413,37 +421,37 @@ final class AuthDeviceV2Tests: XCTestCase {
             _ = try await api.startDeviceLogin(.init(deviceName: "TV", devicePlatform: "tvos"), expectedAccount: identity)
             XCTFail("a v1-only server cannot open a pairing request")
         } catch {
-            XCTAssertEqual(QRLoginViewModel.startFailureMessage(for: error), UpdateRequirement.serverMessage)
+            XCTAssertEqual(QRLoginViewModel.startResult(for: error), .terminal(.updateRequired(message: UpdateRequirement.serverMessage)))
         }
         XCTAssertEqual(stub.requestedPaths, ["/api/v2/auth/device/start"])
     }
 
-    /// The view model runs start, a pending poll and the approved poll, waits
-    /// for the pending answer's `poll_after` rather than the start interval,
-    /// and binds the token pair's account.
+    /// The view model reads the capability, runs start, a pending poll and
+    /// the approved poll, waits for the pending answer's `poll_after` rather
+    /// than the start interval, and binds the token pair's account.
     @MainActor
     func testQRSignInFollowsPollAfterAndBindsTheTokenPairAccount() async throws {
         let (model, tokens) = try await qrViewModel()
         stub.sequence([
+            .json(200, Self.get_device_login_capability_ok),
             .json(201, Self.fixture("start_device_login_ok", setting: ["interval": 30])),
-            .json(200, #"{"status":"pending","poll_after":1,"profile_id":"","profile_token":"","temporary":false}"#),
+            .json(200, #"{"status":"pending","poll_after":1,"opened":false,"profile_id":"","profile_token":"","temporary":false}"#),
             .json(200, Self.poll_device_login_ok),
         ])
         await model.begin(deviceName: "TV", devicePlatform: "tvos")
-        // Settling within 10 s shows the loop waited `poll_after` (1 s), not
-        // the start `interval` (30 s).
-        let state = try await settle(model)
-        model.cancel()
-        XCTAssertEqual(state, .approved)
+        let status = try await settle(model)
+        model.stop()
+        XCTAssertEqual(status, .approved(account: "laura"))
         let durable = await tokens.captureDurableAccountAuth()
         XCTAssertEqual(durable?.accountID, "1")
         let access = await tokens.getAccessToken()
         XCTAssertEqual(access, "acc")
-        XCTAssertEqual(stub.requestedPaths,
-            ["/api/v2/auth/device/start", "/api/v2/auth/device/poll", "/api/v2/auth/device/poll"])
+        XCTAssertEqual(stub.requestedPaths, ["/api/v2/auth/device/capability", "/api/v2/auth/device/start",
+            "/api/v2/auth/device/poll", "/api/v2/auth/device/poll"])
         let poll = try XCTUnwrap(stub.requests.last)
         let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(poll.body)) as? [String: String])
         XCTAssertEqual(body, ["device_code": "dev-1"])
+        XCTAssertNil(stub.requests.first?.header("authorization"), "the capability is read without credentials")
     }
 
     /// A temporary session belongs to a SiloRemote handoff. Sign-in refuses
@@ -460,20 +468,457 @@ final class AuthDeviceV2Tests: XCTestCase {
         // The answer passes wire validation, so the refusal is the sign-in's own.
         let decoded = try HTTPClient.makeJSONDecoder().decode(APIv2DevicePoll.self, from: Data(temporary.utf8)).validated()
         XCTAssertTrue(decoded.temporary)
-        stub.sequence([.json(201, Self.start_device_login_ok), .json(200, temporary)])
+        stub.sequence([.json(200, Self.get_device_login_capability_ok), .json(201, Self.start_device_login_ok), .json(200, temporary)])
         await model.begin(deviceName: "TV", devicePlatform: "tvos")
-        let state = try await settle(model)
-        model.cancel()
-        XCTAssertEqual(state, .error(message: APIv2Error.incompleteAuthResponse.localizedDescription))
+        let status = try await settle(model)
+        model.stop()
+        XCTAssertEqual(status, .couldNotFinish)
         let access = await tokens.getAccessToken()
         XCTAssertNil(access)
         let durable = await tokens.captureDurableAccountAuth()
         XCTAssertNil(durable)
-        XCTAssertEqual(stub.requestedPaths, ["/api/v2/auth/device/start", "/api/v2/auth/device/poll"])
+    }
+
+    /// A code that expires while the screen is visible is polled once more
+    /// (a late approval or extension would win), then replaced in place
+    /// without a user action and withdrawn on the server; the renewal is
+    /// flagged for the status line.
+    @MainActor
+    func testQRRenewsAnExpiredCodeInPlaceAfterOneLastPoll() async throws {
+        let (model, _) = try await qrViewModel()
+        stub.reply(path: Self.capabilityPath, 200, Self.get_device_login_capability_ok)
+        stub.sequence(path: Self.startPath, [
+            .json(201, Self.fixture("start_device_login_ok", setting: ["expires_in": 0])),
+            .json(201, Self.fixture("start_device_login_ok", setting: ["device_code": "dev-2", "user_code": "1111-2222"])),
+        ])
+        // An older server: pending answers carry no expires_at.
+        stub.reply(path: Self.pollPath, 200, Self.pendingPoll)
+        stub.reply(path: Self.cancelPath, 200, Self.fixture("cancel_device_login_ok"))
+        await model.begin(deviceName: "TV", devicePlatform: "tvos")
+        try await waitFor(model) { $0.session?.deviceCode == "dev-2" && $0.status == .waiting }
+        XCTAssertTrue(model.codeWasRenewed)
+        XCTAssertEqual(model.session?.userCode, "1111-2222")
+        XCTAssertEqual(Array(stub.requestedPaths.filter { $0 != Self.cancelPath }.prefix(4)),
+            [Self.capabilityPath, Self.startPath, Self.pollPath, Self.startPath])
+        try await waitForCancel(of: "dev-1")
+        model.stop()
+    }
+
+    /// Only the server's `expires_at` moves the deadline: an opened request
+    /// whose poll carries none is still replaced when its start expiry
+    /// passes, rather than held on a client-side guess.
+    @MainActor
+    func testQROpenedRequestWithoutExpiresAtKeepsTheStartDeadline() async throws {
+        let (model, _) = try await qrViewModel()
+        stub.reply(path: Self.capabilityPath, 200, Self.get_device_login_capability_ok)
+        stub.sequence(path: Self.startPath, [
+            .json(201, Self.fixture("start_device_login_ok", setting: ["expires_in": 0])),
+            .json(201, Self.fixture("start_device_login_ok", setting: ["device_code": "dev-2", "user_code": "1111-2222"])),
+        ])
+        stub.reply(path: Self.pollPath, 200, #"{"status":"pending","poll_after":1,"opened":true,"profile_id":"","profile_token":"","temporary":false}"#)
+        stub.reply(path: Self.cancelPath, 200, Self.fixture("cancel_device_login_ok"))
+        await model.begin(deviceName: "TV", devicePlatform: "tvos")
+        try await waitFor(model) { $0.session?.deviceCode == "dev-2" }
+        XCTAssertTrue(model.codeWasRenewed)
+        try await waitForCancel(of: "dev-1")
+        model.stop()
+    }
+
+    /// A pending poll's `expires_at` (an approver's lookup extended the
+    /// request) moves the local deadline, so the code stays on screen
+    /// instead of being replaced.
+    @MainActor
+    func testQRFollowsThePollsExpiresAt() async throws {
+        let (model, _) = try await qrViewModel()
+        stub.reply(path: Self.capabilityPath, 200, Self.get_device_login_capability_ok)
+        // Expired by the start answer's own clock at once…
+        stub.sequence(path: Self.startPath, [.json(201, Self.fixture("start_device_login_ok", setting: ["expires_in": 0]))])
+        // …but the server holds it ten more minutes (start expires_at + 600s).
+        stub.reply(path: Self.pollPath, 200, Self.fixture("poll_device_login_opened", setting: ["expires_at": "2026-01-02T03:29:05.678Z"]))
+        await model.begin(deviceName: "TV", devicePlatform: "tvos")
+        try await waitFor(model) { _ in self.stub.requestedPaths.filter { $0 == Self.pollPath }.count >= 3 }
+        XCTAssertEqual(model.status, .opened)
+        XCTAssertEqual(model.session?.deviceCode, "dev-1")
+        XCTAssertFalse(model.codeWasRenewed)
+        XCTAssertEqual(stub.requestedPaths.filter { $0 == Self.startPath }.count, 1)
+        XCTAssertFalse(stub.requestedPaths.contains(Self.cancelPath))
+        model.stop()
+    }
+
+    /// After the renewal window (about an hour) the screen pauses instead of
+    /// renewing forever; "Show a new code" starts a fresh window.
+    @MainActor
+    func testQRPausesAfterTheRenewalWindowAndRestartsOnRequest() async throws {
+        var timing = Self.fastTiming
+        timing.renewalLimit = 0
+        let (model, _) = try await qrViewModel(timing: timing)
+        stub.reply(path: Self.capabilityPath, 200, Self.get_device_login_capability_ok)
+        stub.sequence(path: Self.startPath, [
+            .json(201, Self.fixture("start_device_login_ok", setting: ["expires_in": 0])),
+            .json(201, Self.fixture("start_device_login_ok", setting: ["device_code": "dev-2"])),
+        ])
+        stub.reply(path: Self.pollPath, 200, Self.pendingPoll)
+        await model.begin(deviceName: "TV", devicePlatform: "tvos")
+        try await waitFor(model) { $0.status == .paused }
+        XCTAssertNil(model.session)
+        XCTAssertFalse(model.showsCode)
+        XCTAssertEqual(stub.requestedPaths.filter { $0 == Self.startPath }.count, 1)
+
+        await model.retry()
+        try await waitFor(model) { $0.status == .waiting }
+        XCTAssertEqual(model.session?.deviceCode, "dev-2")
+        XCTAssertFalse(model.codeWasRenewed, "a requested code is not a renewal")
+        XCTAssertEqual(stub.requestedPaths.filter { $0 == Self.startPath }.count, 2)
+        model.stop()
+    }
+
+    /// Going to the background pauses polling after the request in flight;
+    /// an approval that request collects is still installed.
+    @MainActor
+    func testQRPausingDuringAnApprovedPollStillSignsIn() async throws {
+        let (model, tokens) = try await qrViewModel()
+        stub.reply(path: Self.capabilityPath, 200, Self.get_device_login_capability_ok)
+        stub.reply(path: Self.startPath, 201, Self.start_device_login_ok)
+        stub.reply(path: Self.pollPath, 200, Self.poll_device_login_ok)
+        stub.hold(path: Self.pollPath)
+        await model.begin(deviceName: "TV", devicePlatform: "tvos")
+        await stub.waitUntilHeld()
+        model.setActive(false)
+        stub.release()
+        try await waitFor(model) { $0.status == .approved(account: "laura") }
+        let access = await tokens.getAccessToken()
+        XCTAssertEqual(access, "acc")
+    }
+
+    /// "Try again" while a poll is collecting an approval lets it finish
+    /// and keeps the sign-in, rather than starting a new code.
+    @MainActor
+    func testQRRetryDuringAnApprovedPollKeepsTheSignIn() async throws {
+        let (model, tokens) = try await qrViewModel()
+        stub.reply(path: Self.capabilityPath, 200, Self.get_device_login_capability_ok)
+        stub.reply(path: Self.startPath, 201, Self.start_device_login_ok)
+        stub.reply(path: Self.pollPath, 200, Self.poll_device_login_ok)
+        stub.hold(path: Self.pollPath)
+        await model.begin(deviceName: "TV", devicePlatform: "tvos")
+        await stub.waitUntilHeld()
+        let retry = Task { await model.retry() }
+        await Task.yield()
+        stub.release()
+        await retry.value
+        XCTAssertEqual(model.status, .approved(account: "laura"))
+        let access = await tokens.getAccessToken()
+        XCTAssertEqual(access, "acc")
+        XCTAssertEqual(stub.requestedPaths.filter { $0 == Self.startPath }.count, 1)
+        XCTAssertFalse(stub.requestedPaths.contains(Self.cancelPath))
+    }
+
+    /// "Change server" while "Try again" waits for the poll in flight: the
+    /// stop wins, so the retry starts no new code for the old server.
+    @MainActor
+    func testQRStopWhileRetryWaitsWins() async throws {
+        let (model, _) = try await qrViewModel()
+        stub.reply(path: Self.capabilityPath, 200, Self.get_device_login_capability_ok)
+        stub.reply(path: Self.startPath, 201, Self.start_device_login_ok)
+        stub.reply(path: Self.pollPath, 200, Self.pendingPoll)
+        stub.reply(path: Self.cancelPath, 200, Self.fixture("cancel_device_login_ok"))
+        stub.hold(path: Self.pollPath)
+        await model.begin(deviceName: "TV", devicePlatform: "tvos")
+        await stub.waitUntilHeld()
+        let retry = Task { await model.retry() }
+        await Task.yield()
+        model.stop()
+        stub.release()
+        await retry.value
+        try await waitForCancel(of: "dev-1")
+        // Give a wrongly restarted loop time to send its start.
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertNil(model.session)
+        XCTAssertEqual(stub.requestedPaths.filter { $0 == Self.startPath }.count, 1, "no new code after stop()")
+
+        // The screen still starts normally when it appears again.
+        await model.begin(deviceName: "TV", devicePlatform: "tvos")
+        try await waitFor(model) { $0.status == .waiting && $0.session != nil }
+        XCTAssertEqual(stub.requestedPaths.filter { $0 == Self.startPath }.count, 2)
+        model.stop()
+    }
+
+    /// No polls while the scene is inactive; one at once on return.
+    @MainActor
+    func testQRPausesPollingInTheBackgroundAndPollsOnReturn() async throws {
+        let (model, _) = try await qrViewModel()
+        stub.reply(path: Self.capabilityPath, 200, Self.get_device_login_capability_ok)
+        stub.reply(path: Self.startPath, 201, Self.start_device_login_ok)
+        stub.reply(path: Self.pollPath, 200, Self.pendingPoll)
+        func polls() -> Int { stub.requestedPaths.filter { $0 == Self.pollPath }.count }
+        await model.begin(deviceName: "TV", devicePlatform: "tvos")
+        try await waitFor(model) { _ in polls() >= 2 }
+        model.setActive(false)
+        // Let a poll already in flight land.
+        try await Task.sleep(for: .milliseconds(100))
+        let paused = polls()
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(polls(), paused, "no polls in the background")
+        XCTAssertEqual(model.status, .waiting)
+        model.setActive(true)
+        try await waitFor(model) { _ in polls() > paused }
+        model.stop()
+    }
+
+    /// A nearby phone waiting on the code on screen hears how it ended:
+    /// signed in, declined, replaced by a renewal, or the screen stopped.
+    @MainActor
+    func testQRNearbyWaitersFollowApprovalDenialRenewalAndStop() async throws {
+        func scenario(start: [APIv2TestStub.Reply], polls: [APIv2TestStub.Reply],
+                      holdFirstPoll: Bool = false) async throws -> QRLoginViewModel {
+            stub.reset()
+            let (model, _) = try await qrViewModel()
+            stub.reply(path: Self.capabilityPath, 200, Self.get_device_login_capability_ok)
+            stub.sequence(path: Self.startPath, start)
+            stub.sequence(path: Self.pollPath, polls)
+            stub.reply(path: Self.pollPath, 200, Self.pendingPoll)
+            stub.reply(path: Self.cancelPath, 200, Self.fixture("cancel_device_login_ok"))
+            if holdFirstPoll { stub.hold(path: Self.pollPath) }
+            await model.begin(deviceName: "TV", devicePlatform: "tvos")
+            return model
+        }
+        let started = APIv2TestStub.Reply.json(201, Self.start_device_login_ok)
+        let slowPending = APIv2TestStub.Reply.json(200, #"{"status":"pending","poll_after":5,"opened":false,"profile_id":"","profile_token":"","temporary":false}"#)
+
+        var model = try await scenario(start: [started], polls: [slowPending, .json(200, Self.poll_device_login_ok)])
+        var code = await model.codeForNearbyApproval()
+        XCTAssertEqual(code?.deviceCode, "dev-1")
+        var outcome = await model.nearbyApprovalOutcome(deviceCode: "dev-1")
+        XCTAssertEqual(outcome, .signedIn)
+
+        let denied = #"{"status":"denied","poll_after":5,"profile_id":"","profile_token":"","temporary":false}"#
+        model = try await scenario(start: [started], polls: [slowPending, .json(200, denied)])
+        code = await model.codeForNearbyApproval()
+        XCTAssertEqual(code?.deviceCode, "dev-1")
+        outcome = await model.nearbyApprovalOutcome(deviceCode: "dev-1")
+        XCTAssertEqual(outcome, .failed(.denied))
+
+        // The code expires locally; its last poll is held until the phone waits.
+        model = try await scenario(start: [
+            .json(201, Self.fixture("start_device_login_ok", setting: ["expires_in": 0])),
+            .json(201, Self.fixture("start_device_login_ok", setting: ["device_code": "dev-2"])),
+        ], polls: [], holdFirstPoll: true)
+        await stub.waitUntilHeld()
+        code = await model.codeForNearbyApproval()
+        XCTAssertEqual(code?.deviceCode, "dev-1")
+        let renewing = model
+        let renewed = Task { await renewing.nearbyApprovalOutcome(deviceCode: "dev-1") }
+        try await Task.sleep(for: .milliseconds(20))
+        stub.release()
+        outcome = await renewed.value
+        XCTAssertEqual(outcome, .failed(.expired), "a renewed code is gone")
+        model.stop()
+
+        model = try await scenario(start: [started], polls: [])
+        code = await model.codeForNearbyApproval()
+        XCTAssertEqual(code?.deviceCode, "dev-1")
+        let stopping = model
+        let waiter = Task { await stopping.nearbyApprovalOutcome(deviceCode: "dev-1") }
+        try await Task.sleep(for: .milliseconds(20))
+        model.stop()
+        outcome = await waiter.value
+        XCTAssertEqual(outcome, .failed(.authFailed), "leaving the screen is not an expired code")
+    }
+
+    /// A phone reaching a declined screen gets a new code: someone is at
+    /// the TV. A server without device sign-in offers the phone nothing.
+    @MainActor
+    func testQRNearbyPhoneRestartsADeclinedScreen() async throws {
+        let (model, _) = try await qrViewModel()
+        stub.reply(path: Self.capabilityPath, 200, Self.get_device_login_capability_ok)
+        stub.sequence(path: Self.startPath, [
+            .json(201, Self.start_device_login_ok),
+            .json(201, Self.fixture("start_device_login_ok", setting: ["device_code": "dev-2"])),
+        ])
+        stub.reply(path: Self.pollPath, 200, #"{"status":"denied","poll_after":5,"profile_id":"","profile_token":"","temporary":false}"#)
+        await model.begin(deviceName: "TV", devicePlatform: "tvos")
+        try await waitFor(model) { $0.status == .denied }
+        XCTAssertTrue(model.offersNearbySignIn)
+        stub.reply(path: Self.pollPath, 200, Self.pendingPoll)
+        let code = await model.codeForNearbyApproval()
+        XCTAssertEqual(code?.deviceCode, "dev-2")
+        model.stop()
+    }
+
+    /// While the server can't be reached the screen says so and keeps
+    /// retrying with backoff; it recovers on its own.
+    @MainActor
+    func testQRShowsUnreachableAndRecovers() async throws {
+        let (model, _) = try await qrViewModel()
+        stub.sequence([.json(200, Self.get_device_login_capability_ok)])
+        stub.fail(.timedOut)
+        await model.begin(deviceName: "TV", devicePlatform: "tvos")
+        try await waitFor(model) { $0.status == .unreachable }
+        let failedStarts = stub.requestedPaths.filter { $0 == "/api/v2/auth/device/start" }.count
+        XCTAssertGreaterThanOrEqual(failedStarts, 1)
+        stub.reply(path: "/api/v2/auth/device/start", 201, Self.start_device_login_ok)
+        stub.reply(path: "/api/v2/auth/device/poll", 200, #"{"status":"pending","poll_after":5,"opened":false,"profile_id":"","profile_token":"","temporary":false}"#)
+        stub.reply(.failure(URLError(.timedOut)))
+        try await waitFor(model) { $0.status == .waiting }
+        XCTAssertTrue(model.showsCode)
+        model.stop()
+    }
+
+    /// A 429 streak longer than the threshold reads as "too many requests".
+    @MainActor
+    func testQRShowsRateLimitedWhen429Persists() async throws {
+        let (model, _) = try await qrViewModel()
+        stub.sequence([.json(200, Self.get_device_login_capability_ok)])
+        stub.reply(429, #"{"type":"https://siloserver.org/docs/api/v2/problems/rate_limited","title":"t","status":429,"detail":"d"}"#)
+        await model.begin(deviceName: "TV", devicePlatform: "tvos")
+        try await waitFor(model) { $0.status == .rateLimited }
+        model.stop()
+    }
+
+    /// The opened signal keeps the code and says "Continue on your phone".
+    @MainActor
+    func testQROpenedSignalShowsContinueOnYourPhone() async throws {
+        let (model, _) = try await qrViewModel()
+        stub.sequence([.json(200, Self.get_device_login_capability_ok), .json(201, Self.start_device_login_ok)])
+        stub.reply(200, Self.fixture("poll_device_login_opened"))
+        await model.begin(deviceName: "TV", devicePlatform: "tvos")
+        try await waitFor(model) { $0.status == .opened }
+        XCTAssertEqual(model.session?.deviceCode, "dev-1")
+        XCTAssertEqual(TVSignInPresentation.statusLine(for: model.status, codeWasRenewed: false, serverHost: "h"),
+            "Continue on your phone")
+        model.stop()
+    }
+
+    /// A server that reports device sign-in unavailable goes straight to the
+    /// password form, without opening a request.
+    @MainActor
+    func testQRNoDeviceSignInWhenTheCapabilityIsOff() async throws {
+        let (model, _) = try await qrViewModel()
+        stub.sequence([.json(200, Self.fixture("get_device_login_capability_ok", setting: ["state": "disabled"]))])
+        await model.begin(deviceName: "TV", devicePlatform: "tvos")
+        try await waitFor(model) { $0.status == .noDeviceSignIn }
+        XCTAssertEqual(stub.requestedPaths, ["/api/v2/auth/device/capability"])
+        XCTAssertFalse(model.offersNearbySignIn, "the TV stops advertising to nearby phones")
+        let code = await model.codeForNearbyApproval()
+        XCTAssertNil(code)
+    }
+
+    /// Leaving the screen withdraws the code on a server that supports it,
+    /// with the device code and no bearer; an older server is left alone.
+    @MainActor
+    func testQRStopWithdrawsTheCodeOnlyWhenTheServerSupportsCancel() async throws {
+        for supportsCancel in [true, false] {
+            stub.reset()
+            let (model, _) = try await qrViewModel()
+            stub.sequence([
+                .json(200, Self.fixture("get_device_login_capability_ok", setting: ["cancel": supportsCancel])),
+                .json(201, Self.start_device_login_ok),
+            ])
+            stub.reply(path: "/api/v2/auth/device/poll", 200, #"{"status":"pending","poll_after":5,"opened":false,"profile_id":"","profile_token":"","temporary":false}"#)
+            stub.reply(path: "/api/v2/auth/device/cancel", 200, Self.fixture("cancel_device_login_ok"))
+            await model.begin(deviceName: "TV", devicePlatform: "tvos")
+            try await waitFor(model) { $0.status == .waiting }
+            model.stop()
+            XCTAssertNil(model.session)
+            if supportsCancel {
+                try await waitForRequest("/api/v2/auth/device/cancel")
+                let cancel = try XCTUnwrap(stub.requests.first { $0.path == "/api/v2/auth/device/cancel" })
+                let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(cancel.body)) as? [String: String])
+                XCTAssertEqual(body, ["device_code": "dev-1"])
+                XCTAssertNil(cancel.header("authorization"))
+            } else {
+                try await Task.sleep(for: .milliseconds(200))
+                XCTAssertFalse(stub.requestedPaths.contains("/api/v2/auth/device/cancel"))
+            }
+        }
+    }
+
+    /// Password sign-in and a phone approval complete once: suspending lets
+    /// the in-flight poll finish, reports an approval that already won, and
+    /// otherwise stops polling until the password attempt ends.
+    @MainActor
+    func testQRPasswordSignInAndApprovalCompleteOnce() async throws {
+        let (model, _) = try await qrViewModel()
+        stub.sequence([.json(200, Self.get_device_login_capability_ok), .json(201, Self.start_device_login_ok)])
+        let pending = #"{"status":"pending","poll_after":1,"opened":false,"profile_id":"","profile_token":"","temporary":false}"#
+        stub.reply(200, pending)
+        await model.begin(deviceName: "TV", devicePlatform: "tvos")
+        try await waitFor(model) { $0.status == .waiting }
+        let mayUsePassword = await model.suspendForPasswordSignIn()
+        XCTAssertTrue(mayUsePassword)
+        let pollsAtSuspend = stub.requestedPaths.filter { $0 == "/api/v2/auth/device/poll" }.count
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(stub.requestedPaths.filter { $0 == "/api/v2/auth/device/poll" }.count, pollsAtSuspend,
+            "no polls while a password sign-in is in flight")
+
+        // The password failed: polling resumes, and the phone's approval wins.
+        stub.reply(200, Self.poll_device_login_ok)
+        model.finishPasswordSignIn(succeeded: false)
+        _ = try await settle(model)
+        let secondTry = await model.suspendForPasswordSignIn()
+        XCTAssertFalse(secondTry, "the approval already signed this TV in")
+        XCTAssertEqual(model.status, .approved(account: "laura"))
+    }
+
+    /// "Try again" or a nearby phone during a password sign-in must not
+    /// restart polling: a device approval would race the password and both
+    /// could install a session. The code is renewed only after the password
+    /// failed.
+    @MainActor
+    func testQRRetryDuringAPasswordSignInWaitsForItToFinish() async throws {
+        let (model, _) = try await qrViewModel()
+        stub.reply(path: Self.capabilityPath, 200, Self.get_device_login_capability_ok)
+        stub.sequence(path: Self.startPath, [
+            .json(201, Self.start_device_login_ok),
+            .json(201, Self.fixture("start_device_login_ok", setting: ["device_code": "dev-2"])),
+        ])
+        stub.reply(path: Self.pollPath, 200, Self.pendingPoll)
+        stub.reply(path: Self.cancelPath, 200, Self.fixture("cancel_device_login_ok"))
+        func count(_ path: String) -> Int { stub.requestedPaths.filter { $0 == path }.count }
+        await model.begin(deviceName: "TV", devicePlatform: "tvos")
+        try await waitFor(model) { $0.status == .waiting }
+        let mayUsePassword = await model.suspendForPasswordSignIn()
+        XCTAssertTrue(mayUsePassword)
+        let polls = count(Self.pollPath)
+
+        await model.retry()
+        let nearby = await model.codeForNearbyApproval()
+        XCTAssertNil(nearby, "no code for a phone while a password is being checked")
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(count(Self.startPath), 1, "no new code while the password is in flight")
+        XCTAssertEqual(count(Self.pollPath), polls, "no polls while the password is in flight")
+        XCTAssertEqual(model.status, .gettingCode)
+        XCTAssertNil(model.session)
+
+        model.finishPasswordSignIn(succeeded: false)
+        try await waitFor(model) { $0.status == .waiting && $0.session?.deviceCode == "dev-2" }
+        XCTAssertEqual(count(Self.startPath), 2)
+        model.stop()
+    }
+
+    /// "Try again" says a new code is coming at once, even while a hung
+    /// request holds up the restart.
+    @MainActor
+    func testQRRetryShowsProgressWhileARequestIsInFlight() async throws {
+        let (model, _) = try await qrViewModel()
+        stub.reply(path: Self.capabilityPath, 200, Self.get_device_login_capability_ok)
+        stub.reply(path: Self.startPath, 201, Self.start_device_login_ok)
+        stub.reply(path: Self.pollPath, 200, Self.pendingPoll)
+        stub.reply(path: Self.cancelPath, 200, Self.fixture("cancel_device_login_ok"))
+        await model.begin(deviceName: "TV", devicePlatform: "tvos")
+        try await waitFor(model) { $0.status == .waiting }
+        stub.hold(path: Self.pollPath)
+        await stub.waitUntilHeld()
+        let retry = Task { await model.retry() }
+        try await waitFor(model) { $0.status == .gettingCode }
+        XCTAssertFalse(model.showsCode)
+        stub.release()
+        await retry.value
+        try await waitFor(model) { $0.status == .waiting && $0.session != nil }
+        model.stop()
     }
 
     @MainActor
-    private func qrViewModel() async throws -> (QRLoginViewModel, TokenStore) {
+    private func qrViewModel(timing: QRLoginViewModel.Timing = fastTiming) async throws -> (QRLoginViewModel, TokenStore) {
         let (api, tokens) = try await harness()
         let http = HTTPClient(session: stub.makeSession(), tokenStore: tokens)
         let name = "AuthDeviceV2Tests.auth.\(UUID().uuidString)"
@@ -481,21 +926,62 @@ final class AuthDeviceV2Tests: XCTestCase {
         addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
         let auth = AuthService(launchPreferences: ProfileLaunchPreferences(defaults: SharedDefaults(suite: suite, standard: suite)),
             apiV2Client: api, httpClient: http, tokenStore: tokens)
-        return (QRLoginViewModel(auth: auth, tokenStore: tokens), tokens)
+        let devices = PairingDeviceAPI(session: stub.makeSession())
+        return (QRLoginViewModel(auth: auth, tokenStore: tokens, timing: timing,
+            // Server seconds run a hundred times faster here.
+            sleeper: { seconds in try? await Task.sleep(for: .milliseconds(Int64(max(0, seconds) * 10))) },
+            devices: devices), tokens)
     }
 
-    /// Waits for the QR flow to reach `.approved` or `.error`.
+    private static let fastTiming: QRLoginViewModel.Timing = {
+        var timing = QRLoginViewModel.Timing.standard
+        timing.unreachableWhileStarting = 0
+        timing.unreachableWhilePolling = 0
+        timing.rateLimitedAfter = 0
+        timing.maxBackoff = 0.05
+        timing.minimumPoll = 0.05
+        return timing
+    }()
+
+    /// Waits for the QR flow to reach a state it leaves only on a user action.
     @MainActor
-    private func settle(_ model: QRLoginViewModel, timeout: TimeInterval = 10) async throws -> QRLoginViewModel.State {
+    private func settle(_ model: QRLoginViewModel, timeout: TimeInterval = 10) async throws -> QRLoginViewModel.Status {
+        try await waitFor(model, timeout: timeout) { $0.status.isTerminal }
+        return model.status
+    }
+
+    @MainActor
+    private func waitFor(_ model: QRLoginViewModel, timeout: TimeInterval = 10,
+                         file: StaticString = #filePath, line: UInt = #line,
+                         _ condition: (QRLoginViewModel) -> Bool) async throws {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            switch model.state {
-            case .approved, .error: return model.state
-            case .idle, .starting, .awaiting: try await Task.sleep(nanoseconds: 20_000_000)
-            }
+            if condition(model) { return }
+            try await Task.sleep(nanoseconds: 10_000_000)
         }
-        XCTFail("QR sign-in did not settle: \(model.state)")
-        return model.state
+        XCTFail("QR sign-in did not reach the expected state: \(model.status)", file: file, line: line)
+    }
+
+    /// Waits for a withdrawal of `deviceCode`.
+    private func waitForCancel(of deviceCode: String, timeout: TimeInterval = 5) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let withdrawn = stub.requests.filter { $0.path == Self.cancelPath }.compactMap { request in
+                request.body.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: String] }?["device_code"]
+            }
+            if withdrawn.contains(deviceCode) { return }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTFail("\(deviceCode) was not withdrawn")
+    }
+
+    private func waitForRequest(_ path: String, timeout: TimeInterval = 5) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if stub.requestedPaths.contains(path) { return }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTFail("no request to \(path)")
     }
 
     /// Server fixtures vendored by scripts/sync-apiv2-fixtures.sh.
@@ -507,4 +993,10 @@ final class AuthDeviceV2Tests: XCTestCase {
     private static var start_device_login_ok: String { fixture("start_device_login_ok") }
     private static var get_device_login_ok: String { fixture("get_device_login_ok") }
     private static var get_device_login_capability_ok: String { fixture("get_device_login_capability_ok") }
+    private static let capabilityPath = "/api/v2/auth/device/capability"
+    private static let startPath = "/api/v2/auth/device/start"
+    private static let pollPath = "/api/v2/auth/device/poll"
+    private static let cancelPath = "/api/v2/auth/device/cancel"
+    /// A pending answer as older servers send it: no `expires_at`.
+    private static let pendingPoll = #"{"status":"pending","poll_after":1,"opened":false,"profile_id":"","profile_token":"","temporary":false}"#
 }

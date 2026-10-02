@@ -16,6 +16,8 @@ struct IOSSettingsOverview: View {
     @State private var launchPreferences = ProfileLaunchPreferences.shared
     @State private var experimental = ExperimentalFeatures.shared
     @State private var searchText = ""
+    @State private var showsSignInTV = false
+    @State private var accountSignIn = AccountSignInModel.live()
 
     var body: some View {
         List {
@@ -41,6 +43,10 @@ struct IOSSettingsOverview: View {
 
                 if diagnosticsModel.shouldShowSettings && matchesDiagnostics {
                     diagnosticsSection
+                }
+
+                if matchesAccountSignIn {
+                    accountSignInSection
                 }
 
                 if matchesConnectionSection {
@@ -75,6 +81,13 @@ struct IOSSettingsOverview: View {
         .siloNavigationTitleDisplayMode(.large)
         .siloToolbarColorSchemeDark()
         .onAppear(perform: navPrefs.refresh)
+        .task { await accountSignIn.load() }
+        .sheet(isPresented: $showsSignInTV) {
+            SignInTVView(onSwitchAccount: { server, link, choosingAccount in
+                showsSignInTV = false
+                router.switchAccount(forTVApproval: link, on: server, choosingAccount: choosingAccount)
+            }, onClose: { showsSignInTV = false })
+        }
     }
 
     @ViewBuilder
@@ -173,6 +186,28 @@ struct IOSSettingsOverview: View {
         }
     }
 
+    /// Shown only when the server has an external sign-in provider or the
+    /// account already has a provider identity.
+    private var accountSignInSection: some View {
+        Section("Account") {
+            NavigationLink {
+                AccountSignInView(model: accountSignIn)
+            } label: {
+                SettingsOverviewRow(
+                    title: "Sign-in",
+                    subtitle: "Connect or disconnect your sign-in provider",
+                    systemImage: "person.badge.key.fill",
+                    value: accountSignIn.identities.first?.providerName
+                )
+            }
+            .accessibilityIdentifier("settings.accountSignIn")
+        }
+    }
+
+    private var matchesAccountSignIn: Bool {
+        accountSignIn.showsEntry && matches("sign-in", "sign in", "account", "provider", "sso", "single sign-on", "connect")
+    }
+
     private var connectionSection: some View {
         Section("Connection") {
             Button {
@@ -186,7 +221,23 @@ struct IOSSettingsOverview: View {
                     showsChevron: true
                 )
             }
+            if matchesSignInTV {
+                Button {
+                    showsSignInTV = true
+                } label: {
+                    SettingsOverviewRow(
+                        title: "Sign in a TV",
+                        subtitle: "Approve a TV's sign-in code with this account",
+                        systemImage: "tv",
+                        showsChevron: true
+                    )
+                }
+            }
         }
+    }
+
+    private var matchesSignInTV: Bool {
+        matches("sign in a tv", "tv", "apple tv", "android tv", "code", "device")
     }
 
     private var aboutSection: some View {
@@ -343,7 +394,7 @@ struct IOSSettingsOverview: View {
     }
 
     private var matchesConnectionSection: Bool {
-        matches("server", "connection", viewModel.serverDisplayName)
+        matches("server", "connection", viewModel.serverDisplayName) || matchesSignInTV
     }
 
     private var matchesAboutSection: Bool {
@@ -383,6 +434,7 @@ struct IOSSettingsOverview: View {
             || matchesInterface
             || matchesPlaybackSection
             || (diagnosticsModel.shouldShowSettings && matchesDiagnostics)
+            || matchesAccountSignIn
             || matchesConnectionSection
             || matchesExperimentalSection
             || matchesAboutSection

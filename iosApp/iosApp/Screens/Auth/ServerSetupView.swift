@@ -75,6 +75,11 @@ struct ServerSetupView: View {
             .animation(.easeInOut(duration: 0.2), value: viewModel.error)
             .sensoryFeedback(.error, trigger: viewModel.error) { _, error in error != nil }
         }
+        .onAppear {
+            // A TV sign-in link for a server this app lacks lands here with
+            // that server's address filled in.
+            if let prefill = router.consumeServerSetupPrefill() { viewModel.host = prefill }
+        }
     }
 
     private func connect() {

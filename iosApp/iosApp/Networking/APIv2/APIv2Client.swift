@@ -1144,10 +1144,18 @@ struct APIv2Client: Sendable {
     /// `login` is `non_retryable` and public: one dispatch with no bearer, and
     /// a 401 is the wrong-credentials answer, never a refresh trigger.
     func login(username: String, password: String, expectedAccount: RefreshAccountIdentity) async throws -> APIv2LoginTokens {
-        try await gate()
         let body = try JSONEncoder().encode(LoginRequest(username: username, password: password))
+        return try await postForLoginTokens(path: "/api/v2/auth/login", body: body, expectedAccount: expectedAccount)
+    }
+
+    /// One public dispatch that answers a login token pair (`login`,
+    /// `completeOAuthLogin`): refused when the active account changed while
+    /// it ran, and when the pair or its account is missing.
+    func postForLoginTokens(path: String, body: Data,
+                            expectedAccount: RefreshAccountIdentity) async throws -> APIv2LoginTokens {
+        try await gate()
         let response = try await mapErrors {
-            try await http.requestData(method: "POST", path: "/api/v2/auth/login", body: body, expectedAccount: expectedAccount)
+            try await http.requestData(method: "POST", path: path, body: body, expectedAccount: expectedAccount)
         }
         guard await tokenStore.refreshAccountIdentity() == expectedAccount else { throw HTTPError.requestIdentityChanged }
         guard response.statusCode == 200 else { throw APIv2Error.incompleteAuthResponse }
@@ -1179,6 +1187,19 @@ struct APIv2Client: Sendable {
         guard await tokenStore.refreshAccountIdentity() == expectedAccount else { throw HTTPError.requestIdentityChanged }
         guard response.statusCode == 200 else { throw APIv2Error.incompleteAuthResponse }
         return try HTTPClient.makeJSONDecoder().decode(APIv2DevicePoll.self, from: response.data).validated()
+    }
+
+    /// `GET /api/v2/auth/device/capability`, read without credentials: which
+    /// device sign-in features this server offers.
+    func deviceLoginCapability(expectedAccount: RefreshAccountIdentity) async throws -> APIv2DeviceCapability {
+        try await gate()
+        let response = try await mapErrors {
+            try await http.requestData(method: "GET", path: "/api/v2/auth/device/capability", expectedAccount: expectedAccount,
+                sendsProfile: false)
+        }
+        guard await tokenStore.refreshAccountIdentity() == expectedAccount else { throw HTTPError.requestIdentityChanged }
+        guard response.statusCode == 200 else { throw APIv2Error.incompleteAuthResponse }
+        return try HTTPClient.makeJSONDecoder().decode(APIv2DeviceCapability.self, from: response.data)
     }
 
     /// The approving side of a SiloRemote handoff reads and decides under

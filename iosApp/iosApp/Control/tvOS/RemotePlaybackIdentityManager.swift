@@ -161,9 +161,8 @@ final class RemotePlaybackIdentityManager {
         onChallenge: @escaping (SiloControlHandoffChallenge) async throws -> Void
     ) async throws -> SiloControlHandoffReady {
         let offeredURL = ServerRegistry.normalize(url: offer.serverURL)
-        guard !offeredURL.isEmpty,
-              !offer.profileId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              ServerRegistry.serverId(for: offeredURL) == offer.serverId else {
+        guard offer.serverIdMatchesURL,
+              !offer.profileId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw HandoffError.invalidOffer
         }
 
@@ -254,7 +253,7 @@ final class RemotePlaybackIdentityManager {
                 )
             case .denied:
                 throw HandoffError.denied
-            case .expired, .consumed:
+            case .expired, .consumed, .canceled:
                 throw HandoffError.expired
             case .pending, .unknown:
                 try await Task.sleep(for: .seconds(max(1, poll.pollAfter)))

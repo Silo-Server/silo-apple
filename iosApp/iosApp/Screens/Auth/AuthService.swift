@@ -208,6 +208,27 @@ final class AuthService: @unchecked Sendable {
         serverRegistry.updateVerifiedServerId(for: server.id, verifiedServerId: identity)
     }
 
+    /// The active server's verified deployment identity, learned now when the
+    /// entry has none yet. Browser sign-in checks the app redirect's `server`
+    /// against it, so a flow finished by another server is refused. Nil when
+    /// the server cannot say, and when the active server changed meanwhile.
+    func verifiedIdentityOfActiveServer() async -> String? {
+        guard let server = serverRegistry.activeServer else { return nil }
+        if let known = ServerIdentity.usable(server.verifiedServerId) { return known }
+        await refreshVerifiedServerId(for: server)
+        guard serverRegistry.activeServerId == server.id else { return nil }
+        return ServerIdentity.usable(serverRegistry.activeServer?.verifiedServerId)
+    }
+
+    /// What the login screen offers on the active server: browser providers
+    /// and whether the password form shows. Never throws; nil when discovery
+    /// could not be read (see `APIv2Client.signInOptions(serverURL:)`).
+    func signInOptions() async -> SignInOptions? {
+        let url = serverUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !url.isEmpty else { return .passwordOnly }
+        return await apiV2Client.signInOptions(serverURL: url)
+    }
+
     /// Validate a Keychain-restored account without changing the remembered
     /// server entry. Temporary failures return `indeterminate`; only the
     /// existing HTTP refresh policy may invalidate a terminally rejected
@@ -705,6 +726,11 @@ final class AuthService: @unchecked Sendable {
         expectedAccount: RefreshAccountIdentity
     ) async throws -> APIv2DevicePoll {
         try await apiV2Client.pollDeviceLogin(deviceCode: deviceCode, expectedAccount: expectedAccount)
+    }
+
+    /// `GET /api/v2/auth/device/capability`, read without credentials.
+    func deviceLoginCapability(expectedAccount: RefreshAccountIdentity) async throws -> APIv2DeviceCapability {
+        try await apiV2Client.deviceLoginCapability(expectedAccount: expectedAccount)
     }
 
     // MARK: - Sign Out

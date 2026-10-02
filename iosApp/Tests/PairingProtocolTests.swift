@@ -62,6 +62,24 @@ final class PairingProtocolTests: XCTestCase {
              .serverResult(serverURL: url, status: .failed, error: PairingFailureCode.unreachable.rawValue)),
             (#"{"type":"done","v":1}"#, .done),
             (#"{"type":"cancel","v":1,"reason":"user_declined"}"#, .cancel(reason: "user_declined")),
+            // Copied verbatim from silo-android's PairingProtocolGoldenFramesTest
+            // (`androidFrames`): a signed-out TV's hello, a push carrying the
+            // server identity and endpoints, and an identity mismatch.
+            (#"{"type":"hello","v":1,"tvName":"Den","tvDeviceId":"id-9","state":"login","supportedVersions":[1]}"#,
+             .hello(tvName: "Den", tvDeviceId: "id-9", state: .login, supportedVersions: [1])),
+            (#"{"type":"pushServer","v":1,"serverURL":"https://media.example.com","serverName":"Home","#
+                + #""serverIdentity":"96c1bd08-b839-4d47-980e-57d4e7a44cfa","endpoints":["#
+                + #"{"url":"https://media.example.com","kind":"public"},"#
+                + #"{"url":"https://media.overlay.example","kind":"provider","provider":"tailscale","displayName":"Tailscale"}]}"#,
+             .pushServer(
+                serverURL: url, serverName: "Home",
+                serverIdentity: "96c1bd08-b839-4d47-980e-57d4e7a44cfa",
+                endpoints: [
+                    ServerEndpoint(url: url, kind: .public),
+                    ServerEndpoint(url: "https://media.overlay.example", kind: .provider, provider: "tailscale", displayName: "Tailscale"),
+                ])),
+            (#"{"type":"serverResult","v":1,"serverURL":"https://media.example.com","status":"failed","error":"identity_mismatch"}"#,
+             .serverResult(serverURL: url, status: .failed, error: PairingFailureCode.identityMismatch.rawValue)),
         ]
         for (frame, message) in frames {
             XCTAssertEqual(try decoder.decode(PairingMessage.self, from: Data(frame.utf8)), message, frame)

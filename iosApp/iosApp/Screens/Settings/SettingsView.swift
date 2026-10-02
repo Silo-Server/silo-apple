@@ -16,6 +16,9 @@ struct SettingsView: View {
     #if os(iOS)
     @State private var diagnosticsModel = DiagnosticsViewModel()
     #endif
+    #if os(macOS)
+    @State private var accountSignIn = AccountSignInModel.live()
+    #endif
 
     var body: some View {
         #if os(tvOS)
@@ -54,6 +57,9 @@ struct SettingsView: View {
     private var macOSBody: some View {
         List {
             accountSection
+            if accountSignIn.showsEntry {
+                accountSignInSection
+            }
             preferencesSection
             connectionSection
             aboutSection
@@ -66,6 +72,7 @@ struct SettingsView: View {
         .task {
             await viewModel.loadSettings()
         }
+        .task { await accountSignIn.load() }
         .alert("Sign Out", isPresented: $showSignOutConfirm) {
             Button("Sign Out", role: .destructive) {
                 router.signOutAndReset()
@@ -73,6 +80,23 @@ struct SettingsView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Are you sure you want to sign out?")
+        }
+    }
+
+    // MARK: - Sign-in
+
+    private var accountSignInSection: some View {
+        Section {
+            NavigationLink {
+                AccountSignInView(model: accountSignIn)
+            } label: {
+                SettingsRowLabel(
+                    title: "Sign-in",
+                    systemImage: "person.badge.key.fill",
+                    color: .blue,
+                    value: accountSignIn.identities.first?.providerName
+                )
+            }
         }
     }
 

@@ -128,12 +128,31 @@ actor HTTPClient {
     private var mediaRefreshBackoff: (auth: CapturedOrdinaryRequestAuth, until: ContinuousClock.Instant)?
     private var proactiveMediaRefreshes: [RefreshAccountIdentity: (id: UUID, task: Task<Void, Never>)] = [:]
 
-    /// A flight's value is the update requirement its refresh answer proved,
-    /// if any. Success and every other failure are read back from
-    /// `TokenStore`; only a version mismatch travels to the waiting requests.
+    /// A flight's value is the failure its refresh answer proved that the
+    /// waiting requests must see, if any. Success and every other failure are
+    /// read back from `TokenStore`.
     private struct RefreshFlight {
         let id: UUID
-        let task: Task<UpdateRequirement?, Never>
+        let task: Task<RefreshFlightFailure?, Never>
+    }
+
+    /// A refresh answer that reaches the waiting requests as their error.
+    /// Neither costs the user the session.
+    private enum RefreshFlightFailure: Sendable {
+        /// A version mismatch (see `noteRefreshUpdateRequirement`).
+        case updateRequired(UpdateRequirement)
+        /// 503 `provider_unavailable`: the provider re-check could not ask
+        /// the provider. The waiting requests fail with that problem, which
+        /// reads as a transient outage, instead of the 401 that sent them
+        /// to refresh (which would read as an ended session).
+        case providerUnavailable(body: String)
+
+        var error: Error {
+            switch self {
+            case .updateRequired(let requirement): return requirement
+            case .providerUnavailable(let body): return HTTPError.http(statusCode: 503, body: body)
+            }
+        }
     }
 
     /// Global URLSession enumeration is asynchronous. Queue cancellation
@@ -610,7 +629,14 @@ actor HTTPClient {
         method: String,
         path: String
     ) async throws -> CapturedHTTPRequestAuth {
-        if try await refreshScopedTokens(auth: auth, expected: requestIdentity, dispatchRevision: dispatchRevision) {
+        let renewed: Bool
+        do {
+            renewed = try await refreshScopedTokens(auth: auth, expected: requestIdentity, dispatchRevision: dispatchRevision)
+        } catch let error where Self.isProviderUnavailableRefresh(error) && !Self.hasExpired(auth.accessToken) {
+            // The bearer still works; the next renewal asks the provider again.
+            renewed = false
+        }
+        if renewed {
             guard let refreshed = try? await tokenStore.captureRequestAuth(expected: requestIdentity),
                   expectedAccount.map({ refreshed.account == $0 }) ?? true,
                   expectedAuth.map({ refreshed.ordinaryIdentity.sameCredentialIdentity(as: $0) }) ?? true,
@@ -999,7 +1025,14 @@ actor HTTPClient {
         // to before anything is sent (see `scopedAuthRefreshedBeforeDispatch`).
         if let current = capturedAuth, !Self.isPublicAuthPath(path), let accessToken = current.accessToken,
            MediaAccessTokenExpiry.shouldRefresh(accessToken, now: Date()) {
-            if let refreshed = try await refreshTokens(expected: current, dispatchRevision: dispatchRevision) {
+            let renewed: CapturedOrdinaryRequestAuth?
+            do {
+                renewed = try await refreshTokens(expected: current, dispatchRevision: dispatchRevision)
+            } catch let error where Self.isProviderUnavailableRefresh(error) && !Self.hasExpired(accessToken) {
+                // The bearer still works; the next renewal asks the provider again.
+                renewed = nil
+            }
+            if let refreshed = renewed {
                 guard expectedAuth.map({ refreshed.sameCredentialIdentity(as: $0) }) ?? true,
                       refreshed.accessToken != nil,
                       await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: refreshed) == refreshed else {
@@ -1757,7 +1790,8 @@ actor HTTPClient {
 
     private static let publicAuthPathSuffixes = [
         "/auth/refresh", "/auth/login",
-        "/api/v2/auth/device/start", "/api/v2/auth/device/poll", "/api/v2/auth/oauth/complete",
+        "/api/v2/auth/device/start", "/api/v2/auth/device/poll",
+        "/api/v2/auth/device/capability", "/api/v2/auth/oauth/complete",
         "/api/v2/system/setup", "/api/v2/auth/signup",
     ]
 
@@ -1790,6 +1824,12 @@ actor HTTPClient {
             && !(method == "POST" && path.hasPrefix("/api/v2/catalog/items/") && path.hasSuffix("/trailers/refresh"))
             && !(method == "POST" && path.hasPrefix("/api/v2/catalog/people/") && path.hasSuffix("/refresh"))
             && !(path == "/api/v2/profiles" && method == "POST")
+            // A link ticket and a link code are single use, and a credentials
+            // link checks two passwords: the first attempt may already have
+            // spent them.
+            && !(method == "POST" && (path == "/api/v2/account/identities/link-ticket"
+                || path == "/api/v2/account/identities/link-complete"
+                || path == "/api/v2/account/identities/link-credentials"))
             // A journaled own-profile PATCH has one dispatch, even when a
             // refresh could obtain another bearer for the same account.
             && !(method == "PATCH" && path.hasPrefix("/api/v2/profiles/")
@@ -1815,8 +1855,9 @@ actor HTTPClient {
         }
     }
 
-    /// Throws the flight's `UpdateRequirement` when the refresh endpoint
-    /// answered update-required; the credentials are kept in that case.
+    /// Throws the flight's failure when the refresh endpoint answered
+    /// update-required or 503 `provider_unavailable`; the credentials are
+    /// kept in both cases.
     private func refreshScopedTokens(
         auth: CapturedHTTPRequestAuth,
         expected: HTTPRequestIdentity,
@@ -1846,11 +1887,11 @@ actor HTTPClient {
         let key = auth.account
         if let existing = inFlightRefreshes[key] {
             refreshFlightJoinObserver?(.scoped)
-            if let requirement = await existing.task.value { throw requirement }
+            if let failure = await existing.task.value { throw failure.error }
             return await scopedCredentialsChanged(since: auth, expected: expected)
         }
 
-        let task = Task<UpdateRequirement?, Never> { [tokenStore, session, decoder, encoder] in
+        let task = Task<RefreshFlightFailure?, Never> { [tokenStore, session, decoder, encoder] in
             await Self.performScopedRefresh(
                 auth: auth,
                 tokenStore: tokenStore,
@@ -1861,11 +1902,11 @@ actor HTTPClient {
         }
         let flightId = UUID()
         inFlightRefreshes[key] = .init(id: flightId, task: task)
-        let requirement = await task.value
+        let failure = await task.value
         if inFlightRefreshes[key]?.id == flightId {
             inFlightRefreshes.removeValue(forKey: key)
         }
-        if let requirement { throw requirement }
+        if let failure { throw failure.error }
         return await scopedCredentialsChanged(since: auth, expected: expected)
     }
 
@@ -1887,9 +1928,9 @@ actor HTTPClient {
         session: URLSession,
         decoder: JSONDecoder,
         encoder: JSONEncoder
-    ) async -> UpdateRequirement? {
+    ) async -> RefreshFlightFailure? {
         guard let refreshValue = auth.refreshToken,
-              let url = URL(string: auth.serverURL + Self.refreshPath) else {
+              let request = makeRefreshRequest(serverURL: auth.serverURL, refreshToken: refreshValue, encoder: encoder) else {
             return nil
         }
         let captured = CapturedRefreshCredential(
@@ -1900,12 +1941,7 @@ actor HTTPClient {
         guard await tokenStore.captureRefreshCredential(expected: auth.account) == captured else {
             return nil
         }
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
         do {
-            request.httpBody = try encoder.encode(RefreshRequest(refreshValue))
             let (data, response) = try await performRefreshTransport(
                 request: request,
                 session: session
@@ -1934,7 +1970,10 @@ actor HTTPClient {
             )
             if let requirement = UpdateRequirement(v2StatusCode: http.statusCode, body: body) {
                 await noteRefreshUpdateRequirement(requirement, serverId: auth.account.serverId)
-                return requirement
+                return .updateRequired(requirement)
+            }
+            if isProviderUnavailable(statusCode: http.statusCode, body: body) {
+                return .providerUnavailable(body: body)
             }
             guard shouldInvalidateSessionAfterRefreshFailure(http.statusCode) else {
                 return nil
@@ -2060,8 +2099,9 @@ actor HTTPClient {
     /// use a token rotated by another flight only when the rest of that exact
     /// request identity is still current.
     ///
-    /// Throws the flight's `UpdateRequirement` when the refresh endpoint
-    /// answered update-required; the credentials are kept in that case.
+    /// Throws the flight's failure when the refresh endpoint answered
+    /// update-required or 503 `provider_unavailable`; the credentials are
+    /// kept in both cases.
     private func refreshTokens(
         expected: CapturedOrdinaryRequestAuth,
         dispatchRevision: UInt64
@@ -2083,7 +2123,7 @@ actor HTTPClient {
         let key = expected.account
         if let existing = inFlightRefreshes[key] {
             refreshFlightJoinObserver?(.ordinary)
-            if let requirement = await existing.task.value { throw requirement }
+            if let failure = await existing.task.value { throw failure.error }
             if let current = await tokenStore.currentOrdinaryRequestAuth(
                 matchingIdentityOf: expected
             ), current.accessToken != expected.accessToken,
@@ -2093,7 +2133,7 @@ actor HTTPClient {
             return nil
         }
 
-        let task = Task<UpdateRequirement?, Never> { [tokenStore, session, decoder, encoder] in
+        let task = Task<RefreshFlightFailure?, Never> { [tokenStore, session, decoder, encoder] in
             await Self.performRefresh(
                 expected: key,
                 tokenStore: tokenStore,
@@ -2104,11 +2144,11 @@ actor HTTPClient {
         }
         let flightId = UUID()
         inFlightRefreshes[key] = .init(id: flightId, task: task)
-        let requirement = await task.value
+        let failure = await task.value
         if inFlightRefreshes[key]?.id == flightId {
             inFlightRefreshes.removeValue(forKey: key)
         }
-        if let requirement { throw requirement }
+        if let failure { throw failure.error }
         if let current = await tokenStore.currentOrdinaryRequestAuth(
             matchingIdentityOf: expected
         ), current.accessToken != expected.accessToken,
@@ -2124,25 +2164,16 @@ actor HTTPClient {
         session: URLSession,
         decoder: JSONDecoder,
         encoder: JSONEncoder
-    ) async -> UpdateRequirement? {
+    ) async -> RefreshFlightFailure? {
         guard let captured = await tokenStore.captureRefreshCredential(expected: expected) else {
             Self.logger.error("Refresh skipped: no refresh token stored")
             return nil
         }
 
-        guard let url = URL(string: expected.serverURL + Self.refreshPath) else {
-            Self.logger.error("Refresh skipped: invalid server URL")
-            return nil
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        do {
-            request.httpBody = try encoder.encode(RefreshRequest(refreshToken: captured.refreshToken))
-        } catch {
-            Self.logger.error("Refresh encode failed: \(String(describing: error), privacy: .public)")
+        guard let request = makeRefreshRequest(
+            serverURL: expected.serverURL, refreshToken: captured.refreshToken, encoder: encoder
+        ) else {
+            Self.logger.error("Refresh skipped: invalid server URL or body")
             return nil
         }
 
@@ -2180,7 +2211,10 @@ actor HTTPClient {
                 Self.logger.error("Refresh failed: status=\(http.statusCode, privacy: .public) body=\(body, privacy: .private)")
                 if let requirement = UpdateRequirement(v2StatusCode: http.statusCode, body: body) {
                     await noteRefreshUpdateRequirement(requirement, serverId: expected.serverId)
-                    return requirement
+                    return .updateRequired(requirement)
+                }
+                if isProviderUnavailable(statusCode: http.statusCode, body: body) {
+                    return .providerUnavailable(body: body)
                 }
                 guard shouldInvalidateSessionAfterRefreshFailure(http.statusCode) else {
                     return nil
@@ -2219,6 +2253,20 @@ actor HTTPClient {
     /// matches its `/auth/refresh` suffix, so it never recurses into refresh.
     static let refreshPath = "/api/v2/auth/refresh"
 
+    /// The request every refresh path sends: `POST <server>/api/v2/auth/refresh`
+    /// with the refresh token as a JSON body and no bearer. Nil when the
+    /// server URL or the body is unusable.
+    static func makeRefreshRequest(serverURL: String, refreshToken: String, encoder: JSONEncoder) -> URLRequest? {
+        guard let url = URL(string: serverURL + refreshPath),
+              let body = try? encoder.encode(RefreshRequest(refreshToken: refreshToken)) else { return nil }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpBody = body
+        return request
+    }
+
     /// A refresh answered update-required never costs the user the session.
     /// A v1-only server's legacy 404 on the v2 refresh route is the same
     /// evidence the contract probe looks for, so it records that verdict for
@@ -2235,6 +2283,113 @@ actor HTTPClient {
         }
     }
 
+    // MARK: - Approver bearer
+
+    /// A bearer for `serverId` that has not expired, for approving another
+    /// device's sign-in (TV device login, companion pairing) against an
+    /// explicit server URL. The access token is renewed first when it has
+    /// expired or is about to: an approval sent with a stale bearer fails,
+    /// and approve is never replayed after a 401.
+    ///
+    /// The active server renews through the shared refresh flight. Another
+    /// saved server renews its own slot once, compare-and-set against the
+    /// session the refresh was sent with. A failed renewal returns the stored
+    /// bearer while it is still valid. Once it has expired the result says
+    /// why: `.rejected` only when the server refused the session
+    /// (`shouldInvalidateSessionAfterRefreshFailure`) or there is none,
+    /// `.providerUnavailable` for 503 `provider_unavailable`, and
+    /// `.unreachable` for anything else, which leaves the session in place.
+    /// Nothing here signs anyone out.
+    ///
+    /// A bearer is released only for the address the saved server is keyed
+    /// by (`TokenStore.session(_:belongsTo:)`): a session bound to another
+    /// origin answers `.rejected` rather than travel to this one.
+    ///
+    /// When the slot changed while the refresh was in flight (it became
+    /// active, was signed out or signed in again, or rotated), the rotated
+    /// pair is not written and not used: the slot keeps its newer
+    /// credentials, and the caller gets the stored-bearer fallback. The
+    /// rotated refresh token is dropped; the server's copy of the old one
+    /// may now be spent, so the slot can need a fresh sign-in later.
+    func freshAccessToken(serverId: String) async -> ApproverBearer {
+        guard !serverId.isEmpty else { return .rejected }
+        if await tokenStore.getActiveServerId() == serverId {
+            guard await !tokenStore.hasTemporaryScope(),
+                  let current = await tokenStore.captureOrdinaryRequestAuth(),
+                  current.account.serverId == serverId,
+                  current.account.serverURL == ServerRegistry.url(forServerId: serverId),
+                  let access = current.accessToken, !access.isEmpty else {
+                return await storedBearer(serverId: serverId)
+            }
+            guard MediaAccessTokenExpiry.shouldRefresh(access, now: Date()) else { return .token(access) }
+            let failure: ApproverBearer
+            do {
+                let revision = try captureRequestDispatchRevision()
+                if let refreshed = try await refreshTokens(expected: current, dispatchRevision: revision),
+                   let token = refreshed.accessToken, !token.isEmpty {
+                    return .token(token)
+                }
+                // A rejected refresh clears the slot (`invalidateRejectedRefresh`).
+                let stored = await tokenStore.getAccessToken(for: serverId)
+                failure = (stored?.isEmpty ?? true) ? .rejected : .unreachable
+            } catch let error where Self.isProviderUnavailableRefresh(error) {
+                failure = .providerUnavailable
+            } catch {
+                failure = .unreachable
+            }
+            return Self.hasExpired(access) ? failure : .token(access)
+        }
+        guard let stored = await tokenStore.inactiveServerSession(for: serverId),
+              let access = stored.accessToken, let refresh = stored.refreshToken,
+              let origin = stored.origin.map({ ServerRegistry.normalize(url: $0) }), !origin.isEmpty else {
+            return await storedBearer(serverId: serverId)
+        }
+        guard MediaAccessTokenExpiry.shouldRefresh(access, now: Date()) else { return .token(access) }
+        func fallback(_ failure: ApproverBearer) -> ApproverBearer {
+            Self.hasExpired(access) ? failure : .token(access)
+        }
+        guard let request = Self.makeRefreshRequest(serverURL: origin, refreshToken: refresh, encoder: encoder),
+              let (data, response) = try? await Self.performRefreshTransport(request: request, session: session),
+              let http = response as? HTTPURLResponse else { return fallback(.unreachable) }
+        guard (200..<300).contains(http.statusCode) else {
+            if Self.shouldInvalidateSessionAfterRefreshFailure(http.statusCode) { return .rejected }
+            let body = String(data: data, encoding: .utf8) ?? ""
+            return fallback(Self.isProviderUnavailable(statusCode: http.statusCode, body: body)
+                ? .providerUnavailable : .unreachable)
+        }
+        guard let tokens = try? decoder.decode(RefreshResponse.self, from: data),
+              await tokenStore.saveInactiveServerRefresh(accessToken: tokens.accessToken,
+                  refreshToken: tokens.refreshToken, replacing: stored, for: serverId) else {
+            return fallback(.unreachable)
+        }
+        return .token(tokens.accessToken)
+    }
+
+    private func storedBearer(serverId: String) async -> ApproverBearer {
+        guard let token = await tokenStore.getAccessToken(for: serverId), !token.isEmpty else { return .rejected }
+        return .token(token)
+    }
+
+    private static func hasExpired(_ token: String?) -> Bool {
+        guard let token else { return true }
+        return MediaAccessTokenExpiry.isExpired(token, now: Date())
+    }
+
+    /// Whether a refresh answer is the server's external-sign-in re-check
+    /// failing closed: 503 with the `provider_unavailable` problem.
+    static func isProviderUnavailable(statusCode: Int, body: String) -> Bool {
+        guard statusCode == 503, let data = body.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let type = object["type"] as? String else { return false }
+        return type.split(separator: "/").last == "provider_unavailable"
+    }
+
+    /// Whether `error` is a refresh flight's `provider_unavailable` failure.
+    private static func isProviderUnavailableRefresh(_ error: Error) -> Bool {
+        guard case HTTPError.http(let statusCode, let body) = error else { return false }
+        return isProviderUnavailable(statusCode: statusCode, body: body ?? "")
+    }
+
     /// Match Android's refresh-failure classifier (AuthInterceptorImpl.kt).
     /// Client/auth rejection is terminal: v2 answers a malformed body with
     /// 400, a revoked session with 401 `session_expired` and any other
@@ -2248,6 +2403,12 @@ actor HTTPClient {
     /// contract disagree, not that the credential was rejected. Update-required
     /// answers (410 `client_upgrade_required`, the legacy 404) are classified
     /// before this and are never terminal either.
+    ///
+    /// 503 `provider_unavailable` is the server's external-sign-in re-check
+    /// failing closed because the provider (OIDC or LDAP) could not be asked:
+    /// the session stays valid and the next refresh asks again, so it is kept
+    /// like any other 5xx. The requests waiting on that refresh fail with the
+    /// problem itself rather than their 401 (`RefreshFlightFailure`).
     static func shouldInvalidateSessionAfterRefreshFailure(_ statusCode: Int) -> Bool {
         statusCode == 400 || statusCode == 401 || statusCode == 403
     }
@@ -2712,3 +2873,22 @@ enum HTTPDecodingDiagnostics {
     ]
 }
 #endif
+
+/// A bearer for approving another device's sign-in on a saved server
+/// (`HTTPClient.freshAccessToken(serverId:)`), or why there is none.
+enum ApproverBearer: Equatable, Sendable {
+    case token(String)
+    /// The server refused the session, or this device has none: sign in to
+    /// that server again.
+    case rejected
+    /// The sign-in provider could not confirm the account (503
+    /// `provider_unavailable`). The session is kept; try again later.
+    case providerUnavailable
+    /// The server could not be reached or failed. The session is kept.
+    case unreachable
+
+    var token: String? {
+        if case .token(let token) = self, !token.isEmpty { return token }
+        return nil
+    }
+}

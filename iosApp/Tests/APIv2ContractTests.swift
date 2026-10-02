@@ -25,7 +25,7 @@ final class APIv2ContractTests: XCTestCase {
     /// type the model layer routes on, and the body decodes as that type.
     func testEveryVendoredFixtureRoutesByStatusAndMediaType() throws {
         let entries = try Support.index(bundleClass: Self.self)
-        XCTAssertEqual(entries.count, 43, "vendored index must list exactly the selected fixtures")
+        XCTAssertEqual(entries.count, 59, "vendored index must list exactly the selected fixtures")
         for entry in entries {
             let data = try fixture(entry.name)
             XCTAssertEqual(entry.responseHeaders["Content-Type"], entry.responseMediaType, entry.name)
@@ -40,6 +40,47 @@ final class APIv2ContractTests: XCTestCase {
                 XCTAssertEqual(problem.status, entry.expectedStatus, entry.name)
             }
         }
+    }
+
+    // MARK: Device sign-in (TV)
+
+    /// The TV withdraws its own request, the poll reports an opened
+    /// request, and the capability says which of the two a server offers.
+    func testDeviceSignInCancelOpenedAndCapabilityFixtures() throws {
+        let cancel = try entry("cancel_device_login_ok")
+        XCTAssertEqual(cancel.operationId, "cancelDeviceLogin")
+        XCTAssertEqual(cancel.request.method, "POST")
+        XCTAssertEqual(cancel.request.path, "/api/v2/auth/device/cancel")
+        XCTAssertNil(cancel.request.headers?["Authorization"], "authenticated by the device code alone")
+        XCTAssertEqual(try decoder.decode(APIv2DeviceCancel.self, from: fixture("cancel_device_login_ok")).status, "canceled")
+        XCTAssertEqual(try entry("cancel_device_login_not_found").expectedStatus, 404)
+
+        let opened = try decoder.decode(APIv2DevicePoll.self, from: fixture("poll_device_login_opened")).validated()
+        XCTAssertEqual(opened.status, "pending")
+        XCTAssertEqual(opened.opened, true)
+        // A pending poll carries the request's current expiry; the TV moves
+        // its local deadline to it.
+        XCTAssertEqual(try XCTUnwrap(opened.expiresAt).timeIntervalSince1970, 1767323645.678, accuracy: 0.001)
+        let approved = try decoder.decode(APIv2DevicePoll.self, from: fixture("poll_device_login_ok")).validated()
+        XCTAssertNil(approved.expiresAt, "only pending answers carry it")
+
+        // The approval card says when the TV asked.
+        let lookup = try decoder.decode(APIv2DeviceLookup.self, from: fixture("get_device_login_ok")).presentation
+        XCTAssertEqual(try XCTUnwrap(lookup.requestedAt).timeIntervalSince1970, 1767323045.678, accuracy: 0.001)
+        XCTAssertEqual(lookup.serverId, "3f2a9d5e-6b1c-4c7e-9a0d-2f4b8c1e7a35")
+        let canceled = try decoder.decode(APIv2DevicePoll.self, from: Data(
+            #"{"status":"canceled","poll_after":5,"opened":false,"profile_id":"","profile_token":"","temporary":false}"#.utf8)).validated()
+        XCTAssertEqual(DeviceLoginStatus(raw: canceled.status), .canceled)
+
+        let capability = try decoder.decode(APIv2DeviceCapability.self, from: fixture("get_device_login_capability_ok"))
+        XCTAssertTrue(capability.supportsCancel)
+        XCTAssertTrue(capability.supportsOpenedSignal)
+        // Older servers omit both flags: no cancel, no opened signal.
+        let older = try decoder.decode(APIv2DeviceCapability.self, from: Data(
+            #"{"revision":"r","state":"available","remote_playback_handoff":true,"protocol_versions":[2]}"#.utf8))
+        XCTAssertTrue(older.offersDeviceSignIn)
+        XCTAssertFalse(older.supportsCancel)
+        XCTAssertFalse(older.supportsOpenedSignal)
     }
 
     // MARK: getSetupStatus

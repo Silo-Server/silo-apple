@@ -32,6 +32,10 @@ struct ContentView: View {
     /// drain on the next `.authenticated` transition. There is intentionally
     /// only one deferred intent: a newer external URL supersedes an older one.
     @State private var pendingDeepLink: URL?
+    #if os(iOS)
+    /// A TV sign-in link being approved (`silo://device?…`).
+    @State private var deviceApprovalLink: DeviceApprovalLink?
+    #endif
     /// Monotonically identifies the newest accepted external navigation
     /// intent. Async play lookups must still own this revision before they can
     /// present anything.
@@ -109,6 +113,22 @@ struct ContentView: View {
             enabled: didFinishStartupSplash && router.authState != .loading,
             authState: router.authState
         )
+        .sheet(item: $deviceApprovalLink) { link in
+            DeviceLinkApprovalView(link: link, onAddServer: { url in
+                // Add the server, then come back to this link once signed in.
+                deviceApprovalLink = nil
+                pendingDeepLink = link.url
+                router.prefillServerSetup(with: url)
+                router.resetToServerSetup()
+            }, onSignIn: { server, pending in
+                // Sign in to that saved server again, then come back here.
+                deviceApprovalLink = nil
+                router.signIn(forTVApproval: pending, on: server)
+            }, onSwitchAccount: { server, pending, choosingAccount in
+                deviceApprovalLink = nil
+                router.switchAccount(forTVApproval: pending, on: server, choosingAccount: choosingAccount)
+            }, onClose: { deviceApprovalLink = nil })
+        }
         #endif
         #if DEBUG
         .modifier(DebugPlayerPresentationModifier(
@@ -276,6 +296,13 @@ struct ContentView: View {
                 #if DEBUG && (os(iOS) || os(tvOS))
                 if CommandLine.arguments.contains("-debugWatchParty") || CommandLine.arguments.contains("-debugWatchPartyCode") {
                     router.navigate(to: .watchParty)
+                }
+                #endif
+                #if os(iOS)
+                // A TV approval that waited for this sign-in ("Not you?
+                // Switch account", or a signed-out saved server).
+                if let link = router.takePendingDeviceApproval() {
+                    pendingDeepLink = link.url
                 }
                 #endif
                 let hasPendingDeepLink = pendingDeepLink != nil
@@ -760,6 +787,18 @@ struct ContentView: View {
     }
 
     private func handleDeepLink(_ url: URL, revision: UInt) {
+        #if os(iOS)
+        // A TV sign-in code from the web approval page. Approval is
+        // account-level: it waits for a signed-in session, not a profile.
+        if let link = DeviceApprovalLink(url: url) {
+            guard router.authState == .authenticated || router.authState == .needsProfile else {
+                pendingDeepLink = url
+                return
+            }
+            deviceApprovalLink = link
+            return
+        }
+        #endif
         #if os(iOS) || os(tvOS)
         if WatchPartyEntry.isEnabled, WatchPartyInvitation(url: url) != nil {
             guard router.authState == .authenticated,

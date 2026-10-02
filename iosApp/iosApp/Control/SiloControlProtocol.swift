@@ -100,6 +100,14 @@ struct SiloControlHandoffOffer: Codable, Equatable, Sendable {
         self.serverIdentity = serverIdentity
         self.serverEndpoints = serverEndpoints
     }
+
+    /// Whether `serverId` is the registry key of `serverURL`
+    /// (`ServerRegistry.serverId(for:)`). A TV refuses an offer that fails
+    /// this, so a phone must keep every saved server keyed by its URL.
+    var serverIdMatchesURL: Bool {
+        let url = ServerRegistry.normalize(url: serverURL)
+        return !url.isEmpty && ServerRegistry.serverId(for: url) == serverId
+    }
 }
 
 struct SiloControlHandoffChallenge: Codable, Equatable, Sendable {

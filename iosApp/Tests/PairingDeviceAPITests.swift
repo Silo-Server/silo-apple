@@ -32,7 +32,8 @@ final class PairingDeviceAPITests: XCTestCase {
         }
         let started = try await api().start(serverURL: server, deviceName: "Living room TV", devicePlatform: "tvos")
         XCTAssertEqual(started.deviceCode, "dev-1")
-        XCTAssertEqual(started.matchCode, "42")
+        XCTAssertEqual(started.matchCode, "warm pony")
+        XCTAssertEqual(started.userCode, "4821-7730")
         let poll = try await api().poll(serverURL: server, deviceCode: started.deviceCode)
         XCTAssertEqual(poll.tokens?.accessToken, "acc")
         XCTAssertEqual(poll.tokens?.user.id, "1")
@@ -111,7 +112,8 @@ final class PairingDeviceAPITests: XCTestCase {
             .json(#"{"status":"approved"}"#)
         }
         let lookup = try await api().lookup(serverURL: server, bearer: "chosen", userCode: "ABCD-1234")
-        XCTAssertEqual(lookup.matchCode, "42")
+        XCTAssertEqual(lookup.matchCode, "warm pony")
+        XCTAssertEqual(lookup.serverName, "Silo")
         try await api().approve(serverURL: server, bearer: "chosen", userCode: "ABCD-1234")
 
         let requests = stub.requests
@@ -119,6 +121,25 @@ final class PairingDeviceAPITests: XCTestCase {
         XCTAssertEqual(requests[0].query, ["code": "ABCD-1234"])
         XCTAssertEqual(requests.map { $0.header("authorization") }, ["Bearer chosen", "Bearer chosen"])
         XCTAssertEqual(try json(requests[1]) as NSDictionary, ["code": "ABCD-1234"])
+    }
+
+    /// The TV withdraws an abandoned request with its device code alone,
+    /// and "Not now" denies with the approver's bearer.
+    func testCancelIsPublicAndDenyCarriesTheBearer() async throws {
+        stub.route(StubURLProtocol.method("POST", path: "/api/v2/auth/device/cancel")) { _ in
+            .json(Self.fixture("cancel_device_login_ok"))
+        }
+        stub.route(StubURLProtocol.method("POST", path: "/api/v2/auth/device/deny")) { _ in
+            .json(#"{"status":"denied"}"#)
+        }
+        try await api().cancel(serverURL: server, deviceCode: "dev-1")
+        try await api().deny(serverURL: server, bearer: "chosen", userCode: "48217730")
+        let requests = stub.requests
+        XCTAssertEqual(requests.map(\.path), ["/api/v2/auth/device/cancel", "/api/v2/auth/device/deny"])
+        XCTAssertNil(requests[0].header("authorization"))
+        XCTAssertEqual(try json(requests[0]) as NSDictionary, ["device_code": "dev-1"])
+        XCTAssertEqual(requests[1].header("authorization"), "Bearer chosen")
+        XCTAssertEqual(try json(requests[1]) as NSDictionary, ["code": "48217730"])
     }
 
     /// Approve is dispatched once: a conflict, an expiry or a lost answer is

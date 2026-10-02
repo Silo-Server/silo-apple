@@ -3,13 +3,17 @@ import Foundation
 import Network
 import OSLog
 
-/// A discovered Apple TV waiting to be set up.
+/// A discovered TV waiting to be set up (`st=setup`) or signed in
+/// (`st=login`). Apple TVs and Android TVs advertise the same record.
 struct DiscoveredTV: Identifiable, Equatable {
     let id: String          // TXT `id` (stable device id), or endpoint string.
     let name: String        // TXT `name`.
     let state: PairingReceiverState
     let endpoint: NWEndpoint
     let sid: String?        // TXT `sid`: per-advertising-session nonce, if present.
+    /// TXT `srv`: for a `login` TV, the deployment identity of the server
+    /// it is signed out of.
+    var serverIdentity: String? = nil
     // id-only equality is intentional: `sid`/`state` changes are surfaced via the
     // Optional nil↔value transition in CompanionPairingCardModifier's onChange latch,
     // not by field equality. Don't make this field-sensitive without revisiting that.
@@ -86,10 +90,20 @@ final class TVPairingBrowser {
 
     private static func makeTV(_ result: NWBrowser.Result) -> DiscoveredTV? {
         guard case let .bonjour(txt) = result.metadata else { return nil }
-        let name = txt["name"] ?? "Apple TV"
-        let id = txt["id"] ?? "\(result.endpoint)"
-        let state = PairingReceiverState(rawValue: txt["st"] ?? "setup") ?? .setup
-        return DiscoveredTV(id: id, name: name, state: state, endpoint: result.endpoint, sid: txt["sid"])
+        return makeTV(txt: txt.dictionary, endpoint: result.endpoint)
+    }
+
+    /// Reads one advertisement. A TV that names no state is a first-run TV
+    /// (older TVs); an unknown state is not offered at all.
+    nonisolated static func makeTV(txt: [String: String], endpoint: NWEndpoint) -> DiscoveredTV? {
+        typealias Key = PairingProtocol.TXTKey
+        guard let state = PairingReceiverState(rawValue: txt[Key.state] ?? PairingReceiverState.setup.rawValue) else {
+            return nil
+        }
+        let name = ServerIdentity.usable(txt[Key.name]) ?? "TV"
+        let id = txt[Key.deviceId] ?? "\(endpoint)"
+        return DiscoveredTV(id: id, name: name, state: state, endpoint: endpoint, sid: txt[Key.sessionNonce],
+            serverIdentity: ServerIdentity.usable(txt[Key.serverIdentity]))
     }
 }
 #endif

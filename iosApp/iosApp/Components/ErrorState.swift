@@ -41,6 +41,13 @@ struct ErrorState: Equatable {
             return
         }
         self.updateRequirement = nil
+        if Self.isProviderUnavailable(error) {
+            // The session is fine; the sign-in provider could not confirm
+            // it during a refresh. Transient, never "Session expired".
+            self.statusCode = 503
+            self.message = ExternalSignInError.reasonText("provider_unavailable")
+            return
+        }
         if let httpError = error as? HTTPError {
             self.statusCode = httpError.statusCode
             self.message = Self.humanize(httpError: httpError)
@@ -67,6 +74,14 @@ struct ErrorState: Equatable {
         self.statusCode = nil
         self.message = (error as? LocalizedError)?.errorDescription
             ?? error.localizedDescription
+    }
+
+    private static func isProviderUnavailable(_ error: Error) -> Bool {
+        switch error {
+        case APIv2Error.problem(let problem): return problem.identifier == "provider_unavailable"
+        case HTTPError.http(let code, let body): return HTTPClient.isProviderUnavailable(statusCode: code, body: body ?? "")
+        default: return false
+        }
     }
 
     /// The HTTP status behind a v2 failure. `APIv2Client` maps every non-2xx

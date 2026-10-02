@@ -4,8 +4,9 @@ import Foundation
 /// Scenario wrapper over the shared `StubURLProtocol.Handler` for the API v2
 /// wire tests. One persistent catch-all route answers every request from a
 /// mutable scenario: a fallback reply, optional per-path replies, an ordered
-/// queue of one-shot replies, a transport failure, and a hold that parks the
-/// next request until the test releases it. Test bodies read the recorded
+/// queue of one-shot replies (global or per path), a transport failure, and
+/// a hold that parks the next request (optionally the next one to a path)
+/// until the test releases it. Test bodies read the recorded
 /// requests straight from the handler.
 ///
 /// This is not another `URLProtocol`; it only arranges routes on the one stub.
@@ -32,7 +33,9 @@ final class APIv2TestStub: @unchecked Sendable {
     private var fallback: Reply
     private var routes: [String: Reply] = [:]
     private var queue: [Reply] = []
+    private var pathQueues: [String: [Reply]] = [:]
     private var holdNext = false
+    private var holdPath: String?
     private var gate: StubURLProtocol.Gate?
     private var heldArrived = false
     private var heldWaiters: [CheckedContinuation<Void, Never>] = []
@@ -48,10 +51,14 @@ final class APIv2TestStub: @unchecked Sendable {
                 let reply: Reply
                 if !queue.isEmpty {
                     reply = queue.removeFirst()
+                } else if let next = pathQueues[request.path]?.first {
+                    pathQueues[request.path]?.removeFirst()
+                    reply = next
                 } else {
                     reply = routes[request.path] ?? fallback
                 }
-                guard holdNext, let gate = self.gate else { return (reply, nil) }
+                guard holdNext, holdPath == nil || holdPath == request.path,
+                      let gate = self.gate else { return (reply, nil) }
                 holdNext = false
                 heldArrived = true
                 let waiters = heldWaiters
@@ -87,16 +94,23 @@ final class APIv2TestStub: @unchecked Sendable {
         lock.withLock { queue = replies }
     }
 
+    /// Ordered one-shot replies for one path, consumed after the global
+    /// sequence and before that path's route.
+    func sequence(path: String, _ replies: [Reply]) {
+        lock.withLock { pathQueues[path] = replies }
+    }
+
     /// Every following request fails at the transport layer.
     func fail(_ code: URLError.Code = .networkConnectionLost) {
         lock.withLock { fallback = .failure(URLError(code)) }
     }
 
-    /// Parks the next request until `release()`. Requests after the parked
-    /// one are answered normally.
-    func hold() {
+    /// Parks the next request (to `path`, when given) until `release()`.
+    /// Other requests are answered normally.
+    func hold(path: String? = nil) {
         lock.withLock {
             holdNext = true
+            holdPath = path
             heldArrived = false
             gate = StubURLProtocol.Gate()
         }
@@ -130,7 +144,9 @@ final class APIv2TestStub: @unchecked Sendable {
         lock.withLock {
             routes.removeAll()
             queue.removeAll()
+            pathQueues.removeAll()
             holdNext = false
+            holdPath = nil
             heldArrived = false
         }
         release()

@@ -2,13 +2,21 @@
 import SwiftUI
 
 /// First-run server entry on tvOS. The screen advertises on the LAN the
-/// moment it appears, so a nearby iPhone can set this TV up hands-off. Two paths
-/// sit side by side: a live "Set up with iPhone" status
+/// moment it appears, so a nearby phone or tablet can set this TV up hands-off.
+/// Two paths sit side by side: a live "Set up with your phone" status
 /// card and a fully functional manual-entry card (the emphasized, default-focused
 /// path). When a phone connects, the same screen swaps *in place* to the pairing
 /// panel — no cover, so nothing ever bleeds through behind it.
 struct TVServerSetupView: View {
     var router: AppRouter
+    /// The route this screen was built for. Nearby advertising stops once the
+    /// app leaves it (see `TVPairingAdvertiser.advertise`).
+    private let route: AppRouter.AuthState
+
+    init(router: AppRouter) {
+        self.router = router
+        route = router.authState
+    }
 
     @State private var viewModel = ServerSetupViewModel()
     @State private var advertiser = TVPairingAdvertiser()
@@ -44,7 +52,7 @@ struct TVServerSetupView: View {
         }
         .ignoresSafeArea()
         .animation(SiloTheme.springAnimation, value: isPairing)
-        .task { startAdvertising() }
+        .task { await advertise() }
         .onChange(of: coordinator.state) { _, state in
             // Only accept a new phone once the panel is back to the idle
             // chooser. Releasing on terminal states (completed/failed) would
@@ -64,15 +72,16 @@ struct TVServerSetupView: View {
             connectChooser
                 .transition(.opacity)
         } else {
-            TVPairingReceiverView(coordinator: coordinator, router: router)
+            TVPairingReceiverView(coordinator: coordinator, advance: { router.showProfileSelection() })
                 .transition(.opacity)
         }
     }
 
     // MARK: - Advertiser lifecycle
 
-    private func startAdvertising() {
-        advertiser.start { session, stream in
+    private func advertise() async {
+        let route = route
+        await advertiser.advertise(while: { router.authState == route }) { session, stream in
             Task {
                 await coordinator.run(session: session, stream: stream)
                 // If the session ended back at the idle chooser, accept a new
@@ -107,7 +116,7 @@ struct TVServerSetupView: View {
                 Text("Connect this Apple TV")
                     .font(.siloTitle)
                     .foregroundStyle(Color.auroraInk)
-                Text("Use your iPhone, or enter the server address with the remote.")
+                Text("Use your phone or tablet, or enter the server address with the remote.")
                     .font(.siloCaption)
                     .foregroundStyle(Color.auroraInkSecondary)
             }
@@ -134,10 +143,10 @@ struct TVServerSetupView: View {
             SearchingBeacon()
                 .frame(maxWidth: .infinity, alignment: .center)
             Spacer(minLength: 20)
-            Text("Looking for an iPhone…")
+            Text("Looking for a phone or tablet…")
                 .font(.siloHeadline)
                 .foregroundStyle(Color.auroraInk)
-            Text("Open Silo on an iPhone connected to the same Wi-Fi. Accept the setup card and Silo will securely bring over the server and account.")
+            Text("Open Silo on a phone or tablet on the same Wi‑Fi. Accept the setup card and Silo will securely bring over the server and account.")
                 .font(.siloBody)
                 .foregroundStyle(Color.auroraInkSecondary)
                 .lineSpacing(4)
@@ -150,7 +159,7 @@ struct TVServerSetupView: View {
     }
 
     private var phoneSetupPill: some View {
-        Text("RECOMMENDED · USE IPHONE")
+        Text("RECOMMENDED · USE YOUR PHONE")
             .font(.system(size: 14, weight: .semibold, design: .monospaced))
             .tracking(2)
             .foregroundStyle(Color.auroraInkSecondary)

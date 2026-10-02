@@ -698,8 +698,29 @@ class AppRouter {
         path = NavigationPath()
     }
 
+    /// Why the sign-in screen is showing, when it isn't the user's own
+    /// choice. The TV sign-in screen explains an expired session instead of
+    /// just appearing. Cleared once the user signs in or leaves sign-in.
+    enum LoginNotice: Equatable {
+        case sessionExpired
+    }
+
+    private(set) var loginNotice: LoginNotice?
+
+    /// An address to fill in on the next server-setup screen (adding the
+    /// server a TV sign-in link names). Read once.
+    private var serverSetupPrefill: String?
+
+    func prefillServerSetup(with url: String) { serverSetupPrefill = url }
+
+    func consumeServerSetupPrefill() -> String? {
+        defer { serverSetupPrefill = nil }
+        return serverSetupPrefill
+    }
+
     /// Return to the login screen (e.g., on sign-out).
     func resetToLogin() {
+        loginNotice = nil
         recordScreenBreadcrumb(target: "login", action: "reset")
         path = NavigationPath()
         profileJourneyLabels = nil
@@ -708,6 +729,7 @@ class AppRouter {
 
     /// Transition to profile selection after successful login.
     func showProfileSelection(journeyLabels: [String]? = nil) {
+        loginNotice = nil
         recordScreenBreadcrumb(target: "profileSelection", action: "reset")
         path = NavigationPath()
         profileJourneyLabels = journeyLabels
@@ -740,6 +762,7 @@ class AppRouter {
 
     /// Return to server setup (e.g., to change servers).
     func resetToServerSetup() {
+        loginNotice = nil
         recordScreenBreadcrumb(target: "serverSetup", action: "reset")
         path = NavigationPath()
         profileJourneyLabels = nil
@@ -749,6 +772,7 @@ class AppRouter {
     /// Commit an auth state produced after validating a server selection.
     /// Every previous screen belongs to the old server/session boundary.
     func resetAfterServerResolution(to state: AuthState) {
+        loginNotice = nil
         recordScreenBreadcrumb(target: state.diagnosticsState, action: "reset")
         PlayerIdentityBoundary.endEngagedVideoPictureInPicture()
         presentedPlayer = nil
@@ -762,13 +786,67 @@ class AppRouter {
         requestSignOut(removingServer: false)
     }
 
+    /// "Sign In Again" after the session expired. Not an explicit sign-out:
+    /// the next browser sign-in does not ask the provider for an account
+    /// choice, so the same person is signed straight back in.
+    func signOutAfterSessionExpired() {
+        requestSignOut(removingServer: false, asksForAccountChoice: false)
+    }
+
     func signOutRemoveServerAndReset() {
         requestSignOut(removingServer: true)
     }
 
+    #if os(iOS)
+    /// A TV approval to show again once the person has signed back in after
+    /// "Not you? Switch account". ContentView takes it (`takePendingDeviceApproval`).
+    private(set) var pendingDeviceApproval: DeviceApprovalLink?
+
+    func takePendingDeviceApproval() -> DeviceApprovalLink? {
+        defer { pendingDeviceApproval = nil }
+        return pendingDeviceApproval
+    }
+
+    /// A TV approval link named a saved server this device is signed out
+    /// of: make it the active server and show its login screen. The TV's code
+    /// returns to the approval card after that sign-in.
+    func signIn(forTVApproval link: DeviceApprovalLink, on server: ServerEntry) {
+        guard !isSigningOut else { return }
+        pendingDeviceApproval = link
+        Task { @MainActor in
+            if ServerRegistry.shared.activeServerId != server.id {
+                guard await ServerRegistry.shared.switchTo(serverId: server.id, resolveDestinationProfile: true) else {
+                    pendingDeviceApproval = nil
+                    accountActionError = "Couldn't switch to that server. Try again."
+                    return
+                }
+            }
+            resetAfterServerResolution(to: await RestoredSessionAuthResolver.resolveValidated())
+        }
+    }
+
+    /// "Not you?" on a TV approval for `server`: make it the active server
+    /// and sign out of it in Silo only (the provider's own session is left
+    /// alone). When the server advertises `select_account`
+    /// (`choosingAccount`), the provider sign-in that follows starts by
+    /// itself with `prompt=select_account`, so the provider lets the person
+    /// pick another account; otherwise the login screen waits. The TV's code
+    /// returns to the approval card after that sign-in.
+    func switchAccount(forTVApproval link: DeviceApprovalLink, on server: ServerEntry, choosingAccount: Bool) {
+        guard !isSigningOut else { return }
+        pendingDeviceApproval = link
+        requestSignOut(removingServer: false, switchingTo: server.id, startsSignIn: choosingAccount)
+    }
+    #endif
+
     /// One operation owns the button action through cleanup and navigation.
     /// Repeated taps cannot queue another logout behind a subsequent login.
-    private func requestSignOut(removingServer: Bool) {
+    /// `switchingTo` makes that saved server active first; `startsSignIn`
+    /// asks its login screen to open the provider sign-in by itself.
+    /// `asksForAccountChoice` is false only when the session ended rather
+    /// than the person signing out.
+    private func requestSignOut(removingServer: Bool, switchingTo targetServerID: String? = nil,
+                                startsSignIn: Bool = false, asksForAccountChoice: Bool = true) {
         guard !isSigningOut else { return }
         isSigningOut = true
         accountActionError = nil
@@ -782,12 +860,35 @@ class AppRouter {
                 }
             }
             #endif
+            if let targetServerID, ServerRegistry.shared.activeServerId != targetServerID {
+                guard await ServerRegistry.shared.switchTo(serverId: targetServerID) else {
+                    accountActionError = "Couldn't switch to that server. Try again."
+                    #if os(iOS)
+                    pendingDeviceApproval = nil
+                    #endif
+                    return
+                }
+            }
             let serverID = ServerRegistry.shared.activeServerId
             let outcome = await AuthService.shared.signOutWithOutcome()
             guard outcome != .refused else {
                 accountActionError = "The active session changed. Try signing out again."
+                if targetServerID != nil {
+                    #if os(iOS)
+                    pendingDeviceApproval = nil
+                    #endif
+                    // The switch above may have changed the active server.
+                    resetAfterServerResolution(to: await RestoredSessionAuthResolver.resolveValidated())
+                }
                 return
             }
+            #if !os(tvOS)
+            // The provider still has the person signed in in the system
+            // browser; the next browser sign-in asks it for an account choice.
+            if !removingServer, asksForAccountChoice, let serverID {
+                SelectAccountPrompt.shared.request(serverId: serverID, autoStart: startsSignIn)
+            }
+            #endif
             var durable = outcome != .localOnly
             if outcome == .diagnosticsCleanupFailed {
                 accountActionError = "You're signed out, but Silo couldn't erase local diagnostics. Remove this server from the server list to retry cleanup."
@@ -837,6 +938,7 @@ class AppRouter {
         path = NavigationPath()
         if ServerRegistry.shared.hasActiveServer {
             recordScreenBreadcrumb(target: "login", action: "sessionExpired")
+            loginNotice = .sessionExpired
             setAuthState(.needsLogin, reason: "sessionExpired")
         } else {
             recordScreenBreadcrumb(target: "serverSetup", action: "sessionExpired")

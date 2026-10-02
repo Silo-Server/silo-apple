@@ -70,7 +70,7 @@ struct ErrorView: View {
     }
 
     private var resolvedOnSignOut: () -> Void {
-        onSignOut ?? { router.signOutAndReset() }
+        onSignOut ?? { router.signOutAfterSessionExpired() }
     }
 
     private var primaryAction: Action? {
