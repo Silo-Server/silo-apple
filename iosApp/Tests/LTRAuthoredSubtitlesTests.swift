@@ -71,17 +71,18 @@ final class LTRAuthoredSubtitlesTests: XCTestCase {
         XCTAssertFalse(track.isLTRAuthored)
     }
 
-    /// The engine clears a channel's cues when it selects a track. The next
-    /// track's evidence starts from nothing, even when its cue IDs repeat.
-    func testAnEmptyPublicationStartsOver() {
+    /// An embedded track's window can empty during a long gap or after a far
+    /// seek. The track's evidence survives it.
+    func testAnEmptyWindowKeepsTheTracksEvidence() {
         var track = LTRAuthoredSubtitles.Track()
-        _ = track.laidOutAsAuthored(cues(ltrAuthored))
-        _ = track.laidOutAsAuthored([])
-        XCTAssertEqual(track.laidOutAsAuthored(cues(logical)).compactMap(\.text), logical)
+        _ = track.laidOutAsAuthored(cues(ltrAuthored), trackID: 1)
+        _ = track.laidOutAsAuthored([], trackID: 1)
+        let later = track.laidOutAsAuthored(cues(["بالطبع"], firstID: 100), trackID: 1)
+        XCTAssertEqual(later.compactMap(\.text), [lrm + "بالطبع"])
     }
 
-    /// A backfill from an already-decoded store replaces the cues without a
-    /// clear but under a new engine track index.
+    /// Every primary track switch changes the engine's track index, including
+    /// a backfill from an already-decoded store that reuses cue IDs.
     func testANewEngineTrackIndexStartsOverWithRepeatedCueIDs() {
         var track = LTRAuthoredSubtitles.Track()
         _ = track.laidOutAsAuthored(cues(ltrAuthored), trackID: 1)
@@ -92,10 +93,10 @@ final class LTRAuthoredSubtitlesTests: XCTestCase {
     /// the logical-order evidence outweighs it.
     func testLaterEvidenceCorrectsAnEarlyClassification() {
         var track = LTRAuthoredSubtitles.Track()
-        _ = track.laidOutAsAuthored(cues(["...ثم", "...وبعد ذلك", "...لكن"]))
+        _ = track.laidOutAsAuthored(cues(["...ثم", "...وبعد ذلك", "...لكن"]), trackID: 1)
         XCTAssertTrue(track.isLTRAuthored)
         let later = cues(Array(repeating: "- لقد انفجر", count: 4), firstID: 100)
-        XCTAssertEqual(track.laidOutAsAuthored(later).compactMap(\.text), later.compactMap(\.text))
+        XCTAssertEqual(track.laidOutAsAuthored(later, trackID: 1).compactMap(\.text), later.compactMap(\.text))
     }
 
     func testSentenceEndAfterASpaceCountsAsLogicalOrder() {

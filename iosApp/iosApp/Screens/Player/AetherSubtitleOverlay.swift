@@ -46,11 +46,18 @@ struct AetherSubtitleOverlay: View {
         }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
+        // Every primary track switch changes the engine's active index, and the
+        // index is set before the switch publishes cues.
         .onReceive(engine.$subtitleCues) {
             primary = primaryTrack.laidOutAsAuthored($0, trackID: engine.activeSubtitleTrackIndex)
         }
+        // The engine publishes no secondary index. It clears the secondary
+        // cues whenever it selects a secondary track, so an empty publication
+        // starts over; an embedded secondary track that empties during a long
+        // gap starts over too.
         .onReceive(engine.$secondarySubtitleCues) {
-            secondary = secondaryTrack.laidOutAsAuthored($0)
+            if $0.isEmpty { secondaryTrack = LTRAuthoredSubtitles.Track() }
+            secondary = secondaryTrack.laidOutAsAuthored($0, trackID: nil)
         }
         .onReceive(engine.clock.$sourceTime) { aetherSourceTime = $0 }
     }

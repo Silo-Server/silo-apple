@@ -27,14 +27,10 @@ enum LTRAuthoredSubtitles {
     private static let minimumSignals = 3
     private static let dominanceRatio = 3
 
-    /// One engine subtitle channel's evidence, gathered across cue publishes.
-    /// An embedded track reaches the overlay as a window around the playhead,
-    /// so each cue counts once and evidence that leaves the window still counts.
-    ///
-    /// The engine clears a channel's cues whenever it selects a track, so an
-    /// empty publication starts over. The one switch that skips the clear, a
-    /// backfill from an already-decoded store, sets the engine's active track
-    /// index first, so a different `trackID` starts over as well.
+    /// One track's evidence, gathered across cue publishes. An embedded track
+    /// reaches the overlay as a window around the playhead, so each cue counts
+    /// once, and evidence that leaves the window, or a window that empties
+    /// during a long gap, still counts.
     struct Track {
         private var trackID: Int?
         private var countedCueIDs: Set<Int> = []
@@ -46,10 +42,10 @@ enum LTRAuthoredSubtitles {
         }
 
         /// The cues as their author laid them out: unchanged unless the track
-        /// is LTR-authored. Pass the engine's track identity for the channel
-        /// when it has one.
-        mutating func laidOutAsAuthored(_ cues: [SubtitleCue], trackID: Int? = nil) -> [SubtitleCue] {
-            if cues.isEmpty || trackID != self.trackID {
+        /// is LTR-authored. `trackID` is the engine's identity for the track
+        /// that published them; a different one starts over.
+        mutating func laidOutAsAuthored(_ cues: [SubtitleCue], trackID: Int?) -> [SubtitleCue] {
+            if trackID != self.trackID {
                 self = Track()
                 self.trackID = trackID
             }
