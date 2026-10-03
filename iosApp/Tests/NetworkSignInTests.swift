@@ -94,6 +94,24 @@ final class NetworkSignInTests: XCTestCase {
         XCTAssertTrue(SignInOptions.passwordOnly.networkProviders.isEmpty)
     }
 
+    /// A TV with no device sign-in on a server that takes no password shows
+    /// "Continue as …" alone, never a password form the server refuses.
+    func testTVShowsOnlyTheNetworkSignInWhenItIsTheOnlyWayIn() {
+        let network = Self.network()
+        let networkOnly = SignInOptions(providers: APIv2AuthProviders(items: [network], passwordLogin: false), oauth: nil)
+        XCTAssertTrue(TVSignInPresentation.offersOnlyNetworkSignIn(networkOnly, deviceSignIn: false))
+        XCTAssertFalse(TVSignInPresentation.offersOnlyNetworkSignIn(networkOnly, deviceSignIn: true),
+            "the code screen leads instead")
+
+        let withPasswords = SignInOptions(providers: APIv2AuthProviders(items: [network], passwordLogin: true), oauth: nil)
+        XCTAssertFalse(TVSignInPresentation.offersOnlyNetworkSignIn(withPasswords, deviceSignIn: false),
+            "the password form stays under the button")
+        let noNetwork = SignInOptions(providers: APIv2AuthProviders(items: [], passwordLogin: false), oauth: nil)
+        XCTAssertFalse(TVSignInPresentation.offersOnlyNetworkSignIn(noNetwork, deviceSignIn: false))
+        XCTAssertFalse(TVSignInPresentation.offersOnlyNetworkSignIn(nil, deviceSignIn: false),
+            "unknown discovery keeps the form")
+    }
+
     /// `network_sign_in_path` becomes a path on the saved base: only its
     /// `/api/v2/auth/network/<id>/sign-in` suffix survives. Anything of
     /// another shape offers no network sign-in.
@@ -228,6 +246,31 @@ final class NetworkSignInTests: XCTestCase {
             XCTFail("signed in through another origin")
         } catch HTTPError.invalidURL {}
         XCTAssertTrue(stub.requests.isEmpty)
+    }
+
+    /// "Change server" while "Continue as …" runs leaves the sign-in screen.
+    /// The session still lands, but the sign-in must not pull the app back
+    /// to the profiles.
+    @MainActor
+    func testSignInDoesNotRouteOnceTheAppLeftTheSignInScreen() async throws {
+        let (auth, tokens) = try await makeAuth()
+        let sent = "/media" + Self.apiPath
+        stub.reply(path: sent, 200, fixture("sign_in_with_network_identity_ok"))
+        stub.hold(path: sent)
+        let router = AppRouter()
+        router.resetToLogin()
+        let model = LoginViewModel(auth: auth)
+
+        let signIn = Task { await model.signInWithNetworkIdentity(Self.network(), router: router) }
+        await stub.waitUntilHeld()
+        router.resetToServerSetup()
+        stub.release()
+        let succeeded = await signIn.value
+
+        XCTAssertTrue(succeeded)
+        XCTAssertEqual(router.authState, .needsServerSetup)
+        let access = await tokens.getAccessToken()
+        XCTAssertEqual(access, "acc")
     }
 
     func testRefusalsReadAsSentencesNamingTheProvider() {

@@ -17,7 +17,11 @@ class LoginViewModel {
     /// button rather than in the password form.
     var networkSignInError: FormError?
 
-    private let auth = AuthService.shared
+    private let auth: AuthService
+
+    init(auth: AuthService = .shared) {
+        self.auth = auth
+    }
 
     var signInOptions: SignInOptions? { discovery.options }
 
@@ -117,18 +121,21 @@ class LoginViewModel {
     }
 
     /// Signs this device's owner in through a network provider ("Continue
-    /// as …"), then routes on like a password sign-in. Returns whether it
+    /// as …"), then routes on like a password sign-in, unless the app left
+    /// the sign-in screen meanwhile ("Change server"). Returns whether it
     /// succeeded. A refusal shows under the button (`networkSignInError`).
     @MainActor
     @discardableResult
     func signInWithNetworkIdentity(_ provider: APIv2AuthProvider, router: AppRouter) async -> Bool {
         guard !isBusy else { return false }
+        let route = router.authState
         providerInFlight = provider.id
         error = nil
         networkSignInError = nil
         defer { providerInFlight = nil }
         do {
             try await auth.signInWithNetworkIdentity(provider)
+            guard router.authState == route else { return true }
             await StartupContentPrefetcher.prefetchProfiles()
             router.showProfileSelection()
             return true
