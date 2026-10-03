@@ -223,10 +223,19 @@ extension View {
     /// alone leaves a freshly launched setup screen with no focus at all, so
     /// the remote does nothing until a swipe. Never overrides a focus the
     /// person or the page already set.
+    ///
+    /// A page can appear while focus still belongs to what it replaces: the
+    /// Sign Out alert closing over Settings, or the old screen mid-crossfade.
+    /// The focus engine drops a request made then, so keep asking until one
+    /// lands, for about a second and a half.
     func marqueeTVSeedFocus<F: Hashable>(_ focus: FocusState<F?>.Binding, _ value: F) -> some View {
         task {
             await Task.yield()
-            if focus.wrappedValue == nil { focus.wrappedValue = value }
+            for _ in 0..<15 {
+                guard focus.wrappedValue == nil else { return }
+                focus.wrappedValue = value
+                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+            }
         }
     }
 
