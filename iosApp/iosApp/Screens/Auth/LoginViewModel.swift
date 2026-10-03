@@ -138,6 +138,7 @@ class LoginViewModel {
             try await auth.signInWithNetworkIdentity(provider)
             guard router.authState == route else { return true }
             await StartupContentPrefetcher.prefetchProfiles()
+            router.skipsSingleProfilePicker = true
             router.showProfileSelection()
             return true
         } catch {

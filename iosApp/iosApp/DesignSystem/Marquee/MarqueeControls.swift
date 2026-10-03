@@ -567,6 +567,55 @@ struct MarqueeProviderLabel: View {
     #endif
 }
 
+/// "Continue as <name>" over "via <provider>": a network sign-in, where this
+/// device's owner signs in with one press. See `NetworkSignIn`.
+struct MarqueeNetworkSignInLabel: View {
+    let title: String
+    var via: String?
+    /// The provider's name, for the lettered mark when it has no icon.
+    let name: String
+    var iconURL: URL?
+
+    init(title: String, via: String?, name: String, iconURL: URL?) {
+        self.title = title
+        self.via = via
+        self.name = name
+        self.iconURL = iconURL
+    }
+
+    /// The label for a discovered network provider on the server at `serverURL`.
+    init(provider: APIv2AuthProvider, serverURL: String) {
+        self.init(
+            title: NetworkSignIn.buttonTitle(for: provider),
+            via: NetworkSignIn.viaLine(for: provider),
+            name: SignInOptions.providerName(for: provider),
+            iconURL: SignInOptions.iconURL(for: provider, serverURL: serverURL)
+        )
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ProviderMark(name: name, iconURL: iconURL, size: markSize)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                if let via {
+                    Text(via)
+                        .font(.system(size: viaSize, weight: .medium))
+                        .opacity(0.7)
+                }
+            }
+        }
+    }
+
+    #if os(tvOS)
+    private let markSize: CGFloat = 40
+    private let viaSize: CGFloat = 18
+    #else
+    private let markSize: CGFloat = 22
+    private let viaSize: CGFloat = 12
+    #endif
+}
+
 struct ProviderMark: View {
     let name: String
     var iconURL: URL?

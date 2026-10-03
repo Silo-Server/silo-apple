@@ -39,8 +39,10 @@ struct LoginView: View {
             options
                 .padding(.top, 24)
                 .animation(.easeInOut(duration: 0.2), value: viewModel.error)
+                .animation(.easeInOut(duration: 0.2), value: viewModel.networkSignInError)
                 .animation(.easeInOut(duration: 0.2), value: viewModel.discovery)
                 .sensoryFeedback(.error, trigger: viewModel.error) { _, error in error != nil }
+                .sensoryFeedback(.error, trigger: viewModel.networkSignInError) { _, error in error != nil }
         }
         .task {
             MarqueeScene.shared.focus = .account
@@ -95,6 +97,20 @@ struct LoginView: View {
             loadingSkeleton
         } else {
             VStack(spacing: 0) {
+                if !viewModel.networkProviders.isEmpty {
+                    networkButtons
+                    if let error = viewModel.networkSignInError {
+                        MarqueeErrorText(error.message)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 10)
+                            .accessibilityIdentifier("login.networkError")
+                    }
+                    if !viewModel.browserProviders.isEmpty || viewModel.showsPasswordForm {
+                        MarqueeLabeledDivider(text: "or")
+                            .padding(.vertical, 18)
+                    }
+                }
+
                 if !viewModel.browserProviders.isEmpty {
                     providerButtons
                     if viewModel.offersAccountChoice {
@@ -160,12 +176,37 @@ struct LoginView: View {
         .accessibilityLabel("Loading sign-in options")
     }
 
-    /// One button per browser provider. Without a password form the first is
-    /// the screen's primary action.
+    /// "Continue as <name>" per network provider: this device's owner signs
+    /// in with no password and no browser. Discovery lists one only when the
+    /// app reached the server through that provider's network, so when it
+    /// shows it is the quickest way in and leads the screen.
+    private var networkButtons: some View {
+        VStack(spacing: 12) {
+            ForEach(viewModel.networkProviders, id: \.id) { provider in
+                let inFlight = viewModel.providerInFlight == provider.id
+                Button {
+                    signInWithNetworkIdentity(provider)
+                } label: {
+                    if inFlight {
+                        Text("Signing in…")
+                    } else {
+                        MarqueeNetworkSignInLabel(provider: provider, serverURL: server.serverURL)
+                    }
+                }
+                .buttonStyle(.marquee(.primary, isLoading: inFlight))
+                .disabled(viewModel.isBusy)
+                .accessibilityLabel(inFlight ? "Signing in…" : NetworkSignIn.accessibilityLabel(for: provider))
+                .accessibilityIdentifier("login.network.\(provider.id)")
+            }
+        }
+    }
+
+    /// One button per browser provider. Without a password form or a
+    /// network sign-in the first is the screen's primary action.
     private var providerButtons: some View {
         VStack(spacing: 12) {
             ForEach(Array(viewModel.browserProviders.enumerated()), id: \.element.id) { index, provider in
-                let isPrimary = index == 0 && !viewModel.showsPasswordForm
+                let isPrimary = index == 0 && !viewModel.showsPasswordForm && viewModel.networkProviders.isEmpty
                 let inFlight = viewModel.providerInFlight == provider.id
                 Button {
                     signIn(with: provider)
@@ -292,6 +333,12 @@ struct LoginView: View {
         Task {
             if await !viewModel.login(router: router) { passwordFailures += 1 }
         }
+    }
+
+    private func signInWithNetworkIdentity(_ provider: APIv2AuthProvider) {
+        guard !viewModel.isBusy else { return }
+        focusedField = nil
+        Task { await viewModel.signInWithNetworkIdentity(provider, router: router) }
     }
 
     private func signIn(with provider: APIv2AuthProvider, choosingAccount: Bool = false) {

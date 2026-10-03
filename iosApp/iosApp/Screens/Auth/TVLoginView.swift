@@ -8,6 +8,11 @@ import UIKit
 /// `PairingProtocol.advertisesSignInTVs` rollout gate). A password
 /// is one click away. The code renews itself while the screen is visible;
 /// nothing counts down. See `QRLoginViewModel` for the lifecycle.
+///
+/// When this TV reached the server through a network identity provider's
+/// network (Tailscale: the saved address is the server's tailnet name),
+/// discovery lists that provider and "Continue as <owner>" leads the screen:
+/// one press signs the TV's owner in, with no code and no password.
 struct TVLoginView: View {
     var router: AppRouter
     /// The route this screen was built for. Nearby advertising stops once the
@@ -27,6 +32,7 @@ struct TVLoginView: View {
     @State private var showPassword: Bool = false
     @State private var showPasswordForm: Bool = false
     @State private var isSubmittingPassword = false
+    @State private var isSubmittingNetwork = false
     /// Counts failed password attempts so the fields shake on each one.
     @State private var passwordFailures = 0
     /// Set by `goToProfiles()`, the one place this screen moves on after a
@@ -39,6 +45,7 @@ struct TVLoginView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     private enum Field: Hashable {
+        case networkSignIn
         case usePassword
         case stateAction
         case changeServer
@@ -62,6 +69,9 @@ struct TVLoginView: View {
             if isPairing {
                 TVPairingReceiverView(coordinator: receiver, advance: goToProfiles)
                     .transition(.opacity)
+            } else if offersOnlyNetworkSignIn {
+                networkOnlyScreen
+                    .transition(.opacity)
             } else if showsPasswordScreen {
                 passwordScreen
                     .transition(.opacity)
@@ -72,6 +82,7 @@ struct TVLoginView: View {
         }
         .animation(.easeOut(duration: 0.32), value: isPairing)
         .animation(.easeOut(duration: 0.32), value: showsPasswordScreen)
+        .animation(.easeOut(duration: 0.32), value: offersOnlyNetworkSignIn)
         .task {
             MarqueeScene.shared.focus = .account
             MarqueeScene.shared.personalTint = nil
@@ -85,6 +96,16 @@ struct TVLoginView: View {
         .onChange(of: qrVM.status, initial: true) { _, status in
             loginVM.offersPhoneRoute = status != .noDeviceSignIn
         }
+        .onChange(of: offersOnlyNetworkSignIn) { _, networkOnly in
+            // The screen focus was on gave way to "Continue as …" alone.
+            // Otherwise discovery answering leaves focus where it is: the
+            // person may be pressing it.
+            if networkOnly { focusedField = .networkSignIn }
+        }
+        .onChange(of: loginVM.networkSignInError) { _, error in
+            guard let error, UIAccessibility.isVoiceOverRunning else { return }
+            AccessibilityNotification.Announcement(AttributedString(error.message)).post()
+        }
         .onChange(of: qrVM.status) { _, newValue in
             if case .approved = newValue {
                 StartupContentPrefetcher.prefetchProfiles()
@@ -96,7 +117,7 @@ struct TVLoginView: View {
                 return
             }
             if newValue == .noDeviceSignIn {
-                focusedField = .username
+                focusedField = networkProvider == nil ? .username : .networkSignIn
             } else if !showPasswordForm, TVSignInPresentation.actionTakesFocus(newValue) {
                 focusedField = .stateAction
             }
@@ -129,8 +150,16 @@ struct TVLoginView: View {
             serverCard
             headline("Sign in to \(server.serverName)")
                 .padding(.top, 44)
+            if let provider = networkProvider {
+                networkSignInButton(provider)
+                    .padding(.top, 32)
+                Text("Or sign in with your phone")
+                    .font(.system(size: 22, weight: .medium))
+                    .foregroundStyle(Color.siloOnSurface.opacity(0.4))
+                    .padding(.top, 30)
+            }
             MarqueeTVBody(codeLead)
-                .padding(.top, 26)
+                .padding(.top, networkProvider == nil ? 26 : 12)
             Label(TVSignInPresentation.nearbyHint, systemImage: "iphone.gen3")
                 .font(.system(size: 22))
                 .foregroundStyle(Color.siloOnSurface.opacity(0.4))
@@ -141,8 +170,16 @@ struct TVLoginView: View {
         } card: {
             MarqueeTVCard { codeCard }
         }
-        .defaultFocus($focusedField, offersPassword ? .usePassword : .changeServer, priority: .userInitiated)
-        .marqueeTVSeedFocus($focusedField, offersPassword ? .usePassword : .changeServer)
+        .defaultFocus($focusedField, defaultCodeScreenFocus, priority: .userInitiated)
+        .marqueeTVSeedFocus($focusedField, defaultCodeScreenFocus)
+    }
+
+    /// Where focus enters the code screen: "Continue as …" when this TV can
+    /// sign in through its network provider, else the password button.
+    /// Discovery answering after focus landed does not move it.
+    private var defaultCodeScreenFocus: Field {
+        if networkProvider != nil { return .networkSignIn }
+        return offersPassword ? .usePassword : .changeServer
     }
 
     private var codeLead: String {
@@ -269,10 +306,17 @@ struct TVLoginView: View {
             serverCard
             headline("Sign in with\na password")
                 .padding(.top, 44)
-            MarqueeTVBody(qrVM.status == .noDeviceSignIn
+            MarqueeTVBody(qrVM.status == .noDeviceSignIn && networkProvider == nil
                 ? "This server only supports password sign-in."
                 : "Use your \(server.serverName) username and password.")
                 .padding(.top, 22)
+
+            // A server without device sign-in lands here directly, so the
+            // one-press sign-in is offered above the fields too.
+            if qrVM.status == .noDeviceSignIn, let provider = networkProvider {
+                networkSignInButton(provider)
+                    .padding(.top, 30)
+            }
 
             VStack(spacing: 20) {
                 MarqueeTVField(
@@ -351,8 +395,8 @@ struct TVLoginView: View {
                     }
                     .buttonStyle(.marquee(.plain, fullWidth: false))
                     .focused($focusedField, equals: .backToPhone)
-                    // A phone approval must not race the password in flight.
-                    .disabled(isSubmittingPassword)
+                    // A phone approval must not race a sign-in in flight.
+                    .disabled(isSubmittingPassword || isSubmittingNetwork)
                 }
 
                 Button("Change server") { changeServer() }
@@ -379,8 +423,8 @@ struct TVLoginView: View {
                     .padding(.top, 14)
             }
         }
-        .defaultFocus($focusedField, .username, priority: .userInitiated)
-        .marqueeTVSeedFocus($focusedField, .username)
+        .defaultFocus($focusedField, passwordScreenFocus, priority: .userInitiated)
+        .marqueeTVSeedFocus($focusedField, passwordScreenFocus)
         .marqueeTVFocusAfterKeyboard($focusedField, pending: $focusAfterKeyboard)
         // Menu returns to the code screen; on a password-only server there is
         // none, so Menu keeps its system meaning.
@@ -389,6 +433,84 @@ struct TVLoginView: View {
     }
 
     private var isSigningIn: Bool { loginVM.isLoading || isSubmittingPassword }
+
+    /// A server without device sign-in opens here; "Continue as …" leads
+    /// when it is offered. Choosing a password from the code screen focuses
+    /// the username itself.
+    private var passwordScreenFocus: Field {
+        qrVM.status == .noDeviceSignIn && networkProvider != nil ? .networkSignIn : .username
+    }
+
+    // MARK: - Network sign-in
+
+    /// The network provider discovery lists for this TV (at most one is
+    /// enabled on a server), when the request came through its network.
+    private var networkProvider: APIv2AuthProvider? { loginVM.networkProviders.first }
+
+    /// No code and no password on this server: "Continue as …" stands alone.
+    private var offersOnlyNetworkSignIn: Bool {
+        TVSignInPresentation.offersOnlyNetworkSignIn(loginVM.signInOptions,
+                                                     deviceSignIn: qrVM.status != .noDeviceSignIn)
+    }
+
+    /// "Continue as <owner>" over "via <provider>", and the refusal under it.
+    /// Not disabled while it runs: on TV a disabled button loses focus.
+    private func networkSignInButton(_ provider: APIv2AuthProvider) -> some View {
+        let inFlight = isSubmittingNetwork || loginVM.providerInFlight == provider.id
+        return VStack(alignment: .leading, spacing: 14) {
+            Button {
+                continueWithNetworkIdentity(provider)
+            } label: {
+                if inFlight {
+                    Text("Signing in…")
+                } else {
+                    MarqueeNetworkSignInLabel(provider: provider, serverURL: server.serverURL)
+                }
+            }
+            .buttonStyle(.marquee(.primary, fullWidth: false, isLoading: inFlight))
+            .focused($focusedField, equals: .networkSignIn)
+            .accessibilityLabel(inFlight ? "Signing in…" : NetworkSignIn.accessibilityLabel(for: provider))
+
+            if let error = loginVM.networkSignInError?.message {
+                MarqueeErrorText(error)
+                    .frame(maxWidth: 760, alignment: .leading)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: loginVM.networkSignInError)
+    }
+
+    /// A server that offers this TV neither a code nor a password:
+    /// "Continue as …" is the one way in.
+    private var networkOnlyScreen: some View {
+        MarqueeTVScreen {
+            sessionExpiredChip
+            serverCard
+            headline("Sign in to \(server.serverName)")
+                .padding(.top, 44)
+            if let provider = networkProvider {
+                networkSignInButton(provider)
+                    .padding(.top, 40)
+            }
+            Button("Change server") { changeServer() }
+                .buttonStyle(.marquee(.plain, fullWidth: false))
+                .focused($focusedField, equals: .changeServer)
+                .padding(.top, 30)
+        } card: {
+            MarqueeTVCard {
+                MarqueeTVCardSymbol(systemImage: "network")
+                Text("No code needed")
+                    .font(.system(size: 40, weight: .bold))
+                    .padding(.top, 34)
+                Text("This Apple TV reached \(server.serverName) through \(networkProvider.map { SignInOptions.providerName(for: $0) } ?? "its network"), which knows who it belongs to.")
+                    .font(.system(size: 24))
+                    .foregroundStyle(Color.siloOnSurface.opacity(0.62))
+                    .padding(.top, 14)
+            }
+        }
+        .defaultFocus($focusedField, .networkSignIn, priority: .userInitiated)
+        .marqueeTVSeedFocus($focusedField, .networkSignIn)
+    }
 
     // MARK: - Pieces
 
@@ -444,7 +566,7 @@ struct TVLoginView: View {
     /// (a poll already in flight finishes first) and the password is only
     /// sent when the approval hasn't won. Success withdraws the code.
     private func submitPassword() {
-        guard !loginVM.isLoading, !isSubmittingPassword else { return }
+        guard !loginVM.isLoading, !isSubmittingPassword, !isSubmittingNetwork else { return }
         isSubmittingPassword = true
         Task { @MainActor in
             defer { isSubmittingPassword = false }
@@ -473,8 +595,23 @@ struct TVLoginView: View {
         router.resetToServerSetup()
     }
 
+    /// "Continue as …": the same single flight as a password sign-in, so a
+    /// phone approval and the network sign-in never both install a session.
+    /// Success withdraws the code; a refusal shows under the button and the
+    /// code keeps renewing.
+    private func continueWithNetworkIdentity(_ provider: APIv2AuthProvider) {
+        guard !loginVM.isBusy, !isSubmittingPassword, !isSubmittingNetwork else { return }
+        isSubmittingNetwork = true
+        Task { @MainActor in
+            defer { isSubmittingNetwork = false }
+            guard await qrVM.suspendForPasswordSignIn() else { return }
+            let succeeded = await loginVM.signInWithNetworkIdentity(provider, router: router)
+            qrVM.finishPasswordSignIn(succeeded: succeeded)
+        }
+    }
+
     private func returnToCodeScreen() {
-        guard !isSubmittingPassword else { return }
+        guard !isSubmittingPassword, !isSubmittingNetwork else { return }
         showPasswordForm = false
         focusedField = .usePassword
         if qrVM.status.isTerminal {
@@ -483,9 +620,10 @@ struct TVLoginView: View {
     }
 
     /// Status changes are announced politely; the code itself is read on
-    /// focus of the QR code.
+    /// focus of the QR code. "Only password sign-in" is not announced while
+    /// "Continue as …" is offered too.
     private func announce(_ status: QRLoginViewModel.Status) {
-        guard UIAccessibility.isVoiceOverRunning,
+        guard UIAccessibility.isVoiceOverRunning, status != .noDeviceSignIn || networkProvider == nil,
               let text = TVSignInPresentation.statusLine(for: status, codeWasRenewed: qrVM.codeWasRenewed, serverHost: serverHost) else { return }
         var announcement = AttributedString(text)
         announcement.accessibilitySpeechAnnouncementPriority = .low
