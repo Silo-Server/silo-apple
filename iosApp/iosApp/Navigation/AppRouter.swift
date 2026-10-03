@@ -368,8 +368,9 @@ class AppRouter {
     /// every auth-state reset so a later normal login uses the default labels.
     var profileJourneyLabels: [String]?
 
-    /// Set by a completed sign-in: a household with exactly one profile and no
-    /// PIN goes straight to Home instead of a one-person picker.
+    /// Set by a completed sign-in, including setup from a nearby phone: a
+    /// household with exactly one profile and no PIN goes straight to Home
+    /// instead of a one-person picker.
     var skipsSingleProfilePicker = false
 
     func switchTab(to tab: AppTab) {

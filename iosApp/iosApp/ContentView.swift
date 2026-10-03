@@ -228,6 +228,7 @@ struct ContentView: View {
             // active-server change intentionally re-keys `authContent`, which
             // otherwise replaces the receiver's success screen with a fresh
             // setup view before its delayed navigation can run.
+            router.skipsSingleProfilePicker = true
             router.showProfileSelection()
         }
         #if os(iOS) || os(tvOS)
