@@ -170,7 +170,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             posterThumbhash: detail.posterThumbhash,
             backdropUrl: detail.backdropUrl,
             backdropThumbhash: detail.backdropThumbhash,
-            eyebrow: PhoneHeroMetadata.eyebrow(from: detail),
+            eyebrow: nil,
             sourceTokens: PhoneHeroMetadata.seriesSourceTokens(from: detail),
             ratingChip: PhoneHeroMetadata.contentRatingChip(from: detail),
             overview: detail.overview,
@@ -179,6 +179,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             creditText: PhoneHeroMetadata.creditText(from: detail),
             overlayData: OverlayData.from(detail),
             enablesArtworkParallax: true,
+            titleEyebrow: PhoneHeroMetadata.titleEyebrow(from: detail),
             actions: { actionStack },
             // Match MovieDetailContent exactly through the playback controls:
             // Play/actions, show overview and credits, translation affordance,

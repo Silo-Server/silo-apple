@@ -788,7 +788,10 @@ enum StartupContentPrefetcher {
         // harmless.)
         let contentSections = response.sections.filter { !$0.items.isEmpty }
         if let firstRow = contentSections.first {
-            append(firstRow.items.first?.logoUrl, into: &logoURLs, seen: &seenLogos)
+            // A profile that turned title art off never shows the logo.
+            if TitleArtPreferences.shared.showsTitleArt {
+                append(firstRow.items.first?.logoUrl, into: &logoURLs, seen: &seenLogos)
+            }
             // Only the marquee's initial selection earns a hero-size decode.
             // A w1920 backdrop is ~8 MB decoded, so warming the whole first
             // row would spend the entire 96 MB tvOS budget on artwork the
@@ -873,6 +876,8 @@ enum StartupContentPrefetcher {
     /// Match `RecommendationsViewModel` ordering so the first two rows the
     /// user can actually focus are the ones whose logo art is ready first.
     private static func prefetchRecommendationLogos(for response: SectionsResponse) {
+        // A profile that turned title art off never shows these logos.
+        guard TitleArtPreferences.shared.showsTitleArt else { return }
         let nonEmpty = response.sections.filter { !$0.items.isEmpty }
         let forYou = nonEmpty.filter { $0.title.lowercased() == "for you" }
         let others = nonEmpty.filter { $0.title.lowercased() != "for you" }

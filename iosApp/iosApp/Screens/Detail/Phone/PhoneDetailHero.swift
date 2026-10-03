@@ -283,6 +283,9 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     var overlayData: OverlayData? = nil
     var enablesArtworkParallax = false
     var artworkStyle: PhoneDetailArtworkStyle = .backdrop
+    /// The `TYPE · PROVIDER` line for movie and series pages. Shown above the
+    /// title on iPhone and in place of `eyebrow` on iPad.
+    var titleEyebrow: PhoneHeroEyebrow? = nil
     @ViewBuilder let actions: () -> Actions
     @ViewBuilder let belowOverview: () -> BelowOverview
 
@@ -358,9 +361,14 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
             )
             .allowsHitTesting(false)
 
-            titleBlock(textAlignment: .center, logoHeight: compactLogoHeight)
-                .padding(.horizontal, 28)
-                .padding(.bottom, 6)
+            VStack(spacing: 10) {
+                if let titleEyebrow {
+                    PhoneHeroEyebrowLine(eyebrow: titleEyebrow, textAlignment: .center)
+                }
+                titleBlock(textAlignment: .center, logoHeight: compactLogoHeight)
+            }
+            .padding(.horizontal, 28)
+            .padding(.bottom, 6)
         }
         .frame(height: compactArtworkHeight)
         .clipped()
@@ -383,7 +391,9 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
             expandedArtwork
 
             VStack(alignment: .leading, spacing: 15) {
-                if let eyebrow, !eyebrow.isEmpty {
+                if let titleEyebrow {
+                    PhoneHeroEyebrowLine(eyebrow: titleEyebrow, textAlignment: .leading)
+                } else if let eyebrow, !eyebrow.isEmpty {
                     Text(eyebrow.uppercased())
                         .font(.system(size: 11, weight: .bold))
                         .tracking(1.2)
@@ -508,9 +518,17 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
         return value
     }
 
+    /// Logo art only while the profile shows title art on this device;
+    /// otherwise the text title, exactly as for a title without a logo.
+    private var displayedLogoUrl: String? {
+        guard TitleArtPreferences.shared.showsTitleArt,
+              let logoUrl, !logoUrl.isEmpty else { return nil }
+        return logoUrl
+    }
+
     @ViewBuilder
     private func titleBlock(textAlignment: TextAlignment, logoHeight: CGFloat) -> some View {
-        if let logoUrl, !logoUrl.isEmpty {
+        if let logoUrl = displayedLogoUrl {
             AsyncImageView(url: logoUrl, contentMode: .fit, placeholderStyle: .clear)
                 .frame(maxWidth: textAlignment == .leading ? 430 : .infinity)
                 .frame(height: logoHeight, alignment: textAlignment == .leading ? .leading : .center)
@@ -729,6 +747,38 @@ private struct PhoneDetailCoverArtwork: View {
 }
 
 // MARK: - Titles
+
+/// `MOVIE · MARVEL STUDIOS`: small, tracked, uppercase, with the provider a
+/// step brighter than the type.
+private struct PhoneHeroEyebrowLine: View {
+    let eyebrow: PhoneHeroEyebrow
+    let textAlignment: TextAlignment
+
+    var body: some View {
+        line
+            .font(.system(size: 11, weight: .bold))
+            .tracking(1.6)
+            .lineLimit(1)
+            .multilineTextAlignment(textAlignment)
+            .shadow(color: .black.opacity(0.35), radius: 6, y: 1)
+            .frame(maxWidth: .infinity, alignment: textAlignment == .leading ? .leading : .center)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(
+                [eyebrow.kind, eyebrow.provider].compactMap { $0 }.joined(separator: ", ")
+            )
+    }
+
+    private var line: Text {
+        let kind = Text(verbatim: eyebrow.kind.uppercased())
+            .foregroundStyle(Color.siloOnSurface.opacity(0.7))
+        guard let provider = eyebrow.provider else { return kind }
+        let separator = Text(verbatim: " \u{00B7} ")
+            .foregroundStyle(Color.siloOnSurface.opacity(0.5))
+        let providerText = Text(verbatim: provider.uppercased())
+            .foregroundStyle(Color.siloOnSurface.opacity(0.9))
+        return Text("\(kind)\(separator)\(providerText)")
+    }
+}
 
 private struct PhoneHeroTitle: View {
     let title: String

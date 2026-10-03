@@ -99,7 +99,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
             posterThumbhash: detail.posterThumbhash,
             backdropUrl: detail.backdropUrl,
             backdropThumbhash: detail.backdropThumbhash,
-            eyebrow: PhoneHeroMetadata.eyebrow(from: detail),
+            eyebrow: PhoneHeroMetadata.episodeEyebrow(from: detail),
             sourceTokens: PhoneHeroMetadata.movieSourceTokens(from: detail),
             ratingChip: PhoneHeroMetadata.contentRatingChip(from: detail),
             overview: detail.overview,
@@ -108,6 +108,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
             creditText: PhoneHeroMetadata.creditText(from: detail),
             overlayData: OverlayData.from(detail),
             enablesArtworkParallax: SiloMediaType.isMovieLibrary(detail.type),
+            titleEyebrow: PhoneHeroMetadata.titleEyebrow(from: detail),
             actions: { actionStack },
             belowOverview: {
                 VStack(spacing: 14) {

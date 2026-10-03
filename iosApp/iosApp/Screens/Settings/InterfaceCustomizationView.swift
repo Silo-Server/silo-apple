@@ -133,12 +133,17 @@ func offsetPrimaryMenuEditorItem(
 /// outside the reorderable list, matching the cross-client contract.
 struct InterfaceCustomizationView: View {
     @State private var preferences = UICustomizationPreferences.shared
+    @State private var titleArt = TitleArtPreferences.shared
     @State private var registry = ServerRegistry.shared
     @State private var librarySnapshot = MainTabLibrarySnapshot.cachedForCurrentAuthority()
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         List {
+            if titleArt.isOffered {
+                TitleArtSettingsSection(preferences: titleArt)
+            }
+
             if let message = preferences.capabilityMessage {
                 Section {
                     Label(message, systemImage: "server.rack")
@@ -326,7 +331,9 @@ struct InterfaceCustomizationView: View {
         .siloGroupedListStyle()
         .navigationTitle("Interface")
         .task {
-            await preferences.refresh()
+            async let preferencesRefresh: Void = preferences.refresh()
+            async let titleArtRefresh: Void = titleArt.refresh()
+            _ = await (preferencesRefresh, titleArtRefresh)
         }
         .task(id: currentLibraryAuthority) {
             await refreshLibraries(for: currentLibraryAuthority)
@@ -336,8 +343,9 @@ struct InterfaceCustomizationView: View {
             let authority = currentLibraryAuthority
             Task {
                 async let preferencesRefresh: Void = preferences.refresh()
+                async let titleArtRefresh: Void = titleArt.refresh()
                 async let librariesRefresh: Void = refreshLibraries(for: authority)
-                _ = await (preferencesRefresh, librariesRefresh)
+                _ = await (preferencesRefresh, titleArtRefresh, librariesRefresh)
             }
         }
     }
@@ -571,6 +579,96 @@ struct InterfaceCustomizationView: View {
         case "desktop": return "Desktop"
         default: return "Family"
         }
+    }
+}
+
+/// "Title Pages": whether detail pages name a title with its logo art, and
+/// whether that choice is this device's own or the profile's for every device.
+/// See `TitleArtPreferences` for the scopes each switch writes.
+private struct TitleArtSettingsSection: View {
+    let preferences: TitleArtPreferences
+
+    var body: some View {
+        Section {
+            TitleArtToggleRow(
+                title: "Show Title Art",
+                subtitle: "Use logo artwork as the title when available.",
+                systemImage: "photo.artframe",
+                isOn: Binding(
+                    get: { preferences.showsTitleArt },
+                    set: { preferences.setShowTitleArt($0) }
+                )
+            )
+            TitleArtToggleRow(
+                title: "Apply to All Devices",
+                subtitle: "Use this choice everywhere on this profile.",
+                systemImage: "laptopcomputer.and.iphone",
+                isOn: Binding(
+                    get: { preferences.appliesToAllDevices },
+                    set: { preferences.setAppliesToAllDevices($0) }
+                )
+            )
+            if preferences.appliesToAllDevices {
+                Label(
+                    "Title art is \(preferences.showsTitleArt ? "on" : "off") on every device signed into this profile. Changing it here changes it everywhere.",
+                    systemImage: "info.circle"
+                )
+                .font(.footnote)
+                .foregroundStyle(Color.siloSecondaryText)
+            }
+            if let message = preferences.errorMessage {
+                Label(message, systemImage: "exclamationmark.triangle")
+                    .font(.footnote)
+                    .foregroundStyle(Color.siloSecondaryText)
+            }
+        } header: {
+            Text("Title Pages")
+        } footer: {
+            if preferences.appliesToAllDevices {
+                Text("Turn off Apply to All Devices to choose for this \(Self.deviceNoun) only.")
+            } else {
+                Text("Only affects this \(Self.deviceNoun). Your other devices keep their own setting.")
+            }
+        }
+        .disabled(!preferences.allowsEditing)
+    }
+
+    private static var deviceNoun: String {
+        switch AppleDeviceIdentity.current.clientFamily {
+        case "tablet": return "iPad"
+        case "desktop": return "Mac"
+        case "tv": return "Apple TV"
+        default: return "iPhone"
+        }
+    }
+}
+
+/// The Settings overview toggle on iPhone and iPad; a plain labeled toggle on
+/// the Mac, which has no overview row style.
+private struct TitleArtToggleRow: View {
+    let title: String
+    let subtitle: String
+    let systemImage: String
+    @Binding var isOn: Bool
+
+    var body: some View {
+        #if os(iOS)
+        SettingsOverviewToggleRow(
+            title: title,
+            subtitle: subtitle,
+            systemImage: systemImage,
+            isOn: $isOn
+        )
+        #else
+        Toggle(isOn: $isOn) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                Text(subtitle)
+                    .font(.footnote)
+                    .foregroundStyle(Color.siloSecondaryText)
+            }
+        }
+        #endif
     }
 }
 

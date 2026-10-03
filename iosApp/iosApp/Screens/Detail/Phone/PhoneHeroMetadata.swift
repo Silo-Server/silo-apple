@@ -10,6 +10,18 @@ enum PhoneHeroFactToken: Hashable {
     case chip(String)
 }
 
+/// The small uppercase line above a detail title, e.g. `MOVIE · MARVEL
+/// STUDIOS`. The provider is optional; without one only the type shows.
+struct PhoneHeroEyebrow: Hashable {
+    let kind: String
+    let provider: String?
+
+    /// The whole line as spoken and as a plain string.
+    var text: String {
+        [kind, provider].compactMap { $0 }.joined(separator: " \u{00B7} ").uppercased()
+    }
+}
+
 /// Builds the eyebrow / source / facts / starring strings shown by the
 /// phone hero from an `ItemDetail`. Mirrors `TVHeroMetadata` — the same
 /// editorial logic, just exposed under an iOS-only namespace so the
@@ -89,27 +101,32 @@ enum PhoneHeroMetadata {
 
     // MARK: - Eyebrow
 
-    static func eyebrow(from detail: ItemDetail) -> String? {
-        if detail.type == "episode" {
-            if let seriesTitle = detail.seriesTitle?
-                .trimmingCharacters(in: .whitespaces), !seriesTitle.isEmpty {
-                return seriesTitle
-            }
+    /// The `TYPE · PROVIDER` line above a movie or series title: the first
+    /// studio for a movie, the first network for a series. Just the type when
+    /// there is no provider. Episodes have none, matching web and Android;
+    /// their series name comes from `episodeEyebrow(from:)` on iPad.
+    static func titleEyebrow(from detail: ItemDetail) -> PhoneHeroEyebrow? {
+        switch detail.type {
+        case "movie":
+            return PhoneHeroEyebrow(kind: "Movie", provider: firstNonEmpty(detail.studios))
+        case "series":
+            return PhoneHeroEyebrow(kind: "Series", provider: firstNonEmpty(detail.networks))
+        default:
+            return nil
         }
-        if let status = detail.status?
-            .trimmingCharacters(in: .whitespaces), !status.isEmpty,
-           detail.type == "series" {
-            switch status.lowercased() {
-            case "continuing", "returning series", "returning":
-                return "Continuing Series"
-            case "ended":
-                return "Complete Series"
-            case "in production":
-                return "New Season Coming"
-            default: break
-            }
-        }
-        return nil
+    }
+
+    /// The series name the iPad hero shows above an episode's title.
+    static func episodeEyebrow(from detail: ItemDetail) -> String? {
+        guard detail.type == "episode" else { return nil }
+        return firstNonEmpty(detail.seriesTitle.map { [$0] })
+    }
+
+    private static func firstNonEmpty(_ values: [String]?) -> String? {
+        values?
+            .lazy
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
     }
 
     // MARK: - Credits
