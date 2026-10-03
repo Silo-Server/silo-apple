@@ -98,10 +98,6 @@ enum NativeSignIn {
         URL(string: ServerRegistry.normalize(url: serverURL)).flatMap(origin(of:))
     }
 
-    /// The server-relative part of every native start: what follows the
-    /// server's base URL (which may carry a reverse proxy's path prefix).
-    private static let nativeStartSuffix = try! NSRegularExpression(pattern: "/api/v2/auth/oauth/[^/?#]+/native/start/?$")
-
     /// The native start on the saved server: the API path (and the server's
     /// query items) of `start`, resolved against `serverURL`, the saved
     /// base. `start` comes from `native_start_path`; anything before its
@@ -117,16 +113,6 @@ enum NativeSignIn {
         components.queryItems = start.queryItems.isEmpty ? nil : start.queryItems
         guard let url = components.url, origin(of: url) == savedOrigin else { return nil }
         return url
-    }
-
-    /// The API path of a native start path: the
-    /// `/api/v2/auth/oauth/<id>/native/start` it ends with. Nil for a path
-    /// of any other shape.
-    static func nativeStartAPIPath(_ path: String) -> String? {
-        let range = NSRange(path.startIndex..., in: path)
-        guard let match = nativeStartSuffix.firstMatch(in: path, range: range),
-              let suffix = Range(match.range, in: path) else { return nil }
-        return String(path[suffix])
     }
 
     /// The redirect's `iss` as an origin: an absolute http(s) URL with no

@@ -132,10 +132,12 @@ final class NetworkSignInTests: XCTestCase {
             installationId: "5", networkSignInPath: Self.apiPath)
         XCTAssertNil(NetworkSignIn.apiPath(of: oauth), "only a network provider signs in this way")
 
-        XCTAssertTrue(NetworkSignIn.isAPIPath(Self.apiPath))
-        XCTAssertTrue(NetworkSignIn.isAPIPath("/media" + Self.apiPath), "under the saved base's path prefix")
-        XCTAssertFalse(NetworkSignIn.isAPIPath("/api/v2/auth/network/5/sign-in/extra"))
-        XCTAssertFalse(NetworkSignIn.isAPIPath(APIv2Client.identityLinkNetworkPath))
+        XCTAssertTrue(ServerAuthPath.isNetworkSignIn(Self.apiPath))
+        XCTAssertTrue(ServerAuthPath.isNetworkSignIn("/media" + Self.apiPath), "under the saved base's path prefix")
+        XCTAssertFalse(ServerAuthPath.isNetworkSignIn("/api/v2/auth/network/5/sign-in/extra"))
+        XCTAssertFalse(ServerAuthPath.isNetworkSignIn("/api/v2/auth/network/0/sign-in"), "ends in /sign-in, wrong id")
+        XCTAssertFalse(ServerAuthPath.isNetworkSignIn("/api/v2/catalog/items"))
+        XCTAssertFalse(ServerAuthPath.isNetworkSignIn(APIv2Client.identityLinkNetworkPath))
     }
 
     func testContinueAsNamesTheDeviceOwnerAndTheProvider() {
@@ -321,6 +323,16 @@ final class NetworkSignInTests: XCTestCase {
             username: "alice@example.test", email: "", displayName: "", linkedAt: Date())
         XCTAssertTrue(AccountSignInModel.connectable(providers: [network], oauth: nil, credentialsLinking: false,
             networkLinking: true, linked: [linked]).isEmpty, "a linked installation is not offered again")
+
+        // Linking turns password sign-in off, so a provider the login screen
+        // would drop for its path is never offered: the account would have
+        // no way back in on this app.
+        for unusable in [nil, "/api/v2/auth/network/abc/sign-in", "https://evil.example/api/v2/auth/network/5/sign-in"] {
+            XCTAssertTrue(SignInOptions(providers: APIv2AuthProviders(items: [Self.network(path: unusable)],
+                passwordLogin: true), oauth: nil).networkProviders.isEmpty, unusable ?? "nil")
+            XCTAssertTrue(AccountSignInModel.connectable(providers: [Self.network(path: unusable)], oauth: nil,
+                credentialsLinking: false, networkLinking: true, linked: []).isEmpty, unusable ?? "nil")
+        }
     }
 
     /// Like directory linking, the local password goes once, under the

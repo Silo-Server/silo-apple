@@ -13,10 +13,6 @@ import Foundation
 /// provider's `network_sign_in_path` on the saved base URL, and the token
 /// pair it answers is installed like a password sign-in's.
 enum NetworkSignIn {
-    /// The server-relative part of every network sign-in: what follows the
-    /// server's base URL. The id has the contract's shape (`^[1-9][0-9]*$`).
-    private static let apiPathSuffix = try! NSRegularExpression(pattern: "/api/v2/auth/network/[1-9][0-9]*/sign-in$")
-
     /// The provider's sign-in as an API path below the saved base: the
     /// `/api/v2/auth/network/<id>/sign-in` its `network_sign_in_path` ends
     /// with. Anything before that (another address's path prefix) is dropped,
@@ -24,23 +20,9 @@ enum NetworkSignIn {
     /// Nil for a provider of another mode and for a path of any other shape,
     /// which offer no network sign-in.
     static func apiPath(of provider: APIv2AuthProvider) -> String? {
-        guard provider.isNetwork,
-              let path = provider.networkSignInPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-              path.hasPrefix("/"), !path.hasPrefix("//"), let components = URLComponents(string: path),
-              components.scheme == nil, components.host == nil,
-              components.query == nil, components.fragment == nil else { return nil }
-        let encoded = components.percentEncodedPath
-        guard let match = apiPathSuffix.firstMatch(in: encoded, range: NSRange(encoded.startIndex..., in: encoded)),
-              let suffix = Range(match.range, in: encoded) else { return nil }
-        return String(encoded[suffix])
-    }
-
-    /// Whether `path` is a network sign-in: public (no bearer, no profile)
-    /// and single dispatch, like `login`. Matched as a suffix, like the other
-    /// public paths, because the request's URL path carries the saved base's
-    /// own path prefix.
-    static func isAPIPath(_ path: String) -> Bool {
-        apiPathSuffix.firstMatch(in: path, range: NSRange(path.startIndex..., in: path)) != nil
+        guard provider.isNetwork else { return nil }
+        return ServerAuthPath.relative(provider.networkSignInPath, suffix: ServerAuthPath.networkSignIn,
+                                       allowsQuery: false)?.apiPath
     }
 
     // MARK: Copy

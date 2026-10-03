@@ -540,8 +540,8 @@ struct TVLoginView: View {
                         }
                         .buttonStyle(AuroraGhostButtonStyle())
                         .focused($focusedField, equals: .backToPhone)
-                        // A phone approval must not race the password in flight.
-                        .disabled(isSubmittingPassword)
+                        // A phone approval must not race a sign-in in flight.
+                        .disabled(isSubmittingPassword || isSubmittingNetwork)
                     }
 
                     Button {
@@ -676,7 +676,7 @@ struct TVLoginView: View {
     }
 
     private func returnToCodeScreen() {
-        guard !isSubmittingPassword else { return }
+        guard !isSubmittingPassword, !isSubmittingNetwork else { return }
         showPasswordForm = false
         focusedField = .usePassword
         if qrVM.status.isTerminal {

@@ -235,7 +235,7 @@ private struct ConnectProviderSheet: View {
         }
         if item.method == .network {
             let who = item.provider.networkIdentity?.name.map { "\($0), " } ?? ""
-            return "Enter your Silo password to confirm. This connects \(who)the \(item.name) account this device belongs to. After connecting, you sign in with \(item.name) instead of your password."
+            return "Enter your Silo password to confirm. This connects \(who)the \(item.name) account this device belongs to. After connecting, you sign in with \(item.name) instead of your password, and only when you open this server at its \(item.name) address."
         }
         return "Confirm your Silo password, then sign in with \(item.name). After connecting, you sign in with \(item.name) instead of your password."
     }

@@ -218,11 +218,8 @@ struct SignInOptions: Equatable, Sendable {
     /// The provider's native start, read from `native_start_path`. Nil when
     /// the server does not list it or it has another shape.
     static func nativeStart(of provider: APIv2AuthProvider) -> NativeStart? {
-        guard let path = provider.nativeStartPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-              path.hasPrefix("/"), !path.hasPrefix("//"), let components = URLComponents(string: path),
-              components.scheme == nil, components.host == nil else { return nil }
-        guard let apiPath = NativeSignIn.nativeStartAPIPath(components.percentEncodedPath) else { return nil }
-        return NativeStart(apiPath: apiPath, queryItems: components.queryItems ?? [])
+        ServerAuthPath.relative(provider.nativeStartPath, suffix: ServerAuthPath.nativeStart, allowsQuery: true)
+            .map { NativeStart(apiPath: $0.apiPath, queryItems: $0.queryItems) }
     }
 
     /// The button text for a provider. Plugins often configure the whole

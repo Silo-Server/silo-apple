@@ -1790,7 +1790,7 @@ actor HTTPClient {
     /// Matched by suffix: `buildRequest` keeps the server URL's base path, so
     /// the path seen at header-attachment time may be `/prefix/api/v2/...`.
     private static func isPublicAuthPath(_ path: String) -> Bool {
-        publicAuthPathSuffixes.contains { path.hasSuffix($0) } || NetworkSignIn.isAPIPath(path)
+        publicAuthPathSuffixes.contains { path.hasSuffix($0) } || ServerAuthPath.isNetworkSignIn(path)
     }
 
     private static let publicAuthPathSuffixes = [
