@@ -12,9 +12,16 @@ struct DiscoveredServerList: View {
 
     var body: some View {
         if !servers.isEmpty {
+            #if os(tvOS)
+            // Disabling would drop the focused row out of the focus graph
+            // mid-connect; `connect(to:)` ignores repeat presses instead.
+            list
+                .transition(.opacity)
+            #else
             list
                 .disabled(isConnecting)
                 .transition(.opacity)
+            #endif
         }
     }
 

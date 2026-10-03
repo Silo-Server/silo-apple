@@ -128,6 +128,9 @@ struct TVServerSetupView: View {
             }
             HStack {
                 Button {
+                    // A found server may be connecting; leaving now would let
+                    // its result land behind manual entry.
+                    guard !viewModel.isLoading else { return }
                     viewModel.clearError()
                     isEnteringAddress = true
                 } label: {
