@@ -109,4 +109,13 @@ enum ServerBrandingCache {
             UserDefaults.standard.set(data, forKey: key)
         }
     }
+
+    /// Forgets a removed server's branding, so the device keeps nothing about it.
+    static func remove(for serverURL: String) {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              var all = try? JSONDecoder().decode([String: ServerBranding].self, from: data),
+              all.removeValue(forKey: ServerRegistry.normalize(url: serverURL)) != nil,
+              let updated = try? JSONEncoder().encode(all) else { return }
+        UserDefaults.standard.set(updated, forKey: key)
+    }
 }

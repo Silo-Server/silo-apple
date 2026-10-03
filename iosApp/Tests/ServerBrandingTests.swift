@@ -11,6 +11,19 @@ final class ServerBrandingTests: XCTestCase {
         XCTAssertNil(ServerBranding.resolve("  ", base: base))
     }
 
+    func testRemovingAServerForgetsItsCachedBranding() {
+        let removed = "https://removed-\(UUID().uuidString).example.com"
+        let kept = "https://kept-\(UUID().uuidString).example.com"
+        let branding = ServerBranding(document: ServerBrandingDocument(serverName: "Den"), baseURL: kept)
+        ServerBrandingCache.store(branding, for: removed)
+        ServerBrandingCache.store(branding, for: kept)
+        defer { ServerBrandingCache.remove(for: kept) }
+
+        ServerBrandingCache.remove(for: removed)
+        XCTAssertNil(ServerBrandingCache.branding(for: removed))
+        XCTAssertNotNil(ServerBrandingCache.branding(for: kept))
+    }
+
     func testBrandingAssetsTreatTheDefaultPortAsSameOrigin() {
         XCTAssertNotNil(ServerBranding.resolve("https://silo.example.com:443/mark.png", base: "https://silo.example.com"))
         XCTAssertNotNil(ServerBranding.resolve("http://SILO.example.com/mark.png", base: "http://silo.example.com:80"))

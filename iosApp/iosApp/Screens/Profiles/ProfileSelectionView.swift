@@ -116,9 +116,10 @@ struct ProfileSelectionView: View {
     }
 
     /// A household with one profile and no PIN doesn't need a picker after
-    /// signing in: go straight to Home.
+    /// signing in: go straight to Home. A failed load keeps the request, so a
+    /// successful Retry still skips.
     private func skipPickerIfSingleProfile() async {
-        guard router.skipsSingleProfilePicker else { return }
+        guard router.skipsSingleProfilePicker, viewModel.error == nil else { return }
         router.skipsSingleProfilePicker = false
         guard viewModel.profiles.count == 1, let only = viewModel.profiles.first, !only.hasPin else { return }
         await viewModel.selectProfile(only, router: router)
@@ -131,7 +132,12 @@ struct ProfileSelectionView: View {
         if viewModel.isLoading && viewModel.profiles.isEmpty {
             LoadingView(message: "Loading profiles...")
         } else if let error = viewModel.error, viewModel.profiles.isEmpty {
-            ErrorView(state: error, onRetry: { Task { await viewModel.loadProfiles() } })
+            ErrorView(state: error, onRetry: {
+                Task {
+                    await viewModel.loadProfiles()
+                    await skipPickerIfSingleProfile()
+                }
+            })
         } else {
             content
         }
