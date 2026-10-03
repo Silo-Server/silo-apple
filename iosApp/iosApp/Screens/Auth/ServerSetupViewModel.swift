@@ -30,14 +30,31 @@ class ServerSetupViewModel {
     typealias ServerCheck = @Sendable (String) async throws -> APIv2SetupStatus
 
     private let checkServer: ServerCheck
+    /// Whether the now-active server already has a signed-in session, as when
+    /// a saved server is picked from Recent.
+    private let hasSession: @Sendable () -> Bool
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "ServerSetup"
     )
 
-    init(checkServer: @escaping ServerCheck = { try await AuthService.shared.checkServer(url: $0) }) {
+    init(
+        checkServer: @escaping ServerCheck = { try await AuthService.shared.checkServer(url: $0) },
+        hasSession: @escaping @Sendable () -> Bool = { AuthService.shared.isLoggedIn }
+    ) {
         self.checkServer = checkServer
+        self.hasSession = hasSession
     }
+
+    /// Set when every secure address failed and the next one is plain HTTP.
+    /// The screen asks before anything is sent unencrypted.
+    struct InsecurePrompt: Equatable {
+        let address: String
+        fileprivate let remaining: [String]
+        fileprivate let attempted: [String]
+    }
+
+    private(set) var insecurePrompt: InsecurePrompt?
 
     /// Validate the server URL and determine whether setup or login is needed.
     func connect(router: AppRouter) async {
@@ -57,23 +74,68 @@ class ServerSetupViewModel {
             return
         }
 
+        insecurePrompt = nil
+        await run(candidates: candidates, attempted: [], allowInsecure: selectedScheme == .http || typedScheme == "http", router: router)
+    }
+
+    /// Continues a connect the person agreed to finish over plain HTTP.
+    func confirmInsecure(router: AppRouter) async {
+        guard let prompt = insecurePrompt else { return }
+        insecurePrompt = nil
+        await run(candidates: prompt.remaining, attempted: prompt.attempted, allowInsecure: true, router: router)
+    }
+
+    func clearError() {
+        error = nil
+    }
+
+    func cancelInsecure() {
+        insecurePrompt = nil
+        error = FormError("Could not reach a Silo server at that address over HTTPS.")
+    }
+
+    private func run(candidates: [String], attempted previous: [String], allowInsecure: Bool, router: AppRouter) async {
         isLoading = true
         error = nil
-        defer { isLoading = false }
+        var connected = false
+        // After a successful connect the screen fades out to sign-in; it keeps
+        // showing "Connecting…" rather than snapping back to its idle state.
+        defer { if !connected { isLoading = false } }
 
-        var attempted: [String] = []
+        var attempted = previous
         var lastError: Error?
         var updateRequirement: UpdateRequirement?
-        for candidate in candidates {
+        for (index, candidate) in candidates.enumerated() {
+            if !allowInsecure, candidate.lowercased().hasPrefix("http://") {
+                // A secure address already proved a version mismatch; asking to
+                // drop encryption would not change the answer.
+                if let updateRequirement {
+                    self.error = FormError(updateRequirement.message)
+                    return
+                }
+                insecurePrompt = InsecurePrompt(
+                    address: Self.displayAddress(candidate),
+                    remaining: Array(candidates[index...]),
+                    attempted: attempted
+                )
+                return
+            }
             attempted.append(candidate)
             do {
                 let status = try await checkServer(candidate)
+                connected = true
                 // This view is also pushed onto the login stack (Change
                 // Server, then Add Server) while `authState` is already
                 // `needsLogin`. Setting the same state is a no-op there, so
                 // the stack must be reset explicitly or the setup screen
                 // stays put after a successful connect.
                 router.popToRoot()
+                // A saved server that is still signed in goes straight to its
+                // profiles; only a server without a session needs sign-in.
+                if !status.needsSetup, hasSession() {
+                    router.showProfileSelection()
+                    return
+                }
                 router.authState = .needsLogin
                 if status.needsSetup {
                     router.navigate(to: .serverNeedsSetup)
@@ -91,6 +153,19 @@ class ServerSetupViewModel {
             "Server autodiscovery failed candidates=\(attempted.joined(separator: ", "), privacy: .public) lastError=\(String(describing: lastError), privacy: .public)"
         )
         self.error = FormError(updateRequirement?.message ?? "Could not reach a Silo server at that address.")
+    }
+
+    /// The scheme typed into the address field, if any.
+    private var typedScheme: String? {
+        let raw = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let range = raw.range(of: "://") else { return nil }
+        return raw[..<range.lowerBound].lowercased()
+    }
+
+    static func displayAddress(_ url: String) -> String {
+        guard let components = URLComponents(string: url), let host = components.host else { return url }
+        if let port = components.port { return "\(host):\(port)" }
+        return host
     }
 
     func buildCandidateURLs() throws -> [String] {
