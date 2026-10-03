@@ -90,7 +90,7 @@ struct TVServerSetupView: View {
             presenting: viewModel.insecurePrompt
         ) { prompt in
             Button("Connect") { Task { await viewModel.confirmInsecure(prompt, router: router) } }
-            Button("Cancel", role: .cancel) { viewModel.cancelInsecure() }
+            Button("Cancel", role: .cancel) { viewModel.cancelInsecure(prompt) }
         } message: { prompt in
             Text("Your password and what you watch will be sent unencrypted to \(prompt.address). Only do this on a network you trust.")
         }
@@ -117,11 +117,15 @@ struct TVServerSetupView: View {
                 .padding(.top, 64)
             // Servers found on this network or the tailnet connect with one
             // press, above the way to type an address.
-            DiscoveredServerList(servers: discovery.servers, isConnecting: viewModel.isLoading) { server in
+            DiscoveredServerList(
+                servers: discovery.servers,
+                isConnecting: viewModel.isLoading,
+                connectingID: viewModel.connectingServerID
+            ) { server in
                 Task { await viewModel.connect(to: server, router: router) }
             }
             .padding(.top, 18)
-            if let error = viewModel.error?.message {
+            if let error = viewModel.discoveryError?.message {
                 MarqueeErrorText(error)
                     .frame(width: 760, alignment: .leading)
                     .padding(.top, 16)
@@ -146,7 +150,7 @@ struct TVServerSetupView: View {
         .defaultFocus($focusedField, .enterAddress, priority: .userInitiated)
         .marqueeTVSeedFocus($focusedField, .enterAddress)
         .animation(.easeOut(duration: 0.32), value: discovery.servers)
-        .animation(.easeInOut(duration: 0.2), value: viewModel.error)
+        .animation(.easeInOut(duration: 0.2), value: viewModel.discoveryError)
     }
 
     // MARK: - Enter the address
@@ -271,7 +275,9 @@ struct TVServerSetupView: View {
         // Leaving mid-probe would let a late connect pull the app on, so
         // the way back waits for it.
         .onExitCommand {
-            if !viewModel.isLoading { isEnteringAddress = false }
+            guard !viewModel.isLoading else { return }
+            viewModel.clearError()
+            isEnteringAddress = false
         }
         .animation(SiloTheme.springAnimation, value: viewModel.showsAdvancedOptions)
         .animation(.easeInOut(duration: 0.2), value: viewModel.error)

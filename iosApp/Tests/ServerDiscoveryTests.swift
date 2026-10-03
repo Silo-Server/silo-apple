@@ -56,7 +56,7 @@ final class ServerDiscoveryTests: XCTestCase {
     }
 
     @MainActor
-    func testBareNameTriesTheRedirectedOriginFirst() async {
+    func testBareNameTriesHTTPSThenTheRedirectedOriginBeforeHTTP() async {
         let attempts = AttemptLog()
         let viewModel = ServerSetupViewModel(
             checkServer: { url in
@@ -68,11 +68,38 @@ final class ServerDiscoveryTests: XCTestCase {
         viewModel.host = "media-box"
         await viewModel.connect(router: AppRouter())
         let tried = await attempts.urls
-        XCTAssertEqual(tried.first, "https://media-box.tail1234.ts.net")
-        XCTAssertTrue(tried.contains("https://media-box"), "unresolved fallbacks stay after the origin")
+        // A LAN host serving HTTPS on its bare name is not held up by the lookup.
+        XCTAssertEqual(tried, ["https://media-box", "https://media-box.tail1234.ts.net"])
         // Plain HTTP still waits for the person to agree, as for any address.
-        XCTAssertFalse(tried.contains("http://media-box"))
         XCTAssertNotNil(viewModel.insecurePrompt)
+    }
+
+    @MainActor
+    func testFoundServerFailureStaysOffTheAddressField() async {
+        let viewModel = ServerSetupViewModel(checkServer: { _ in throw URLError(.cannotConnectToHost) })
+        let found = DiscoveredServer(serverId: "id", name: "Den", url: "https://silo.tail1234.ts.net", route: .overlay)
+        await viewModel.connect(to: found, router: AppRouter())
+        XCTAssertNil(viewModel.error)
+        XCTAssertNotNil(viewModel.discoveryError)
+        XCTAssertNil(viewModel.connectingServerID)
+    }
+
+    @MainActor
+    func testDecliningHTTPForAFoundServerIsNotAnError() async {
+        let viewModel = ServerSetupViewModel(checkServer: { _ in APIv2SetupStatus(needsSetup: false) })
+        let found = DiscoveredServer(serverId: "id", name: "Den", url: "http://192.168.1.5:8090", route: .localNetwork)
+        await viewModel.connect(to: found, router: AppRouter())
+        let prompt = viewModel.insecurePrompt
+        XCTAssertEqual(prompt?.address, "192.168.1.5:8090")
+        viewModel.dismissInsecurePrompt()
+        viewModel.cancelInsecure(prompt)
+        XCTAssertNil(viewModel.error)
+        XCTAssertNil(viewModel.discoveryError)
+    }
+
+    func testFoundServerDetailKeepsThePort() {
+        let server = DiscoveredServer(serverId: "id", name: "Den", url: "http://192.168.1.5:8091", route: .localNetwork)
+        XCTAssertEqual(server.detail, "On this network · 192.168.1.5:8091")
     }
 
     @MainActor

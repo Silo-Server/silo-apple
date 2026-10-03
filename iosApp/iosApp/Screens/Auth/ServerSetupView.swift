@@ -60,10 +60,22 @@ struct ServerSetupView: View {
             // the address field has the keyboard, the field and Continue need
             // the room.
             if focusedField == nil, !(viewModel.isLoading && submittedWithKeyboard) {
-                DiscoveredServerList(servers: discovery.servers, isConnecting: viewModel.isLoading) { server in
+                DiscoveredServerList(
+                    servers: discovery.servers,
+                    isConnecting: viewModel.isLoading,
+                    connectingID: viewModel.connectingServerID
+                ) { server in
+                    // A keyboard submit that failed earlier must not hide the
+                    // lists while this connect runs.
+                    submittedWithKeyboard = false
                     Task { await viewModel.connect(to: server, router: router) }
                 }
                 .padding(.top, 22)
+                if let error = viewModel.discoveryError {
+                    MarqueeErrorText(error.message)
+                        .padding(.top, 10)
+                        .padding(.leading, 4)
+                }
             }
 
             if !recentServers.isEmpty, focusedField == nil, !(viewModel.isLoading && submittedWithKeyboard) {
@@ -86,10 +98,12 @@ struct ServerSetupView: View {
             .padding(.top, 22)
         }
         .animation(.easeInOut(duration: 0.2), value: viewModel.error)
+        .animation(.easeInOut(duration: 0.2), value: viewModel.discoveryError)
         .animation(SiloTheme.springAnimation, value: viewModel.showsAdvancedOptions)
         .animation(.easeOut(duration: 0.25), value: focusedField)
         .animation(.easeInOut(duration: 0.2), value: discovery.servers)
         .sensoryFeedback(.error, trigger: viewModel.error) { _, error in error != nil }
+        .sensoryFeedback(.error, trigger: viewModel.discoveryError) { _, error in error != nil }
         .alert(
             "Connect without encryption?",
             isPresented: Binding(
@@ -98,7 +112,7 @@ struct ServerSetupView: View {
             ),
             presenting: viewModel.insecurePrompt
         ) { prompt in
-            Button("Cancel", role: .cancel) { viewModel.cancelInsecure() }
+            Button("Cancel", role: .cancel) { viewModel.cancelInsecure(prompt) }
             Button("Connect") {
                 Task { await viewModel.confirmInsecure(prompt, router: router) }
             }
@@ -204,55 +218,17 @@ struct ServerSetupView: View {
     // MARK: - Recent servers
 
     private var recentList: some View {
-        VStack(spacing: 0) {
-            ForEach(Array(recentServers.enumerated()), id: \.element.id) { index, server in
-                if index > 0 {
-                    Rectangle().fill(Color.white.opacity(0.08)).frame(height: 1)
-                }
-                Button {
-                    viewModel.useRecent(server.url)
-                    connect()
-                } label: {
-                    HStack(spacing: 12) {
-                        MarqueeServerMark(
-                            name: server.fetchedName,
-                            imageURL: ServerBrandingCache.branding(for: server.url)?.markURL,
-                            size: 40
-                        )
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(server.displayName)
-                                .font(.system(size: 16, weight: .semibold))
-                                .foregroundStyle(Color.siloOnSurface)
-                                .lineLimit(1)
-                            Text(Self.hostLabel(server.url))
-                                .font(.system(size: 13))
-                                .foregroundStyle(Color.siloOnSurface.opacity(0.4))
-                                .lineLimit(1)
-                        }
-                        Spacer(minLength: 0)
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(Color.siloOnSurface.opacity(0.4))
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 12)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.marqueePressable)
-                .accessibilityLabel("\(server.displayName), \(Self.hostLabel(server.url))")
+        ServerPickerList(recentServers) { server in
+            ServerPickerRow(
+                name: server.displayName,
+                markName: server.fetchedName,
+                markURL: ServerBrandingCache.branding(for: server.url)?.markURL,
+                detail: ServerBranding.hostLabel(server.url)
+            ) {
+                viewModel.useRecent(server.url)
+                connect()
             }
         }
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color.white.opacity(0.07))
-                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
-        )
-    }
-
-    static func hostLabel(_ url: String) -> String {
-        guard let components = URLComponents(string: url), let host = components.host else { return url }
-        if let port = components.port { return "\(host):\(port)" }
-        return host
     }
 }
 #endif

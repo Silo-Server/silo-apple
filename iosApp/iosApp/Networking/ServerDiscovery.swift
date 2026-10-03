@@ -44,8 +44,9 @@ struct DiscoveredServer: Identifiable, Hashable, Sendable {
 
     /// Short secondary line: where the address lives, never a guess at the
     /// provider (the redirect does not say which overlay it came through).
+    /// The port stays, so two deployments on one host are told apart.
     var detail: String {
-        let host = URL(string: url)?.host ?? url
+        let host = ServerBranding.hostLabel(url)
         switch route {
         case .localNetwork: return "On this network · \(host)"
         case .overlay: return "Private network · \(host)"
@@ -76,27 +77,50 @@ struct OverlayNameResolver: Sendable {
 
     func resolve(name: String) async -> Resolution? {
         guard Self.isBareName(name),
-              let probe = URL(string: "http://\(name.lowercased())\(ServerIdentity.identityPath)") else { return nil }
+              let probe = URL(string: "http://\(name.lowercased())\(ServerIdentity.identityPath)"),
+              let answer = await Self.probeIdentity(at: probe, timeout: timeout),
+              answer.ranOverOverlay, Self.isExpansion(of: name, host: answer.finalURL.host),
+              let origin = Self.origin(of: answer.finalURL) else { return nil }
+        return Resolution(origin: origin, serverId: answer.serverId)
+    }
+
+    /// The HTTPS origin a plain-HTTP server address redirects to, when the
+    /// redirect stays on that host or completes its name (`http://silo` ->
+    /// `https://silo.tail1234.ts.net`) and lands on a Silo server. Such an
+    /// address answers reads only, so the origin is what should be saved.
+    /// Nil for any other address, answer or failure.
+    func secureOrigin(redirectedFrom address: String) async -> String? {
+        guard let url = URL(string: address), url.scheme?.lowercased() == "http", let host = url.host,
+              url.path.isEmpty || url.path == "/",
+              let probe = URL(string: ServerRegistry.normalize(url: address) + ServerIdentity.identityPath),
+              let answer = await Self.probeIdentity(at: probe, timeout: timeout) else { return nil }
+        let finalHost = answer.finalURL.host?.lowercased()
+        guard finalHost == host.lowercased() || Self.isExpansion(of: host, host: finalHost) else { return nil }
+        return Self.origin(of: answer.finalURL)
+    }
+
+    private struct IdentityAnswer {
+        let finalURL: URL
+        let serverId: String
+        let ranOverOverlay: Bool
+    }
+
+    /// One GET of the identity operation, following at most one redirect and
+    /// only to HTTPS. Nil unless it ends in a 200 carrying a server ID.
+    private static func probeIdentity(at url: URL, timeout: TimeInterval) async -> IdentityAnswer? {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = timeout
         configuration.timeoutIntervalForResource = timeout
         let session = URLSession(configuration: configuration)
         defer { session.finishTasksAndInvalidate() }
-        do {
-            let policy = HTTPSRedirectOnly()
-            let (data, response) = try await session.data(from: probe, delegate: policy)
-            guard policy.ranOverOverlay,
-                  let http = response as? HTTPURLResponse, http.statusCode == 200,
-                  let final = http.url, Self.isExpansion(of: name, host: final.host),
-                  let origin = Self.origin(of: final) else { return nil }
-            let decoder = JSONDecoder()
-            decoder.keyDecodingStrategy = .convertFromSnakeCase
-            let document = try decoder.decode(ServerIdentityDocument.self, from: data)
-            guard let id = ServerIdentity.usable(document.serverId) else { return nil }
-            return Resolution(origin: origin, serverId: id)
-        } catch {
-            return nil
-        }
+        let policy = HTTPSRedirectOnly()
+        guard let (data, response) = try? await session.data(from: url, delegate: policy),
+              let http = response as? HTTPURLResponse, http.statusCode == 200, let final = http.url else { return nil }
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        guard let document = try? decoder.decode(ServerIdentityDocument.self, from: data),
+              let id = ServerIdentity.usable(document.serverId) else { return nil }
+        return IdentityAnswer(finalURL: final, serverId: id, ranOverOverlay: await policy.ranOverOverlay())
     }
 
     /// True when `host` is `name` completed with a domain (`silo` ->
@@ -148,12 +172,32 @@ struct OverlayNameResolver: Sendable {
 private final class HTTPSRedirectOnly: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     private let lock = NSLock()
     private var followed = false
-    private var overlayOnly = false
+    private var overlayOnly: Bool?
+    private var waiter: CheckedContinuation<Bool, Never>?
 
-    var ranOverOverlay: Bool {
+    /// Waits for the task's metrics: URLSession may deliver them after the
+    /// task has returned its data. A bounded wait, in case they never come.
+    func ranOverOverlay() async -> Bool {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if let overlayOnly {
+                lock.unlock()
+                continuation.resume(returning: overlayOnly)
+                return
+            }
+            waiter = continuation
+            lock.unlock()
+            DispatchQueue.global().asyncAfter(deadline: .now() + 2) { [weak self] in self?.finish(false) }
+        }
+    }
+
+    private func finish(_ value: Bool) {
         lock.lock()
-        defer { lock.unlock() }
-        return overlayOnly
+        if overlayOnly == nil { overlayOnly = value }
+        let pending = waiter
+        waiter = nil
+        lock.unlock()
+        pending?.resume(returning: value)
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
@@ -163,9 +207,7 @@ private final class HTTPSRedirectOnly: NSObject, URLSessionTaskDelegate, @unchec
             guard let local = transaction.localAddress, let remote = transaction.remoteAddress else { return nil }
             return (local, remote)
         }
-        lock.lock()
-        overlayOnly = OverlayNameResolver.ranOverOverlay(connections)
-        lock.unlock()
+        finish(OverlayNameResolver.ranOverOverlay(connections))
     }
 
     func urlSession(
@@ -191,6 +233,30 @@ private final class HTTPSRedirectOnly: NSObject, URLSessionTaskDelegate, @unchec
 final class ServerDiscovery {
     private(set) var servers: [DiscoveredServer] = []
 
+    /// One current browse result and how far its confirmation got.
+    private struct LANEntry {
+        enum State {
+            /// Not confirmed and not in flight, after `attempts` failures.
+            case unconfirmed(attempts: Int)
+            /// Attempt number `attempt` is running; `token` tells a stale
+            /// attempt's result from the current one.
+            case confirming(attempt: Int, token: UUID)
+            case confirmed(DiscoveredServer)
+        }
+
+        let endpoint: NWEndpoint
+        /// The identity the result advertises; a change starts over.
+        let serverId: String
+        var state: State
+    }
+
+    /// An overlay result and the probes it has missed since it last answered.
+    private struct OverlayEntry {
+        var server: DiscoveredServer
+        var misses = 0
+    }
+
+    private var isRunning = false
     private var browser: NWBrowser?
     /// Advances on start and stop; work started for an earlier visit to the
     /// screen checks it and drops its result.
@@ -198,16 +264,15 @@ final class ServerDiscovery {
     /// Advances whenever a browser is replaced; browse callbacks and LAN
     /// confirmations from an earlier browser are dropped.
     private var browserGeneration = 0
-    /// What each current browse result advertised, for retries on the refresh timer.
-    private var advertised: [String: (endpoint: NWEndpoint, serverId: String)] = [:]
-    private var lanResults: [String: DiscoveredServer] = [:]   // keyed by browse result
-    private var overlayResults: [DiscoveredServer] = []
-    private var pending: Set<String> = []
-    /// Confirmation attempts per browse result. One delayed retry covers a
-    /// transient failure; after that a result that does not confirm is left
-    /// alone instead of being re-probed on every browse change.
-    private var attempts: [String: Int] = [:]
+    private var lan: [String: LANEntry] = [:]   // keyed by browse result
+    private var overlay: [String: OverlayEntry] = [:]   // keyed by origin
+    /// One delayed retry covers a transient failure; after that a result that
+    /// does not confirm waits for the refresh timer instead of being re-probed
+    /// on every browse change.
     private static let maxAttempts = 2
+    /// A tailnet row survives this many missed probes in a row: probes run
+    /// right after network changes, while a tunnel may still be re-handshaking.
+    private static let maxOverlayMisses = 3
     /// Re-runs the overlay probe when the device's network changes, such as
     /// Tailscale connecting while the screen is open.
     private var pathMonitor: NWPathMonitor?
@@ -218,11 +283,14 @@ final class ServerDiscovery {
     private var overlayRefresh: Task<Void, Never>?
     private static let overlayRefreshInterval: Duration = .seconds(30)
     private let identity = ServerIdentityResolver()
-    private let overlay = OverlayNameResolver()
+    private let resolver = OverlayNameResolver()
     private nonisolated static let logger = Logger(subsystem: "org.siloserver.silo", category: "server.discovery")
 
     func start() {
-        guard browser == nil else { return }
+        // Not `browser == nil`: the browser is also nil while a failed one
+        // waits to be replaced.
+        guard !isRunning else { return }
+        isRunning = true
         session += 1
         startBrowser()
         let session = self.session
@@ -258,11 +326,10 @@ final class ServerDiscovery {
 
     private func startBrowser() {
         browserGeneration += 1
-        // Results and confirmations in flight belong to the browser being
-        // replaced; the new one reports its own.
-        pending = []
-        attempts = [:]
-        advertised = [:]
+        // Results and confirmations belong to the browser being replaced; the
+        // new one reports its own, and may find nothing.
+        lan = [:]
+        publish()
         let gen = browserGeneration
         let params = NWParameters()
         params.includePeerToPeer = false
@@ -283,7 +350,7 @@ final class ServerDiscovery {
                 self.browser?.cancel()
                 self.browser = nil
                 try? await Task.sleep(for: .seconds(2))
-                guard self.browserGeneration == gen, self.browser == nil else { return }
+                guard self.isRunning, self.browserGeneration == gen, self.browser == nil else { return }
                 self.startBrowser()
             }
         }
@@ -292,6 +359,7 @@ final class ServerDiscovery {
     }
 
     func stop() {
+        isRunning = false
         session += 1
         browserGeneration += 1
         browser?.cancel()
@@ -302,73 +370,74 @@ final class ServerDiscovery {
         overlayProbe = nil
         overlayRefresh?.cancel()
         overlayRefresh = nil
-        advertised = [:]
-        lanResults = [:]
-        overlayResults = []
-        pending = []
-        attempts = [:]
+        lan = [:]
+        overlay = [:]
         servers = []
     }
 
     private func update(results: Set<NWBrowser.Result>, generation gen: Int) {
-        let previous = advertised
-        advertised = [:]
+        var current: [String: LANEntry] = [:]
         for result in results {
             guard case let .bonjour(txt) = result.metadata,
                   let advertisedId = ServerIdentity.usable(txt.dictionary[ServerDiscoveryProtocol.txtServerID]) else { continue }
-            advertised["\(result.endpoint)"] = (result.endpoint, advertisedId)
+            let key = "\(result.endpoint)"
+            // An entry keeps its progress only while its endpoint advertises
+            // the same identity; a changed `id` (a reinstall, or another
+            // deployment on the same name and port) is confirmed afresh.
+            if let existing = lan[key], existing.serverId == advertisedId {
+                current[key] = existing
+            } else {
+                current[key] = LANEntry(endpoint: result.endpoint, serverId: advertisedId, state: .unconfirmed(attempts: 0))
+            }
         }
-        // A row stays only while its endpoint still advertises the identity it
-        // was confirmed with; a changed `id` (a reinstall, or another
-        // deployment on the same name and port) is confirmed afresh.
-        lanResults = lanResults.filter { advertised[$0.key]?.serverId == $0.value.serverId }
-        attempts = attempts.filter { key, _ in
-            guard let now = advertised[key] else { return false }
-            return previous[key]?.serverId == now.serverId
-        }
+        lan = current
         confirmUnconfirmed(generation: gen)
         publish()
     }
 
-    /// Starts confirmation for every current result that is not confirmed,
-    /// not in flight and not out of attempts.
+    /// Starts confirmation for every result that is neither confirmed, in
+    /// flight, nor out of attempts.
     private func confirmUnconfirmed(generation gen: Int) {
-        for (key, entry) in advertised {
-            guard lanResults[key] == nil, !pending.contains(key), attempts[key, default: 0] < Self.maxAttempts else { continue }
-            confirm(key: key, endpoint: entry.endpoint, advertisedId: entry.serverId, generation: gen)
+        for (key, entry) in lan {
+            guard case .unconfirmed(let attempts) = entry.state, attempts < Self.maxAttempts else { continue }
+            confirm(key: key, attempt: attempts + 1, generation: gen)
         }
     }
 
     /// Gives results that failed both confirmations another pair, for a
     /// server that was still starting when it was first seen.
     private func retryUnconfirmedLAN() {
-        attempts = attempts.filter { lanResults[$0.key] != nil || pending.contains($0.key) }
+        for (key, entry) in lan {
+            if case .unconfirmed(let attempts) = entry.state, attempts >= Self.maxAttempts {
+                lan[key]?.state = .unconfirmed(attempts: 0)
+            }
+        }
         confirmUnconfirmed(generation: browserGeneration)
     }
 
-    private func confirm(key: String, endpoint: NWEndpoint, advertisedId: String, generation gen: Int) {
-        let instanceName: String? = if case let .service(name, _, _, _) = endpoint { name } else { nil }
-        pending.insert(key)
-        attempts[key, default: 0] += 1
+    private func confirm(key: String, attempt: Int, generation gen: Int) {
+        guard let entry = lan[key] else { return }
+        let token = UUID()
+        lan[key]?.state = .confirming(attempt: attempt, token: token)
+        let instanceName: String? = if case let .service(name, _, _, _) = entry.endpoint { name } else { nil }
         Task {
-            let found = await self.confirmLAN(endpoint: endpoint, advertisedId: advertisedId, instanceName: instanceName)
-            guard self.browserGeneration == gen else { return }
-            self.pending.remove(key)
-            // The advertisement may have gone, or changed its identity, while
-            // this was confirming; a new identity is confirmed afresh.
-            guard self.advertised[key]?.serverId == advertisedId else {
-                self.confirmUnconfirmed(generation: gen)
+            let found = await self.confirmLAN(endpoint: entry.endpoint, advertisedId: entry.serverId, instanceName: instanceName)
+            // A browse change may have replaced the entry, or a newer browser
+            // the whole map, while this was confirming.
+            guard self.browserGeneration == gen, case .confirming(_, let current)? = self.lan[key]?.state,
+                  current == token else { return }
+            if let found {
+                self.lan[key]?.state = .confirmed(found)
+                self.publish()
                 return
             }
-            if let found {
-                self.lanResults[key] = found
-                self.publish()
-            } else if self.attempts[key, default: 0] < Self.maxAttempts {
-                try? await Task.sleep(for: .seconds(3))
-                guard self.browserGeneration == gen, self.advertised[key]?.serverId == advertisedId, self.lanResults[key] == nil,
-                      !self.pending.contains(key) else { return }
-                self.confirm(key: key, endpoint: endpoint, advertisedId: advertisedId, generation: gen)
-            }
+            self.lan[key]?.state = .unconfirmed(attempts: attempt)
+            guard attempt < Self.maxAttempts else { return }
+            try? await Task.sleep(for: .seconds(3))
+            // Retry only if nothing else touched the entry meanwhile.
+            guard self.browserGeneration == gen, case .unconfirmed(let attempts)? = self.lan[key]?.state,
+                  attempts == attempt else { return }
+            self.confirm(key: key, attempt: attempt + 1, generation: gen)
         }
     }
 
@@ -386,12 +455,12 @@ final class ServerDiscovery {
     /// Resolves each default overlay name, and its display name, concurrently
     /// within the discovery timeout.
     private func probeOverlayNames(session: Int) async {
-        let overlay = self.overlay
+        let resolver = self.resolver
         let identity = self.identity
-        let servers = await withTaskGroup(of: DiscoveredServer?.self) { group in
+        let found = await withTaskGroup(of: DiscoveredServer?.self) { group in
             for name in ServerDiscoveryProtocol.overlayNames {
                 group.addTask {
-                    guard let resolution = await overlay.resolve(name: name) else { return nil }
+                    guard let resolution = await resolver.resolve(name: name) else { return nil }
                     let label = await identity.fetchServerName(
                         serverURL: resolution.origin, timeout: ServerDiscoveryProtocol.probeTimeout) ?? "Silo"
                     return DiscoveredServer(serverId: resolution.serverId, name: label, url: resolution.origin, route: .overlay)
@@ -402,17 +471,35 @@ final class ServerDiscovery {
             return found
         }
         // A cancelled probe was replaced by a newer one; its empty result
-        // must not clear rows the newer one will report.
+        // must not count as a miss for rows the newer one will report.
         guard self.session == session, !Task.isCancelled else { return }
-        overlayResults = servers
+        mergeOverlay(found)
         publish()
+    }
+
+    /// Updates what answered and counts a miss for what did not, dropping a
+    /// row only after several misses in a row, so a probe that times out
+    /// while a tunnel re-handshakes does not pull a row from under the user.
+    private func mergeOverlay(_ found: [DiscoveredServer]) {
+        let answered = Dictionary(found.map { ($0.url, $0) }, uniquingKeysWith: { first, _ in first })
+        for key in overlay.keys where answered[key] == nil {
+            overlay[key]?.misses += 1
+        }
+        overlay = overlay.filter { $0.value.misses < Self.maxOverlayMisses }
+        for (key, server) in answered {
+            overlay[key] = OverlayEntry(server: server)
+        }
     }
 
     /// One row per server and route: replicas of one deployment, or one host
     /// seen on several interfaces, advertise the same `id`.
     private func publish() {
         var seen = Set<String>()
-        let candidates = (Array(lanResults.values) + overlayResults).sorted { $0.url < $1.url }
+        let confirmed = lan.values.compactMap { entry -> DiscoveredServer? in
+            if case .confirmed(let server) = entry.state { return server }
+            return nil
+        }
+        let candidates = (confirmed + overlay.values.map(\.server)).sorted { $0.url < $1.url }
         let all = candidates.filter { seen.insert("\($0.serverId)|\($0.route)").inserted }
         servers = all.sorted {
             if $0.name != $1.name { return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
