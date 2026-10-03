@@ -50,6 +50,16 @@ final class ServerSetupRoutingTests: XCTestCase {
         XCTAssertEqual(router.path.count, 1)
     }
 
+    /// A protocol and port chosen for a manual attempt must not redirect a
+    /// saved server picked from Recent.
+    func testRecentServerIgnoresEarlierProtocolAndPortOverrides() throws {
+        let viewModel = ServerSetupViewModel(checkServer: { _ in APIv2SetupStatus(needsSetup: false) })
+        viewModel.selectedScheme = .http
+        viewModel.port = "8090"
+        viewModel.useRecent("https://media.example.com")
+        XCTAssertEqual(try viewModel.buildCandidateURLs().first, "https://media.example.com")
+    }
+
     /// SwiftUI clears the alert's binding before the Connect action's task
     /// runs; connecting must still use the prompt the alert showed.
     func testConnectingOverHTTPWorksAfterTheAlertIsDismissed() async throws {

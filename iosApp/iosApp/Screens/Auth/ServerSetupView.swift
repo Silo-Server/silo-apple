@@ -197,7 +197,7 @@ struct ServerSetupView: View {
                     Rectangle().fill(Color.white.opacity(0.08)).frame(height: 1)
                 }
                 Button {
-                    viewModel.host = server.url
+                    viewModel.useRecent(server.url)
                     connect()
                 } label: {
                     HStack(spacing: 12) {

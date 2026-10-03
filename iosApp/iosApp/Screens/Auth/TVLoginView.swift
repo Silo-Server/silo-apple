@@ -118,6 +118,9 @@ struct TVLoginView: View {
             }
             if newValue == .noDeviceSignIn {
                 focusedField = networkProvider == nil ? .username : .networkSignIn
+            } else if case .updateRequired = newValue, !showPasswordForm, focusedField == .usePassword {
+                // The focused password button is gone; hand focus to a neighbour.
+                focusedField = defaultCodeScreenFocus
             } else if !showPasswordForm, TVSignInPresentation.actionTakesFocus(newValue) {
                 focusedField = .stateAction
             }
@@ -179,7 +182,8 @@ struct TVLoginView: View {
     /// Discovery answering after focus landed does not move it.
     private var defaultCodeScreenFocus: Field {
         if networkProvider != nil { return .networkSignIn }
-        return offersPassword ? .usePassword : .changeServer
+        // An update requirement hides the password button.
+        return offersPassword && !isUpdateRequired ? .usePassword : .changeServer
     }
 
     private var codeLead: String {

@@ -191,8 +191,10 @@ private struct FocusAfterKeyboard<F: Hashable>: ViewModifier {
             .task(id: pending) {
                 guard pending != nil else { return }
                 // Submitted without the full-screen keyboard: focus never
-                // left, so move now.
+                // left, so move now. A newer submit cancels this task; only
+                // the current one may act on `pending`.
                 await Task.yield()
+                guard !Task.isCancelled else { return }
                 if focus.wrappedValue != nil, let next = pending {
                     pending = nil
                     focus.wrappedValue = next
@@ -200,7 +202,8 @@ private struct FocusAfterKeyboard<F: Hashable>: ViewModifier {
                 }
                 // A keyboard that never hands focus back must not make a
                 // later, deliberate move jump away.
-                try? await Task.sleep(for: .seconds(2))
+                do { try await Task.sleep(for: .seconds(2)) } catch { return }
+                guard !Task.isCancelled else { return }
                 pending = nil
             }
     }

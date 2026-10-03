@@ -78,6 +78,15 @@ class ServerSetupViewModel {
         await run(candidates: candidates, attempted: [], allowInsecure: selectedScheme == .http || typedScheme == "http", router: router)
     }
 
+    /// Fills in a saved server's address. Its URL already names the scheme
+    /// and port, so a protocol or port chosen for an earlier attempt must not
+    /// override them.
+    func useRecent(_ url: String) {
+        host = url
+        selectedScheme = .auto
+        port = ""
+    }
+
     /// Continues a connect the person agreed to finish over plain HTTP.
     /// `prompt` is the one the alert showed: dismissing the alert clears the
     /// model's copy before this runs.
