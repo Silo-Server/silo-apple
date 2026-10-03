@@ -189,11 +189,10 @@ struct OverlayNameResolver: Sendable {
     /// `https://host[:port]` of a final redirect target; nil unless HTTPS.
     static func origin(of url: URL) -> String? {
         guard url.scheme?.lowercased() == "https", let host = url.host, !host.isEmpty else { return nil }
-        var components = URLComponents()
-        components.scheme = "https"
-        components.host = host
-        components.port = url.port.flatMap { $0 == 443 ? nil : $0 }
-        return components.url.map { ServerRegistry.normalize(url: $0.absoluteString) }
+        // `URL.host` drops an IPv6 literal's brackets; the origin needs them.
+        var origin = "https://" + (host.contains(":") ? "[\(host)]" : host)
+        if let port = url.port, port != 443 { origin += ":\(port)" }
+        return URL(string: origin).map { ServerRegistry.normalize(url: $0.absoluteString) }
     }
 }
 
@@ -482,6 +481,8 @@ final class ServerDiscovery {
             if var previous, previous.misses + 1 < Self.maxMisses {
                 previous.misses += 1
                 self.lan[key]?.state = .confirmed(previous)
+                // Another address of this server may now be the better row.
+                self.publish()
                 return
             }
             self.lan[key]?.state = .unconfirmed(attempts: attempt)

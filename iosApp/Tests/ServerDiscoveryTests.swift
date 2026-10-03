@@ -22,6 +22,12 @@ final class ServerDiscoveryTests: XCTestCase {
             OverlayNameResolver.origin(of: URL(string: "https://silo.tail1234.ts.net:8443/x")!),
             "https://silo.tail1234.ts.net:8443")
         XCTAssertNil(OverlayNameResolver.origin(of: URL(string: "http://silo/api/v2/system/identity")!))
+        XCTAssertEqual(
+            OverlayNameResolver.origin(of: URL(string: "https://[2001:db8::1]/api/v2/system/identity")!),
+            "https://[2001:db8::1]")
+        XCTAssertEqual(
+            OverlayNameResolver.origin(of: URL(string: "https://[2001:db8::1]:8443/x")!),
+            "https://[2001:db8::1]:8443")
     }
 
     func testRedirectMustExpandTheProbedName() {
