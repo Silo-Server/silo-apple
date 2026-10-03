@@ -124,8 +124,18 @@ final class AuthService: @unchecked Sendable {
     /// succeeds. If both optional identity probes fail, the display name
     /// falls back to the URL. A v1-only server fails the setup read with
     /// `APIv2Error.serverUpdateRequired`, so it is never committed.
+    ///
+    /// A plain-HTTP candidate that redirects to HTTPS on its own host, or on
+    /// its name completed with a domain (an overlay provider's bare name), is
+    /// committed as that HTTPS origin: the redirect answers reads only, so
+    /// saving the typed URL would fail sign-in.
     func checkServer(url: String) async throws -> APIv2SetupStatus {
-        let normalized = ServerRegistry.normalize(url: url)
+        var normalized = ServerRegistry.normalize(url: url)
+        if normalized.lowercased().hasPrefix("http://"),
+           let secure = await OverlayNameResolver(timeout: ServerIdentity.probeTimeout).secureOrigin(redirectedFrom: normalized) {
+            normalized = secure
+        }
+        try Task.checkCancellation()
         let id = ServerRegistry.serverId(for: normalized)
 
         // Probe the candidate by explicit URL without touching the active

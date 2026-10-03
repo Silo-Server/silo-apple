@@ -162,11 +162,12 @@ struct ServerIdentityResolver {
     /// nil, which leaves the previously stored name unchanged. A v1-only
     /// server has no v2 branding; it is update-required anyway, so there is
     /// no fallback to another endpoint.
-    func fetchServerName(serverURL: String) async -> String? {
+    func fetchServerName(serverURL: String, timeout: TimeInterval? = nil) async -> String? {
         guard let branding: ServerBrandingStatus = try? await httpClient.getUnauthenticated(
             serverURL: serverURL,
             path: ServerIdentity.brandingPath,
-            quietStatuses: [404]
+            quietStatuses: [404],
+            timeout: timeout
         ) else {
             return nil
         }

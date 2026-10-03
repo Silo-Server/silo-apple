@@ -18,6 +18,7 @@ enum ServerSetupScheme: String, CaseIterable, Identifiable {
     }
 }
 
+@MainActor
 @Observable
 class ServerSetupViewModel {
     var host: String = ""
@@ -27,12 +28,21 @@ class ServerSetupViewModel {
     @ObservationIgnored private var submitted: (host: String, scheme: ServerSetupScheme, port: String)?
     var showsAdvancedOptions: Bool = false
     var isLoading: Bool = false
+    /// A failure for the typed address; the address field shows it.
     private(set) var error: FormError?
+    /// A failure connecting to a found server; shown beside the found list,
+    /// not on the address field the person never used.
+    private(set) var discoveryError: FormError?
+    /// The found server being connected to, so its row can show progress.
+    private(set) var connectingServerID: DiscoveredServer.ID?
 
     /// Probes one candidate URL and commits it on success.
     typealias ServerCheck = @Sendable (String) async throws -> APIv2SetupStatus
+    /// Resolves a bare overlay machine name (`silo`) to its HTTPS origin.
+    typealias BareNameResolver = @Sendable (String) async -> String?
 
     private let checkServer: ServerCheck
+    private let resolveBareName: BareNameResolver
     /// Whether the now-active server already has a signed-in session, as when
     /// a saved server is picked from Recent.
     private let hasSession: @Sendable () -> Bool
@@ -43,10 +53,24 @@ class ServerSetupViewModel {
 
     init(
         checkServer: @escaping ServerCheck = { try await AuthService.shared.checkServer(url: $0) },
-        hasSession: @escaping @Sendable () -> Bool = { AuthService.shared.isLoggedIn }
+        hasSession: @escaping @Sendable () -> Bool = { AuthService.shared.isLoggedIn },
+        // Typed, so it may wait as long as any address probe: a cold or
+        // relayed tailnet path can take longer than background discovery's limit.
+        resolveBareName: @escaping BareNameResolver = {
+            await OverlayNameResolver(timeout: ServerIdentity.probeTimeout).resolve(name: $0)?.origin
+        }
     ) {
         self.checkServer = checkServer
         self.hasSession = hasSession
+        self.resolveBareName = resolveBareName
+    }
+
+    /// Where a connect started: the address field, or a found server.
+    fileprivate enum Source: Equatable {
+        /// `bareName` is a typed machine name whose overlay redirect is
+        /// looked up once HTTPS fails, before plain HTTP is offered.
+        case typed(bareName: String?)
+        case discovered(DiscoveredServer.ID)
     }
 
     /// Set when every secure address failed and the next one is plain HTTP.
@@ -55,6 +79,7 @@ class ServerSetupViewModel {
         let address: String
         fileprivate let remaining: [String]
         fileprivate let attempted: [String]
+        fileprivate let source: Source
     }
 
     private(set) var insecurePrompt: InsecurePrompt?
@@ -66,7 +91,7 @@ class ServerSetupViewModel {
             return
         }
 
-        let candidates: [String]
+        var candidates: [String]
         do {
             candidates = try buildCandidateURLs()
         } catch let validationError as ServerSetupValidationError {
@@ -78,7 +103,24 @@ class ServerSetupViewModel {
         }
 
         insecurePrompt = nil
-        await run(candidates: candidates, attempted: [], allowInsecure: selectedScheme == .http || typedScheme == "http", router: router)
+        // A bare machine name ("media-box") may be an overlay node whose
+        // certificate covers only its full name. Its provider redirects plain
+        // HTTP to that HTTPS origin, which `run` looks up once HTTPS fails.
+        let allowInsecure = selectedScheme == .http || typedScheme == "http"
+        let bareName = selectedScheme == .auto && port.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && OverlayNameResolver.isBareName(host) ? host.trimmingCharacters(in: .whitespacesAndNewlines) : nil
+        await run(candidates: candidates, attempted: [], allowInsecure: allowInsecure,
+                  source: .typed(bareName: bareName), router: router)
+    }
+
+    /// Connects to an address discovery found. The address was already
+    /// confirmed by its identity; a plain-HTTP one still asks first, like a
+    /// typed address that falls back to HTTP.
+    func connect(to server: DiscoveredServer, router: AppRouter) async {
+        guard !isLoading else { return }
+        insecurePrompt = nil
+        await run(candidates: [server.url], attempted: [], allowInsecure: false,
+                  source: .discovered(server.id), router: router)
     }
 
     /// Fills in a saved server's address. Its URL already names the scheme
@@ -96,7 +138,8 @@ class ServerSetupViewModel {
     func confirmInsecure(_ prompt: InsecurePrompt? = nil, router: AppRouter) async {
         guard let prompt = prompt ?? insecurePrompt else { return }
         insecurePrompt = nil
-        await run(candidates: prompt.remaining, attempted: prompt.attempted, allowInsecure: true, router: router)
+        await run(candidates: prompt.remaining, attempted: prompt.attempted, allowInsecure: true,
+                  source: prompt.source, router: router)
     }
 
     /// The fields stay enabled while connecting so the keyboard stays up, but
@@ -111,6 +154,7 @@ class ServerSetupViewModel {
 
     func clearError() {
         error = nil
+        discoveryError = nil
     }
 
     /// The alert went away. Its buttons say whether to connect or give up.
@@ -118,15 +162,28 @@ class ServerSetupViewModel {
         insecurePrompt = nil
     }
 
-    func cancelInsecure() {
+    /// The person declined plain HTTP. For a typed address that means every
+    /// secure address failed; a found server was never tried over HTTPS, so
+    /// declining it is not a failure.
+    func cancelInsecure(_ prompt: InsecurePrompt? = nil) {
+        let source = (prompt ?? insecurePrompt)?.source
         insecurePrompt = nil
-        error = FormError("Could not reach a Silo server at that address over HTTPS.")
+        if case .typed = source {
+            error = FormError("Could not reach a Silo server at that address over HTTPS.")
+        }
     }
 
-    private func run(candidates: [String], attempted previous: [String], allowInsecure: Bool, router: AppRouter) async {
+    private func run(
+        candidates: [String],
+        attempted previous: [String],
+        allowInsecure: Bool,
+        source: Source,
+        router: AppRouter
+    ) async {
         isLoading = true
         submitted = (host, selectedScheme, port)
-        error = nil
+        if case .discovered(let id) = source { connectingServerID = id }
+        clearError()
         var connected = false
         // After a successful connect the screen fades out to sign-in; it keeps
         // showing "Connecting…" rather than snapping back to its idle state.
@@ -134,27 +191,44 @@ class ServerSetupViewModel {
             if !connected {
                 isLoading = false
                 submitted = nil
+                connectingServerID = nil
             }
         }
 
+        var candidates = candidates
         var attempted = previous
         var lastError: Error?
         var updateRequirement: UpdateRequirement?
-        for (index, candidate) in candidates.enumerated() {
+        var lookedUpBareName = false
+        var index = 0
+        while index < candidates.count {
+            let candidate = candidates[index]
             if !allowInsecure, candidate.lowercased().hasPrefix("http://") {
                 // A secure address already proved a version mismatch; asking to
                 // drop encryption would not change the answer.
                 if let updateRequirement {
-                    self.error = FormError(updateRequirement.message)
+                    fail(FormError(updateRequirement.message), source: source)
                     return
+                }
+                // Before offering plain HTTP for a typed machine name, ask its
+                // overlay provider for the HTTPS origin. Save that origin, never
+                // the bare name, which answers reads only and would fail sign-in.
+                if case .typed(let bareName?) = source, !lookedUpBareName {
+                    lookedUpBareName = true
+                    if let origin = await resolveBareName(bareName), !attempted.contains(origin) {
+                        candidates.insert(origin, at: index)
+                        continue
+                    }
                 }
                 insecurePrompt = InsecurePrompt(
                     address: Self.displayAddress(candidate),
                     remaining: Array(candidates[index...]),
-                    attempted: attempted
+                    attempted: attempted,
+                    source: source
                 )
                 return
             }
+            index += 1
             attempted.append(candidate)
             do {
                 let status = try await checkServer(candidate)
@@ -187,7 +261,14 @@ class ServerSetupViewModel {
         Self.logger.error(
             "Server autodiscovery failed candidates=\(attempted.joined(separator: ", "), privacy: .public) lastError=\(String(describing: lastError), privacy: .public)"
         )
-        self.error = FormError(updateRequirement?.message ?? "Could not reach a Silo server at that address.")
+        fail(FormError(updateRequirement?.message ?? "Could not reach a Silo server at that address."), source: source)
+    }
+
+    private func fail(_ failure: FormError, source: Source) {
+        switch source {
+        case .typed: error = failure
+        case .discovered: discoveryError = failure
+        }
     }
 
     /// The scheme typed into the address field, if any.
