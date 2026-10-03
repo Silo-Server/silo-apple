@@ -76,6 +76,27 @@ final class ServerDiscoveryTests: XCTestCase {
     }
 
     @MainActor
+    func testInputsStayLockedWhileABareNameResolves() async {
+        let box = ViewModelBox()
+        let viewModel = ServerSetupViewModel(
+            checkServer: { _ in throw URLError(.cannotConnectToHost) },
+            resolveBareName: { _ in
+                await MainActor.run {
+                    // An edit made while the name resolves is put back, as the
+                    // screen does through `keepsSubmittedServerInputs`.
+                    box.viewModel?.host = "edited.example.com"
+                    box.viewModel?.restoreSubmittedInputs()
+                }
+                return nil
+            }
+        )
+        box.viewModel = viewModel
+        viewModel.host = "media-box"
+        await viewModel.connect(router: AppRouter())
+        XCTAssertEqual(viewModel.host, "media-box")
+    }
+
+    @MainActor
     func testQualifiedHostNeverProbesTheOverlay() async {
         let resolved = AttemptLog()
         let viewModel = ServerSetupViewModel(
@@ -90,6 +111,11 @@ final class ServerDiscoveryTests: XCTestCase {
         let names = await resolved.urls
         XCTAssertTrue(names.isEmpty)
     }
+}
+
+@MainActor
+private final class ViewModelBox {
+    var viewModel: ServerSetupViewModel?
 }
 
 private actor AttemptLog {

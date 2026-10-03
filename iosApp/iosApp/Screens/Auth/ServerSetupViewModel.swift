@@ -87,14 +87,17 @@ class ServerSetupViewModel {
         // certificate covers only its full name. Its provider redirects plain
         // HTTP to that HTTPS origin; save the origin, never the bare name,
         // which answers reads only and would fail sign-in.
+        let allowInsecure = selectedScheme == .http || typedScheme == "http"
         if selectedScheme == .auto, port.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
            OverlayNameResolver.isBareName(host) {
+            // Lock the inputs for the lookup too: the candidates are already
+            // built from them.
             isLoading = true
+            submitted = (host, selectedScheme, port)
             let origin = await resolveBareName(host.trimmingCharacters(in: .whitespacesAndNewlines))
-            isLoading = false
             if let origin { candidates.insert(origin, at: 0) }
         }
-        await run(candidates: candidates, attempted: [], allowInsecure: selectedScheme == .http || typedScheme == "http", router: router)
+        await run(candidates: candidates, attempted: [], allowInsecure: allowInsecure, router: router)
     }
 
     /// Connects to an address discovery found. The address was already
@@ -150,7 +153,8 @@ class ServerSetupViewModel {
 
     private func run(candidates: [String], attempted previous: [String], allowInsecure: Bool, router: AppRouter) async {
         isLoading = true
-        submitted = (host, selectedScheme, port)
+        // A bare-name lookup may already have locked what was submitted.
+        if submitted == nil { submitted = (host, selectedScheme, port) }
         error = nil
         var connected = false
         // After a successful connect the screen fades out to sign-in; it keeps

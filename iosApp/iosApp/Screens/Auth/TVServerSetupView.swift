@@ -121,8 +121,14 @@ struct TVServerSetupView: View {
                 Task { await viewModel.connect(to: server, router: router) }
             }
             .padding(.top, 18)
+            if let error = viewModel.error?.message {
+                MarqueeErrorText(error)
+                    .frame(width: 760, alignment: .leading)
+                    .padding(.top, 16)
+            }
             HStack {
                 Button {
+                    viewModel.clearError()
                     isEnteringAddress = true
                 } label: {
                     Label("Enter server address", systemImage: "globe")
@@ -137,6 +143,7 @@ struct TVServerSetupView: View {
         .defaultFocus($focusedField, .enterAddress, priority: .userInitiated)
         .marqueeTVSeedFocus($focusedField, .enterAddress)
         .animation(.easeOut(duration: 0.32), value: discovery.servers)
+        .animation(.easeInOut(duration: 0.2), value: viewModel.error)
     }
 
     // MARK: - Enter the address
