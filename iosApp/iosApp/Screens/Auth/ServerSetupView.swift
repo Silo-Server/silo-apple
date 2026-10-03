@@ -8,6 +8,7 @@ import SwiftUI
 struct ServerSetupView: View {
     var router: AppRouter
     @State private var viewModel = ServerSetupViewModel()
+    @State private var discovery = ServerDiscovery()
     @FocusState private var focusedField: Field?
 
     private enum Field: Hashable { case host, port }
@@ -39,6 +40,10 @@ struct ServerSetupView: View {
             .padding(.bottom, 24)
 
             VStack(alignment: .leading, spacing: 18) {
+                DiscoveredServerList(servers: discovery.servers, isConnecting: viewModel.isLoading) { server in
+                    Task { await viewModel.connect(to: server, router: router) }
+                }
+
                 AuroraTextField(
                     label: "Server address",
                     text: $viewModel.host,
@@ -73,13 +78,16 @@ struct ServerSetupView: View {
             .padding(22)
             .auroraGlass(cornerRadius: 24, emphasized: true)
             .animation(.easeInOut(duration: 0.2), value: viewModel.error)
+            .animation(.easeInOut(duration: 0.2), value: discovery.servers)
             .sensoryFeedback(.error, trigger: viewModel.error) { _, error in error != nil }
         }
         .onAppear {
+            discovery.start()
             // A TV sign-in link for a server this app lacks lands here with
             // that server's address filled in.
             if let prefill = router.consumeServerSetupPrefill() { viewModel.host = prefill }
         }
+        .onDisappear { discovery.stop() }
     }
 
     private func connect() {

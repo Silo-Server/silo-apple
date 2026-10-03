@@ -21,6 +21,7 @@ struct TVServerSetupView: View {
     @State private var viewModel = ServerSetupViewModel()
     @State private var advertiser = TVPairingAdvertiser()
     @State private var coordinator = ReceiverPairingCoordinator()
+    @State private var discovery = ServerDiscovery()
     @FocusState private var focusedField: Field?
 
     private enum Field: Hashable {
@@ -60,7 +61,9 @@ struct TVServerSetupView: View {
             // still reading.
             if case .idle = state { advertiser.release() }
         }
+        .onAppear { discovery.start() }
         .onDisappear {
+            discovery.stop()
             advertiser.stop()
             Task { await coordinator.cancel() }
         }
@@ -191,10 +194,19 @@ struct TVServerSetupView: View {
     // MARK: - Manual entry card (active)
 
     private var manualCard: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            Text("Enter the server address")
-                .font(.siloHeadline)
-                .foregroundStyle(Color.auroraInk)
+        // The card has a fixed height: found servers take the place of the
+        // heading and the HTTPS caption rather than growing the card.
+        let showsFound = !discovery.servers.isEmpty
+        return VStack(alignment: .leading, spacing: showsFound ? 16 : 22) {
+            DiscoveredServerList(servers: discovery.servers, isConnecting: viewModel.isLoading) { server in
+                Task { await viewModel.connect(to: server, router: router) }
+            }
+
+            if !showsFound {
+                Text("Enter the server address")
+                    .font(.siloHeadline)
+                    .foregroundStyle(Color.auroraInk)
+            }
 
             VStack(alignment: .leading, spacing: 10) {
                 fieldLabel("Server address")
@@ -208,9 +220,11 @@ struct TVServerSetupView: View {
                 )
             }
 
-            Label("Secure HTTPS is tried automatically.", systemImage: "lock.shield")
-                .font(.siloCaption)
-                .foregroundStyle(Color.auroraInkSecondary)
+            if !showsFound {
+                Label("Secure HTTPS is tried automatically.", systemImage: "lock.shield")
+                    .font(.siloCaption)
+                    .foregroundStyle(Color.auroraInkSecondary)
+            }
 
             Button {
                 withAnimation(SiloTheme.springAnimation) {
@@ -275,6 +289,7 @@ struct TVServerSetupView: View {
         .auroraGlass(cornerRadius: 28, emphasized: true)
         .animation(.easeInOut(duration: 0.2), value: viewModel.error)
         .animation(SiloTheme.springAnimation, value: viewModel.showsAdvancedOptions)
+        .animation(SiloTheme.springAnimation, value: discovery.servers)
     }
 
     private var protocolSegments: some View {

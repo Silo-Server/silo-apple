@@ -28,15 +28,22 @@ class ServerSetupViewModel {
 
     /// Probes one candidate URL and commits it on success.
     typealias ServerCheck = @Sendable (String) async throws -> APIv2SetupStatus
+    /// Resolves a bare overlay machine name (`silo`) to its HTTPS origin.
+    typealias BareNameResolver = @Sendable (String) async -> String?
 
     private let checkServer: ServerCheck
+    private let resolveBareName: BareNameResolver
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "ServerSetup"
     )
 
-    init(checkServer: @escaping ServerCheck = { try await AuthService.shared.checkServer(url: $0) }) {
+    init(
+        checkServer: @escaping ServerCheck = { try await AuthService.shared.checkServer(url: $0) },
+        resolveBareName: @escaping BareNameResolver = { await OverlayNameResolver().resolve(name: $0)?.origin }
+    ) {
         self.checkServer = checkServer
+        self.resolveBareName = resolveBareName
     }
 
     /// Validate the server URL and determine whether setup or login is needed.
@@ -46,7 +53,7 @@ class ServerSetupViewModel {
             return
         }
 
-        let candidates: [String]
+        var candidates: [String]
         do {
             candidates = try buildCandidateURLs()
         } catch let validationError as ServerSetupValidationError {
@@ -61,6 +68,30 @@ class ServerSetupViewModel {
         error = nil
         defer { isLoading = false }
 
+        // A bare machine name ("media-box") may be an overlay node whose
+        // certificate covers only its full name. Its provider redirects plain
+        // HTTP to that HTTPS origin; save the origin, never the bare name,
+        // which answers reads only and would fail sign-in.
+        if selectedScheme == .auto, port.trimmingCharacters(in: .whitespaces).isEmpty,
+           OverlayNameResolver.isBareName(host),
+           let origin = await resolveBareName(host.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            candidates.insert(origin, at: 0)
+        }
+
+        await attempt(candidates: candidates, router: router)
+    }
+
+    /// Connects to an address discovery found. The address was already
+    /// confirmed by its identity, so it is the only candidate.
+    func connect(to server: DiscoveredServer, router: AppRouter) async {
+        guard !isLoading else { return }
+        isLoading = true
+        error = nil
+        defer { isLoading = false }
+        await attempt(candidates: [server.url], router: router)
+    }
+
+    private func attempt(candidates: [String], router: AppRouter) async {
         var attempted: [String] = []
         var lastError: Error?
         var updateRequirement: UpdateRequirement?
