@@ -180,7 +180,13 @@ final class ServerDiscovery {
     private(set) var servers: [DiscoveredServer] = []
 
     private var browser: NWBrowser?
-    private var generation = 0
+    /// Advances on start and stop; work started for an earlier visit to the
+    /// screen checks it and drops its result.
+    private var session = 0
+    /// Advances whenever a browser is replaced; browse callbacks and LAN
+    /// confirmations from an earlier browser are dropped.
+    private var browserGeneration = 0
+    private var currentKeys: Set<String> = []                 // latest browse snapshot
     private var lanResults: [String: DiscoveredServer] = [:]   // keyed by browse result
     private var overlayResults: [DiscoveredServer] = []
     private var pending: Set<String> = []
@@ -195,20 +201,24 @@ final class ServerDiscovery {
 
     func start() {
         guard browser == nil else { return }
+        session += 1
         startBrowser()
-        let gen = generation
-        Task { await probeOverlayNames(generation: gen) }
+        let session = self.session
+        Task { await probeOverlayNames(session: session) }
     }
 
     private func startBrowser() {
-        generation += 1
-        let gen = generation
+        browserGeneration += 1
+        // Confirmations in flight belong to the browser being replaced.
+        pending = []
+        attempts = [:]
+        let gen = browserGeneration
         let params = NWParameters()
         params.includePeerToPeer = false
         let browser = NWBrowser(for: .bonjourWithTXTRecord(type: ServerDiscoveryProtocol.serviceType, domain: nil), using: params)
         browser.browseResultsChangedHandler = { [weak self] results, _ in
             Task { @MainActor in
-                guard let self, self.generation == gen else { return }
+                guard let self, self.browserGeneration == gen else { return }
                 self.update(results: results, generation: gen)
             }
         }
@@ -218,11 +228,11 @@ final class ServerDiscovery {
             // A failed NWBrowser (for example after the network stack resets
             // in the background) never recovers; replace it.
             Task { @MainActor in
-                guard let self, self.generation == gen else { return }
+                guard let self, self.browserGeneration == gen else { return }
                 self.browser?.cancel()
                 self.browser = nil
                 try? await Task.sleep(for: .seconds(2))
-                guard self.generation == gen, self.browser == nil else { return }
+                guard self.browserGeneration == gen, self.browser == nil else { return }
                 self.startBrowser()
             }
         }
@@ -231,9 +241,11 @@ final class ServerDiscovery {
     }
 
     func stop() {
-        generation += 1
+        session += 1
+        browserGeneration += 1
         browser?.cancel()
         browser = nil
+        currentKeys = []
         lanResults = [:]
         overlayResults = []
         pending = []
@@ -242,9 +254,9 @@ final class ServerDiscovery {
     }
 
     private func update(results: Set<NWBrowser.Result>, generation gen: Int) {
-        let keys = Set(results.map { "\($0.endpoint)" })
-        lanResults = lanResults.filter { keys.contains($0.key) }
-        attempts = attempts.filter { keys.contains($0.key) }
+        currentKeys = Set(results.map { "\($0.endpoint)" })
+        lanResults = lanResults.filter { currentKeys.contains($0.key) }
+        attempts = attempts.filter { currentKeys.contains($0.key) }
         for result in results {
             let key = "\(result.endpoint)"
             guard lanResults[key] == nil, !pending.contains(key), attempts[key, default: 0] < Self.maxAttempts,
@@ -261,14 +273,16 @@ final class ServerDiscovery {
         attempts[key, default: 0] += 1
         Task {
             let found = await self.confirmLAN(endpoint: endpoint, advertisedId: advertisedId, instanceName: instanceName)
-            guard self.generation == gen else { return }
+            guard self.browserGeneration == gen else { return }
             self.pending.remove(key)
+            // The advertisement may have gone while this was confirming.
+            guard self.currentKeys.contains(key) else { return }
             if let found {
                 self.lanResults[key] = found
                 self.publish()
             } else if self.attempts[key, default: 0] < Self.maxAttempts {
                 try? await Task.sleep(for: .seconds(3))
-                guard self.generation == gen, self.attempts[key] != nil, self.lanResults[key] == nil,
+                guard self.browserGeneration == gen, self.currentKeys.contains(key), self.lanResults[key] == nil,
                       !self.pending.contains(key) else { return }
                 self.confirm(key: key, endpoint: endpoint, advertisedId: advertisedId, generation: gen)
             }
@@ -276,32 +290,35 @@ final class ServerDiscovery {
     }
 
     private func confirmLAN(endpoint: NWEndpoint, advertisedId: String, instanceName: String?) async -> DiscoveredServer? {
-        guard let (host, port) = await Self.resolveIPv4(endpoint) else { return nil }
-        let url = "http://\(host):\(port)"
-        guard case .identity(let id) = await identity.probeIdentity(serverURL: url), id == advertisedId else {
+        guard let origin = await Self.resolveOrigin(endpoint) else { return nil }
+        guard case .identity(let id) = await identity.probeIdentity(serverURL: origin), id == advertisedId else {
             Self.logger.info("ignoring advertisement whose address does not confirm its identity")
             return nil
         }
-        let name = await identity.fetchServerName(serverURL: url) ?? instanceName ?? "Silo"
-        return DiscoveredServer(serverId: id, name: name, url: url, route: .localNetwork)
+        let name = await identity.fetchServerName(serverURL: origin, timeout: ServerDiscoveryProtocol.probeTimeout)
+            ?? instanceName ?? "Silo"
+        return DiscoveredServer(serverId: id, name: name, url: origin, route: .localNetwork)
     }
 
-    private func probeOverlayNames(generation gen: Int) async {
+    /// Resolves each default overlay name, and its display name, concurrently
+    /// within the discovery timeout.
+    private func probeOverlayNames(session: Int) async {
         let overlay = self.overlay
-        let resolutions = await withTaskGroup(of: OverlayNameResolver.Resolution?.self) { group in
+        let identity = self.identity
+        let servers = await withTaskGroup(of: DiscoveredServer?.self) { group in
             for name in ServerDiscoveryProtocol.overlayNames {
-                group.addTask { await overlay.resolve(name: name) }
+                group.addTask {
+                    guard let resolution = await overlay.resolve(name: name) else { return nil }
+                    let label = await identity.fetchServerName(
+                        serverURL: resolution.origin, timeout: ServerDiscoveryProtocol.probeTimeout) ?? "Silo"
+                    return DiscoveredServer(serverId: resolution.serverId, name: label, url: resolution.origin, route: .overlay)
+                }
             }
-            var found: [OverlayNameResolver.Resolution] = []
-            for await resolution in group { if let resolution { found.append(resolution) } }
+            var found: [DiscoveredServer] = []
+            for await server in group { if let server { found.append(server) } }
             return found
         }
-        var servers: [DiscoveredServer] = []
-        for resolution in resolutions {
-            let name = await identity.fetchServerName(serverURL: resolution.origin) ?? "Silo"
-            servers.append(DiscoveredServer(serverId: resolution.serverId, name: name, url: resolution.origin, route: .overlay))
-        }
-        guard generation == gen else { return }
+        guard self.session == session else { return }
         overlayResults = servers
         publish()
     }
@@ -319,13 +336,25 @@ final class ServerDiscovery {
         }
     }
 
-    /// Resolves a browse result to an IPv4 address and port by opening a TCP
-    /// connection to it and reading the path's remote endpoint. IPv4 keeps
-    /// the URL free of link-local scope IDs.
-    private nonisolated static func resolveIPv4(_ endpoint: NWEndpoint) async -> (String, UInt16)? {
+    /// The `http://host:port` origin of a browse result: its IPv4 address
+    /// when it has one, otherwise a routable IPv6 address. Link-local IPv6 is
+    /// skipped because a URL host cannot carry its interface scope.
+    private nonisolated static func resolveOrigin(_ endpoint: NWEndpoint) async -> String? {
+        if let (address, port) = await resolve(endpoint, version: .v4) {
+            return "http://\(address):\(port)"
+        }
+        if let (address, port) = await resolve(endpoint, version: .v6) {
+            return "http://[\(address)]:\(port)"
+        }
+        return nil
+    }
+
+    /// Opens a TCP connection to a browse result over one IP version and
+    /// reads the remote address of the resulting path.
+    private nonisolated static func resolve(_ endpoint: NWEndpoint, version: NWProtocolIP.Options.Version) async -> (String, UInt16)? {
         let params = NWParameters.tcp
         if let ip = params.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options {
-            ip.version = .v4
+            ip.version = version
         }
         let connection = NWConnection(to: endpoint, using: params)
         return await withCheckedContinuation { continuation in
@@ -333,14 +362,7 @@ final class ServerDiscovery {
             connection.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
-                    if case let .hostPort(host, port)? = connection.currentPath?.remoteEndpoint,
-                       case let .ipv4(address) = host {
-                        // Drop any "%iface" scope suffix; a URL host cannot carry it.
-                        let literal = "\(address)".split(separator: "%").first.map(String.init) ?? "\(address)"
-                        once.resume((literal, port.rawValue))
-                    } else {
-                        once.resume(nil)
-                    }
+                    once.resume(Self.routableAddress(connection.currentPath?.remoteEndpoint))
                     connection.cancel()
                 case .failed, .cancelled:
                     once.resume(nil)
@@ -354,6 +376,23 @@ final class ServerDiscovery {
                 connection.cancel()
             }
         }
+    }
+
+    private nonisolated static func routableAddress(_ endpoint: NWEndpoint?) -> (String, UInt16)? {
+        guard case let .hostPort(host, port)? = endpoint else { return nil }
+        switch host {
+        case let .ipv4(address):
+            return (scopeless("\(address)"), port.rawValue)
+        case let .ipv6(address) where !address.isLinkLocal:
+            return (scopeless("\(address)"), port.rawValue)
+        default:
+            return nil
+        }
+    }
+
+    /// Drops any "%iface" scope suffix; a URL host cannot carry it.
+    private nonisolated static func scopeless(_ literal: String) -> String {
+        literal.split(separator: "%").first.map(String.init) ?? literal
     }
 }
 
