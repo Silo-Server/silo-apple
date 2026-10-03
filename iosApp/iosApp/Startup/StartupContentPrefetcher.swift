@@ -538,6 +538,11 @@ enum StartupContentPrefetcher {
     #endif
 
     static func fetchLibrarySections(libraryId: Int) async throws -> SectionsResponse {
+        try await fetchLibrarySectionsRead(libraryId: libraryId).response
+    }
+
+    /// Share the in-flight fetch while retaining its owner for follow-up section paging.
+    static func fetchLibrarySectionsRead(libraryId: Int) async throws -> APIv2LibrarySectionsRead {
         let generation = profileScopedGeneration
         // Verbose: these two run once per library on the landing prefetch and
         // again on every browse navigation, so at essential tier a session's
@@ -577,7 +582,7 @@ enum StartupContentPrefetcher {
             #endif
             ResponseCache.shared.set(response, for: CacheKey.librarySections(libraryId))
             prefetchSectionArtwork(for: response, maxCount: maxSectionArtworkURLs)
-            return response
+            return read
         } catch {
             if profileScopedGeneration == generation {
                 librarySectionsTasks[libraryId] = nil

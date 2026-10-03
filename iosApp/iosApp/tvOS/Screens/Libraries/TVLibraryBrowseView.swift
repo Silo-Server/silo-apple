@@ -11,6 +11,7 @@ import SwiftUI
 /// focus.
 struct TVLibraryBrowseView: View {
     let library: Library
+    var mediaScope: LibraryVideoScope? = nil
     /// Focus hand-down token from the shell — claims the first card of row 1
     /// on tab entry.
     var focusRequest: Int = 0
@@ -26,6 +27,7 @@ struct TVLibraryBrowseView: View {
     @State private var sections: [ResolvedSection] = []
     @State private var isLoadingSections = true
     @State private var sectionsError: ErrorState? = nil
+    @State private var scopeIncomplete = false
 
     @Environment(AppRouter.self) private var router
 
@@ -72,6 +74,12 @@ struct TVLibraryBrowseView: View {
                 .id(library.id)
             }
         }
+        .overlay(alignment: .bottom) {
+            if scopeIncomplete {
+                Text("Some shelves could not be fully loaded. Open Browse to see this media type.")
+                    .font(.caption).padding().background(.ultraThinMaterial)
+            }
+        }
         .environment(\.browseLibraryId, library.id)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task { await loadContent() }
@@ -80,8 +88,8 @@ struct TVLibraryBrowseView: View {
     private var emptyHint: some View {
         EmptyStateView(
             icon: emptyLibraryIcon,
-            title: "\(library.name) is empty",
-            subtitle: "Add media to this library on the server to see it here."
+            title: scopeIncomplete ? "Some shelves could not be loaded" : mediaScope != nil ? "No titles for this tab" : "\(library.name) is empty",
+            subtitle: mediaScope != nil ? "Open Browse to see titles matching this tab." : "Add media to this library on the server to see it here."
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .tvPageFocusOwner(
@@ -101,17 +109,56 @@ struct TVLibraryBrowseView: View {
     // MARK: - Data
 
     private func loadContent() async {
+        let scopedCacheKey = mediaScope.map { CacheKey.librarySections(library.id) + ".type-\($0.rawValue)" }
+        if sections.isEmpty, let scopedCacheKey,
+           let cached: (sections: [ResolvedSection], incomplete: Bool) = ResponseCache.shared.get(scopedCacheKey) {
+            sections = cached.sections
+            scopeIncomplete = cached.incomplete
+        }
         if sections.isEmpty,
            let cached: SectionsResponse = ResponseCache.shared.get(CacheKey.librarySections(library.id)) {
-            sections = cached.sections
+            sections = cached.sections.map { row in
+                guard let mediaScope else { return row }
+                return mediaScope.section(row, items: row.items.filter { mediaScope.contains($0.type) })
+            }
         }
         isLoadingSections = true
         sectionsError = nil
         do {
-            let response = try await StartupContentPrefetcher.fetchLibrarySections(libraryId: library.id)
-            sections = response.sections
+            if let mediaScope {
+                let read = try await StartupContentPrefetcher.fetchLibrarySectionsRead(libraryId: library.id)
+                let visibleRows = read.response.sections.filter { !$0.isFeatured }
+                let scoped = try await mediaScope.refillSections(visibleRows) { [libraryID = library.id] (row: ResolvedSection, cursor: APIv2CatalogContinuation?) in
+                    guard await SiloAPI.shared.isCurrentOwner(read.auth) else { throw HTTPError.requestIdentityChanged }
+                    let page: CatalogListPage
+                    if let cursor { page = try await SiloAPI.shared.nextCatalogPage(cursor) }
+                    else {
+                        var query = APIv2CatalogQuery()
+                        query.source = "section"; query.scope = "library"
+                        query.libraryId = String(libraryID); query.sectionId = row.id; query.limit = 100
+                        page = try await SiloAPI.shared.catalogPage(query)
+                    }
+                    guard await SiloAPI.shared.isCurrentOwner(read.auth) else { throw HTTPError.requestIdentityChanged }
+                    return LibraryScopedPage(items: page.response.items.map { SectionItem(browseItem: $0) },
+                                             next: page.continuation, startsOver: page.startsOver)
+                }
+                guard await SiloAPI.shared.isCurrentOwner(read.auth) else { throw HTTPError.requestIdentityChanged }
+                try Task.checkCancellation()
+                sections = scoped.map(\.section)
+                scopeIncomplete = scoped.contains { $0.incomplete }
+                if let scopedCacheKey {
+                    ResponseCache.shared.set((sections: sections, incomplete: scopeIncomplete), for: scopedCacheKey)
+                }
+            } else {
+                let response = try await StartupContentPrefetcher.fetchLibrarySections(libraryId: library.id)
+                sections = response.sections
+            }
         } catch {
+            if error is CancellationError { return }
+            if case HTTPError.requestIdentityChanged = error { sections = [] }
+            if case HTTPError.authorityChanged = error { sections = [] }
             sectionsError = ErrorState(error)
+            scopeIncomplete = mediaScope != nil && !sections.isEmpty
         }
         isLoadingSections = false
     }

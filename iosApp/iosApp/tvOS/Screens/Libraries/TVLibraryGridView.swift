@@ -11,6 +11,7 @@ struct TVLibraryGridView: View {
     let libraryId: Int
     let libraryName: String
     let libraryType: String
+    let mediaScope: LibraryVideoScope?
     let initialFilter: CatalogFilterState
     let subtitle: String?
     /// Pushed full-screen entries render the big library header; Skyline
@@ -46,6 +47,7 @@ struct TVLibraryGridView: View {
         libraryId: Int,
         libraryName: String,
         libraryType: String,
+        mediaScope: LibraryVideoScope? = nil,
         initialFilter: CatalogFilterState = .none,
         subtitle: String? = nil,
         showsHeader: Bool = true,
@@ -58,6 +60,7 @@ struct TVLibraryGridView: View {
         self.libraryId = libraryId
         self.libraryName = libraryName
         self.libraryType = libraryType
+        self.mediaScope = mediaScope
         self.initialFilter = initialFilter
         self.subtitle = subtitle
         self.showsHeader = showsHeader
@@ -69,6 +72,7 @@ struct TVLibraryGridView: View {
         _viewModel = State(initialValue: TVLibraryGridViewModel(
             libraryId: libraryId,
             libraryType: libraryType,
+            mediaScope: mediaScope,
             initialFilter: initialFilter
         ))
         _selectedPrefix = State(initialValue: initialFilter.namePrefix)

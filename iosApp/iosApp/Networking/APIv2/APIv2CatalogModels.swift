@@ -107,7 +107,9 @@ struct APIv2CatalogQuery: Encodable, Hashable {
         guard (1...100).contains(limit), queryLimit.map({ $0 >= 0 }) ?? true,
               sort.map({ !$0.hasPrefix("-") && !$0.contains(",") }) ?? true,
               order == "asc" || order == "desc" else { throw APIv2Error.invalidCatalogQuery }
-        var query = ["source": source, "limit": String(limit), "match": match]
+        var query = ["source": source, "limit": String(limit)]
+        // Sections own their filters. Even the default match overlay is rejected.
+        if source != "section" { query["match"] = match }
         for (key, value) in [
             ("scope", scope), ("section_id", sectionId), ("collection_id", collectionId),
             ("person_id", personId), ("library_id", libraryId), ("q", q), ("type", type),

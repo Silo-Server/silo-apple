@@ -18,7 +18,7 @@ enum Route: Hashable {
     case search
     case browse(libraryId: Int?)
     case library(libraryId: Int, title: String?)
-    case libraryCollection(libraryId: Int, collectionId: String, title: String?, kind: LibraryCollectionKind?)
+    case libraryCollection(libraryId: Int, collectionId: String, title: String?, kind: LibraryCollectionKind?, mediaScope: LibraryVideoScope? = nil)
     case itemDetail(
         contentId: String,
         tvSeed: TVItemDetailRouteSeed? = nil,

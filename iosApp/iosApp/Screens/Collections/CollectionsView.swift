@@ -703,6 +703,7 @@ struct LibraryCollectionDetailView: View {
     let collectionId: String
     let title: String?
     let kind: LibraryCollectionKind?
+    var mediaScope: LibraryVideoScope? = nil
 
     @State private var items: [BrowseItem] = []
     @State private var isLoading = false
@@ -737,7 +738,7 @@ struct LibraryCollectionDetailView: View {
         .environment(\.browseLibraryId, libraryId)
         .navigationTitle(title ?? "Collection")
         .siloNavigationTitleDisplayMode(.large)
-        .task(id: "\(libraryId)-\(collectionId)") {
+        .task(id: "\(libraryId)-\(collectionId)-\(mediaScope?.rawValue ?? "all")") {
             await loadItems(reset: true)
         }
         .refreshable {
@@ -786,7 +787,7 @@ struct LibraryCollectionDetailView: View {
 
     private func loadItems(reset: Bool) async {
         guard !isLoading else { return }
-        let cacheKey = CacheKey.catalogCollectionItems(collectionId)
+        let cacheKey = CacheKey.catalogCollectionItems(collectionId) + (mediaScope.map { ".library-\(libraryId).type-\($0.rawValue)" } ?? "")
         if reset {
             // Surface the cached first page instantly so the grid doesn't
             // blank out while the network call runs.
@@ -814,9 +815,12 @@ struct LibraryCollectionDetailView: View {
             if let nextPage {
                 page = try await SiloAPI.shared.nextCatalogPage(nextPage)
             } else {
-                page = try await SiloAPI.shared.catalogPage(.collectionItems(
+                var query = APIv2CatalogQuery.collectionItems(
                     kind: kind ?? .regular, collectionId: collectionId, limit: pageSize
-                ))
+                )
+                query.type = mediaScope?.rawValue
+                if mediaScope != nil { query.libraryId = String(libraryId) }
+                page = try await SiloAPI.shared.catalogPage(query)
             }
             if nextPage != nil, !page.startsOver {
                 items.append(contentsOf: page.response.items)

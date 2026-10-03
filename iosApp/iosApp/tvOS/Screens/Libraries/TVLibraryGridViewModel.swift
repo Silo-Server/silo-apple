@@ -34,6 +34,7 @@ final class TVLibraryGridViewModel {
     // MARK: - Private state
 
     private let libraryId: Int
+    private let mediaScope: LibraryVideoScope?
     /// Media family — picks the sort/facet vocabulary in the panels.
     let mediaType: BrowseMediaType
     /// Whether to send the `type` media-scope param (video libraries only;
@@ -58,15 +59,16 @@ final class TVLibraryGridViewModel {
     )
     private var generation: Int = 0
 
-    init(libraryId: Int, libraryType: String, initialFilter: CatalogFilterState = .none) {
+    init(libraryId: Int, libraryType: String, mediaScope: LibraryVideoScope? = nil, initialFilter: CatalogFilterState = .none) {
         self.libraryId = libraryId
-        self.mediaType = BrowseMediaType.from(libraryType: libraryType)
+        self.mediaScope = mediaScope
+        self.mediaType = BrowseMediaType.from(libraryType: mediaScope?.rawValue ?? libraryType)
         self.sendsType = SiloMediaType.isSeries(libraryType) || SiloMediaType.isMovieLibrary(libraryType)
         // A non-default initial filter (a deep-linked landing tap) wins;
         // otherwise restore the persisted per-library state.
         if !initialFilter.isDefault {
             self.filter = initialFilter
-        } else if let saved = BrowsePrefsStore.shared.savedState(libraryId: libraryId) {
+        } else if let saved = BrowsePrefsStore.shared.savedState(libraryId: libraryId, mediaScope: mediaScope?.rawValue) {
             self.filter = saved
         } else {
             self.filter = initialFilter
@@ -76,7 +78,7 @@ final class TVLibraryGridViewModel {
     }
 
     private var currentCacheKey: String {
-        CacheKey.tvLibrary(libraryId: libraryId, filterKey: filter.cacheKeyFragment)
+        CacheKey.tvLibrary(libraryId: libraryId, filterKey: (mediaScope.map { "type=\($0.rawValue)|" } ?? "") + filter.cacheKeyFragment)
     }
 
     private func hydratePage1FromCache() {
@@ -111,7 +113,7 @@ final class TVLibraryGridViewModel {
     func applyFilter(_ newFilter: CatalogFilterState) async {
         guard newFilter != filter else { return }
         filter = newFilter
-        BrowsePrefsStore.shared.saveState(newFilter, libraryId: libraryId)
+        BrowsePrefsStore.shared.saveState(newFilter, libraryId: libraryId, mediaScope: mediaScope?.rawValue)
         await reload()
     }
 
@@ -133,12 +135,12 @@ final class TVLibraryGridViewModel {
         facets = try? await FacetLoader.shared.facets(libraryId: libraryId)
     }
 
-    var preserveEnabled: Bool { BrowsePrefsStore.shared.preserveEnabled(libraryId: libraryId) }
+    var preserveEnabled: Bool { BrowsePrefsStore.shared.preserveEnabled(libraryId: libraryId, mediaScope: mediaScope?.rawValue) }
 
     func setPreserveEnabled(_ enabled: Bool) {
-        BrowsePrefsStore.shared.setPreserveEnabled(enabled, libraryId: libraryId)
+        BrowsePrefsStore.shared.setPreserveEnabled(enabled, libraryId: libraryId, mediaScope: mediaScope?.rawValue)
         if enabled {
-            BrowsePrefsStore.shared.saveState(filter, libraryId: libraryId)
+            BrowsePrefsStore.shared.saveState(filter, libraryId: libraryId, mediaScope: mediaScope?.rawValue)
         }
     }
 
@@ -232,7 +234,8 @@ final class TVLibraryGridViewModel {
                     libraryId: libraryId,
                     mediaType: mediaType,
                     limit: pageSize,
-                    includeType: sendsType
+                    includeType: sendsType,
+                    enforcedScope: mediaScope
                 ))
             }
 

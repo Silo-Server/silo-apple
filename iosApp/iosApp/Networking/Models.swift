@@ -6,6 +6,14 @@ struct BrowseItem: Codable, Identifiable, Hashable {
     let contentId: String
     let type: String
     let title: String
+    let seriesId: String?
+    let seriesTitle: String?
+    let seasonNumber: Int?
+    let episodeNumber: Int?
+    let itemSource: String?
+    let positionSeconds: Double?
+    let durationSeconds: Double?
+    let progressUpdatedAt: String?
     let year: Int?
     let genres: [String]?
     let contentRating: String?
@@ -36,6 +44,14 @@ struct BrowseItem: Codable, Identifiable, Hashable {
         contentId = try c.decode(String.self, forKey: .contentId)
         type = try c.decode(String.self, forKey: .type)
         title = try c.decode(String.self, forKey: .title)
+        seriesId = try c.decodeIfPresent(String.self, forKey: .seriesId)
+        seriesTitle = try c.decodeIfPresent(String.self, forKey: .seriesTitle)
+        seasonNumber = try c.decodeIfPresent(Int.self, forKey: .seasonNumber)
+        episodeNumber = try c.decodeIfPresent(Int.self, forKey: .episodeNumber)
+        itemSource = try c.decodeIfPresent(String.self, forKey: .itemSource)
+        positionSeconds = try c.decodeIfPresent(Double.self, forKey: .positionSeconds)
+        durationSeconds = try c.decodeIfPresent(Double.self, forKey: .durationSeconds)
+        progressUpdatedAt = try c.decodeIfPresent(String.self, forKey: .progressUpdatedAt)
         year = try c.decodeIfPresent(Int.self, forKey: .year)
         genres = try c.decodeIfPresent([String].self, forKey: .genres)
         contentRating = try c.decodeIfPresent(String.self, forKey: .contentRating)
@@ -178,10 +194,10 @@ struct SectionItem: Codable, Identifiable, Hashable {
         contentId = item.contentId
         type = item.type
         title = item.title
-        seriesId = nil
-        seriesTitle = nil
-        seasonNumber = nil
-        episodeNumber = nil
+        seriesId = item.seriesId
+        seriesTitle = item.seriesTitle
+        seasonNumber = item.seasonNumber
+        episodeNumber = item.episodeNumber
         year = item.year
         genres = item.genres
         status = item.status
@@ -196,10 +212,10 @@ struct SectionItem: Codable, Identifiable, Hashable {
         networks = item.networks
         showStatus = item.showStatus
         overview = item.overview
-        itemSource = nil
-        self.positionSeconds = positionSeconds
-        self.durationSeconds = durationSeconds
-        progressUpdatedAt = nil
+        itemSource = item.itemSource
+        self.positionSeconds = positionSeconds ?? item.positionSeconds
+        self.durationSeconds = durationSeconds ?? item.durationSeconds
+        progressUpdatedAt = item.progressUpdatedAt
         posterUrl = item.posterUrl
         posterThumbhash = item.posterThumbhash
         backdropUrl = item.backdropUrl
