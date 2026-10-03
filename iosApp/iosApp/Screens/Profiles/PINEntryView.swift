@@ -44,7 +44,7 @@ struct PINEntryView: View {
             #else
             phoneBody
                 #if os(iOS)
-                .marqueeSwipeBack(cancel)
+                .marqueeSwipeBack(isVerifying ? nil : cancel)
                 #endif
             #endif
         }
@@ -56,6 +56,7 @@ struct PINEntryView: View {
         VStack(spacing: 0) {
             HStack {
                 MarqueeIconButton(systemImage: "chevron.left", accessibilityLabel: "Back", action: cancel)
+                    .disabled(isVerifying)
                 Spacer()
             }
             .padding(.horizontal, 24)
@@ -100,6 +101,7 @@ struct PINEntryView: View {
                 .focusSection()
             Button("Cancel", action: cancel)
                 .buttonStyle(.marquee(.plain, fullWidth: false, compact: true))
+                .disabled(isVerifying)
                 .padding(.top, 30)
         }
         .onExitCommand(perform: handleExit)
@@ -217,7 +219,10 @@ struct PINEntryView: View {
     private let padVSpacing: CGFloat = 16
     #endif
 
+    /// Leaving while the server checks the PIN would let the answer act on a
+    /// prompt that's gone (open Home or Create Profile), so it waits.
     private func cancel() {
+        guard !isVerifying else { return }
         if let onCancel {
             onCancel()
         } else {

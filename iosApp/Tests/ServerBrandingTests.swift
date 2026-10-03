@@ -49,4 +49,26 @@ final class ServerSetupRoutingTests: XCTestCase {
         XCTAssertEqual(router.authState, .needsLogin)
         XCTAssertEqual(router.path.count, 1)
     }
+
+    /// SwiftUI clears the alert's binding before the Connect action's task
+    /// runs; connecting must still use the prompt the alert showed.
+    func testConnectingOverHTTPWorksAfterTheAlertIsDismissed() async throws {
+        let router = AppRouter()
+        let viewModel = ServerSetupViewModel(
+            checkServer: { url in
+                guard url.hasPrefix("http://") else { throw URLError(.cannotConnectToHost) }
+                return APIv2SetupStatus(needsSetup: false)
+            },
+            hasSession: { false }
+        )
+        viewModel.host = "media.lan"
+        await viewModel.connect(router: router)
+        let prompt = try XCTUnwrap(viewModel.insecurePrompt)
+
+        viewModel.dismissInsecurePrompt()
+        await viewModel.confirmInsecure(prompt, router: router)
+
+        XCTAssertEqual(router.authState, .needsLogin)
+        XCTAssertNil(viewModel.error)
+    }
 }

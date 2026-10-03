@@ -153,19 +153,16 @@ extension View {
     /// button. The page follows the finger and either slides away or springs
     /// back. A horizontal drag is needed to start, so vertical scrolling,
     /// taps and text editing are unaffected. VoiceOver's escape gesture
-    /// (two-finger Z) does the same. Nil leaves the view unchanged.
-    @ViewBuilder
+    /// (two-finger Z) does the same. Nil turns the gesture off; the modifier
+    /// stays installed so toggling it keeps the page's identity (fields keep
+    /// their focus and state).
     func marqueeSwipeBack(_ action: (() -> Void)?) -> some View {
-        if let action {
-            modifier(MarqueeSwipeBack(action: action))
-        } else {
-            self
-        }
+        modifier(MarqueeSwipeBack(action: action))
     }
 }
 
 private struct MarqueeSwipeBack: ViewModifier {
-    let action: () -> Void
+    let action: (() -> Void)?
 
     @State private var offset: CGFloat = 0
     @State private var width: CGFloat = 1
@@ -175,16 +172,17 @@ private struct MarqueeSwipeBack: ViewModifier {
     func body(content: Content) -> some View {
         content
             .offset(x: reduceMotion ? 0 : offset)
-            .opacity(1 - 0.6 * progress)
+            .opacity(fade)
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = max($0, 1) }
             // Gaps between controls count too, not only drawn content.
             .contentShape(.rect)
-            .gesture(BackSwipeRecognizer(changed: changed, ended: ended))
+            .gesture(BackSwipeRecognizer(isEnabled: action != nil, changed: changed, ended: ended))
             .sensoryFeedback(.impact(weight: .light), trigger: pastThreshold) { _, isPast in isPast }
-            .accessibilityAction(.escape, action)
+            .accessibilityAction(.escape) { action?() }
     }
 
     private var progress: CGFloat { min(max(offset / width, 0), 1) }
+    private var fade: Double { 1 - 0.6 * Double(progress) }
     private var threshold: CGFloat { width * 0.3 }
 
     private func changed(_ translation: CGFloat) {
@@ -197,7 +195,7 @@ private struct MarqueeSwipeBack: ViewModifier {
     private func ended(translation: CGFloat, velocity: CGFloat, cancelled: Bool) {
         pastThreshold = false
         let commits = !cancelled && velocity > -150 && (translation > threshold || velocity > 700)
-        guard commits else {
+        guard commits, let action else {
             withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) { offset = 0 }
             return
         }
@@ -216,6 +214,7 @@ private struct MarqueeSwipeBack: ViewModifier {
 /// It recognizes alongside scroll views so a slightly diagonal swipe still
 /// works on pages that scroll.
 private struct BackSwipeRecognizer: UIGestureRecognizerRepresentable {
+    let isEnabled: Bool
     let changed: (CGFloat) -> Void
     let ended: (_ translation: CGFloat, _ velocity: CGFloat, _ cancelled: Bool) -> Void
 
@@ -225,7 +224,12 @@ private struct BackSwipeRecognizer: UIGestureRecognizerRepresentable {
         let pan = UIPanGestureRecognizer()
         pan.maximumNumberOfTouches = 1
         pan.delegate = context.coordinator
+        pan.isEnabled = isEnabled
         return pan
+    }
+
+    func updateUIGestureRecognizer(_ recognizer: UIPanGestureRecognizer, context: Context) {
+        recognizer.isEnabled = isEnabled
     }
 
     func handleUIGestureRecognizerAction(_ recognizer: UIPanGestureRecognizer, context: Context) {

@@ -79,14 +79,21 @@ class ServerSetupViewModel {
     }
 
     /// Continues a connect the person agreed to finish over plain HTTP.
-    func confirmInsecure(router: AppRouter) async {
-        guard let prompt = insecurePrompt else { return }
+    /// `prompt` is the one the alert showed: dismissing the alert clears the
+    /// model's copy before this runs.
+    func confirmInsecure(_ prompt: InsecurePrompt? = nil, router: AppRouter) async {
+        guard let prompt = prompt ?? insecurePrompt else { return }
         insecurePrompt = nil
         await run(candidates: prompt.remaining, attempted: prompt.attempted, allowInsecure: true, router: router)
     }
 
     func clearError() {
         error = nil
+    }
+
+    /// The alert went away. Its buttons say whether to connect or give up.
+    func dismissInsecurePrompt() {
+        insecurePrompt = nil
     }
 
     func cancelInsecure() {

@@ -75,11 +75,11 @@ struct TVServerSetupView: View {
             "Connect without encryption?",
             isPresented: Binding(
                 get: { viewModel.insecurePrompt != nil },
-                set: { if !$0, viewModel.insecurePrompt != nil { viewModel.cancelInsecure() } }
+                set: { if !$0 { viewModel.dismissInsecurePrompt() } }
             ),
             presenting: viewModel.insecurePrompt
-        ) { _ in
-            Button("Connect") { Task { await viewModel.confirmInsecure(router: router) } }
+        ) { prompt in
+            Button("Connect") { Task { await viewModel.confirmInsecure(prompt, router: router) } }
             Button("Cancel", role: .cancel) { viewModel.cancelInsecure() }
         } message: { prompt in
             Text("Your password and what you watch will be sent unencrypted to \(prompt.address). Only do this on a network you trust.")
@@ -226,6 +226,7 @@ struct TVServerSetupView: View {
                 }
                 .buttonStyle(.marquee(.plain, fullWidth: false))
                 .focused($focusedField, equals: .back)
+                .disabled(viewModel.isLoading)
             }
             .padding(.top, 40)
             .focusSection()
@@ -242,8 +243,10 @@ struct TVServerSetupView: View {
             }
         }
         .defaultFocus($focusedField, .host, priority: .userInitiated)
+        // Leaving mid-probe would let a late connect pull the app on, so
+        // the way back waits for it.
         .onExitCommand {
-            isEnteringAddress = false
+            if !viewModel.isLoading { isEnteringAddress = false }
         }
         .animation(SiloTheme.springAnimation, value: viewModel.showsAdvancedOptions)
         .animation(.easeInOut(duration: 0.2), value: viewModel.error)

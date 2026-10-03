@@ -84,13 +84,13 @@ struct ServerSetupView: View {
             "Connect without encryption?",
             isPresented: Binding(
                 get: { viewModel.insecurePrompt != nil },
-                set: { if !$0, viewModel.insecurePrompt != nil { viewModel.cancelInsecure() } }
+                set: { if !$0 { viewModel.dismissInsecurePrompt() } }
             ),
             presenting: viewModel.insecurePrompt
-        ) { _ in
+        ) { prompt in
             Button("Cancel", role: .cancel) { viewModel.cancelInsecure() }
             Button("Connect") {
-                Task { await viewModel.confirmInsecure(router: router) }
+                Task { await viewModel.confirmInsecure(prompt, router: router) }
             }
         } message: { prompt in
             Text("Your password and what you watch will be sent unencrypted to \(prompt.address). Only do this on a network you trust.")

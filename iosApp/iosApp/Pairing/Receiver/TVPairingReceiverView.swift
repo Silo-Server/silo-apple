@@ -198,10 +198,11 @@ struct TVPairingReceiverView: View {
             MarqueeTVCardSymbol(systemImage: "wifi.exclamationmark", tint: Color(hex: "#F4C869"))
             cardTitle("No answer")
             cardNote("This Apple TV couldn’t reach the address your phone sent.")
-        case .failed:
+        case let .failed(name, _, _):
             MarqueeTVCardSymbol(systemImage: "exclamationmark.triangle", tint: Color(hex: "#F4C869"))
             cardTitle("Not finished")
-            cardNote("Nothing was signed in.")
+            // Earlier servers in the same session may have signed in.
+            cardNote("\(name) wasn't signed in.")
         }
     }
 
