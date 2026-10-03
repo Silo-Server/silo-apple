@@ -253,6 +253,7 @@ struct TVServerSetupView: View {
         }
         .animation(SiloTheme.springAnimation, value: viewModel.showsAdvancedOptions)
         .animation(.easeInOut(duration: 0.2), value: viewModel.error)
+        .keepsSubmittedServerInputs(viewModel)
     }
 
     private func connect() {

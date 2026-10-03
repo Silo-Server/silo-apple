@@ -102,6 +102,7 @@ struct ServerSetupView: View {
             if let prefill = router.consumeServerSetupPrefill() { viewModel.host = prefill }
         }
         .marqueeTransparentNavigation()
+        .keepsSubmittedServerInputs(viewModel)
     }
 
     /// The keyboard stays up while connecting: dismissing it would shift the

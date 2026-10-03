@@ -57,6 +57,37 @@ final class ServerSetupRoutingTests: XCTestCase {
         XCTAssertEqual(router.path.count, 1)
     }
 
+    /// The fields keep the keyboard during a slow connect, but the probe is
+    /// for what was submitted; an edit then must not show over that server.
+    func testAddressCannotChangeWhileConnecting() async {
+        let (gate, release) = AsyncStream<Void>.makeStream()
+        let viewModel = ServerSetupViewModel(
+            checkServer: { _ in
+                for await _ in gate { break }
+                throw URLError(.cannotConnectToHost)
+            },
+            hasSession: { false }
+        )
+        viewModel.host = "https://silo.example.com"
+        let connecting = Task { await viewModel.connect(router: AppRouter()) }
+        while !viewModel.isLoading { await Task.yield() }
+
+        viewModel.host = "https://other.example.com"
+        viewModel.selectedScheme = .http
+        viewModel.port = "8090"
+        viewModel.restoreSubmittedInputs()
+        XCTAssertEqual(viewModel.host, "https://silo.example.com")
+        XCTAssertEqual(viewModel.selectedScheme, .auto)
+        XCTAssertEqual(viewModel.port, "")
+
+        release.yield()
+        await connecting.value
+        XCTAssertFalse(viewModel.isLoading)
+        viewModel.host = "https://other.example.com"
+        viewModel.restoreSubmittedInputs()
+        XCTAssertEqual(viewModel.host, "https://other.example.com")
+    }
+
     /// A protocol and port chosen for a manual attempt must not redirect a
     /// saved server picked from Recent.
     func testRecentServerIgnoresEarlierProtocolAndPortOverrides() throws {

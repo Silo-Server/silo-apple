@@ -1,5 +1,6 @@
 import Foundation
 import OSLog
+import SwiftUI
 
 enum ServerSetupScheme: String, CaseIterable, Identifiable {
     case auto = "Auto"
@@ -22,6 +23,8 @@ class ServerSetupViewModel {
     var host: String = ""
     var selectedScheme: ServerSetupScheme = .auto
     var port: String = ""
+    /// What a running connect is for. Set while `isLoading`.
+    @ObservationIgnored private var submitted: (host: String, scheme: ServerSetupScheme, port: String)?
     var showsAdvancedOptions: Bool = false
     var isLoading: Bool = false
     private(set) var error: FormError?
@@ -96,6 +99,16 @@ class ServerSetupViewModel {
         await run(candidates: prompt.remaining, attempted: prompt.attempted, allowInsecure: true, router: router)
     }
 
+    /// The fields stay enabled while connecting so the keyboard stays up, but
+    /// the probe has already committed to what was submitted: an edit made
+    /// meanwhile is put back rather than shown over a different server.
+    func restoreSubmittedInputs() {
+        guard let submitted else { return }
+        if host != submitted.host { host = submitted.host }
+        if selectedScheme != submitted.scheme { selectedScheme = submitted.scheme }
+        if port != submitted.port { port = submitted.port }
+    }
+
     func clearError() {
         error = nil
     }
@@ -112,11 +125,17 @@ class ServerSetupViewModel {
 
     private func run(candidates: [String], attempted previous: [String], allowInsecure: Bool, router: AppRouter) async {
         isLoading = true
+        submitted = (host, selectedScheme, port)
         error = nil
         var connected = false
         // After a successful connect the screen fades out to sign-in; it keeps
         // showing "Connecting…" rather than snapping back to its idle state.
-        defer { if !connected { isLoading = false } }
+        defer {
+            if !connected {
+                isLoading = false
+                submitted = nil
+            }
+        }
 
         var attempted = previous
         var lastError: Error?
@@ -298,5 +317,16 @@ private enum ServerSetupValidationError: LocalizedError {
         case .invalidPort:
             return "Port must be a number between 1 and 65535."
         }
+    }
+}
+
+extension View {
+    /// Puts back the submitted address, protocol and port when one is edited
+    /// during a connect. Undoing the edit after the field has shown it, not
+    /// inside the setter, is what makes the field redraw with the restored text.
+    func keepsSubmittedServerInputs(_ model: ServerSetupViewModel) -> some View {
+        onChange(of: model.host) { model.restoreSubmittedInputs() }
+            .onChange(of: model.selectedScheme) { model.restoreSubmittedInputs() }
+            .onChange(of: model.port) { model.restoreSubmittedInputs() }
     }
 }
