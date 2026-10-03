@@ -43,16 +43,25 @@ final class ServerDiscoveryTests: XCTestCase {
     }
 
     func testOverlayProbeNeedsOverlayAddressesOnBothEnds() {
+        let tunnel = { (address: String) in address == "100.100.1.9" }
         XCTAssertTrue(OverlayNameResolver.ranOverOverlay([
             (local: "100.100.1.9", remote: "100.100.1.2"), (local: "100.100.1.9", remote: "100.100.1.2"),
-        ]))
+        ], isTunnelAddress: tunnel))
         // A local network that resolves the name to a CGNAT address and routes it to itself.
-        XCTAssertFalse(OverlayNameResolver.ranOverOverlay([(local: "192.168.1.20", remote: "100.100.1.2")]))
+        XCTAssertFalse(OverlayNameResolver.ranOverOverlay([(local: "192.168.1.20", remote: "100.100.1.2")], isTunnelAddress: tunnel))
         // An overlay first hop redirected to a host outside the overlay.
         XCTAssertFalse(OverlayNameResolver.ranOverOverlay([
             (local: "100.100.1.9", remote: "100.100.1.2"), (local: "192.168.1.20", remote: "203.0.113.5"),
-        ]))
-        XCTAssertFalse(OverlayNameResolver.ranOverOverlay([]))
+        ], isTunnelAddress: tunnel))
+        // A LAN that numbers its clients from the CGNAT range, with no tunnel.
+        XCTAssertFalse(OverlayNameResolver.ranOverOverlay([(local: "100.70.0.20", remote: "100.70.0.1")], isTunnelAddress: tunnel))
+        XCTAssertFalse(OverlayNameResolver.ranOverOverlay([], isTunnelAddress: tunnel))
+    }
+
+    func testOnlyPointToPointInterfacesAreTunnels() {
+        // The loopback address is on a loopback interface, not a tunnel.
+        XCTAssertFalse(OverlayNameResolver.isTunnelAddress("127.0.0.1"))
+        XCTAssertFalse(OverlayNameResolver.isTunnelAddress("not-an-ip"))
     }
 
     @MainActor

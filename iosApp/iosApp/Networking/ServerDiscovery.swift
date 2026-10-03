@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Network
 import OSLog
@@ -136,12 +137,38 @@ struct OverlayNameResolver: Sendable {
     }
 
     /// True when every connection of a probe ran over the overlay: both its
-    /// local and remote addresses are overlay addresses. A remote overlay
-    /// address alone is not enough, because a local network can resolve a
-    /// bare name to one and route it to itself; only traffic that went through
-    /// the overlay's own interface has an overlay address on this end too.
-    static func ranOverOverlay(_ connections: [(local: String, remote: String)]) -> Bool {
-        !connections.isEmpty && connections.allSatisfy { isOverlayAddress($0.local) && isOverlayAddress($0.remote) }
+    /// local and remote addresses are overlay addresses, and the local one
+    /// belongs to a tunnel interface. A remote overlay address alone is not
+    /// enough, because a local network can resolve a bare name to one and
+    /// route it to itself; nor is a local one, because a LAN may number its
+    /// clients from the same CGNAT range. Only traffic through the overlay's
+    /// own point-to-point tunnel (a `utun` interface) passes all three.
+    static func ranOverOverlay(
+        _ connections: [(local: String, remote: String)],
+        isTunnelAddress: (String) -> Bool = isTunnelAddress
+    ) -> Bool {
+        !connections.isEmpty && connections.allSatisfy {
+            isOverlayAddress($0.local) && isOverlayAddress($0.remote) && isTunnelAddress($0.local)
+        }
+    }
+
+    /// True when `address` is assigned to a point-to-point interface on this
+    /// device, as VPN and overlay tunnels are and Wi-Fi and Ethernet are not.
+    static func isTunnelAddress(_ address: String) -> Bool {
+        let literal = address.split(separator: "%").first.map(String.init) ?? address
+        var head: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&head) == 0, let first = head else { return false }
+        defer { freeifaddrs(head) }
+        for entry in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            let ifa = entry.pointee
+            guard ifa.ifa_flags & UInt32(IFF_POINTOPOINT) != 0, let sockaddr = ifa.ifa_addr else { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            guard getnameinfo(sockaddr, socklen_t(sockaddr.pointee.sa_len), &host, socklen_t(host.count),
+                              nil, 0, NI_NUMERICHOST) == 0 else { continue }
+            let found = String(cString: host)
+            if (found.split(separator: "%").first.map(String.init) ?? found) == literal { return true }
+        }
+        return false
     }
 
     /// Overlay networks (Tailscale, NetBird) address peers from the CGNAT
@@ -524,15 +551,19 @@ final class ServerDiscovery {
 
     /// One row per server and route: replicas of one deployment, or one host
     /// seen on several interfaces, advertise the same `id`.
+    /// Of several addresses for one server and route, the row shows one that
+    /// last answered: a failing address is listed only when no other is.
     private func publish() {
         var seen = Set<String>()
-        let confirmed = lan.values.compactMap { entry -> DiscoveredServer? in
+        let lanRows = lan.values.compactMap { entry -> (server: DiscoveredServer, misses: Int)? in
             switch entry.state {
-            case .confirmed(let confirmed), .confirming(_, _, let confirmed?): return confirmed.server
+            case .confirmed(let confirmed), .confirming(_, _, let confirmed?): return (confirmed.server, confirmed.misses)
             default: return nil
             }
         }
-        let candidates = (confirmed + overlay.values.map(\.server)).sorted { $0.url < $1.url }
+        let candidates = (lanRows + overlay.values.map { ($0.server, $0.misses) }).sorted {
+            $0.misses != $1.misses ? $0.misses < $1.misses : $0.server.url < $1.server.url
+        }.map(\.server)
         let all = candidates.filter { seen.insert("\($0.serverId)|\($0.route)").inserted }
         servers = all.sorted {
             if $0.name != $1.name { return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
