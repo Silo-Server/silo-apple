@@ -198,7 +198,6 @@ final class ServerDiscovery {
     /// Advances whenever a browser is replaced; browse callbacks and LAN
     /// confirmations from an earlier browser are dropped.
     private var browserGeneration = 0
-    private var currentKeys: Set<String> = []                 // latest browse snapshot
     /// What each current browse result advertised, for retries on the refresh timer.
     private var advertised: [String: (endpoint: NWEndpoint, serverId: String)] = [:]
     private var lanResults: [String: DiscoveredServer] = [:]   // keyed by browse result
@@ -264,7 +263,6 @@ final class ServerDiscovery {
         pending = []
         attempts = [:]
         advertised = [:]
-        currentKeys = []
         let gen = browserGeneration
         let params = NWParameters()
         params.includePeerToPeer = false
@@ -304,7 +302,6 @@ final class ServerDiscovery {
         overlayProbe = nil
         overlayRefresh?.cancel()
         overlayRefresh = nil
-        currentKeys = []
         advertised = [:]
         lanResults = [:]
         overlayResults = []
@@ -314,14 +311,20 @@ final class ServerDiscovery {
     }
 
     private func update(results: Set<NWBrowser.Result>, generation gen: Int) {
-        currentKeys = Set(results.map { "\($0.endpoint)" })
-        lanResults = lanResults.filter { currentKeys.contains($0.key) }
-        attempts = attempts.filter { currentKeys.contains($0.key) }
+        let previous = advertised
         advertised = [:]
         for result in results {
             guard case let .bonjour(txt) = result.metadata,
                   let advertisedId = ServerIdentity.usable(txt.dictionary[ServerDiscoveryProtocol.txtServerID]) else { continue }
             advertised["\(result.endpoint)"] = (result.endpoint, advertisedId)
+        }
+        // A row stays only while its endpoint still advertises the identity it
+        // was confirmed with; a changed `id` (a reinstall, or another
+        // deployment on the same name and port) is confirmed afresh.
+        lanResults = lanResults.filter { advertised[$0.key]?.serverId == $0.value.serverId }
+        attempts = attempts.filter { key, _ in
+            guard let now = advertised[key] else { return false }
+            return previous[key]?.serverId == now.serverId
         }
         confirmUnconfirmed(generation: gen)
         publish()
@@ -351,14 +354,18 @@ final class ServerDiscovery {
             let found = await self.confirmLAN(endpoint: endpoint, advertisedId: advertisedId, instanceName: instanceName)
             guard self.browserGeneration == gen else { return }
             self.pending.remove(key)
-            // The advertisement may have gone while this was confirming.
-            guard self.currentKeys.contains(key) else { return }
+            // The advertisement may have gone, or changed its identity, while
+            // this was confirming; a new identity is confirmed afresh.
+            guard self.advertised[key]?.serverId == advertisedId else {
+                self.confirmUnconfirmed(generation: gen)
+                return
+            }
             if let found {
                 self.lanResults[key] = found
                 self.publish()
             } else if self.attempts[key, default: 0] < Self.maxAttempts {
                 try? await Task.sleep(for: .seconds(3))
-                guard self.browserGeneration == gen, self.currentKeys.contains(key), self.lanResults[key] == nil,
+                guard self.browserGeneration == gen, self.advertised[key]?.serverId == advertisedId, self.lanResults[key] == nil,
                       !self.pending.contains(key) else { return }
                 self.confirm(key: key, endpoint: endpoint, advertisedId: advertisedId, generation: gen)
             }
