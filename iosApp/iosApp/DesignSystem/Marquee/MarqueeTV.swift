@@ -65,58 +65,116 @@ struct MarqueeWaitingDots: View {
     }
 }
 
-// MARK: - Mini iPhone
+// MARK: - Setup steps
 
-/// The setup card as it appears in Silo on a nearby iPhone, drawn small on
-/// the TV so people know what to look for.
-struct MarqueeMiniPhone: View {
-    let tvName: String
-
+/// How to set this TV up from a phone: three numbered steps, one action
+/// each, with a small picture of exactly that action. Short titles only, so
+/// they read from across the room.
+struct MarqueeTVSetupSteps: View {
     var body: some View {
-        ZStack(alignment: .bottom) {
-            // The iPhone app's own backdrop, still, as it looks behind the
-            // setup card.
-            BrandLightLayer(stage: 1, drifts: false)
-                .clipShape(RoundedRectangle(cornerRadius: 50, style: .continuous))
-
-            VStack(spacing: 0) {
-                Image(systemName: "appletv")
-                    .font(.system(size: 26))
-                    .frame(width: 60, height: 60)
-                    .background(Circle().fill(Color.white.opacity(0.08)))
-                    .overlay(Circle().strokeBorder(Color.white.opacity(0.14)))
-                Text("Set Up \(tvName)")
-                    .font(.system(size: 22, weight: .bold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                    .padding(.top, 14)
-                Text("Sign this Apple TV in with your Silo account.")
-                    .font(.system(size: 15))
-                    .foregroundStyle(Color.siloOnSurface.opacity(0.62))
-                    .multilineTextAlignment(.center)
-                    .padding(.top, 6)
-                Capsule()
-                    .fill(Color.siloOnSurface)
-                    .frame(height: 46)
-                    .overlay(Text("Set Up").font(.system(size: 18, weight: .semibold)).foregroundStyle(.black))
-                    .padding(.top, 16)
-                Text("Not Now")
-                    .font(.system(size: 18))
-                    .foregroundStyle(Color.siloOnSurface.opacity(0.62))
-                    .frame(height: 40)
-            }
-            .foregroundStyle(Color.siloOnSurface)
-            .padding(.horizontal, 20)
-            .padding(.top, 26)
-            .padding(.bottom, 10)
-            .background(RoundedRectangle(cornerRadius: 40, style: .continuous).fill(Color(white: 0.18).opacity(0.96)))
-            .padding(10)
+        VStack(alignment: .leading, spacing: 30) {
+            step(1, "Open Silo on your phone") { SetupAppIcon() }
+            step(2, "Tap Set Up") { SetupCardPicture() }
+            step(3, "Finish on your phone") { SetupDonePicture() }
         }
-        .frame(width: 280, height: 560)
-        .clipShape(RoundedRectangle(cornerRadius: 50, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 50, style: .continuous).strokeBorder(Color(white: 0.12), lineWidth: 8))
-        .shadow(color: .black.opacity(0.8), radius: 40, y: 20)
-        .accessibilityHidden(true)
+        .frame(width: 700, alignment: .leading)
+    }
+
+    private func step(_ number: Int, _ title: String, @ViewBuilder picture: () -> some View) -> some View {
+        HStack(spacing: 34) {
+            RoundedRectangle(cornerRadius: 34, style: .continuous)
+                .fill(Color.white.opacity(0.06))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 34, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
+                )
+                .frame(width: 168, height: 168)
+                .overlay { picture() }
+                .overlay(alignment: .topLeading) {
+                    Text("\(number)")
+                        .font(.system(size: 28, weight: .heavy))
+                        .foregroundStyle(.black)
+                        .frame(width: 52, height: 52)
+                        .background(Circle().fill(Color.siloOnSurface))
+                        .shadow(color: .black.opacity(0.5), radius: 7, y: 6)
+                        .offset(x: -16, y: -16)
+                }
+            Text(title)
+                .font(.system(size: 38, weight: .bold))
+                .kerning(-0.4)
+                .foregroundStyle(Color.siloOnSurface)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Step \(number): \(title)")
+    }
+}
+
+/// The Silo app icon: the three-bar mark on black.
+private struct SetupAppIcon: View {
+    var body: some View {
+        VStack(spacing: 3) {
+            ForEach([Color.siloBrandBlue, .siloBrandRed, .siloBrandOrange], id: \.self) { color in
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(color)
+                    .modifier(SkewY(angle: .degrees(-18)))
+            }
+        }
+        .frame(width: 26, height: 56)
+        .frame(width: 92, height: 92)
+        .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(.black))
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
+        )
+    }
+}
+
+/// The setup card Silo shows on a nearby phone, with its Set Up button ringed.
+private struct SetupCardPicture: View {
+    var body: some View {
+        VStack(spacing: 8) {
+            Capsule().fill(Color.white.opacity(0.3)).frame(width: 80, height: 8)
+            Capsule().fill(Color.white.opacity(0.16)).frame(width: 56, height: 8)
+            Text("Set Up")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(.black)
+                .frame(maxWidth: .infinity)
+                .frame(height: 30)
+                .background(Capsule().fill(Color.siloOnSurface))
+                .overlay(Capsule().strokeBorder(Color.siloBrandOrange.opacity(0.85), lineWidth: 4).padding(-4))
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 14)
+        .padding(.bottom, 12)
+        .frame(width: 128)
+        .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Color(white: 0.15).opacity(0.95)))
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
+        )
+    }
+}
+
+/// A green check: the rest happens on the phone.
+private struct SetupDonePicture: View {
+    var body: some View {
+        Image(systemName: "checkmark")
+            .font(.system(size: 44, weight: .bold))
+            .foregroundStyle(Color.siloSuccess)
+            .frame(width: 96, height: 96)
+            .background(Circle().fill(Color.siloSuccess.opacity(0.16)))
+            .overlay(Circle().strokeBorder(Color.siloSuccess, lineWidth: 3))
+    }
+}
+
+/// Slants a view vertically about its center, like CSS `skewY`.
+private struct SkewY: GeometryEffect {
+    var angle: Angle
+
+    func effectValue(size: CGSize) -> ProjectionTransform {
+        let slope = CGFloat(tan(angle.radians))
+        return ProjectionTransform(CGAffineTransform(a: 1, b: slope, c: 0, d: 1, tx: 0, ty: -size.width / 2 * slope))
     }
 }
 
@@ -142,11 +200,16 @@ struct MarqueeTVCardSymbol: View {
 /// Body copy at TV size, secondary ink.
 struct MarqueeTVBody: View {
     let text: String
-    init(_ text: String) { self.text = text }
+    let size: CGFloat
+
+    init(_ text: String, size: CGFloat = MarqueeMetrics.leadFont) {
+        self.text = text
+        self.size = size
+    }
 
     var body: some View {
         Text(text)
-            .font(.system(size: MarqueeMetrics.leadFont))
+            .font(.system(size: size))
             .foregroundStyle(Color.siloOnSurface.opacity(0.62))
             .lineSpacing(4)
             .fixedSize(horizontal: false, vertical: true)

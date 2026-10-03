@@ -101,8 +101,12 @@ struct TVServerSetupView: View {
                 .kerning(-2)
                 .foregroundStyle(Color.siloOnSurface)
                 .accessibilityAddTraits(.isHeader)
-            MarqueeTVBody("Open Silo on a phone or tablet on the same Wi‑Fi and tap Set Up. Your server and account come across securely, with nothing to type.")
+            MarqueeTVBody("It's the easiest way. There's nothing to type with the remote.", size: 32)
                 .padding(.top, 28)
+            Text("No phone nearby?")
+                .font(.system(size: 26))
+                .foregroundStyle(Color.siloOnSurface.opacity(0.4))
+                .padding(.top, 64)
             HStack {
                 Button {
                     isEnteringAddress = true
@@ -112,22 +116,9 @@ struct TVServerSetupView: View {
                 .buttonStyle(.marquee(.glass, fullWidth: false))
                 .focused($focusedField, equals: .enterAddress)
             }
-            .padding(.top, 56)
-            Text("Silo adds https for you. Protocol and port are under Advanced options.")
-                .font(.system(size: 22))
-                .foregroundStyle(Color.siloOnSurface.opacity(0.4))
-                .padding(.top, 30)
+            .padding(.top, 18)
         } card: {
-            MarqueeTVCard {
-                MarqueeMiniPhone(tvName: Self.tvName)
-                Text("On your phone")
-                    .font(.system(size: 32, weight: .semibold))
-                    .padding(.top, 40)
-                Text("This card appears in Silo when this Apple TV is nearby.")
-                    .font(.system(size: 22))
-                    .foregroundStyle(Color.siloOnSurface.opacity(0.4))
-                    .padding(.top, 8)
-            }
+            MarqueeTVSetupSteps()
         }
         .defaultFocus($focusedField, .enterAddress, priority: .userInitiated)
         .marqueeTVSeedFocus($focusedField, .enterAddress)
