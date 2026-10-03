@@ -249,14 +249,16 @@ struct MovieDetailContent<BelowOverview: View>: View {
 
     private var belowFold: some View {
         VStack(alignment: .leading, spacing: 36) {
-            if let cast = detail.cast, !cast.isEmpty {
-                castSection(cast: cast)
+            if !castCrewGroups.isEmpty {
+                castSection(groups: castCrewGroups)
             }
 
             trailersSection
 
-            detailsSection
-                .padding(.horizontal, SiloTheme.safePadding)
+            if showsDetailsSection {
+                detailsSection
+                    .padding(.horizontal, SiloTheme.safePadding)
+            }
 
             similarSection
         }
@@ -286,12 +288,21 @@ struct MovieDetailContent<BelowOverview: View>: View {
     // MARK: - Cast
 
     @ViewBuilder
-    private func castSection(cast: [CastMember]) -> some View {
+    private func castSection(groups: [CastCrewGroup]) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             PhoneSectionHeader(title: "Cast & Crew")
                 .padding(.horizontal, SiloTheme.safePadding)
-            PhoneCastRail(cast: cast, onTap: onPersonTap)
+            PhoneCastRail(groups: groups, onTap: onPersonTap)
         }
+    }
+
+    /// Movies get the grouped director, writers and cast row. Episodes keep
+    /// their cast-only rail.
+    private var castCrewGroups: [CastCrewGroup] {
+        if detail.type == "movie" {
+            return CastCrewGroups.build(cast: detail.cast, crew: detail.crew, leadRole: .director)
+        }
+        return CastCrewGroups.castOnly(detail.cast ?? [])
     }
 
     // MARK: - More Like This
@@ -310,8 +321,21 @@ struct MovieDetailContent<BelowOverview: View>: View {
     private var detailsSection: some View {
         VStack(alignment: .leading, spacing: 14) {
             PhoneSectionHeader(title: "Details")
-            PhoneDetailFactsSection(detail: detail)
+            PhoneDetailFactsSection(detail: detail, includesCredits: factsIncludeCredits)
         }
+    }
+
+    /// Movie directors and writers now live in the Cast & Crew row, so the
+    /// facts list drops them there. Episodes keep them.
+    private var factsIncludeCredits: Bool {
+        detail.type != "movie"
+    }
+
+    /// Hides the Details header on a movie whose only facts were credits.
+    /// Episode pages keep their existing layout.
+    private var showsDetailsSection: Bool {
+        factsIncludeCredits
+            || !DetailFacts(detail: detail, includesCredits: false).assembleFacts().isEmpty
     }
 
     // MARK: - Resume / play helpers

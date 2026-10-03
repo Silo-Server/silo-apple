@@ -477,12 +477,14 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     private var belowFold: some View {
         VStack(alignment: .leading, spacing: 36) {
             episodesSection
-            if let cast = detail.cast, !cast.isEmpty {
-                castSection(cast: cast)
+            if !castCrewGroups.isEmpty {
+                castSection(groups: castCrewGroups)
             }
             trailersSection
-            detailsSection
-                .padding(.horizontal, SiloTheme.safePadding)
+            if hasDetailFacts {
+                detailsSection
+                    .padding(.horizontal, SiloTheme.safePadding)
+            }
             similarSection
         }
     }
@@ -611,12 +613,18 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     // MARK: - Cast
 
     @ViewBuilder
-    private func castSection(cast: [CastMember]) -> some View {
+    private func castSection(groups: [CastCrewGroup]) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             PhoneSectionHeader(title: "Cast & Crew")
                 .padding(.horizontal, SiloTheme.safePadding)
-            PhoneCastRail(cast: cast, onTap: onPersonTap)
+            PhoneCastRail(groups: groups, onTap: onPersonTap)
         }
+    }
+
+    /// Creators, writers and cast in one row. Series creators are stored as
+    /// Director credits, so they are captioned "Creator".
+    private var castCrewGroups: [CastCrewGroup] {
+        CastCrewGroups.build(cast: detail.cast, crew: detail.crew, leadRole: .creator)
     }
 
     // MARK: - Details
@@ -624,8 +632,12 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     private var detailsSection: some View {
         VStack(alignment: .leading, spacing: 14) {
             PhoneSectionHeader(title: "Details")
-            PhoneDetailFactsSection(detail: detail)
+            PhoneDetailFactsSection(detail: detail, includesCredits: false)
         }
+    }
+
+    private var hasDetailFacts: Bool {
+        !DetailFacts(detail: detail, includesCredits: false).assembleFacts().isEmpty
     }
 }
 #endif

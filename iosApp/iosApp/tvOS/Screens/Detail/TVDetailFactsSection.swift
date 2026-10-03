@@ -8,6 +8,9 @@ import SwiftUI
 /// hides cleanly when no facts are available.
 struct TVDetailFactsSection: View {
     let detail: ItemDetail
+    /// False on movie and series pages, where directors and writers already
+    /// appear in the Cast & Crew row.
+    var includesCredits = true
 
     private let columnGap: CGFloat = 64
 
@@ -22,7 +25,7 @@ struct TVDetailFactsSection: View {
     @FocusState private var isFocused: Bool
 
     var body: some View {
-        let facts = DetailFacts(detail: detail).assembleFacts()
+        let facts = DetailFacts(detail: detail, includesCredits: includesCredits).assembleFacts()
         if !facts.isEmpty {
             VStack(spacing: 0) {
                 ForEach(Array(facts.enumerated()), id: \.element.label) { index, fact in
