@@ -463,6 +463,11 @@ final class TVSignInTests: XCTestCase {
         XCTAssertEqual(TVApprovalAccountSwitch(SignInOptions(browserProviders: [sso], acceptsPasswords: true,
             supportsSelectAccount: false)), .signOut)
         XCTAssertEqual(TVApprovalAccountSwitch(.passwordOnly), .switchAccount, "password-only or directory-only")
+        let network = APIv2AuthProvider(id: "plugin:5:tailscale", displayName: "Tailscale", mode: "network",
+            default: false, installationId: "5", networkSignInPath: "/api/v2/auth/network/5/sign-in")
+        XCTAssertEqual(TVApprovalAccountSwitch(SignInOptions(browserProviders: [], acceptsPasswords: false,
+            supportsSelectAccount: false, networkProviders: [network])), .signOut,
+            "network sign-in only signs the same device owner back in")
         XCTAssertEqual(TVApprovalAccountSwitch(nil), .signOut, "unread discovery promises nothing")
         #if os(iOS)
         XCTAssertEqual(TVApprovalCard.switchAccountLink(.chooseAccount), "Not you? Switch account")

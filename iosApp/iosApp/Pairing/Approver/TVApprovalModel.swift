@@ -26,9 +26,10 @@ enum TVApprovalAccountSwitch: Equatable, Sendable {
     /// No browser provider: the password form that follows lets the person
     /// choose the account.
     case switchAccount
-    /// A browser provider without `select_account` (or discovery could not
-    /// be read): the provider may sign the same person straight back in, so
-    /// the card promises only a sign-out.
+    /// A browser provider without `select_account`, a server that takes no
+    /// password (its network provider signs the same device owner back in),
+    /// or discovery that could not be read: the card promises only a
+    /// sign-out.
     case signOut
 
     /// The rule for a server's discovery; nil is discovery that could not
@@ -36,7 +37,7 @@ enum TVApprovalAccountSwitch: Equatable, Sendable {
     init(_ options: SignInOptions?) {
         guard let options else { self = .signOut; return }
         if options.browserProviders.isEmpty {
-            self = .switchAccount
+            self = options.acceptsPasswords ? .switchAccount : .signOut
         } else {
             self = options.supportsSelectAccount ? .chooseAccount : .signOut
         }

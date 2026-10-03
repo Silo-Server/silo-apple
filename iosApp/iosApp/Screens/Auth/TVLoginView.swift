@@ -442,7 +442,7 @@ struct TVLoginView: View {
                 Text("Sign in with a password")
                     .font(.siloTitle)
                     .foregroundStyle(Color.auroraInk)
-                if qrVM.status == .noDeviceSignIn {
+                if qrVM.status == .noDeviceSignIn, networkProvider == nil {
                     Text("This server only supports password sign-in.")
                         .font(.siloBody)
                         .foregroundStyle(Color.auroraInkSecondary)
@@ -685,10 +685,10 @@ struct TVLoginView: View {
     }
 
     /// Status changes are announced politely; the code itself is read on
-    /// focus of the QR code. A TV with "Continue as …" alone hears nothing
-    /// about passwords.
+    /// focus of the QR code. "Only password sign-in" is not announced while
+    /// "Continue as …" is offered too.
     private func announce(_ status: QRLoginViewModel.Status) {
-        guard UIAccessibility.isVoiceOverRunning, !offersOnlyNetworkSignIn,
+        guard UIAccessibility.isVoiceOverRunning, status != .noDeviceSignIn || networkProvider == nil,
               let text = TVSignInPresentation.statusLine(for: status, codeWasRenewed: qrVM.codeWasRenewed, serverHost: serverHost) else { return }
         var announcement = AttributedString(text)
         announcement.accessibilitySpeechAnnouncementPriority = .low
