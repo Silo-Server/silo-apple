@@ -30,6 +30,8 @@ extension ItemDetail {
         self.tagline = value.tagline
         self.runtime = try value.runtime.map { try catalogLegacyInt($0) }
         self.contentRating = value.contentRating
+        self.advisoryAge = try value.advisoryAge.map { try catalogLegacyInt($0) }
+        self.advisorySource = value.advisorySource
         self.genres = value.genres
         self.ratingImdb = value.ratingImdb
         self.ratingTmdb = value.ratingTmdb

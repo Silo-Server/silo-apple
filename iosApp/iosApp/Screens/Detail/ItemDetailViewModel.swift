@@ -616,6 +616,8 @@ class ItemDetailViewModel {
                 tagline: item.tagline,
                 runtime: item.runtime,
                 contentRating: item.contentRating,
+                advisoryAge: item.advisoryAge,
+                advisorySource: item.advisorySource,
                 genres: item.genres,
                 ratingImdb: item.ratingImdb,
                 ratingTmdb: item.ratingTmdb,

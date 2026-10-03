@@ -281,6 +281,17 @@ private extension OverlayRegistry {
             iconCapable: true,
             getValue: { $0.contentRating }
         ),
+        OverlayDef(
+            id: .advisoryAge,
+            defaultPosition: .bottomRight,
+            defaultEnabled: false,
+            iconId: .users,
+            iconCapable: true,
+            getValue: { data in
+                guard let age = data.advisoryAge, age > 0 else { return nil }
+                return "\(age)+"
+            }
+        ),
     ]
 }
 
