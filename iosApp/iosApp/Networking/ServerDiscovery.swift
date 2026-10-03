@@ -207,6 +207,10 @@ final class ServerDiscovery {
     /// alone instead of being re-probed on every browse change.
     private var attempts: [String: Int] = [:]
     private static let maxAttempts = 2
+    /// Re-runs the overlay probe when the device's network changes, such as
+    /// Tailscale connecting while the screen is open.
+    private var pathMonitor: NWPathMonitor?
+    private var overlayProbe: Task<Void, Never>?
     private let identity = ServerIdentityResolver()
     private let overlay = OverlayNameResolver()
     private nonisolated static let logger = Logger(subsystem: "org.siloserver.silo", category: "server.discovery")
@@ -216,7 +220,26 @@ final class ServerDiscovery {
         session += 1
         startBrowser()
         let session = self.session
-        Task { await probeOverlayNames(session: session) }
+        // The first path update arrives right away and runs the first probe.
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.session == session else { return }
+                self.scheduleOverlayProbe(session: session)
+            }
+        }
+        monitor.start(queue: .main)
+        pathMonitor = monitor
+    }
+
+    /// Debounced: a VPN coming up reports several path changes in a row.
+    private func scheduleOverlayProbe(session: Int) {
+        overlayProbe?.cancel()
+        overlayProbe = Task {
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            await probeOverlayNames(session: session)
+        }
     }
 
     private func startBrowser() {
@@ -257,6 +280,10 @@ final class ServerDiscovery {
         browserGeneration += 1
         browser?.cancel()
         browser = nil
+        pathMonitor?.cancel()
+        pathMonitor = nil
+        overlayProbe?.cancel()
+        overlayProbe = nil
         currentKeys = []
         lanResults = [:]
         overlayResults = []
@@ -330,7 +357,9 @@ final class ServerDiscovery {
             for await server in group { if let server { found.append(server) } }
             return found
         }
-        guard self.session == session else { return }
+        // A cancelled probe was replaced by a newer one; its empty result
+        // must not clear rows the newer one will report.
+        guard self.session == session, !Task.isCancelled else { return }
         overlayResults = servers
         publish()
     }
