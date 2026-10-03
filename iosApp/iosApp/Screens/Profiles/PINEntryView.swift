@@ -1,84 +1,118 @@
 import SwiftUI
 
-/// Modal number-pad for entering a 4-digit profile PIN.
+/// Full-screen PIN prompt over the brand light: the person's avatar,
+/// four dots, and a keypad laid out like the system passcode screen. A wrong
+/// PIN keeps the prompt open, turns the dots red, and clears for another try.
 struct PINEntryView: View {
     let profile: UserProfile
     let onComplete: (String) -> Void
     let onCancel: (() -> Void)?
+    /// Set by the caller after the server rejects a PIN.
+    var errorMessage: String?
+    /// Bumped on each rejection so the dots shake and the entry clears.
+    var errorCount: Int = 0
+    var isVerifying: Bool = false
 
     @State private var pin: String = ""
     @FocusState private var focusedPadKey: String?
     @Environment(\.dismiss) private var dismiss
 
     private let maxDigits = 4
-    private let sheetDragIndicatorClearance: CGFloat = 24
-
-    // 3-column grid for the number pad
-    private let padColumns = Array(repeating: GridItem(.flexible(), spacing: 16), count: 3)
 
     init(
         profile: UserProfile,
+        errorMessage: String? = nil,
+        errorCount: Int = 0,
+        isVerifying: Bool = false,
         onCancel: (() -> Void)? = nil,
         onComplete: @escaping (String) -> Void
     ) {
         self.profile = profile
+        self.errorMessage = errorMessage
+        self.errorCount = errorCount
+        self.isVerifying = isVerifying
         self.onCancel = onCancel
         self.onComplete = onComplete
     }
 
     var body: some View {
-        #if os(tvOS)
-        tvOSBody
-        #else
-        phoneBody
-        #endif
+        ZStack {
+            MarqueeScrim(style: .ambient)
+            Color.black.opacity(0.35).ignoresSafeArea()
+            #if os(tvOS)
+            tvOSBody
+            #else
+            // A small phone or a short iPad window can't fit the full layout
+            // (about 690 points); the compact one keeps the keypad whole, and
+            // scrolling is the last resort.
+            ViewThatFits(in: .vertical) {
+                phoneBody(compact: false)
+                phoneBody(compact: true)
+                ScrollView { phoneBody(compact: true) }
+            }
+                #if os(iOS)
+                .marqueeSwipeBack(isVerifying ? nil : cancel)
+                #endif
+            #endif
+        }
+        .onChange(of: errorCount) { _, _ in pin = "" }
     }
 
-    private var phoneBody: some View {
-        ZStack {
-            SiloPageBackdrop()
-
-            VStack(spacing: 32) {
-                header(avatarSize: 64)
-                    .padding(.top, SiloTheme.largePadding + sheetDragIndicatorClearance)
-
-                pinDots(dotSize: 20, spacing: 20)
-
+    #if !os(tvOS)
+    private func phoneBody(compact: Bool) -> some View {
+        VStack(spacing: 0) {
+            HStack {
+                MarqueeIconButton(systemImage: "chevron.left", accessibilityLabel: "Back", action: cancel)
+                    .disabled(isVerifying)
                 Spacer()
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 6)
 
-                numberPad
-                    .padding(.horizontal, SiloTheme.largePadding)
+            Spacer(minLength: compact ? 8 : 12)
 
-                cancelButton
-                    .padding(.bottom, SiloTheme.largePadding)
+            header(avatarSize: compact ? 64 : 88)
+            pinDots(dotSize: 14, spacing: 16)
+                .padding(.top, compact ? 14 : 22)
+            statusLine
+                .frame(height: 22)
+                .padding(.top, compact ? 10 : 14)
+
+            numberPad(verticalSpacing: compact ? 10 : padVSpacing)
+                .padding(.top, compact ? 18 : 28)
+
+            Spacer(minLength: compact ? 8 : 12)
+
+            if !compact {
+                Text("Forgot your PIN? The account admin can reset it.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.siloOnSurface.opacity(0.4))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 16)
             }
         }
+        .frame(maxWidth: 440)
     }
+    #endif
 
     #if os(tvOS)
     private var tvOSBody: some View {
-        ZStack {
-            Color.black.opacity(0.72).ignoresSafeArea()
-
-            VStack(spacing: 28) {
-                header(avatarSize: 84)
-                pinDots(dotSize: 24, spacing: 24)
-                numberPad
-                cancelButton
-            }
-            .padding(.horizontal, 56)
-            .padding(.vertical, 44)
-            .frame(width: 620)
-            .background(
-                RoundedRectangle(cornerRadius: 34, style: .continuous)
-                    .fill(Color.siloSurfaceElevated.opacity(0.98))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 34, style: .continuous)
-                    .stroke(Color.white.opacity(0.16), lineWidth: 1)
-            )
-            .shadow(color: .black.opacity(0.45), radius: 36, y: 18)
-            .focusSection()
+        VStack(spacing: 0) {
+            header(avatarSize: 160)
+            pinDots(dotSize: 26, spacing: 28)
+                .padding(.top, 34)
+            statusLine
+                .frame(height: 34)
+                .padding(.top, 18)
+            numberPad(verticalSpacing: padVSpacing)
+                .padding(.top, 30)
+                .focusSection()
+            // Not disabled while the PIN is checked: on TV a disabled control
+            // loses focus. `cancel` waits for the answer by itself.
+            Button("Cancel", action: cancel)
+                .buttonStyle(.marquee(.plain, fullWidth: false, compact: true))
+                .padding(.top, 30)
         }
         .onExitCommand(perform: handleExit)
         .task {
@@ -92,74 +126,118 @@ struct PINEntryView: View {
     #endif
 
     private func header(avatarSize: CGFloat) -> some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 6) {
             ProfileAvatarView(
                 avatar: profile.avatarEmoji,
                 imageUrl: profile.avatarImageUrl,
                 name: profile.name,
                 size: avatarSize
             )
+            .padding(.bottom, 8)
 
-            Text("Enter PIN for \(profile.name)")
-                .font(.siloSubheadline)
-                .foregroundColor(.siloOnSurface)
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
+            Text(profile.name)
+                .font(.system(size: nameFont, weight: .bold))
+                .foregroundStyle(Color.siloOnSurface)
+                .lineLimit(1)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Enter PIN for \(profile.name)")
+    }
+
+    @ViewBuilder
+    private var statusLine: some View {
+        if let errorMessage {
+            Text(errorMessage)
+                .font(.system(size: statusFont))
+                .foregroundStyle(Color(hex: "#FF6961"))
+                .transition(.opacity)
+        } else if isVerifying {
+            ProgressView()
+        } else {
+            Text("Enter your PIN")
+                .font(.system(size: statusFont))
+                .foregroundStyle(Color.siloOnSurface.opacity(0.62))
         }
     }
 
     private func pinDots(dotSize: CGFloat, spacing: CGFloat) -> some View {
         HStack(spacing: spacing) {
             ForEach(0..<maxDigits, id: \.self) { index in
+                let filled = index < pin.count || (errorMessage != nil && pin.isEmpty)
                 Circle()
-                    .fill(index < pin.count ? Color.siloPrimary : Color.siloSurfaceVariant)
+                    .fill(filled ? dotColor : Color.clear)
+                    .overlay(Circle().strokeBorder(dotColor.opacity(filled ? 1 : 0.7), lineWidth: dotSize * 0.11))
                     .frame(width: dotSize, height: dotSize)
             }
         }
+        .modifier(MarqueeShake(trigger: errorCount))
+        .accessibilityLabel("\(pin.count) of \(maxDigits) digits entered")
     }
 
-    private var numberPad: some View {
-        LazyVGrid(columns: padColumns, spacing: 16) {
-            ForEach(1...9, id: \.self) { digit in
-                NumberPadButton(
-                    label: "\(digit)",
-                    focus: $focusedPadKey,
-                    focusValue: "\(digit)"
-                ) {
-                    appendDigit("\(digit)")
+    private var dotColor: Color {
+        errorMessage != nil && pin.isEmpty ? Color(hex: "#FF6961") : Color.siloOnSurface
+    }
+
+    private func numberPad(verticalSpacing: CGFloat) -> some View {
+        Grid(horizontalSpacing: padHSpacing, verticalSpacing: verticalSpacing) {
+            ForEach(0..<3, id: \.self) { row in
+                GridRow {
+                    ForEach(1...3, id: \.self) { column in
+                        let digit = row * 3 + column
+                        NumberPadButton(
+                            label: "\(digit)",
+                            letters: Self.letters[digit],
+                            focus: $focusedPadKey,
+                            focusValue: "\(digit)"
+                        ) {
+                            appendDigit("\(digit)")
+                        }
+                    }
                 }
             }
-
-            Color.clear.frame(height: NumberPadButton.size)
-
-            NumberPadButton(
-                label: "0",
-                focus: $focusedPadKey,
-                focusValue: "0"
-            ) {
-                appendDigit("0")
-            }
-
-            NumberPadButton(
-                label: "delete.backward",
-                isSystemImage: true,
-                focus: $focusedPadKey,
-                focusValue: "delete"
-            ) {
-                deleteDigit()
+            GridRow {
+                Color.clear.frame(width: NumberPadButton.size, height: NumberPadButton.size)
+                NumberPadButton(label: "0", focus: $focusedPadKey, focusValue: "0") {
+                    appendDigit("0")
+                }
+                NumberPadButton(
+                    label: "delete.backward",
+                    isSystemImage: true,
+                    focus: $focusedPadKey,
+                    focusValue: "delete"
+                ) {
+                    deleteDigit()
+                }
             }
         }
-        #if os(tvOS)
-        .frame(width: 360)
+        // On TV the keypad stays enabled: disabling it drops focus off the
+        // key, and after a wrong PIN nothing would be focused. The keys
+        // ignore presses while the PIN is checked.
+        #if !os(tvOS)
+        .disabled(isVerifying)
         #endif
     }
 
-    private var cancelButton: some View {
-        Button("Cancel", action: cancel)
-            .siloTextButton()
-    }
+    private static let letters: [Int: String] = [
+        2: "ABC", 3: "DEF", 4: "GHI", 5: "JKL", 6: "MNO", 7: "PQRS", 8: "TUV", 9: "WXYZ",
+    ]
 
+    #if os(tvOS)
+    private let nameFont: CGFloat = 38
+    private let statusFont: CGFloat = 26
+    private let padHSpacing: CGFloat = 24
+    private let padVSpacing: CGFloat = 20
+    #else
+    private let nameFont: CGFloat = 22
+    private let statusFont: CGFloat = 15
+    private let padHSpacing: CGFloat = 26
+    private let padVSpacing: CGFloat = 16
+    #endif
+
+    /// Leaving while the server checks the PIN would let the answer act on a
+    /// prompt that's gone (open Home or Create Profile), so it waits.
     private func cancel() {
+        guard !isVerifying else { return }
         if let onCancel {
             onCancel()
         } else {
@@ -176,7 +254,7 @@ struct PINEntryView: View {
     }
 
     private func appendDigit(_ digit: String) {
-        guard pin.count < maxDigits else { return }
+        guard pin.count < maxDigits, !isVerifying else { return }
         pin += digit
 
         if pin.count == maxDigits {
@@ -185,7 +263,7 @@ struct PINEntryView: View {
     }
 
     private func deleteDigit() {
-        guard !pin.isEmpty else { return }
+        guard !pin.isEmpty, !isVerifying else { return }
         pin.removeLast()
     }
 }
@@ -194,15 +272,16 @@ struct PINEntryView: View {
 
 private struct NumberPadButton: View {
     let label: String
+    var letters: String? = nil
     var isSystemImage: Bool = false
     var focus: FocusState<String?>.Binding? = nil
     var focusValue: String? = nil
     let action: () -> Void
     static var size: CGFloat {
         #if os(tvOS)
-        96
+        100
         #else
-        64
+        76
         #endif
     }
 
@@ -222,8 +301,16 @@ private struct NumberPadButton: View {
                 Image(systemName: label)
                     .font(.system(size: symbolSize, weight: .semibold))
             } else {
-                Text(label)
-                    .font(.siloPIN)
+                VStack(spacing: 1) {
+                    Text(label)
+                        .font(.system(size: digitSize, weight: .regular))
+                    if let letters {
+                        Text(letters)
+                            .font(.system(size: digitSize * 0.28, weight: .bold))
+                            .kerning(1.5)
+                            .opacity(0.62)
+                    }
+                }
             }
         }
         .buttonStyle(NumberPadButtonStyle(isFocused: isFocused))
@@ -238,7 +325,15 @@ private struct NumberPadButton: View {
         #if os(tvOS)
         34
         #else
-        20
+        22
+        #endif
+    }
+
+    private var digitSize: CGFloat {
+        #if os(tvOS)
+        44
+        #else
+        34
         #endif
     }
 }
@@ -263,6 +358,7 @@ private struct NumberPadButtonBody: View {
             .overlay(border)
             .scaleEffect(isFocused ? 1.08 : 1.0)
             .opacity(configuration.isPressed ? 0.75 : 1.0)
+            .marqueePressHaptic(configuration.isPressed, .impact(flexibility: .rigid, intensity: 0.7))
             #if os(tvOS)
             .focusEffectDisabled()
             #endif
@@ -271,22 +367,13 @@ private struct NumberPadButtonBody: View {
 
     @ViewBuilder
     private var background: some View {
-        #if os(tvOS)
-        RoundedRectangle(cornerRadius: 18, style: .continuous)
-            .fill(isFocused ? Color.siloOnSurface : Color.white.opacity(0.1))
-        #else
         Circle()
-            .fill(Color.siloSurfaceVariant)
-        #endif
+            .fill(isFocused ? Color.siloOnSurface : Color.white.opacity(0.13))
     }
 
     @ViewBuilder
     private var border: some View {
-        #if os(tvOS)
-        RoundedRectangle(cornerRadius: 18, style: .continuous)
-            .stroke(isFocused ? Color.clear : Color.white.opacity(0.18), lineWidth: 1)
-        #else
-        EmptyView()
-        #endif
+        Circle()
+            .strokeBorder(isFocused ? Color.clear : Color.white.opacity(0.10), lineWidth: 1)
     }
 }

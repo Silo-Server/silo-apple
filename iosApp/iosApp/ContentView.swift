@@ -63,12 +63,32 @@ struct ContentView: View {
     // sessionTaskContent -> body. Swift 6.2 cannot type-check it as one
     // expression, so it is split into stages; SwiftUI modifier order still
     // follows that reading order.
+    /// The identity `authContent` is keyed on. Server setup holds no server
+    /// data, and connecting makes the new server active before the app moves
+    /// to sign-in; re-keying there would flash a fresh, empty setup screen
+    /// between the two.
+    private var authContentIdentity: String? {
+        router.authState == .needsServerSetup ? "serverSetup" : serverRegistry.activeServerId
+    }
+
     private var presentedContent: some View {
         authContent
         // A server change is a hard data boundary even when both servers map
         // to the same auth state. Re-key the routed subtree so profile, home,
         // library, focus, and modal state cannot survive from the old server.
-        .id(serverRegistry.activeServerId)
+        .id(authContentIdentity)
+        // Moving between first-run screens (setup, sign-in, profiles)
+        // crossfades instead of cutting, while the brand light stays put
+        // behind them. Entering the app itself is not animated here.
+        .animation(router.authState.showsMarqueeBackdrop ? .easeInOut(duration: 0.4) : nil, value: router.authState)
+        // The first-run backdrop lives outside the re-keyed subtree so it
+        // keeps drifting while screens and servers change in front of it.
+        .background {
+            if router.authState.showsMarqueeBackdrop {
+                MarqueeBackdrop()
+                    .transition(.opacity)
+            }
+        }
         #if os(iOS) || os(tvOS)
         .modifier(WatchPartyPresentationModifier(router: router))
         .task(id: router.authState) {
@@ -208,6 +228,7 @@ struct ContentView: View {
             // active-server change intentionally re-keys `authContent`, which
             // otherwise replaces the receiver's success screen with a fresh
             // setup view before its delayed navigation can run.
+            router.skipsSingleProfilePicker = true
             router.showProfileSelection()
         }
         #if os(iOS) || os(tvOS)

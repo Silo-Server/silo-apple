@@ -724,6 +724,12 @@ final class ServerRegistry {
             await tokenStore.switchActiveServer(serverId: activeServerId ?? "")
         }
         launchPreferences.clearRememberedProfile(for: serverId)
+        // Branding is cached by address; another saved entry for the same
+        // address still uses it.
+        if let removedURL = previousEntries.first(where: { $0.id == serverId })?.url,
+           !entries.contains(where: { Self.normalize(url: $0.url) == Self.normalize(url: removedURL) }) {
+            ServerBrandingCache.remove(for: removedURL)
+        }
         if removesActiveServer,
            resolveFallbackProfile,
            AuthService.shared.isLoggedIn {

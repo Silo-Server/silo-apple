@@ -43,6 +43,14 @@ class ProfileSelectionViewModel {
         }
     }
 
+    /// The signed-in account's username, shown under the title. Nil until
+    /// `loadAccount` finishes, or when the read fails.
+    private(set) var accountName: String?
+
+    func loadAccount() async {
+        accountName = try? await SiloAPI.shared.currentUser().username
+    }
+
     var primaryProfile: UserProfile? {
         profiles.first(where: \.isPrimary)
             ?? (profiles.count == 1 ? profiles.first : nil)

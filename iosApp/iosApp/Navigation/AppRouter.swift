@@ -110,6 +110,14 @@ class AppRouter {
             case .authenticated: return "authenticated"
             }
         }
+
+        /// The first-run screens draw over the shared brand-light backdrop.
+        var showsMarqueeBackdrop: Bool {
+            switch self {
+            case .needsServerSetup, .needsLogin, .serverRecovery, .needsProfile: true
+            case .loading, .authenticated: false
+            }
+        }
     }
 
     /// Every auth-state transition funnels through this one property, whether
@@ -359,6 +367,11 @@ class AppRouter {
     /// Optional copy for an alternate three-step profile journey. Cleared at
     /// every auth-state reset so a later normal login uses the default labels.
     var profileJourneyLabels: [String]?
+
+    /// Set by a completed sign-in, including setup from a nearby phone: a
+    /// household with exactly one profile and no PIN goes straight to Home
+    /// instead of a one-person picker.
+    var skipsSingleProfilePicker = false
 
     func switchTab(to tab: AppTab) {
         requestedTab = tab
@@ -766,6 +779,7 @@ class AppRouter {
         recordScreenBreadcrumb(target: "serverSetup", action: "reset")
         path = NavigationPath()
         profileJourneyLabels = nil
+        skipsSingleProfilePicker = false
         setAuthState(.needsServerSetup, reason: "resetToServerSetup")
     }
 

@@ -111,6 +111,7 @@ class LoginViewModel {
         do {
             try await auth.login(username: username, password: password)
             await StartupContentPrefetcher.prefetchProfiles()
+            router.skipsSingleProfilePicker = true
             router.showProfileSelection()
             return true
         } catch let loginError {
@@ -137,6 +138,7 @@ class LoginViewModel {
             try await auth.signInWithNetworkIdentity(provider)
             guard router.authState == route else { return true }
             await StartupContentPrefetcher.prefetchProfiles()
+            router.skipsSingleProfilePicker = true
             router.showProfileSelection()
             return true
         } catch {
@@ -165,6 +167,7 @@ class LoginViewModel {
             try await ExternalSignInService.live.signIn(with: provider, selectAccount: selectAccount)
             prompt.clear(serverId: serverId)
             await StartupContentPrefetcher.prefetchProfiles()
+            router.skipsSingleProfilePicker = true
             router.showProfileSelection()
         } catch {
             self.error = Self.browserSignInMessage(for: error).map(FormError.init)

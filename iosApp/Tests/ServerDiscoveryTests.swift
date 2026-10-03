@@ -69,7 +69,10 @@ final class ServerDiscoveryTests: XCTestCase {
         await viewModel.connect(router: AppRouter())
         let tried = await attempts.urls
         XCTAssertEqual(tried.first, "https://media-box.tail1234.ts.net")
-        XCTAssertTrue(tried.contains("http://media-box"), "unresolved fallbacks stay after the origin")
+        XCTAssertTrue(tried.contains("https://media-box"), "unresolved fallbacks stay after the origin")
+        // Plain HTTP still waits for the person to agree, as for any address.
+        XCTAssertFalse(tried.contains("http://media-box"))
+        XCTAssertNotNil(viewModel.insecurePrompt)
     }
 
     @MainActor

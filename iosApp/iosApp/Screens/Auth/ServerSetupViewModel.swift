@@ -1,5 +1,6 @@
 import Foundation
 import OSLog
+import SwiftUI
 
 enum ServerSetupScheme: String, CaseIterable, Identifiable {
     case auto = "Auto"
@@ -22,6 +23,8 @@ class ServerSetupViewModel {
     var host: String = ""
     var selectedScheme: ServerSetupScheme = .auto
     var port: String = ""
+    /// What a running connect is for. Set while `isLoading`.
+    @ObservationIgnored private var submitted: (host: String, scheme: ServerSetupScheme, port: String)?
     var showsAdvancedOptions: Bool = false
     var isLoading: Bool = false
     private(set) var error: FormError?
@@ -33,6 +36,9 @@ class ServerSetupViewModel {
 
     private let checkServer: ServerCheck
     private let resolveBareName: BareNameResolver
+    /// Whether the now-active server already has a signed-in session, as when
+    /// a saved server is picked from Recent.
+    private let hasSession: @Sendable () -> Bool
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "ServerSetup"
@@ -40,11 +46,23 @@ class ServerSetupViewModel {
 
     init(
         checkServer: @escaping ServerCheck = { try await AuthService.shared.checkServer(url: $0) },
+        hasSession: @escaping @Sendable () -> Bool = { AuthService.shared.isLoggedIn },
         resolveBareName: @escaping BareNameResolver = { await OverlayNameResolver().resolve(name: $0)?.origin }
     ) {
         self.checkServer = checkServer
+        self.hasSession = hasSession
         self.resolveBareName = resolveBareName
     }
+
+    /// Set when every secure address failed and the next one is plain HTTP.
+    /// The screen asks before anything is sent unencrypted.
+    struct InsecurePrompt: Equatable {
+        let address: String
+        fileprivate let remaining: [String]
+        fileprivate let attempted: [String]
+    }
+
+    private(set) var insecurePrompt: InsecurePrompt?
 
     /// Validate the server URL and determine whether setup or login is needed.
     func connect(router: AppRouter) async {
@@ -64,47 +82,120 @@ class ServerSetupViewModel {
             return
         }
 
-        isLoading = true
-        error = nil
-        defer { isLoading = false }
-
+        insecurePrompt = nil
         // A bare machine name ("media-box") may be an overlay node whose
         // certificate covers only its full name. Its provider redirects plain
         // HTTP to that HTTPS origin; save the origin, never the bare name,
         // which answers reads only and would fail sign-in.
         if selectedScheme == .auto, port.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           OverlayNameResolver.isBareName(host),
-           let origin = await resolveBareName(host.trimmingCharacters(in: .whitespacesAndNewlines)) {
-            candidates.insert(origin, at: 0)
+           OverlayNameResolver.isBareName(host) {
+            isLoading = true
+            let origin = await resolveBareName(host.trimmingCharacters(in: .whitespacesAndNewlines))
+            isLoading = false
+            if let origin { candidates.insert(origin, at: 0) }
         }
-
-        await attempt(candidates: candidates, router: router)
+        await run(candidates: candidates, attempted: [], allowInsecure: selectedScheme == .http || typedScheme == "http", router: router)
     }
 
     /// Connects to an address discovery found. The address was already
-    /// confirmed by its identity, so it is the only candidate.
+    /// confirmed by its identity; a plain-HTTP one still asks first, like a
+    /// typed address that falls back to HTTP.
     func connect(to server: DiscoveredServer, router: AppRouter) async {
         guard !isLoading else { return }
-        isLoading = true
-        error = nil
-        defer { isLoading = false }
-        await attempt(candidates: [server.url], router: router)
+        insecurePrompt = nil
+        await run(candidates: [server.url], attempted: [], allowInsecure: false, router: router)
     }
 
-    private func attempt(candidates: [String], router: AppRouter) async {
-        var attempted: [String] = []
+    /// Fills in a saved server's address. Its URL already names the scheme
+    /// and port, so a protocol or port chosen for an earlier attempt must not
+    /// override them.
+    func useRecent(_ url: String) {
+        host = url
+        selectedScheme = .auto
+        port = ""
+    }
+
+    /// Continues a connect the person agreed to finish over plain HTTP.
+    /// `prompt` is the one the alert showed: dismissing the alert clears the
+    /// model's copy before this runs.
+    func confirmInsecure(_ prompt: InsecurePrompt? = nil, router: AppRouter) async {
+        guard let prompt = prompt ?? insecurePrompt else { return }
+        insecurePrompt = nil
+        await run(candidates: prompt.remaining, attempted: prompt.attempted, allowInsecure: true, router: router)
+    }
+
+    /// The fields stay enabled while connecting so the keyboard stays up, but
+    /// the probe has already committed to what was submitted: an edit made
+    /// meanwhile is put back rather than shown over a different server.
+    func restoreSubmittedInputs() {
+        guard let submitted else { return }
+        if host != submitted.host { host = submitted.host }
+        if selectedScheme != submitted.scheme { selectedScheme = submitted.scheme }
+        if port != submitted.port { port = submitted.port }
+    }
+
+    func clearError() {
+        error = nil
+    }
+
+    /// The alert went away. Its buttons say whether to connect or give up.
+    func dismissInsecurePrompt() {
+        insecurePrompt = nil
+    }
+
+    func cancelInsecure() {
+        insecurePrompt = nil
+        error = FormError("Could not reach a Silo server at that address over HTTPS.")
+    }
+
+    private func run(candidates: [String], attempted previous: [String], allowInsecure: Bool, router: AppRouter) async {
+        isLoading = true
+        submitted = (host, selectedScheme, port)
+        error = nil
+        var connected = false
+        // After a successful connect the screen fades out to sign-in; it keeps
+        // showing "Connecting…" rather than snapping back to its idle state.
+        defer {
+            if !connected {
+                isLoading = false
+                submitted = nil
+            }
+        }
+
+        var attempted = previous
         var lastError: Error?
         var updateRequirement: UpdateRequirement?
-        for candidate in candidates {
+        for (index, candidate) in candidates.enumerated() {
+            if !allowInsecure, candidate.lowercased().hasPrefix("http://") {
+                // A secure address already proved a version mismatch; asking to
+                // drop encryption would not change the answer.
+                if let updateRequirement {
+                    self.error = FormError(updateRequirement.message)
+                    return
+                }
+                insecurePrompt = InsecurePrompt(
+                    address: Self.displayAddress(candidate),
+                    remaining: Array(candidates[index...]),
+                    attempted: attempted
+                )
+                return
+            }
             attempted.append(candidate)
             do {
                 let status = try await checkServer(candidate)
+                connected = true
                 // This view is also pushed onto the login stack (Change
                 // Server, then Add Server) while `authState` is already
                 // `needsLogin`. Setting the same state is a no-op there, so
                 // the stack must be reset explicitly or the setup screen
                 // stays put after a successful connect.
                 router.popToRoot()
+                // A saved server that is still signed in goes straight to its
+                // profiles; only a server without a session needs sign-in.
+                if !status.needsSetup, hasSession() {
+                    router.showProfileSelection()
+                    return
+                }
                 router.authState = .needsLogin
                 if status.needsSetup {
                     router.navigate(to: .serverNeedsSetup)
@@ -122,6 +213,19 @@ class ServerSetupViewModel {
             "Server autodiscovery failed candidates=\(attempted.joined(separator: ", "), privacy: .public) lastError=\(String(describing: lastError), privacy: .public)"
         )
         self.error = FormError(updateRequirement?.message ?? "Could not reach a Silo server at that address.")
+    }
+
+    /// The scheme typed into the address field, if any.
+    private var typedScheme: String? {
+        let raw = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let range = raw.range(of: "://") else { return nil }
+        return raw[..<range.lowerBound].lowercased()
+    }
+
+    static func displayAddress(_ url: String) -> String {
+        guard let components = URLComponents(string: url), let host = components.host else { return url }
+        if let port = components.port { return "\(host):\(port)" }
+        return host
     }
 
     func buildCandidateURLs() throws -> [String] {
@@ -238,5 +342,16 @@ private enum ServerSetupValidationError: LocalizedError {
         case .invalidPort:
             return "Port must be a number between 1 and 65535."
         }
+    }
+}
+
+extension View {
+    /// Puts back the submitted address, protocol and port when one is edited
+    /// during a connect. Undoing the edit after the field has shown it, not
+    /// inside the setter, is what makes the field redraw with the restored text.
+    func keepsSubmittedServerInputs(_ model: ServerSetupViewModel) -> some View {
+        onChange(of: model.host) { model.restoreSubmittedInputs() }
+            .onChange(of: model.selectedScheme) { model.restoreSubmittedInputs() }
+            .onChange(of: model.port) { model.restoreSubmittedInputs() }
     }
 }

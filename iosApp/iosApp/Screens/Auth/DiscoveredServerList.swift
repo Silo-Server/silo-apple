@@ -1,69 +1,99 @@
 import SwiftUI
 
-/// The servers `ServerDiscovery` found, as one button per address. Shared by
-/// the iOS/macOS setup form and the tvOS manual-entry card; renders nothing
-/// until something is found, so a network without servers looks unchanged.
+/// The servers `ServerDiscovery` found, one button per address. On iPhone,
+/// iPad and Mac it matches the Recent list on the server screen; on Apple TV
+/// it is a column of buttons beside "Enter server address". It renders
+/// nothing until something is found, so a network without servers looks
+/// unchanged.
 struct DiscoveredServerList: View {
     let servers: [DiscoveredServer]
     let isConnecting: Bool
     let select: (DiscoveredServer) -> Void
 
-    #if os(tvOS)
-    // The tvOS manual-entry card has a fixed height.
-    private let maxVisible = 2
-    private let titleSize: CGFloat = 24
-    private let detailSize: CGFloat = 18
-    private let iconSize: CGFloat = 26
-    #else
-    private let maxVisible = 5
-    private let titleSize: CGFloat = 16
-    private let detailSize: CGFloat = 13
-    private let iconSize: CGFloat = 17
-    #endif
-
     var body: some View {
         if !servers.isEmpty {
-            VStack(alignment: .leading, spacing: 10) {
-                label
-                ForEach(servers.prefix(maxVisible)) { server in
+            list
+                .disabled(isConnecting)
+                .transition(.opacity)
+        }
+    }
+
+    #if os(tvOS)
+    private var list: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            // Two rows fit beside the setup steps without pushing the
+            // address button off the screen.
+            ForEach(servers.prefix(2)) { server in
+                Button {
+                    select(server)
+                } label: {
+                    HStack(spacing: 18) {
+                        MarqueeServerMark(name: server.name, size: 52)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(server.name)
+                                .font(.system(size: 28, weight: .semibold))
+                                .lineLimit(1)
+                            Text(server.detail)
+                                .font(.system(size: 22))
+                                .opacity(0.62)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+                }
+                .buttonStyle(.marquee(.glass, fullWidth: false))
+                .accessibilityLabel("\(server.name), \(server.detail)")
+            }
+        }
+    }
+    #else
+    private var list: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Found nearby")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Color.siloOnSurface.opacity(0.62))
+                .padding(.leading, 2)
+                .padding(.bottom, 10)
+            VStack(spacing: 0) {
+                ForEach(Array(servers.prefix(4).enumerated()), id: \.element.id) { index, server in
+                    if index > 0 {
+                        Rectangle().fill(Color.white.opacity(0.08)).frame(height: 1)
+                    }
                     Button {
                         select(server)
                     } label: {
-                        row(server)
+                        HStack(spacing: 12) {
+                            MarqueeServerMark(name: server.name, size: 40)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(server.name)
+                                    .font(.system(size: 16, weight: .semibold))
+                                    .foregroundStyle(Color.siloOnSurface)
+                                    .lineLimit(1)
+                                Text(server.detail)
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(Color.siloOnSurface.opacity(0.4))
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+                            Spacer(minLength: 0)
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(Color.siloOnSurface.opacity(0.4))
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 12)
+                        .contentShape(Rectangle())
                     }
-                    .buttonStyle(AuroraGhostButtonStyle())
-                    .disabled(isConnecting)
+                    .buttonStyle(.marqueePressable)
                     .accessibilityLabel("\(server.name), \(server.detail)")
                 }
             }
-            .transition(.opacity)
+            .background(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color.white.opacity(0.07))
+                    .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
+            )
         }
     }
-
-    private var label: some View {
-        Text("FOUND ON YOUR NETWORKS")
-            .font(.system(size: detailSize - 2, weight: .semibold, design: .monospaced))
-            .tracking(1.6)
-            .foregroundStyle(Color.auroraInkTertiary)
-    }
-
-    private func row(_ server: DiscoveredServer) -> some View {
-        HStack(spacing: 14) {
-            Image(systemName: server.route == .localNetwork ? "wifi" : "network.badge.shield.half.filled")
-                .font(.system(size: iconSize, weight: .medium))
-                .frame(width: iconSize + 8)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(server.name)
-                    .font(.system(size: titleSize, weight: .semibold))
-                    .lineLimit(1)
-                Text(server.detail)
-                    .font(.system(size: detailSize))
-                    .opacity(0.75)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            Spacer(minLength: 0)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
+    #endif
 }

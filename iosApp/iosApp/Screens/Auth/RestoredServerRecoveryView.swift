@@ -86,55 +86,48 @@ struct RestoredServerRecoveryView: View {
     #if os(tvOS)
     private var tvOSBody: some View {
         ZStack {
-            AuroraBackdrop(variant: .server, scrim: .soft)
+            MarqueeTVScreen {
+                serverCard
+                    .fixedSize(horizontal: true, vertical: false)
+                Text(title)
+                    .font(.system(size: MarqueeMetrics.heroFont, weight: .heavy))
+                    .kerning(-2)
+                    .foregroundStyle(Color.siloOnSurface)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.6)
+                    .padding(.top, 52)
+                    .accessibilityAddTraits(.isHeader)
+                MarqueeTVBody(message)
+                    .padding(.top, 26)
 
-            VStack(spacing: 0) {
-                HStack {
-                    SiloWordmarkView(width: 132)
-                    Spacer(minLength: 0)
+                if let visibleError {
+                    recoveryError(visibleError)
+                        .padding(.top, 20)
                 }
 
-                Spacer(minLength: 48)
-
-                VStack(spacing: 28) {
-                    recoveryIcon(size: 58)
-
-                    recoveryCopy
-
-                    if let visibleError {
-                        recoveryError(visibleError)
+                HStack(spacing: 22) {
+                    Button(action: retry) {
+                        Label(isChecking ? "Checking…" : "Try again", systemImage: "arrow.clockwise")
                     }
+                    .buttonStyle(.marquee(.primary, fullWidth: false, isLoading: isChecking))
+                    .focused($focusedAction, equals: .retry)
 
-                    HStack(spacing: 24) {
-                        Button(action: retry) {
-                            Label(
-                                isChecking ? "Checking…" : "Try Again",
-                                systemImage: "arrow.clockwise"
-                            )
-                        }
-                        .buttonStyle(AuroraPrimaryButtonStyle(isLoading: isChecking))
-                        .focused($focusedAction, equals: .retry)
+                    Button("Manage servers", action: manageServers)
+                        .buttonStyle(.marquee(.glass, fullWidth: false))
+                        .focused($focusedAction, equals: .manageServers)
 
-                        Button("Manage Servers", action: manageServers)
-                            .buttonStyle(AuroraGhostButtonStyle())
-                            .focused($focusedAction, equals: .manageServers)
-
-                        Button("Forget This Server", action: requestForget)
-                            .buttonStyle(AuroraGhostButtonStyle())
-                            .foregroundStyle(Color.siloError)
-                            .focused($focusedAction, equals: .forget)
-                    }
-                    .disabled(isChecking || coordinator.isForgetting)
-                    .focusSection()
+                    Button("Forget this server", action: requestForget)
+                        .buttonStyle(.marquee(.plain, fullWidth: false))
+                        .focused($focusedAction, equals: .forget)
                 }
-                .padding(56)
-                .frame(width: 980)
-                .auroraGlass(cornerRadius: 30, emphasized: true)
-
-                Spacer(minLength: 0)
+                // Not disabled while checking: disabling every button leaves
+                // the page with nothing to focus, so the remote stops
+                // responding. The actions ignore presses while busy.
+                .padding(.top, 56)
+                .focusSection()
+            } card: {
+                EmptyView()
             }
-            .padding(.horizontal, 96)
-            .padding(.vertical, 64)
             .disabled(showForgetConfirmation)
 
             if showForgetConfirmation {
@@ -149,9 +142,11 @@ struct RestoredServerRecoveryView: View {
                 .zIndex(1)
             }
         }
+        .onAppear { MarqueeScene.shared.showActiveServer() }
         .ignoresSafeArea()
         .navigationBarBackButtonHidden()
         .defaultFocus($focusedAction, .retry, priority: .userInitiated)
+        .marqueeTVSeedFocus($focusedAction, .retry)
         .animation(.easeInOut(duration: 0.2), value: error)
         .animation(.easeOut(duration: SiloTheme.fastDuration), value: showForgetConfirmation)
         .onDisappear(perform: cancelWork)
@@ -160,43 +155,39 @@ struct RestoredServerRecoveryView: View {
 
     #if !os(tvOS)
     private var standardBody: some View {
-        AuroraScreen(variant: .server, scrim: .soft) {
-            SiloWordmarkView(width: 112)
-                .frame(maxWidth: .infinity)
-                .padding(.bottom, 24)
+        MarqueeStage(scrim: .bottom, frostStart: 0.45) {
+            MarqueeTopBar {
+                SiloWordmarkView(width: 92)
+            } trailing: { EmptyView() }
+        } content: {
+            serverCard
+            MarqueeHeadline(title: title, lead: message)
+                .padding(.top, 26)
 
-            recoveryIcon(size: 36)
-                .frame(maxWidth: .infinity)
-                .padding(.bottom, 18)
+            if let visibleError {
+                MarqueeErrorText(visibleError)
+                    .padding(.top, 14)
+            }
 
-            recoveryCopy
-                .padding(.bottom, 22)
-
-            VStack(spacing: 16) {
-                if let visibleError {
-                    AuroraErrorLabel(visibleError)
-                }
-
+            VStack(spacing: 10) {
                 Button(action: retry) {
-                    Text(isChecking ? "Checking…" : "Try Again")
+                    Text(isChecking ? "Checking…" : "Try again")
                 }
-                .buttonStyle(AuroraPrimaryButtonStyle(isLoading: isChecking))
+                .buttonStyle(.marquee(.primary, isLoading: isChecking))
 
-                Button("Manage Servers", action: manageServers)
-                    .buttonStyle(AuroraGhostButtonStyle())
-                    .frame(maxWidth: .infinity)
+                Button("Manage servers", action: manageServers)
+                    .buttonStyle(.marqueeGlass)
 
-                Button("Forget This Server", role: .destructive, action: requestForget)
-                    .buttonStyle(AuroraGhostButtonStyle())
-                    .foregroundStyle(Color.siloError)
-                    .frame(maxWidth: .infinity)
+                Button("Forget this server", role: .destructive, action: requestForget)
+                    .buttonStyle(.marqueePlain)
             }
             .disabled(isChecking || coordinator.isForgetting)
-            .padding(22)
-            .auroraGlass(cornerRadius: 24, emphasized: true)
-            .animation(.easeInOut(duration: 0.2), value: error)
+            .padding(.top, 26)
         }
+        .animation(.easeInOut(duration: 0.2), value: error)
+        .onAppear { MarqueeScene.shared.showActiveServer() }
         .navigationBarBackButtonHidden()
+        .marqueeTransparentNavigation()
         .alert("Forget this server?", isPresented: $showForgetConfirmation) {
             Button("Forget Server", role: .destructive, action: confirmForget)
             Button("Cancel", role: .cancel) {}
@@ -207,55 +198,33 @@ struct RestoredServerRecoveryView: View {
     }
     #endif
 
-    @ViewBuilder
-    private func recoveryIcon(size: CGFloat) -> some View {
-        let symbol = reason == .needsSetup ? "gearshape.2" : "server.rack"
-        ZStack {
-            Circle().fill(Color.auroraAccent.opacity(0.14))
-            Circle().stroke(Color.auroraAccent.opacity(0.34), lineWidth: 1)
-            Image(systemName: symbol)
-                .font(.system(size: size, weight: .regular))
-                .foregroundStyle(Color.auroraAccent)
-        }
-        #if os(tvOS)
-        .frame(width: 116, height: 116)
-        #else
-        .frame(width: 82, height: 82)
-        #endif
+    private var serverCard: some View {
+        MarqueeServerCard(
+            name: activeServer?.displayName ?? "Your server",
+            address: activeServer.map { Self.hostLabel($0.url) } ?? "",
+            markURL: activeServer.flatMap { ServerBrandingCache.branding(for: $0.url)?.markURL },
+            badge: .init(text: badgeText, systemImage: "exclamationmark.triangle", tone: .warning)
+        )
+        .accessibilityLabel("Server address: \(activeServer?.url ?? "")")
     }
 
-    private var recoveryCopy: some View {
-        VStack(spacing: 14) {
-            AuroraEyebrow(text: eyebrow, centered: true)
-            Text(title)
-                .font(.siloTitle)
-                .foregroundStyle(Color.auroraInk)
-                .multilineTextAlignment(.center)
-            Text(message)
-                .font(.siloBody)
-                .foregroundStyle(Color.auroraInkSecondary)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-            if let serverURL = activeServer?.url {
-                Text(serverURL)
-                    .font(.siloCaption.monospaced())
-                    .foregroundStyle(Color.auroraInkSecondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .accessibilityLabel("Server address: \(serverURL)")
-            }
+    private var badgeText: String {
+        switch reason {
+        case .needsSetup: return "Setup needed"
+        case .serverNotRecognized: return "Not recognized"
+        case .serverUpdateRequired, .appUpdateRequired: return "Update needed"
         }
+    }
+
+    private static func hostLabel(_ url: String) -> String {
+        guard let components = URLComponents(string: url), let host = components.host else { return url }
+        if let port = components.port { return "\(host):\(port)" }
+        return host
     }
 
     #if os(tvOS)
     private func recoveryError(_ message: String) -> some View {
-        Label(message, systemImage: "exclamationmark.circle.fill")
-            .font(.siloCaption)
-            .foregroundStyle(Color.requestRose)
-            .multilineTextAlignment(.center)
-            .fixedSize(horizontal: false, vertical: true)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("Error: \(message)")
+        MarqueeErrorText(message)
     }
     #endif
 
@@ -263,18 +232,10 @@ struct RestoredServerRecoveryView: View {
         registry.activeServer
     }
 
-    private var eyebrow: String {
-        switch reason {
-        case .needsSetup: return "SERVER SETUP"
-        case .serverNotRecognized: return "CONNECTION RECOVERY"
-        case .serverUpdateRequired, .appUpdateRequired: return "UPDATE REQUIRED"
-        }
-    }
-
     private var title: String {
         switch reason {
         case .needsSetup: return "This server isn't ready"
-        case .serverNotRecognized: return "We can't verify this server"
+        case .serverNotRecognized: return "Can't open this server"
         case .serverUpdateRequired: return "Server update required"
         case .appUpdateRequired: return "Update Silo"
         }
@@ -359,6 +320,7 @@ struct RestoredServerRecoveryView: View {
     }
 
     private func manageServers() {
+        guard !coordinator.isForgetting else { return }
         cancelWork()
         router.navigate(to: .serverList)
     }

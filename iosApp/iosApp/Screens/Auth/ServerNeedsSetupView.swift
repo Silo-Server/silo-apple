@@ -11,65 +11,60 @@ struct ServerNeedsSetupView: View {
     @State private var error: String?
     @State private var retryTask: Task<Void, Never>?
 
+    private var serverURL: String { AuthService.shared.serverUrl }
+
+    private var hostLabel: String {
+        guard let url = URL(string: serverURL), let host = url.host else { return serverURL }
+        if let port = url.port { return "\(host):\(port)" }
+        return host
+    }
+
     var body: some View {
-        AuroraScreen(variant: .server, scrim: .soft) {
-            SiloWordmarkView(width: 112)
-                .frame(maxWidth: .infinity)
-                .padding(.bottom, 24)
+        MarqueeStage(scrim: .bottom, frostStart: 0.45, onBack: changeServer) {
+            MarqueeTopBar {
+                MarqueeIconButton(systemImage: "chevron.left", accessibilityLabel: "Change server", action: changeServer)
+            } trailing: { EmptyView() }
+        } content: {
+            MarqueeServerCard(
+                name: hostLabel,
+                address: serverURL,
+                showsInitial: false,
+                badge: .init(text: "Setup needed", systemImage: "clock", tone: .warning),
+                status: .init(text: "Reachable · not set up yet", tone: .warning)
+            )
+            MarqueeHeadline(
+                title: "This server isn't ready",
+                lead: "Ask the server administrator to finish setup. When it's ready, return here and check again."
+            )
+            .padding(.top, 26)
 
-            AuroraJourneyProgress(currentStep: 1)
-                .frame(maxWidth: 330)
-                .frame(maxWidth: .infinity)
-                .padding(.bottom, 28)
-
-            AuroraEyebrow(text: "Server setup", centered: true)
-                .padding(.bottom, 16)
-
-            ZStack {
-                Circle().fill(Color.auroraAccent.opacity(0.14))
-                Circle().stroke(Color.auroraAccent.opacity(0.34), lineWidth: 1)
-                Image(systemName: "gearshape.2")
-                    .font(.system(size: 32, weight: .regular))
-                    .foregroundStyle(Color.auroraAccent)
+            if let error {
+                MarqueeErrorText(error)
+                    .padding(.top, 14)
             }
-            .frame(width: 78, height: 78)
-            .frame(maxWidth: .infinity)
-            .padding(.bottom, 18)
 
-            VStack(spacing: 12) {
-                Text("This server isn't ready")
-                    .font(.siloTitle)
-                    .foregroundStyle(Color.auroraInk)
-                    .multilineTextAlignment(.center)
-                Text("Ask the server administrator to finish setup. When it's ready, return here and check again.")
-                    .font(.siloBody)
-                    .foregroundStyle(Color.auroraInkSecondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
+            Button(action: retry) {
+                Text(isChecking ? "Checking…" : "Check again")
             }
-            .frame(maxWidth: .infinity)
-            .padding(.bottom, 22)
+            .buttonStyle(.marquee(.primary, isLoading: isChecking))
+            .disabled(isChecking)
+            .padding(.top, 26)
 
-            VStack(spacing: 16) {
-                if let error {
-                    AuroraErrorLabel(error)
+            if let url = URL(string: serverURL) {
+                Link(destination: url) {
+                    Label("Open setup in your browser", systemImage: "arrow.up.right.square")
                 }
-
-                Button(action: retry) {
-                    Text(isChecking ? "Checking…" : "Check again")
-                }
-                .buttonStyle(AuroraPrimaryButtonStyle(isLoading: isChecking))
-                .disabled(isChecking)
-
-                Button("Change server", action: changeServer)
-                    .buttonStyle(AuroraGhostButtonStyle())
-                    .frame(maxWidth: .infinity)
+                .buttonStyle(.marqueeGlass)
+                .padding(.top, 12)
             }
-            .padding(22)
-            .auroraGlass(cornerRadius: 24, emphasized: true)
-            .animation(.easeInOut(duration: 0.2), value: error)
+
+            Button("Change server", action: changeServer)
+                .buttonStyle(.marqueePlain)
+                .padding(.top, 6)
         }
+        .animation(.easeInOut(duration: 0.2), value: error)
         .navigationBarBackButtonHidden()
+        .marqueeTransparentNavigation()
         .onDisappear(perform: cancelRetry)
     }
 
