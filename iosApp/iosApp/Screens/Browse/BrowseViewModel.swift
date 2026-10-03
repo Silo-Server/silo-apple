@@ -22,6 +22,7 @@ class BrowseViewModel {
     /// no continuation, so a load-more over it restarts from page 1.
     private var continuation: APIv2CatalogContinuation?
     private var libraryId: Int?
+    private var mediaScope: LibraryVideoScope?
     private var hasConfigured = false
     private var configurationGeneration = 0
     /// Bumped on every reset; a returning fetch from an older generation
@@ -29,23 +30,32 @@ class BrowseViewModel {
     private var generation = 0
 
     @discardableResult
-    func configure(libraryId: Int?, libraryType: String? = nil) async -> Bool {
+    func configure(libraryId: Int?, libraryType: String? = nil, mediaScope: LibraryVideoScope? = nil) async -> Bool {
         configurationGeneration += 1
         let myConfiguration = configurationGeneration
-        let libraryChanged = !hasConfigured || self.libraryId != libraryId
+        let libraryChanged = !hasConfigured || self.libraryId != libraryId || self.mediaScope != mediaScope
+        if libraryChanged {
+            // Invalidate before metadata I/O so an old page cannot publish while
+            // the next library or type is being configured.
+            generation += 1
+            continuation = nil
+            items = []
+            hasMore = true
+            isLoading = false
+            isRefreshing = false
+            error = nil
+        }
         let resolvedMediaType = await resolveMediaType(libraryId: libraryId, libraryType: libraryType)
         guard myConfiguration == configurationGeneration, !Task.isCancelled else { return false }
 
         self.libraryId = libraryId
+        self.mediaScope = mediaScope
         hasConfigured = true
-        mediaType = resolvedMediaType
+        mediaType = mediaScope.map { $0 == .movie ? .movie : .series } ?? resolvedMediaType
 
         if libraryChanged {
-            generation += 1
-            continuation = nil
-            hasMore = true
-            items = []
-            filterState = BrowsePrefsStore.shared.savedState(libraryId: libraryId) ?? .none
+            filterState = BrowsePrefsStore.shared.savedState(libraryId: libraryId, mediaScope: mediaScope?.rawValue) ?? .none
+            if mediaScope != nil { filterState.mediaScope = nil }
         }
 
         facets = FacetLoader.shared.cachedFacets(libraryId: libraryId)
@@ -90,11 +100,12 @@ class BrowseViewModel {
             } else {
                 page = try await StartupContentPrefetcher.fetchBrowseFirstPage(
                     libraryId: libraryId,
-                    state: filterState
+                    state: filterState,
+                    mediaScope: mediaScope
                 )
             }
             // Discard if another reset superseded us while we awaited.
-            guard myGeneration == generation else { return }
+            guard myGeneration == generation, !Task.isCancelled else { return }
 
             startsOver = startsOver || page.startsOver
             if startsOver {
@@ -107,7 +118,7 @@ class BrowseViewModel {
             continuation = page.continuation
             hasMore = page.continuation != nil
         } catch let err {
-            guard myGeneration == generation else { return }
+            guard myGeneration == generation, !Task.isCancelled else { return }
             if items.isEmpty {
                 self.error = ErrorState(err)
             }
@@ -119,9 +130,11 @@ class BrowseViewModel {
 
     /// Commit a new filter/sort state: persist it, reset pagination, refetch.
     func apply(_ newState: CatalogFilterState) async {
-        guard newState != filterState else { return }
-        filterState = newState
-        BrowsePrefsStore.shared.saveState(newState, libraryId: libraryId)
+        var scopedState = newState
+        if mediaScope != nil { scopedState.mediaScope = nil }
+        guard scopedState != filterState else { return }
+        filterState = scopedState
+        BrowsePrefsStore.shared.saveState(scopedState, libraryId: libraryId, mediaScope: mediaScope?.rawValue)
         items = []
         hydratePage1FromCache()
         await loadItems(reset: true)
@@ -155,26 +168,29 @@ class BrowseViewModel {
     /// Load the live facet vocabulary for the filter sheet.
     func loadFacetsIfNeeded() async {
         if facets != nil { return }
-        facets = try? await FacetLoader.shared.facets(libraryId: libraryId)
+        let configuration = configurationGeneration
+        let loaded = try? await FacetLoader.shared.facets(libraryId: libraryId)
+        guard configuration == configurationGeneration, !Task.isCancelled else { return }
+        facets = loaded
     }
 
     var hasActiveFilters: Bool { filterState.hasActiveFilters }
 
     // MARK: - Preserve toggle
 
-    var preserveEnabled: Bool { BrowsePrefsStore.shared.preserveEnabled(libraryId: libraryId) }
+    var preserveEnabled: Bool { BrowsePrefsStore.shared.preserveEnabled(libraryId: libraryId, mediaScope: mediaScope?.rawValue) }
 
     func setPreserveEnabled(_ enabled: Bool) {
-        BrowsePrefsStore.shared.setPreserveEnabled(enabled, libraryId: libraryId)
+        BrowsePrefsStore.shared.setPreserveEnabled(enabled, libraryId: libraryId, mediaScope: mediaScope?.rawValue)
         if enabled {
-            BrowsePrefsStore.shared.saveState(filterState, libraryId: libraryId)
+            BrowsePrefsStore.shared.saveState(filterState, libraryId: libraryId, mediaScope: mediaScope?.rawValue)
         }
     }
 
     // MARK: - Cache
 
     private var currentCacheKey: String {
-        CacheKey.browse(libraryId: libraryId, filterKey: filterState.cacheKeyFragment)
+        CacheKey.browse(libraryId: libraryId, filterKey: filterState.cacheKeyFragment, mediaScope: mediaScope?.rawValue)
     }
 
     private func hydratePage1FromCache() {
@@ -219,7 +235,7 @@ class BrowseViewModel {
     private func refineMediaType(from response: CatalogResponse) {
         // A mixed library was resolved from the library list in `configure`;
         // refining from a (movie or series) item would hide the Type facet.
-        guard mediaType != .mixed, let first = response.items.first else { return }
+        guard mediaScope == nil, mediaType != .mixed, let first = response.items.first else { return }
         mediaType = BrowseMediaType.from(libraryType: first.type)
     }
 }

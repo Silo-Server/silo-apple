@@ -48,7 +48,7 @@ struct TVLibraryTypeTabView: View {
                 }
                 // Re-create the tab body when the scoped library changes so
                 // section fetches and grid state reset cleanly.
-                .id(activeLibrary.id)
+                .id("\(activeLibrary.id)-\(mediaScope?.rawValue ?? "all")")
             } else {
                 EmptyStateView(
                     icon: "square.stack.3d.up",
@@ -67,12 +67,18 @@ struct TVLibraryTypeTabView: View {
         .siloBackground()
     }
 
+    private var mediaScope: LibraryVideoScope? {
+        guard activeLibrary?.isMixedLibrary == true else { return nil }
+        return LibraryVideoScope(rawValue: type == .movies ? "movie" : type == .series ? "series" : "")
+    }
+
     @ViewBuilder
     private func pillContent(for library: Library) -> some View {
         switch selectedPill {
         case .recommended:
             TVLibraryBrowseView(
                 library: library,
+                mediaScope: mediaScope,
                 focusRequest: focusRequest,
                 isTopMenuFocused: isTopMenuFocused,
                 onMoveUp: onTopMenuFocusRequest
@@ -80,6 +86,7 @@ struct TVLibraryTypeTabView: View {
         case .collections:
             TVLibraryCollectionsView(
                 library: library,
+                mediaScope: mediaScope,
                 focusRequest: focusRequest,
                 isTopMenuFocused: isTopMenuFocused,
                 onMoveUp: onTopMenuFocusRequest
@@ -89,6 +96,7 @@ struct TVLibraryTypeTabView: View {
                 libraryId: library.id,
                 libraryName: library.name,
                 libraryType: library.type,
+                mediaScope: mediaScope,
                 initialFilter: .none,
                 showsHeader: false,
                 showsAlphabetRail: true,

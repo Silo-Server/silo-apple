@@ -111,8 +111,8 @@ enum CacheKey {
     /// distinct filter combinations never collide (the old genre+sort-only
     /// key did). `filterKey` is `CatalogFilterState.cacheKeyFragment`.
     /// Versioned with the wire: pages from the v2 catalog.
-    static func browse(libraryId: Int?, filterKey: String) -> String {
-        "browse:v2:\(libraryId.map(String.init) ?? "all"):\(filterKey)"
+    static func browse(libraryId: Int?, filterKey: String, mediaScope: String? = nil) -> String {
+        "browse:v2:\(libraryId.map(String.init) ?? "all"):\(filterKey)" + (mediaScope.map { ".type-\($0)" } ?? "")
     }
     /// Per-library facet vocabulary from `/catalog/filters`.
     static func catalogFilters(libraryId: Int?, includeTechnical: Bool = true) -> String {

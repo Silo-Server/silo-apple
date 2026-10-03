@@ -1,6 +1,6 @@
 import SwiftUI
 
-func libraryCollectionAccessibilityLabel(_ collection: LibraryCollection) -> String {
+func libraryCollectionAccessibilityLabel(_ collection: LibraryCollection, showItemCount: Bool = true) -> String {
     let type = collection.kind == .userCollections
         ? "User collection"
         : collection.collectionType?.capitalized ?? "Collection"
@@ -9,7 +9,7 @@ func libraryCollectionAccessibilityLabel(_ collection: LibraryCollection) -> Str
     } else {
         "Smart"
     }
-    return [collection.name, type, count].joined(separator: ", ")
+    return (showItemCount ? [collection.name, type, count] : [collection.name, type]).joined(separator: ", ")
 }
 
 /// List of user-created collections, grouped into named buckets +
@@ -503,6 +503,7 @@ private class LibraryCollectionsViewModel {
 
 struct LibraryCollectionsView: View {
     let libraryId: Int
+    var mediaScope: LibraryVideoScope? = nil
 
     @State private var viewModel = LibraryCollectionsViewModel()
     @State private var uiCustomization = UICustomizationPreferences.shared
@@ -571,18 +572,20 @@ struct LibraryCollectionsView: View {
                             libraryId: libraryId,
                             collectionId: collection.id,
                             title: collection.name,
-                            kind: collection.kind
+                            kind: collection.kind,
+                            mediaScope: mediaScope
                         )
                     ) {
                         LibraryCollectionCard(
                             collection: collection,
-                            cardWidthOverride: libraryCollectionCardWidthOverride
+                            cardWidthOverride: libraryCollectionCardWidthOverride,
+                            showItemCount: mediaScope == nil
                         )
                     }
                     .buttonStyle(.plain)
                     .frame(maxWidth: .infinity)
                     .accessibilityElement(children: .ignore)
-                    .accessibilityLabel(libraryCollectionAccessibilityLabel(collection))
+                    .accessibilityLabel(libraryCollectionAccessibilityLabel(collection, showItemCount: mediaScope == nil))
                 }
             }
             #if os(iOS)
@@ -617,6 +620,7 @@ struct LibraryCollectionsView: View {
 private struct LibraryCollectionCard: View {
     let collection: LibraryCollection
     let cardWidthOverride: CGFloat?
+    var showItemCount = true
     @State private var uiCustomization = UICustomizationPreferences.shared
 
     private var cardWidth: CGFloat {
@@ -632,14 +636,16 @@ private struct LibraryCollectionCard: View {
             ZStack(alignment: .bottomTrailing) {
                 poster
 
-                Text(countLabel)
-                    .font(.siloSmall)
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
-                    .background(Color.black.opacity(0.65))
-                    .clipShape(Capsule())
-                    .padding(8)
+                if showItemCount {
+                    Text(countLabel)
+                        .font(.siloSmall)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(Color.black.opacity(0.65))
+                        .clipShape(Capsule())
+                        .padding(8)
+                }
             }
             .frame(width: cardWidth, height: cardHeight)
             .clipShape(RoundedRectangle(cornerRadius: SiloTheme.smallCornerRadius))
@@ -703,27 +709,18 @@ struct LibraryCollectionDetailView: View {
     let collectionId: String
     let title: String?
     let kind: LibraryCollectionKind?
+    var mediaScope: LibraryVideoScope? = nil
 
-    @State private var items: [BrowseItem] = []
-    @State private var isLoading = false
-    @State private var error: ErrorState?
-    @State private var hasMore = true
-    @State private var totalItems: Int?
-    /// Where the next page starts; `nil` before the live first page and
-    /// after the last one. A cached first page has no continuation.
-    @State private var continuation: APIv2CatalogContinuation?
-
+    @State private var viewModel = LibraryCollectionDetailViewModel()
     @Environment(AppRouter.self) private var router
-
-    private let pageSize = 60
 
     var body: some View {
         Group {
-            if !items.isEmpty {
+            if !viewModel.items.isEmpty {
                 content
-            } else if let error {
+            } else if let error = viewModel.error {
                 ErrorView(state: error, onRetry: { Task { await loadItems(reset: true) } })
-            } else if isLoading {
+            } else if viewModel.isLoading {
                 Color.clear
             } else {
                 EmptyStateView(
@@ -737,7 +734,7 @@ struct LibraryCollectionDetailView: View {
         .environment(\.browseLibraryId, libraryId)
         .navigationTitle(title ?? "Collection")
         .siloNavigationTitleDisplayMode(.large)
-        .task(id: "\(libraryId)-\(collectionId)") {
+        .task(id: "\(libraryId)-\(collectionId)-\(mediaScope?.rawValue ?? "all")-\(kind?.rawValue ?? "regular")") {
             await loadItems(reset: true)
         }
         .refreshable {
@@ -753,9 +750,9 @@ struct LibraryCollectionDetailView: View {
                     .foregroundColor(.siloSecondaryText)
 
                 CatalogGrid(
-                    items: items,
-                    isLoading: isLoading,
-                    hasMore: hasMore,
+                    items: viewModel.items,
+                    isLoading: viewModel.isLoading,
+                    hasMore: viewModel.hasMore,
                     forcesThreeColumnsOnPhone: true,
                     onItemTap: { item in
                         router.navigate(to: .itemDetail(browseItem: item, libraryId: libraryId))
@@ -772,67 +769,20 @@ struct LibraryCollectionDetailView: View {
     }
 
     private var countLabel: String {
-        if let totalItems, !hasMore {
+        if let totalItems = viewModel.totalItems, !viewModel.hasMore {
             return "\(totalItems) item\(totalItems == 1 ? "" : "s")"
         }
-        let suffix = hasMore ? "+" : ""
-        return "\(items.count)\(suffix) item\(items.count == 1 && !hasMore ? "" : "s")"
+        let suffix = viewModel.hasMore ? "+" : ""
+        return "\(viewModel.items.count)\(suffix) item\(viewModel.items.count == 1 && !viewModel.hasMore ? "" : "s")"
     }
 
     private func loadMoreIfNeeded() async {
-        guard hasMore, !isLoading else { return }
+        guard viewModel.hasMore, !viewModel.isLoading else { return }
         await loadItems(reset: false)
     }
 
     private func loadItems(reset: Bool) async {
-        guard !isLoading else { return }
-        let cacheKey = CacheKey.catalogCollectionItems(collectionId)
-        if reset {
-            // Surface the cached first page instantly so the grid doesn't
-            // blank out while the network call runs.
-            if items.isEmpty,
-               let cached: CatalogResponse = ResponseCache.shared.get(cacheKey) {
-                items = cached.items
-                hasMore = cached.hasMore ?? false
-                totalItems = cached.totalExact == false ? nil : cached.total
-            } else if items.isEmpty {
-                hasMore = true
-                totalItems = nil
-            }
-        }
-        guard reset || hasMore else { return }
-
-        isLoading = true
-        error = nil
-
-        // A reset, or a load-more over a cached first page, starts over from
-        // the first page and replaces the grid instead of appending to it.
-        let nextPage = reset ? nil : continuation
-
-        do {
-            let page: CatalogListPage
-            if let nextPage {
-                page = try await SiloAPI.shared.nextCatalogPage(nextPage)
-            } else {
-                page = try await SiloAPI.shared.catalogPage(.collectionItems(
-                    kind: kind ?? .regular, collectionId: collectionId, limit: pageSize
-                ))
-            }
-            if nextPage != nil, !page.startsOver {
-                items.append(contentsOf: page.response.items)
-            } else {
-                items = page.response.items
-                ResponseCache.shared.set(page.response, for: cacheKey)
-            }
-            totalItems = page.response.totalExact == false ? nil : page.response.total
-            continuation = page.continuation
-            hasMore = page.continuation != nil
-        } catch let err {
-            if items.isEmpty {
-                error = ErrorState(err)
-            }
-        }
-
-        isLoading = false
+        await viewModel.load(libraryId: libraryId, collectionId: collectionId,
+                             kind: kind ?? .regular, mediaScope: mediaScope, reset: reset)
     }
 }

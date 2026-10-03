@@ -538,6 +538,11 @@ enum StartupContentPrefetcher {
     #endif
 
     static func fetchLibrarySections(libraryId: Int) async throws -> SectionsResponse {
+        try await fetchLibrarySectionsRead(libraryId: libraryId).response
+    }
+
+    /// Share the in-flight fetch while retaining its owner for follow-up section paging.
+    static func fetchLibrarySectionsRead(libraryId: Int) async throws -> APIv2LibrarySectionsRead {
         let generation = profileScopedGeneration
         // Verbose: these two run once per library on the landing prefetch and
         // again on every browse navigation, so at essential tier a session's
@@ -577,7 +582,7 @@ enum StartupContentPrefetcher {
             #endif
             ResponseCache.shared.set(response, for: CacheKey.librarySections(libraryId))
             prefetchSectionArtwork(for: response, maxCount: maxSectionArtworkURLs)
-            return response
+            return read
         } catch {
             if profileScopedGeneration == generation {
                 librarySectionsTasks[libraryId] = nil
@@ -599,10 +604,11 @@ enum StartupContentPrefetcher {
     /// uses for page 2, so the prefetch and the live grid share one query.
     static func fetchBrowseFirstPage(
         libraryId: Int?,
-        state: CatalogFilterState = .none
+        state: CatalogFilterState = .none,
+        mediaScope: LibraryVideoScope? = nil
     ) async throws -> CatalogListPage {
         let generation = profileScopedGeneration
-        let key = CacheKey.browse(libraryId: libraryId, filterKey: state.cacheKeyFragment)
+        let key = CacheKey.browse(libraryId: libraryId, filterKey: state.cacheKeyFragment, mediaScope: mediaScope?.rawValue)
         // Verbose for the same reason as `library_sections`, and the cache key
         // (library id plus the user's filter selections) is never logged.
         #if os(iOS) || os(tvOS)
@@ -617,15 +623,15 @@ enum StartupContentPrefetcher {
             task = existing
         } else {
             task = Task {
-                // iOS omits `type` (library_id already scopes the page); the
-                // builder is the single source of the wire format, and later
-                // pages follow this page's continuation.
+                // A mixed library's navigation scope is independent of optional
+                // filter groups. Later pages retain it in the continuation.
                 let query = CatalogQueryBuilder.build(
                     state,
                     libraryId: libraryId,
                     mediaType: .movie,
                     limit: browsePageSize,
-                    includeType: false
+                    includeType: false,
+                    enforcedScope: mediaScope
                 )
                 return try await SiloAPI.shared.catalogPage(query)
             }

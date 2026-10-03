@@ -6,6 +6,7 @@ import SwiftUI
 /// the existing collection detail screen.
 struct TVLibraryCollectionsView: View {
     let library: Library
+    var mediaScope: LibraryVideoScope? = nil
     /// Focus hand-down token from the shell — claims the first card on
     /// tab entry when this pill is the restored destination.
     var focusRequest: Int = 0
@@ -117,7 +118,8 @@ struct TVLibraryCollectionsView: View {
                                             libraryId: library.id,
                                             collectionId: collection.id,
                                             title: collection.name,
-                                            kind: collection.kind
+                                            kind: collection.kind,
+                                            mediaScope: mediaScope
                                         ))
                                     }
                                 )
