@@ -27,6 +27,7 @@ enum OverlayId: String, CaseIterable, Codable, Hashable {
     case ratingRt = "rating_rt"
     case ratingRtAudience = "rating_rt_audience"
     case contentRating = "content_rating"
+    case advisoryAge = "advisory_age"
     // metadata
     case year
     case runtime
@@ -103,6 +104,8 @@ struct OverlayData: Hashable {
     var ratingRtCritic: Int?
     var ratingRtAudience: Int?
     var contentRating: String?
+    var advisoryAge: Int?
+    var advisorySource: String?
     var year: Int?
     var runtime: Int?
     var originalLanguage: String?
@@ -166,6 +169,7 @@ enum OverlayIconId: String, Hashable {
     case languages
     case building
     case shield
+    case users
     case layout
     case monitor
     case volume

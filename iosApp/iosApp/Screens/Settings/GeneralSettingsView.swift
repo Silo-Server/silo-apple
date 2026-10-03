@@ -5,15 +5,20 @@ import SwiftUI
 /// interface customization.
 struct GeneralSettingsView: View {
     @State private var launchPreferences = ProfileLaunchPreferences.shared
+    @StateObject private var advisoryAgePreference = AdvisoryAgePreferenceStore.shared
 
     var body: some View {
         List {
             profileSection
+            if advisoryAgePreference.isSupported {
+                advisoryAgeSection
+            }
         }
         .settingsListChrome()
         .navigationTitle("General")
         .siloNavigationTitleDisplayMode(.inline)
         .siloToolbarColorSchemeDark()
+        .task { await advisoryAgePreference.hydrateIfNeeded() }
     }
 
     private var profileSection: some View {
@@ -38,6 +43,28 @@ struct GeneralSettingsView: View {
                 .foregroundStyle(Color.siloSecondaryText)
         } footer: {
             Text(launchPreferences.behavior.standardDescription)
+                .foregroundStyle(Color.siloSecondaryText)
+        }
+        .listRowBackground(Color.siloGroupedCell)
+    }
+
+    private var advisoryAgeSection: some View {
+        Section {
+            Toggle(
+                "Show Advisory Age",
+                isOn: Binding(
+                    get: { advisoryAgePreference.showsAdvisoryAge },
+                    set: { value in
+                        Task { await advisoryAgePreference.setShowsAdvisoryAge(value) }
+                    }
+                )
+            )
+            .disabled(advisoryAgePreference.isSaving)
+        } header: {
+            Text("Ratings")
+                .foregroundStyle(Color.siloSecondaryText)
+        } footer: {
+            Text("Show a suggested minimum viewer age, such as Common Sense Media’s, on movie and show details. This does not change what the profile may watch.")
                 .foregroundStyle(Color.siloSecondaryText)
         }
         .listRowBackground(Color.siloGroupedCell)

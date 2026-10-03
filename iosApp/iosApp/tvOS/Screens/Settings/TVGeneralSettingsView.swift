@@ -14,6 +14,7 @@ struct TVGeneralSettingsPane: View {
     @State private var showsMenuEditor = false
     @State private var registry = ServerRegistry.shared
     @State private var librarySnapshot = MainTabLibrarySnapshot.cachedForCurrentAuthority()
+    @StateObject private var advisoryAgePreference = AdvisoryAgePreferenceStore.shared
     let activeProfile: UserProfile?
     let detailFocus: FocusState<TVSettingsDetailFocus?>.Binding
     let changePairedProfile: () -> Void
@@ -80,6 +81,23 @@ struct TVGeneralSettingsPane: View {
             }
 
             TVSettingsSectionHeader("CARDS & POSTERS")
+
+            if advisoryAgePreference.isSupported {
+                TVSettingsToggleRow(
+                    title: "Show Advisory Age",
+                    isOn: advisoryAgePreference.showsAdvisoryAge
+                ) {
+                    Task {
+                        await advisoryAgePreference.setShowsAdvisoryAge(
+                            !advisoryAgePreference.showsAdvisoryAge
+                        )
+                    }
+                }
+                .focused(detailFocus, equals: .generalAdvisoryAge)
+                .disabled(advisoryAgePreference.isSaving)
+
+                TVSettingsFooter("Show a suggested minimum viewer age, such as Common Sense Media’s, on movie and show details. This does not change what the profile may watch.")
+            }
 
             presetRow
 
@@ -165,7 +183,9 @@ struct TVGeneralSettingsPane: View {
             TVMenuCustomizationSheet(libraries: libraries)
         }
         .task {
-            await preferences.refresh()
+            async let preferencesRefresh: Void = preferences.refresh()
+            async let advisoryRefresh: Void = advisoryAgePreference.hydrateIfNeeded()
+            _ = await (preferencesRefresh, advisoryRefresh)
         }
         .task(id: currentLibraryAuthority) {
             await refreshLibraries(for: currentLibraryAuthority)

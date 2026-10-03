@@ -40,6 +40,7 @@ struct OverlayIcon: View {
         case .languages: return "globe"
         case .building:  return "building.2"
         case .shield:    return "shield"
+        case .users:     return "person.2.fill"
         case .layout:    return "rectangle.ratio.16.to.9"
         case .monitor:   return "display"
         case .volume:    return "speaker.wave.2.fill"

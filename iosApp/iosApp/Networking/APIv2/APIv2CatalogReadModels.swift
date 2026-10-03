@@ -6,6 +6,8 @@ import Foundation
 enum APIv2CatalogRead {
     struct CatalogItemDetail: Decodable {
         let addedAt: Date?
+        let advisoryAge: Int64?
+        let advisorySource: String?
         let airDate: String?
         let airTime: String?
         let airTimezone: String?

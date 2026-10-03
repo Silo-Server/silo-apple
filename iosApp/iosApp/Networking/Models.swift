@@ -9,6 +9,8 @@ struct BrowseItem: Codable, Identifiable, Hashable {
     let year: Int?
     let genres: [String]?
     let contentRating: String?
+    let advisoryAge: Int?
+    let advisorySource: String?
     let status: String?
     let ratingImdb: Double?
     let ratingTmdb: Double?
@@ -39,6 +41,8 @@ struct BrowseItem: Codable, Identifiable, Hashable {
         year = try c.decodeIfPresent(Int.self, forKey: .year)
         genres = try c.decodeIfPresent([String].self, forKey: .genres)
         contentRating = try c.decodeIfPresent(String.self, forKey: .contentRating)
+        advisoryAge = try c.decodeIfPresent(Int.self, forKey: .advisoryAge)
+        advisorySource = try c.decodeIfPresent(String.self, forKey: .advisorySource)
         status = try c.decodeIfPresent(String.self, forKey: .status)
         ratingImdb = try c.decodeIfPresent(Double.self, forKey: .ratingImdb)
         ratingTmdb = try c.decodeIfPresent(Double.self, forKey: .ratingTmdb)
@@ -153,6 +157,8 @@ struct SectionItem: Codable, Identifiable, Hashable {
     let ratingRtCritic: Int?
     let ratingRtAudience: Int?
     let contentRating: String?
+    let advisoryAge: Int?
+    let advisorySource: String?
     let runtime: Int?
     let originalLanguage: String?
     let studios: [String]?
@@ -190,6 +196,8 @@ struct SectionItem: Codable, Identifiable, Hashable {
         ratingRtCritic = item.ratingRtCritic
         ratingRtAudience = item.ratingRtAudience
         contentRating = item.contentRating
+        advisoryAge = item.advisoryAge
+        advisorySource = item.advisorySource
         runtime = item.runtime
         originalLanguage = item.originalLanguage
         studios = item.studios
@@ -226,6 +234,8 @@ struct SectionItem: Codable, Identifiable, Hashable {
         ratingRtCritic = try c.decodeIfPresent(Int.self, forKey: .ratingRtCritic)
         ratingRtAudience = try c.decodeIfPresent(Int.self, forKey: .ratingRtAudience)
         contentRating = try c.decodeIfPresent(String.self, forKey: .contentRating)
+        advisoryAge = try c.decodeIfPresent(Int.self, forKey: .advisoryAge)
+        advisorySource = try c.decodeIfPresent(String.self, forKey: .advisorySource)
         runtime = try c.decodeIfPresent(Int.self, forKey: .runtime)
         originalLanguage = try c.decodeIfPresent(String.self, forKey: .originalLanguage)
         studios = try c.decodeIfPresent([String].self, forKey: .studios)
@@ -447,6 +457,8 @@ struct ItemDetail: Codable {
     let tagline: String?
     let runtime: Int?
     let contentRating: String?
+    let advisoryAge: Int?
+    let advisorySource: String?
     let genres: [String]?
     let ratingImdb: Double?
     let ratingTmdb: Double?

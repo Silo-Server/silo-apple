@@ -153,6 +153,35 @@ final class DisplayRatingTests: XCTestCase {
         }
     }
 
+    func testAdvisoryAgeFlowsFromDetailIntoPosterAndAttributedBadge() throws {
+        let detail = try decodeDetail(extraFields: #""advisory_age":13,"advisory_source":"commonsense""#)
+        XCTAssertEqual(detail.advisoryAge, 13)
+        XCTAssertEqual(detail.advisorySource, "commonsense")
+
+        let data = OverlayData.from(detail)
+        let definition = try XCTUnwrap(
+            OverlayRegistry.all.first { $0.id == .advisoryAge }
+        )
+        XCTAssertEqual(definition.getValue(data), "13+")
+        XCTAssertEqual(data.advisoryAgeBadgeLabel, "Common Sense 13+")
+        XCTAssertFalse(definition.defaultEnabled)
+        XCTAssertEqual(definition.defaultPosition, .bottomRight)
+        XCTAssertEqual(definition.iconId, .users)
+    }
+
+    func testAdvisoryAgeBadgeAttributesMDBListAndRejectsInvalidAges() {
+        XCTAssertEqual(
+            OverlayData(advisoryAge: 10, advisorySource: "mdblist").advisoryAgeBadgeLabel,
+            "MDBList 10+"
+        )
+        XCTAssertEqual(
+            OverlayData(advisoryAge: 8, advisorySource: "future-provider").advisoryAgeBadgeLabel,
+            "8+"
+        )
+        XCTAssertNil(OverlayData(advisoryAge: 0, advisorySource: "commonsense").advisoryAgeBadgeLabel)
+        XCTAssertNil(OverlayData(advisoryAge: nil, advisorySource: "commonsense").advisoryAgeBadgeLabel)
+    }
+
     #if os(tvOS)
     // MARK: Focus marquee
 
