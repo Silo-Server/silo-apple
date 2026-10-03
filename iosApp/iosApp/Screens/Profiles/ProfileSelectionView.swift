@@ -26,6 +26,10 @@ struct ProfileSelectionView: View {
     @Namespace private var profileFocusNamespace
     #if os(tvOS)
     @FocusState private var isSignOutFocused: Bool
+    /// The profile whose PIN prompt was open, so closing it puts focus back
+    /// on that profile rather than the first one.
+    @State private var returnFocusProfileID: String?
+    @Environment(\.resetFocus) private var resetFocus
     #endif
 
     private enum PINEntryPurpose: String {
@@ -280,7 +284,7 @@ struct ProfileSelectionView: View {
         let rememberedProfileID = launchPreferences.rememberedProfile(
             for: ServerRegistry.shared.activeServerId
         )?.profileID
-        let preferredProfileID = rememberedProfileID ?? viewModel.profiles.first?.id
+        let preferredProfileID = returnFocusProfileID ?? rememberedProfileID ?? viewModel.profiles.first?.id
         let grid = LazyVGrid(
             columns: gridColumns,
             spacing: rowSpacing
@@ -388,6 +392,9 @@ struct ProfileSelectionView: View {
     #endif
 
     private func handleProfileTap(_ profile: UserProfile) {
+        #if os(tvOS)
+        returnFocusProfileID = profile.id
+        #endif
         if profile.hasPin {
             pinEntryContext = PINEntryContext(profile: profile, purpose: .profileSelection)
         } else {
@@ -483,6 +490,14 @@ struct ProfileSelectionView: View {
     private func closePINEntry() {
         pinEntryContext = nil
         pinError = nil
+        #if os(tvOS)
+        // The picker is enabled again in this update; once it is, send focus
+        // to the profile that opened the prompt.
+        Task { @MainActor in
+            await Task.yield()
+            resetFocus(in: profileFocusNamespace)
+        }
+        #endif
     }
 
     /// The prompt stays open while the server checks the PIN. A rejected PIN

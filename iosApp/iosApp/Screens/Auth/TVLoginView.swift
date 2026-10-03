@@ -34,6 +34,8 @@ struct TVLoginView: View {
     @State private var navigatedAfterApproval = false
 
     @FocusState private var focusedField: Field?
+    /// Where focus goes once the system keyboard closes after Done.
+    @State private var focusAfterKeyboard: Field?
     @Environment(\.scenePhase) private var scenePhase
 
     private enum Field: Hashable {
@@ -140,6 +142,7 @@ struct TVLoginView: View {
             MarqueeTVCard { codeCard }
         }
         .defaultFocus($focusedField, offersPassword ? .usePassword : .changeServer, priority: .userInitiated)
+        .marqueeTVSeedFocus($focusedField, offersPassword ? .usePassword : .changeServer)
     }
 
     private var codeLead: String {
@@ -282,7 +285,7 @@ struct TVLoginView: View {
                 )
                 // Advance to the password field once the username is entered.
                 .submitLabel(.next)
-                .onSubmit { moveFocusAfterTextEntry(to: .password) }
+                .onSubmit { focusAfterKeyboard = .password }
                 HStack(spacing: 16) {
                     MarqueeTVField(
                         systemImage: "lock",
@@ -296,7 +299,7 @@ struct TVLoginView: View {
                     )
                     // Hand focus to the Sign In button once the password is entered.
                     .submitLabel(.done)
-                    .onSubmit { moveFocusAfterTextEntry(to: .signIn) }
+                    .onSubmit { focusAfterKeyboard = .signIn }
 
                     Button {
                         showPassword.toggle()
@@ -358,8 +361,12 @@ struct TVLoginView: View {
                     // A password sign-in in flight would pull the app back.
                     .disabled(isSubmittingPassword)
             }
+            // Full width, so Down from the show-password button reaches the
+            // row; entering it lands on Sign in.
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.top, 40)
             .focusSection()
+            .defaultFocus($focusedField, .signIn, priority: .userInitiated)
         } card: {
             MarqueeTVCard {
                 MarqueeTVCardSymbol(systemImage: "iphone")
@@ -373,6 +380,8 @@ struct TVLoginView: View {
             }
         }
         .defaultFocus($focusedField, .username, priority: .userInitiated)
+        .marqueeTVSeedFocus($focusedField, .username)
+        .marqueeTVFocusAfterKeyboard($focusedField, pending: $focusAfterKeyboard)
         // Menu returns to the code screen; on a password-only server there is
         // none, so Menu keeps its system meaning.
         .onExitCommand(perform: qrVM.status == .noDeviceSignIn ? nil : returnToCodeScreen)
@@ -510,13 +519,6 @@ struct TVLoginView: View {
 
     private var canFocusPasswordToggle: Bool {
         focusedField == .password || focusedField == .togglePassword
-    }
-
-    private func moveFocusAfterTextEntry(to field: Field) {
-        Task { @MainActor in
-            await Task.yield()
-            focusedField = field
-        }
     }
 
     /// The code as one element VoiceOver reads character by character.

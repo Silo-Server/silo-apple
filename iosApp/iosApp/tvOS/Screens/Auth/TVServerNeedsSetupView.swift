@@ -46,7 +46,8 @@ struct TVServerNeedsSetupView: View {
                 }
                 .buttonStyle(.marquee(.primary, fullWidth: false, isLoading: isChecking))
                 .focused($focusedAction, equals: .retry)
-                .disabled(isChecking)
+                // Not disabled while checking: a disabled button loses focus,
+                // so it would land on Change server. `retry` ignores repeats.
 
                 Button("Change server", action: changeServer)
                     .buttonStyle(.marquee(.plain, fullWidth: false))
@@ -59,6 +60,7 @@ struct TVServerNeedsSetupView: View {
         }
         .navigationBarBackButtonHidden()
         .defaultFocus($focusedAction, .retry, priority: .userInitiated)
+        .marqueeTVSeedFocus($focusedAction, .retry)
         .animation(.easeInOut(duration: 0.2), value: error)
         .onDisappear(perform: cancelRetry)
     }

@@ -26,7 +26,11 @@ struct TVPairingReceiverView: View {
         } card: {
             MarqueeTVCard { card }
         }
-        .defaultFocus($focused, .primary)
+        .defaultFocus($focused, .primary, priority: .userInitiated)
+        .marqueeTVSeedFocus($focused, .primary)
+        // Each state draws its own buttons, so the one that had focus is gone;
+        // hand focus to the new state's main action.
+        .onChange(of: coordinator.state) { _, _ in focused = .primary }
     }
 
     private var isSignIn: Bool { coordinator.mode.isSignIn }

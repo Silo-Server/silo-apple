@@ -108,9 +108,10 @@ struct PINEntryView: View {
             numberPad(verticalSpacing: padVSpacing)
                 .padding(.top, 30)
                 .focusSection()
+            // Not disabled while the PIN is checked: on TV a disabled control
+            // loses focus. `cancel` waits for the answer by itself.
             Button("Cancel", action: cancel)
                 .buttonStyle(.marquee(.plain, fullWidth: false, compact: true))
-                .disabled(isVerifying)
                 .padding(.top, 30)
         }
         .onExitCommand(perform: handleExit)
@@ -209,7 +210,12 @@ struct PINEntryView: View {
                 }
             }
         }
+        // On TV the keypad stays enabled: disabling it drops focus off the
+        // key, and after a wrong PIN nothing would be focused. The keys
+        // ignore presses while the PIN is checked.
+        #if !os(tvOS)
         .disabled(isVerifying)
+        #endif
     }
 
     private static let letters: [Int: String] = [
@@ -257,7 +263,7 @@ struct PINEntryView: View {
     }
 
     private func deleteDigit() {
-        guard !pin.isEmpty else { return }
+        guard !pin.isEmpty, !isVerifying else { return }
         pin.removeLast()
     }
 }

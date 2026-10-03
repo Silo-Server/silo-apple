@@ -152,4 +152,57 @@ struct MarqueeTVBody: View {
             .fixedSize(horizontal: false, vertical: true)
     }
 }
+
+// MARK: - Focus helpers
+
+extension View {
+    /// Gives a page its first focus when nothing holds it. `defaultFocus`
+    /// alone leaves a freshly launched setup screen with no focus at all, so
+    /// the remote does nothing until a swipe. Never overrides a focus the
+    /// person or the page already set.
+    func marqueeTVSeedFocus<F: Hashable>(_ focus: FocusState<F?>.Binding, _ value: F) -> some View {
+        task {
+            await Task.yield()
+            if focus.wrappedValue == nil { focus.wrappedValue = value }
+        }
+    }
+
+    /// Moves focus after Done on the system keyboard. Each field's
+    /// `onSubmit` sets `pending` to where focus goes next. While the keyboard
+    /// is up nothing in the page has focus; closing it hands focus back to a
+    /// field (after Next chains keyboards, the first one), and moving earlier
+    /// gets overwritten. So the first focus that returns takes `pending`.
+    func marqueeTVFocusAfterKeyboard<F: Hashable>(_ focus: FocusState<F?>.Binding, pending: Binding<F?>) -> some View {
+        modifier(FocusAfterKeyboard(focus: focus, pending: pending))
+    }
+}
+
+private struct FocusAfterKeyboard<F: Hashable>: ViewModifier {
+    var focus: FocusState<F?>.Binding
+    @Binding var pending: F?
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: focus.wrappedValue) { _, current in
+                guard current != nil, let next = pending else { return }
+                pending = nil
+                focus.wrappedValue = next
+            }
+            .task(id: pending) {
+                guard pending != nil else { return }
+                // Submitted without the full-screen keyboard: focus never
+                // left, so move now.
+                await Task.yield()
+                if focus.wrappedValue != nil, let next = pending {
+                    pending = nil
+                    focus.wrappedValue = next
+                    return
+                }
+                // A keyboard that never hands focus back must not make a
+                // later, deliberate move jump away.
+                try? await Task.sleep(for: .seconds(2))
+                pending = nil
+            }
+    }
+}
 #endif

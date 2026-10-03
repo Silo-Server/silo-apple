@@ -120,7 +120,9 @@ struct RestoredServerRecoveryView: View {
                         .buttonStyle(.marquee(.plain, fullWidth: false))
                         .focused($focusedAction, equals: .forget)
                 }
-                .disabled(isChecking || coordinator.isForgetting)
+                // Not disabled while checking: disabling every button leaves
+                // the page with nothing to focus, so the remote stops
+                // responding. The actions ignore presses while busy.
                 .padding(.top, 56)
                 .focusSection()
             } card: {
@@ -144,6 +146,7 @@ struct RestoredServerRecoveryView: View {
         .ignoresSafeArea()
         .navigationBarBackButtonHidden()
         .defaultFocus($focusedAction, .retry, priority: .userInitiated)
+        .marqueeTVSeedFocus($focusedAction, .retry)
         .animation(.easeInOut(duration: 0.2), value: error)
         .animation(.easeOut(duration: SiloTheme.fastDuration), value: showForgetConfirmation)
         .onDisappear(perform: cancelWork)
@@ -317,6 +320,7 @@ struct RestoredServerRecoveryView: View {
     }
 
     private func manageServers() {
+        guard !coordinator.isForgetting else { return }
         cancelWork()
         router.navigate(to: .serverList)
     }

@@ -21,6 +21,8 @@ struct TVServerSetupView: View {
     @State private var coordinator = ReceiverPairingCoordinator()
     @State private var isEnteringAddress = false
     @FocusState private var focusedField: Field?
+    /// Where focus goes once the system keyboard closes after Done.
+    @State private var focusAfterKeyboard: Field?
 
     private enum Field: Hashable {
         case enterAddress
@@ -128,6 +130,7 @@ struct TVServerSetupView: View {
             }
         }
         .defaultFocus($focusedField, .enterAddress, priority: .userInitiated)
+        .marqueeTVSeedFocus($focusedField, .enterAddress)
     }
 
     // MARK: - Enter the address
@@ -155,14 +158,7 @@ struct TVServerSetupView: View {
             )
             .frame(width: 760)
             .padding(.top, 40)
-            // After the system keyboard closes; set at once, its dismissal
-            // can take focus back.
-            .onSubmit {
-                Task { @MainActor in
-                    await Task.yield()
-                    focusedField = .connect
-                }
-            }
+            .onSubmit { focusAfterKeyboard = .connect }
 
             if let error = viewModel.error?.message {
                 MarqueeErrorText(error)
@@ -177,6 +173,10 @@ struct TVServerSetupView: View {
             }
             .buttonStyle(.marquee(.plain, fullWidth: false, compact: true))
             .focused($focusedField, equals: .advanced)
+            // Full width, so Up from the port field lands here rather than
+            // skipping to the address.
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .focusSection()
             .padding(.top, 18)
 
             if viewModel.showsAdvancedOptions {
@@ -204,9 +204,13 @@ struct TVServerSetupView: View {
                         content: .number
                     )
                     .frame(width: 250)
+                    .onSubmit { focusAfterKeyboard = .connect }
                 }
                 .padding(.top, 14)
                 .focusSection()
+                // Entering the row lands on the chosen protocol, not whichever
+                // button sits under the toggle.
+                .defaultFocus($focusedField, .scheme(viewModel.selectedScheme), priority: .userInitiated)
             }
 
             HStack(spacing: 22) {
@@ -228,8 +232,12 @@ struct TVServerSetupView: View {
                 .focused($focusedField, equals: .back)
                 .disabled(viewModel.isLoading)
             }
+            // Full width, so Down from the port field at the far end of the
+            // row above still reaches the row; entering it lands on Connect.
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.top, 40)
             .focusSection()
+            .defaultFocus($focusedField, .connect, priority: .userInitiated)
         } card: {
             MarqueeTVCard {
                 MarqueeTVCardSymbol(systemImage: "iphone")
@@ -243,6 +251,7 @@ struct TVServerSetupView: View {
             }
         }
         .defaultFocus($focusedField, .host, priority: .userInitiated)
+        .marqueeTVFocusAfterKeyboard($focusedField, pending: $focusAfterKeyboard)
         // Leaving mid-probe would let a late connect pull the app on, so
         // the way back waits for it.
         .onExitCommand {
