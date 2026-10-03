@@ -73,6 +73,38 @@ final class AdvisoryAgePreferenceStoreTests: XCTestCase {
         XCTAssertTrue(store.showsAdvisoryAge)
     }
 
+    func testOlderUnsupportedResultCannotClearANewerSuccessfulToggle() async {
+        let store = makeStore()
+        await store.refresh()
+        transport.capabilityGate = AsyncTestGate()
+        let refresh = Task { await store.refresh() }
+        await waitUntil { self.transport.capabilityRequests == 2 }
+
+        await store.setShowsAdvisoryAge(true)
+        transport.capabilities = .available(advisoryCapabilities(revision: 9))
+        transport.capabilityGate?.open()
+        await refresh.value
+
+        XCTAssertTrue(store.isSupported)
+        XCTAssertTrue(store.showsAdvisoryAge)
+    }
+
+    func testFailedWriteDoesNotDiscardConcurrentHydration() async {
+        transport.readGate = AsyncTestGate()
+        transport.effectiveValue = true
+        transport.writeError = TestWriteError.failed
+        let store = makeStore()
+        let refresh = Task { await store.refresh() }
+        await waitUntil { store.isSupported }
+
+        await store.setShowsAdvisoryAge(false)
+        transport.readGate?.open()
+        await refresh.value
+
+        XCTAssertTrue(store.showsAdvisoryAge)
+        XCTAssertFalse(store.isSaving)
+    }
+
     func testWriteCompletionAfterClearCannotRestorePreviousProfileState() async {
         transport.writeGate = AsyncTestGate()
         let store = makeStore()
@@ -111,13 +143,18 @@ private final class FakeAdvisoryAgePreferenceTransport: AdvisoryAgePreferenceTra
 
     var capabilities: SettingsCapabilitiesResult = .available(advisoryCapabilities(revision: 14))
     var effectiveValue = false
+    var capabilityGate: AsyncTestGate?
     var readGate: AsyncTestGate?
     var writeGate: AsyncTestGate?
+    var writeError: Error?
+    private(set) var capabilityRequests = 0
     private(set) var readIdentities: [HTTPRequestIdentity] = []
     private(set) var writes: [Write] = []
 
     func contractCapabilities(requestIdentity: HTTPRequestIdentity) async -> SettingsCapabilitiesResult {
-        capabilities
+        capabilityRequests += 1
+        await capabilityGate?.wait()
+        return capabilities
     }
 
     func effectiveValue(requestIdentity: HTTPRequestIdentity) async throws -> EffectiveSettingValuesResponse {
@@ -129,7 +166,12 @@ private final class FakeAdvisoryAgePreferenceTransport: AdvisoryAgePreferenceTra
     func putValue(_ enabled: Bool, requestIdentity: HTTPRequestIdentity) async throws {
         writes.append(.init(enabled: enabled, identity: requestIdentity))
         await writeGate?.wait()
+        if let writeError { throw writeError }
     }
+}
+
+private enum TestWriteError: Error {
+    case failed
 }
 
 @MainActor

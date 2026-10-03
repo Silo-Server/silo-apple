@@ -90,6 +90,7 @@ final class AdvisoryAgePreferenceStore: ObservableObject {
 
             guard let contract = capabilities.capabilities,
                   contract.supports(.catalogShowAdvisoryAge) else {
+                guard self.localMutationRevision == mutationRevision else { return }
                 self.isSupported = false
                 self.showsAdvisoryAge = false
                 if case .failed = capabilities {
@@ -117,7 +118,6 @@ final class AdvisoryAgePreferenceStore: ObservableObject {
 
     func setShowsAdvisoryAge(_ enabled: Bool) async {
         guard isSupported, !isSaving, let identity = requestIdentity() else { return }
-        localMutationRevision &+= 1
         writeSequence &+= 1
         let currentWrite = writeSequence
         let currentGeneration = generation
@@ -131,6 +131,7 @@ final class AdvisoryAgePreferenceStore: ObservableObject {
             try await transport.putValue(enabled, requestIdentity: identity)
             guard canApply(generation: currentGeneration, identity: identity),
                   writeSequence == currentWrite else { return }
+            localMutationRevision &+= 1
             showsAdvisoryAge = enabled
             hasHydrated = true
         } catch {
