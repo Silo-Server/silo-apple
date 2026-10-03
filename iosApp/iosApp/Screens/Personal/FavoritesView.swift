@@ -197,9 +197,14 @@ struct FavoritesView: View {
     @State private var isLoading = false
     @State private var error: ErrorState?
     @State private var uiCustomization = UICustomizationPreferences.shared
+    #if os(iOS) || os(tvOS)
+    @State private var listFilter = PersonalListFilter()
+    #endif
     #if os(tvOS)
     @State private var selectedSection: FavoriteMediaSection = .movies
     @FocusState private var focusedSection: FavoriteMediaSection?
+    @FocusState private var focusedListControl: TVPersonalListControl?
+    @State private var openListPanel: TVPersonalListPanel?
     @State private var lastAppliedFocusRequest = 0
     #endif
     @Environment(AppRouter.self) private var router
@@ -242,24 +247,46 @@ struct FavoritesView: View {
             VStack(spacing: 16) {
                 IOSPersonalMediaSectionPicker(selection: $selectedSection)
 
-                if filteredIOSItems.isEmpty {
+                if sectionIOSItems.isEmpty {
                     iosSelectedSectionEmptyState
                 } else {
-                    IOSPersonalMediaPosterLayout(items: filteredIOSItems) { item, state in
-                        guard !state.isFavorite else { return }
-                        withAnimation {
-                            items.removeAll { $0.contentId == item.contentId }
+                    IOSPersonalListFilterBar(
+                        filter: $listFilter,
+                        availableGenres: availableIOSGenres
+                    )
+
+                    if filteredIOSItems.isEmpty {
+                        IOSPersonalListNoMatchesView {
+                            withAnimation { listFilter.clearFilters() }
+                        }
+                    } else {
+                        IOSPersonalMediaPosterLayout(items: filteredIOSItems) { item, state in
+                            guard !state.isFavorite else { return }
+                            withAnimation {
+                                items.removeAll { $0.contentId == item.contentId }
+                            }
                         }
                     }
                 }
             }
             .padding(SiloTheme.padding)
         }
+        .onChange(of: availableIOSGenres) { _, genres in
+            listFilter.pruneGenres(to: genres)
+        }
         .reportsPageChromeScroll()
     }
 
-    private var filteredIOSItems: [BrowseItem] {
+    private var sectionIOSItems: [BrowseItem] {
         items.filter(selectedSection.includes)
+    }
+
+    private var filteredIOSItems: [BrowseItem] {
+        listFilter.apply(to: sectionIOSItems)
+    }
+
+    private var availableIOSGenres: [String] {
+        PersonalListFilter.availableGenres(in: sectionIOSItems)
     }
 
     private var iosSelectedSectionEmptyState: some View {
@@ -359,8 +386,16 @@ struct FavoritesView: View {
     }
 
     #if os(tvOS)
-    private var filteredItems: [BrowseItem] {
+    private var sectionItems: [BrowseItem] {
         items.filter(selectedSection.includes)
+    }
+
+    private var filteredItems: [BrowseItem] {
+        listFilter.apply(to: sectionItems)
+    }
+
+    private var availableGenres: [String] {
+        PersonalListFilter.availableGenres(in: sectionItems)
     }
 
     private var tvGridContent: some View {
@@ -374,8 +409,10 @@ struct FavoritesView: View {
 
                 sectionSelector
 
-                if filteredItems.isEmpty {
+                if sectionItems.isEmpty {
                     selectedSectionEmptyState
+                } else if filteredItems.isEmpty {
+                    TVPersonalListNoMatchesView()
                 } else {
                     LazyVGrid(
                         columns: columns,
@@ -395,6 +432,15 @@ struct FavoritesView: View {
             .padding(.bottom, SiloTheme.safePadding)
         }
         .modifier(TVMenuEntryScroll(request: focusRequest, isTopMenuFocused: isTopMenuFocused, onReady: applyFocusRequest))
+        .tvPersonalListPanels(
+            openPanel: $openListPanel,
+            filter: $listFilter,
+            availableGenres: availableGenres,
+            focusedControl: $focusedListControl
+        )
+        .onChange(of: availableGenres) { _, genres in
+            listFilter.pruneGenres(to: genres)
+        }
     }
 
     private var sectionSelector: some View {
@@ -415,6 +461,14 @@ struct FavoritesView: View {
             }
 
             Spacer(minLength: 0)
+
+            if !sectionItems.isEmpty {
+                TVPersonalListControls(
+                    filter: listFilter,
+                    focusedControl: $focusedListControl,
+                    onOpen: { openListPanel = $0 }
+                )
+            }
         }
         .focusSection()
         .onMoveCommand { direction in
