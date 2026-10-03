@@ -199,6 +199,8 @@ final class ServerDiscovery {
     /// confirmations from an earlier browser are dropped.
     private var browserGeneration = 0
     private var currentKeys: Set<String> = []                 // latest browse snapshot
+    /// What each current browse result advertised, for retries on the refresh timer.
+    private var advertised: [String: (endpoint: NWEndpoint, serverId: String)] = [:]
     private var lanResults: [String: DiscoveredServer] = [:]   // keyed by browse result
     private var overlayResults: [DiscoveredServer] = []
     private var pending: Set<String> = []
@@ -212,7 +214,8 @@ final class ServerDiscovery {
     private var pathMonitor: NWPathMonitor?
     private var overlayProbe: Task<Void, Never>?
     /// Re-probes on a timer too: a tailnet server can start or recover while
-    /// the network itself stays the same.
+    /// the network itself stays the same, and a LAN result that failed both
+    /// confirmations gets another pair.
     private var overlayRefresh: Task<Void, Never>?
     private static let overlayRefreshInterval: Duration = .seconds(30)
     private let identity = ServerIdentityResolver()
@@ -239,6 +242,7 @@ final class ServerDiscovery {
                 try? await Task.sleep(for: Self.overlayRefreshInterval)
                 guard let self, !Task.isCancelled, self.session == session else { return }
                 self.scheduleOverlayProbe(session: session)
+                self.retryUnconfirmedLAN()
             }
         }
     }
@@ -255,9 +259,12 @@ final class ServerDiscovery {
 
     private func startBrowser() {
         browserGeneration += 1
-        // Confirmations in flight belong to the browser being replaced.
+        // Results and confirmations in flight belong to the browser being
+        // replaced; the new one reports its own.
         pending = []
         attempts = [:]
+        advertised = [:]
+        currentKeys = []
         let gen = browserGeneration
         let params = NWParameters()
         params.includePeerToPeer = false
@@ -298,6 +305,7 @@ final class ServerDiscovery {
         overlayRefresh?.cancel()
         overlayRefresh = nil
         currentKeys = []
+        advertised = [:]
         lanResults = [:]
         overlayResults = []
         pending = []
@@ -309,14 +317,30 @@ final class ServerDiscovery {
         currentKeys = Set(results.map { "\($0.endpoint)" })
         lanResults = lanResults.filter { currentKeys.contains($0.key) }
         attempts = attempts.filter { currentKeys.contains($0.key) }
+        advertised = [:]
         for result in results {
-            let key = "\(result.endpoint)"
-            guard lanResults[key] == nil, !pending.contains(key), attempts[key, default: 0] < Self.maxAttempts,
-                  case let .bonjour(txt) = result.metadata,
+            guard case let .bonjour(txt) = result.metadata,
                   let advertisedId = ServerIdentity.usable(txt.dictionary[ServerDiscoveryProtocol.txtServerID]) else { continue }
-            confirm(key: key, endpoint: result.endpoint, advertisedId: advertisedId, generation: gen)
+            advertised["\(result.endpoint)"] = (result.endpoint, advertisedId)
         }
+        confirmUnconfirmed(generation: gen)
         publish()
+    }
+
+    /// Starts confirmation for every current result that is not confirmed,
+    /// not in flight and not out of attempts.
+    private func confirmUnconfirmed(generation gen: Int) {
+        for (key, entry) in advertised {
+            guard lanResults[key] == nil, !pending.contains(key), attempts[key, default: 0] < Self.maxAttempts else { continue }
+            confirm(key: key, endpoint: entry.endpoint, advertisedId: entry.serverId, generation: gen)
+        }
+    }
+
+    /// Gives results that failed both confirmations another pair, for a
+    /// server that was still starting when it was first seen.
+    private func retryUnconfirmedLAN() {
+        attempts = attempts.filter { lanResults[$0.key] != nil || pending.contains($0.key) }
+        confirmUnconfirmed(generation: browserGeneration)
     }
 
     private func confirm(key: String, endpoint: NWEndpoint, advertisedId: String, generation gen: Int) {
