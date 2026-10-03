@@ -85,7 +85,7 @@ struct OverlayNameResolver: Sendable {
         do {
             let policy = HTTPSRedirectOnly()
             let (data, response) = try await session.data(from: probe, delegate: policy)
-            guard policy.firstHopWasOverlay,
+            guard policy.ranOverOverlay,
                   let http = response as? HTTPURLResponse, http.statusCode == 200,
                   let final = http.url, Self.isExpansion(of: name, host: final.host),
                   let origin = Self.origin(of: final) else { return nil }
@@ -107,9 +107,17 @@ struct OverlayNameResolver: Sendable {
         return host.hasPrefix(prefix) && host.count > prefix.count
     }
 
+    /// True when every connection of a probe ran over the overlay: both its
+    /// local and remote addresses are overlay addresses. A remote overlay
+    /// address alone is not enough, because a local network can resolve a
+    /// bare name to one and route it to itself; only traffic that went through
+    /// the overlay's own interface has an overlay address on this end too.
+    static func ranOverOverlay(_ connections: [(local: String, remote: String)]) -> Bool {
+        !connections.isEmpty && connections.allSatisfy { isOverlayAddress($0.local) && isOverlayAddress($0.remote) }
+    }
+
     /// Overlay networks (Tailscale, NetBird) address peers from the CGNAT
-    /// range or Tailscale's ULA prefix. A bare name that resolved anywhere
-    /// else came from the local network's DNS, not the overlay's.
+    /// range or Tailscale's ULA prefix.
     static func isOverlayAddress(_ address: String) -> Bool {
         let literal = address.split(separator: "%").first.map(String.init) ?? address
         if let v4 = IPv4Address(literal) {
@@ -136,23 +144,27 @@ struct OverlayNameResolver: Sendable {
 
 /// Follows exactly one redirect, and only to HTTPS. A plain-HTTP answer or a
 /// second hop is returned as-is and fails the status check. Also records
-/// whether the first (plain-HTTP) hop went to an overlay address.
+/// whether every connection the probe made ran over the overlay.
 private final class HTTPSRedirectOnly: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     private let lock = NSLock()
     private var followed = false
-    private var overlayFirstHop = false
+    private var overlayOnly = false
 
-    var firstHopWasOverlay: Bool {
+    var ranOverOverlay: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return overlayFirstHop
+        return overlayOnly
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
-        guard let first = metrics.transactionMetrics.first(where: { $0.request.url?.scheme == "http" }),
-              let address = first.remoteAddress else { return }
+        // A transaction with no addresses reused an earlier connection, which
+        // is already counted.
+        let connections = metrics.transactionMetrics.compactMap { transaction -> (local: String, remote: String)? in
+            guard let local = transaction.localAddress, let remote = transaction.remoteAddress else { return nil }
+            return (local, remote)
+        }
         lock.lock()
-        overlayFirstHop = OverlayNameResolver.isOverlayAddress(address)
+        overlayOnly = OverlayNameResolver.ranOverOverlay(connections)
         lock.unlock()
     }
 

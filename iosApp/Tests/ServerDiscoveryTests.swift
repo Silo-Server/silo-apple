@@ -42,6 +42,19 @@ final class ServerDiscoveryTests: XCTestCase {
         }
     }
 
+    func testOverlayProbeNeedsOverlayAddressesOnBothEnds() {
+        XCTAssertTrue(OverlayNameResolver.ranOverOverlay([
+            (local: "100.100.1.9", remote: "100.100.1.2"), (local: "100.100.1.9", remote: "100.100.1.2"),
+        ]))
+        // A local network that resolves the name to a CGNAT address and routes it to itself.
+        XCTAssertFalse(OverlayNameResolver.ranOverOverlay([(local: "192.168.1.20", remote: "100.100.1.2")]))
+        // An overlay first hop redirected to a host outside the overlay.
+        XCTAssertFalse(OverlayNameResolver.ranOverOverlay([
+            (local: "100.100.1.9", remote: "100.100.1.2"), (local: "192.168.1.20", remote: "203.0.113.5"),
+        ]))
+        XCTAssertFalse(OverlayNameResolver.ranOverOverlay([]))
+    }
+
     @MainActor
     func testBareNameTriesTheRedirectedOriginFirst() async {
         let attempts = AttemptLog()

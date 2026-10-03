@@ -72,7 +72,7 @@ class ServerSetupViewModel {
         // certificate covers only its full name. Its provider redirects plain
         // HTTP to that HTTPS origin; save the origin, never the bare name,
         // which answers reads only and would fail sign-in.
-        if selectedScheme == .auto, port.trimmingCharacters(in: .whitespaces).isEmpty,
+        if selectedScheme == .auto, port.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
            OverlayNameResolver.isBareName(host),
            let origin = await resolveBareName(host.trimmingCharacters(in: .whitespacesAndNewlines)) {
             candidates.insert(origin, at: 0)
