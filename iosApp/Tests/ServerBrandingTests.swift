@@ -10,6 +10,13 @@ final class ServerBrandingTests: XCTestCase {
         XCTAssertNil(ServerBranding.resolve("https://elsewhere.example.com/mark.png", base: base))
         XCTAssertNil(ServerBranding.resolve("  ", base: base))
     }
+
+    func testBrandingAssetsTreatTheDefaultPortAsSameOrigin() {
+        XCTAssertNotNil(ServerBranding.resolve("https://silo.example.com:443/mark.png", base: "https://silo.example.com"))
+        XCTAssertNotNil(ServerBranding.resolve("http://SILO.example.com/mark.png", base: "http://silo.example.com:80"))
+        XCTAssertNil(ServerBranding.resolve("https://silo.example.com:8443/mark.png", base: "https://silo.example.com"))
+        XCTAssertNil(ServerBranding.resolve("http://silo.example.com/mark.png", base: "https://silo.example.com"))
+    }
 }
 
 /// Where a successful connect leads.

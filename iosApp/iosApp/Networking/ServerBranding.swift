@@ -36,8 +36,16 @@ struct ServerBranding: Equatable, Codable {
               let baseURL = URL(string: base.hasSuffix("/") ? base : base + "/") else { return nil }
         let trimmed = value.hasPrefix("/") ? String(value.dropFirst()) : value
         guard let url = URL(string: trimmed, relativeTo: baseURL)?.absoluteURL,
-              url.scheme == baseURL.scheme, url.host == baseURL.host, url.port == baseURL.port else { return nil }
+              let assetOrigin = origin(of: url), assetOrigin == origin(of: baseURL) else { return nil }
         return url
+    }
+
+    /// Scheme, host and port, with the default port filled in, so
+    /// `https://host` and `https://host:443` count as the same origin.
+    private static func origin(of url: URL) -> String? {
+        guard let scheme = url.scheme?.lowercased(), let host = url.host?.lowercased() else { return nil }
+        guard let port = url.port ?? ["https": 443, "http": 80][scheme] else { return nil }
+        return "\(scheme)://\(host):\(port)"
     }
 
     /// What first-run screens call a server: its branded name, then the name
