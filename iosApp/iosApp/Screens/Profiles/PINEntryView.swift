@@ -42,7 +42,14 @@ struct PINEntryView: View {
             #if os(tvOS)
             tvOSBody
             #else
-            phoneBody
+            // A small phone or a short iPad window can't fit the full layout
+            // (about 690 points); the compact one keeps the keypad whole, and
+            // scrolling is the last resort.
+            ViewThatFits(in: .vertical) {
+                phoneBody(compact: false)
+                phoneBody(compact: true)
+                ScrollView { phoneBody(compact: true) }
+            }
                 #if os(iOS)
                 .marqueeSwipeBack(isVerifying ? nil : cancel)
                 #endif
@@ -52,7 +59,7 @@ struct PINEntryView: View {
     }
 
     #if !os(tvOS)
-    private var phoneBody: some View {
+    private func phoneBody(compact: Bool) -> some View {
         VStack(spacing: 0) {
             HStack {
                 MarqueeIconButton(systemImage: "chevron.left", accessibilityLabel: "Back", action: cancel)
@@ -62,26 +69,28 @@ struct PINEntryView: View {
             .padding(.horizontal, 24)
             .padding(.top, 6)
 
-            Spacer(minLength: 12)
+            Spacer(minLength: compact ? 8 : 12)
 
-            header(avatarSize: 88)
+            header(avatarSize: compact ? 64 : 88)
             pinDots(dotSize: 14, spacing: 16)
-                .padding(.top, 22)
+                .padding(.top, compact ? 14 : 22)
             statusLine
                 .frame(height: 22)
-                .padding(.top, 14)
+                .padding(.top, compact ? 10 : 14)
 
-            numberPad
-                .padding(.top, 28)
+            numberPad(verticalSpacing: compact ? 10 : padVSpacing)
+                .padding(.top, compact ? 18 : 28)
 
-            Spacer(minLength: 12)
+            Spacer(minLength: compact ? 8 : 12)
 
-            Text("Forgot your PIN? The account admin can reset it.")
-                .font(.system(size: 13))
-                .foregroundStyle(Color.siloOnSurface.opacity(0.4))
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 24)
-                .padding(.bottom, 16)
+            if !compact {
+                Text("Forgot your PIN? The account admin can reset it.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.siloOnSurface.opacity(0.4))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 16)
+            }
         }
         .frame(maxWidth: 440)
     }
@@ -96,7 +105,7 @@ struct PINEntryView: View {
             statusLine
                 .frame(height: 34)
                 .padding(.top, 18)
-            numberPad
+            numberPad(verticalSpacing: padVSpacing)
                 .padding(.top, 30)
                 .focusSection()
             Button("Cancel", action: cancel)
@@ -168,8 +177,8 @@ struct PINEntryView: View {
         errorMessage != nil && pin.isEmpty ? Color(hex: "#FF6961") : Color.siloOnSurface
     }
 
-    private var numberPad: some View {
-        Grid(horizontalSpacing: padHSpacing, verticalSpacing: padVSpacing) {
+    private func numberPad(verticalSpacing: CGFloat) -> some View {
+        Grid(horizontalSpacing: padHSpacing, verticalSpacing: verticalSpacing) {
             ForEach(0..<3, id: \.self) { row in
                 GridRow {
                     ForEach(1...3, id: \.self) { column in

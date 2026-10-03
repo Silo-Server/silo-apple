@@ -1,4 +1,5 @@
 #if !os(tvOS)
+import SwiftUI
 import XCTest
 @testable import Silo
 
@@ -63,6 +64,20 @@ final class ProfilePickerLayoutTests: XCTestCase {
         let largeText = ProfilePickerLayout(tileCount: 6, width: 354, height: 300)
         XCTAssertLessThanOrEqual(largeText.avatarSize, regular.avatarSize)
         XCTAssertGreaterThanOrEqual(largeText.perRow, regular.perRow)
+    }
+}
+
+/// The PIN prompt keeps its whole keypad on screen, 0 and Delete included,
+/// on the shortest phone it runs on.
+@MainActor
+final class PINEntryLayoutTests: XCTestCase {
+    func testPINPadFitsTheSmallestPhone() {
+        let profile = UserProfile(id: "kid", name: "Restricted", avatarEmoji: nil, hasPin: true, isChild: true)
+        let host = UIHostingController(rootView: PINEntryView(profile: profile, onCancel: {}) { _ in })
+        // iPhone SE in portrait, below the status bar.
+        let available = CGSize(width: 375, height: 647)
+        // Within a point: layout rounds to the screen's pixel grid.
+        XCTAssertLessThanOrEqual(host.sizeThatFits(in: available).height, available.height + 1)
     }
 }
 #endif
