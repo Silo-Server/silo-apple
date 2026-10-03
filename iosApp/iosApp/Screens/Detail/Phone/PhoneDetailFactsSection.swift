@@ -8,9 +8,12 @@ import SwiftUI
 /// dividers and tight rows.
 struct PhoneDetailFactsSection: View {
     let detail: ItemDetail
+    /// False on movie and series pages, where directors and writers already
+    /// appear in the Cast & Crew row.
+    var includesCredits = true
 
     var body: some View {
-        let facts = DetailFacts(detail: detail).assembleFacts()
+        let facts = DetailFacts(detail: detail, includesCredits: includesCredits).assembleFacts()
         if !facts.isEmpty {
             VStack(spacing: 0) {
                 ForEach(Array(facts.enumerated()), id: \.element.label) { index, fact in
@@ -41,7 +44,14 @@ struct PhoneDetailFactsSection: View {
 
 struct DetailFacts {
     let detail: ItemDetail
+    /// Whether the Director and Writer rows are included.
+    let includesCredits: Bool
     private let maxCreditNames = 3
+
+    init(detail: ItemDetail, includesCredits: Bool = true) {
+        self.detail = detail
+        self.includesCredits = includesCredits
+    }
 
     struct Fact {
         let label: String
@@ -54,10 +64,12 @@ struct DetailFacts {
         }
         var facts: [Fact] = []
 
-        if let directors = creditNames(forJobs: ["Director"]), !directors.isEmpty {
+        if includesCredits,
+           let directors = creditNames(forJobs: ["Director"]), !directors.isEmpty {
             facts.append(Fact(label: "Director", value: directors))
         }
-        if let writers = creditNames(forJobs: ["Writer", "Screenplay", "Story"]), !writers.isEmpty {
+        if includesCredits,
+           let writers = creditNames(forJobs: ["Writer", "Screenplay", "Story"]), !writers.isEmpty {
             facts.append(Fact(label: writerLabel, value: writers))
         }
         if let studios = detail.studios, !studios.isEmpty {

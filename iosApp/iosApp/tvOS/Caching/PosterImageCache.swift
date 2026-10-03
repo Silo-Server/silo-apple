@@ -279,15 +279,19 @@ enum PosterImageCache {
     }
 
     /// Prefetch only movie portraits. Series cast lives farther down its page
-    /// and deliberately keeps the normal lazy-loading path.
+    /// and deliberately keeps the normal lazy-loading path. Portraits are
+    /// warmed in Cast & Crew row order: directors, writers, then cast.
     static func prefetchVisibleMovieCast(for detail: ItemDetail) {
-        guard detail.type == "movie", let cast = detail.cast else { return }
+        guard detail.type == "movie" else { return }
+        let entries = CastCrewGroups
+            .build(cast: detail.cast, crew: detail.crew, leadRole: .director)
+            .flatMap(\.entries)
 
         var urls: [URL] = []
         var seen = Set<String>()
-        for member in cast {
+        for entry in entries {
             guard urls.count < visibleMovieCastPortraitLimit else { break }
-            guard let value = member.photoUrl?.trimmingCharacters(in: .whitespacesAndNewlines),
+            guard let value = entry.photoUrl?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !value.isEmpty,
                   let url = URL(string: value),
                   seen.insert(url.absoluteString).inserted else { continue }
