@@ -554,17 +554,27 @@ final class ServerDiscovery {
     /// Of several addresses for one server and route, the row shows one that
     /// last answered: a failing address is listed only when no other is.
     private func publish() {
-        var seen = Set<String>()
-        let lanRows = lan.values.compactMap { entry -> (server: DiscoveredServer, misses: Int)? in
+        var rows: [(server: DiscoveredServer, misses: Int)] = []
+        for entry in lan.values {
             switch entry.state {
-            case .confirmed(let confirmed), .confirming(_, _, let confirmed?): return (confirmed.server, confirmed.misses)
-            default: return nil
+            case .confirmed(let confirmed), .confirming(_, _, let confirmed?):
+                rows.append((confirmed.server, confirmed.misses))
+            default:
+                break
             }
         }
-        let candidates = (lanRows + overlay.values.map { ($0.server, $0.misses) }).sorted {
-            $0.misses != $1.misses ? $0.misses < $1.misses : $0.server.url < $1.server.url
-        }.map(\.server)
-        let all = candidates.filter { seen.insert("\($0.serverId)|\($0.route)").inserted }
+        for entry in overlay.values {
+            rows.append((entry.server, entry.misses))
+        }
+        rows.sort { a, b in
+            if a.misses != b.misses { return a.misses < b.misses }
+            return a.server.url < b.server.url
+        }
+        var seen = Set<String>()
+        var all: [DiscoveredServer] = []
+        for row in rows where seen.insert("\(row.server.serverId)|\(row.server.route)").inserted {
+            all.append(row.server)
+        }
         servers = all.sorted {
             if $0.name != $1.name { return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
             if $0.route != $1.route { return $0.route == .localNetwork }
