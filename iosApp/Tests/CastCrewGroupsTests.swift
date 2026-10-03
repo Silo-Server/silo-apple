@@ -121,6 +121,23 @@ final class CastCrewGroupsTests: XCTestCase {
         XCTAssertNil(groups[0].dividerLabel)
     }
 
+    func testJobMatchingIgnoresCaseAndKeepsStoryWriters() {
+        let groups = CastCrewGroups.build(
+            cast: [],
+            crew: [
+                crew("Lower Director", job: "director", personId: "1"),
+                crew("Story Writer", job: "Story", personId: "2"),
+                crew("Spaced Writer", job: " WRITER ", personId: "3"),
+                crew("Director of Photography", job: "Director of Photography", personId: "4"),
+            ],
+            leadRole: .director
+        )
+
+        XCTAssertEqual(groups.map(\.kind), [.lead, .writers])
+        XCTAssertEqual(names(groups[0]), ["Lower Director"])
+        XCTAssertEqual(names(groups[1]), ["Story Writer", "Spaced Writer"])
+    }
+
     func testWritersLeadWithNoDividerWhenThereIsNoDirector() {
         let groups = CastCrewGroups.build(
             cast: [cast("Actor", order: 0)],

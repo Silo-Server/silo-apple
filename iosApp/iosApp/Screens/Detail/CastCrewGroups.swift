@@ -54,8 +54,10 @@ enum CastCrewGroups {
     static let writersLabel = "Writers"
     static let castLabel = "Cast"
 
-    private static let leadJobs: Set<String> = ["Director"]
-    private static let writerJobs: Set<String> = ["Writer", "Screenplay"]
+    /// Lowercased job names. Matching is case-insensitive and keeps the same
+    /// writer roles the Details list showed before credits moved into the row.
+    private static let leadJobs: Set<String> = ["director"]
+    private static let writerJobs: Set<String> = ["writer", "screenplay", "story"]
 
     /// Groups for a movie or series. Empty groups are dropped, and the first
     /// remaining group carries no divider label.
@@ -66,14 +68,14 @@ enum CastCrewGroups {
     ) -> [CastCrewGroup] {
         let crew = crew ?? []
 
-        let leads = uniqueCrew(crew.filter { leadJobs.contains($0.job ?? "") })
+        let leads = uniqueCrew(crew.filter { hasJob($0, in: leadJobs) })
             .prefix(maxLeads)
         // A writer-director already has a card in the lead group. Exclude
         // against every director credit, not just the capped ones, to match
         // the web client.
-        let leadKeys = Set(crew.filter { leadJobs.contains($0.job ?? "") }.map(personKey))
+        let leadKeys = Set(crew.filter { hasJob($0, in: leadJobs) }.map(personKey))
         let writers = uniqueCrew(
-            crew.filter { writerJobs.contains($0.job ?? "") && !leadKeys.contains(personKey($0)) }
+            crew.filter { hasJob($0, in: writerJobs) && !leadKeys.contains(personKey($0)) }
         )
         .prefix(maxWriters)
         let castMembers = sortedCast(cast ?? []).prefix(maxCast)
@@ -94,6 +96,11 @@ enum CastCrewGroups {
     }
 
     // MARK: - Helpers
+
+    private static func hasJob(_ member: CrewMember, in jobs: Set<String>) -> Bool {
+        guard let job = member.job?.trimmingCharacters(in: .whitespaces).lowercased() else { return false }
+        return jobs.contains(job)
+    }
 
     private static func assemble(
         _ candidates: [(CastCrewGroup.Kind, String, [CastCrewEntry])]
