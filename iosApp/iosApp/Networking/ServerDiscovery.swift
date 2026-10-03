@@ -85,17 +85,21 @@ struct OverlayNameResolver: Sendable {
     }
 
     /// The HTTPS origin a plain-HTTP server address redirects to, when the
-    /// redirect stays on that host or completes its name (`http://silo` ->
-    /// `https://silo.tail1234.ts.net`) and lands on a Silo server. Such an
-    /// address answers reads only, so the origin is what should be saved.
-    /// Nil for any other address, answer or failure.
+    /// redirect stays on that host, or completes its name (`http://silo` ->
+    /// `https://silo.tail1234.ts.net`) over the overlay, and lands on a Silo
+    /// server. Such an address answers reads only, so the origin is what
+    /// should be saved. A completed name off the overlay is refused: anyone
+    /// who can answer plain HTTP for `silo` could otherwise send the app to a
+    /// certificate-valid `silo.<their domain>`. Nil for any other address,
+    /// answer or failure.
     func secureOrigin(redirectedFrom address: String) async -> String? {
         guard let url = URL(string: address), url.scheme?.lowercased() == "http", let host = url.host,
               url.path.isEmpty || url.path == "/",
               let probe = URL(string: ServerRegistry.normalize(url: address) + ServerIdentity.identityPath),
               let answer = await Self.probeIdentity(at: probe, timeout: timeout) else { return nil }
         let finalHost = answer.finalURL.host?.lowercased()
-        guard finalHost == host.lowercased() || Self.isExpansion(of: host, host: finalHost) else { return nil }
+        guard finalHost == host.lowercased()
+            || (answer.ranOverOverlay && Self.isExpansion(of: host, host: finalHost)) else { return nil }
         return Self.origin(of: answer.finalURL)
     }
 
@@ -239,9 +243,16 @@ final class ServerDiscovery {
             /// Not confirmed and not in flight, after `attempts` failures.
             case unconfirmed(attempts: Int)
             /// Attempt number `attempt` is running; `token` tells a stale
-            /// attempt's result from the current one.
-            case confirming(attempt: Int, token: UUID)
-            case confirmed(DiscoveredServer)
+            /// attempt's result from the current one. `previous` is a row
+            /// being re-checked, which stays visible meanwhile.
+            case confirming(attempt: Int, token: UUID, previous: Confirmed?)
+            case confirmed(Confirmed)
+        }
+
+        /// A confirmed row and the re-checks it has failed in a row.
+        struct Confirmed {
+            var server: DiscoveredServer
+            var misses = 0
         }
 
         let endpoint: NWEndpoint
@@ -270,9 +281,9 @@ final class ServerDiscovery {
     /// does not confirm waits for the refresh timer instead of being re-probed
     /// on every browse change.
     private static let maxAttempts = 2
-    /// A tailnet row survives this many missed probes in a row: probes run
-    /// right after network changes, while a tunnel may still be re-handshaking.
-    private static let maxOverlayMisses = 3
+    /// A row survives this many failed re-checks in a row: probes run right
+    /// after network changes, while a tunnel may still be re-handshaking.
+    private static let maxMisses = 3
     /// Re-runs the overlay probe when the device's network changes, such as
     /// Tailscale connecting while the screen is open.
     private var pathMonitor: NWPathMonitor?
@@ -405,33 +416,49 @@ final class ServerDiscovery {
     }
 
     /// Gives results that failed both confirmations another pair, for a
-    /// server that was still starting when it was first seen.
+    /// server that was still starting when it was first seen, and re-checks
+    /// confirmed rows: an advertisement keeps its name, port and `id` when the
+    /// server's address changes (a new DHCP lease), and only resolving it
+    /// again finds the new address.
     private func retryUnconfirmedLAN() {
         for (key, entry) in lan {
-            if case .unconfirmed(let attempts) = entry.state, attempts >= Self.maxAttempts {
+            switch entry.state {
+            case .unconfirmed(let attempts) where attempts >= Self.maxAttempts:
                 lan[key]?.state = .unconfirmed(attempts: 0)
+            case .confirmed(let confirmed):
+                confirm(key: key, attempt: 1, previous: confirmed, generation: browserGeneration)
+            default:
+                break
             }
         }
         confirmUnconfirmed(generation: browserGeneration)
     }
 
-    private func confirm(key: String, attempt: Int, generation gen: Int) {
+    private func confirm(key: String, attempt: Int, previous: LANEntry.Confirmed? = nil, generation gen: Int) {
         guard let entry = lan[key] else { return }
         let token = UUID()
-        lan[key]?.state = .confirming(attempt: attempt, token: token)
+        lan[key]?.state = .confirming(attempt: attempt, token: token, previous: previous)
         let instanceName: String? = if case let .service(name, _, _, _) = entry.endpoint { name } else { nil }
         Task {
             let found = await self.confirmLAN(endpoint: entry.endpoint, advertisedId: entry.serverId, instanceName: instanceName)
             // A browse change may have replaced the entry, or a newer browser
             // the whole map, while this was confirming.
-            guard self.browserGeneration == gen, case .confirming(_, let current)? = self.lan[key]?.state,
+            guard self.browserGeneration == gen, case .confirming(_, let current, _)? = self.lan[key]?.state,
                   current == token else { return }
             if let found {
-                self.lan[key]?.state = .confirmed(found)
+                self.lan[key]?.state = .confirmed(LANEntry.Confirmed(server: found))
                 self.publish()
                 return
             }
+            // A re-checked row stays through a few failures, then is
+            // confirmed afresh like a new result.
+            if var previous, previous.misses + 1 < Self.maxMisses {
+                previous.misses += 1
+                self.lan[key]?.state = .confirmed(previous)
+                return
+            }
             self.lan[key]?.state = .unconfirmed(attempts: attempt)
+            if previous != nil { self.publish() }
             guard attempt < Self.maxAttempts else { return }
             try? await Task.sleep(for: .seconds(3))
             // Retry only if nothing else touched the entry meanwhile.
@@ -482,10 +509,14 @@ final class ServerDiscovery {
     /// while a tunnel re-handshakes does not pull a row from under the user.
     private func mergeOverlay(_ found: [DiscoveredServer]) {
         let answered = Dictionary(found.map { ($0.url, $0) }, uniquingKeysWith: { first, _ in first })
+        let answeredIDs = Set(found.map(\.serverId))
+        // A server that answered at a new origin replaces its old one at
+        // once; misses only cover a server that did not answer at all.
+        overlay = overlay.filter { answered[$0.key] != nil || !answeredIDs.contains($0.value.server.serverId) }
         for key in overlay.keys where answered[key] == nil {
             overlay[key]?.misses += 1
         }
-        overlay = overlay.filter { $0.value.misses < Self.maxOverlayMisses }
+        overlay = overlay.filter { $0.value.misses < Self.maxMisses }
         for (key, server) in answered {
             overlay[key] = OverlayEntry(server: server)
         }
@@ -496,8 +527,10 @@ final class ServerDiscovery {
     private func publish() {
         var seen = Set<String>()
         let confirmed = lan.values.compactMap { entry -> DiscoveredServer? in
-            if case .confirmed(let server) = entry.state { return server }
-            return nil
+            switch entry.state {
+            case .confirmed(let confirmed), .confirming(_, _, let confirmed?): return confirmed.server
+            default: return nil
+            }
         }
         let candidates = (confirmed + overlay.values.map(\.server)).sorted { $0.url < $1.url }
         let all = candidates.filter { seen.insert("\($0.serverId)|\($0.route)").inserted }
