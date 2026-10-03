@@ -211,6 +211,10 @@ final class ServerDiscovery {
     /// Tailscale connecting while the screen is open.
     private var pathMonitor: NWPathMonitor?
     private var overlayProbe: Task<Void, Never>?
+    /// Re-probes on a timer too: a tailnet server can start or recover while
+    /// the network itself stays the same.
+    private var overlayRefresh: Task<Void, Never>?
+    private static let overlayRefreshInterval: Duration = .seconds(30)
     private let identity = ServerIdentityResolver()
     private let overlay = OverlayNameResolver()
     private nonisolated static let logger = Logger(subsystem: "org.siloserver.silo", category: "server.discovery")
@@ -230,6 +234,13 @@ final class ServerDiscovery {
         }
         monitor.start(queue: .main)
         pathMonitor = monitor
+        overlayRefresh = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: Self.overlayRefreshInterval)
+                guard let self, !Task.isCancelled, self.session == session else { return }
+                self.scheduleOverlayProbe(session: session)
+            }
+        }
     }
 
     /// Debounced: a VPN coming up reports several path changes in a row.
@@ -284,6 +295,8 @@ final class ServerDiscovery {
         pathMonitor = nil
         overlayProbe?.cancel()
         overlayProbe = nil
+        overlayRefresh?.cancel()
+        overlayRefresh = nil
         currentKeys = []
         lanResults = [:]
         overlayResults = []
