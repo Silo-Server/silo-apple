@@ -609,6 +609,14 @@ final class SubtitleSyncTests: XCTestCase {
         XCTAssertNil(PlaybackRealtimeSubtitleSyncUpdatedPayload(payload: outOfRange), "outside ±600000 ms")
         outOfRange["timing"] = .object(["offset_ms": .number(0), "scale": .number(1e300)])
         XCTAssertNil(PlaybackRealtimeSubtitleSyncUpdatedPayload(payload: outOfRange), "outside 0.9...1.1")
+        var hugeFile = try Self.syncUpdatePayload(status: "running")
+        hugeFile["file_id"] = .number(1e300)
+        XCTAssertNil(PlaybackRealtimeSubtitleSyncUpdatedPayload(payload: hugeFile), "a file id no Int can hold")
+        hugeFile = try Self.syncUpdatePayload(status: "running")
+        hugeFile["subtitle_id"] = .number(-1e300)
+        XCTAssertNil(try XCTUnwrap(PlaybackRealtimeSubtitleSyncUpdatedPayload(payload: hugeFile)).subtitleId)
+        let fractional: PlaybackRealtimePayload = ["n": .number(42.9)]
+        XCTAssertEqual(fractional.int(forKeys: "n"), 42, "still truncates")
         // Values from elsewhere still format without trapping.
         XCTAssertEqual(SubtitleSyncLabel.offset(Int.min).first, "\u{2212}")
         XCTAssertNotNil(SubtitleSyncLabel.scale(1e300))

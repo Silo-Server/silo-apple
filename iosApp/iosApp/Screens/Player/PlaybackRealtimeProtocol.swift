@@ -211,10 +211,13 @@ extension Dictionary where Key == String, Value == PlaybackRealtimeValue {
         return nil
     }
 
+    /// The first of `keys` holding a number, truncated toward zero as
+    /// before; nil when that number is not finite or no `Int` can hold it,
+    /// rather than trapping on a malformed event.
     func int(forKeys keys: String...) -> Int? {
         for key in keys {
             if case .number(let value)? = self[key], value.isFinite {
-                return Int(value)
+                return Int(exactly: value.rounded(.towardZero))
             }
         }
         return nil
