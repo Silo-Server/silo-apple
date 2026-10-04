@@ -2303,6 +2303,10 @@ final class DownloadManager {
             displayFillScope = loadedScope
             displayFillFailures = []
             displayFillRetryDelay = .seconds(15)
+            // The previous scope's retry neither applies here nor may hold
+            // back this scope's own.
+            displayFillRetryTask?.cancel()
+            displayFillRetryTask = nil
         }
         let ids = file.records.values
             .filter {
@@ -2331,9 +2335,10 @@ final class DownloadManager {
         guard displayFillRetryTask == nil else { return }
         let delay = displayFillRetryDelay
         displayFillRetryDelay = min(delay * 2, .seconds(300))
+        let scope = loadedScope
         displayFillRetryTask = Task { [weak self] in
             try? await Task.sleep(for: delay)
-            guard let self, !Task.isCancelled else { return }
+            guard let self, !Task.isCancelled, self.loadedScope == scope else { return }
             self.displayFillRetryTask = nil
             self.fillMissingDisplay()
         }
