@@ -52,7 +52,9 @@ struct SeriesDownloadSheet: View {
     private var existing: DownloadSubscription? { manager.subscription(forSeriesId: seriesId) }
     /// An existing monitor stays reachable, so it can be stopped, even when
     /// the server no longer offers monitoring.
-    private var canShowMonitor: Bool { manager.canMonitorSeries || existing != nil }
+    /// A new monitor also needs a rule the sheet can offer: a server that
+    /// advertises only specific seasons has none.
+    private var canShowMonitor: Bool { (manager.canMonitorSeries && !ruleRows.isEmpty) || existing != nil }
     private var isMonitoring: Bool { existing?.active == true }
 
     var body: some View {
@@ -231,7 +233,7 @@ struct SeriesDownloadSheet: View {
     private var primaryEnabled: Bool {
         switch kind {
         case .oneTime: return isAvailable(oneTime)
-        case .monitor: return manager.canMonitorSeries
+        case .monitor: return manager.canMonitorSeries && ruleRows.contains(rule)
         }
     }
 
