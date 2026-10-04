@@ -2338,8 +2338,12 @@ final class DownloadManager {
         let scope = loadedScope
         displayFillRetryTask = Task { [weak self] in
             try? await Task.sleep(for: delay)
-            guard let self, !Task.isCancelled, self.loadedScope == scope else { return }
+            // A cancelled retry was already replaced. Any other clears
+            // itself even when its scope is gone, so a finished task can't
+            // hold back the retries of a scope that comes back.
+            guard let self, !Task.isCancelled else { return }
             self.displayFillRetryTask = nil
+            guard self.loadedScope == scope else { return }
             self.fillMissingDisplay()
         }
     }

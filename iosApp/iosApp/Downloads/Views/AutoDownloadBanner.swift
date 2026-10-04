@@ -13,7 +13,9 @@ struct AutoDownloadBanner: View {
     private var schedule: AutoDownloadSchedule { AutoDownloadSchedule.shared }
 
     var body: some View {
-        if manager.canMonitorSeries, let subscription = manager.subscription(forSeriesId: seriesId) {
+        // Shown for an existing monitor even when the server no longer
+        // offers monitoring, like the Monitored list, so it can be stopped.
+        if let subscription = manager.subscription(forSeriesId: seriesId) {
             let status = schedule.status(for: subscription)
             Button {
                 showOptions = true
