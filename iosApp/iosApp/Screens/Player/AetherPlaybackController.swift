@@ -152,7 +152,12 @@ final class AetherPlaybackController {
     /// mid-playback.
     private var displaySleepActivity: NSObjectProtocol?
     private var displaySleepReleaseTask: Task<Void, Never>?
-    private static let displaySleepReleaseDelay: UInt64 = 5_000_000_000
+    /// Covers an autoplay handoff: the outgoing item pauses before the
+    /// successor's start-session (up to 15 s) and stream setup, and the
+    /// "At end" Next Up countdown adds 10 s. A manual pause resets the idle
+    /// timer and macOS's shortest idle setting is one minute, so holding this
+    /// long after a pause is invisible.
+    private static let displaySleepReleaseDelay: UInt64 = 60_000_000_000
     #endif
 
     init() throws {
@@ -667,9 +672,10 @@ final class AetherPlaybackController {
                 reason: "Silo video playback"
             )
         } else if displaySleepActivity != nil, displaySleepReleaseTask == nil {
-            // The engine passes through paused and idle for a second or two
-            // between episodes. Releasing at once would let the screen saver
-            // start in that gap after an episode watched without input.
+            // The engine stays paused or idle between episodes until the
+            // successor starts loading. Releasing at once would let the
+            // screen saver start in that gap after an episode watched
+            // without input.
             displaySleepReleaseTask = Task { [weak self] in
                 try? await Task.sleep(nanoseconds: Self.displaySleepReleaseDelay)
                 guard !Task.isCancelled, let self else { return }
