@@ -427,6 +427,7 @@ final class AetherPlaybackController {
 
     func selectSubtitleTrack(id: Int64?) {
         cueHold.release(.primary)
+        if let id, refetchStaleExternalSubtitleTrack(appTrackID: id, primary: true) { return }
         if let id, let aetherID = aetherSubtitleID(forAppID: id) {
             engine.selectSubtitleTrack(index: aetherID)
         } else {
@@ -436,6 +437,7 @@ final class AetherPlaybackController {
 
     func selectSecondarySubtitleTrack(id: Int64?) {
         cueHold.release(.secondary)
+        if let id, refetchStaleExternalSubtitleTrack(appTrackID: id, primary: false) { return }
         if let id, let aetherID = aetherSubtitleID(forAppID: id) {
             engine.selectSecondarySubtitleTrack(index: aetherID)
         } else {
@@ -519,16 +521,36 @@ final class AetherPlaybackController {
     /// load is backfilled from the copy Aether already decoded. The app id
     /// stays the same, so the picker does not change. Returns false when the
     /// id names no registered sidecar, or when an unselected track cannot be
-    /// registered again without risking an automatic selection.
+    /// registered again without risking an automatic selection; that track
+    /// is registered again when it is next selected.
     @discardableResult
     func reloadExternalSubtitleTrack(appTrackID: Int64, primary: Bool, secondary: Bool) -> Bool {
-        guard let previousID = aetherSubtitleIDByAppID[appTrackID],
-              let source = externalSubtitleSources[appTrackID] else { return false }
+        guard aetherSubtitleIDByAppID[appTrackID] != nil, externalSubtitleSources[appTrackID] != nil else { return false }
         // Registering a track runs Aether's preferred-language selection when
         // nothing is selected; an unselected reload must not turn subtitles on.
         if !primary, !secondary, activeSpec?.options.preferredSubtitleLanguages.isEmpty == false {
+            externalSubtitleSources[appTrackID]?.isStale = true
             return false
         }
+        replaceExternalSubtitleTrack(appTrackID: appTrackID, primary: primary, secondary: secondary, holdingCues: true)
+        return true
+    }
+
+    /// Selecting a stale sidecar registers it again first, so Aether fetches
+    /// its current timing. Any automatic selection the registration makes is
+    /// replaced by this one at once. Returns false when the track is not stale.
+    private func refetchStaleExternalSubtitleTrack(appTrackID: Int64, primary: Bool) -> Bool {
+        guard externalSubtitleSources[appTrackID]?.isStale == true,
+              aetherSubtitleIDByAppID[appTrackID] != nil else { return false }
+        // The cues on screen belong to another track, so nothing is held.
+        replaceExternalSubtitleTrack(appTrackID: appTrackID, primary: primary, secondary: !primary, holdingCues: false)
+        return true
+    }
+
+    private func replaceExternalSubtitleTrack(appTrackID: Int64, primary: Bool, secondary: Bool, holdingCues: Bool) {
+        guard let previousID = aetherSubtitleIDByAppID[appTrackID],
+              let source = externalSubtitleSources[appTrackID] else { return }
+        externalSubtitleSources[appTrackID]?.isStale = false
         let wasLoadingPrimary = engine.isLoadingSubtitles
         let wasLoadingSecondary = engine.isLoadingSecondarySubtitles
         isRegisteringExternalSubtitle = true
@@ -543,15 +565,14 @@ final class AetherPlaybackController {
         isRegisteringExternalSubtitle = false
         // A showing track keeps its cues on screen until the refetched ones
         // are decoded, instead of going blank while they load.
-        if primary { cueHold.begin(.primary, trackID: registered.id, alreadyLoading: wasLoadingPrimary) }
-        if secondary { cueHold.begin(.secondary, alreadyLoading: wasLoadingSecondary) }
+        if holdingCues, primary { cueHold.begin(.primary, trackID: registered.id, alreadyLoading: wasLoadingPrimary) }
+        if holdingCues, secondary { cueHold.begin(.secondary, alreadyLoading: wasLoadingSecondary) }
         // Select the new id before dropping the old one: removing a selected
         // track clears that selection.
         if primary { engine.selectSubtitleTrack(index: registered.id) }
         if secondary { engine.selectSecondarySubtitleTrack(index: registered.id) }
         engine.removeExternalSubtitleTrack(id: previousID)
         publish(.inventoryChanged)
-        return true
     }
 
     private static func declaredExternalSubtitleSources(_ spec: AetherLoadSpec) -> [Int64: ExternalSubtitleSource] {
@@ -1007,4 +1028,7 @@ extension AetherAudioSessionOwnership.Claim {
 private struct ExternalSubtitleSource {
     let track: ExternalSubtitleTrack
     let fontRequest: URLRequest?
+    /// The server changed this file's timing while it was not showing and it
+    /// could not be registered again then; it is, once it is selected.
+    var isStale = false
 }
