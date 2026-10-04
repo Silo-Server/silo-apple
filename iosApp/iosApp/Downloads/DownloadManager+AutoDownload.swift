@@ -27,12 +27,17 @@ extension DownloadManager {
             .compactMap(\.episodeId))
     }
 
-    func autoDownloadStatus(for subscription: DownloadSubscription, upcoming: [UpcomingEpisode]) -> AutoDownloadStatus {
+    func autoDownloadStatus(
+        for subscription: DownloadSubscription,
+        upcoming: [UpcomingEpisode],
+        scheduleKnown: Bool = true
+    ) -> AutoDownloadStatus {
         AutoDownloadRules.status(
             for: subscription,
             activity: autoDownloadActivity(forSeriesId: subscription.seriesId),
             upcoming: upcoming,
-            knownEpisodeIds: knownEpisodeIds(forSeriesId: subscription.seriesId)
+            knownEpisodeIds: knownEpisodeIds(forSeriesId: subscription.seriesId),
+            scheduleKnown: scheduleKnown
         )
     }
 

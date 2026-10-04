@@ -38,6 +38,9 @@ enum AutoDownloadStatus: Hashable, Sendable {
     /// Nothing is on its way; the next in-scope episode airs on this date.
     case next(UpcomingEpisode)
     case upToDate
+    /// Nothing is on its way, and the airing calendar hasn't loaded, so
+    /// whether anything is due is unknown.
+    case monitoring
 }
 
 /// The rules of a series monitor in the words the auto-download screens use.
@@ -92,6 +95,7 @@ enum AutoDownloadRules {
         activity: [AutoDownloadActivity],
         upcoming: [UpcomingEpisode],
         knownEpisodeIds: Set<String>,
+        scheduleKnown: Bool = true,
         now: Date = Date()
     ) -> AutoDownloadStatus {
         guard subscription.active else { return .paused }
@@ -120,7 +124,7 @@ enum AutoDownloadRules {
            ) {
             return .next(next)
         }
-        return .upToDate
+        return scheduleKnown ? .upToDate : .monitoring
     }
 
     // MARK: - Copy
@@ -184,6 +188,8 @@ enum AutoDownloadRules {
             return "Episode \(upcoming.episodeNumber) \(when)"
         case .upToDate:
             return "Up to date"
+        case .monitoring:
+            return "Monitoring"
         }
     }
 

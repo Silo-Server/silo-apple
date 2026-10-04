@@ -281,7 +281,10 @@ struct SeriesDownloadSheet: View {
     }
 
     private var episodeDownloaded: Bool {
-        episode.map { manager.isDownloaded(contentId: $0.contentId) || manager.isInFlight(contentId: $0.contentId) } ?? false
+        episode.map {
+            manager.isDownloaded(contentId: $0.contentId) || manager.isInFlight(contentId: $0.contentId)
+                || manager.isRegistering(contentId: $0.contentId)
+        } ?? false
     }
 
     private func isAvailable(_ row: OneTime) -> Bool {
