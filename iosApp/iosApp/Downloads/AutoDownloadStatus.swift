@@ -148,9 +148,15 @@ enum AutoDownloadRules {
         }
     }
 
+    /// The rule, plus the quality when it isn't original:
+    /// "Future episodes · 10 Mbps".
     static func ruleSummary(for subscription: DownloadSubscription) -> String {
         guard let mode = SubscriptionMode(rawValue: subscription.mode) else { return "Monitored" }
-        return ruleSummary(mode: mode, targetSeason: subscription.targetSeason, seasonNumbers: subscription.seasonNumbers)
+        let rule = ruleSummary(mode: mode, targetSeason: subscription.targetSeason, seasonNumbers: subscription.seasonNumbers)
+        guard let quality = subscription.quality.flatMap(DownloadFormat.init(rawValue:)), quality != .original else {
+            return rule
+        }
+        return "\(rule) · \(quality.displayName)"
     }
 
     /// "Season 4", "Seasons 2 and 3", "Seasons 1, 2, and 4".

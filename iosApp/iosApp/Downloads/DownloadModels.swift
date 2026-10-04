@@ -21,6 +21,11 @@ struct DownloadCapability: Codable, Hashable, Sendable {
     let seasonDownload: Bool
     let seriesMonitoring: Bool
     let monitoringModes: [String]
+    /// Season and series batches accept any of `qualityPresets`; without it
+    /// they are original only.
+    let bulkQuality: Bool
+    /// Monitors store a quality; without it they download originals.
+    let monitorQuality: Bool
 
     /// Downloads are usable only when the capability is available and this
     /// principal may use it.
@@ -44,6 +49,8 @@ struct DownloadCapability: Codable, Hashable, Sendable {
         case seasonDownload
         case seriesMonitoring
         case monitoringModes
+        case bulkQuality
+        case monitorQuality
     }
 
     init(_ wire: APIv2DownloadCapability) {
@@ -60,6 +67,8 @@ struct DownloadCapability: Codable, Hashable, Sendable {
         seasonDownload = wire.seasonDownload
         seriesMonitoring = wire.seriesMonitoring
         monitoringModes = wire.monitoringModes
+        bulkQuality = wire.bulkQuality ?? false
+        monitorQuality = wire.monitorQuality ?? false
     }
 
     /// Reads the cached copy. A copy cached before `state` and `allowed`
@@ -77,6 +86,51 @@ struct DownloadCapability: Codable, Hashable, Sendable {
         seasonDownload = try container.decode(Bool.self, forKey: .seasonDownload)
         seriesMonitoring = try container.decode(Bool.self, forKey: .seriesMonitoring)
         monitoringModes = try container.decode([String].self, forKey: .monitoringModes)
+        bulkQuality = try container.decodeIfPresent(Bool.self, forKey: .bulkQuality) ?? false
+        monitorQuality = try container.decodeIfPresent(Bool.self, forKey: .monitorQuality) ?? false
+    }
+}
+
+/// `DownloadPreparation`: where a preparing entry's file is in the server's
+/// preparation queue, or how far its encode has got.
+struct DownloadPreparation: Codable, Hashable, Sendable {
+    /// `queued`, `running`, or `retrying`.
+    let state: String
+    /// 1-based place among every queued preparation on the server.
+    let queuePosition: Int?
+    /// Encoded fraction, 0 to 1, once a running encode reports it.
+    let progress: Double?
+    /// Estimated seconds left at the encode's speed.
+    let remainingSeconds: Int?
+
+    /// The row's status line: "Waiting to prepare · 3rd in line",
+    /// "Preparing · 35% · 6 min left".
+    var statusLine: String {
+        switch state {
+        case "queued":
+            guard let position = queuePosition, position > 0 else { return "Waiting to prepare" }
+            if position == 1 { return "Waiting to prepare · next in line" }
+            let formatter = NumberFormatter()
+            formatter.numberStyle = .ordinal
+            let ordinal = formatter.string(from: NSNumber(value: position)) ?? "#\(position)"
+            return "Waiting to prepare · \(ordinal) in line"
+        case "retrying":
+            return "Preparing · trying again soon"
+        default:
+            guard let progress else { return "Preparing on server…" }
+            var parts = ["Preparing", "\(Int((progress * 100).rounded(.down)))%"]
+            if let remainingSeconds { parts.append(Self.timeLeft(remainingSeconds)) }
+            return parts.joined(separator: " · ")
+        }
+    }
+
+    /// "under a minute left", "6 min left", "1 hr 5 min left".
+    static func timeLeft(_ seconds: Int) -> String {
+        if seconds < 60 { return "under a minute left" }
+        let minutes = (seconds + 59) / 60
+        if minutes < 60 { return "\(minutes) min left" }
+        let rest = minutes % 60
+        return rest == 0 ? "\(minutes / 60) hr left" : "\(minutes / 60) hr \(rest) min left"
     }
 }
 
@@ -468,6 +522,9 @@ struct ServerSubscription: Decodable, Hashable, Sendable {
     let seasonNumbers: [Int]
     let deleteWatched: Bool
     let maxStorageBytes: Int64
+    /// Absent from servers without `monitorQuality`, whose monitors download
+    /// originals.
+    let quality: String?
     let active: Bool
     let createdAt: Date
     let updatedAt: Date
@@ -505,6 +562,8 @@ struct CreateSubscriptionRequest: Encodable, Hashable, Sendable {
     let seasonNumbers: [Int]?
     let deleteWatched: Bool
     let maxStorageBytes: Int64
+    /// Sent only to a server with `monitorQuality`.
+    var quality: String? = nil
 }
 
 /// `DownloadSubscriptionPatchBody`. A nil field is omitted, never sent as
@@ -515,6 +574,7 @@ struct UpdateSubscriptionRequest: Encodable, Hashable, Sendable {
     let deleteWatched: Bool?
     let maxStorageBytes: Int64?
     let active: Bool?
+    var quality: String? = nil
 }
 
 // MARK: - Local persistence types
@@ -627,6 +687,9 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     /// The latest local status event the server has not answered yet. A
     /// retry resends exactly this event.
     var pendingStatusEvent: DownloadStatusEvent? = nil
+    /// The server's preparation queue position or encode progress, while
+    /// the entry is preparing.
+    var preparation: DownloadPreparation? = nil
     /// The media file's exact size from the manifest's integrity block, when
     /// the server sends one. A finished transfer of any other size is
     /// discarded and downloaded again.
@@ -676,6 +739,8 @@ struct DownloadSubscription: Codable, Identifiable, Hashable, Sendable {
     var seasonNumbers: [Int]?
     var deleteWatched: Bool
     var maxStorageBytes: Int64
+    /// The quality the monitor downloads in; nil reads as original.
+    var quality: String?
     var active: Bool
     /// The monitor's validator when it was last read. Nil for a monitor
     /// stored before validators were kept; writes read it first.
@@ -690,6 +755,7 @@ struct DownloadSubscription: Codable, Identifiable, Hashable, Sendable {
         self.seasonNumbers = server.seasonNumbers
         self.deleteWatched = server.deleteWatched
         self.maxStorageBytes = server.maxStorageBytes
+        self.quality = server.quality
         self.active = server.active
         self.etag = server.etag
     }

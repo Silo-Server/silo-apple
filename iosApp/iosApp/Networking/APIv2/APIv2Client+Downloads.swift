@@ -115,7 +115,7 @@ extension APIv2Client {
                 return entry.id == id && entry.revision >= revision
             }
             return true
-        case let .seriesPage(seriesId, _, batchId, _):
+        case let .seriesPage(seriesId, _, batchId, _, _):
             guard created.batchId == batchId,
                   created.items.count + created.skipped.count <= downloadRegistryPageLimit,
                   created.items.allSatisfy({ $0.contentId == seriesId && $0.episodeId?.isEmpty == false }) else {

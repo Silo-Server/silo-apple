@@ -6,9 +6,10 @@ import UIKit
 
 /// The series Download action. "One Time" downloads an episode, a season,
 /// or every episode now. "Monitor" keeps a series downloading: All
-/// Episodes, Future Episodes, or Last Season. The monitor's retention
-/// fields (`delete_watched`, `max_storage_bytes`) are enforced on the
-/// device; the server only soft-gates registration.
+/// Episodes, Future Episodes, or Last Season. Both start at the quality
+/// set in Settings and can override it. The monitor's retention fields
+/// (`delete_watched`, `max_storage_bytes`) are enforced on the device; the
+/// server only soft-gates registration.
 struct SeriesDownloadSheet: View {
     let seriesId: String
     let seriesTitle: String
@@ -43,6 +44,8 @@ struct SeriesDownloadSheet: View {
     @State private var rule: Rule = .mode(.future)
     @State private var deleteWatched = DownloadSettings.shared.defaultDeleteWatched
     @State private var maxStorageBytes = Int64(DownloadSettings.shared.defaultMaxStorageGB) * DownloadSettings.bytesPerGB
+    @State private var oneTimeQuality = DownloadFormat.original.rawValue
+    @State private var monitorQuality = DownloadFormat.original.rawValue
     @State private var loadedSeasons: [Season] = []
     @State private var prefilled = false
     @State private var isWorking = false
@@ -81,6 +84,9 @@ struct SeriesDownloadSheet: View {
                             Option(id: AnyHashable(row), title: title(for: row), detail: detail(for: row),
                                    selected: oneTime == row, enabled: isAvailable(row)) { oneTime = row }
                         })
+                        card {
+                            qualityRow(selection: $oneTimeQuality, locked: oneTimeQualityLocked)
+                        }
                     } else {
                         optionList(ruleRows.map { row in
                             Option(id: AnyHashable(row), title: title(for: row), detail: detail(for: row),
@@ -126,6 +132,7 @@ struct SeriesDownloadSheet: View {
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
         #endif
+        .onChange(of: manager.availableFormats) { _, _ in clampQualities() }
         .task {
             prefill()
             await loadSeasonsIfNeeded()
@@ -199,8 +206,71 @@ struct SeriesDownloadSheet: View {
             .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color.white.opacity(0.06)))
     }
 
+    /// The presets this user may download in, in the server's order, plus
+    /// `kept` when it isn't one, so an existing monitor's stored quality
+    /// stays representable.
+    private func qualityChoices(keeping kept: String?) -> [DownloadFormat] {
+        var formats = manager.availableFormats
+        if formats.isEmpty { formats = [.original] }
+        if let kept, let stored = DownloadFormat(rawValue: kept), !formats.contains(stored) {
+            formats.append(stored)
+        }
+        return formats
+    }
+
+    /// A one-time or new-monitor choice the server no longer offers falls
+    /// back to the Settings default, so the menu never shows a quality the
+    /// request wouldn't use. An existing monitor keeps its stored quality.
+    private func clampQualities() {
+        let allowed = manager.capability?.qualityPresets ?? []
+        let preferred = DownloadSettings.shared.resolvedFormat(allowedFormats: allowed)
+        if !allowed.contains(oneTimeQuality) { oneTimeQuality = preferred }
+        if existing == nil, !allowed.contains(monitorQuality) { monitorQuality = preferred }
+    }
+
+    private func qualityLabel(_ raw: String) -> String {
+        guard let format = DownloadFormat(rawValue: raw) else { return raw }
+        return manager.capability?.label(for: format) ?? format.displayName
+    }
+
+    /// A quality menu. `locked` shows Original alone, for a server that
+    /// downloads seasons or monitors only in original quality.
+    private func qualityRow(selection: Binding<String>, locked: Bool, keeping kept: String? = nil) -> some View {
+        let choices = qualityChoices(keeping: kept)
+        let isMenu = !locked && choices.count > 1
+        return HStack {
+            // The menu carries its own "Quality" label for VoiceOver.
+            Text("Quality")
+                .foregroundColor(.siloOnSurface)
+                .accessibilityHidden(isMenu)
+            Spacer()
+            if !isMenu {
+                Text(locked ? DownloadFormat.original.displayName : qualityLabel(selection.wrappedValue))
+                    .foregroundColor(.siloSecondaryText)
+                    .padding(.trailing, 10)
+                    .padding(.vertical, 7)
+            } else {
+                Picker("Quality", selection: selection) {
+                    ForEach(choices, id: \.self) { format in
+                        Text(qualityLabel(format.rawValue)).tag(format.rawValue)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .tint(.siloSecondaryText)
+            }
+        }
+        .padding(.leading, 16)
+        .padding(.trailing, 6)
+        .padding(.vertical, 4)
+        .accessibilityElement(children: isMenu ? .contain : .combine)
+    }
+
     private var settingsCard: some View {
         card {
+            qualityRow(selection: $monitorQuality, locked: !manager.canChooseMonitorQuality,
+                       keeping: existing.map { $0.quality ?? DownloadFormat.original.rawValue })
+            Divider().overlay(Color.siloDivider).padding(.leading, 16)
             Toggle("Delete after watching", isOn: $deleteWatched)
                 .tint(.siloSwitchOn)
                 .foregroundColor(.siloOnSurface)
@@ -321,6 +391,13 @@ struct SeriesDownloadSheet: View {
         }
     }
 
+    /// A season or series download on a server that takes them only in
+    /// original quality.
+    private var oneTimeQualityLocked: Bool { oneTime != .episode && !manager.canChooseBatchQuality }
+
+    private var oneTimeEffectiveQuality: String {
+        oneTimeQualityLocked ? DownloadFormat.original.rawValue : oneTimeQuality
+    }
 
     private func downloadOnce() {
         isWorking = true
@@ -336,15 +413,14 @@ struct SeriesDownloadSheet: View {
                         displaySubtitle: "S\(episode.seasonNumber) · E\(episode.episodeNumber)",
                         posterThumbhash: posterThumbhash,
                         fileId: episodeFileId,
-                        quality: DownloadSettings.shared.resolvedFormat(
-                            allowedFormats: manager.capability?.qualityPresets ?? []
-                        )
+                        quality: oneTimeQuality
                     )
                 case .season:
                     guard let season = oneTimeSeason else { break }
-                    try await manager.downloadSeason(seriesId: seriesId, seasonNumber: season.seasonNumber)
+                    try await manager.downloadSeason(
+                        seriesId: seriesId, seasonNumber: season.seasonNumber, quality: oneTimeEffectiveQuality)
                 case .all:
-                    try await manager.downloadSeries(seriesId: seriesId)
+                    try await manager.downloadSeries(seriesId: seriesId, quality: oneTimeEffectiveQuality)
                 }
                 dismiss()
             } catch DownloadError.registrationAlreadyInFlight {
@@ -417,8 +493,17 @@ struct SeriesDownloadSheet: View {
         return Self.rule(for: existing) != rule
             || existing.deleteWatched != deleteWatched
             || existing.maxStorageBytes != maxStorageBytes
+            || monitorQualityChange(from: existing) != nil
     }
 
+    /// The quality to send, or nil when it stays as stored. An unchanged
+    /// quality is never resent: the server rechecks transcode permission
+    /// for any quality it receives.
+    private func monitorQualityChange(from existing: DownloadSubscription?) -> String? {
+        guard manager.canChooseMonitorQuality else { return nil }
+        guard let existing else { return monitorQuality }
+        return (existing.quality ?? DownloadFormat.original.rawValue) == monitorQuality ? nil : monitorQuality
+    }
 
     private static func rule(for subscription: DownloadSubscription) -> Rule {
         let mode = SubscriptionMode(rawValue: subscription.mode) ?? .future
@@ -436,17 +521,20 @@ struct SeriesDownloadSheet: View {
                 switch (rule, existing) {
                 case (.custom, let existing?):
                     try await manager.updateSubscription(
-                        id: existing.id, deleteWatched: deleteWatched, maxStorageBytes: maxStorageBytes, active: true)
+                        id: existing.id, deleteWatched: deleteWatched, maxStorageBytes: maxStorageBytes, active: true,
+                        quality: monitorQualityChange(from: existing))
                 case (.mode(let mode), let existing?):
                     // An unchanged rule isn't resent: the server may no longer
                     // accept it as a new choice.
                     try await manager.updateSubscription(
                         id: existing.id, mode: rule == Self.rule(for: existing) ? nil : mode,
-                        deleteWatched: deleteWatched, maxStorageBytes: maxStorageBytes, active: true)
+                        deleteWatched: deleteWatched, maxStorageBytes: maxStorageBytes, active: true,
+                        quality: monitorQualityChange(from: existing))
                 case (.mode(let mode), nil):
                     try await manager.createSubscription(
                         seriesId: seriesId, seriesTitle: seriesTitle, mode: mode, seasonNumbers: nil,
-                        deleteWatched: deleteWatched, maxStorageBytes: maxStorageBytes)
+                        deleteWatched: deleteWatched, maxStorageBytes: maxStorageBytes,
+                        quality: monitorQualityChange(from: nil))
                 case (.custom, nil):
                     break
                 }
@@ -482,14 +570,20 @@ struct SeriesDownloadSheet: View {
     private var summary: String {
         switch kind {
         case .oneTime:
-            return oneTime == .episode ? "" : "Season and series downloads use original quality."
+            if oneTime == .episode { return "" }
+            if oneTimeQualityLocked { return "This server downloads seasons in original quality." }
+            return oneTimeQuality == DownloadFormat.original.rawValue
+                ? "" : "Episodes the server can't convert to this quality are skipped."
         case .monitor:
             let mode: SubscriptionMode
             switch rule {
             case .mode(let picked): mode = picked
             case .custom: mode = .specificSeasons
             }
-            var sentence = "Monitored episodes download in original quality."
+            let quality = manager.canChooseMonitorQuality ? monitorQuality : DownloadFormat.original.rawValue
+            var sentence = quality == DownloadFormat.original.rawValue
+                ? "Monitored episodes download in original quality."
+                : "Monitored episodes download at \(DownloadFormat(rawValue: quality)?.displayName ?? quality)."
             if let next = AutoDownloadRules.nextEpisode(
                 mode: mode,
                 targetSeason: mode == .latestSeason ? latestSeasonNumber : nil,
@@ -514,7 +608,11 @@ struct SeriesDownloadSheet: View {
     private func prefill() {
         guard !prefilled else { return }
         prefilled = true
+        let preferred = DownloadSettings.shared.resolvedFormat(allowedFormats: manager.capability?.qualityPresets ?? [])
+        oneTimeQuality = preferred
+        monitorQuality = preferred
         if let existing {
+            monitorQuality = existing.quality ?? DownloadFormat.original.rawValue
             rule = Self.rule(for: existing)
             deleteWatched = existing.deleteWatched
             maxStorageBytes = existing.maxStorageBytes
