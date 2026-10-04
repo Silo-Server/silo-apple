@@ -28,7 +28,7 @@ final class AutoDownloadSchedule {
     private static let seriesInfoConcurrency = 4
 
     private(set) var upcomingBySeries: [String: [UpcomingEpisode]] = [:]
-    private(set) var seriesInfo: [String: SeriesInfo] = [:]
+    private var seriesInfo: [String: SeriesInfo] = [:]
     /// When a series' detail read last failed; it isn't read again until the
     /// refresh interval passes.
     private var seriesInfoFailedAt: [String: Date] = [:]
@@ -41,6 +41,11 @@ final class AutoDownloadSchedule {
     private var loading: (scope: String, token: UUID, task: Task<Void, Never>)?
 
     private var manager: DownloadManager { DownloadManager.shared }
+
+    /// A monitored series' title and poster, for the active scope only.
+    func info(forSeriesId seriesId: String) -> SeriesInfo? {
+        stateIsCurrent ? seriesInfo[seriesId] : nil
+    }
 
     func upcoming(forSeriesId seriesId: String) -> [UpcomingEpisode] {
         guard stateIsCurrent else { return [] }
@@ -132,6 +137,9 @@ final class AutoDownloadSchedule {
     /// Reads the title and poster of monitored series this scope hasn't
     /// loaded, a few at a time.
     private func loadMissingSeriesInfo() async {
+        // A scope change since the last refresh drops the old scope's data
+        // before this one's is stored alongside it.
+        resetIfScopeChanged()
         let key = currentScopeKey
         let now = Date()
         let missing = Array(Set(manager.subscriptions.map(\.seriesId).filter {
