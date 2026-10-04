@@ -157,6 +157,24 @@ actor SiloAI {
     func resetStoredSubtitleTiming(id: String, mediaFileId: Int) async throws -> DownloadedSubtitle {
         try await v2.setStoredSubtitleTiming(id: id, mediaFileID: mediaFileId, timing: .identity)
     }
+
+    // MARK: - Subtitle sync by sync key
+
+    func subtitleSyncStates(mediaFileId: Int) async throws -> [SubtitleSyncState] {
+        try await v2.subtitleSyncStates(mediaFileID: mediaFileId)
+    }
+
+    func subtitleSyncState(mediaFileId: Int, key: String) async throws -> SubtitleSyncState {
+        try await v2.subtitleSyncState(mediaFileID: mediaFileId, key: key)
+    }
+
+    func startSubtitleSync(mediaFileId: Int, key: String) async throws -> SubtitleSyncState {
+        try await v2.startSubtitleSync(mediaFileID: mediaFileId, key: key)
+    }
+
+    func resetSubtitleTiming(mediaFileId: Int, key: String) async throws -> SubtitleSyncState {
+        try await v2.setSubtitleTiming(mediaFileID: mediaFileId, key: key, timing: .identity)
+    }
 }
 
 /// What makes two subtitle job requests the same request: the owner, the

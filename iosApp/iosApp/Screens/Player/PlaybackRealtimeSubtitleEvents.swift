@@ -158,7 +158,7 @@ enum PlaybackRealtimeSubtitleEvent: Equatable {
                 label: payload.string(forKeys: "label")
             ))
 
-        case .chapterThumbnailReady, .markersUpdated, .subtitleTimingChanged, .unknown:
+        case .chapterThumbnailReady, .markersUpdated, .subtitleTimingChanged, .subtitleSyncUpdated, .unknown:
             return nil
         }
     }

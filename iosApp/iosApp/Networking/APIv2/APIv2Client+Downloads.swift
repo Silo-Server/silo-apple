@@ -194,9 +194,9 @@ extension APIv2Client {
     }
 
     /// Fetches a subtitle file the entry's manifest names unless the saved
-    /// copy still matches `entityTag`. A stored (`downloaded:{id}`) subtitle
-    /// is delivered with its timing correction applied, so the server
-    /// revalidates it: its ETag follows the subtitle's revision.
+    /// copy still matches `entityTag`. A stored (`downloaded:{id}`) or
+    /// external subtitle is delivered with its timing correction applied, so
+    /// the server revalidates it: its ETag follows the delivered bytes.
     func revalidateDownloadSubtitle(path: String, downloadId: String, entityTag: String?,
                                     auth: CapturedOrdinaryRequestAuth) async throws -> DownloadSubtitleRevalidation {
         guard let assetPath = Self.downloadAssetPath(path, downloadId: downloadId) else {

@@ -25,6 +25,8 @@ struct TrackSelectionSheet: View {
                 if !viewModel.subtitleTracks.isEmpty {
                     Section("Subtitles") { subtitleRows(isSecondary: false) }
 
+                    timingSection
+
                     if viewModel.supportsSecondarySubtitles,
                        viewModel.selectedSubtitleId != nil,
                        !viewModel.availableSecondarySubtitleTracks.isEmpty {
@@ -32,14 +34,12 @@ struct TrackSelectionSheet: View {
                     }
                 }
 
-                storedTimingSection
-
                 if aiSubtitlesAvailable || viewModel.subtitleSearchVisible {
                     subtitleToolsSection
                 }
             }
             .listStyle(.insetGrouped)
-            .onAppear { viewModel.refreshStoredSubtitleSync() }
+            .onAppear { viewModel.refreshSubtitleSync() }
             .navigationTitle("Audio & Subtitles")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -122,7 +122,7 @@ struct TrackSelectionSheet: View {
                 detail: track.languageFirstDetailLabel,
                 attributes: pills.isEmpty ? nil : pills.joined(separator: " · "),
                 pills: pills,
-                status: viewModel.storedSubtitleStatus(for: track),
+                status: viewModel.subtitleSyncStatus(for: track),
                 isSelected: isSelected,
                 isDisabled: isDisabled
             ) {
@@ -135,37 +135,58 @@ struct TrackSelectionSheet: View {
         }
     }
 
-    /// "Sync Subtitle" and "Reset Timing" for the selected stored track.
-    /// Retiming changes the subtitle for everyone watching the file, so the
-    /// server allows it only for the account that added it or an admin; a
-    /// refusal replaces the actions with a short explanation.
+    /// "Sync to Audio" and "Reset Timing" for the selected track, stored or a
+    /// file next to the media, with a running sync's progress and the last
+    /// result. Anyone who can play the file may retime it; a refusal (demo
+    /// mode) replaces the actions with a short explanation.
     @ViewBuilder
-    private var storedTimingSection: some View {
-        let sync = viewModel.storedSubtitleSync
-        if let id = viewModel.selectedStoredSubtitleId, let entry = sync.entry(for: id),
+    private var timingSection: some View {
+        let sync = viewModel.subtitleSync
+        if let key = viewModel.selectedSubtitleSyncKey, let entry = sync.entry(for: key),
            sync.showsTimingControls(entry) {
             Section {
                 if entry.isForbidden {
-                    Text(StoredSubtitleSyncModel.forbiddenMessage)
+                    Text(sync.forbiddenMessage)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 } else {
                     if sync.canSync(entry) {
                         Button {
-                            Task { await sync.requestSync(id: id) }
+                            Task { await sync.requestSync(key: key) }
                         } label: {
-                            Label(entry.isInProgress ? "Syncing…" : "Sync Subtitle", systemImage: "waveform")
+                            Label(entry.isInProgress ? "Syncing…" : "Sync to Audio", systemImage: "waveform")
                         }
                         .disabled(entry.isBusy || entry.isInProgress)
                     }
                     if entry.canReset {
                         Button {
-                            Task { await sync.resetTiming(id: id) }
+                            Task { await sync.resetTiming(key: key) }
                         } label: {
                             Label("Reset Timing", systemImage: "arrow.uturn.backward")
                         }
                         .disabled(entry.isBusy || entry.isInProgress)
                     }
+                }
+                if let job = entry.job, job.isInProgress {
+                    VStack(alignment: .leading, spacing: 6) {
+                        SubtitleSyncProgressBar(percent: SubtitleSyncLabel.percent(job) ?? 0)
+                        if let phase = SubtitleSyncLabel.phase(job) {
+                            Text(phase)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                if let result = entry.result {
+                    Label {
+                        Text(result.text)
+                    } icon: {
+                        Image(systemName: result.isWarning ? "exclamationmark.triangle.fill" : "checkmark.circle")
+                            .foregroundStyle(result.isWarning ? Color.siloWarning : Color.secondary)
+                    }
+                    .font(.footnote)
+                    .foregroundStyle(result.isWarning ? Color.siloWarning : Color.secondary)
                 }
                 if let error = entry.error {
                     Text(error)
@@ -174,6 +195,10 @@ struct TrackSelectionSheet: View {
                 }
             } header: {
                 Text("Timing")
+            } footer: {
+                if !entry.isForbidden, sync.canSync(entry), !entry.isInProgress, entry.result == nil {
+                    Text(entry.actionNote)
+                }
             }
         }
     }
@@ -212,7 +237,7 @@ private struct TrackSelectionRow: View {
     var detail: String? = nil
     let attributes: String?
     var pills: [String] = []
-    /// A stored subtitle's sync status ("Synced −3.2 s").
+    /// A subtitle's sync status ("Syncing… 40%", "Synced −3.0 s").
     var status: String? = nil
     let isSelected: Bool
     var isDisabled: Bool = false

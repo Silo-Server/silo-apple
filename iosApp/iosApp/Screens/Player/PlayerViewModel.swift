@@ -255,7 +255,12 @@ class PlayerViewModel {
     var title: String = ""
     var isLoading = true
     var isBuffering = false
-    var isLoadingSubtitles = false
+    var isLoadingSubtitles = false {
+        didSet {
+            guard isLoadingSubtitles != oldValue else { return }
+            subtitleSync.setActiveTrackLoading(isLoadingSubtitles)
+        }
+    }
     /// Fill progress (0–100) toward the buffering-resume threshold; nil
     /// when not buffering or when the active backend doesn't report it.
     var bufferingProgress: Double?
@@ -271,7 +276,9 @@ class PlayerViewModel {
     var activeNotice: PlayerNotice?
     var remoteDismissToken: UUID?
     var audioTracks: [PlayerTrack] = []
-    var subtitleTracks: [PlayerTrack] = []
+    var subtitleTracks: [PlayerTrack] = [] {
+        didSet { updateSubtitleSyncActiveTrack() }
+    }
     /// Realtime AI cues stay in Silo's product layer because Aether 6.34 does
     /// not expose a host cue-injection API. The presentation overlay merges
     /// these normalized source-time cues with Aether's decoded cue arrays.
@@ -288,7 +295,12 @@ class PlayerViewModel {
     /// See IntroSkipPrompt.swift and the server's intro-skip-mode spec.
     let introSkipPrompt = IntroSkipPrompt()
     var selectedAudioId: Int64?
-    var selectedSubtitleId: Int64?
+    var selectedSubtitleId: Int64? {
+        didSet {
+            guard selectedSubtitleId != oldValue else { return }
+            updateSubtitleSyncActiveTrack()
+        }
+    }
     var selectedSecondarySubtitleId: Int64?
     var qualityOptions: [ApplePlaybackQualityOption] = [ApplePlaybackQuality.auto]
     var activeQualityId: String = ApplePlaybackQuality.autoId
@@ -566,16 +578,14 @@ class PlayerViewModel {
         )
     }
 
-    /// Timing and sync state of the playing file's stored subtitles. A timing
-    /// change it observes fetches that track's cues again.
+    /// Timing and sync state of the playing file's syncable subtitles (stored
+    /// ones and sidecar files). A timing change it observes fetches that
+    /// track's cues again.
+    ///
+    /// Not lazy: track and loading changes report to it from teardown paths,
+    /// where creating it (and its weak back-reference) is not allowed.
     @ObservationIgnored
-    private(set) lazy var storedSubtitleSync: StoredSubtitleSyncModel = MainActor.assumeIsolated {
-        let model = StoredSubtitleSyncModel()
-        model.onTimingChanged = { [weak self] storedId in
-            self?.refetchStoredSubtitleCues(storedId: storedId)
-        }
-        return model
-    }
+    let subtitleSync = SubtitleSyncModel()
 
     /// Last-known realtime websocket connectivity, mirrored from the actor so
     /// the synchronous subtitle-AI submit path can tell the difference between
@@ -1033,6 +1043,9 @@ class PlayerViewModel {
             guard let self else { return }
             self.scrubPreviewImage = preview?.image
             self.scrubPreviewImageSourceTime = preview?.sourceTime
+        }
+        subtitleSync.onTimingChanged = { [weak self] key in
+            self?.refetchSubtitleCues(syncKey: key)
         }
         aetherPlaybackController.onEvent = { [weak self] event in
             self?.handleAetherEvent(event)
@@ -6035,9 +6048,10 @@ class PlayerViewModel {
             },
             register: { listing, position in
                 // Provider downloads are synced automatically; follow the job
-                // so the cues are fetched again once it applies.
-                self.storedSubtitleSync.bind(mediaFileId: fileId)
-                self.storedSubtitleSync.remember(listing[position])
+                // so the cues are fetched again once it applies, and report
+                // it to the viewer who downloaded it.
+                self.subtitleSync.bind(mediaFileId: fileId)
+                self.subtitleSync.remember(listing[position])
                 guard let context = self.makeSubtitleHandoffContext(),
                       let descriptor = listing[position].synthesizedDescriptor(
                           sessionId: context.sessionId,
@@ -6051,21 +6065,23 @@ class PlayerViewModel {
         )
     }
 
-    // MARK: - Stored subtitle sync
+    // MARK: - Subtitle sync
 
-    /// The stored-subtitle ID behind a sidecar row, read from the
-    /// `downloaded_subtitle_id` pin the server puts on a downloaded track's
-    /// URL, the only carrier of that ID the player has. Nil for embedded,
-    /// external, live, and offline tracks.
-    func storedSubtitleId(for track: PlayerTrack) -> String? {
-        guard SubtitleTrackIdSpace.isSidecar(track.trackId), !SubtitleTrackIdSpace.isAILive(track.trackId) else {
+    /// The sync key of a subtitle row: the inventory's `sync_key`, or, from a
+    /// server that predates sync keys, `stored-{id}` read from the
+    /// `downloaded_subtitle_id` pin on a downloaded track's URL. Nil for
+    /// embedded, live, and offline tracks; the inventory also leaves it off
+    /// formats that cannot be retimed.
+    func subtitleSyncKey(for track: PlayerTrack) -> String? {
+        guard offlinePlaybackContext == nil, SubtitleTrackIdSpace.isSidecar(track.trackId),
+              !SubtitleTrackIdSpace.isAILive(track.trackId) else {
             return nil
         }
         let ordinal = track.srcId ?? SubtitleTrackIdSpace.sidecarIndex(from: track.trackId)
-        let url = activePreparedProtocolV3?.plan.subtitle.inventory
-            .first(where: { $0.combinedIndex == ordinal })?.url
-            ?? knownExternalSubtitles.first(where: { $0.index == ordinal })?.url
-        return url.flatMap(Self.storedSubtitleId(fromURL:))
+        let item = activePreparedProtocolV3?.plan.subtitle.inventory.first(where: { $0.combinedIndex == ordinal })
+        if let key = item?.syncKey, !key.isEmpty { return key }
+        let url = item?.url ?? knownExternalSubtitles.first(where: { $0.index == ordinal })?.url
+        return url.flatMap(Self.storedSubtitleId(fromURL:)).map(SubtitleSyncState.storedKey)
     }
 
     static func storedSubtitleId(fromURL url: String) -> String? {
@@ -6076,43 +6092,51 @@ class PlayerViewModel {
         return raw
     }
 
-    /// A stored subtitle row's sync status ("Synced −3.2 s"), once read.
-    func storedSubtitleStatus(for track: PlayerTrack) -> String? {
-        storedSubtitleSync.entry(for: storedSubtitleId(for: track))?.statusLabel
+    /// A subtitle row's sync status ("Syncing… 40%", "Synced −3.0 s"), once
+    /// read.
+    func subtitleSyncStatus(for track: PlayerTrack) -> String? {
+        subtitleSync.statusLabel(for: subtitleSyncKey(for: track))
     }
 
-    /// The stored-subtitle ID of the selected primary track, when it is one.
-    var selectedStoredSubtitleId: String? {
+    /// The sync key of the selected primary track, when it has one.
+    var selectedSubtitleSyncKey: String? {
         selectedSubtitleId
             .flatMap { id in subtitleTracks.first(where: { $0.trackId == id }) }
-            .flatMap(storedSubtitleId(for:))
+            .flatMap(subtitleSyncKey(for:))
     }
 
-    /// Points the sync model at the playing file and re-reads its stored
+    /// Points the sync model at the playing file and re-reads its syncable
     /// subtitles. Called when a subtitle menu opens, so a job that finished
     /// meanwhile shows its result.
-    func refreshStoredSubtitleSync() {
-        guard offlinePlaybackContext == nil else { return }
-        storedSubtitleSync.bind(mediaFileId: currentSelectedVersion?.fileId)
-        guard subtitleTracks.contains(where: { storedSubtitleId(for: $0) != nil }) else { return }
-        Task { await storedSubtitleSync.reload() }
+    func refreshSubtitleSync() {
+        updateSubtitleSyncActiveTrack()
+        guard offlinePlaybackContext == nil,
+              subtitleTracks.contains(where: { subtitleSyncKey(for: $0) != nil }) else { return }
+        Task { await subtitleSync.reload() }
     }
 
-    /// Fetches a stored subtitle's cues again after the server changed its
-    /// timing. The track's URL is unchanged and serves the new timing, but
-    /// the engine keeps the cues it already fetched. A registered track that
-    /// is not selected is registered again too: a track declared at load
-    /// would otherwise backfill the old cues when it is selected later. A
+    /// Tells the sync model which file plays and which track is on screen,
+    /// so it can tell when a retimed track's new cues show.
+    private func updateSubtitleSyncActiveTrack() {
+        subtitleSync.bind(mediaFileId: offlinePlaybackContext == nil ? currentSelectedVersion?.fileId : nil)
+        subtitleSync.setActiveTrack(key: selectedSubtitleSyncKey)
+    }
+
+    /// Fetches a subtitle's cues again after the server changed its timing.
+    /// The track's URL is unchanged and serves the new timing, but the
+    /// engine keeps the cues it already fetched. A registered track that is
+    /// not selected is registered again too: a track declared at load would
+    /// otherwise backfill the old cues when it is selected later. A
     /// burned-in track keeps the old timing until the next replan.
-    private func refetchStoredSubtitleCues(storedId: String) {
-        for track in subtitleTracks where storedSubtitleId(for: track) == storedId {
+    private func refetchSubtitleCues(syncKey: String) {
+        for track in subtitleTracks where subtitleSyncKey(for: track) == syncKey {
             let primary = track.trackId == selectedSubtitleId
             let secondary = track.trackId == selectedSecondarySubtitleId
             let reloaded = aetherPlaybackController.reloadExternalSubtitleTrack(
                 appTrackID: track.trackId, primary: primary, secondary: secondary
             )
             Self.logger.info(
-                "[CMP-SUB] stored subtitle timing changed; refetch trackId=\(track.trackId, privacy: .public) primary=\(primary, privacy: .public) secondary=\(secondary, privacy: .public) reloaded=\(reloaded, privacy: .public)"
+                "[CMP-SUB] subtitle timing changed; refetch trackId=\(track.trackId, privacy: .public) primary=\(primary, privacy: .public) secondary=\(secondary, privacy: .public) reloaded=\(reloaded, privacy: .public)"
             )
         }
     }
@@ -6648,7 +6672,7 @@ class PlayerViewModel {
         locallyRegisteredSidecarSubtitleTracks = []
         localProtocolV3SubtitleSelection = nil
         subtitleAI.reset()
-        storedSubtitleSync.bind(mediaFileId: nil)
+        subtitleSync.bind(mediaFileId: nil)
         deferredLiveSubtitleCloseTask?.cancel()
         deferredLiveSubtitleCloseTask = nil
         pendingLiveSubtitleCloseTrackId = nil
@@ -6849,8 +6873,21 @@ class PlayerViewModel {
             guard let fileId = currentSelectedVersion?.fileId, payload.fileId == fileId else {
                 return
             }
-            storedSubtitleSync.bind(mediaFileId: fileId)
-            storedSubtitleSync.timingChanged(id: payload.subtitleId)
+            subtitleSync.bind(mediaFileId: fileId)
+            subtitleSync.timingChanged(key: payload.syncKey)
+        case .subtitleSyncUpdated:
+            guard let payload = PlaybackRealtimeSubtitleSyncUpdatedPayload(payload: event.payload) else {
+                Self.logger.warning("[CMP-SUB] ignored malformed subtitle_sync_updated event")
+                return
+            }
+            if let payloadSessionId = payload.sessionId, payloadSessionId != event.sessionId {
+                return
+            }
+            guard let fileId = currentSelectedVersion?.fileId, payload.fileId == fileId else {
+                return
+            }
+            subtitleSync.bind(mediaFileId: fileId)
+            subtitleSync.syncUpdated(payload)
         case .subtitleTranslationStarted,
              .subtitleTranslationCues,
              .subtitleTranslationCompleted,

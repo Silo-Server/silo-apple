@@ -98,9 +98,9 @@ struct MacPlayerOptionsPanel: View {
                         .padding(.top, 4)
                 }
 
-                storedTimingControls
+                timingControls
             }
-            .onAppear { viewModel.refreshStoredSubtitleSync() }
+            .onAppear { viewModel.refreshSubtitleSync() }
         case .chapters:
             optionList {
                 if viewModel.chapters.isEmpty {
@@ -243,42 +243,63 @@ struct MacPlayerOptionsPanel: View {
             parts.append(attributes)
         }
         parts.append(track.isExternal ? "External" : "Embedded")
-        if let status = viewModel.storedSubtitleStatus(for: track) {
+        if let status = viewModel.subtitleSyncStatus(for: track) {
             parts.append(status)
         }
         return parts.joined(separator: " · ")
     }
 
-    /// "Sync Subtitle" and "Reset Timing" for the selected stored track. The
-    /// server allows them only for the account that added it or an admin.
+    /// "Sync to Audio" and "Reset Timing" for the selected track, stored or a
+    /// file next to the media, with a running sync's progress and the last
+    /// result. Anyone who can play the file may retime it; a refusal (demo
+    /// mode) replaces the actions with a short explanation.
     @ViewBuilder
-    private var storedTimingControls: some View {
-        let sync = viewModel.storedSubtitleSync
-        if let id = viewModel.selectedStoredSubtitleId, let entry = sync.entry(for: id),
+    private var timingControls: some View {
+        let sync = viewModel.subtitleSync
+        if let key = viewModel.selectedSubtitleSyncKey, let entry = sync.entry(for: key),
            sync.showsTimingControls(entry) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Timing")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.white.opacity(0.62))
                 if entry.isForbidden {
-                    Text(StoredSubtitleSyncModel.forbiddenMessage)
+                    Text(sync.forbiddenMessage)
                         .font(.caption)
                         .foregroundStyle(.white.opacity(0.58))
                 } else {
                     HStack(spacing: 8) {
                         if sync.canSync(entry) {
-                            Button(entry.isInProgress ? "Syncing…" : "Sync Subtitle") {
-                                Task { await sync.requestSync(id: id) }
+                            Button(entry.isInProgress ? "Syncing…" : "Sync to Audio") {
+                                Task { await sync.requestSync(key: key) }
                             }
                         }
                         if entry.canReset {
                             Button("Reset Timing") {
-                                Task { await sync.resetTiming(id: id) }
+                                Task { await sync.resetTiming(key: key) }
                             }
                         }
                     }
                     .buttonStyle(.bordered)
                     .disabled(entry.isBusy || entry.isInProgress)
+                }
+                if let job = entry.job, job.isInProgress {
+                    SubtitleSyncProgressBar(percent: SubtitleSyncLabel.percent(job) ?? 0)
+                    if let phase = SubtitleSyncLabel.phase(job) {
+                        Text(phase)
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.58))
+                    }
+                }
+                if let result = entry.result {
+                    Text(result.text)
+                        .font(.caption)
+                        .foregroundStyle(result.isWarning ? Color.siloWarning.opacity(0.9) : .white.opacity(0.58))
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if !entry.isForbidden, sync.canSync(entry), !entry.isInProgress, entry.error == nil {
+                    Text(entry.actionNote)
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.45))
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 if let error = entry.error {
                     Text(error)

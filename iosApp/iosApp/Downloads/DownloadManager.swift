@@ -759,7 +759,7 @@ final class DownloadManager {
         guard downloadsEnabled else { return }
         await reconcileWithServer(triggerPipeline: true)
         await runMonitoringAndProgressSync()
-        await revalidateStoredSubtitles()
+        await refreshSavedSubtitles()
     }
 
     /// Sign-out: stop active transfers and drop in-memory state. On-disk
@@ -1485,79 +1485,108 @@ final class DownloadManager {
             }
             guard assetsAreCurrent(recordId, assets, owner) else { return }
             guard !data.isEmpty,
-                  let url = absoluteFileURLForNewAsset(recordId: recordId, filename: filename) else {
+                  let url = absoluteFileURLForNewAsset(recordId: recordId, filename: filename),
+                  (try? data.write(to: url, options: .atomic)) != nil,
+                  var record = file.records[recordId] else {
                 continue
             }
-            try? data.write(to: url, options: .atomic)
-            guard var record = file.records[recordId] else { continue }
             record.subtitleFilenames[subtitle.fetchUrl] = filename
-            if Self.isStoredSubtitleReference(subtitle.fetchUrl) {
-                record.setSubtitleEntityTag(entityTag, for: subtitle.fetchUrl)
-            }
+            record.setSubtitleEntityTag(entityTag, for: subtitle.fetchUrl)
+            record.setSubtitleRevision(subtitle.revision, for: subtitle.fetchUrl)
             file.records[recordId] = record
         }
         persist()
     }
 
-    /// When saved stored subtitles were last revalidated in this process.
-    private var lastStoredSubtitleRevalidation: Date?
-    private static let storedSubtitleRevalidationInterval: TimeInterval = 15 * 60
+    /// When saved subtitles were last refreshed in this process.
+    private var lastSavedSubtitleRefresh: Date?
+    private static let savedSubtitleRefreshInterval: TimeInterval = 15 * 60
 
-    /// Fetches again each stored (`downloaded:{id}`) subtitle of a finished
-    /// download whose timing changed on the server since it was saved. The
-    /// server applies a subtitle's timing correction when it delivers the
-    /// file, and a sync or a manual adjustment changes those bytes under the
-    /// same reference. A subtitle that did not change answers 304; external
-    /// subtitles never change and are not asked about.
-    private func revalidateStoredSubtitles() async {
-        if let last = lastStoredSubtitleRevalidation,
-           Date().timeIntervalSince(last) < Self.storedSubtitleRevalidationInterval { return }
+    /// Fetches again each saved subtitle of a finished download whose bytes
+    /// changed on the server since it was saved. The server applies a
+    /// subtitle's timing correction when it delivers the file, so a sync or a
+    /// timing change (or an external file edited on disk) changes those bytes
+    /// under the same reference; the download's manifest then shows the
+    /// subtitle with another `revision`. The fetch is conditional, so bytes
+    /// that did not change answer 304.
+    private func refreshSavedSubtitles() async {
+        if let last = lastSavedSubtitleRefresh,
+           Date().timeIntervalSince(last) < Self.savedSubtitleRefreshInterval { return }
         guard let owner = await captureScopeOwner() else { return }
-        lastStoredSubtitleRevalidation = Date()
+        lastSavedSubtitleRefresh = Date()
         var changed = false
         var failed = false
         let candidates = file.records.values
-            .filter { $0.localStatus == .completed && !restartOwners.fetchesAssets($0.id) }
+            .filter { $0.localStatus == .completed && !$0.subtitleFilenames.isEmpty }
             .sorted { $0.id < $1.id }
         for record in candidates {
-            let references = record.subtitleFilenames
-                .filter { Self.isStoredSubtitleReference($0.key) }
-                .sorted { $0.key < $1.key }
             // A pipeline may have taken the record over while earlier records
             // were being checked; never take its assets from it.
-            guard !references.isEmpty, file.records[record.id]?.localStatus == .completed,
+            guard file.records[record.id]?.localStatus == .completed,
                   !restartOwners.fetchesAssets(record.id) else { continue }
+            let manifest: OfflineManifest
+            do {
+                manifest = try await SiloAPI.shared.apiV2Client.downloadManifest(id: record.id, auth: owner.auth)
+            } catch {
+                Self.logger.warning("saved subtitle manifest read failed: \(String(describing: error), privacy: .public)")
+                // Only an unanswered read is retried at the next activation; a
+                // refused one (the entry is gone) waits for the interval.
+                if Self.isTransientPipelineFailure(error) { failed = true }
+                continue
+            }
+            // A newer entry revision replaces every asset through reconcile;
+            // these subtitles would belong to the replaced bytes.
+            guard let current = file.records[record.id], current.localStatus == .completed,
+                  current.revision == nil || manifest.revision == current.revision,
+                  !restartOwners.fetchesAssets(record.id) else { continue }
+            let refreshes = (manifest.subtitles ?? []).filter {
+                Self.savedSubtitleNeedsRefresh($0, in: current)
+            }
+            guard !refreshes.isEmpty else { continue }
             let assets = restartOwners.claimAssets(record.id)
             defer { restartOwners.releaseAssets(record.id, assets) }
-            for (fetchUrl, filename) in references {
+            for subtitle in refreshes {
                 let result: DownloadSubtitleRevalidation
                 do {
                     result = try await SiloAPI.shared.apiV2Client.revalidateDownloadSubtitle(
-                        path: fetchUrl, downloadId: record.id,
-                        entityTag: file.records[record.id]?.subtitleEntityTags?[fetchUrl], auth: owner.auth)
+                        path: subtitle.fetchUrl, downloadId: record.id,
+                        entityTag: file.records[record.id]?.subtitleEntityTags?[subtitle.fetchUrl], auth: owner.auth)
                 } catch {
-                    Self.logger.warning("stored subtitle revalidation failed: \(String(describing: error), privacy: .public)")
-                    failed = true
+                    Self.logger.warning("saved subtitle refresh failed: \(String(describing: error), privacy: .public)")
+                    if Self.isTransientPipelineFailure(error) { failed = true }
                     continue
                 }
                 guard assetsAreCurrent(record.id, assets, owner) else { break }
-                guard case .changed(let data, let entityTag) = result, !data.isEmpty,
-                      var current = file.records[record.id], current.subtitleFilenames[fetchUrl] == filename,
-                      let url = absoluteFileURL(for: current, filename: filename) else { continue }
-                do {
-                    try data.write(to: url, options: .atomic)
-                } catch {
-                    Self.logger.warning("stored subtitle rewrite failed")
-                    continue
+                guard var current = file.records[record.id],
+                      let filename = current.subtitleFilenames[subtitle.fetchUrl] else { continue }
+                if case .changed(let data, let entityTag) = result {
+                    guard !data.isEmpty, let url = absoluteFileURL(for: current, filename: filename),
+                          (try? data.write(to: url, options: .atomic)) != nil else {
+                        Self.logger.warning("saved subtitle rewrite failed")
+                        continue
+                    }
+                    current.setSubtitleEntityTag(entityTag, for: subtitle.fetchUrl)
                 }
-                current.setSubtitleEntityTag(entityTag, for: fetchUrl)
+                current.setSubtitleRevision(subtitle.revision, for: subtitle.fetchUrl)
                 file.records[record.id] = current
                 changed = true
             }
         }
         if changed { persist() }
         // Offline or interrupted: ask again on the next activation.
-        if failed { lastStoredSubtitleRevalidation = nil }
+        if failed { lastSavedSubtitleRefresh = nil }
+    }
+
+    /// Whether a subtitle the refreshed manifest lists should be fetched
+    /// again: it is saved, and its `revision` differs from the one its saved
+    /// bytes belong to. A server that publishes no revision is asked about
+    /// stored subtitles only, by ETag; its external subtitles never change.
+    static func savedSubtitleNeedsRefresh(_ subtitle: OfflineSubtitle, in record: DownloadRecord) -> Bool {
+        guard record.subtitleFilenames[subtitle.fetchUrl] != nil else { return false }
+        if let revision = subtitle.revision {
+            return record.subtitleRevisions?[subtitle.fetchUrl] != revision
+        }
+        return isStoredSubtitleReference(subtitle.fetchUrl)
     }
 
     /// Whether a manifest `fetch_url` names a stored subtitle
@@ -3340,6 +3369,8 @@ final class DownloadManager {
         record.logoFilename = nil
         record.seriesPosterFilename = nil
         record.subtitleFilenames = [:]
+        record.subtitleEntityTags = nil
+        record.subtitleRevisions = nil
         record.resumeDataFilename = nil
         record.container = nil
         record.stableIdentity = nil
