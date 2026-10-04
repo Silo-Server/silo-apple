@@ -93,6 +93,14 @@ struct DownloadsView: View {
     /// Mirrors `EmptyStateView` but adds a route into content: an empty
     /// Downloads tab is most often a brand-new user, so hand them the
     /// browse entry point rather than a dead end.
+    /// Points to monitoring too, since its list is reached from here only
+    /// once something is downloaded or monitored.
+    private var noDownloadsHint: String {
+        let base = "Downloaded movies and episodes appear here for offline viewing."
+        guard manager.canMonitorSeries else { return base }
+        return base + " To get new episodes automatically, open a series, tap Download, and choose Monitor."
+    }
+
     private var noDownloadsState: some View {
         VStack(spacing: 12) {
             Image(systemName: "arrow.down.circle")
@@ -101,7 +109,7 @@ struct DownloadsView: View {
             Text("No Downloads")
                 .font(.siloSubheadline)
                 .foregroundColor(.siloOnSurface)
-            Text("Downloaded movies and episodes appear here for offline viewing.")
+            Text(noDownloadsHint)
                 .font(.siloCaption)
                 .foregroundColor(.siloSecondaryText)
                 .multilineTextAlignment(.center)
