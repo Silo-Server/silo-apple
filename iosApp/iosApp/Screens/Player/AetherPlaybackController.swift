@@ -619,6 +619,7 @@ final class AetherPlaybackController {
         state: PlaybackState,
         route: VideoRoute,
         playWhenReady: Bool,
+        audioOnly: Bool,
         externalPlaybackActive: Bool
     ) -> Bool {
         // The picture is on the AirPlay receiver, not on this display.
@@ -632,8 +633,9 @@ final class AetherPlaybackController {
                 return false
             }
         case .loading, .seeking:
-            // The route is not settled while a load is in flight.
-            return playWhenReady && route != .audio
+            // The route is not settled while a load is in flight, so the
+            // load's own declaration rules out audio-only media.
+            return playWhenReady && !audioOnly && route != .audio
         case .idle, .paused, .ended, .error:
             return false
         }
@@ -645,6 +647,7 @@ final class AetherPlaybackController {
             state: engine.state,
             route: engine.videoRoute,
             playWhenReady: shouldPlayWhenReady,
+            audioOnly: activeSpec?.options.audioOnly == true,
             externalPlaybackActive: isExternalPlaybackActive
         )
         if prevented {

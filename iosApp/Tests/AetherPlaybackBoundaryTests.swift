@@ -1410,11 +1410,12 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
             _ state: PlaybackState,
             _ route: VideoRoute,
             playWhenReady: Bool = true,
+            audioOnly: Bool = false,
             external: Bool = false
         ) -> Bool {
             AetherPlaybackController.shouldPreventDisplaySleep(
-                state: state, route: route,
-                playWhenReady: playWhenReady, externalPlaybackActive: external
+                state: state, route: route, playWhenReady: playWhenReady,
+                audioOnly: audioOnly, externalPlaybackActive: external
             )
         }
 
@@ -1428,6 +1429,8 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         XCTAssertTrue(prevents(.seeking, .loopback))
         XCTAssertFalse(prevents(.loading, .none, playWhenReady: false))
         XCTAssertFalse(prevents(.loading, .audio))
+        XCTAssertFalse(prevents(.loading, .none, audioOnly: true),
+                       "an audio-only load has no picture to keep on screen")
 
         for state in [PlaybackState.idle, .paused, .ended, .error("failed")] {
             XCTAssertFalse(prevents(state, .loopback), "\(state) must release the display")
