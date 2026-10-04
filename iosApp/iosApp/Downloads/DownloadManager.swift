@@ -881,12 +881,13 @@ final class DownloadManager {
         )
     }
 
-    func downloadSeason(seriesId: String, seasonNumber: Int) async throws {
-        try await requestDownload(contentId: seriesId, series: true, seasonNumber: seasonNumber, seriesId: seriesId)
+    func downloadSeason(seriesId: String, seasonNumber: Int, quality: String? = nil) async throws {
+        try await requestDownload(contentId: seriesId, quality: quality, series: true, seasonNumber: seasonNumber,
+            seriesId: seriesId)
     }
 
-    func downloadSeries(seriesId: String) async throws {
-        try await requestDownload(contentId: seriesId, series: true, seriesId: seriesId)
+    func downloadSeries(seriesId: String, quality: String? = nil) async throws {
+        try await requestDownload(contentId: seriesId, quality: quality, series: true, seriesId: seriesId)
     }
 
     private func requestDownload(
@@ -929,9 +930,8 @@ final class DownloadManager {
         let isBatch = series || seasonNumber != nil
         do {
             if isBatch {
-                // Series/season batches are original-quality only per the
-                // server contract.
-                try await createSeriesPages(seriesId: contentId, seasonNumber: seasonNumber, owner: owner)
+                try await createSeriesPages(seriesId: contentId, seasonNumber: seasonNumber,
+                    quality: batchQuality(requestedQuality), owner: owner)
             } else {
                 let request = APIv2DownloadCreateRequest.single(
                     contentId: contentId,
@@ -963,12 +963,14 @@ final class DownloadManager {
     /// Registers a series or season one server page at a time. Every page
     /// repeats the same client-chosen batch id, and each page's entries are
     /// stored as soon as it arrives.
-    private func createSeriesPages(seriesId: String, seasonNumber: Int?, owner: ScopeOwner) async throws {
+    private func createSeriesPages(seriesId: String, seasonNumber: Int?, quality: String,
+                                   owner: ScopeOwner) async throws {
         let request = APIv2DownloadCreateRequest.seriesPage(
             seriesId: seriesId,
             seasonNumber: seasonNumber,
             batchId: UUID().uuidString.lowercased(),
-            caps: DownloadCaps.current()
+            caps: DownloadCaps.current(),
+            quality: quality
         )
         var cursor: String?
         var cursors: Set<String> = []
@@ -1076,6 +1078,22 @@ final class DownloadManager {
         return DownloadSettings.shared.resolvedFormat(allowedFormats: allowed)
     }
 
+    /// Whether season and series batches take a quality other than original.
+    var canChooseBatchQuality: Bool { capability?.bulkQuality == true }
+
+    /// Whether monitors take a quality other than original.
+    var canChooseMonitorQuality: Bool { capability?.monitorQuality == true }
+
+    /// A batch's quality. A server without `bulkQuality` takes original only.
+    private func batchQuality(_ requestedQuality: String?) -> String {
+        canChooseBatchQuality ? resolvedDownloadQuality(requestedQuality) : DownloadFormat.original.rawValue
+    }
+
+    /// The quality a monitor write sends, or nil for a server without
+    /// `monitorQuality`, which would not accept the field.
+    private func monitorQuality(_ requestedQuality: String?) -> String? {
+        canChooseMonitorQuality ? resolvedDownloadQuality(requestedQuality) : nil
+    }
 
     func deleteDownload(id: String) {
         deleteDownloads(ids: [id])
@@ -2535,7 +2553,8 @@ final class DownloadManager {
         mode: SubscriptionMode,
         seasonNumbers: [Int]?,
         deleteWatched: Bool,
-        maxStorageBytes: Int64
+        maxStorageBytes: Int64,
+        quality: String? = nil
     ) async throws {
         guard let owner = await captureScopeOwner() else { throw DownloadError.monitoringScopeChanged }
         let request = CreateSubscriptionRequest(
@@ -2543,7 +2562,8 @@ final class DownloadManager {
             mode: mode.rawValue,
             seasonNumbers: mode == .specificSeasons ? seasonNumbers : nil,
             deleteWatched: deleteWatched,
-            maxStorageBytes: maxStorageBytes
+            maxStorageBytes: maxStorageBytes,
+            quality: monitorQuality(quality)
         )
         // A monitor DELETE on the wire lands first, so a create for a series
         // the user just stopped does not answer with the monitor that DELETE
@@ -2578,7 +2598,8 @@ final class DownloadManager {
                 seasonNumbers: request.seasonNumbers,
                 deleteWatched: deleteWatched,
                 maxStorageBytes: maxStorageBytes,
-                active: true
+                active: true,
+                quality: request.quality == (monitor.quality ?? DownloadFormat.original.rawValue) ? nil : request.quality
             )
             return
         }
@@ -2612,7 +2633,9 @@ final class DownloadManager {
     /// Whether a stored monitor already has the options a create asked for.
     nonisolated static func monitorMatches(_ monitor: DownloadSubscription, _ request: CreateSubscriptionRequest) -> Bool {
         guard monitor.active, monitor.mode == request.mode, monitor.deleteWatched == request.deleteWatched,
-              monitor.maxStorageBytes == request.maxStorageBytes else { return false }
+              monitor.maxStorageBytes == request.maxStorageBytes,
+              request.quality.map({ $0 == (monitor.quality ?? DownloadFormat.original.rawValue) }) ?? true
+        else { return false }
         guard request.mode == SubscriptionMode.specificSeasons.rawValue else { return true }
         return Set(monitor.seasonNumbers ?? []) == Set(request.seasonNumbers ?? [])
     }
@@ -2626,7 +2649,8 @@ final class DownloadManager {
         seasonNumbers: [Int]? = nil,
         deleteWatched: Bool? = nil,
         maxStorageBytes: Int64? = nil,
-        active: Bool? = nil
+        active: Bool? = nil,
+        quality: String? = nil
     ) async throws {
         guard let owner = await captureScopeOwner() else { throw DownloadError.monitoringScopeChanged }
         guard let existing = file.subscriptions.first(where: { $0.id == id }) else { throw DownloadError.monitorRemoved }
@@ -2635,7 +2659,8 @@ final class DownloadManager {
             seasonNumbers: seasonNumbers,
             deleteWatched: deleteWatched,
             maxStorageBytes: maxStorageBytes,
-            active: active
+            active: active,
+            quality: quality.flatMap(monitorQuality)
         )
         let updated: ServerSubscription
         do {

@@ -129,13 +129,16 @@ final class AutoDownloadStatusTests: XCTestCase {
         XCTAssertEqual(line(17, number: 1).0, "Season 3 starts on Oct 20")
     }
 
-    func testRuleSummaries() {
+    func testRuleSummaries() throws {
         XCTAssertEqual(AutoDownloadRules.ruleSummary(mode: .all, targetSeason: nil, seasonNumbers: nil), "All episodes")
         XCTAssertEqual(AutoDownloadRules.ruleSummary(mode: .future, targetSeason: nil, seasonNumbers: nil), "Future episodes")
         XCTAssertEqual(
             AutoDownloadRules.ruleSummary(mode: .latestSeason, targetSeason: 3, seasonNumbers: nil),
             "Last season · Season 3 on"
         )
+        XCTAssertEqual(AutoDownloadRules.ruleSummary(for: try subscription(.future)), "Future episodes")
+        XCTAssertEqual(AutoDownloadRules.ruleSummary(for: try subscription(.future, quality: "original")), "Future episodes")
+        XCTAssertEqual(AutoDownloadRules.ruleSummary(for: try subscription(.future, quality: "10mbps")), "Future episodes · 10 Mbps")
         XCTAssertEqual(AutoDownloadRules.seasonList([4]), "Season 4")
         XCTAssertEqual(AutoDownloadRules.seasonList([3, 2]), "Seasons 2 and 3")
     }
@@ -195,7 +198,8 @@ final class AutoDownloadStatusTests: XCTestCase {
         target: Int? = nil,
         seasons: [Int]? = nil,
         active: Bool = true,
-        maxBytes: Int64 = 0
+        maxBytes: Int64 = 0,
+        quality: String? = nil
     ) throws -> DownloadSubscription {
         var json: [String: Any] = [
             "id": "sub-1", "seriesId": "n", "mode": mode.rawValue,
@@ -203,6 +207,7 @@ final class AutoDownloadStatusTests: XCTestCase {
         ]
         json["targetSeason"] = target
         json["seasonNumbers"] = seasons
+        json["quality"] = quality
         return try JSONDecoder().decode(DownloadSubscription.self, from: JSONSerialization.data(withJSONObject: json))
     }
 

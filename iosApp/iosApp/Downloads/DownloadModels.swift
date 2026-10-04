@@ -21,6 +21,11 @@ struct DownloadCapability: Codable, Hashable, Sendable {
     let seasonDownload: Bool
     let seriesMonitoring: Bool
     let monitoringModes: [String]
+    /// Season and series batches accept any of `qualityPresets`; without it
+    /// they are original only.
+    let bulkQuality: Bool
+    /// Monitors store a quality; without it they download originals.
+    let monitorQuality: Bool
 
     /// Downloads are usable only when the capability is available and this
     /// principal may use it.
@@ -44,6 +49,8 @@ struct DownloadCapability: Codable, Hashable, Sendable {
         case seasonDownload
         case seriesMonitoring
         case monitoringModes
+        case bulkQuality
+        case monitorQuality
     }
 
     init(_ wire: APIv2DownloadCapability) {
@@ -60,6 +67,8 @@ struct DownloadCapability: Codable, Hashable, Sendable {
         seasonDownload = wire.seasonDownload
         seriesMonitoring = wire.seriesMonitoring
         monitoringModes = wire.monitoringModes
+        bulkQuality = wire.bulkQuality ?? false
+        monitorQuality = wire.monitorQuality ?? false
     }
 
     /// Reads the cached copy. A copy cached before `state` and `allowed`
@@ -77,6 +86,8 @@ struct DownloadCapability: Codable, Hashable, Sendable {
         seasonDownload = try container.decode(Bool.self, forKey: .seasonDownload)
         seriesMonitoring = try container.decode(Bool.self, forKey: .seriesMonitoring)
         monitoringModes = try container.decode([String].self, forKey: .monitoringModes)
+        bulkQuality = try container.decodeIfPresent(Bool.self, forKey: .bulkQuality) ?? false
+        monitorQuality = try container.decodeIfPresent(Bool.self, forKey: .monitorQuality) ?? false
     }
 }
 
@@ -468,6 +479,9 @@ struct ServerSubscription: Decodable, Hashable, Sendable {
     let seasonNumbers: [Int]
     let deleteWatched: Bool
     let maxStorageBytes: Int64
+    /// Absent from servers without `monitorQuality`, whose monitors download
+    /// originals.
+    let quality: String?
     let active: Bool
     let createdAt: Date
     let updatedAt: Date
@@ -505,6 +519,8 @@ struct CreateSubscriptionRequest: Encodable, Hashable, Sendable {
     let seasonNumbers: [Int]?
     let deleteWatched: Bool
     let maxStorageBytes: Int64
+    /// Sent only to a server with `monitorQuality`.
+    var quality: String? = nil
 }
 
 /// `DownloadSubscriptionPatchBody`. A nil field is omitted, never sent as
@@ -515,6 +531,7 @@ struct UpdateSubscriptionRequest: Encodable, Hashable, Sendable {
     let deleteWatched: Bool?
     let maxStorageBytes: Int64?
     let active: Bool?
+    var quality: String? = nil
 }
 
 // MARK: - Local persistence types
@@ -676,6 +693,8 @@ struct DownloadSubscription: Codable, Identifiable, Hashable, Sendable {
     var seasonNumbers: [Int]?
     var deleteWatched: Bool
     var maxStorageBytes: Int64
+    /// The quality the monitor downloads in; nil reads as original.
+    var quality: String?
     var active: Bool
     /// The monitor's validator when it was last read. Nil for a monitor
     /// stored before validators were kept; writes read it first.
@@ -690,6 +709,7 @@ struct DownloadSubscription: Codable, Identifiable, Hashable, Sendable {
         self.seasonNumbers = server.seasonNumbers
         self.deleteWatched = server.deleteWatched
         self.maxStorageBytes = server.maxStorageBytes
+        self.quality = server.quality
         self.active = server.active
         self.etag = server.etag
     }
