@@ -111,7 +111,15 @@ final class AetherPlaybackController {
     /// The user's latest transport intent, independent of transient engine
     /// states such as loading, buffering, and error. A replacement load reads
     /// this after it commits so Play/Pause commands issued while loading win.
-    private(set) var shouldPlayWhenReady = false
+    private(set) var shouldPlayWhenReady = false {
+        didSet {
+            // The engine can stay in `.loading` or `.seeking` across a Play
+            // or Pause, so the intent change is the only signal.
+            #if os(macOS)
+            refreshDisplaySleepPrevention()
+            #endif
+        }
+    }
     /// Watch Party resumes only through a current room command.
     var requiresExplicitTransportResume = false
     private var audioInterrupted = false
