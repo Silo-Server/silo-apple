@@ -29,6 +29,9 @@ final class AutoDownloadSchedule {
 
     private(set) var upcomingBySeries: [String: [UpcomingEpisode]] = [:]
     private(set) var seriesInfo: [String: SeriesInfo] = [:]
+    /// When a series' detail read last failed; it isn't read again until the
+    /// refresh interval passes.
+    private var seriesInfoFailedAt: [String: Date] = [:]
 
     private var scopeKey = ""
     private var loadedAt: Date?
@@ -94,6 +97,7 @@ final class AutoDownloadSchedule {
         scopeKey = key
         upcomingBySeries = [:]
         seriesInfo = [:]
+        seriesInfoFailedAt = [:]
         loadedAt = nil
     }
 
@@ -122,18 +126,24 @@ final class AutoDownloadSchedule {
     /// loaded, a few at a time.
     private func loadMissingSeriesInfo() async {
         let key = currentScopeKey
-        let missing = Array(Set(manager.subscriptions.map(\.seriesId).filter { seriesInfo[$0] == nil }))
+        let now = Date()
+        let missing = Array(Set(manager.subscriptions.map(\.seriesId).filter {
+            seriesInfo[$0] == nil
+                && (seriesInfoFailedAt[$0].map { now.timeIntervalSince($0) >= Self.refreshInterval } ?? true)
+        }))
         for start in stride(from: 0, to: missing.count, by: Self.seriesInfoConcurrency) {
             let batch = missing[start..<min(start + Self.seriesInfoConcurrency, missing.count)]
-            await withTaskGroup(of: (String, ItemDetail)?.self) { group in
+            await withTaskGroup(of: (String, ItemDetail?).self) { group in
                 for seriesId in batch {
-                    group.addTask {
-                        guard let detail = try? await SiloAPI.shared.itemDetail(contentId: seriesId) else { return nil }
-                        return (seriesId, detail)
-                    }
+                    group.addTask { (seriesId, try? await SiloAPI.shared.itemDetail(contentId: seriesId)) }
                 }
-                for await result in group {
-                    guard let (seriesId, detail) = result, key == currentScopeKey else { continue }
+                for await (seriesId, detail) in group {
+                    guard key == currentScopeKey else { continue }
+                    guard let detail else {
+                        seriesInfoFailedAt[seriesId] = Date()
+                        continue
+                    }
+                    seriesInfoFailedAt[seriesId] = nil
                     seriesInfo[seriesId] = SeriesInfo(
                         title: detail.title,
                         posterUrl: detail.posterUrl,
