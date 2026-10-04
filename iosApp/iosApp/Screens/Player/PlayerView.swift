@@ -299,6 +299,19 @@ struct PlayerView: View {
         .onGeometryChange(for: CGSize.self) { $0.size } action: { _ in
             orientationCoordinator.refreshInterfaceOrientation()
         }
+        // Hardware keyboards (iPad, or the iOS app running on a Mac) get no
+        // key events from the touch gesture layer. Space toggles playback,
+        // matching the macOS player.
+        .background {
+            Button("Play/Pause") { viewModel.togglePlayPause() }
+                .keyboardShortcut(.space, modifiers: [])
+                .opacity(0)
+                .accessibilityHidden(true)
+                .disabled(
+                    viewModel.isLoading || viewModel.error != nil || viewModel.showNextUpScreen
+                        || showsPartyPanel || !viewModel.canRequestPlayPause
+                )
+        }
         #endif
         #if os(tvOS)
         // Physical Play/Pause on the Siri remote always toggles playback
