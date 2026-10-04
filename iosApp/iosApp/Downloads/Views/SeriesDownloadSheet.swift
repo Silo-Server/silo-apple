@@ -132,6 +132,7 @@ struct SeriesDownloadSheet: View {
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
         #endif
+        .onChange(of: manager.availableFormats) { _, _ in clampQualities() }
         .task {
             prefill()
             await loadSeasonsIfNeeded()
@@ -206,15 +207,25 @@ struct SeriesDownloadSheet: View {
     }
 
     /// The presets this user may download in, in the server's order, plus
-    /// `current` when it isn't one, so a monitor's stored quality stays
-    /// representable.
-    private func qualityChoices(including current: String) -> [DownloadFormat] {
+    /// `kept` when it isn't one, so an existing monitor's stored quality
+    /// stays representable.
+    private func qualityChoices(keeping kept: String?) -> [DownloadFormat] {
         var formats = manager.availableFormats
         if formats.isEmpty { formats = [.original] }
-        if let stored = DownloadFormat(rawValue: current), !formats.contains(stored) {
+        if let kept, let stored = DownloadFormat(rawValue: kept), !formats.contains(stored) {
             formats.append(stored)
         }
         return formats
+    }
+
+    /// A one-time or new-monitor choice the server no longer offers falls
+    /// back to the Settings default, so the menu never shows a quality the
+    /// request wouldn't use. An existing monitor keeps its stored quality.
+    private func clampQualities() {
+        let allowed = manager.capability?.qualityPresets ?? []
+        let preferred = DownloadSettings.shared.resolvedFormat(allowedFormats: allowed)
+        if !allowed.contains(oneTimeQuality) { oneTimeQuality = preferred }
+        if existing == nil, !allowed.contains(monitorQuality) { monitorQuality = preferred }
     }
 
     private func qualityLabel(_ raw: String) -> String {
@@ -224,8 +235,8 @@ struct SeriesDownloadSheet: View {
 
     /// A quality menu. `locked` shows Original alone, for a server that
     /// downloads seasons or monitors only in original quality.
-    private func qualityRow(selection: Binding<String>, locked: Bool) -> some View {
-        let choices = qualityChoices(including: selection.wrappedValue)
+    private func qualityRow(selection: Binding<String>, locked: Bool, keeping kept: String? = nil) -> some View {
+        let choices = qualityChoices(keeping: kept)
         let isMenu = !locked && choices.count > 1
         return HStack {
             // The menu carries its own "Quality" label for VoiceOver.
@@ -257,7 +268,8 @@ struct SeriesDownloadSheet: View {
 
     private var settingsCard: some View {
         card {
-            qualityRow(selection: $monitorQuality, locked: !manager.canChooseMonitorQuality)
+            qualityRow(selection: $monitorQuality, locked: !manager.canChooseMonitorQuality,
+                       keeping: existing.map { $0.quality ?? DownloadFormat.original.rawValue })
             Divider().overlay(Color.siloDivider).padding(.leading, 16)
             Toggle("Delete after watching", isOn: $deleteWatched)
                 .tint(.siloSwitchOn)
