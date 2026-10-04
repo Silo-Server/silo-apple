@@ -445,7 +445,8 @@ final class SubtitleSyncModel {
     /// it once more afterwards: a realtime update that arrived meanwhile
     /// makes the answer in flight stale, so it is dropped.
     private func readOne(_ key: String) async {
-        guard let mediaFileId, let endpoints else { return }
+        // A timing change can arrive before anything probed the server.
+        guard let mediaFileId, let endpoints = await probedEndpoints(), isSyncAvailable else { return }
         guard !reading.contains(key) else {
             rereads.insert(key)
             return
@@ -593,6 +594,8 @@ final class SubtitleSyncModel {
             activeRevision: activeKey.map { cueRevisions[$0, default: 0] } ?? 0,
             activeJob: active?.job,
             activeWatchedJobId: active?.watchedJobId,
+            activeTiming: active?.state.timing,
+            isActiveKnown: active != nil,
             isActiveTrackLoading: isActiveTrackLoading
         ))
         publishFeedback()
@@ -676,7 +679,20 @@ struct SubtitleSyncFeedback {
         /// started on it.
         var activeJob: SubtitleSyncJob?
         var activeWatchedJobId: String?
+        /// The timing of the track on screen.
+        var activeTiming: SubtitleTiming?
+        /// The sync state of the track on screen has been read.
+        var isActiveKnown = false
         var isActiveTrackLoading = false
+
+        /// The track on screen shows the result of an automatic sync, which
+        /// should go unnoticed: the server synced it the first time it was
+        /// played, and nobody here asked.
+        var activeShowsAutomaticResult: Bool {
+            guard let job = activeJob, job.trigger == "auto", job.status == "synced",
+                  let result = job.result else { return false }
+            return result == activeTiming
+        }
     }
 
     struct Applying: Equatable {
@@ -691,6 +707,8 @@ struct SubtitleSyncFeedback {
     private struct Foreign: Equatable {
         let key: String
         let revision: Int
+        /// Its new cues are on screen.
+        var loaded = false
     }
 
     private(set) var input: Input?
@@ -774,15 +792,27 @@ struct SubtitleSyncFeedback {
             let job = input.activeJob
             let own = input.activeWatchedJobId != nil && job?.id == input.activeWatchedJobId
                 && (job?.isInProgress == true || (job?.status == "synced" && !applied.contains(job?.id ?? "")))
-            if !own { foreign = Foreign(key: key, revision: before.activeRevision) }
+            if !own, !input.activeShowsAutomaticResult {
+                foreign = Foreign(key: key, revision: before.activeRevision)
+            }
         }
-        if let foreign {
+        if var foreign {
             if foreign.key != input.activeKey {
                 self.foreign = nil
-            } else if loaded(foreign.key, after: foreign.revision) {
-                self.foreign = nil
-                show(SubtitleSyncNotice(id: "timing:\(foreign.key):\(input.activeRevision)", tone: .info,
-                                        title: "Subtitle timing updated"))
+            } else {
+                if loaded(foreign.key, after: foreign.revision) { foreign.loaded = true }
+                // Whether it was an automatic sync is known only once the
+                // track's state has been read; an automatic sync can finish
+                // before that, and must not be announced while it is unknown.
+                if foreign.loaded, input.isActiveKnown {
+                    self.foreign = nil
+                    if !input.activeShowsAutomaticResult {
+                        show(SubtitleSyncNotice(id: "timing:\(foreign.key):\(input.activeRevision)", tone: .info,
+                                                title: "Subtitle timing updated"))
+                    }
+                } else {
+                    self.foreign = foreign
+                }
             }
         }
     }

@@ -14,6 +14,10 @@ final class ASSSubtitleSession: ObservableObject {
     @Published private(set) var failureMessage: String?
 
     private let engine: AetherEngine
+    /// While it holds, the last frame stays on screen through the reload of
+    /// the showing track instead of clearing.
+    var cueHold: SubtitleCueHold?
+    private var holdsFrame: Bool { cueHold?.isHolding == true }
     private let fontLoader: @Sendable (URLRequest, HTTPRequestAuthorization?) async throws -> [FontAttachment]
     private var renderer = ASSSubtitleRenderer()
     private var subscriptions: Set<AnyCancellable> = []
@@ -53,7 +57,7 @@ final class ASSSubtitleSession: ObservableObject {
             events = ASSSubtitleRenderer.Event.events(from: cues)
             if cues.isEmpty {
                 renderer = ASSSubtitleRenderer()
-                frame = nil
+                if !holdsFrame { frame = nil }
             }
         }.store(in: &subscriptions)
         engine.clock.$sourceTime.sink { [weak self] time in
@@ -107,7 +111,7 @@ final class ASSSubtitleSession: ObservableObject {
         isLoadingFonts = false
         failureMessage = nil
         didRecordFrame = false
-        frame = nil
+        if !holdsFrame { frame = nil }
         renderer = ASSSubtitleRenderer()
     }
 
@@ -123,7 +127,7 @@ final class ASSSubtitleSession: ObservableObject {
         guard !isLoadingFonts, failureMessage == nil else { return }
         let header = track.isExternal ? engine.sidecarASSHeader : track.assHeader
         guard let header, !header.isEmpty else {
-            if frame != nil { frame = nil }
+            if frame != nil, !holdsFrame { frame = nil }
             if !engine.isLoadingSubtitles {
                 reportFailure("Subtitle data couldn’t be loaded. Turn subtitles off and on to retry.",
                               error: URLError(.cannotDecodeContentData))

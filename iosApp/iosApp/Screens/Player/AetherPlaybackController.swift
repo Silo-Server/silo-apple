@@ -71,6 +71,8 @@ final class AetherPlaybackController {
 
     let engine: AetherEngine
     let assSubtitles: ASSSubtitleSession
+    /// Keeps a showing track's cues on screen while it is fetched again.
+    let cueHold = SubtitleCueHold()
     /// Registers this engine with the process-wide audio-session ownership
     /// registry for its lifetime. Silo runs two `AetherEngine`s (audiobooks and
     /// video); without this claim the audio controller would read itself as the
@@ -144,6 +146,7 @@ final class AetherPlaybackController {
     init() throws {
         engine = try AetherEngine()
         assSubtitles = ASSSubtitleSession(engine: engine)
+        assSubtitles.cueHold = cueHold
         aetherSessionClaim = AetherAudioSessionOwnership.Claim(engine: engine)
         #if os(iOS) || os(tvOS)
         engine.ownsVideoNowPlayingSession = true
@@ -423,6 +426,7 @@ final class AetherPlaybackController {
     func selectAudioTrack(id: Int) { engine.selectAudioTrack(index: id) }
 
     func selectSubtitleTrack(id: Int64?) {
+        cueHold.release()
         if let id, let aetherID = aetherSubtitleID(forAppID: id) {
             engine.selectSubtitleTrack(index: aetherID)
         } else {
@@ -431,6 +435,7 @@ final class AetherPlaybackController {
     }
 
     func selectSecondarySubtitleTrack(id: Int64?) {
+        cueHold.release()
         if let id, let aetherID = aetherSubtitleID(forAppID: id) {
             engine.selectSecondarySubtitleTrack(index: aetherID)
         } else {
@@ -524,6 +529,9 @@ final class AetherPlaybackController {
         if !primary, !secondary, activeSpec?.options.preferredSubtitleLanguages.isEmpty == false {
             return false
         }
+        // A showing track keeps its cues on screen until the refetched ones
+        // are decoded, instead of going blank while they load.
+        if primary || secondary { cueHold.begin(alreadyLoading: engine.isLoadingSubtitles) }
         isRegisteringExternalSubtitle = true
         let registered = engine.addExternalSubtitleTrack(source.track)
         aetherSubtitleIDByAppID[appTrackID] = registered.id
@@ -592,6 +600,7 @@ final class AetherPlaybackController {
     }
 
     private func invalidateActiveLoad(preservingExternalPlaybackPolicy: Bool = false) {
+        cueHold.release()
         assSubtitles.stop()
         replacementExternalPlaybackPolicy = preservingExternalPlaybackPolicy
             ? observedExternalPlaybackPlayer?.allowsExternalPlayback
@@ -685,7 +694,10 @@ final class AetherPlaybackController {
 
         engine.$isLoadingSubtitles
             .removeDuplicates()
-            .sink { [weak self] loading in self?.publish(.subtitleLoading(loading)) }
+            .sink { [weak self] loading in
+                self?.cueHold.loadingChanged(loading)
+                self?.publish(.subtitleLoading(loading))
+            }
             .store(in: &subscriptions)
 
         engine.$hasFirstFrameReadyForDisplay

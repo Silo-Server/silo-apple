@@ -6,6 +6,8 @@ import SwiftUI
 struct AetherSubtitleOverlay: View {
     let engine: AetherEngine
     @ObservedObject var assSubtitles: ASSSubtitleSession
+    /// Read when a publication arrives; see ``SubtitleCueHold``.
+    let cueHold: SubtitleCueHold
     let sourceTime: Double
     let primaryUsesMovieTimeline: Bool
     let secondaryUsesMovieTimeline: Bool
@@ -49,6 +51,9 @@ struct AetherSubtitleOverlay: View {
         // Every primary track switch changes the engine's active index, and the
         // index is set before the switch publishes cues.
         .onReceive(engine.$subtitleCues) {
+            // A showing track fetched again after a timing change keeps its
+            // cues until the new ones arrive.
+            if $0.isEmpty, cueHold.isHolding { return }
             primary = primaryTrack.laidOutAsAuthored($0, trackID: engine.activeSubtitleTrackIndex)
         }
         // The engine publishes no secondary index. It clears the secondary
@@ -56,6 +61,7 @@ struct AetherSubtitleOverlay: View {
         // starts over; an embedded secondary track that empties during a long
         // gap starts over too.
         .onReceive(engine.$secondarySubtitleCues) {
+            if $0.isEmpty, cueHold.isHolding { return }
             if $0.isEmpty { secondaryTrack = LTRAuthoredSubtitles.Track() }
             secondary = secondaryTrack.laidOutAsAuthored($0, trackID: nil)
         }

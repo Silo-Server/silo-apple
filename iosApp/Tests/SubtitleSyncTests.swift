@@ -530,11 +530,14 @@ final class SubtitleSyncTests: XCTestCase {
     func testFeedbackNotesForeignTimingChangesOnce() {
         var feedback = SubtitleSyncFeedback()
         let key = Self.sidecarKey
-        feedback.step(.init(activeKey: key, activeRevision: 0))
-        feedback.step(.init(activeKey: key, activeRevision: 1, activeJob: Self.job("8", status: "synced")))
+        let manual = Self.job("8", status: "synced")
+        feedback.step(.init(activeKey: key, activeRevision: 0, activeJob: manual, isActiveKnown: true))
+        feedback.step(.init(activeKey: key, activeRevision: 1, activeJob: manual, isActiveKnown: true))
         XCTAssertNil(feedback.notice, "nothing shows before the new cues load")
-        feedback.step(.init(activeKey: key, activeRevision: 1, isActiveTrackLoading: true))
-        feedback.step(.init(activeKey: key, activeRevision: 1, isActiveTrackLoading: false))
+        feedback.step(.init(activeKey: key, activeRevision: 1, activeJob: manual, isActiveKnown: true,
+                            isActiveTrackLoading: true))
+        feedback.step(.init(activeKey: key, activeRevision: 1, activeJob: manual, isActiveKnown: true,
+                            isActiveTrackLoading: false))
         XCTAssertEqual(feedback.notice?.title, "Subtitle timing updated")
         XCTAssertEqual(feedback.notice?.tone, .info)
 
@@ -548,6 +551,70 @@ final class SubtitleSyncTests: XCTestCase {
         own.step(.init(watched: Self.watched("synced", revision: 1), activeKey: key, activeRevision: 1,
                        activeJob: Self.job("2", status: "synced"), activeWatchedJobId: "2", isActiveTrackLoading: false))
         XCTAssertEqual(own.notice?.title, "Subtitles synced")
+    }
+
+    /// An automatic sync the server ran when the track was first played goes
+    /// unnoticed; a later manual change by someone else is still announced.
+    func testAutomaticSyncOfTheTrackOnScreenIsQuiet() {
+        let key = Self.sidecarKey
+        let shifted = SubtitleTiming(offsetMs: -3010, scale: 1)
+        var auto = Self.job("7", status: "synced", result: shifted)
+        auto = SubtitleSyncJob(id: auto.id, subtitleId: nil, status: "synced", trigger: "auto", confidence: 1,
+                               result: shifted, createdAt: Self.createdAt, finishedAt: Self.createdAt)
+        var feedback = SubtitleSyncFeedback()
+        feedback.step(.init(activeKey: key, activeRevision: 0))
+        // The cues reload before the track's state has been read: nothing yet.
+        feedback.step(.init(activeKey: key, activeRevision: 1))
+        feedback.step(.init(activeKey: key, activeRevision: 1, isActiveTrackLoading: true))
+        feedback.step(.init(activeKey: key, activeRevision: 1))
+        XCTAssertNil(feedback.notice, "nothing is said while the change's source is unknown")
+        // The read shows an automatic sync whose result is applied: still nothing.
+        feedback.step(.init(activeKey: key, activeRevision: 1, activeJob: auto, activeTiming: shifted, isActiveKnown: true))
+        XCTAssertNil(feedback.notice, "an automatic sync's swap is not announced")
+
+        // Someone resets it by hand afterwards: the timing no longer equals
+        // the automatic result, so the change is announced.
+        let known = SubtitleSyncFeedback.Input(activeKey: key, activeRevision: 2, activeJob: auto,
+                                               activeTiming: .identity, isActiveKnown: true)
+        feedback.step(known)
+        var loading = known
+        loading.isActiveTrackLoading = true
+        feedback.step(loading)
+        feedback.step(known)
+        XCTAssertEqual(feedback.notice?.title, "Subtitle timing updated")
+    }
+
+    /// An automatic job the viewer did not start shows no progress card,
+    /// through the model.
+    func testUnwatchedAutomaticJobShowsNoCard() async throws {
+        let calls = Calls()
+        let model = model(calls, list: [Self.sidecar()])
+        model.onTimingChanged = { _ in }
+        await model.reload()
+        model.setActiveTrack(key: Self.sidecarKey)
+        model.syncUpdated(try Self.syncUpdate(jobId: "7", status: "running", offset: 0, progress: 0.4))
+        XCTAssertNil(model.notice)
+    }
+
+    // MARK: Cue hold
+
+    func testCueHoldLastsUntilTheReloadFinishes() {
+        let hold = SubtitleCueHold()
+        hold.begin()
+        XCTAssertTrue(hold.isHolding)
+        hold.loadingChanged(false)
+        XCTAssertTrue(hold.isHolding, "a load that never started cannot end the hold")
+        hold.loadingChanged(true)
+        hold.loadingChanged(false)
+        XCTAssertFalse(hold.isHolding)
+
+        hold.begin(alreadyLoading: true)
+        hold.loadingChanged(false)
+        XCTAssertFalse(hold.isHolding, "the reload continued a load already running")
+
+        hold.begin()
+        hold.release()
+        XCTAssertFalse(hold.isHolding)
     }
 
     // MARK: Wire

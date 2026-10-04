@@ -223,6 +223,7 @@ class PlayerViewModel {
     @ObservationIgnored
     private var scrubPreviewProvider: AetherScrubPreviewProvider!
     @MainActor var assSubtitles: ASSSubtitleSession { aetherPlaybackController.assSubtitles }
+    @MainActor var subtitleCueHold: SubtitleCueHold { aetherPlaybackController.cueHold }
     @MainActor var aetherEngine: AetherEngine { aetherPlaybackController.engine }
     private var hasActiveAetherSession: Bool {
         aetherPlaybackController.activeSpec != nil

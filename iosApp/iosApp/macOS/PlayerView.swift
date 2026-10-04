@@ -163,6 +163,7 @@ struct PlayerView: View {
             AetherSubtitleOverlay(
                 engine: viewModel.aetherEngine,
                 assSubtitles: viewModel.assSubtitles,
+                cueHold: viewModel.subtitleCueHold,
                 sourceTime: viewModel.currentTime,
                 primaryUsesMovieTimeline: viewModel.subtitleUsesMovieTimeline(viewModel.selectedSubtitleId),
                 secondaryUsesMovieTimeline: viewModel.subtitleUsesMovieTimeline(viewModel.selectedSecondarySubtitleId, slot: .secondary),
