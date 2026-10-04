@@ -343,10 +343,17 @@ final class SubtitleSyncModel {
             $0.isBusy = true
             $0.error = nil
         }
+        let version = pushVersions[key]
         do {
             let state = try await endpoints.resetTiming(mediaFileId, key)
             guard current == generation else { return }
-            observe(state)
+            if pushVersions[key] == version {
+                observe(state)
+            } else {
+                // A realtime update after the reset is newer than its answer;
+                // read the subtitle rather than install the older state.
+                Task { await readOne(key) }
+            }
             patch(key) { $0.isBusy = false }
             advanceFeedback()
         } catch {
@@ -902,7 +909,8 @@ enum SubtitleSyncLabel {
 
     /// "+2.3 s" / "−0.4 s".
     static func offset(_ offsetMs: Int) -> String {
-        let seconds = Double(abs(offsetMs)) / 1000
+        // `magnitude` cannot overflow, unlike `abs(Int.min)`.
+        let seconds = Double(offsetMs.magnitude) / 1000
         return "\(offsetMs < 0 ? "\u{2212}" : "+")\(String(format: "%.1f", seconds)) s"
     }
 
@@ -932,6 +940,7 @@ enum SubtitleSyncLabel {
 
     /// `25` → "25", `23.976` → "23.976", as JavaScript prints numbers.
     private static func rate(_ value: Double) -> String {
-        value == value.rounded() ? String(Int(value)) : String(value)
+        guard value == value.rounded(), let whole = Int(exactly: value) else { return String(value) }
+        return String(whole)
     }
 }

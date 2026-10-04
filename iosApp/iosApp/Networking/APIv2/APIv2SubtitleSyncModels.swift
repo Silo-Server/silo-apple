@@ -14,6 +14,10 @@ struct SubtitleTiming: Decodable, Equatable, Sendable {
     let scale: Double
 
     static let identity = SubtitleTiming(offsetMs: 0, scale: 1)
+    /// The bounds the server accepts and returns (`SubtitleTiming` in the
+    /// API contract).
+    static let offsetRange = -600_000...600_000
+    static let scaleRange = 0.9...1.1
 
     var isIdentity: Bool { offsetMs == 0 && scale == 1 }
 }

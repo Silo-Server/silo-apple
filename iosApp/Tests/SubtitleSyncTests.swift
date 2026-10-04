@@ -115,6 +115,8 @@ final class SubtitleSyncTests: XCTestCase {
         var beforeListReturns: (() async -> Void)?
         /// Runs while a read is on the wire, before it answers.
         var beforeReadReturns: (() async -> Void)?
+        /// Runs while a timing reset is on the wire, before it answers.
+        var beforeResetReturns: (() async -> Void)?
     }
 
     private func model(_ calls: Calls, list: [SubtitleSyncState]) -> SubtitleSyncModel {
@@ -136,7 +138,10 @@ final class SubtitleSyncTests: XCTestCase {
                 if let error = calls.syncError { throw error }
                 return calls.syncJob
             },
-            resetTiming: { _, _ in try calls.resetResult.get() }
+            resetTiming: { _, _ in
+                if let hook = calls.beforeResetReturns { await hook() }
+                return try calls.resetResult.get()
+            }
         )
         let model = SubtitleSyncModel(service: SubtitleSyncService(
             status: { try HTTPClient.makeJSONDecoder().decode(APIv2SubtitleSyncStatus.self, from: Data(calls.status.utf8)) },
@@ -242,6 +247,25 @@ final class SubtitleSyncTests: XCTestCase {
         model.syncUpdated(try Self.syncUpdate(key: "stored-9", status: "running", offset: 0))
         try await waitUntil { calls.lists == 2 }
         XCTAssertEqual(calls.lists, 2)
+    }
+
+    /// A realtime update after a reset is newer than the reset's answer:
+    /// the answer is dropped and the subtitle read again.
+    func testResetAnswerOlderThanARealtimeUpdateIsDropped() async throws {
+        let shifted = SubtitleTiming(offsetMs: -3010, scale: 1)
+        let other = SubtitleTiming(offsetMs: 500, scale: 1)
+        let calls = Calls()
+        let model = model(calls, list: [Self.sidecar(timing: shifted)])
+        model.onTimingChanged = { _ in }
+        await model.reload()
+        let update = try Self.syncUpdate(jobId: "9", status: "synced", offset: 500)
+        calls.reads = [Self.sidecar(timing: other)]
+        calls.resetResult = .success(Self.sidecar())
+        // Another viewer's change lands while the reset is on the wire.
+        calls.beforeResetReturns = { await MainActor.run { model.syncUpdated(update) } }
+        await model.resetTiming(key: Self.sidecarKey)
+        try await waitUntil { calls.reads.isEmpty }
+        XCTAssertEqual(model.entry(for: Self.sidecarKey)?.state.timing, other)
     }
 
     func testRefusedSyncExplainsItself() async {
@@ -581,6 +605,13 @@ final class SubtitleSyncTests: XCTestCase {
                      "an offset no Int can hold is rejected, not trapped on")
         outOfRange["timing"] = .object(["offset_ms": .number(12.5), "scale": .number(1)])
         XCTAssertNil(PlaybackRealtimeSubtitleSyncUpdatedPayload(payload: outOfRange))
+        outOfRange["timing"] = .object(["offset_ms": .number(-9_223_372_036_854_775_808), "scale": .number(1)])
+        XCTAssertNil(PlaybackRealtimeSubtitleSyncUpdatedPayload(payload: outOfRange), "outside ±600000 ms")
+        outOfRange["timing"] = .object(["offset_ms": .number(0), "scale": .number(1e300)])
+        XCTAssertNil(PlaybackRealtimeSubtitleSyncUpdatedPayload(payload: outOfRange), "outside 0.9...1.1")
+        // Values from elsewhere still format without trapping.
+        XCTAssertEqual(SubtitleSyncLabel.offset(Int.min).first, "\u{2212}")
+        XCTAssertNotNil(SubtitleSyncLabel.scale(1e300))
     }
 
     func testTimingChangedEventNamesTheTrackBySyncKey() throws {
