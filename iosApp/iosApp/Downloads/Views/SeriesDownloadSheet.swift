@@ -258,6 +258,9 @@ struct SeriesDownloadSheet: View {
                 .pickerStyle(.menu)
                 .labelsHidden()
                 .tint(.siloSecondaryText)
+                // At its natural width: sharing the row with the label wraps
+                // a value like "1 Mbps · up to 480p" out of the row.
+                .fixedSize()
             }
         }
         .padding(.leading, 16)
@@ -291,6 +294,8 @@ struct SeriesDownloadSheet: View {
                 .pickerStyle(.menu)
                 .labelsHidden()
                 .tint(.siloSecondaryText)
+                // At its natural width, like the Quality menu.
+                .fixedSize()
             }
             .padding(.leading, 16)
             .padding(.trailing, 6)
