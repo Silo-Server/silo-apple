@@ -2329,6 +2329,8 @@ final class DownloadManager {
                 // them all again.
                 let unusable = (error as? DownloadRegistryError) == .unusableManifest
                 guard unusable || APIv2Client.downloadRegistryFailure(error) == .rejected else { break }
+                // A read that outlived its scope says nothing about the new one.
+                guard isCurrent(owner) else { return }
                 displayFillFailures.insert(id)
             }
         }
