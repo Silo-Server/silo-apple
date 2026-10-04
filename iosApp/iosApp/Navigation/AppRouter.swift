@@ -1100,6 +1100,8 @@ private extension Route {
             return "offlineSeriesBrowse"
         case .offlineDownloadDetail:
             return "offlineDownloadDetail"
+        case .autoDownloads:
+            return "autoDownloads"
         case .tvLibraryGrid:
             return "tvLibraryGrid"
         }

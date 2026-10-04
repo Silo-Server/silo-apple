@@ -623,7 +623,6 @@ private struct ItemDetailPhoneContent: View {
         } else if detail.type == "series" {
             SeriesDetailContent(
                 detail: detail,
-                libraryId: libraryId,
                 isFavorite: viewModel.isFavorite,
                 inWatchlist: viewModel.inWatchlist,
                 isWatched: viewModel.isWatched,
@@ -632,7 +631,6 @@ private struct ItemDetailPhoneContent: View {
                 episodes: viewModel.episodes,
                 episodeFavoriteStates: viewModel.episodeFavoriteStates,
                 episodeWatchlistStates: viewModel.episodeWatchlistStates,
-                episodesBySeason: viewModel.episodesBySeason,
                 isLoadingEpisodes: viewModel.isLoadingSeriesHierarchy,
                 hierarchyError: viewModel.seriesLoadErrorMessage,
                 onRetryHierarchy: { await viewModel.retrySeriesHierarchy() },

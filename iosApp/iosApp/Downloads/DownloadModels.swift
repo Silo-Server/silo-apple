@@ -490,10 +490,10 @@ enum SubscriptionMode: String, Codable, CaseIterable, Sendable {
 
     var displayName: String {
         switch self {
-        case .all: return "All Seasons"
-        case .future: return "New Episodes Only"
-        case .latestSeason: return "Latest Season & Newer"
-        case .specificSeasons: return "Specific Seasons"
+        case .all: return "All Episodes"
+        case .future: return "Future Episodes"
+        case .latestSeason: return "Last Season"
+        case .specificSeasons: return "Custom"
         }
     }
 }

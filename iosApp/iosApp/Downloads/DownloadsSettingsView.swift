@@ -60,8 +60,8 @@ struct DownloadsSettingsView: View {
             }
             .listRowBackground(Color.siloGroupedCell)
 
-            Section("Series Monitoring Defaults") {
-                Toggle("Delete watched episodes", isOn: $settings.defaultDeleteWatched)
+            Section("Monitoring Defaults") {
+                Toggle("Delete after watching", isOn: $settings.defaultDeleteWatched)
                     .tint(.siloSwitchOn)
                 Stepper(
                     settings.defaultMaxStorageGB == 0

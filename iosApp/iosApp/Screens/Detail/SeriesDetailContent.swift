@@ -9,7 +9,6 @@ import SwiftUI
 /// next-up Play action, same horizontal episode rail — sized for touch.
 struct SeriesDetailContent<BelowOverview: View>: View {
     let detail: ItemDetail
-    var libraryId: Int? = nil
     let isFavorite: Bool
     let inWatchlist: Bool
     let isWatched: Bool
@@ -18,7 +17,6 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     let episodes: [EpisodeListItem]
     let episodeFavoriteStates: [String: Bool]
     let episodeWatchlistStates: [String: Bool]
-    let episodesBySeason: [Int: [EpisodeListItem]]
     let isLoadingEpisodes: Bool
     let hierarchyError: String?
     let onRetryHierarchy: () async -> Void
@@ -237,21 +235,24 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                 )
                 .disabled(isUpdatingWatched)
                 if DownloadManager.shared.downloadsEnabled {
-                    SeriesDownloadMenuButton(
+                    SeriesDownloadButton(
                         detail: detail,
-                        libraryId: libraryId,
                         seasons: seasons,
                         selectedSeason: selectedSeason,
-                        episodes: episodes,
-                        episodesBySeason: episodesBySeason,
-                        episodeTarget: episodeDownloadTarget,
-                        style: .labeled
+                        episode: nextUpEpisode,
+                        episodeFileId: nextUpEpisode.flatMap(playbackFileId(for:))
                     )
                 }
                 PhoneLabeledMenu(label: "More") {
                     overflowMenuItems
                 }
             }
+
+            AutoDownloadBanner(
+                seriesId: detail.seriesId ?? detail.contentId,
+                seriesTitle: detail.title,
+                seasons: seasons
+            )
 
             if let trailerStatusMessage {
                 PhoneTrailerStatusPill(
@@ -442,21 +443,6 @@ struct SeriesDetailContent<BelowOverview: View>: View {
         }
         guard (episode.files ?? []).contains(where: { $0.fileId == selectedNextUpFileId }) else { return nil }
         return selectedNextUpFileId
-    }
-
-    /// Nil until the highlighted episode's own versions have loaded, so the
-    /// menu never offers a download labeled with another episode's version.
-    private var episodeDownloadTarget: SeriesEpisodeDownloadTarget? {
-        guard let episode = nextUpEpisode,
-              let watchDetail = nextUpWatchDetail,
-              watchDetail.contentId == episode.contentId,
-              !watchDetail.versions.isEmpty else { return nil }
-        return SeriesEpisodeDownloadTarget(
-            episode: episode,
-            versions: watchDetail.versions,
-            selectedFileId: selectedNextUpFileId,
-            lastFileId: watchDetail.userData?.lastFileId
-        )
     }
 
     private var nextUpVersions: [FileVersion] {

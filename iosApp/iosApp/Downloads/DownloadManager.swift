@@ -313,6 +313,11 @@ final class DownloadManager {
         downloadedContentIds.contains(contentId) && downloadsEnabled
     }
 
+    /// Leaf content ids of downloads still on their way to this device, so
+    /// the Download sheet doesn't offer an episode already coming. Cached
+    /// like `downloadedContentIds` so progress ticks don't redraw views.
+    private(set) var inFlightContentIds: Set<String> = []
+
     private func rebuildDownloadedIndex() {
         // Revoked downloads keep their on-device file (playable offline),
         // so they badge the same as completed ones.
@@ -324,6 +329,15 @@ final class DownloadManager {
         if ids != downloadedContentIds {
             downloadedContentIds = ids
         }
+        let inFlight = Set(file.records.values.filter { $0.localStatus.isActive }.map(\.leafMediaItemId))
+        if inFlight != inFlightContentIds {
+            inFlightContentIds = inFlight
+        }
+    }
+
+    /// Capability-aware check mirroring `isDownloaded(contentId:)`.
+    func isInFlight(contentId: String) -> Bool {
+        inFlightContentIds.contains(contentId) && downloadsEnabled
     }
 
     /// The download record for a leaf content id (movie or episode), if any.
@@ -1061,6 +1075,7 @@ final class DownloadManager {
         }
         return DownloadSettings.shared.resolvedFormat(allowedFormats: allowed)
     }
+
 
     func deleteDownload(id: String) {
         deleteDownloads(ids: [id])
@@ -3418,6 +3433,13 @@ final class DownloadManager {
     /// manifest hydrates `seriesId` — without the fallback, freshly synced
     /// episodes would bypass the cap entirely.
     private func capSeriesId(for record: DownloadRecord) -> String? {
+        Self.seriesKey(for: record)
+    }
+
+    /// The series a download belongs to. Episode rows registered by
+    /// subscription sync carry the series id in `contentId` until the
+    /// manifest hydrates `seriesId`.
+    nonisolated static func seriesKey(for record: DownloadRecord) -> String? {
         record.seriesId ?? (record.episodeId != nil ? record.contentId : nil)
     }
 

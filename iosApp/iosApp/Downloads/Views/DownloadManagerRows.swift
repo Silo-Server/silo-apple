@@ -472,13 +472,13 @@ struct DownloadSeriesRow: View {
         .frame(width: 47, height: 60, alignment: .leading)
     }
 
-    /// Antenna glyph after the title of a series with an active monitoring
-    /// subscription — the same glyph as the Monitoring section.
+    /// Antenna glyph after the title of a monitored series — the same
+    /// glyph as the Monitored row.
     private var monitorBadge: some View {
         Image(systemName: "antenna.radiowaves.left.and.right")
             .font(.footnote.weight(.semibold))
             .foregroundColor(.siloSecondaryText)
-            .accessibilityLabel("Monitoring")
+            .accessibilityLabel("Monitored")
     }
 
     private var subtitleLine: String {

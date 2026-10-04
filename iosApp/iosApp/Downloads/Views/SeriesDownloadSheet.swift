@@ -1,0 +1,513 @@
+#if !os(tvOS)
+import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
+
+/// The series Download action. "One Time" downloads an episode, a season,
+/// or every episode now. "Monitor" keeps a series downloading: All
+/// Episodes, Future Episodes, or Last Season. The monitor's retention
+/// fields (`delete_watched`, `max_storage_bytes`) are enforced on the
+/// device; the server only soft-gates registration.
+struct SeriesDownloadSheet: View {
+    let seriesId: String
+    let seriesTitle: String
+    var seasons: [Season] = []
+    /// The season the series page shows, offered for a one-time download.
+    var selectedSeason: Season? = nil
+    /// The episode the series page highlights, with the version its
+    /// selector shows.
+    var episode: EpisodeListItem? = nil
+    var episodeFileId: Int? = nil
+    var posterThumbhash: String? = nil
+    /// Opens on Monitor, for callers about an existing monitor.
+    var startsOnMonitor = false
+
+    enum Kind: Hashable { case oneTime, monitor }
+
+    private enum OneTime: Hashable { case episode, season, all }
+
+    /// A monitor row. `custom` stands for a specific-seasons monitor
+    /// another client created; it can be kept, not chosen.
+    private enum Rule: Hashable {
+        case mode(SubscriptionMode)
+        case custom
+    }
+
+    @Environment(\.dismiss) private var dismiss
+    private var manager: DownloadManager { DownloadManager.shared }
+    private var schedule: AutoDownloadSchedule { AutoDownloadSchedule.shared }
+
+    @State private var kind: Kind = .oneTime
+    @State private var oneTime: OneTime = .episode
+    @State private var rule: Rule = .mode(.future)
+    @State private var deleteWatched = DownloadSettings.shared.defaultDeleteWatched
+    @State private var maxStorageBytes = Int64(DownloadSettings.shared.defaultMaxStorageGB) * DownloadSettings.bytesPerGB
+    @State private var loadedSeasons: [Season] = []
+    @State private var prefilled = false
+    @State private var isWorking = false
+    @State private var errorMessage: String?
+    @State private var confirmingStop = false
+
+    private var existing: DownloadSubscription? { manager.subscription(forSeriesId: seriesId) }
+    private var isMonitoring: Bool { existing?.active == true }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    Picker("Download", selection: $kind) {
+                        Text("One Time").tag(Kind.oneTime)
+                        if manager.canMonitorSeries {
+                            Text("Monitor").tag(Kind.monitor)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    Text(kind == .oneTime
+                         ? "Download now. Nothing else downloads later."
+                         : "Keep new episodes coming to this \(Self.deviceName) as they air.")
+                        .font(.footnote)
+                        .foregroundColor(.siloSecondaryText)
+                        .padding(.horizontal, 4)
+
+                    if kind == .oneTime {
+                        optionList(oneTimeRows.map { row in
+                            Option(id: AnyHashable(row), title: title(for: row), detail: detail(for: row),
+                                   selected: oneTime == row, enabled: isAvailable(row)) { oneTime = row }
+                        })
+                    } else {
+                        optionList(ruleRows.map { row in
+                            Option(id: AnyHashable(row), title: title(for: row), detail: detail(for: row),
+                                   selected: rule == row, enabled: true) { rule = row }
+                        })
+                        settingsCard
+                        if existing != nil {
+                            Button("Stop Monitoring", role: .destructive) { confirmingStop = true }
+                                .font(.system(size: 15.5, weight: .semibold))
+                                .frame(maxWidth: .infinity)
+                                .padding(.top, 2)
+                                .disabled(isWorking)
+                        }
+                    }
+
+                    if !summary.isEmpty {
+                        Text(summary)
+                            .font(.subheadline)
+                            .foregroundColor(.siloSecondaryText)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 8)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 4)
+                .padding(.bottom, 16)
+                .animation(.easeInOut(duration: 0.2), value: kind)
+            }
+            .safeAreaInset(edge: .bottom) { primaryButton }
+            .navigationTitle(seriesTitle)
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .siloSheetBackground()
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+        #if os(iOS)
+        .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
+        #endif
+        .task {
+            prefill()
+            await loadSeasonsIfNeeded()
+            await schedule.refresh(evenWithoutMonitors: true)
+        }
+        .alert(
+            kind == .oneTime ? "Download Failed" : "Couldn't Save Monitoring",
+            isPresented: Binding(
+                get: { errorMessage != nil },
+                set: { if !$0 { errorMessage = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(errorMessage ?? "")
+        }
+        .alert("Stop monitoring \(seriesTitle)?", isPresented: $confirmingStop) {
+            Button("Stop", role: .destructive, action: stopMonitoring)
+            Button("Keep", role: .cancel) {}
+        } message: {
+            Text("Episodes already on this \(Self.deviceName) stay until you delete them.")
+        }
+    }
+
+    // MARK: - Rows
+
+    private struct Option: Identifiable {
+        let id: AnyHashable
+        let title: String
+        let detail: String
+        let selected: Bool
+        let enabled: Bool
+        let select: () -> Void
+    }
+
+    private func optionList(_ options: [Option]) -> some View {
+        VStack(spacing: 0) {
+            ForEach(Array(options.enumerated()), id: \.element.id) { index, option in
+                if index > 0 { Divider().overlay(Color.siloDivider).padding(.leading, 52) }
+                Button(action: option.select) {
+                    HStack(spacing: 14) {
+                        Image(systemName: option.selected ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 22))
+                            .foregroundColor(option.selected ? .siloOnSurface : .siloSecondaryText.opacity(0.6))
+                            .frame(width: 24)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(option.title)
+                                .font(.system(size: 16.5, weight: .semibold))
+                                .foregroundColor(.siloOnSurface)
+                            Text(option.detail)
+                                .font(.footnote)
+                                .foregroundColor(.siloSecondaryText)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .contentShape(Rectangle())
+                    .opacity(option.enabled ? 1 : 0.45)
+                }
+                .buttonStyle(.plain)
+                .disabled(!option.enabled)
+                .accessibilityAddTraits(option.selected ? .isSelected : [])
+            }
+        }
+        .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color.white.opacity(0.06)))
+    }
+
+    private func card<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        VStack(spacing: 0, content: content)
+            .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color.white.opacity(0.06)))
+    }
+
+    private var settingsCard: some View {
+        card {
+            Toggle("Delete after watching", isOn: $deleteWatched)
+                .tint(.siloSwitchOn)
+                .foregroundColor(.siloOnSurface)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 11)
+            Divider().overlay(Color.siloDivider).padding(.leading, 16)
+            HStack {
+                // The menu carries its own "Storage limit" label for VoiceOver.
+                Text("Storage limit")
+                    .foregroundColor(.siloOnSurface)
+                    .accessibilityHidden(true)
+                Spacer()
+                Picker("Storage limit", selection: $maxStorageBytes) {
+                    ForEach(storageLimitOptions, id: \.self) { bytes in
+                        Text(bytes == 0 ? "None" : AutoDownloadRules.limitText(bytes)).tag(bytes)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .tint(.siloSecondaryText)
+            }
+            .padding(.leading, 16)
+            .padding(.trailing, 6)
+            .padding(.vertical, 4)
+        }
+    }
+
+    private var primaryButton: some View {
+        Button(action: kind == .oneTime ? downloadOnce : saveMonitor) {
+            Group {
+                if isWorking {
+                    ProgressView().tint(.black)
+                } else {
+                    Text(primaryTitle).fontWeight(.bold)
+                }
+            }
+            .font(.system(size: 17))
+            .frame(maxWidth: .infinity)
+            .frame(height: 50)
+            .background(Color.siloOnSurface)
+            .foregroundColor(.black)
+            .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(isWorking || (kind == .oneTime && !isAvailable(oneTime)))
+        .opacity(kind == .oneTime && !isAvailable(oneTime) ? 0.5 : 1)
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .padding(.bottom, 4)
+        .background(.ultraThinMaterial)
+    }
+
+    // MARK: - One time
+
+    private var allSeasons: [Season] {
+        (seasons.isEmpty ? loadedSeasons : seasons).sorted { $0.seasonNumber < $1.seasonNumber }
+    }
+
+    /// The season a one-time season download takes: the one the page
+    /// shows, else the newest regular season.
+    private var oneTimeSeason: Season? {
+        selectedSeason ?? allSeasons.last { $0.seasonNumber > 0 && $0.isSpecials != true }
+    }
+
+    private var oneTimeRows: [OneTime] {
+        var rows: [OneTime] = []
+        if episode != nil { rows.append(.episode) }
+        if manager.canDownloadSeason, oneTimeSeason != nil { rows.append(.season) }
+        rows.append(.all)
+        return rows
+    }
+
+    private var episodeDownloaded: Bool {
+        episode.map { manager.isDownloaded(contentId: $0.contentId) || manager.isInFlight(contentId: $0.contentId) } ?? false
+    }
+
+    private func isAvailable(_ row: OneTime) -> Bool {
+        switch row {
+        case .episode: return episode != nil && !episodeDownloaded
+        case .season: return oneTimeSeason != nil
+        case .all: return true
+        }
+    }
+
+    private func title(for row: OneTime) -> String {
+        switch row {
+        case .episode:
+            guard let episode else { return "This Episode" }
+            return "S\(episode.seasonNumber) · E\(episode.episodeNumber) · \(episode.title ?? "Episode \(episode.episodeNumber)")"
+        case .season: return oneTimeSeason?.downloadDisplayName ?? "Season"
+        case .all: return "All Episodes"
+        }
+    }
+
+    private func detail(for row: OneTime) -> String {
+        switch row {
+        case .episode:
+            if let episode, manager.isDownloaded(contentId: episode.contentId) { return "On this \(Self.deviceName)" }
+            if episodeDownloaded { return "Downloading" }
+            return "This episode only"
+        case .season:
+            let count = oneTimeSeason?.episodeCount ?? 0
+            return "\(count) episode\(count == 1 ? "" : "s")"
+        case .all:
+            return "Every season"
+        }
+    }
+
+
+    private func downloadOnce() {
+        isWorking = true
+        Task {
+            do {
+                switch oneTime {
+                case .episode:
+                    guard let episode else { break }
+                    try await manager.downloadEpisode(
+                        seriesId: seriesId,
+                        episodeId: episode.contentId,
+                        displayTitle: episode.title ?? "Episode \(episode.episodeNumber)",
+                        displaySubtitle: "S\(episode.seasonNumber) · E\(episode.episodeNumber)",
+                        posterThumbhash: posterThumbhash,
+                        fileId: episodeFileId,
+                        quality: DownloadSettings.shared.resolvedFormat(
+                            allowedFormats: manager.capability?.qualityPresets ?? []
+                        )
+                    )
+                case .season:
+                    guard let season = oneTimeSeason else { break }
+                    try await manager.downloadSeason(seriesId: seriesId, seasonNumber: season.seasonNumber)
+                case .all:
+                    try await manager.downloadSeries(seriesId: seriesId)
+                }
+                dismiss()
+            } catch DownloadError.registrationAlreadyInFlight {
+                // The original request owns the Preparing state.
+                dismiss()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+            isWorking = false
+        }
+    }
+
+    // MARK: - Monitor
+
+    private var ruleRows: [Rule] {
+        let advertised = manager.monitoringModes.isEmpty ? SubscriptionMode.allCases : manager.monitoringModes
+        var rows = [SubscriptionMode.all, .future, .latestSeason].filter(advertised.contains).map(Rule.mode)
+        if existing?.mode == SubscriptionMode.specificSeasons.rawValue { rows.append(.custom) }
+        return rows
+    }
+
+    /// The season "Last Season" starts from: the monitor's own when it
+    /// already uses that rule, else the newest regular season.
+    private var latestSeasonNumber: Int? {
+        if let existing, existing.mode == SubscriptionMode.latestSeason.rawValue, let target = existing.targetSeason {
+            return target
+        }
+        return allSeasons.filter { $0.seasonNumber > 0 && $0.isSpecials != true }.map(\.seasonNumber).max()
+    }
+
+    private func title(for row: Rule) -> String {
+        switch row {
+        case .mode(.all): return "All Episodes"
+        case .mode(.future): return "Future Episodes"
+        case .mode(.latestSeason): return "Last Season"
+        case .mode(.specificSeasons), .custom: return "Custom"
+        }
+    }
+
+    private func detail(for row: Rule) -> String {
+        switch row {
+        case .mode(.all): return "Download every episode now, then new ones as they air"
+        case .mode(.future): return "Only episodes that air from now on"
+        case .mode(.latestSeason):
+            return latestSeasonNumber.map { "Season \($0) and anything newer" } ?? "The latest season and anything newer"
+        case .mode(.specificSeasons), .custom:
+            return AutoDownloadRules.seasonList(existing?.seasonNumbers ?? [])
+        }
+    }
+
+    /// Common caps, plus the stored value when it doesn't match one, so a
+    /// limit another client wrote stays as it is unless the user picks
+    /// another.
+    private var storageLimitOptions: [Int64] {
+        var options = [0, 10, 25, 50, 100].map { Int64($0) * DownloadSettings.bytesPerGB }
+        if !options.contains(maxStorageBytes) {
+            options.append(maxStorageBytes)
+            options.sort()
+        }
+        return options
+    }
+
+    private var monitorHasChanges: Bool {
+        guard let existing, existing.active else { return true }
+        return Self.rule(for: existing) != rule
+            || existing.deleteWatched != deleteWatched
+            || existing.maxStorageBytes != maxStorageBytes
+    }
+
+
+    private static func rule(for subscription: DownloadSubscription) -> Rule {
+        let mode = SubscriptionMode(rawValue: subscription.mode) ?? .future
+        return mode == .specificSeasons ? .custom : .mode(mode)
+    }
+
+    private func saveMonitor() {
+        guard monitorHasChanges else {
+            dismiss()
+            return
+        }
+        isWorking = true
+        Task {
+            do {
+                switch (rule, existing) {
+                case (.custom, let existing?):
+                    try await manager.updateSubscription(
+                        id: existing.id, deleteWatched: deleteWatched, maxStorageBytes: maxStorageBytes, active: true)
+                case (.mode(let mode), let existing?):
+                    try await manager.updateSubscription(
+                        id: existing.id, mode: mode, deleteWatched: deleteWatched,
+                        maxStorageBytes: maxStorageBytes, active: true)
+                case (.mode(let mode), nil):
+                    try await manager.createSubscription(
+                        seriesId: seriesId, seriesTitle: seriesTitle, mode: mode, seasonNumbers: nil,
+                        deleteWatched: deleteWatched, maxStorageBytes: maxStorageBytes)
+                case (.custom, nil):
+                    break
+                }
+                schedule.subscriptionsChanged()
+                dismiss()
+            } catch {
+                // Keep the sheet up so the choice isn't lost.
+                errorMessage = error.localizedDescription
+            }
+            isWorking = false
+        }
+    }
+
+    private func stopMonitoring() {
+        guard let existing else { return }
+        Task {
+            await manager.deleteSubscription(id: existing.id)
+            schedule.subscriptionsChanged()
+            dismiss()
+        }
+    }
+
+    // MARK: - Shared
+
+    private var primaryTitle: String {
+        switch kind {
+        case .oneTime: return "Download"
+        case .monitor: return isMonitoring ? "Save" : "Start Monitoring"
+        }
+    }
+
+    /// One plain sentence on what happens next.
+    private var summary: String {
+        switch kind {
+        case .oneTime:
+            return oneTime == .episode ? "" : "Season and series downloads use original quality."
+        case .monitor:
+            let mode: SubscriptionMode
+            switch rule {
+            case .mode(let picked): mode = picked
+            case .custom: mode = .specificSeasons
+            }
+            var sentence = "Monitored episodes download in original quality."
+            if let next = AutoDownloadRules.nextEpisode(
+                mode: mode,
+                targetSeason: mode == .latestSeason ? latestSeasonNumber : nil,
+                seasonNumbers: existing?.seasonNumbers,
+                upcoming: schedule.upcoming(forSeriesId: seriesId),
+                excluding: manager.knownEpisodeIds(forSeriesId: seriesId)
+            ) {
+                sentence = AutoDownloadRules.headline(.next(next)) + ". " + sentence
+            }
+            return sentence
+        }
+    }
+
+    static var deviceName: String {
+        #if os(iOS)
+        UIDevice.current.model
+        #else
+        "Mac"
+        #endif
+    }
+
+    private func prefill() {
+        guard !prefilled else { return }
+        prefilled = true
+        if let existing {
+            rule = Self.rule(for: existing)
+            deleteWatched = existing.deleteWatched
+            maxStorageBytes = existing.maxStorageBytes
+        }
+        if manager.canMonitorSeries, startsOnMonitor || isMonitoring {
+            kind = .monitor
+        }
+        if !isAvailable(oneTime), let first = oneTimeRows.first(where: isAvailable) {
+            oneTime = first
+        }
+    }
+
+    private func loadSeasonsIfNeeded() async {
+        guard seasons.isEmpty, loadedSeasons.isEmpty else { return }
+        if let response = try? await SiloAPI.shared.seasons(seriesId: seriesId) {
+            loadedSeasons = response.seasons
+        }
+    }
+}
+#endif

@@ -87,6 +87,9 @@ enum Route: Hashable {
     /// Offline leaf detail for one downloaded movie or episode.
     case offlineDownloadDetail(downloadId: String)
 
+    /// Every series this device auto-downloads, reached from the Downloads tab.
+    case autoDownloads
+
     // tvOS-specific: deep-linked library grid with a pre-applied filter.
     // Pushed from `TVLibraryLandingView` when the user picks a genre,
     // decade, sort order, or "Browse All". Handled only by `TVMainTabView`;

@@ -3042,6 +3042,13 @@ struct MainTabView: View {
             #else
             OfflineDownloadDetailView(downloadId: downloadId)
             #endif
+        case .autoDownloads:
+            #if os(tvOS)
+            EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
+                .siloPageBackground()
+            #else
+            AutoDownloadsView()
+            #endif
         default:
             EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
                 .siloPageBackground()

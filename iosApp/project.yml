@@ -379,6 +379,8 @@ targets:
           - "SiloControlWireCompatibilityTests.swift"
           # OnboardingTourViewModel / OnboardingTourAPI are declared under #if !os(tvOS).
           - "OnboardingInvitationTests.swift"
+          # AutoDownloadRules / AutoDownloadSchedule are declared under #if !os(tvOS).
+          - "AutoDownloadStatusTests.swift"
           # Same non-fixture files as SiloTests, re-added below with no phase.
           - "Fixtures/ASS/README.md"
           - "Fixtures/ASS/generate-font.py"
