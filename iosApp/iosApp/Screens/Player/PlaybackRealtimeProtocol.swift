@@ -367,7 +367,7 @@ struct PlaybackRealtimeSubtitleSyncUpdatedPayload: Equatable {
         guard let fileId = payload.int(forKeys: "file_id", "fileId"),
               let syncKey = payload.subtitleSyncKey(),
               case .object(let timing)? = payload["timing"],
-              case .number(let offset)? = timing["offset_ms"], offset.isFinite,
+              case .number(let offset)? = timing["offset_ms"], let offsetMs = Int(exactly: offset),
               case .number(let scale)? = timing["scale"], scale.isFinite, scale > 0,
               let jobValue = payload["job"],
               let jobData = try? JSONEncoder().encode(jobValue),
@@ -379,7 +379,7 @@ struct PlaybackRealtimeSubtitleSyncUpdatedPayload: Equatable {
         self.fileId = fileId
         self.syncKey = syncKey
         subtitleId = payload.subtitleSyncStoredId()
-        self.timing = SubtitleTiming(offsetMs: Int(offset), scale: scale)
+        self.timing = SubtitleTiming(offsetMs: offsetMs, scale: scale)
         self.job = job
     }
 }

@@ -215,6 +215,20 @@ final class SubtitleSyncTests: XCTestCase {
         XCTAssertEqual(refetched, [Self.sidecarKey])
     }
 
+    /// Two separate timing changes in quick succession fetch the cues twice:
+    /// only a change whose timing a sync update already reported is coalesced.
+    func testBackToBackTimingChangesEachRefetch() async throws {
+        let calls = Calls()
+        calls.reads = [Self.sidecar(), Self.sidecar()]
+        let model = model(calls, list: [Self.sidecar()])
+        var refetched: [String] = []
+        model.onTimingChanged = { refetched.append($0) }
+        await model.reload()
+        model.timingChanged(key: Self.sidecarKey)
+        model.timingChanged(key: Self.sidecarKey)
+        XCTAssertEqual(refetched, [Self.sidecarKey, Self.sidecarKey])
+    }
+
     func testSyncUpdateShowsProgressAndUnknownKeysReloadEverything() async throws {
         let calls = Calls()
         let model = model(calls, list: [Self.sidecar()])
@@ -514,6 +528,18 @@ final class SubtitleSyncTests: XCTestCase {
 
     // MARK: Wire
 
+    /// A well-formed `subtitle_sync_updated` payload tree, for tests that
+    /// alter one field of it.
+    private static func syncUpdatePayload(status: String) throws -> PlaybackRealtimePayload {
+        let object: [String: Any] = ["type": "event", "session_id": "s1", "name": "subtitle_sync_updated",
+            "payload": ["session_id": "s1", "file_id": 42, "sync_key": sidecarKey,
+                        "timing": ["offset_ms": 0, "scale": 1],
+                        "job": ["id": "2", "status": status, "trigger": "manual", "confidence": NSNull(),
+                                "created_at": createdAt, "finished_at": NSNull()]]]
+        return try JSONDecoder().decode(PlaybackRealtimeEventEnvelope.self,
+                                        from: JSONSerialization.data(withJSONObject: object)).payload
+    }
+
     private static func syncUpdate(key: String = sidecarKey, jobId: String = "2", status: String, offset: Int,
                                    phase: String? = nil, progress: Double? = nil) throws -> PlaybackRealtimeSubtitleSyncUpdatedPayload {
         var job: [String: Any] = ["id": jobId, "status": status, "trigger": "manual", "confidence": NSNull(),
@@ -548,6 +574,13 @@ final class SubtitleSyncTests: XCTestCase {
             "file_id": .number(42), "sync_key": .string(Self.sidecarKey),
             "timing": .object(["offset_ms": .number(0), "scale": .number(1)]),
         ]), "an update without its job is ignored")
+
+        var outOfRange = try Self.syncUpdatePayload(status: "running")
+        outOfRange["timing"] = .object(["offset_ms": .number(1e300), "scale": .number(1)])
+        XCTAssertNil(PlaybackRealtimeSubtitleSyncUpdatedPayload(payload: outOfRange),
+                     "an offset no Int can hold is rejected, not trapped on")
+        outOfRange["timing"] = .object(["offset_ms": .number(12.5), "scale": .number(1)])
+        XCTAssertNil(PlaybackRealtimeSubtitleSyncUpdatedPayload(payload: outOfRange))
     }
 
     func testTimingChangedEventNamesTheTrackBySyncKey() throws {

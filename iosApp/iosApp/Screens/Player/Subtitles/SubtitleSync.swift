@@ -278,8 +278,11 @@ final class SubtitleSyncModel {
         pushVersions[key, default: 0] += 1
         // A change this player fetched the cues for already (a sync update
         // carrying the new timing) is only re-read; the read still catches a
-        // different timing that landed meanwhile.
-        let fetchedAlready = refetchedAt[key].map { now().timeIntervalSince($0) < Self.refetchCoalescing } ?? false
+        // different timing that landed meanwhile. A recent fetch made for an
+        // earlier timing_changed proves nothing about this one: its timing
+        // was never known, so this change fetches the cues again.
+        let fetchedAlready = knownTiming[key] != .dirty
+            && refetchedAt[key].map { now().timeIntervalSince($0) < Self.refetchCoalescing } ?? false
         if !fetchedAlready {
             knownTiming[key] = .dirty
             refetchCues(key)

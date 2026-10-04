@@ -1853,7 +1853,7 @@ private struct SubtitlesPane: View {
     private var timingFocusTargets: [Option] {
         guard let timing = selectedTiming, !timing.entry.isForbidden else { return [] }
         var targets: [Option] = []
-        if timing.canSync || timing.entry.error != nil { targets.append(.syncTiming) }
+        if timing.canSync { targets.append(.syncTiming) }
         if timing.entry.canReset { targets.append(.resetTiming) }
         return targets
     }
@@ -1881,14 +1881,16 @@ private struct SubtitlesPane: View {
                 .opacity(0.35)
                 .id(Option.syncTiming)
             } else {
-                if timing.canSync || entry.error != nil {
+                // An unsupported format keeps its explanation in the note
+                // below, but no action that could never run.
+                if timing.canSync {
                     HUDSettingRow(
                         label: entry.isInProgress ? "Syncing…" : "Sync to Audio",
                         value: "",
                         systemImage: "waveform",
                         showsChevron: false
                     ) {
-                        guard timing.canSync, !entry.isBusy, !entry.isInProgress else { return }
+                        guard !entry.isBusy, !entry.isInProgress else { return }
                         Task { await sync.requestSync(key: timing.key) }
                     }
                     .focused($focusedOption, equals: .syncTiming)
