@@ -52,7 +52,7 @@ struct AutoDownloadsView: View {
                     } label: {
                         AutoDownloadRow(
                             title: title(for: subscription),
-                            info: schedule.seriesInfo[subscription.seriesId],
+                            info: schedule.info(forSeriesId: subscription.seriesId),
                             rule: AutoDownloadRules.ruleSummary(for: subscription),
                             status: schedule.status(for: subscription)
                         )
@@ -92,7 +92,7 @@ struct AutoDownloadsView: View {
     }
 
     private func title(for subscription: DownloadSubscription) -> String {
-        schedule.seriesInfo[subscription.seriesId]?.title ?? subscription.seriesTitle ?? "Series"
+        schedule.info(forSeriesId: subscription.seriesId)?.title ?? subscription.seriesTitle ?? "Series"
     }
 }
 
