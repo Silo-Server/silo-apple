@@ -98,6 +98,7 @@ final class DownloadGroupingTests: XCTestCase {
         XCTAssertEqual(line("running", progress: 0.99, remaining: 20), "Preparing · 99% · under a minute left")
         XCTAssertEqual(line("running", progress: 0.1, remaining: 3_900), "Preparing · 10% · 1 hr 5 min left")
         XCTAssertEqual(line("retrying"), "Preparing · trying again soon")
+        XCTAssertEqual(line("paused"), "Preparation paused on the server")
 
         let json = #"{"id":"d1","content_id":"s","episode_id":"e","media_file_id":"4","file_size":0,"bytes_sent":0,"kind":"queued","status":"preparing","quality":"5mbps","effective_quality":"5mbps","delivery_format":"transcode","target_bitrate_kbps":5000,"revision":1,"created_at":"2026-10-04T04:00:00.000Z","preparation":{"state":"queued","queue_position":4}}"#
         let entry = try HTTPClient.makeJSONDecoder().decode(APIv2DownloadEntry.self, from: Data(json.utf8))

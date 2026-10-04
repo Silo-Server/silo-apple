@@ -94,7 +94,8 @@ struct DownloadCapability: Codable, Hashable, Sendable {
 /// `DownloadPreparation`: where a preparing entry's file is in the server's
 /// preparation queue, or how far its encode has got.
 struct DownloadPreparation: Codable, Hashable, Sendable {
-    /// `queued`, `running`, or `retrying`.
+    /// `queued`, `running`, `retrying`, or `paused` (an administrator
+    /// paused the job).
     let state: String
     /// 1-based place among every queued preparation on the server.
     let queuePosition: Int?
@@ -116,6 +117,8 @@ struct DownloadPreparation: Codable, Hashable, Sendable {
             return "Waiting to prepare · \(ordinal) in line"
         case "retrying":
             return "Preparing · trying again soon"
+        case "paused":
+            return "Preparation paused on the server"
         default:
             guard let progress else { return "Preparing on server…" }
             var parts = ["Preparing", "\(Int((progress * 100).rounded(.down)))%"]
