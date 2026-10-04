@@ -2315,9 +2315,10 @@ final class DownloadManager {
                 manifests[id] = try await SiloAPI.shared.apiV2Client.downloadManifest(id: id, auth: owner.auth)
             } catch {
                 Self.logger.info("display read for \(id, privacy: .public) failed: \(String(describing: error), privacy: .public)")
-                // Offline: every other read would fail the same way, and the
-                // next pass tries this one again.
-                if APIv2Client.downloadRegistryFailure(error) == .uncertain { break }
+                // Only a refusal of this download is lasting. A connection
+                // failure, timeout, or busy server would fail the rest of the
+                // pass too; the next pass tries them all again.
+                guard APIv2Client.downloadRegistryFailure(error) == .rejected else { break }
                 displayFillFailures.insert(id)
             }
         }
