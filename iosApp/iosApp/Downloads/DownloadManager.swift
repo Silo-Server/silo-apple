@@ -1498,8 +1498,9 @@ final class DownloadManager {
         persist()
     }
 
-    /// When saved subtitles were last refreshed in this process.
-    private var lastSavedSubtitleRefresh: Date?
+    /// When saved subtitles were last refreshed in this process, and for
+    /// which scope: another server or profile is refreshed on its own.
+    private var lastSavedSubtitleRefresh: (scope: ScopeKey, at: Date)?
     private static let savedSubtitleRefreshInterval: TimeInterval = 15 * 60
 
     /// Fetches again each saved subtitle of a finished download whose bytes
@@ -1510,12 +1511,16 @@ final class DownloadManager {
     /// subtitle with another `revision`. The fetch is conditional, so bytes
     /// that did not change answer 304.
     private func refreshSavedSubtitles() async {
-        if let last = lastSavedSubtitleRefresh,
-           Date().timeIntervalSince(last) < Self.savedSubtitleRefreshInterval { return }
+        if let last = lastSavedSubtitleRefresh, last.scope == loadedScope,
+           Date().timeIntervalSince(last.at) < Self.savedSubtitleRefreshInterval { return }
         guard let owner = await captureScopeOwner() else { return }
-        lastSavedSubtitleRefresh = Date()
-        var changed = false
+        lastSavedSubtitleRefresh = (owner.scope, Date())
         var failed = false
+        // Offline or interrupted: ask again on the next activation. A scan of
+        // a scope that is no longer active leaves the new one's state alone.
+        defer {
+            if failed, lastSavedSubtitleRefresh?.scope == owner.scope { lastSavedSubtitleRefresh = nil }
+        }
         let candidates = file.records.values
             .filter { $0.localStatus == .completed && !$0.subtitleFilenames.isEmpty }
             .sorted { $0.id < $1.id }
@@ -1534,6 +1539,8 @@ final class DownloadManager {
                 if Self.isTransientPipelineFailure(error) { failed = true }
                 continue
             }
+            // The server or profile changed while the manifest was read.
+            guard isCurrent(owner) else { return }
             // A newer entry revision replaces every asset through reconcile;
             // these subtitles would belong to the replaced bytes.
             guard let current = file.records[record.id], current.localStatus == .completed,
@@ -1545,6 +1552,7 @@ final class DownloadManager {
             guard !refreshes.isEmpty else { continue }
             let assets = restartOwners.claimAssets(record.id)
             defer { restartOwners.releaseAssets(record.id, assets) }
+            var changed = false
             for subtitle in refreshes {
                 let result: DownloadSubtitleRevalidation
                 do {
@@ -1563,6 +1571,7 @@ final class DownloadManager {
                     guard !data.isEmpty, let url = absoluteFileURL(for: current, filename: filename),
                           (try? data.write(to: url, options: .atomic)) != nil else {
                         Self.logger.warning("saved subtitle rewrite failed")
+                        failed = true
                         continue
                     }
                     current.setSubtitleEntityTag(entityTag, for: subtitle.fetchUrl)
@@ -1571,10 +1580,10 @@ final class DownloadManager {
                 file.records[record.id] = current
                 changed = true
             }
+            // Saved per download: a scope change stops the scan, and nothing
+            // saves the store it leaves.
+            if changed { persist() }
         }
-        if changed { persist() }
-        // Offline or interrupted: ask again on the next activation.
-        if failed { lastSavedSubtitleRefresh = nil }
     }
 
     /// Whether a subtitle the refreshed manifest lists should be fetched

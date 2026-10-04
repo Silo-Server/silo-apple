@@ -157,6 +157,23 @@ final class SubtitleSyncTests: XCTestCase {
         }
     }
 
+    /// Another file may be on another server, so binding it asks the server
+    /// again what it supports instead of reusing the first answer.
+    func testBindingAnotherFileProbesTheServerAgain() async {
+        let calls = Calls()
+        let model = model(calls, list: [Self.sidecar()])
+        await model.reload()
+        XCTAssertTrue(model.isExternalSyncAvailable)
+
+        calls.status = #"{"revision":"r","state":"disabled","allowed":true,"auto_sync":true,"external":true}"#
+        model.bind(mediaFileId: 43)
+        XCTAssertFalse(model.isSyncAvailable, "nothing is offered before the new server answers")
+        await model.reload()
+        XCTAssertFalse(model.isSyncAvailable)
+        XCTAssertFalse(model.isExternalSyncAvailable)
+        XCTAssertNil(model.entry(for: Self.sidecarKey))
+    }
+
     /// A timing change the model reads (a reset, a finished poll) fetches
     /// the cues once; reading the same timing again does not.
     func testObservedTimingChangeRefetchesOnce() async {

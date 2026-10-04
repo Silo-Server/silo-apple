@@ -197,11 +197,16 @@ final class SubtitleSyncModel {
     }
 
     /// Points the model at the file now playing; `nil` when playback ends.
-    /// A different file drops everything in flight.
+    /// A different file drops everything in flight, and the server is asked
+    /// again what it supports, since the file may be on another server.
     func bind(mediaFileId: Int?) {
         guard mediaFileId != self.mediaFileId else { return }
         generation &+= 1
         self.mediaFileId = mediaFileId
+        endpoints = nil
+        isSyncAvailable = false
+        isExternalSyncAvailable = false
+        usesSyncKeys = true
         entries = [:]
         knownTiming = [:]
         pollStarted = [:]
@@ -388,7 +393,9 @@ final class SubtitleSyncModel {
 
     private func probedEndpoints() async -> SubtitleSyncEndpoints? {
         if let endpoints { return endpoints }
-        guard let status = try? await service.status() else { return nil }
+        let current = generation
+        // An answer for an earlier binding may describe another server.
+        guard let status = try? await service.status(), current == generation else { return nil }
         if let endpoints { return endpoints }
         isSyncAvailable = status.isAvailable
         isExternalSyncAvailable = status.isAvailable && status.external == true
