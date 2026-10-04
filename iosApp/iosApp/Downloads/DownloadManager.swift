@@ -1514,12 +1514,15 @@ final class DownloadManager {
         if let last = lastSavedSubtitleRefresh, last.scope == loadedScope,
            Date().timeIntervalSince(last.at) < Self.savedSubtitleRefreshInterval { return }
         guard let owner = await captureScopeOwner() else { return }
-        lastSavedSubtitleRefresh = (owner.scope, Date())
+        let started = Date()
+        lastSavedSubtitleRefresh = (owner.scope, started)
         var failed = false
-        // Offline or interrupted: ask again on the next activation. A scan of
-        // a scope that is no longer active leaves the new one's state alone.
+        // Offline or interrupted: ask again on the next activation. Only this
+        // scan's mark is cleared, never one a later scan or scope set.
         defer {
-            if failed, lastSavedSubtitleRefresh?.scope == owner.scope { lastSavedSubtitleRefresh = nil }
+            if failed, let last = lastSavedSubtitleRefresh, last.scope == owner.scope, last.at == started {
+                lastSavedSubtitleRefresh = nil
+            }
         }
         let candidates = file.records.values
             .filter { $0.localStatus == .completed && !$0.subtitleFilenames.isEmpty }
