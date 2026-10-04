@@ -31,7 +31,9 @@ final class AutoDownloadSchedule {
 
     private var scopeKey = ""
     private var loadedAt: Date?
-    private var loading: Task<Void, Never>?
+    /// The load in flight and the scope it loads; a scope change starts a
+    /// new one instead of waiting on a load whose result it discards.
+    private var loading: (scope: String, task: Task<Void, Never>)?
 
     private var manager: DownloadManager { DownloadManager.shared }
 
@@ -52,18 +54,19 @@ final class AutoDownloadSchedule {
         resetIfScopeChanged()
         guard ConnectionMonitor.shared.isDeviceOnline,
               evenWithoutMonitors || !manager.subscriptions.isEmpty else { return }
-        if let loading {
-            await loading.value
+        if let loading, loading.scope == scopeKey {
+            await loading.task.value
             return
         }
         if !force, let loadedAt, Date().timeIntervalSince(loadedAt) < Self.refreshInterval {
             await loadMissingSeriesInfo()
             return
         }
+        let scope = scopeKey
         let task = Task { await self.load() }
-        loading = task
+        loading = (scope, task)
         await task.value
-        loading = nil
+        if loading?.scope == scope { loading = nil }
     }
 
     /// Call after a monitor is created, edited or stopped so a new series

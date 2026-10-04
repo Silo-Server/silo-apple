@@ -53,6 +53,9 @@ struct SeriesDownloadSheet: View {
     @State private var confirmingStop = false
 
     private var existing: DownloadSubscription? { manager.subscription(forSeriesId: seriesId) }
+    /// An existing monitor stays reachable, so it can be stopped, even when
+    /// the server no longer offers monitoring.
+    private var canShowMonitor: Bool { manager.canMonitorSeries || existing != nil }
     private var isMonitoring: Bool { existing?.active == true }
 
     var body: some View {
@@ -61,7 +64,7 @@ struct SeriesDownloadSheet: View {
                 VStack(alignment: .leading, spacing: 14) {
                     Picker("Download", selection: $kind) {
                         Text("One Time").tag(Kind.oneTime)
-                        if manager.canMonitorSeries {
+                        if canShowMonitor {
                             Text("Monitor").tag(Kind.monitor)
                         }
                     }
@@ -281,6 +284,15 @@ struct SeriesDownloadSheet: View {
         }
     }
 
+    /// One Time needs an available row; Monitor needs the server to still
+    /// offer monitoring (an existing monitor can only be stopped).
+    private var primaryEnabled: Bool {
+        switch kind {
+        case .oneTime: return isAvailable(oneTime)
+        case .monitor: return manager.canMonitorSeries
+        }
+    }
+
     private var primaryButton: some View {
         Button(action: kind == .oneTime ? downloadOnce : saveMonitor) {
             Group {
@@ -298,8 +310,8 @@ struct SeriesDownloadSheet: View {
             .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
         }
         .buttonStyle(.plain)
-        .disabled(isWorking || (kind == .oneTime && !isAvailable(oneTime)))
-        .opacity(kind == .oneTime && !isAvailable(oneTime) ? 0.5 : 1)
+        .disabled(isWorking || !primaryEnabled)
+        .opacity(primaryEnabled ? 1 : 0.5)
         .padding(.horizontal, 16)
         .padding(.top, 8)
         .padding(.bottom, 4)
@@ -579,8 +591,11 @@ struct SeriesDownloadSheet: View {
             rule = Self.rule(for: existing)
             deleteWatched = existing.deleteWatched
             maxStorageBytes = existing.maxStorageBytes
+        } else if !ruleRows.contains(rule), let first = ruleRows.first {
+            // The server may not offer Future Episodes.
+            rule = first
         }
-        if manager.canMonitorSeries, startsOnMonitor || isMonitoring {
+        if canShowMonitor, startsOnMonitor || isMonitoring {
             kind = .monitor
         }
         if !isAvailable(oneTime), let first = oneTimeRows.first(where: isAvailable) {
