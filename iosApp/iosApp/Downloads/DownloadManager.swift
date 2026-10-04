@@ -201,6 +201,12 @@ final class DownloadManager {
     /// the scope changes, so a lasting failure isn't retried every poll.
     private var displayFillFailures: Set<String> = []
     private var displayFillScope: ScopeKey?
+    /// The wait before another pass after one ended on a connection
+    /// failure; doubles up to five minutes and resets after a pass that
+    /// wasn't interrupted, or on a scope change.
+    private var displayFillRetryDelay: Duration = .seconds(15)
+    private var displayFillRetryTask: Task<Void, Never>?
+    private static let displayFillConcurrency = 4
     /// Records whose pending status event is being sent.
     private var statusReportsInFlight: Set<String> = []
     /// The running pass over `file.pendingSubscriptionDeletes`, if any.
@@ -2296,6 +2302,7 @@ final class DownloadManager {
         if displayFillScope != loadedScope {
             displayFillScope = loadedScope
             displayFillFailures = []
+            displayFillRetryDelay = .seconds(15)
         }
         let ids = file.records.values
             .filter {
@@ -2306,35 +2313,79 @@ final class DownloadManager {
             .map(\.id)
         guard !ids.isEmpty else { return }
         displayFillTask = Task { [weak self] in
-            await self?.fillDisplay(ids)
+            let interrupted = await self?.fillDisplay(ids) ?? false
             guard let self else { return }
             self.displayFillTask = nil
+            if interrupted {
+                self.scheduleDisplayFillRetry()
+            } else {
+                self.displayFillRetryDelay = .seconds(15)
+            }
             if self.displayFillRequested { self.fillMissingDisplay() }
         }
     }
 
-    private func fillDisplay(_ ids: [String]) async {
-        guard let owner = await captureScopeOwner() else { return }
+    /// Tries again after a pass a connection failure ended, with backoff,
+    /// so an untitled download isn't left waiting on an unrelated trigger.
+    private func scheduleDisplayFillRetry() {
+        guard displayFillRetryTask == nil else { return }
+        let delay = displayFillRetryDelay
+        displayFillRetryDelay = min(delay * 2, .seconds(300))
+        displayFillRetryTask = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard let self, !Task.isCancelled else { return }
+            self.displayFillRetryTask = nil
+            self.fillMissingDisplay()
+        }
+    }
+
+    /// Reads the manifests a few at a time. Returns true when a connection
+    /// failure, timeout, or busy server ended the pass early.
+    private func fillDisplay(_ ids: [String]) async -> Bool {
+        guard let owner = await captureScopeOwner() else { return false }
+        let auth = owner.auth
+        let pending = ids.filter { id in file.records[id].map { $0.title == nil } ?? false }
         var manifests: [String: OfflineManifest] = [:]
-        for id in ids {
-            guard isCurrent(owner) else { return }
-            guard let record = file.records[id], record.title == nil else { continue }
-            do {
-                manifests[id] = try await SiloAPI.shared.apiV2Client.downloadManifest(id: id, auth: owner.auth)
-            } catch {
-                Self.logger.info("display read for \(id, privacy: .public) failed: \(String(describing: error), privacy: .public)")
-                // A refusal of this download, or a manifest the app can't use,
-                // is lasting. A connection failure, timeout, or busy server
-                // would fail the rest of the pass too; the next pass tries
-                // them all again.
-                let unusable = (error as? DownloadRegistryError) == .unusableManifest
-                guard unusable || APIv2Client.downloadRegistryFailure(error) == .rejected else { break }
-                // A read that outlived its scope says nothing about the new one.
-                guard isCurrent(owner) else { return }
-                displayFillFailures.insert(id)
+        var interrupted = false
+        for start in stride(from: 0, to: pending.count, by: Self.displayFillConcurrency) {
+            guard isCurrent(owner), !interrupted else { break }
+            let batch = pending[start..<min(start + Self.displayFillConcurrency, pending.count)]
+            let results = await withTaskGroup(of: (String, Result<OfflineManifest, Error>).self) { group in
+                for id in batch {
+                    group.addTask {
+                        do {
+                            return (id, .success(try await SiloAPI.shared.apiV2Client.downloadManifest(id: id, auth: auth)))
+                        } catch {
+                            return (id, .failure(error))
+                        }
+                    }
+                }
+                var out: [(String, Result<OfflineManifest, Error>)] = []
+                for await result in group { out.append(result) }
+                return out
+            }
+            // A read that outlived its scope says nothing about the new one.
+            guard isCurrent(owner) else { return false }
+            for (id, result) in results {
+                switch result {
+                case .success(let manifest):
+                    manifests[id] = manifest
+                case .failure(let error):
+                    Self.logger.info("display read for \(id, privacy: .public) failed: \(String(describing: error), privacy: .public)")
+                    // A refusal of this download, or a manifest the app
+                    // can't use, is lasting. A connection failure, timeout,
+                    // or busy server would fail the rest too; a retry
+                    // follows.
+                    let unusable = (error as? DownloadRegistryError) == .unusableManifest
+                    if unusable || APIv2Client.downloadRegistryFailure(error) == .rejected {
+                        displayFillFailures.insert(id)
+                    } else {
+                        interrupted = true
+                    }
+                }
             }
         }
-        guard isCurrent(owner), !manifests.isEmpty else { return }
+        guard isCurrent(owner), !manifests.isEmpty else { return interrupted }
         // One write for the pass: each write to `file` rebuilds the indexes.
         var records = file.records
         for (id, manifest) in manifests {
@@ -2344,6 +2395,7 @@ final class DownloadManager {
         }
         file.records = records
         persist()
+        return interrupted
     }
 
     /// Splits server rows the store doesn't know into rows to import and rows
