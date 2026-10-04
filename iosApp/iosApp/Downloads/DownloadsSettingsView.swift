@@ -23,8 +23,11 @@ struct DownloadsSettingsView: View {
             + (batches ? "Bitrate presets" : "For single items, bitrate presets")
             + " are prepared on the server when the original is larger"
         let showsResolution = manager.capability?.qualityOptions.contains { ($0.maxHeight ?? 0) > 0 } ?? false
+        let monitors = manager.canChooseMonitorQuality
         let scope = batches
-            ? " This is the default for every download and monitor; the Download sheet can change it."
+            ? (monitors
+                ? " This is the default for every download and monitor; the Download sheet can change it."
+                : " This is the default for every download; the Download sheet can change it. Monitored series download in original quality.")
             : " Series and season downloads use original quality."
         return base + (showsResolution ? ", at up to the resolution shown." : ".") + scope
     }
