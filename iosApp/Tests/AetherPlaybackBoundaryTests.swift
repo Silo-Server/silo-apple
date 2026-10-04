@@ -1405,6 +1405,37 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         XCTAssertEqual(controller.activeLoadEpoch, successorEpoch)
     }
 
+    func testDisplayStaysAwakeOnlyWhileVideoIsShownOnThisDevice() {
+        func prevents(
+            _ state: PlaybackState,
+            _ route: VideoRoute,
+            playWhenReady: Bool = true,
+            external: Bool = false
+        ) -> Bool {
+            AetherPlaybackController.shouldPreventDisplaySleep(
+                state: state, route: route,
+                playWhenReady: playWhenReady, externalPlaybackActive: external
+            )
+        }
+
+        for route in [VideoRoute.loopback, .remoteBypass, .software] {
+            XCTAssertTrue(prevents(.playing, route))
+        }
+        XCTAssertFalse(prevents(.playing, .audio), "music must let the display sleep")
+        XCTAssertFalse(prevents(.playing, .none))
+
+        XCTAssertTrue(prevents(.loading, .none), "an episode boundary must not open a gap")
+        XCTAssertTrue(prevents(.seeking, .loopback))
+        XCTAssertFalse(prevents(.loading, .none, playWhenReady: false))
+        XCTAssertFalse(prevents(.loading, .audio))
+
+        for state in [PlaybackState.idle, .paused, .ended, .error("failed")] {
+            XCTAssertFalse(prevents(state, .loopback), "\(state) must release the display")
+        }
+        XCTAssertFalse(prevents(.playing, .loopback, external: true),
+                       "the picture is on the AirPlay receiver")
+    }
+
     func testReplacementExternalPlaybackPolicyOnlyWinsForReceiverSafeSuccessor() {
         XCTAssertTrue(AetherPlaybackController.externalPlaybackAllowed(
             activePolicy: false,

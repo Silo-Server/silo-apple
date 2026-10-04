@@ -137,6 +137,15 @@ final class AetherPlaybackController {
     private var replacementExternalPlaybackPolicy: Bool?
     private var lastExternalPlaybackSupport = false
     private var lastExternalPlaybackActive = false
+    #if os(macOS)
+    /// Holds the display and the system awake while video plays on this
+    /// Mac. The native route's AVPlayer was observed playing an on-screen
+    /// video with no display-sleep assertion, so the screen saver started
+    /// mid-playback.
+    private var displaySleepActivity: NSObjectProtocol?
+    private var displaySleepReleaseTask: Task<Void, Never>?
+    private static let displaySleepReleaseDelay: UInt64 = 5_000_000_000
+    #endif
 
     init() throws {
         engine = try AetherEngine()
@@ -601,6 +610,68 @@ final class AetherPlaybackController {
         return Int(exactly: id)
     }
 
+    /// Whether this device's display must stay awake. Loading and seeking
+    /// count while the user still intends to play, so an episode boundary or a
+    /// scrub does not open a gap for the screen saver. Paused does not count
+    /// even with that intent set: the engine can pause without the controller
+    /// hearing about it, and a paused video must let the display sleep.
+    nonisolated static func shouldPreventDisplaySleep(
+        state: PlaybackState,
+        route: VideoRoute,
+        playWhenReady: Bool,
+        externalPlaybackActive: Bool
+    ) -> Bool {
+        // The picture is on the AirPlay receiver, not on this display.
+        guard !externalPlaybackActive else { return false }
+        switch state {
+        case .playing:
+            switch route {
+            case .loopback, .remoteBypass, .software:
+                return true
+            case .none, .audio:
+                return false
+            }
+        case .loading, .seeking:
+            // The route is not settled while a load is in flight.
+            return playWhenReady && route != .audio
+        case .idle, .paused, .ended, .error:
+            return false
+        }
+    }
+
+    #if os(macOS)
+    private func refreshDisplaySleepPrevention() {
+        let prevented = Self.shouldPreventDisplaySleep(
+            state: engine.state,
+            route: engine.videoRoute,
+            playWhenReady: shouldPlayWhenReady,
+            externalPlaybackActive: isExternalPlaybackActive
+        )
+        if prevented {
+            displaySleepReleaseTask?.cancel()
+            displaySleepReleaseTask = nil
+            guard displaySleepActivity == nil else { return }
+            displaySleepActivity = ProcessInfo.processInfo.beginActivity(
+                options: [.idleDisplaySleepDisabled, .idleSystemSleepDisabled],
+                reason: "Silo video playback"
+            )
+        } else if displaySleepActivity != nil, displaySleepReleaseTask == nil {
+            // The engine passes through paused and idle for a second or two
+            // between episodes. Releasing at once would let the screen saver
+            // start in that gap after an episode watched without input.
+            displaySleepReleaseTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: Self.displaySleepReleaseDelay)
+                guard !Task.isCancelled, let self else { return }
+                displaySleepReleaseTask = nil
+                if let activity = displaySleepActivity {
+                    ProcessInfo.processInfo.endActivity(activity)
+                    displaySleepActivity = nil
+                }
+            }
+        }
+    }
+    #endif
+
     private func observeEngine() {
         engine.$state
             .sink { [weak self] state in
@@ -696,6 +767,15 @@ final class AetherPlaybackController {
                 publishSystemMediaChanged()
             }
             .store(in: &subscriptions)
+
+        #if os(macOS)
+        // `@Published` emits before the property changes; hop once so the
+        // refresh reads the settled state and route.
+        engine.$state.combineLatest(engine.$videoRoute)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.refreshDisplaySleepPrevention() }
+            .store(in: &subscriptions)
+        #endif
 
         #if os(iOS) || os(tvOS)
         NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)
@@ -850,6 +930,9 @@ final class AetherPlaybackController {
 
         supportsExternalPlayback = supported
         isExternalPlaybackActive = routeIsActive
+        #if os(macOS)
+        refreshDisplaySleepPrevention()
+        #endif
         guard supported != lastExternalPlaybackSupport
                 || routeIsActive != lastExternalPlaybackActive else { return }
         lastExternalPlaybackSupport = supported
