@@ -439,6 +439,10 @@ struct OfflineSubtitle: Codable, Hashable, Sendable {
     let external: Bool?
     let fetchUrl: String
     let fileSize: Int64?
+    /// Opaque; changes whenever the subtitle's delivered bytes can change (a
+    /// timing correction, or an external file edited on disk). Present on
+    /// `downloaded:` and readable `external:` subtitles.
+    var revision: String? = nil
 }
 
 /// Rescan-stable identity mirroring the watch-state identity. Used to
@@ -593,16 +597,27 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     var seriesPosterFilename: String? = nil
     /// Manifest `fetch_url` → relative on-disk filename.
     var subtitleFilenames: [String: String]
-    /// Manifest `fetch_url` → ETag of the saved bytes, for stored
-    /// (`downloaded:{id}`) subtitles, whose bytes change with their timing
-    /// correction. Optional keeps stores written before it decodable.
+    /// Manifest `fetch_url` → ETag of the saved bytes. A subtitle's bytes
+    /// change with its timing correction (and an external one's with its
+    /// file on disk). Optional keeps stores written before it decodable.
     var subtitleEntityTags: [String: String]? = nil
+    /// Manifest `fetch_url` → the manifest `revision` the saved bytes
+    /// belong to. Optional keeps stores written before it decodable.
+    var subtitleRevisions: [String: String]? = nil
 
     /// Records the ETag of a saved subtitle's bytes; `nil` forgets it.
     mutating func setSubtitleEntityTag(_ entityTag: String?, for fetchUrl: String) {
         var tags = subtitleEntityTags ?? [:]
         tags[fetchUrl] = entityTag
         subtitleEntityTags = tags
+    }
+
+    /// Records the manifest revision of a saved subtitle's bytes; `nil`
+    /// forgets it.
+    mutating func setSubtitleRevision(_ revision: String?, for fetchUrl: String) {
+        var revisions = subtitleRevisions ?? [:]
+        revisions[fetchUrl] = revision
+        subtitleRevisions = revisions
     }
     /// Persisted `cancel(byProducingResumeData:)` blob for a paused
     /// transfer. Default `nil` keeps Codable backward-compatible with

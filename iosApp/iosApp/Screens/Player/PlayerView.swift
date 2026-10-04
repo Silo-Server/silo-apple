@@ -279,6 +279,8 @@ struct PlayerView: View {
                             PlayerNoticeOverlay(notice: notice)
                         }
                         #endif
+
+                        subtitleSyncIndicator
                     }
 
                     #if os(tvOS)
@@ -653,6 +655,37 @@ struct PlayerView: View {
         return nil
     }
     #endif
+
+    /// The sync card for a subtitle sync this viewer started, in the
+    /// top-trailing corner. On iOS it moves below the top bar while the
+    /// controls show (two rows tall in portrait, one in landscape); on tvOS
+    /// it stays clear of the overscan margin.
+    @ViewBuilder
+    private var subtitleSyncIndicator: some View {
+        if let notice = viewModel.subtitleSync.notice {
+            #if os(tvOS)
+            // Below the player menu's panel while it is open, so the card
+            // never covers its Options column.
+            SubtitleSyncIndicator(notice: notice)
+                .padding(.top, viewModel.isHUDPresented ? 560 : 60)
+                .padding(.trailing, 80)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .transition(.opacity)
+            #else
+            GeometryReader { proxy in
+                let portrait = proxy.size.width < proxy.size.height
+                SubtitleSyncIndicator(notice: notice) {
+                    viewModel.subtitleSync.dismissNotice()
+                }
+                .padding(.top, viewModel.shouldShowMobilePlayerChrome ? (portrait ? 112 : 64) : 12)
+                .padding(.trailing, 16)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .animation(.easeOut(duration: 0.2), value: viewModel.shouldShowMobilePlayerChrome)
+            }
+            .transition(.opacity)
+            #endif
+        }
+    }
 
     #if !os(tvOS)
     /// Tap-to-reveal close control while loading and on Next Up, in

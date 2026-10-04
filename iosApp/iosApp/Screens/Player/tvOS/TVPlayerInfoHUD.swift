@@ -522,6 +522,8 @@ private struct HUDSettingRow: View {
     var detail: String? = nil
     var colorHex: String? = nil
     var systemImage: String? = nil
+    /// Off for rows that act in place rather than open a picker or menu.
+    var showsChevron = true
     let action: () -> Void
 
     var body: some View {
@@ -532,7 +534,7 @@ private struct HUDSettingRow: View {
                 detail: detail,
                 colorHex: colorHex,
                 systemImage: systemImage,
-                showsChevron: true
+                showsChevron: showsChevron
             )
         }
         .buttonStyle(HUDRowButtonStyle())
@@ -1682,7 +1684,7 @@ private struct SubtitlesPane: View {
             overlayActive = presented
         }
         .onDisappear { overlayActive = false }
-        .onAppear { viewModel.refreshStoredSubtitleSync() }
+        .onAppear { viewModel.refreshSubtitleSync() }
         // A refusal (403) swaps the Sync row for its unfocusable variant, and
         // a reset removes the Reset row; hand focus to a neighbour then.
         .onChange(of: timingFocusTargets) { _, targets in
@@ -1832,44 +1834,47 @@ private struct SubtitlesPane: View {
         }
     }
 
-    /// The track's attributes, followed by its sync status when it is a
-    /// stored subtitle ("Synced −3.2 s").
+    /// The track's attributes, followed by its sync status when it can be
+    /// synced ("Syncing… 40%", "Synced −3.0 s").
     private func attributes(for track: PlayerTrack) -> String? {
-        let parts = [track.attributesLabel, viewModel.storedSubtitleStatus(for: track)].compactMap { $0 }.filter { !$0.isEmpty }
+        let parts = [track.attributesLabel, viewModel.subtitleSyncStatus(for: track)].compactMap { $0 }.filter { !$0.isEmpty }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
-    /// The selected stored track's sync entry, when timing actions apply.
-    private var storedTiming: (id: String, entry: StoredSubtitleSyncModel.Entry, canSync: Bool)? {
-        let sync = viewModel.storedSubtitleSync
-        guard let id = viewModel.selectedStoredSubtitleId, let entry = sync.entry(for: id),
+    /// The selected track's sync entry, when timing actions apply.
+    private var selectedTiming: (key: String, entry: SubtitleSyncModel.Entry, canSync: Bool)? {
+        let sync = viewModel.subtitleSync
+        guard let key = viewModel.selectedSubtitleSyncKey, let entry = sync.entry(for: key),
               sync.showsTimingControls(entry) else { return nil }
-        return (id, entry, sync.canSync(entry))
+        return (key, entry, sync.canSync(entry))
     }
 
     /// The timing rows that can hold focus right now.
     private var timingFocusTargets: [Option] {
-        guard let timing = storedTiming, !timing.entry.isForbidden else { return [] }
+        guard let timing = selectedTiming, !timing.entry.isForbidden else { return [] }
         var targets: [Option] = []
         if timing.canSync || timing.entry.error != nil { targets.append(.syncTiming) }
         if timing.entry.canReset { targets.append(.resetTiming) }
         return targets
     }
 
-    /// "Sync Subtitle" and "Reset Timing" for the selected stored track.
-    /// Rows stay enabled while a request runs, so focus never lands on a row
-    /// that just went inert; a press during a running job does nothing.
+    /// "Sync to Audio" and "Reset Timing" for the selected track, stored or a
+    /// file next to the media, with a running sync's progress and the last
+    /// result. Rows stay enabled while a request runs, so focus never lands
+    /// on a row that just went inert; a press during a running job does
+    /// nothing. The progress and the note under the rows never take focus.
     @ViewBuilder
     private var timingRows: some View {
-        if let timing = storedTiming {
+        if let timing = selectedTiming {
             let entry = timing.entry
-            let sync = viewModel.storedSubtitleSync
+            let sync = viewModel.subtitleSync
             if entry.isForbidden {
                 HUDSettingRow(
-                    label: "Sync Subtitle",
+                    label: "Sync to Audio",
                     value: "",
-                    detail: StoredSubtitleSyncModel.forbiddenMessage,
+                    detail: sync.forbiddenMessage,
                     systemImage: "waveform",
+                    showsChevron: false,
                     action: {}
                 )
                 .disabled(true)
@@ -1878,31 +1883,66 @@ private struct SubtitlesPane: View {
             } else {
                 if timing.canSync || entry.error != nil {
                     HUDSettingRow(
-                        label: "Sync Subtitle",
-                        value: entry.isInProgress ? "Syncing…" : "",
-                        detail: entry.error ?? entry.statusLabel,
-                        systemImage: "waveform"
+                        label: entry.isInProgress ? "Syncing…" : "Sync to Audio",
+                        value: "",
+                        systemImage: "waveform",
+                        showsChevron: false
                     ) {
                         guard timing.canSync, !entry.isBusy, !entry.isInProgress else { return }
-                        Task { await sync.requestSync(id: timing.id) }
+                        Task { await sync.requestSync(key: timing.key) }
                     }
                     .focused($focusedOption, equals: .syncTiming)
                     .id(Option.syncTiming)
+                }
+                if let job = entry.job, job.isInProgress {
+                    VStack(alignment: .leading, spacing: 6) {
+                        SubtitleSyncProgressBar(percent: SubtitleSyncLabel.percent(job) ?? 0)
+                        if let phase = SubtitleSyncLabel.phase(job) {
+                            Text(phase)
+                                .font(.system(size: 17))
+                                .foregroundStyle(.white.opacity(0.55))
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .accessibilityElement(children: .combine)
                 }
                 if entry.canReset {
                     HUDSettingRow(
                         label: "Reset Timing",
                         value: "",
-                        systemImage: "arrow.uturn.backward"
+                        systemImage: "arrow.uturn.backward",
+                        showsChevron: false
                     ) {
                         guard !entry.isBusy, !entry.isInProgress else { return }
-                        Task { await sync.resetTiming(id: timing.id) }
+                        Task { await sync.resetTiming(key: timing.key) }
                     }
                     .focused($focusedOption, equals: .resetTiming)
                     .id(Option.resetTiming)
                 }
+                if let note = timingNote(entry, canSync: timing.canSync) {
+                    Text(note.text)
+                        .font(.system(size: 17))
+                        .foregroundStyle(note.color)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 14)
+                        .padding(.top, 4)
+                        .padding(.bottom, 10)
+                }
             }
         }
+    }
+
+    /// The line under the timing rows: the last action's error, the last
+    /// result, or what "Sync to Audio" does.
+    private func timingNote(_ entry: SubtitleSyncModel.Entry, canSync: Bool) -> (text: String, color: Color)? {
+        if let error = entry.error { return (error, Color(red: 1, green: 0.55, blue: 0.55)) }
+        if let result = entry.result {
+            return (result.text, result.isWarning ? Color.siloWarning.opacity(0.9) : .white.opacity(0.55))
+        }
+        if canSync, !entry.isInProgress { return (entry.actionNote, .white.opacity(0.45)) }
+        return nil
     }
 
     @ViewBuilder

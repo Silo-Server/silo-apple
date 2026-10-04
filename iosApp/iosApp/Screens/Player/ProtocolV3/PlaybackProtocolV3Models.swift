@@ -470,6 +470,10 @@ struct PlaybackV3SubtitleInventoryItem: Codable, Equatable {
     let delivery: String
     let url: String?
     let fontBundleUrl: String?
+    /// Names the track to the subtitle sync operations; present on external
+    /// and downloaded SRT, WebVTT, ASS, and SSA tracks. Opaque, and stable
+    /// across sessions and inventory order.
+    var syncKey: String? = nil
 }
 
 struct PlaybackV3EmbeddedSubtitle: Codable, Equatable {

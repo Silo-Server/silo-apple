@@ -97,6 +97,16 @@ struct PlayerView: View {
                         .padding(.top, 72)
                 }
 
+                if let notice = viewModel.subtitleSync.notice {
+                    SubtitleSyncIndicator(notice: notice) {
+                        viewModel.subtitleSync.dismissNotice()
+                    }
+                    .padding(.top, 24)
+                    .padding(.trailing, 24)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .transition(.opacity)
+                }
+
                 MacPlayerCommandCapture { command in
                     handleCommand(command)
                 }
