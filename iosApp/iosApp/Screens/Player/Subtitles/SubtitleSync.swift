@@ -143,6 +143,10 @@ final class SubtitleSyncModel {
     @ObservationIgnored private var reading: Set<String> = []
     /// The file binding a listing is in flight for.
     @ObservationIgnored private var reloadingGeneration: Int?
+    /// A listing was asked for while one was in flight.
+    @ObservationIgnored private var reloadQueued = false
+    /// Subtitles asked to be read again while a read of them was in flight.
+    @ObservationIgnored private var rereads: Set<String> = []
     @ObservationIgnored private var pendingWatch: [String: String] = [:]
     /// Grows with each realtime update of a subtitle. A read sent before one
     /// arrived describes an older state and is dropped.
@@ -204,6 +208,8 @@ final class SubtitleSyncModel {
         pushedAt = [:]
         refetchedAt = [:]
         reading = []
+        rereads = []
+        reloadQueued = false
         pendingWatch = [:]
         pushVersions = [:]
         pollTask?.cancel()
@@ -225,18 +231,26 @@ final class SubtitleSyncModel {
         pollStarted = [:]
         for key in entries.keys { entries[key]?.pollExpired = false }
         // One listing at a time: a burst of realtime updates for a subtitle
-        // not loaded yet asks for several.
+        // not loaded yet asks for several. A request during a listing runs
+        // one more after it, since the listing drops what a realtime update
+        // superseded while it was on the wire.
         let current = generation
-        guard reloadingGeneration != current else { return }
+        guard reloadingGeneration != current else {
+            reloadQueued = true
+            return
+        }
         reloadingGeneration = current
         defer { if reloadingGeneration == current { reloadingGeneration = nil } }
-        // Sync state is decoration; the tracks still play without it.
-        guard let endpoints = await probedEndpoints(), current == generation, isSyncAvailable else { return }
-        let versions = pushVersions
-        guard let states = try? await endpoints.list(mediaFileId), current == generation else { return }
-        for state in states where pushVersions[state.key] == versions[state.key] { observe(state) }
-        updatePolling()
-        advanceFeedback()
+        repeat {
+            reloadQueued = false
+            // Sync state is decoration; the tracks still play without it.
+            guard let endpoints = await probedEndpoints(), current == generation, isSyncAvailable else { return }
+            let versions = pushVersions
+            guard let states = try? await endpoints.list(mediaFileId), current == generation else { return }
+            for state in states where pushVersions[state.key] == versions[state.key] { observe(state) }
+            updatePolling()
+            advanceFeedback()
+        } while reloadQueued && current == generation
     }
 
     /// Records a subtitle the viewer just downloaded, following its
@@ -417,28 +431,44 @@ final class SubtitleSyncModel {
         onTimingChanged?(key)
     }
 
+    /// Reads one subtitle. A request while a read of it is in flight reads
+    /// it once more afterwards: a realtime update that arrived meanwhile
+    /// makes the answer in flight stale, so it is dropped.
     private func readOne(_ key: String) async {
-        guard let mediaFileId, let endpoints, !reading.contains(key) else { return }
+        guard let mediaFileId, let endpoints else { return }
+        guard !reading.contains(key) else {
+            rereads.insert(key)
+            return
+        }
         let current = generation
         reading.insert(key)
         defer {
             // A reset swapped in a new set; never unlock a newer context's read.
             if current == generation { reading.remove(key) }
         }
-        let version = pushVersions[key]
-        do {
-            let state = try await endpoints.read(mediaFileId, key)
-            guard current == generation, pushVersions[key] == version else { return }
-            observe(state)
-            updatePolling()
-            advanceFeedback()
-        } catch {
-            // A lost subtitle or file stops polling (a reload re-arms it); a
-            // read that failed on the way is tried again at the next tick.
-            guard current == generation, Self.stopsPolling(error) else { return }
-            patch(key) { $0.pollExpired = true }
-            advanceFeedback()
-        }
+        repeat {
+            rereads.remove(key)
+            let version = pushVersions[key]
+            do {
+                let state = try await endpoints.read(mediaFileId, key)
+                guard current == generation else { return }
+                if pushVersions[key] == version {
+                    observe(state)
+                    updatePolling()
+                    advanceFeedback()
+                }
+            } catch {
+                // A lost subtitle or file stops polling (a reload re-arms it); a
+                // read that failed on the way is tried again at the next tick.
+                guard current == generation else { return }
+                if Self.stopsPolling(error) {
+                    rereads.remove(key)
+                    patch(key) { $0.pollExpired = true }
+                    advanceFeedback()
+                    return
+                }
+            }
+        } while current == generation && rereads.contains(key)
     }
 
     private var pollingKeys: [String] {

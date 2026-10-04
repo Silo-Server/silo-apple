@@ -113,6 +113,8 @@ final class SubtitleSyncTests: XCTestCase {
         var readError: Error?
         /// Runs while a listing is on the wire, before it answers.
         var beforeListReturns: (() async -> Void)?
+        /// Runs while a read is on the wire, before it answers.
+        var beforeReadReturns: (() async -> Void)?
     }
 
     private func model(_ calls: Calls, list: [SubtitleSyncState]) -> SubtitleSyncModel {
@@ -126,7 +128,9 @@ final class SubtitleSyncTests: XCTestCase {
             },
             read: { _, _ in
                 if let error = calls.readError { throw error }
-                return calls.reads.removeFirst()
+                let state = calls.reads.removeFirst()
+                if let hook = calls.beforeReadReturns { await hook() }
+                return state
             },
             start: { _, _ in
                 if let error = calls.syncError { throw error }
@@ -350,6 +354,45 @@ final class SubtitleSyncTests: XCTestCase {
         XCTAssertEqual(model.entry(for: Self.sidecarKey)?.job?.status, "synced")
         XCTAssertEqual(refetched, [Self.sidecarKey], "the stale listing fetched the cues again")
         XCTAssertEqual(model.notice?.title, "Applying new timing…")
+    }
+
+    /// A realtime update for a subtitle the listing on the wire does not know
+    /// yet asks for another listing; it runs once the first one answers,
+    /// which dropped that subtitle as superseded.
+    func testUpdateDuringAListingGetsItsOwnListing() async throws {
+        let calls = Calls()
+        let model = model(calls, list: [Self.sidecar()])
+        let update = try Self.syncUpdate(status: "running", offset: 0, phase: "analyzing", progress: 0.3)
+        calls.beforeListReturns = {
+            calls.beforeListReturns = nil
+            await MainActor.run { model.syncUpdated(update) }
+            // Let the reload the update asked for find this one in flight.
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        await model.reload()
+        try await waitUntil { model.entry(for: Self.sidecarKey) != nil }
+        XCTAssertEqual(calls.lists, 2)
+        XCTAssertNotNil(model.entry(for: Self.sidecarKey))
+    }
+
+    /// A second timing change during a read reads the subtitle again once
+    /// the first read answers, which it drops as stale.
+    func testChangeDuringAReadGetsItsOwnRead() async throws {
+        let shifted = SubtitleTiming(offsetMs: -3010, scale: 1)
+        let calls = Calls()
+        let model = model(calls, list: [Self.sidecar()])
+        model.onTimingChanged = { _ in }
+        await model.reload()
+        calls.reads = [Self.sidecar(), Self.sidecar(timing: shifted, sync: Self.job("3", status: "synced", result: shifted))]
+        calls.beforeReadReturns = {
+            calls.beforeReadReturns = nil
+            await MainActor.run { model.timingChanged(key: Self.sidecarKey) }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        model.timingChanged(key: Self.sidecarKey)
+        try await waitUntil { model.entry(for: Self.sidecarKey)?.state.timing == shifted }
+        XCTAssertEqual(model.entry(for: Self.sidecarKey)?.state.timing, shifted)
+        XCTAssertTrue(calls.reads.isEmpty)
     }
 
     /// A poll that finds the subtitle gone stops, and the progress card of a
