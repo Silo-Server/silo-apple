@@ -799,6 +799,8 @@ final class DownloadManager {
     private func deactivate() {
         pollTask?.cancel()
         pollTask = nil
+        displayFillRetryTask?.cancel()
+        displayFillRetryTask = nil
         abandonAllRestarts()
         progressHighWater.removeAll()
         pendingPauseIds.removeAll()
@@ -2338,7 +2340,7 @@ final class DownloadManager {
         let scope = loadedScope
         displayFillRetryTask = Task { [weak self] in
             try? await Task.sleep(for: delay)
-            // A cancelled retry was already replaced. Any other clears
+            // Whoever cancelled a retry also cleared it. Any other clears
             // itself even when its scope is gone, so a finished task can't
             // hold back the retries of a scope that comes back.
             guard let self, !Task.isCancelled else { return }
