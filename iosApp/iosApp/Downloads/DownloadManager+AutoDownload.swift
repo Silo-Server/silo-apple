@@ -19,8 +19,12 @@ extension DownloadManager {
 
     /// Episodes of the series this device already holds a download for, in
     /// any state, so "what's next" never names one of them.
+    /// Episodes of the series this device has or is getting. A failed
+    /// download doesn't count, so its episode can still be named as next.
     func knownEpisodeIds(forSeriesId seriesId: String) -> Set<String> {
-        Set(file.records.values.filter { Self.seriesKey(for: $0) == seriesId }.compactMap(\.episodeId))
+        Set(file.records.values
+            .filter { Self.seriesKey(for: $0) == seriesId && $0.localStatus != .failed }
+            .compactMap(\.episodeId))
     }
 
     func autoDownloadStatus(for subscription: DownloadSubscription, upcoming: [UpcomingEpisode]) -> AutoDownloadStatus {

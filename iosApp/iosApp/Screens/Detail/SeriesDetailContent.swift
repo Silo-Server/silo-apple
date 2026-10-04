@@ -240,7 +240,8 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                         seasons: seasons,
                         selectedSeason: selectedSeason,
                         episode: nextUpEpisode,
-                        episodeFileId: nextUpEpisode.flatMap(playbackFileId(for:))
+                        // The version the page shows, including an automatic pick.
+                        episodeFileId: nextUpEpisode.flatMap(playbackFileId(for:)) ?? effectiveNextUpVersion?.fileId
                     )
                 }
                 PhoneLabeledMenu(label: "More") {
