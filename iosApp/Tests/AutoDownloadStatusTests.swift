@@ -93,6 +93,15 @@ final class AutoDownloadStatusTests: XCTestCase {
         XCTAssertEqual(AutoDownloadRules.statusLine(status), "Episode 5 waits for Wi-Fi")
     }
 
+    func testIdleSeriesWithoutACalendarIsMonitoringNotUpToDate() throws {
+        let status = AutoDownloadRules.status(
+            for: try subscription(.future), activity: [], upcoming: [], knownEpisodeIds: [], scheduleKnown: false, now: now
+        )
+        XCTAssertEqual(status, .monitoring)
+        XCTAssertEqual(AutoDownloadRules.statusLine(status, now: now, calendar: calendar), "Monitoring")
+        XCTAssertEqual(AutoDownloadRules.headline(status, now: now, calendar: calendar), "Monitoring")
+    }
+
     func testIdleSeriesNamesItsNextAiringOrIsUpToDate() throws {
         let sub = try subscription(.latestSeason, target: 3)
         let next = AutoDownloadRules.status(

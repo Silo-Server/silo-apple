@@ -44,7 +44,13 @@ final class AutoDownloadSchedule {
 
     /// The status an auto-download row or banner shows for `subscription`.
     func status(for subscription: DownloadSubscription) -> AutoDownloadStatus {
-        manager.autoDownloadStatus(for: subscription, upcoming: upcoming(forSeriesId: subscription.seriesId))
+        // Until the calendar loads for this profile, an empty schedule means
+        // unknown, not up to date.
+        manager.autoDownloadStatus(
+            for: subscription,
+            upcoming: upcoming(forSeriesId: subscription.seriesId),
+            scheduleKnown: loadedAt != nil
+        )
     }
 
     /// Reloads the calendar when it is older than the refresh interval, or

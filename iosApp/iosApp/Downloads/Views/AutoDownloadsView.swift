@@ -216,6 +216,7 @@ enum AutoDownloadStatusStyle {
             }
         case .next: return "clock"
         case .upToDate: return "checkmark"
+        case .monitoring: return "dot.radiowaves.left.and.right"
         }
     }
 
