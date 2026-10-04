@@ -426,7 +426,7 @@ final class AetherPlaybackController {
     func selectAudioTrack(id: Int) { engine.selectAudioTrack(index: id) }
 
     func selectSubtitleTrack(id: Int64?) {
-        cueHold.release()
+        cueHold.release(.primary)
         if let id, let aetherID = aetherSubtitleID(forAppID: id) {
             engine.selectSubtitleTrack(index: aetherID)
         } else {
@@ -435,7 +435,7 @@ final class AetherPlaybackController {
     }
 
     func selectSecondarySubtitleTrack(id: Int64?) {
-        cueHold.release()
+        cueHold.release(.secondary)
         if let id, let aetherID = aetherSubtitleID(forAppID: id) {
             engine.selectSecondarySubtitleTrack(index: aetherID)
         } else {
@@ -529,9 +529,8 @@ final class AetherPlaybackController {
         if !primary, !secondary, activeSpec?.options.preferredSubtitleLanguages.isEmpty == false {
             return false
         }
-        // A showing track keeps its cues on screen until the refetched ones
-        // are decoded, instead of going blank while they load.
-        if primary || secondary { cueHold.begin(alreadyLoading: engine.isLoadingSubtitles) }
+        let wasLoadingPrimary = engine.isLoadingSubtitles
+        let wasLoadingSecondary = engine.isLoadingSecondarySubtitles
         isRegisteringExternalSubtitle = true
         let registered = engine.addExternalSubtitleTrack(source.track)
         aetherSubtitleIDByAppID[appTrackID] = registered.id
@@ -542,6 +541,10 @@ final class AetherPlaybackController {
                                             authorization: activeSpec?.subtitleRequestAuthorization(for: fontRequest.url))
         }
         isRegisteringExternalSubtitle = false
+        // A showing track keeps its cues on screen until the refetched ones
+        // are decoded, instead of going blank while they load.
+        if primary { cueHold.begin(.primary, trackID: registered.id, alreadyLoading: wasLoadingPrimary) }
+        if secondary { cueHold.begin(.secondary, alreadyLoading: wasLoadingSecondary) }
         // Select the new id before dropping the old one: removing a selected
         // track clears that selection.
         if primary { engine.selectSubtitleTrack(index: registered.id) }
@@ -600,7 +603,7 @@ final class AetherPlaybackController {
     }
 
     private func invalidateActiveLoad(preservingExternalPlaybackPolicy: Bool = false) {
-        cueHold.release()
+        cueHold.releaseAll()
         assSubtitles.stop()
         replacementExternalPlaybackPolicy = preservingExternalPlaybackPolicy
             ? observedExternalPlaybackPlayer?.allowsExternalPlayback
@@ -695,9 +698,14 @@ final class AetherPlaybackController {
         engine.$isLoadingSubtitles
             .removeDuplicates()
             .sink { [weak self] loading in
-                self?.cueHold.loadingChanged(loading)
+                self?.cueHold.loadingChanged(loading, for: .primary)
                 self?.publish(.subtitleLoading(loading))
             }
+            .store(in: &subscriptions)
+
+        engine.$isLoadingSecondarySubtitles
+            .removeDuplicates()
+            .sink { [weak self] loading in self?.cueHold.loadingChanged(loading, for: .secondary) }
             .store(in: &subscriptions)
 
         engine.$hasFirstFrameReadyForDisplay

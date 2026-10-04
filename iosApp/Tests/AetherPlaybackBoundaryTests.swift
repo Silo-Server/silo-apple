@@ -1277,14 +1277,16 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
 
         XCTAssertTrue(controller.reloadExternalSubtitleTrack(appTrackID: appID, primary: true, secondary: false))
         XCTAssertTrue(controller.engine.subtitleCues.isEmpty, "Aether clears the cues while it fetches the file again")
-        XCTAssertTrue(controller.cueHold.isHolding, "so the renderers hold the ones on screen")
-        try await waitForCondition { !controller.engine.subtitleCues.isEmpty && !controller.cueHold.isHolding }
-        XCTAssertFalse(controller.cueHold.isHolding, "the hold ends once the new cues are decoded")
+        XCTAssertTrue(controller.cueHold.holds(.primary, trackID: controller.engine.activeSubtitleTrackIndex),
+                      "so the renderers hold the ones on screen")
+        XCTAssertFalse(controller.cueHold.isHolding(.secondary), "the secondary stream was not reloaded")
+        try await waitForCondition { !controller.engine.subtitleCues.isEmpty && !controller.cueHold.isHolding(.primary) }
+        XCTAssertFalse(controller.cueHold.isHolding(.primary), "the hold ends once the new cues are decoded")
 
         XCTAssertTrue(controller.reloadExternalSubtitleTrack(appTrackID: appID, primary: true, secondary: false))
-        XCTAssertTrue(controller.cueHold.isHolding)
+        XCTAssertTrue(controller.cueHold.isHolding(.primary))
         controller.selectSubtitleTrack(id: nil)
-        XCTAssertFalse(controller.cueHold.isHolding, "turning subtitles off must not keep old cues up")
+        XCTAssertFalse(controller.cueHold.isHolding(.primary), "turning subtitles off must not keep old cues up")
     }
 
     private func waitForCondition(timeout: TimeInterval = 5, _ condition: () -> Bool) async throws {

@@ -17,7 +17,10 @@ final class ASSSubtitleSession: ObservableObject {
     /// While it holds, the last frame stays on screen through the reload of
     /// the showing track instead of clearing.
     var cueHold: SubtitleCueHold?
-    private var holdsFrame: Bool { cueHold?.isHolding == true }
+    /// Whether the frame on screen stays up while `trackID` reloads.
+    private func holdsFrame(for trackID: Int?) -> Bool {
+        cueHold?.holds(.primary, trackID: trackID) == true
+    }
     private let fontLoader: @Sendable (URLRequest, HTTPRequestAuthorization?) async throws -> [FontAttachment]
     private var renderer = ASSSubtitleRenderer()
     private var subscriptions: Set<AnyCancellable> = []
@@ -47,8 +50,10 @@ final class ASSSubtitleSession: ObservableObject {
          }) {
         self.engine = engine
         self.fontLoader = fontLoader
-        engine.$activeSubtitleTrackIndex.removeDuplicates().sink { [weak self] _ in
-            self?.clearSelection()
+        // Published values arrive before the property changes, so pass the
+        // new index along.
+        engine.$activeSubtitleTrackIndex.removeDuplicates().sink { [weak self] trackID in
+            self?.clearSelection(showing: trackID)
         }.store(in: &subscriptions)
         engine.$subtitleCues.sink { [weak self] cues in
             guard let self else { return }
@@ -57,7 +62,7 @@ final class ASSSubtitleSession: ObservableObject {
             events = ASSSubtitleRenderer.Event.events(from: cues)
             if cues.isEmpty {
                 renderer = ASSSubtitleRenderer()
-                if !holdsFrame { frame = nil }
+                if !holdsFrame(for: self.engine.activeSubtitleTrackIndex) { frame = nil }
             }
         }.store(in: &subscriptions)
         engine.clock.$sourceTime.sink { [weak self] time in
@@ -91,17 +96,17 @@ final class ASSSubtitleSession: ObservableObject {
         enabled = false
         fontRequests = [:]
         fontCache = [:]
-        clearSelection()
+        clearSelection(showing: nil)
     }
 
     func registerFontRequest(_ request: URLRequest, trackID: Int, authorization: HTTPRequestAuthorization? = nil) {
         let resource = FontRequest(request: request, authorization: authorization)
         guard fontRequests[trackID] != resource else { return }
         fontRequests[trackID] = resource
-        if fontSelection == trackID { clearSelection() }
+        if fontSelection == trackID { clearSelection(showing: engine.activeSubtitleTrackIndex) }
     }
 
-    private func clearSelection() {
+    private func clearSelection(showing trackID: Int?) {
         generation &+= 1
         fontGeneration &+= 1
         fontTask?.cancel()
@@ -111,7 +116,7 @@ final class ASSSubtitleSession: ObservableObject {
         isLoadingFonts = false
         failureMessage = nil
         didRecordFrame = false
-        if !holdsFrame { frame = nil }
+        if !holdsFrame(for: trackID) { frame = nil }
         renderer = ASSSubtitleRenderer()
     }
 
@@ -127,7 +132,7 @@ final class ASSSubtitleSession: ObservableObject {
         guard !isLoadingFonts, failureMessage == nil else { return }
         let header = track.isExternal ? engine.sidecarASSHeader : track.assHeader
         guard let header, !header.isEmpty else {
-            if frame != nil, !holdsFrame { frame = nil }
+            if frame != nil, !holdsFrame(for: track.id) { frame = nil }
             if !engine.isLoadingSubtitles {
                 reportFailure("Subtitle data couldn’t be loaded. Turn subtitles off and on to retry.",
                               error: URLError(.cannotDecodeContentData))

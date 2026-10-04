@@ -600,21 +600,40 @@ final class SubtitleSyncTests: XCTestCase {
 
     func testCueHoldLastsUntilTheReloadFinishes() {
         let hold = SubtitleCueHold()
-        hold.begin()
-        XCTAssertTrue(hold.isHolding)
-        hold.loadingChanged(false)
-        XCTAssertTrue(hold.isHolding, "a load that never started cannot end the hold")
-        hold.loadingChanged(true)
-        hold.loadingChanged(false)
-        XCTAssertFalse(hold.isHolding)
+        hold.begin(.primary, trackID: 4)
+        XCTAssertTrue(hold.holds(.primary, trackID: 4))
+        hold.loadingChanged(false, for: .primary)
+        XCTAssertTrue(hold.isHolding(.primary), "a load that never started cannot end the hold")
+        hold.loadingChanged(true, for: .primary)
+        hold.loadingChanged(false, for: .primary)
+        XCTAssertFalse(hold.isHolding(.primary))
 
-        hold.begin(alreadyLoading: true)
-        hold.loadingChanged(false)
-        XCTAssertFalse(hold.isHolding, "the reload continued a load already running")
+        hold.begin(.primary, trackID: 4, alreadyLoading: true)
+        hold.loadingChanged(false, for: .primary)
+        XCTAssertFalse(hold.isHolding(.primary), "the reload continued a load already running")
 
-        hold.begin()
-        hold.release()
-        XCTAssertFalse(hold.isHolding)
+        hold.begin(.primary, trackID: 4)
+        hold.release(.primary)
+        XCTAssertFalse(hold.isHolding(.primary))
+    }
+
+    func testCueHoldCoversOnlyTheReloadedStreamAndTrack() {
+        let hold = SubtitleCueHold()
+        hold.begin(.primary, trackID: 4)
+        XCTAssertFalse(hold.holds(.primary, trackID: 2), "another primary track's empty cues pass through")
+        XCTAssertFalse(hold.holds(.secondary, trackID: nil), "the secondary stream is not held")
+
+        hold.begin(.secondary)
+        hold.loadingChanged(true, for: .secondary)
+        hold.loadingChanged(false, for: .secondary)
+        XCTAssertFalse(hold.isHolding(.secondary))
+        XCTAssertTrue(hold.holds(.primary, trackID: 4), "the secondary load does not end the primary hold")
+
+        hold.begin(.secondary)
+        hold.release(.primary)
+        XCTAssertTrue(hold.holds(.secondary, trackID: nil))
+        hold.releaseAll()
+        XCTAssertFalse(hold.isHolding(.secondary))
     }
 
     // MARK: Wire
