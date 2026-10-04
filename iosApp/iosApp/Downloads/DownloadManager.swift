@@ -195,6 +195,8 @@ final class DownloadManager {
     private var serverDeleteTask: Task<Void, Never>?
     /// The running pass that reads display fields for untitled records.
     private var displayFillTask: Task<Void, Never>?
+    /// Records arrived while a pass ran; another pass follows it.
+    private var displayFillRequested = false
     /// Records whose display read failed in this scope; not read again until
     /// the scope changes, so a lasting failure isn't retried every poll.
     private var displayFillFailures: Set<String> = []
@@ -2286,7 +2288,11 @@ final class DownloadManager {
     /// active record's manifest now for its display fields alone. One pass
     /// runs at a time; a record that fails is tried again on the next pass.
     private func fillMissingDisplay() {
-        guard displayFillTask == nil else { return }
+        guard displayFillTask == nil else {
+            displayFillRequested = true
+            return
+        }
+        displayFillRequested = false
         if displayFillScope != loadedScope {
             displayFillScope = loadedScope
             displayFillFailures = []
@@ -2301,7 +2307,9 @@ final class DownloadManager {
         guard !ids.isEmpty else { return }
         displayFillTask = Task { [weak self] in
             await self?.fillDisplay(ids)
-            self?.displayFillTask = nil
+            guard let self else { return }
+            self.displayFillTask = nil
+            if self.displayFillRequested { self.fillMissingDisplay() }
         }
     }
 
