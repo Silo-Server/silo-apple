@@ -35,15 +35,22 @@ final class AutoDownloadSchedule {
 
     private var scopeKey = ""
     private var loadedAt: Date?
-    /// The load in flight and the scope it loads; a scope change starts a
-    /// new one instead of waiting on a load whose result it discards.
-    private var loading: (scope: String, task: Task<Void, Never>)?
+    /// The load in flight, the scope it loads, and its token; a scope change
+    /// starts a new one instead of waiting on a load whose result it
+    /// discards, and only the current load publishes or clears the slot.
+    private var loading: (scope: String, token: UUID, task: Task<Void, Never>)?
 
     private var manager: DownloadManager { DownloadManager.shared }
 
     func upcoming(forSeriesId seriesId: String) -> [UpcomingEpisode] {
-        upcomingBySeries[seriesId] ?? []
+        guard stateIsCurrent else { return [] }
+        return upcomingBySeries[seriesId] ?? []
     }
+
+    /// Whether the loaded schedule belongs to the active server and profile.
+    /// Reads don't reset it, since views read during an update; the next
+    /// refresh does.
+    private var stateIsCurrent: Bool { scopeKey == currentScopeKey }
 
     /// The status an auto-download row or banner shows for `subscription`.
     func status(for subscription: DownloadSubscription) -> AutoDownloadStatus {
@@ -52,7 +59,7 @@ final class AutoDownloadSchedule {
         manager.autoDownloadStatus(
             for: subscription,
             upcoming: upcoming(forSeriesId: subscription.seriesId),
-            scheduleKnown: loadedAt != nil
+            scheduleKnown: stateIsCurrent && loadedAt != nil
         )
     }
 
@@ -72,11 +79,11 @@ final class AutoDownloadSchedule {
             await loadMissingSeriesInfo()
             return
         }
-        let scope = scopeKey
-        let task = Task { await self.load() }
-        loading = (scope, task)
+        let token = UUID()
+        let task = Task { await self.load(token: token) }
+        loading = (scopeKey, token, task)
         await task.value
-        if loading?.scope == scope { loading = nil }
+        if loading?.token == token { loading = nil }
     }
 
     /// Call after a monitor is created, edited or stopped so a new series
@@ -101,7 +108,7 @@ final class AutoDownloadSchedule {
         loadedAt = nil
     }
 
-    private func load() async {
+    private func load(token: UUID) async {
         let key = currentScopeKey
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
@@ -113,7 +120,7 @@ final class AutoDownloadSchedule {
                 filter: CalendarFilter.everything.rawValue,
                 timezone: calendar.timeZone.identifier
             )
-            guard key == currentScopeKey else { return }
+            guard key == currentScopeKey, loading?.token == token else { return }
             upcomingBySeries = Self.upcoming(from: response, now: Date(), calendar: calendar)
             loadedAt = Date()
         } catch {
