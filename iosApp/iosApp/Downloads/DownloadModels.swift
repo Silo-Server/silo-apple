@@ -91,6 +91,49 @@ struct DownloadCapability: Codable, Hashable, Sendable {
     }
 }
 
+/// `DownloadPreparation`: where a preparing entry's file is in the server's
+/// preparation queue, or how far its encode has got.
+struct DownloadPreparation: Codable, Hashable, Sendable {
+    /// `queued`, `running`, or `retrying`.
+    let state: String
+    /// 1-based place among every queued preparation on the server.
+    let queuePosition: Int?
+    /// Encoded fraction, 0 to 1, once a running encode reports it.
+    let progress: Double?
+    /// Estimated seconds left at the encode's speed.
+    let remainingSeconds: Int?
+
+    /// The row's status line: "Waiting to prepare · 3rd in line",
+    /// "Preparing · 35% · 6 min left".
+    var statusLine: String {
+        switch state {
+        case "queued":
+            guard let position = queuePosition, position > 0 else { return "Waiting to prepare" }
+            if position == 1 { return "Waiting to prepare · next in line" }
+            let formatter = NumberFormatter()
+            formatter.numberStyle = .ordinal
+            let ordinal = formatter.string(from: NSNumber(value: position)) ?? "#\(position)"
+            return "Waiting to prepare · \(ordinal) in line"
+        case "retrying":
+            return "Preparing · trying again soon"
+        default:
+            guard let progress else { return "Preparing on server…" }
+            var parts = ["Preparing", "\(Int((progress * 100).rounded(.down)))%"]
+            if let remainingSeconds { parts.append(Self.timeLeft(remainingSeconds)) }
+            return parts.joined(separator: " · ")
+        }
+    }
+
+    /// "under a minute left", "6 min left", "1 hr 5 min left".
+    static func timeLeft(_ seconds: Int) -> String {
+        if seconds < 60 { return "under a minute left" }
+        let minutes = (seconds + 59) / 60
+        if minutes < 60 { return "\(minutes) min left" }
+        let rest = minutes % 60
+        return rest == 0 ? "\(minutes / 60) hr left" : "\(minutes / 60) hr \(rest) min left"
+    }
+}
+
 /// One quality preset as the server describes it: the video bitrate cap and
 /// the tallest output the preset can produce. Both are nil for `original`.
 struct DownloadQualityOption: Codable, Hashable, Sendable {
@@ -644,6 +687,9 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     /// The latest local status event the server has not answered yet. A
     /// retry resends exactly this event.
     var pendingStatusEvent: DownloadStatusEvent? = nil
+    /// The server's preparation queue position or encode progress, while
+    /// the entry is preparing.
+    var preparation: DownloadPreparation? = nil
     /// The media file's exact size from the manifest's integrity block, when
     /// the server sends one. A finished transfer of any other size is
     /// discarded and downloaded again.

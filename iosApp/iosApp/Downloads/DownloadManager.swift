@@ -193,6 +193,14 @@ final class DownloadManager {
     private var legacyRemovalIncomplete = false
     /// The running pass over `file.pendingServerDeletes`, if any.
     private var serverDeleteTask: Task<Void, Never>?
+    /// The running pass that reads display fields for untitled records.
+    private var displayFillTask: Task<Void, Never>?
+    /// Records arrived while a pass ran; another pass follows it.
+    private var displayFillRequested = false
+    /// Records whose display read failed in this scope; not read again until
+    /// the scope changes, so a lasting failure isn't retried every poll.
+    private var displayFillFailures: Set<String> = []
+    private var displayFillScope: ScopeKey?
     /// Records whose pending status event is being sent.
     private var statusReportsInFlight: Set<String> = []
     /// The running pass over `file.pendingSubscriptionDeletes`, if any.
@@ -1028,6 +1036,7 @@ final class DownloadManager {
         persist()
         processQueue()
         ensurePolling()
+        fillMissingDisplay()
     }
 
     /// Decides what a failed create means for the user. `createDownloads` is
@@ -1405,19 +1414,13 @@ final class DownloadManager {
         }
     }
 
-    private func applyManifestDisplay(_ manifest: OfflineManifest, recordId: String) {
-        guard var record = file.records[recordId] else { return }
+    /// The fields a list row shows. Never overwrites what the record
+    /// already has, and touches nothing the transfer depends on.
+    nonisolated static func applyDisplayFields(_ manifest: OfflineManifest, to record: inout DownloadRecord) {
         record.title = record.title ?? manifest.title
-        record.type = manifest.type
-        record.format = manifest.quality
-        record.effectiveQuality = manifest.effectiveQuality
-        record.deliveryFormat = manifest.deliveryFormat
-        record.targetBitrateKbps = manifest.targetBitrateKbps
-        record.revision = manifest.revision ?? record.revision
-        record.container = manifest.container
+        record.type = record.type ?? manifest.type
         record.posterThumbhash = record.posterThumbhash ?? manifest.posterThumbhash
-        record.seriesPosterThumbhash = manifest.seriesPosterThumbhash ?? record.seriesPosterThumbhash
-        record.stableIdentity = manifest.stableIdentity
+        record.seriesPosterThumbhash = record.seriesPosterThumbhash ?? manifest.seriesPosterThumbhash
         if let seriesId = manifest.seriesId { record.seriesId = seriesId }
         record.seriesTitle = record.seriesTitle ?? manifest.seriesTitle
         record.seasonNumber = record.seasonNumber ?? manifest.seasonNumber
@@ -1431,6 +1434,20 @@ final class DownloadManager {
                 record.subtitle = String(year)
             }
         }
+    }
+
+    private func applyManifestDisplay(_ manifest: OfflineManifest, recordId: String) {
+        guard var record = file.records[recordId] else { return }
+        Self.applyDisplayFields(manifest, to: &record)
+        record.type = manifest.type
+        record.format = manifest.quality
+        record.effectiveQuality = manifest.effectiveQuality
+        record.deliveryFormat = manifest.deliveryFormat
+        record.targetBitrateKbps = manifest.targetBitrateKbps
+        record.revision = manifest.revision ?? record.revision
+        record.container = manifest.container
+        record.seriesPosterThumbhash = manifest.seriesPosterThumbhash ?? record.seriesPosterThumbhash
+        record.stableIdentity = manifest.stableIdentity
         if record.fileSize <= 0, let size = manifest.fileSize { record.fileSize = size }
         record.expectedBytes = manifest.integrity?.expectedBytes
         file.records[recordId] = record
@@ -2261,6 +2278,70 @@ final class DownloadManager {
             applyTransferLimit()
             ensurePolling()
         }
+        fillMissingDisplay()
+    }
+
+    /// Season, series, and monitor entries arrive without a title or
+    /// artwork, and their manifest is otherwise read only once the file is
+    /// ready, which for a prepared quality can take an hour. The server
+    /// builds manifests for preparing entries too, so read each untitled
+    /// active record's manifest now for its display fields alone. One pass
+    /// runs at a time; a record that fails is tried again on the next pass.
+    private func fillMissingDisplay() {
+        guard displayFillTask == nil else {
+            displayFillRequested = true
+            return
+        }
+        displayFillRequested = false
+        if displayFillScope != loadedScope {
+            displayFillScope = loadedScope
+            displayFillFailures = []
+        }
+        let ids = file.records.values
+            .filter {
+                $0.title == nil && $0.localStatus.isActive && $0.manifestFilename == nil
+                    && !displayFillFailures.contains($0.id)
+            }
+            .sorted { ($0.registeredAt, $0.id) < ($1.registeredAt, $1.id) }
+            .map(\.id)
+        guard !ids.isEmpty else { return }
+        displayFillTask = Task { [weak self] in
+            await self?.fillDisplay(ids)
+            guard let self else { return }
+            self.displayFillTask = nil
+            if self.displayFillRequested { self.fillMissingDisplay() }
+        }
+    }
+
+    private func fillDisplay(_ ids: [String]) async {
+        guard let owner = await captureScopeOwner() else { return }
+        var manifests: [String: OfflineManifest] = [:]
+        for id in ids {
+            guard isCurrent(owner) else { return }
+            guard let record = file.records[id], record.title == nil else { continue }
+            do {
+                manifests[id] = try await SiloAPI.shared.apiV2Client.downloadManifest(id: id, auth: owner.auth)
+            } catch {
+                Self.logger.info("display read for \(id, privacy: .public) failed: \(String(describing: error), privacy: .public)")
+                // A refusal of this download, or a manifest the app can't use,
+                // is lasting. A connection failure, timeout, or busy server
+                // would fail the rest of the pass too; the next pass tries
+                // them all again.
+                let unusable = (error as? DownloadRegistryError) == .unusableManifest
+                guard unusable || APIv2Client.downloadRegistryFailure(error) == .rejected else { break }
+                displayFillFailures.insert(id)
+            }
+        }
+        guard isCurrent(owner), !manifests.isEmpty else { return }
+        // One write for the pass: each write to `file` rebuilds the indexes.
+        var records = file.records
+        for (id, manifest) in manifests {
+            guard var record = records[id], record.title == nil else { continue }
+            Self.applyDisplayFields(manifest, to: &record)
+            records[id] = record
+        }
+        file.records = records
+        persist()
     }
 
     /// Splits server rows the store doesn't know into rows to import and rows
@@ -3326,6 +3407,7 @@ final class DownloadManager {
         record.targetBitrateKbps = row.targetBitrateKbps
         record.revision = row.revision
         record.serverStatus = row.status
+        record.preparation = row.status == "preparing" ? row.preparation : nil
         if row.fileSize > 0, record.fileSize <= 0 {
             record.fileSize = row.fileSize
         }
@@ -3335,7 +3417,7 @@ final class DownloadManager {
     }
 
     private func makeRecord(from row: APIv2DownloadEntry, type: String?) -> DownloadRecord {
-        DownloadRecord(
+        var record = DownloadRecord(
             id: row.id,
             contentId: row.contentId,
             episodeId: row.episodeId,
@@ -3369,6 +3451,8 @@ final class DownloadManager {
             retryCount: 0,
             taskIdentifier: nil
         )
+        record.preparation = row.status == "preparing" ? row.preparation : nil
+        return record
     }
 
     nonisolated static func mapInitialStatus(_ serverStatus: String) -> LocalDownloadStatus {

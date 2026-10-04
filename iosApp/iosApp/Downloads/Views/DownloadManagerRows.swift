@@ -129,7 +129,7 @@ struct DownloadActiveRow: View {
         case .paused:
             return "Paused · \(percentText) · \(sizeText)"
         case .registering, .queued: return waitText ?? "Queued"
-        case .preparing: return "Preparing on server…"
+        case .preparing: return record.preparation?.statusLine ?? "Preparing on server…"
         // Fetching the manifest, before the transfer starts.
         case .fetchingAssets: return waitText ?? "Starting…"
         case .completed: return DownloadFormatting.bytes(record.fileSize)
@@ -189,6 +189,17 @@ struct DownloadActiveRow: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(paused ? "Resume download" : "Pause download")
+        case .preparing where record.preparation?.progress != nil:
+            // The server's encode, not a transfer: nothing to pause.
+            ZStack {
+                Circle().stroke(Color.siloOnSurface.opacity(0.15), lineWidth: 3)
+                Circle()
+                    .trim(from: 0, to: max(0.02, record.preparation?.progress ?? 0))
+                    .stroke(Color.siloOnSurface.opacity(0.55), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+            }
+            .frame(width: 36, height: 36)
+            .accessibilityHidden(true)
         default:
             ProgressView().controlSize(.small).tint(.siloOnSurface)
         }

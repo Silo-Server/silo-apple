@@ -57,6 +57,8 @@ struct APIv2DownloadEntry: Decodable, Hashable, Sendable {
     let createdAt: Date
     let completedAt: Date?
     let statusEventAt: Date?
+    /// Listed preparing entries only, on a server with `preparationProgress`.
+    let preparation: DownloadPreparation?
 
     /// Whether the entry can be stored: an id, a file, and a revision a
     /// status event can name.

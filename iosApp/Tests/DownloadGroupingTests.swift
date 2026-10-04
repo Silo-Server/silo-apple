@@ -59,6 +59,51 @@ final class DownloadGroupingTests: XCTestCase {
         return record
     }
 
+    func testManifestFillsAPreparingRowsDisplayWithoutTouchingTheTransfer() throws {
+        var record = movie("d1", bytes: 0, title: "")
+        record.title = nil
+        record.subtitle = nil
+        record.type = "episode"
+        record.localStatus = .preparing
+        record.format = "5mbps"
+        record.expectedBytes = nil
+        let json = #"{"download_id":"d1","content_id":"series-1","type":"episode","title":"Reborn","quality":"original","media_file_id":"42","series_id":"series-1","series_title":"Tokyo Revengers","season_number":1,"episode_number":3,"series_poster_thumbhash":"abc","integrity":{"expected_bytes":99}}"#
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let manifest = try decoder.decode(OfflineManifest.self, from: Data(json.utf8))
+
+        DownloadManager.applyDisplayFields(manifest, to: &record)
+
+        XCTAssertEqual(record.title, "Reborn")
+        XCTAssertEqual(record.subtitle, "S1 · E3")
+        XCTAssertEqual(record.seriesTitle, "Tokyo Revengers")
+        XCTAssertEqual(record.seasonNumber, 1)
+        XCTAssertEqual(record.episodeNumber, 3)
+        XCTAssertEqual(record.tileThumbhash, "abc")
+        XCTAssertEqual(record.format, "5mbps", "the requested quality stays until the file is ready")
+        XCTAssertNil(record.expectedBytes, "a preparing file's size is not taken from an early manifest")
+        XCTAssertEqual(record.localStatus, .preparing)
+    }
+
+    func testPreparationStatusLines() throws {
+        func line(_ state: String, position: Int? = nil, progress: Double? = nil, remaining: Int? = nil) -> String {
+            DownloadPreparation(state: state, queuePosition: position, progress: progress, remainingSeconds: remaining).statusLine
+        }
+        XCTAssertEqual(line("queued", position: 1), "Waiting to prepare · next in line")
+        XCTAssertEqual(line("queued", position: 3), "Waiting to prepare · 3rd in line")
+        XCTAssertEqual(line("queued"), "Waiting to prepare")
+        XCTAssertEqual(line("running"), "Preparing on server…")
+        XCTAssertEqual(line("running", progress: 0.359), "Preparing · 35%")
+        XCTAssertEqual(line("running", progress: 0.35, remaining: 330), "Preparing · 35% · 6 min left")
+        XCTAssertEqual(line("running", progress: 0.99, remaining: 20), "Preparing · 99% · under a minute left")
+        XCTAssertEqual(line("running", progress: 0.1, remaining: 3_900), "Preparing · 10% · 1 hr 5 min left")
+        XCTAssertEqual(line("retrying"), "Preparing · trying again soon")
+
+        let json = #"{"id":"d1","content_id":"s","episode_id":"e","media_file_id":"4","file_size":0,"bytes_sent":0,"kind":"queued","status":"preparing","quality":"5mbps","effective_quality":"5mbps","delivery_format":"transcode","target_bitrate_kbps":5000,"revision":1,"created_at":"2026-10-04T04:00:00.000Z","preparation":{"state":"queued","queue_position":4}}"#
+        let entry = try HTTPClient.makeJSONDecoder().decode(APIv2DownloadEntry.self, from: Data(json.utf8))
+        XCTAssertEqual(entry.preparation, DownloadPreparation(state: "queued", queuePosition: 4, progress: nil, remainingSeconds: nil))
+    }
+
     private func movie(_ id: String, bytes: Int64, title: String) -> DownloadRecord {
         DownloadRecord(
             id: id,
