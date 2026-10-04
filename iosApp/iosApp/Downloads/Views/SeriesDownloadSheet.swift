@@ -356,8 +356,13 @@ struct SeriesDownloadSheet: View {
 
     private var ruleRows: [Rule] {
         let advertised = manager.monitoringModes.isEmpty ? SubscriptionMode.allCases : manager.monitoringModes
-        var rows = [SubscriptionMode.all, .future, .latestSeason].filter(advertised.contains).map(Rule.mode)
-        if existing?.mode == SubscriptionMode.specificSeasons.rawValue { rows.append(.custom) }
+        // An existing monitor's rule stays listed, so it can be kept, even
+        // when the server no longer advertises it.
+        let current = existing.flatMap { SubscriptionMode(rawValue: $0.mode) }
+        var rows = [SubscriptionMode.all, .future, .latestSeason]
+            .filter { advertised.contains($0) || $0 == current }
+            .map(Rule.mode)
+        if current == .specificSeasons { rows.append(.custom) }
         return rows
     }
 
@@ -428,9 +433,11 @@ struct SeriesDownloadSheet: View {
                     try await manager.updateSubscription(
                         id: existing.id, deleteWatched: deleteWatched, maxStorageBytes: maxStorageBytes, active: true)
                 case (.mode(let mode), let existing?):
+                    // An unchanged rule isn't resent: the server may no longer
+                    // accept it as a new choice.
                     try await manager.updateSubscription(
-                        id: existing.id, mode: mode, deleteWatched: deleteWatched,
-                        maxStorageBytes: maxStorageBytes, active: true)
+                        id: existing.id, mode: rule == Self.rule(for: existing) ? nil : mode,
+                        deleteWatched: deleteWatched, maxStorageBytes: maxStorageBytes, active: true)
                 case (.mode(let mode), nil):
                     try await manager.createSubscription(
                         seriesId: seriesId, seriesTitle: seriesTitle, mode: mode, seasonNumbers: nil,

@@ -25,6 +25,7 @@ final class AutoDownloadSchedule {
     /// The calendar answers at most 31 days at once.
     private static let windowDays = 30
     private static let refreshInterval: TimeInterval = 15 * 60
+    private static let seriesInfoConcurrency = 4
 
     private(set) var upcomingBySeries: [String: [UpcomingEpisode]] = [:]
     private(set) var seriesInfo: [String: SeriesInfo] = [:]
@@ -111,17 +112,29 @@ final class AutoDownloadSchedule {
         await loadMissingSeriesInfo()
     }
 
+    /// Reads the title and poster of monitored series this scope hasn't
+    /// loaded, a few at a time.
     private func loadMissingSeriesInfo() async {
         let key = currentScopeKey
-        let missing = manager.subscriptions.map(\.seriesId).filter { seriesInfo[$0] == nil }
-        for seriesId in Set(missing) {
-            guard let detail = try? await SiloAPI.shared.itemDetail(contentId: seriesId),
-                  key == currentScopeKey else { continue }
-            seriesInfo[seriesId] = SeriesInfo(
-                title: detail.title,
-                posterUrl: detail.posterUrl,
-                posterThumbhash: detail.posterThumbhash
-            )
+        let missing = Array(Set(manager.subscriptions.map(\.seriesId).filter { seriesInfo[$0] == nil }))
+        for start in stride(from: 0, to: missing.count, by: Self.seriesInfoConcurrency) {
+            let batch = missing[start..<min(start + Self.seriesInfoConcurrency, missing.count)]
+            await withTaskGroup(of: (String, ItemDetail)?.self) { group in
+                for seriesId in batch {
+                    group.addTask {
+                        guard let detail = try? await SiloAPI.shared.itemDetail(contentId: seriesId) else { return nil }
+                        return (seriesId, detail)
+                    }
+                }
+                for await result in group {
+                    guard let (seriesId, detail) = result, key == currentScopeKey else { continue }
+                    seriesInfo[seriesId] = SeriesInfo(
+                        title: detail.title,
+                        posterUrl: detail.posterUrl,
+                        posterThumbhash: detail.posterThumbhash
+                    )
+                }
+            }
         }
     }
 
