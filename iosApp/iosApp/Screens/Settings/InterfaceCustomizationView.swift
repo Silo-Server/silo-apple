@@ -327,7 +327,11 @@ struct InterfaceCustomizationView: View {
                 )
             }
         }
+        #if os(macOS)
+        .settingsListChrome()
+        #else
         .siloGroupedListStyle()
+        #endif
         .navigationTitle("Interface")
         .task {
             await preferences.refresh()
@@ -620,7 +624,11 @@ private struct HomeSectionsCustomizationView: View {
                 }
             }
         }
+        #if os(macOS)
+        .settingsListChrome()
+        #else
         .siloGroupedListStyle()
+        #endif
         .navigationTitle("Home Sections")
         #if os(iOS)
         .toolbar {

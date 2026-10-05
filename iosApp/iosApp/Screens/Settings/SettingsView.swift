@@ -71,7 +71,11 @@ struct SettingsView: View {
             aboutSection
             signOutSection
         }
+        #if os(macOS)
+        .settingsListChrome()
+        #else
         .siloGroupedListStyle()
+        #endif
         .navigationTitle("Settings")
         .siloNavigationTitleDisplayMode(.large)
         .siloToolbarColorSchemeDark()

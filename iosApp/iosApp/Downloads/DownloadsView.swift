@@ -48,7 +48,11 @@ struct DownloadsView: View {
                 content
             }
         }
+        #if os(macOS)
+        .siloPageBackground()
+        #else
         .background(Color.siloBackground.ignoresSafeArea())
+        #endif
         .navigationTitle(isSelecting ? "\(selectedCount) Selected" : "Downloads")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.large)

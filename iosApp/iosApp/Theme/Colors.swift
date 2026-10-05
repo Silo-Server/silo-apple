@@ -114,6 +114,15 @@ extension Color {
     /// Text-field caret tint.
     static let siloFieldTint = Color(hex: "#0A84FF")
 
+    #if os(macOS)
+    /// Mac page canvas: one flat charcoal behind every signed-in page.
+    static let siloPageCanvas = Color(hex: "#1A1A1C")
+
+    /// Mac sidebar surface, a shade darker than the page canvas so the two
+    /// regions read as separate without a border.
+    static let siloSidebarCanvas = Color(hex: "#121214")
+    #else
     /// Signed-in iOS page canvas behind `SiloPageBackdrop`'s washes.
     static let siloPageCanvas = Color(hex: "#111111")
+    #endif
 }

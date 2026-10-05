@@ -343,7 +343,7 @@ struct LibrariesTabView: View {
         VStack(spacing: 0) {
             LibrariesTopBar(
                 activeLibrary: activeLibrary,
-                canSwitch: visibleLibraries.count > 1,
+                canSwitch: canSwitchLibraries,
                 onLibraryTap: { showPicker = true },
                 onSearch: { router.navigate(to: .search) },
                 onOpenSettings: { router.navigate(to: .settings) },
@@ -380,6 +380,16 @@ struct LibrariesTabView: View {
         return [PrimaryMenuBuiltin.movies, .series, .audiobooks].first {
             libraryMatchesPrimaryMenuCategory(fixed, category: $0)
         }
+    }
+
+    /// The Mac lists every library in its sidebar, so the page title offers
+    /// no picker there.
+    private var canSwitchLibraries: Bool {
+        #if os(macOS)
+        false
+        #else
+        visibleLibraries.count > 1
+        #endif
     }
 
     private var visibleLibraries: [Library] {

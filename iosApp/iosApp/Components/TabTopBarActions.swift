@@ -28,6 +28,10 @@ struct TabTopBarActions: View {
     #endif
 
     var body: some View {
+        #if os(macOS)
+        // The Mac sidebar carries Search and the profile menu.
+        EmptyView()
+        #else
         // Icons spaced evenly. Order is fixed: Search, Remote (iOS), Profile.
         HStack(spacing: SiloTheme.topBarIconSpacing) {
             TopBarIconButton(
@@ -57,6 +61,7 @@ struct TabTopBarActions: View {
         // No-op once cached; covers a page shown before the session-level
         // load finished.
         .task { await profileStore.refresh() }
+        #endif
     }
 }
 
@@ -83,9 +88,12 @@ private struct TopBarIconButton: View {
 
 /// Profile avatar opening the account menu (Watch Party, Requests, Settings,
 /// Switch Profile, Switch Server, Sign Out).
-private struct ProfileAvatarMenu: View {
+struct ProfileAvatarMenu: View {
     @Environment(AppRouter.self) private var router
     let profile: UserProfile?
+    /// Shows the profile name beside the avatar as a full-width row, for the
+    /// Mac sidebar. The top-bar cluster keeps the avatar alone.
+    var showsName = false
     let onOpenSettings: () -> Void
     let onOpenRequests: () -> Void
     let onSwitchProfile: () -> Void
@@ -96,6 +104,20 @@ private struct ProfileAvatarMenu: View {
     /// the feature enabled (older servers 404 the probe and read as off).
     private var requestsEnabled: Bool {
         RequestsFeatureStore.shared.isEnabled
+    }
+
+    private var avatarSize: CGFloat {
+        #if os(macOS)
+        SiloTheme.macSidebarAvatarSize
+        #else
+        30
+        #endif
+    }
+
+    /// The default avatar fill is as dark as the Mac sidebar, so the row
+    /// there uses the lighter tile grey to keep the circle visible.
+    private var avatarFill: Color {
+        showsName ? .siloIconTile : .siloSurfaceVariant
     }
 
     var body: some View {
@@ -139,19 +161,36 @@ private struct ProfileAvatarMenu: View {
                 Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
             }
         } label: {
-            ProfileAvatarView(
-                avatar: profile?.avatarEmoji,
-                imageUrl: profile?.avatarImageUrl,
-                name: profile?.name ?? "",
-                size: 30
-            )
-            .frame(
-                width: SiloTheme.topBarIconHitSize,
-                height: SiloTheme.topBarIconHitSize
-            )
+            HStack(spacing: SiloTheme.smallPadding) {
+                ProfileAvatarView(
+                    avatar: profile?.avatarEmoji,
+                    imageUrl: profile?.avatarImageUrl,
+                    name: profile?.name ?? "",
+                    size: avatarSize,
+                    backgroundColor: avatarFill
+                )
+                .frame(
+                    width: showsName ? nil : SiloTheme.topBarIconHitSize,
+                    height: SiloTheme.topBarIconHitSize
+                )
+                if showsName {
+                    Text(profile?.name ?? "")
+                        .font(.siloHeadline)
+                        .foregroundStyle(Color.siloOnSurface)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+            }
             .contentShape(Rectangle())
         }
+        #if os(macOS)
+        // The borderless style flattens a Mac menu label to bare text; the
+        // plain button style keeps the avatar-and-name row.
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        #else
         .menuStyle(.borderlessButton)
+        #endif
         .accessibilityLabel("Profile menu")
     }
 }

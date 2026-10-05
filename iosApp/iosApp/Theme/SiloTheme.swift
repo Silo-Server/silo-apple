@@ -31,6 +31,21 @@ enum SiloTheme {
     /// Gap between top-bar action items (cast / search / profile).
     static let topBarIconSpacing: CGFloat = 2
 
+    #if os(macOS)
+    // MARK: - Sidebar (macOS)
+
+    /// Width range of the Mac sidebar column.
+    static let macSidebarMinWidth: CGFloat = 240
+    static let macSidebarIdealWidth: CGFloat = 260
+    static let macSidebarMaxWidth: CGFloat = 280
+    /// Width of the Silo logo pinned above the sidebar rows.
+    static let macSidebarWordmarkWidth: CGFloat = 84
+    /// Letter spacing of the sidebar's caps group headings.
+    static let macSidebarHeadingTracking: CGFloat = 1.5
+    /// Diameter of the profile avatar in the sidebar's bottom row.
+    static let macSidebarAvatarSize: CGFloat = 32
+    #endif
+
     // MARK: - Spacing
 
     #if os(tvOS)
