@@ -53,6 +53,7 @@ struct SiloApp: App {
                 #if os(macOS)
                 // Deliver URLs to this window instead of opening a new one.
                 .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
+                .background(MacWindowPlacement())
                 #endif
         }
     }
