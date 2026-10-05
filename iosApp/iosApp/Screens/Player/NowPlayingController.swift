@@ -16,8 +16,9 @@ import UIKit
 ///
 /// Both centers are process-wide and may also be bound by a local audiobook
 /// or software-route video, so this controller claims them through
-/// `SharedNowPlayingArbiter` while attached, publishes only its own metadata,
-/// and releases them through the arbiter on `detach()`.
+/// `SharedNowPlayingArbiter` while attached, publishes only its own metadata
+/// and only while it is the newest claimant, and releases them through the
+/// arbiter on `detach()`.
 @MainActor
 final class NowPlayingController {
     private static let logger = Logger(
@@ -88,11 +89,16 @@ final class NowPlayingController {
     func attach(handlers: Handlers) {
         self.handlers = handlers
         if !isActive {
-            SharedNowPlayingArbiter.shared.claim(self) { [weak self] in
-                self?.restoreSharedBinding()
-            }
-            registerRemoteCommands()
+            // Claiming suspends any local audiobook or software-route video
+            // on the shared centers, so lock-screen commands reach only the
+            // TV session whose metadata is shown.
+            SharedNowPlayingArbiter.shared.claim(
+                self,
+                suspend: { [weak self] in self?.unregisterRemoteCommands() },
+                restore: { [weak self] in self?.restoreSharedBinding() }
+            )
             isActive = true
+            registerRemoteCommands()
         } else {
             updateCommandAvailability()
         }
@@ -112,8 +118,8 @@ final class NowPlayingController {
         SharedNowPlayingArbiter.shared.releaseSharedCenters(self)
     }
 
-    /// Re-registers targets and republishes metadata after another claimant
-    /// released the shared centers. No-op unless attached.
+    /// Re-registers targets and republishes metadata once this session is
+    /// again the newest claimant. No-op unless attached.
     private func restoreSharedBinding() {
         guard isActive else { return }
         unregisterRemoteCommands()
@@ -121,12 +127,18 @@ final class NowPlayingController {
         publishNowPlayingInfo()
     }
 
+    /// False while detached or suspended behind a newer claimant, whose
+    /// metadata and command state this session must not overwrite.
+    private var drivesSharedCenters: Bool {
+        isActive && SharedNowPlayingArbiter.shared.isCurrentClaimant(self)
+    }
+
     func setPreferredSkipIntervals(backward: TimeInterval, forward: TimeInterval) {
         preferredSkipIntervals = SkipIntervals(
             backward: max(1, backward),
             forward: max(1, forward)
         )
-        guard isActive else { return }
+        guard drivesSharedCenters else { return }
         let center = MPRemoteCommandCenter.shared()
         center.skipForwardCommand.preferredIntervals = [NSNumber(value: preferredSkipIntervals.forward)]
         center.skipBackwardCommand.preferredIntervals = [NSNumber(value: preferredSkipIntervals.backward)]
@@ -229,6 +241,7 @@ final class NowPlayingController {
     }
 
     private func publishNowPlayingInfo() {
+        guard drivesSharedCenters else { return }
         MPNowPlayingInfoCenter.default().nowPlayingInfo =
             nowPlayingInfo.isEmpty ? nil : nowPlayingInfo
     }
@@ -326,7 +339,7 @@ final class NowPlayingController {
     }
 
     private func updateCommandAvailability() {
-        guard isActive else { return }
+        guard drivesSharedCenters else { return }
         let center = MPRemoteCommandCenter.shared()
         center.stopCommand.isEnabled = handlers?.stop != nil
         center.nextTrackCommand.isEnabled = handlers.map { $0.next != nil && $0.isNextEnabled() } ?? false

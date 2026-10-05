@@ -87,7 +87,7 @@ final class AudioNowPlayingCoordinator {
     /// live when commands are already registered.
     func setPreferredSkipIntervals(backward: TimeInterval, forward: TimeInterval) {
         preferredSkipIntervals = (backward, forward)
-        guard let center = commandCenter else { return }
+        guard drivesBoundCenters, let center = commandCenter else { return }
         center.skipForwardCommand.preferredIntervals = [NSNumber(value: forward)]
         center.skipBackwardCommand.preferredIntervals = [NSNumber(value: backward)]
     }
@@ -258,9 +258,18 @@ final class AudioNowPlayingCoordinator {
     }
 
     private func publishNowPlayingInfo() {
-        guard let infoCenter else { return }
+        guard drivesBoundCenters, let infoCenter else { return }
         infoCenter.nowPlayingInfo = nowPlayingInfo.isEmpty ? nil : nowPlayingInfo
         lastPublishedAt = now()
+    }
+
+    /// False while suspended on the shared centers behind a newer claimant,
+    /// whose metadata and command state this coordinator must not overwrite.
+    /// A player-scoped center belongs to this binding alone.
+    private var drivesBoundCenters: Bool {
+        guard let commandCenter else { return false }
+        return commandCenter !== MPRemoteCommandCenter.shared()
+            || SharedNowPlayingArbiter.shared.isCurrentClaimant(self)
     }
 
     /// Binds the process-wide centers and registers this coordinator as a
@@ -268,13 +277,15 @@ final class AudioNowPlayingCoordinator {
     private func bindSharedCenters() {
         commandCenter = MPRemoteCommandCenter.shared()
         infoCenter = MPNowPlayingInfoCenter.default()
-        SharedNowPlayingArbiter.shared.claim(self) { [weak self] in
-            self?.restoreSharedBinding()
-        }
+        SharedNowPlayingArbiter.shared.claim(
+            self,
+            suspend: { [weak self] in self?.unregisterRemoteCommands() },
+            restore: { [weak self] in self?.restoreSharedBinding() }
+        )
     }
 
-    /// Re-registers targets and republishes metadata after another claimant
-    /// released the shared centers. No-op unless still bound to them.
+    /// Re-registers targets and republishes metadata once this coordinator is
+    /// again the newest claimant. No-op unless still bound to the shared centers.
     private func restoreSharedBinding() {
         guard commandCenter === MPRemoteCommandCenter.shared() else { return }
         unregisterRemoteCommands()
