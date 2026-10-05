@@ -282,7 +282,7 @@ struct IOSSettingsOverview: View {
     private var experimentalSection: some View {
         // A query naming the section shows every row; otherwise each row
         // appears only for its own terms.
-        Section("Experimental") {
+        Section("Extra Features") {
             if matchesExperimentalName || matchesAudiobooks {
                 SettingsOverviewToggleRow(
                     title: "Show Audiobooks",
@@ -378,7 +378,7 @@ struct IOSSettingsOverview: View {
     }
 
     private var matchesExperimentalName: Bool {
-        matches("experimental", "beta", "testing")
+        matches("extra features", "experimental")
     }
 
     private var matchesExperimentalSection: Bool {

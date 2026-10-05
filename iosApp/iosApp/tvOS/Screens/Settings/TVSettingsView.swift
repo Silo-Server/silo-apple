@@ -610,7 +610,7 @@ struct TVSettingsView: View {
             .buttonStyle(TVSettingsPaneRowStyle())
             .focused($detailFocus, equals: .serverOpenSourceLicenses)
 
-            TVSettingsSectionHeader("EXPERIMENTAL")
+            TVSettingsSectionHeader("EXTRA FEATURES")
 
             ForEach(ExperimentalFeature.allCases) { feature in
                 TVSettingsToggleRow(

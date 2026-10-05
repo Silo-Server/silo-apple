@@ -4,7 +4,7 @@ import SwiftUI
 @MainActor
 enum WatchPartyEntry {
     // Off in Release until the physical-device and mixed-client gate clears;
-    // testers opt in from Settings > Experimental.
+    // users opt in from Settings > Extra Features.
     static var isEnabled: Bool {
         ExperimentalFeatures.shared.isEnabled(.watchParty)
     }
