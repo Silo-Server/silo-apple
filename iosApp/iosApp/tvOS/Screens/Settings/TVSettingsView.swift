@@ -660,6 +660,7 @@ enum TVSettingsDetailFocus: Hashable {
     case generalAppleTVUser
     case generalProfileLaunch
     case generalHomeSections
+    case generalAdvisoryAge
     case generalCardPreset
     case generalTopMenu
     case playbackAudioLanguage

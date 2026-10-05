@@ -1067,6 +1067,9 @@ struct ContentView: View {
         #elseif os(iOS)
         Task { await diagnosticsModel.handleForeground() }
         #endif
+        // Detail pages read this lazily, so the next one re-reads it
+        // instead of every foreground paying for a request.
+        AdvisoryAgePreferenceStore.shared.markStale()
         Task { await refreshSessionStores(overlayPhase: "foreground_refresh") }
         #if os(iOS)
         Task {

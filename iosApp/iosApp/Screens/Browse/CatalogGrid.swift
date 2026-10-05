@@ -98,8 +98,8 @@ struct CatalogGrid: View {
         #endif
         #if !os(tvOS)
         .environment(\.itemDetailBrowseSource, detailBrowseSource)
-        // Keyed on a cheap fingerprint rather than every ID: a paged grid
-        // holds thousands of items and this runs on each body pass.
+        // Keyed on a hash of the ordered IDs rather than the ID array: a paged
+        // grid holds thousands of items and this runs on each body pass.
         .onChange(of: ItemsFingerprint(items), initial: true) {
             detailBrowseSource = ItemDetailBrowseSource(
                 originID: detailBrowseOriginID,
@@ -171,13 +171,13 @@ struct CatalogGrid: View {
 /// Changes when a paged list is replaced, extended, or reordered at its ends.
 private struct ItemsFingerprint: Equatable {
     let count: Int
-    let first: String?
-    let last: String?
+    let orderedIDsHash: Int
 
     init(_ items: [BrowseItem]) {
         count = items.count
-        first = items.first?.contentId
-        last = items.last?.contentId
+        var hasher = Hasher()
+        for item in items { hasher.combine(item.contentId) }
+        orderedIDsHash = hasher.finalize()
     }
 }
 #endif

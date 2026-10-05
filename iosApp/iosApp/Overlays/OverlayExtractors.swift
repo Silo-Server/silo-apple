@@ -10,6 +10,18 @@ import Foundation
 /// registry's `getValue` returns `nil`, hiding the badge.
 extension OverlayData {
 
+    /// Source-attributed label used on item detail, matching the web client.
+    var advisoryAgeBadgeLabel: String? {
+        guard let advisoryAge, advisoryAge > 0 else { return nil }
+        let source: String?
+        switch advisorySource?.lowercased() {
+        case "commonsense": source = "Common Sense"
+        case "mdblist": source = "MDBList"
+        default: source = nil
+        }
+        return [source, "\(advisoryAge)+"].compactMap { $0 }.joined(separator: " ")
+    }
+
     static func from(_ item: BrowseItem) -> OverlayData {
         var data = OverlayData()
         applySummary(item.overlaySummary, into: &data)
@@ -18,6 +30,8 @@ extension OverlayData {
         data.ratingRtCritic    = item.ratingRtCritic
         data.ratingRtAudience  = item.ratingRtAudience
         data.contentRating     = item.contentRating
+        data.advisoryAge       = item.advisoryAge
+        data.advisorySource    = item.advisorySource
         data.year              = item.year
         data.runtime           = item.runtime
         data.originalLanguage  = item.originalLanguage
@@ -35,12 +49,33 @@ extension OverlayData {
         data.ratingRtCritic    = item.ratingRtCritic
         data.ratingRtAudience  = item.ratingRtAudience
         data.contentRating     = item.contentRating
+        data.advisoryAge       = item.advisoryAge
+        data.advisorySource    = item.advisorySource
         data.year              = item.year
         data.runtime           = item.runtime
         data.originalLanguage  = item.originalLanguage
         data.studio            = firstNonEmpty(item.studios)
         data.network           = firstNonEmpty(item.networks)
         data.showStatus        = item.showStatus
+        return data
+    }
+
+    static func from(_ detail: ItemDetail) -> OverlayData {
+        var data = OverlayData()
+        applySummary(detail.overlaySummary, into: &data)
+        data.ratingImdb        = detail.ratingImdb
+        data.ratingTmdb        = detail.ratingTmdb
+        data.ratingRtCritic    = detail.ratingRtCritic
+        data.ratingRtAudience  = detail.ratingRtAudience
+        data.contentRating     = detail.contentRating
+        data.advisoryAge       = detail.advisoryAge
+        data.advisorySource    = detail.advisorySource
+        data.year              = detail.year
+        data.runtime           = detail.runtime
+        data.originalLanguage  = detail.originalLanguage
+        data.studio            = firstNonEmpty(detail.studios)
+        data.network           = firstNonEmpty(detail.networks)
+        data.showStatus        = detail.showStatus
         return data
     }
 

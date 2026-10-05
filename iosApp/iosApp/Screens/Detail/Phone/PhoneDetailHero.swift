@@ -289,6 +289,9 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     /// all of them in the expanded one.
     var ratings: [DisplayRating] = []
     var creditText: String? = nil
+    /// Overlay metadata used to add the advisory-age badge when the active
+    /// profile has enabled it.
+    var overlayData: OverlayData? = nil
     var enablesArtworkParallax = false
     var artworkStyle: PhoneDetailArtworkStyle = .backdrop
     @ViewBuilder let actions: () -> Actions
@@ -298,6 +301,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     @State private var availableWidth: CGFloat = 0
     @State private var showFullOverview = false
+    @ObservedObject private var advisoryAgePreference = AdvisoryAgePreferenceStore.shared
 
     private let expandedLayoutBreakpoint: CGFloat = 700
 
@@ -314,6 +318,10 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
         } action: { width in
             guard abs(width - availableWidth) > 1 else { return }
             availableWidth = width
+        }
+        .task(id: overlayData?.advisoryAge) {
+            guard (overlayData?.advisoryAge ?? 0) > 0 else { return }
+            await advisoryAgePreference.hydrateIfNeeded()
         }
     }
 
@@ -537,7 +545,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
         isCompact: Bool
     ) -> some View {
         let stackAlignment: HorizontalAlignment = textAlignment == .leading ? .leading : .center
-        let hasFacts = !metadataTokens.isEmpty || ratingChip != nil
+        let hasFacts = !metadataTokens.isEmpty || !ratingChips.isEmpty
         if hasFacts || !ratings.isEmpty {
             VStack(alignment: stackAlignment, spacing: 10) {
                 if hasFacts {
@@ -581,18 +589,35 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
 
     @ViewBuilder
     private var ratingView: some View {
-        if let ratingChip, !ratingChip.isEmpty {
-            Text(ratingChip)
-                .font(.system(size: 11, weight: .heavy))
-                .tracking(0.7)
-                .foregroundStyle(Color.siloOnSurface)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 3)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 4)
-                        .stroke(Color.siloOnSurface.opacity(0.55), lineWidth: 1)
-                )
+        // No view at all without chips: an empty stack would still take the
+        // parent's spacing and push the metadata off centre.
+        if !ratingChips.isEmpty {
+            HStack(spacing: 6) {
+                ForEach(Array(ratingChips.enumerated()), id: \.offset) { _, chip in
+                    Text(chip)
+                        .font(.system(size: 11, weight: .heavy))
+                        .tracking(0.7)
+                        .foregroundStyle(Color.siloOnSurface)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(Color.siloOnSurface.opacity(0.55), lineWidth: 1)
+                        )
+                }
+            }
         }
+    }
+
+    private var ratingChips: [String] {
+        var chips = [ratingChip].compactMap { value in
+            value.flatMap { $0.isEmpty ? nil : $0 }
+        }
+        if advisoryAgePreference.showsAdvisoryAge,
+           let advisory = overlayData?.advisoryAgeBadgeLabel {
+            chips.append(advisory)
+        }
+        return chips
     }
 
     private var metadataTokens: [String] {

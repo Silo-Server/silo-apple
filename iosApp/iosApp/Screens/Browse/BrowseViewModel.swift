@@ -72,6 +72,7 @@ class BrowseViewModel {
         }
 
         let myGeneration = generation
+        let writeToken = ResponseCache.shared.writeToken
         guard hasMore else {
             finishLoading(for: myGeneration)
             return
@@ -97,7 +98,7 @@ class BrowseViewModel {
             startsOver = startsOver || page.startsOver
             if startsOver {
                 items = page.response.items
-                ResponseCache.shared.set(page.response, for: currentCacheKey)
+                ResponseCache.shared.set(page.response, for: currentCacheKey, fetchedAt: writeToken)
                 refineMediaType(from: page.response)
             } else {
                 items.append(contentsOf: page.response.items)

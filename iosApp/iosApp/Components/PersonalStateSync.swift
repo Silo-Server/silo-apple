@@ -183,7 +183,7 @@ enum PersonalStateSync {
     /// Drops the cached lists and grids derived from personal flags (Home,
     /// Recommendations, Favorites, Watchlist, library and collection pages).
     static func invalidateDerivedLists() {
-        StartupContentPrefetcher.invalidateHomeSectionsInFlight()
+        StartupContentPrefetcher.invalidateDerivedListsInFlight()
         for key in [CacheKey.homeSections, CacheKey.recommendations, CacheKey.favorites, CacheKey.watchlist] {
             ResponseCache.shared.remove(key)
         }

@@ -225,6 +225,7 @@ final class TVLibraryGridViewModel {
 
     private func fetchPage(reset: Bool) async {
         let myGeneration = generation
+        let writeToken = ResponseCache.shared.writeToken
         let nextPage = reset ? nil : continuation
         let startsOver = nextPage == nil
         if startsOver, !items.isEmpty {
@@ -260,7 +261,7 @@ final class TVLibraryGridViewModel {
 
             if startsOver || page.startsOver {
                 items = page.response.items
-                ResponseCache.shared.set(page.response, for: currentCacheKey)
+                ResponseCache.shared.set(page.response, for: currentCacheKey, fetchedAt: writeToken)
             } else {
                 items.append(contentsOf: page.response.items)
             }

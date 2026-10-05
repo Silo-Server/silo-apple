@@ -512,7 +512,9 @@ final class APIv2SubtitleTests: XCTestCase {
         let coordinator = LiveSubtitleCoordinator(controls: LiveControls(), sink: sink, clock: ManualSafetyClock())
         let controller = SubtitleAIController(
             api: SiloAI(v2: api),
-            poller: AIJobPoller(pollInterval: .milliseconds(1)),
+            // The `.started` event below must land before the poller gives up
+            // (five polls). At 1 ms a loaded runner loses that race.
+            poller: AIJobPoller(pollInterval: .milliseconds(100)),
             mediaFileId: { 42 },
             currentTime: { 0 },
             sessionId: { "sess-1" },

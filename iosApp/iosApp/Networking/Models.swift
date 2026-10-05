@@ -9,6 +9,8 @@ struct BrowseItem: Codable, Identifiable, Hashable {
     let year: Int?
     let genres: [String]?
     let contentRating: String?
+    let advisoryAge: Int?
+    let advisorySource: String?
     let status: String?
     let ratingImdb: Double?
     let ratingTmdb: Double?
@@ -108,6 +110,8 @@ struct SectionItem: Codable, Identifiable, Hashable {
     let ratingRtCritic: Int?
     let ratingRtAudience: Int?
     let contentRating: String?
+    let advisoryAge: Int?
+    let advisorySource: String?
     let runtime: Int?
     let originalLanguage: String?
     let studios: [String]?
@@ -145,6 +149,8 @@ struct SectionItem: Codable, Identifiable, Hashable {
         ratingRtCritic = item.ratingRtCritic
         ratingRtAudience = item.ratingRtAudience
         contentRating = item.contentRating
+        advisoryAge = item.advisoryAge
+        advisorySource = item.advisorySource
         runtime = item.runtime
         originalLanguage = item.originalLanguage
         studios = item.studios
@@ -256,6 +262,8 @@ extension BrowseItem {
             year: item.year,
             genres: item.genres,
             contentRating: item.contentRating,
+            advisoryAge: item.advisoryAge,
+            advisorySource: item.advisorySource,
             status: item.status,
             ratingImdb: item.ratingImdb,
             ratingTmdb: item.ratingTmdb,
@@ -390,6 +398,8 @@ struct ItemDetail: Codable {
     let tagline: String?
     let runtime: Int?
     let contentRating: String?
+    let advisoryAge: Int?
+    let advisorySource: String?
     let genres: [String]?
     let ratingImdb: Double?
     let ratingTmdb: Double?

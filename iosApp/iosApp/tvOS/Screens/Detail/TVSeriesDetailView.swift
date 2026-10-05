@@ -357,6 +357,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             eyebrow: nil,
             sourceTokens: heroSourceTokens,
             ratingChip: TVHeroMetadata.contentRatingChip(from: detail),
+            overlayData: OverlayData.from(detail),
             overview: heroOverview,
             factsLine: heroFactsLine,
             ratings: heroRatings,

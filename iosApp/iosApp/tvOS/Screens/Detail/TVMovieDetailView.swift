@@ -70,6 +70,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                             eyebrow: nil,
                             sourceTokens: TVHeroMetadata.movieSourceTokens(from: detail),
                             ratingChip: TVHeroMetadata.contentRatingChip(from: detail),
+                            overlayData: OverlayData.from(detail),
                             overview: detail.overview,
                             factsLine: TVHeroMetadata.movieFactsLine(from: detail, version: currentVersion),
                             ratings: detail.displayRatings,

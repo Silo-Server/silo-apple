@@ -108,6 +108,16 @@ enum StartupContentPrefetcher {
         homeSections.reset()
     }
 
+    /// A personal-state change (watched, favorite, watchlist) alters these
+    /// lists: requests already in flight carry the old rows, so callers that
+    /// join after the change must start a fresh one.
+    static func invalidateDerivedListsInFlight() {
+        invalidateHomeSectionsInFlight()
+        recommendations.reset()
+        librarySections.values.forEach { $0.reset() }
+        browseFirstPages.values.forEach { $0.reset() }
+    }
+
     /// Capture the active profile/server generation when a player is created.
     /// Call only AFTER its progress write completes. A late previous-profile
     /// player must never invalidate or refresh the new profile's Home cache.
@@ -129,6 +139,7 @@ enum StartupContentPrefetcher {
         let probe = PrefetchProbe.begin("home_sections", isOriginator: !homeSections.isInFlight)
         #endif
         let task = homeSections.join { try await SiloAPI.shared.homeSections() }
+        let writeToken = homeSections.writeToken
         do {
             let read = try await task.value
             // The rows belong to the profile they were fetched for. Never
@@ -141,7 +152,7 @@ enum StartupContentPrefetcher {
             #if os(iOS) || os(tvOS)
             probe.finish(error: nil)
             #endif
-            ResponseCache.shared.set(read.response, for: CacheKey.homeSections)
+            ResponseCache.shared.set(read.response, for: CacheKey.homeSections, fetchedAt: writeToken)
             prefetchHomeArtwork(for: read.response)
             return read.response
         } catch {
@@ -301,6 +312,7 @@ enum StartupContentPrefetcher {
         let probe = PrefetchProbe.begin("recommendations", isOriginator: !recommendations.isInFlight)
         #endif
         let task = recommendations.join { try await SiloAPI.shared.recommendationsDiscover() }
+        let writeToken = recommendations.writeToken
         do {
             let response = try await task.value
             try validateProfileScopedGeneration(generation)
@@ -308,7 +320,7 @@ enum StartupContentPrefetcher {
             #if os(iOS) || os(tvOS)
             probe.finish(error: nil)
             #endif
-            ResponseCache.shared.set(response, for: CacheKey.recommendations)
+            ResponseCache.shared.set(response, for: CacheKey.recommendations, fetchedAt: writeToken)
             prefetchSectionArtwork(for: response, maxCount: maxSectionArtworkURLs)
             #if os(tvOS)
             prefetchRecommendationLogos(for: response)
@@ -331,6 +343,7 @@ enum StartupContentPrefetcher {
         let probe = PrefetchProbe.begin("user_libraries", isOriginator: !userLibraries.isInFlight)
         #endif
         let task = userLibraries.join { try await SiloAPI.shared.libraries() }
+        let writeToken = userLibraries.writeToken
         do {
             let response = try await task.value
             try validateProfileScopedGeneration(generation)
@@ -340,7 +353,7 @@ enum StartupContentPrefetcher {
             #if os(iOS) || os(tvOS)
             probe.finish(error: nil)
             #endif
-            ResponseCache.shared.set(response, for: CacheKey.userLibraries)
+            ResponseCache.shared.set(response, for: CacheKey.userLibraries, fetchedAt: writeToken)
             if isFirstToLand {
                 NotificationCenter.default.post(name: .userLibrariesDidRefresh, object: response)
             }
@@ -418,12 +431,14 @@ enum StartupContentPrefetcher {
             libraryType: library.type,
             filter: filter
         )
+        let writeToken = ResponseCache.shared.writeToken
         Task {
             guard let page = try? await SiloAPI.shared.catalogPage(query),
                   profileScopedGeneration == generation else { return }
             ResponseCache.shared.set(
                 page.response,
-                for: CacheKey.tvLibrary(libraryId: library.id, filterKey: filter.cacheKeyFragment)
+                for: CacheKey.tvLibrary(libraryId: library.id, filterKey: filter.cacheKeyFragment),
+                fetchedAt: writeToken
             )
             PosterImageCache.prefetchArtworkData(
                 uniqueURLs(page.response.items.map(\.posterUrl), limit: maxGridArtworkURLs)
@@ -459,6 +474,7 @@ enum StartupContentPrefetcher {
         )
         #endif
         let task = flight.join { try await SiloAPI.shared.librarySections(libraryId: libraryId) }
+        let writeToken = flight.writeToken
         do {
             let read = try await task.value
             // Sections belong to the profile they were fetched for. Never
@@ -470,7 +486,7 @@ enum StartupContentPrefetcher {
             #if os(iOS) || os(tvOS)
             probe.finish(error: nil)
             #endif
-            ResponseCache.shared.set(read.response, for: CacheKey.librarySections(libraryId))
+            ResponseCache.shared.set(read.response, for: CacheKey.librarySections(libraryId), fetchedAt: writeToken)
             prefetchSectionArtwork(for: read.response, maxCount: maxSectionArtworkURLs)
             return read.response
         } catch {
@@ -522,6 +538,7 @@ enum StartupContentPrefetcher {
             )
             return try await SiloAPI.shared.catalogPage(query)
         }
+        let writeToken = flight.writeToken
         do {
             let page = try await task.value
             try validateProfileScopedGeneration(generation)
@@ -529,7 +546,7 @@ enum StartupContentPrefetcher {
             #if os(iOS) || os(tvOS)
             probe.finish(error: nil)
             #endif
-            ResponseCache.shared.set(page.response, for: key)
+            ResponseCache.shared.set(page.response, for: key, fetchedAt: writeToken)
             prefetchBrowseArtwork(for: page.response)
             return page
         } catch {
@@ -769,6 +786,9 @@ enum StartupContentPrefetcher {
 @MainActor
 final class SharedFetch<Value> {
     private var task: Task<Value, Error>?
+    /// `ResponseCache.writeToken` when the in-flight request started. A
+    /// caller that joins later caches the result under this token, not its own.
+    private(set) var writeToken: UInt64 = 0
     private var landed: (value: Value, at: ContinuousClock.Instant)?
     private let reuseWindow: Duration
 
@@ -785,6 +805,7 @@ final class SharedFetch<Value> {
 
     func join(_ start: @escaping @MainActor () async throws -> Value) -> Task<Value, Error> {
         if let task { return task }
+        writeToken = ResponseCache.shared.writeToken
         let task = Task { try await start() }
         self.task = task
         return task

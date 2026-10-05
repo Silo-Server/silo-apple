@@ -58,7 +58,11 @@ struct OfflineSeriesBrowseView: View {
         ) { group in
             let count = group.episodeCount
             Button(count == 1 ? "Delete Download" : "Delete \(count) Downloads", role: .destructive) {
-                manager.deleteDownloads(ids: group.allRecords.map(\.id))
+                // Only what was confirmed and is still in the series: records
+                // can finish, be removed, or be replaced while the alert is up.
+                let confirmed = Set(group.allRecords.map(\.id))
+                let current = manager.seriesGroup(forSeriesId: seriesId)?.allRecords ?? []
+                manager.deleteDownloads(ids: current.map(\.id).filter(confirmed.contains))
                 dismiss()
             }
             Button("Keep", role: .cancel) {}

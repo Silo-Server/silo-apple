@@ -47,7 +47,30 @@ final class ResponseCache {
         storeSnapshot(value, for: key)
     }
 
+    // MARK: Write fence
+
+    /// Advances on every invalidation. A fetch reads it before it starts and
+    /// passes it to `set(_:for:fetchedAt:)`, so a response that left the
+    /// server before an invalidation cannot restore the invalidated data,
+    /// in memory or in a snapshot.
+    private(set) var writeToken: UInt64 = 0
+    private var keyInvalidations: [String: UInt64] = [:]
+    private var prefixInvalidations: [String: UInt64] = [:]
+
+    /// Caches `value` unless `key` was invalidated after `token`.
+    func set<T>(_ value: T, for key: String, fetchedAt token: UInt64) {
+        guard !wasInvalidated(key, after: token) else { return }
+        set(value, for: key)
+    }
+
+    private func wasInvalidated(_ key: String, after token: UInt64) -> Bool {
+        if let invalidated = keyInvalidations[key], invalidated > token { return true }
+        return prefixInvalidations.contains { key.hasPrefix($0.key) && $0.value > token }
+    }
+
     func remove(_ key: String) {
+        writeToken &+= 1
+        keyInvalidations[key] = writeToken
         entries.removeValue(forKey: key)
         if ResponseSnapshotStore.snapshotType(forKey: key) != nil, let scope = snapshotScope {
             ResponseSnapshotStore.remove(scope: scope) { $0 == key }
@@ -74,6 +97,8 @@ final class ResponseCache {
     /// Drop every entry whose key starts with `prefix`. Useful for
     /// invalidating a family (e.g. "item:" after a profile switch).
     func removeAll(withPrefix prefix: String) {
+        writeToken &+= 1
+        prefixInvalidations[prefix] = writeToken
         for key in entries.keys where key.hasPrefix(prefix) {
             entries.removeValue(forKey: key)
         }

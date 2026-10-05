@@ -65,10 +65,11 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     /// Optional short editorial line placed in a capsule above the title
     /// (e.g. "New Episode Friday", "Continuing Series"). Hidden when nil.
     let eyebrow: String?
-    /// Source/genre labels shown under the title. The optional outlined
-    /// rating chip leads the metadata, followed by dot-separated text.
+    /// Source/genre labels shown under the title. Optional outlined rating
+    /// and advisory-age chips lead the metadata, followed by dot-separated text.
     let sourceTokens: [String]
     let ratingChip: String?
+    var overlayData: OverlayData? = nil
     /// Short description shown in the hero. Clamped to 3 lines.
     let overview: String?
     /// Inline facts row shown above the action buttons. Mixes plain text
@@ -122,13 +123,20 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     /// description-translation control). Pass `{ EmptyView() }` when there's
     /// nothing to show.
     @ViewBuilder let belowSynopsis: () -> BelowSynopsis
+    @ObservedObject private var advisoryAgePreference = AdvisoryAgePreferenceStore.shared
 
     @ViewBuilder
     var body: some View {
-        if extendsBackdropFadeBelowHero {
-            heroComposition
-        } else {
-            heroComposition.clipped()
+        Group {
+            if extendsBackdropFadeBelowHero {
+                heroComposition
+            } else {
+                heroComposition.clipped()
+            }
+        }
+        .task(id: overlayData?.advisoryAge) {
+            guard (overlayData?.advisoryAge ?? 0) > 0 else { return }
+            await advisoryAgePreference.hydrateIfNeeded()
         }
     }
 
@@ -341,7 +349,7 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
 
     @ViewBuilder
     private var factsRow: some View {
-        if !factsLine.isEmpty || !ratings.isEmpty || !sourceTokens.isEmpty || ratingChip != nil {
+        if !factsLine.isEmpty || !ratings.isEmpty || !sourceTokens.isEmpty || !ratingChips.isEmpty {
             HStack(spacing: 14) {
                 if hasLeadingFacts {
                     // The row never wraps. When the ratings don't all fit,
@@ -369,7 +377,7 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     }
 
     private var hasLeadingFacts: Bool {
-        !(ratingChip ?? "").isEmpty || !factsLine.isEmpty || !ratings.isEmpty
+        !ratingChips.isEmpty || !factsLine.isEmpty || !ratings.isEmpty
     }
 
     /// Every rating first, then one fewer at a time. A single empty row
@@ -381,8 +389,8 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     /// The rating chip, facts and the given ratings, none of which truncate.
     private func leadingFacts(ratings shown: [DisplayRating]) -> some View {
         HStack(spacing: 14) {
-            if let ratingChip, !ratingChip.isEmpty {
-                ratingBadge(ratingChip)
+            ForEach(Array(ratingChips.enumerated()), id: \.offset) { _, chip in
+                ratingBadge(chip)
                     .fixedSize(horizontal: true, vertical: false)
             }
 
@@ -415,6 +423,17 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
                 RoundedRectangle(cornerRadius: 5)
                     .stroke(Color.white.opacity(0.78), lineWidth: 1.5)
             )
+    }
+
+    private var ratingChips: [String] {
+        var chips = [ratingChip].compactMap { value in
+            value.flatMap { $0.isEmpty ? nil : $0 }
+        }
+        if advisoryAgePreference.showsAdvisoryAge,
+           let advisory = overlayData?.advisoryAgeBadgeLabel {
+            chips.append(advisory)
+        }
+        return chips
     }
 
     @ViewBuilder
