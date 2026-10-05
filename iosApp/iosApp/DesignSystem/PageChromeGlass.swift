@@ -47,7 +47,28 @@ struct PageChromeGlass: View {
                     to: Self.fadeEnd
                 )
             )
+            #if os(macOS)
+            // Extend the strip a little below the chrome and fade only that
+            // extension, so the title and pills keep a full blur behind them
+            // while the strip still melts into the page with no hard line.
+            .padding(.bottom, -SiloTheme.macPageChromeFadeLength)
+            .mask {
+                VStack(spacing: 0) {
+                    Color.black
+                    LinearGradient(
+                        colors: [.black, .clear],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .frame(height: SiloTheme.macPageChromeFadeLength)
+                }
+            }
+            // Run under the Mac sidebar too, so the strip does not end in a
+            // straight edge beside the sidebar's rounded panel.
+            .ignoresSafeArea(edges: [.top, .leading])
+            #else
             .ignoresSafeArea(edges: .top)
+            #endif
             .allowsHitTesting(false)
             .accessibilityHidden(true)
         #endif

@@ -57,6 +57,26 @@ struct PhoneDetailPageSurface<Content: View>: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
+        #if os(macOS)
+        // The page keeps the leading inset so it is not laid out underneath
+        // the Mac sidebar, while its backdrop still fills the window: a
+        // backdrop that stopped at the inset would show a hard edge beside
+        // the sidebar's rounded panel.
+        content()
+            .ignoresSafeArea(edges: .vertical)
+            .background { backdrop.ignoresSafeArea() }
+            .task(id: backdropURL) { await sampleTint() }
+        #else
+        ZStack {
+            backdrop
+            content()
+        }
+        .ignoresSafeArea()
+        .task(id: backdropURL) { await sampleTint() }
+        #endif
+    }
+
+    private var backdrop: some View {
         ZStack {
             Color.black
 
@@ -82,24 +102,22 @@ struct PhoneDetailPageSurface<Content: View>: View {
             } else {
                 sampledTint.opacity(0.42)
             }
-
-            content()
         }
-        .ignoresSafeArea()
-        .task(id: backdropURL) {
-            guard let rawURL = backdropURL,
-                  let url = URL(string: rawURL) else {
-                sampledTint = Color(red: 0.04, green: 0.12, blue: 0.14)
-                return
-            }
+    }
 
-            if let cached = HeroBackdropPalette.cachedTint(for: url) {
-                sampledTint = cached
-            }
-            if let tint = await HeroBackdropPalette.tintColor(for: url),
-               !Task.isCancelled {
-                sampledTint = tint
-            }
+    private func sampleTint() async {
+        guard let rawURL = backdropURL,
+              let url = URL(string: rawURL) else {
+            sampledTint = Color(red: 0.04, green: 0.12, blue: 0.14)
+            return
+        }
+
+        if let cached = HeroBackdropPalette.cachedTint(for: url) {
+            sampledTint = cached
+        }
+        if let tint = await HeroBackdropPalette.tintColor(for: url),
+           !Task.isCancelled {
+            sampledTint = tint
         }
     }
 

@@ -44,6 +44,9 @@ enum SiloTheme {
     static let macSidebarHeadingTracking: CGFloat = 1.5
     /// Diameter of the profile avatar in the sidebar's bottom row.
     static let macSidebarAvatarSize: CGFloat = 32
+
+    /// Height of the soft fade below the scrolling header strip.
+    static let macPageChromeFadeLength: CGFloat = 32
     #endif
 
     // MARK: - Spacing
