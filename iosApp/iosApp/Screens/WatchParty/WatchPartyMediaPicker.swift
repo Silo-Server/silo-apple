@@ -745,6 +745,8 @@ private struct WatchPartyEpisodePicker: View {
     let purpose: WatchPartyPickerPurpose
     let series: BrowseItem
     var initialSeasonNumber: Int? = nil
+    /// The episode the viewer came from, when they browse its series.
+    var initialEpisodeId: String? = nil
     let onComplete: () -> Void
     @State private var seasons: [Season] = []
     @State private var episodes: [EpisodeListItem] = []
@@ -775,9 +777,10 @@ private struct WatchPartyEpisodePicker: View {
         #endif
     }
 
-    /// The viewer's own next episode in this season, as on the series page.
+    /// The episode the viewer came from, else their own next episode in this
+    /// season, as on the series page.
     private var resumeEpisode: EpisodeListItem? {
-        episodes.preferredResumeEpisode()
+        episodes.first { $0.contentId == initialEpisodeId } ?? episodes.preferredResumeEpisode()
     }
 
     #if os(tvOS)
@@ -1137,7 +1140,8 @@ private struct WatchPartyMediaChoiceView: View {
         #endif
         .navigationDestination(item: $browsedSeries) { series in
             WatchPartyEpisodePicker(session: session, purpose: purpose, series: series,
-                                    initialSeasonNumber: choice.seasonNumber, onComplete: onComplete)
+                                    initialSeasonNumber: choice.seasonNumber, initialEpisodeId: choice.contentId,
+                                    onComplete: onComplete)
         }
         .task(id: choice.contentId) {
             if session.capabilities?.memberState == true {

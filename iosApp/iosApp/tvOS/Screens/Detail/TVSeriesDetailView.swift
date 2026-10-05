@@ -950,13 +950,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     // MARK: - Episode state and version selection
 
     private var suggestedEpisode: EpisodeListItem? {
-        if let inProgress = episodes.first(where: { $0.userData?.isInProgress == true }) {
-            return inProgress
-        }
-        if let unwatched = episodes.first(where: { !($0.userData?.played ?? false) }) {
-            return unwatched
-        }
-        return episodes.first
+        episodes.preferredResumeEpisode()
     }
 
     private var displayedEpisode: EpisodeListItem? {

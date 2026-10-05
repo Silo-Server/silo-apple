@@ -736,13 +736,7 @@ struct TVItemDetailView: View {
            }) {
             return active
         }
-        if let inProgress = viewModel.episodes.first(where: { $0.userData?.isInProgress == true }) {
-            return inProgress
-        }
-        if let unwatched = viewModel.episodes.first(where: { !($0.userData?.played ?? false) }) {
-            return unwatched
-        }
-        return viewModel.episodes.first
+        return viewModel.episodes.preferredResumeEpisode()
     }
 
     private func seriesNextUpEpisodeContentId(for detail: ItemDetail) -> String? {

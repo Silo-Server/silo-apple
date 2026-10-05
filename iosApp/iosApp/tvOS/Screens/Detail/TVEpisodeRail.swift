@@ -138,6 +138,9 @@ struct TVEpisodeRail: View {
     }
 
     @FocusState private var focusedCardId: String?
+    /// The plain rail centers the current card once. Returning from a pushed
+    /// page re-runs onAppear and must not scroll away from the focused card.
+    @State private var hasCenteredCurrent = false
     @Namespace private var anchoredFocusScope
     /// The card the anchored row is positioned on: the focused card while the
     /// row has focus, otherwise the last one it selected or scrolled to.
@@ -177,7 +180,8 @@ struct TVEpisodeRail: View {
                 onFocusedEpisodeChange?(nil)
             }
             .onAppear {
-                guard let id = currentContentId else { return }
+                guard !hasCenteredCurrent, let id = currentContentId else { return }
+                hasCenteredCurrent = true
                 // Next tick, so the LazyHStack has made the card first.
                 DispatchQueue.main.async {
                     proxy.scrollTo(id, anchor: .center)
