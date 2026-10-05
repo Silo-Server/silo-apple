@@ -557,10 +557,6 @@ final class AetherPlaybackController {
             .canReleaseSharedSession(excluding: aetherSessionClaim)
         engine.stop(finalTeardown: true)
         refreshExternalPlaybackState()
-        #if os(macOS)
-        // No successor follows a stop, so there is no gap to bridge.
-        releaseDisplaySleepPrevention()
-        #endif
         publishSystemMediaChanged()
     }
 
@@ -688,7 +684,10 @@ final class AetherPlaybackController {
         }
     }
 
-    private func releaseDisplaySleepPrevention() {
+    /// Ends the activity without the release delay. For closing the player:
+    /// `stop()` alone keeps the delay because a failed load can stop the
+    /// engine and then replan onto another route.
+    func releaseDisplaySleepPrevention() {
         displaySleepReleaseTask?.cancel()
         displaySleepReleaseTask = nil
         if let activity = displaySleepActivity {
