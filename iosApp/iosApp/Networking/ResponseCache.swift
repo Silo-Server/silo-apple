@@ -29,7 +29,7 @@ final class ResponseCache {
             queue: .main
         ) { _ in
             MainActor.assumeIsolated {
-                ResponseCache.shared.removeAll(withPrefix: "item:")
+                ResponseCache.shared.clearMemory(withPrefix: "item:")
             }
         }
         #endif
@@ -115,6 +115,17 @@ final class ResponseCache {
     /// handoff and its end. The owner's snapshots stay for their next launch.
     func clearMemory() {
         entries.removeAll()
+        seededScope = nil
+    }
+
+    /// Profile boundary (restore, switch, deselect): drops what this process
+    /// loaded for the family but keeps the profile's snapshots, which a
+    /// launch restoring that profile seeds from right after. Invalidations
+    /// use `removeAll(withPrefix:)` instead.
+    func clearMemory(withPrefix prefix: String) {
+        for key in entries.keys where key.hasPrefix(prefix) {
+            entries.removeValue(forKey: key)
+        }
         seededScope = nil
     }
 

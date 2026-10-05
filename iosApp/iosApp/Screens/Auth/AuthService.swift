@@ -715,7 +715,7 @@ final class AuthService: @unchecked Sendable {
     private func clearPerProfileCaches(preservingTrailerReturn: Bool = false, preservingWatchPartyRecent: Bool = false) {
         StartupContentPrefetcher.resetProfileScopedPrefetches()
         for prefix in CacheKey.perProfilePrefixes {
-            ResponseCache.shared.removeAll(withPrefix: prefix)
+            ResponseCache.shared.clearMemory(withPrefix: prefix)
         }
         // Profiles are account-scoped and are the offline source for Who's
         // Watching. Keep that list across profile transitions; server/account

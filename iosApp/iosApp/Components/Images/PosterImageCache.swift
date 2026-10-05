@@ -19,8 +19,9 @@ enum PosterImageCache {
 
     /// Longest decoded edge in pixels: 128 × 2^(n/3), each step about 26%
     /// above the last, up to 4096.
-    private static let decodeLadder: [CGFloat] = (0...15).map {
-        (128 * pow(2, CGFloat($0) / 3)).rounded()
+    private static let decodeLadder: [CGFloat] = (0...15).map { (step: Int) -> CGFloat in
+        let exponent = CGFloat(step) / 3
+        return (128 * pow(CGFloat(2), exponent)).rounded()
     }
 
     /// The decode size for artwork drawn at `pointSize`: its pixel size with
