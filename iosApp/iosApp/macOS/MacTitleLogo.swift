@@ -1,4 +1,5 @@
 #if os(macOS)
+import Nuke
 import NukeUI
 import SwiftUI
 

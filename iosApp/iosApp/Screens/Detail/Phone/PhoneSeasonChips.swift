@@ -17,7 +17,7 @@ struct PhoneSeasonChips: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(alignment: .top, spacing: Self.itemSpacing) {
+                HStack(alignment: Self.itemAlignment, spacing: Self.itemSpacing) {
                     ForEach(seasons) { season in
                         #if os(macOS)
                         posterCard(for: season)
@@ -53,6 +53,15 @@ struct PhoneSeasonChips: View {
         } else {
             proxy.scrollTo(id, anchor: .center)
         }
+    }
+
+    /// Poster cards share a top edge; chips keep their centred default.
+    private static var itemAlignment: VerticalAlignment {
+        #if os(macOS)
+        .top
+        #else
+        .center
+        #endif
     }
 
     private static var itemSpacing: CGFloat {
