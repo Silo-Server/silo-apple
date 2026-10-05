@@ -1059,13 +1059,16 @@ private struct ItemDetailPhoneContent: View {
             }
         }
 
+        // Identity boundaries and invalidations advance the token, so a
+        // response from before either is not cached.
+        let writeToken = ResponseCache.shared.writeToken
         do {
             let watchDetail = try await MetadataRequestPool.shared.watchDetail(
                 contentId: requestedContentId, libraryId: libraryId
             )
             guard !Task.isCancelled,
                   playbackEpisode(for: detail)?.contentId == requestedContentId else { return }
-            ResponseCache.shared.set(watchDetail, for: cacheKey)
+            ResponseCache.shared.set(watchDetail, for: cacheKey, fetchedAt: writeToken)
             // Keep any pick made on the cached selectors while this ran.
             let isUntouched = preferredNextUpFileId == nil
                 && preferredNextUpAudioTrackIndex == nil
