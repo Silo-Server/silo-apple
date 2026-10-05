@@ -83,8 +83,8 @@ extension SiloAppDelegate: UNUserNotificationCenterDelegate {
         fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
     ) {
         Task { @MainActor in
-            let synced = await Self.syncWithDeadline(Self.backgroundSyncDeadlineSeconds)
-            completionHandler(synced ? .newData : .noData)
+            let fetchedDeliveries = await Self.syncWithDeadline(Self.backgroundSyncDeadlineSeconds)
+            completionHandler(fetchedDeliveries ? .newData : .noData)
         }
     }
 
@@ -119,11 +119,12 @@ extension SiloAppDelegate: UNUserNotificationCenterDelegate {
         }
     }
 
-    /// Runs the notification-inbox sync and the download monitoring sync,
-    /// but returns `false` once the deadline passes, cancelling the
-    /// underlying requests. The completion handler for a background wake
-    /// must be called inside the system budget even when the server is
-    /// unreachable.
+    /// Runs the notification-inbox sync and the download monitoring sync and
+    /// returns whether the inbox page carried deliveries. A backlog page
+    /// counts even though the inbox is not caught up yet. Returns `false`
+    /// once the deadline passes, cancelling the underlying requests. The
+    /// completion handler for a background wake must be called inside the
+    /// system budget even when the server is unreachable.
     @MainActor
     private static func syncWithDeadline(_ seconds: TimeInterval) async -> Bool {
         await withTaskGroup(of: Bool.self) { group in
@@ -148,7 +149,7 @@ extension SiloAppDelegate: UNUserNotificationCenterDelegate {
                 if !Task.isCancelled {
                     await DownloadManager.shared.onAppActive()
                 }
-                return await inboxSynced
+                return await inboxSynced.fetchedDeliveries
             }
             group.addTask {
                 try? await Task.sleep(for: .seconds(seconds))

@@ -105,7 +105,7 @@ final class ApplePushNotificationSyncTests: XCTestCase {
 
         let first = await h.coordinator.sync()
 
-        XCTAssertTrue(first)
+        XCTAssertEqual(first, .init(fetchedDeliveries: true, caughtUp: true))
         await fulfillment(of: [refreshed], timeout: 1)
         let request = try XCTUnwrap(h.server.handler.requests.first)
         XCTAssertEqual(request.query, ["limit": "50"])
@@ -119,8 +119,8 @@ final class ApplePushNotificationSyncTests: XCTestCase {
 
         // One page per sync: the backlog page is not caught up, and the next
         // sync resumes from its sync_cursor.
-        XCTAssertFalse(second)
-        XCTAssertTrue(third)
+        XCTAssertEqual(second, .init(fetchedDeliveries: true, caughtUp: false))
+        XCTAssertEqual(third, .init(fetchedDeliveries: false, caughtUp: true))
         XCTAssertEqual(h.server.sentCursors, [nil, "c1", "c2"])
     }
 
@@ -133,7 +133,7 @@ final class ApplePushNotificationSyncTests: XCTestCase {
         let relaunched = await relaunch(h)
         let synced = await relaunched.sync()
 
-        XCTAssertTrue(synced)
+        XCTAssertTrue(synced.caughtUp)
         XCTAssertEqual(h.server.sentCursors, [nil, "c1"])
     }
 
@@ -149,7 +149,7 @@ final class ApplePushNotificationSyncTests: XCTestCase {
         let synced = await relaunched.sync()
 
         await fulfillment(of: [notRefreshed], timeout: 0.2)
-        XCTAssertTrue(synced)
+        XCTAssertEqual(synced, .init(fetchedDeliveries: false, caughtUp: true))
         XCTAssertEqual(h.server.sentCursors, [nil, "c1"])
     }
 
@@ -164,9 +164,9 @@ final class ApplePushNotificationSyncTests: XCTestCase {
         // A relaunch reads the persisted slot, so this proves the failure left it intact.
         let resumed = await relaunch(h).sync()
 
-        XCTAssertTrue(seeded)
-        XCTAssertFalse(failed)
-        XCTAssertTrue(resumed)
+        XCTAssertTrue(seeded.caughtUp)
+        XCTAssertEqual(failed, .init())
+        XCTAssertTrue(resumed.caughtUp)
         XCTAssertEqual(h.server.sentCursors, [nil, "c1", "c1"])
     }
 
@@ -179,13 +179,13 @@ final class ApplePushNotificationSyncTests: XCTestCase {
 
         let restarted = await h.coordinator.sync()
 
-        XCTAssertTrue(restarted)
+        XCTAssertTrue(restarted.caughtUp)
         XCTAssertEqual(h.server.sentCursors, [nil, "stale", nil])
 
         // The replacement cursor was persisted.
         h.server.page(for: "fresh", items: [], syncCursor: "fresh")
         let resumed = await relaunch(h).sync()
-        XCTAssertTrue(resumed)
+        XCTAssertTrue(resumed.caughtUp)
         XCTAssertEqual(h.server.sentCursors, [nil, "stale", nil, "fresh"])
     }
 
@@ -198,7 +198,7 @@ final class ApplePushNotificationSyncTests: XCTestCase {
         h.server.page(for: nil, items: ["n9"], profile: "profile-b", syncCursor: "profile-b-cursor")
         let synced = await h.coordinator.sync()
 
-        XCTAssertTrue(synced)
+        XCTAssertTrue(synced.caughtUp)
         XCTAssertEqual(h.server.sentCursors, [nil, nil])
         XCTAssertEqual(h.server.handler.requests.last?.header("X-Profile-Id"), "profile-b")
     }
@@ -214,7 +214,8 @@ final class ApplePushNotificationSyncTests: XCTestCase {
 
         let backlog = await h.coordinator.sync()
 
-        XCTAssertFalse(backlog)
+        // A backlog page is new data for a background wake, though not caught up.
+        XCTAssertEqual(backlog, .init(fetchedDeliveries: true, caughtUp: false))
         XCTAssertEqual(h.server.handler.requests.count, 2)
         await fulfillment(of: [refreshed], timeout: 1)
         _ = await h.coordinator.sync()

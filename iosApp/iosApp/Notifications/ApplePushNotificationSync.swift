@@ -21,6 +21,16 @@ final class ApplePushNotificationSyncCoordinator {
         let cursor: String
     }
 
+    /// What one sync read. The two flags are independent: a backlog page can
+    /// carry deliveries while the checkpoint is still short of the head.
+    struct SyncResult: Equatable {
+        /// The page carried deliveries, so Home was asked to refresh. A
+        /// background wake reports this to the system as new data.
+        var fetchedDeliveries = false
+        /// The checkpoint reached the server's head.
+        var caughtUp = false
+    }
+
     private let api: APIv2Client
     private let tokenStore: TokenStore
     private let checkpoints: UserDefaults
@@ -49,7 +59,7 @@ final class ApplePushNotificationSyncCoordinator {
     }
 
     @discardableResult
-    func refreshFromRemoteNotification() async -> Bool {
+    func refreshFromRemoteNotification() async -> SyncResult {
         // A background remote-notification wake can launch a killed app and
         // land here before ContentView.checkInitialState() has pointed
         // TokenStore at the active registry server — the capture below would
@@ -62,12 +72,12 @@ final class ApplePushNotificationSyncCoordinator {
     }
 
     /// Reads one page forward from the persisted checkpoint and refreshes Home
-    /// when that page has deliveries. Returns `true` when the checkpoint has
-    /// reached the server's head; a backlog resumes on the next sync.
+    /// when that page has deliveries. A backlog resumes on the next sync. A
+    /// skipped or failed sync returns an empty result.
     @discardableResult
-    func sync() async -> Bool {
+    func sync() async -> SyncResult {
         guard !inFlight else {
-            return false
+            return SyncResult()
         }
         // Claimed before the first await so a second push/foreground/tap
         // sync cannot race the checkpoint bookkeeping.
@@ -76,7 +86,7 @@ final class ApplePushNotificationSyncCoordinator {
 
         guard let auth = await tokenStore.captureOrdinaryRequestAuth(),
               let profileId = auth.profileId, !profileId.isEmpty else {
-            return false
+            return SyncResult()
         }
         // Computed from the auth captured before the request, so the cursor is
         // filed under the owner it was minted for even if the profile changes
@@ -100,10 +110,10 @@ final class ApplePushNotificationSyncCoordinator {
                 restarted = true
             } catch {
                 Self.logger.error("Notification sync failed: \(String(describing: error), privacy: .public)")
-                return false
+                return SyncResult()
             }
         }
-        guard let page = fetched else { return false }
+        guard let page = fetched else { return SyncResult() }
         // Keep `sync_cursor`, not `page.next_cursor`: the last page has no
         // next cursor but still advances the checkpoint.
         if let owner {
@@ -111,10 +121,11 @@ final class ApplePushNotificationSyncCoordinator {
         }
         let caughtUp = !page.page.hasMore
         Self.logger.info("Synced Silo notifications count=\(page.items.count, privacy: .public) unread=\(page.unreadCount, privacy: .public) caught_up=\(caughtUp, privacy: .public)")
-        if !page.items.isEmpty {
+        let fetchedDeliveries = !page.items.isEmpty
+        if fetchedDeliveries {
             NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil)
         }
-        return caughtUp
+        return SyncResult(fetchedDeliveries: fetchedDeliveries, caughtUp: caughtUp)
     }
 
     // MARK: - Checkpoint slot

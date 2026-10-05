@@ -105,6 +105,9 @@ final class CalendarViewModel {
         let week = week
         let filter = filter
         let key = CacheKey.calendarWeek(week.startString, filter: filter.rawValue)
+        // Read before the fetch so a week that lands after a profile
+        // boundary cleared "calendar:" cannot refill it for the next profile.
+        let writeToken = ResponseCache.shared.writeToken
 
         if let cached: CalendarResponse = ResponseCache.shared.get(key) {
             setDays(cached.events)
@@ -123,7 +126,7 @@ final class CalendarViewModel {
                 TimeZone.current.identifier
             )
             guard token == requestToken else { return }
-            ResponseCache.shared.set(response, for: key)
+            ResponseCache.shared.set(response, for: key, fetchedAt: writeToken)
             setDays(response.events)
         } catch let err {
             guard token == requestToken else { return }

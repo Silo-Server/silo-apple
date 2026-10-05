@@ -46,7 +46,8 @@ enum DeviceLoginPoller {
         case removed
         /// Polling again cannot help, and the caller reports the error: an
         /// update requirement, an approval whose tokens cannot be collected
-        /// again (they are issued once), or a changed active account.
+        /// again (they are issued once), a changed active account, or a
+        /// client error such as a 400 or 422.
         case terminal
     }
 
@@ -62,8 +63,23 @@ enum DeviceLoginPoller {
             return .removed
         case APIv2Error.incompleteAuthResponse, HTTPError.requestIdentityChanged:
             return .terminal
+        case APIv2Error.problem(let problem):
+            return classify(status: problem.status)
+        case APIv2Error.httpStatus(let status):
+            return classify(status: status)
         default:
             return .transient
+        }
+    }
+
+    /// The server answers every request state, `pending` included, with a
+    /// 200. A timeout, a rate limit, or a server or proxy failure can clear on
+    /// a re-poll; any other client error will come back the same.
+    private static func classify(status: Int) -> ErrorClass {
+        switch status {
+        case 408, 429, 500...599: return .transient
+        case 400...499: return .terminal
+        default: return .transient
         }
     }
 
