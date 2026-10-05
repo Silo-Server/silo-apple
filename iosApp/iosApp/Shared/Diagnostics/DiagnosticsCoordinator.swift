@@ -1952,9 +1952,20 @@ actor DiagnosticsCoordinator {
     /// the hosted collector's contract does not have it yet, and an older
     /// server would reject the report outright. The lifecycle breadcrumb the
     /// watchdog writes reaches every destination.
+    ///
+    /// `epoch` is the evidence epoch when the hang ended. The report is filed
+    /// only if it still holds, so a capture queued behind other work cannot
+    /// outlive a profile switch or a Turn Off and Delete and be filed after
+    /// diagnostics is turned back on.
     @discardableResult
-    func captureWatchdogHang(startedAt: Date, endedAt: Date, residentMB: Int?) async -> Bool {
-        guard let context = await captureContext(),
+    func captureWatchdogHang(
+        startedAt: Date,
+        endedAt: Date,
+        residentMB: Int?,
+        epoch: DiagnosticsEvidenceEpoch
+    ) async -> Bool {
+        guard Self.currentEvidenceEpoch() == epoch,
+              let context = await captureContext(),
               Self.canFileWatchdogHang(to: context) else {
             return false
         }
@@ -1998,6 +2009,8 @@ actor DiagnosticsCoordinator {
             binding: context.binding,
             profileID: context.profileID
         ))
+        // Again after the context lookup and the evidence reads above.
+        guard Self.currentEvidenceEpoch() == epoch else { return false }
         do {
             _ = try pendingStore.save(PendingReportCapture(
                 binding: context.binding,

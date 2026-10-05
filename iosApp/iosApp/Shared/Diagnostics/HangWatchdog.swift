@@ -164,11 +164,13 @@ final class HangWatchdog {
             )
             // A debugger pausing or stepping the main thread is not a hang.
             guard !ExitSentinelEnvironment.isDebuggerAttached() else { return }
+            let epoch = DiagnosticsCoordinator.currentEvidenceEpoch()
             Task {
                 await DiagnosticsCoordinator.shared.captureWatchdogHang(
                     startedAt: endedAt.addingTimeInterval(-duration),
                     endedAt: endedAt,
-                    residentMB: residentMB
+                    residentMB: residentMB,
+                    epoch: epoch
                 )
             }
         }
