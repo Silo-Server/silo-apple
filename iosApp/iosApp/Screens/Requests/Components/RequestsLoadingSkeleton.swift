@@ -59,7 +59,10 @@ struct RequestRailSkeleton: View {
                     }
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            // `minWidth: 0` lets the frame shrink below the cards' total
+            // width; without it an overflowing rail widens the whole page
+            // column and the scroll view centers it off the leading edge.
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             .clipped()
         }
         .allowsHitTesting(false)
