@@ -1170,7 +1170,10 @@ final class PendingReportStore {
         guard let existing else { return nil }
 
         var manifest = existing.manifest
-        manifest.report.occurrenceCount = (manifest.report.occurrenceCount ?? 1) + 1
+        manifest.report.occurrenceCount = min(
+            (manifest.report.occurrenceCount ?? 1) + 1,
+            DiagnosticsManifest.Report.maxOccurrenceCount
+        )
         try writeJSON(manifest, to: existing.directoryURL.appendingPathComponent("manifest.json"))
         markFingerprintSeenLocked(capture.fingerprint, now: capture.capturedAt)
         guard let report = loadReport(from: existing.directoryURL) else {

@@ -166,6 +166,37 @@ final class PendingReportStoreTests: XCTestCase {
         XCTAssertTrue(manifestJSON.contains(#""occurrence_count":3"#) || manifestJSON.contains(#""occurrence_count" : 3"#))
     }
 
+    /// The contract caps `occurrence_count` at 1,000,000, so counting stops
+    /// there instead of producing a manifest every destination rejects.
+    func testRepeatCountStopsAtTheContractMaximum() throws {
+        let store = try makeStore()
+        let binding = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "42")
+        let start = Date(timeIntervalSince1970: 100_000)
+        let max = DiagnosticsManifest.Report.maxOccurrenceCount
+
+        let first = try store.save(makeCapture(binding: binding, fingerprint: "event-1", capturedAt: start, issue: "issue-a"))
+        var nearMax = first.manifest
+        nearMax.report.occurrenceCount = max - 1
+        try DiagnosticsJSONCoding.makeEncoder().encode(nearMax)
+            .write(to: first.directoryURL.appendingPathComponent("manifest.json"))
+
+        for index in 2...3 {
+            let repeated = try store.save(makeCapture(
+                binding: binding,
+                fingerprint: "event-\(index)",
+                capturedAt: start.addingTimeInterval(TimeInterval(index)),
+                issue: "issue-a"
+            ))
+            XCTAssertEqual(repeated.id, first.id)
+            XCTAssertEqual(repeated.manifest.report.occurrenceCount, max)
+            XCTAssertNoThrow(try repeated.manifest.report.validate())
+        }
+
+        var overMax = first.manifest.report
+        overMax.occurrenceCount = max + 1
+        XCTAssertThrowsError(try overMax.validate())
+    }
+
     func testRepeatAfterTheWindowStartsANewReport() throws {
         let store = try makeStore()
         let binding = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "42")

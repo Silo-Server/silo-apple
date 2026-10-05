@@ -90,6 +90,9 @@ struct DiagnosticsManifest: Codable, Equatable {
         /// report instead of each taking a slot (see `PendingReportStore`).
         var occurrenceCount: Int? = nil
 
+        /// The contract's ceiling for `occurrence_count`.
+        static let maxOccurrenceCount = 1_000_000
+
         enum CodingKeys: String, CodingKey {
             case type
             case capturedAt = "captured_at"
@@ -118,7 +121,7 @@ struct DiagnosticsManifest: Codable, Equatable {
             guard !osVersion.isEmpty else {
                 throw DiagnosticsValidationError.invalidField("report.os_version")
             }
-            if let occurrenceCount, occurrenceCount < 1 {
+            if let occurrenceCount, !(1...Self.maxOccurrenceCount).contains(occurrenceCount) {
                 throw DiagnosticsValidationError.invalidField("report.occurrence_count")
             }
         }
