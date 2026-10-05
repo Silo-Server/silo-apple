@@ -3767,17 +3767,6 @@ class PlayerViewModel {
             // or hit Back.
             nextUpAutoplayCancelled = true
             cancelNextUpCountdown()
-            // A download has no connection to lose: its early end is a file
-            // that stops short.
-            let isDownload = lastLoadRequest?.offlineDownloadId != nil
-            showNotice(
-                title: isDownload ? "Download incomplete" : "Connection lost",
-                message: isDownload
-                    ? "The downloaded video file ends early. Delete and re-download it."
-                    : "Lost connection to the server before the episode finished.",
-                tone: .warning,
-                duration: 6
-            )
         }
 
         #if os(iOS) || os(tvOS)
@@ -3864,6 +3853,22 @@ class PlayerViewModel {
         }
 
         beginNextUpPostroll(videoEnded: true)
+
+        // After the postroll, which clears notices left over from playback;
+        // the postroll shows this one.
+        if isPremature {
+            // A download has no connection to lose: its early end is a file
+            // that stops short.
+            let isDownload = lastLoadRequest?.offlineDownloadId != nil
+            showNotice(
+                title: isDownload ? "Download incomplete" : "Connection lost",
+                message: isDownload
+                    ? "The downloaded video file ends early. Delete and re-download it."
+                    : "Lost connection to the server before the episode finished.",
+                tone: .warning,
+                duration: 6
+            )
+        }
     }
 
 

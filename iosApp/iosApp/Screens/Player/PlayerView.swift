@@ -848,6 +848,13 @@ struct PlayerNextUpScreen: View {
         #if os(tvOS)
         .ignoresSafeArea()
         #endif
+        // The player's notice layer is hidden behind this screen, and an end
+        // that stopped short explains itself here.
+        .overlay(alignment: .top) {
+            if let notice = viewModel.activeNotice {
+                PlayerNoticeOverlay(notice: notice)
+            }
+        }
         .animation(.easeInOut(duration: 0.2), value: viewModel.nextUpCountdownSeconds)
         .animation(.easeInOut(duration: 0.2), value: viewModel.nextUpEpisode)
         .animation(.easeInOut(duration: 0.2), value: viewModel.nextUpCarouselItems)
