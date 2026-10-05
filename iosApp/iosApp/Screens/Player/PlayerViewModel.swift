@@ -240,6 +240,20 @@ class PlayerViewModel {
     var title: String = ""
     var isLoading = true
     var isBuffering = false
+    /// The engine phase last reported for the active load. Kept so a source
+    /// stall can be re-judged as the playhead moves or stops.
+    @ObservationIgnored
+    private var aetherPhase: PlaybackPhase = .idle
+    /// When the playhead last moved, on any load.
+    @ObservationIgnored
+    private var playheadSample: (seconds: Double, movedAt: ContinuousClock.Instant)?
+    /// Since when the engine has held no media ahead of its clock, sampled
+    /// while the source is stalled. nil while media is buffered ahead.
+    @ObservationIgnored
+    private var stalledBufferEmptySince: ContinuousClock.Instant?
+    /// Re-judges a `.stalled` phase while it lasts; see `PlayerStallPresentation`.
+    @ObservationIgnored
+    private var sourceStallWatch: Task<Void, Never>?
     var isLoadingSubtitles = false {
         didSet {
             guard isLoadingSubtitles != oldValue else { return }
@@ -1192,6 +1206,57 @@ class PlayerViewModel {
         }
     }
 
+    private func currentPhaseIsLoading() -> Bool {
+        PlayerStallPresentation.isLoading(
+            phase: aetherPhase,
+            isPlaying: isPlaying,
+            playheadMovedAt: playheadSample?.movedAt,
+            bufferEmptySince: stalledBufferEmptySince,
+            now: .now
+        )
+    }
+
+    /// Records whether the engine still holds media ahead of its clock while
+    /// the source is stalled. An audio-only load has no buffer-ahead surface
+    /// (its buffered position mirrors the clock), so only its playhead counts.
+    private func sampleStalledBuffer() {
+        guard case .stalled = aetherPhase, !isAudioOnlyAetherLoad else {
+            stalledBufferEmptySince = nil
+            return
+        }
+        let engine = aetherPlaybackController.engine
+        if PlayerStallPresentation.hasMediaAhead(
+            bufferedPosition: engine.bufferedPosition,
+            clockTime: engine.currentTime
+        ) {
+            stalledBufferEmptySince = nil
+        } else if stalledBufferEmptySince == nil {
+            stalledBufferEmptySince = .now
+        }
+    }
+
+    /// A source outage leaves the player loading only once the buffer runs
+    /// out: the playhead stops, or (after a seek past the buffer) the clock
+    /// runs on with nothing buffered ahead of it. Neither change produces a
+    /// phase event, so re-judge on a short poll until the phase or the load
+    /// changes.
+    private func watchSourceStall(epoch: AetherPlaybackController.LoadEpoch) {
+        sourceStallWatch?.cancel()
+        sourceStallWatch = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(250))
+                guard let self, !Task.isCancelled, !self.isDisposed,
+                      self.activeAetherLoadEpoch == epoch,
+                      case .stalled = self.aetherPhase else { return }
+                self.sampleStalledBuffer()
+                let loading = self.currentPhaseIsLoading()
+                guard loading != self.isLoading else { continue }
+                self.isLoading = loading
+                self.syncIntroSkipPrompt()
+            }
+        }
+    }
+
     private func handleAetherEvent(_ scopedEvent: AetherPlaybackController.ScopedEvent) {
         guard !isDisposed, scopedEvent.epoch == activeAetherLoadEpoch else { return }
         defer { publishWatchPartySnapshot() }
@@ -1220,15 +1285,21 @@ class PlayerViewModel {
             }
             syncIntroSkipPrompt()
         case .phase(let phase):
-            switch phase {
-            case .loading, .rebuffering, .stalled:
-                isLoading = true
-            case .playing, .paused, .seeking, .ended, .idle, .error:
-                isLoading = false
+            aetherPhase = phase
+            sampleStalledBuffer()
+            isLoading = currentPhaseIsLoading()
+            if case .stalled = phase {
+                watchSourceStall(epoch: scopedEvent.epoch)
+            } else {
+                sourceStallWatch?.cancel()
+                sourceStallWatch = nil
             }
             refreshPlaybackStats(force: true)
             syncIntroSkipPrompt()
         case .playerTime(let playerSeconds):
+            if playerSeconds.isFinite, playheadSample?.seconds != playerSeconds {
+                playheadSample = (playerSeconds, .now)
+            }
             guard !hasReachedEndOfFile,
                   playerSeconds.isFinite,
                   let timeline = aetherPlaybackController.activeSpec?.timeline else { return }
