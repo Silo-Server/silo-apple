@@ -212,8 +212,11 @@ struct MobilePlayerControls: View {
             .accessibilityHint("Rotates the screen without interrupting playback")
             .accessibilityIdentifier("player.rotate")
 
+            // The open and closed glyphs differ only in the padlock's shackle,
+            // so the lock also takes the active tint the quality pill uses.
             controlButton(
-                systemName: orientationCoordinator.isRotationLocked ? "lock.rotation" : "lock.rotation.open"
+                systemName: orientationCoordinator.isRotationLocked ? "lock.rotation" : "lock.rotation.open",
+                tint: orientationCoordinator.isRotationLocked ? Color.white.opacity(0.22) : nil
             ) {
                 orientationCoordinator.toggleRotationLock()
                 viewModel.resumeAutoHide()
@@ -597,14 +600,17 @@ struct MobilePlayerControls: View {
 
     // MARK: - Helpers
 
-    private func controlButton(systemName: String, action: @escaping () -> Void) -> some View {
+    private func controlButton(
+        systemName: String, tint: Color? = nil, action: @escaping () -> Void
+    ) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.white)
+                .contentTransition(.symbolEffect(.replace))
                 .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
         }
-        .buttonStyle(MobilePlayerGlassButtonStyle())
+        .buttonStyle(MobilePlayerGlassButtonStyle(tint: tint))
     }
 
     // MARK: - Sheet identifier
