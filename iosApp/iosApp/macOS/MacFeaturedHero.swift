@@ -16,6 +16,7 @@ struct MacFeaturedHero: View {
     @Environment(AppRouter.self) private var router
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.displayScale) private var displayScale
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
     @State private var index = 0
     @State private var isHovering = false
     /// The logo that has finished loading. Until a title's logo is in, its
@@ -46,8 +47,13 @@ struct MacFeaturedHero: View {
             }
             .clipped()
             .onHover { isHovering = $0 }
-            .task(id: AdvanceTrigger(index: index, isPaused: isHovering || reduceMotion)) {
+            .task(id: AdvanceTrigger(index: index, isPaused: isPaused)) {
                 await advanceAfterDelay()
+            }
+            .onChange(of: section.items.map(\.contentId)) { _, ids in
+                // A reload can shorten the section; keep the label and the
+                // highlight on a title that still exists.
+                if index >= ids.count { index = max(0, ids.count - 1) }
             }
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Featured")
@@ -128,14 +134,17 @@ struct MacFeaturedHero: View {
             }
 
             HStack(spacing: SiloTheme.spacing) {
-                Button { play(item) } label: {
-                    Label("Play", systemImage: "play.fill")
-                        .font(.siloBody.weight(.semibold))
-                        .foregroundStyle(Color.siloBackground)
-                        .padding(.horizontal, SiloTheme.largePadding)
-                        .padding(.vertical, SiloTheme.spacing)
-                        .background(Capsule().fill(Color.siloPrimary))
-                        .contentShape(Capsule())
+                // A series has nothing to play directly; More Info opens it.
+                if SiloMediaType.isDirectlyPlayable(item.type) {
+                    Button { play(item) } label: {
+                        Label("Play", systemImage: "play.fill")
+                            .font(.siloBody.weight(.semibold))
+                            .foregroundStyle(Color.siloBackground)
+                            .padding(.horizontal, SiloTheme.largePadding)
+                            .padding(.vertical, SiloTheme.spacing)
+                            .background(Capsule().fill(Color.siloPrimary))
+                            .contentShape(Capsule())
+                    }
                 }
                 Button { openDetail(item) } label: {
                     Label("More Info", systemImage: "info.circle")
@@ -285,8 +294,14 @@ struct MacFeaturedHero: View {
         let isPaused: Bool
     }
 
+    /// The title must not change under someone reading or operating the
+    /// hero: under the pointer, with Reduce Motion, or with VoiceOver on.
+    private var isPaused: Bool {
+        isHovering || reduceMotion || voiceOverEnabled
+    }
+
     private func advanceAfterDelay() async {
-        guard !isHovering, !reduceMotion, section.items.count > 1 else { return }
+        guard !isPaused, section.items.count > 1 else { return }
         try? await Task.sleep(for: .seconds(SiloTheme.macHeroAdvanceSeconds))
         guard !Task.isCancelled else { return }
         step(1)
@@ -312,10 +327,6 @@ struct MacFeaturedHero: View {
     }
 
     private func play(_ item: SectionItem) {
-        guard SiloMediaType.isDirectlyPlayable(item.type) else {
-            openDetail(item)
-            return
-        }
         router.presentPlayer(
             contentId: item.contentId,
             resumePosition: item.positionSeconds,
