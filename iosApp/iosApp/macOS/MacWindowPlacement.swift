@@ -15,6 +15,10 @@ struct MacWindowPlacement: NSViewRepresentable {
         private static let frameKey = "mac.window.lastFrame"
         private var observers: [NSObjectProtocol] = []
 
+        deinit {
+            observers.forEach(NotificationCenter.default.removeObserver)
+        }
+
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             observers.forEach(NotificationCenter.default.removeObserver)
@@ -33,7 +37,9 @@ struct MacWindowPlacement: NSViewRepresentable {
         private func restoreFrame(of window: NSWindow) {
             guard let saved = UserDefaults.standard.string(forKey: Self.frameKey) else { return }
             let frame = NSRectFromString(saved)
-            guard frame.width > 0, frame.height > 0 else { return }
+            // A window the system reopened in full screen keeps that frame.
+            guard frame.width > 0, frame.height > 0,
+                  !window.styleMask.contains(.fullScreen) else { return }
 
             let centre = NSPoint(x: frame.midX, y: frame.midY)
             if NSScreen.screens.contains(where: { $0.frame.contains(centre) }) {
@@ -54,7 +60,9 @@ struct MacWindowPlacement: NSViewRepresentable {
         private func trackFrame(of window: NSWindow) {
             let names: [Notification.Name] = [
                 NSWindow.didMoveNotification,
-                NSWindow.didEndLiveResizeNotification,
+                // Covers zoom, tiling and programmatic resizes, which do not
+                // end a live resize and may not move the origin.
+                NSWindow.didResizeNotification,
                 NSWindow.didChangeScreenNotification,
             ]
             observers = names.map { name in
