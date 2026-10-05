@@ -63,7 +63,8 @@ final class PlaybackSessionSummaryRecorder {
 
     private let lock = NSLock()
     private let now: () -> TimeInterval
-    private let emit: (PlaybackSessionSummary, TimeInterval) -> Void
+    /// Receives each summary, the time it was taken, and the session's owner.
+    private let emit: (PlaybackSessionSummary, TimeInterval, String?) -> Void
     private let currentOwner: () -> String?
     private var sessionID: String?
     /// Who was signed in when the session began (see `currentOwner`).
@@ -79,7 +80,7 @@ final class PlaybackSessionSummaryRecorder {
     /// form `diagnosticsOwner(binding:profileID:)` builds; nil when unknown.
     init(
         now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
-        emit: @escaping (PlaybackSessionSummary, TimeInterval) -> Void = PlaybackSessionSummaryRecorder.recordDiagnostics,
+        emit: @escaping (PlaybackSessionSummary, TimeInterval, String?) -> Void = PlaybackSessionSummaryRecorder.recordDiagnostics,
         currentOwner: @escaping () -> String? = PlaybackSessionSummaryRecorder.currentDiagnosticsOwner
     ) {
         self.now = now
@@ -272,7 +273,7 @@ final class PlaybackSessionSummaryRecorder {
     private func emitLocked(at time: TimeInterval) {
         guard let summary else { return }
         lastEmitAt = time
-        emit(Self.folding(openWaitLocked, into: summary, at: time), time)
+        emit(Self.folding(openWaitLocked, into: summary, at: time), time, owner)
     }
 }
 
@@ -336,23 +337,42 @@ extension PlaybackSessionSummaryRecorder {
     /// Record the summary as a playback breadcrumb, which the journal keeps
     /// across launches so an abnormal-exit report carries the crashed run's
     /// latest summary.
-    static func recordDiagnostics(_ summary: PlaybackSessionSummary, at now: TimeInterval) {
-        let attrs = summary.diagnosticsAttributes(at: now)
-        diagnosticsQueue.async {
+    static func recordDiagnostics(_ summary: PlaybackSessionSummary, at now: TimeInterval, owner: String?) {
+        diagnosticsQueue.async(execute: diagnosticsWrite(for: summary, at: now, owner: owner))
+    }
+
+    /// The breadcrumb write for a summary that `owner`'s session produced.
+    /// It runs later on `diagnosticsQueue`, and writes nothing if by then the
+    /// active owner changed or evidence was erased: a profile purge must not
+    /// be followed by the old profile's summary landing under the new one.
+    static func diagnosticsWrite(
+        for summary: PlaybackSessionSummary,
+        at now: TimeInterval,
+        owner: String?,
+        currentEpoch: @escaping () -> DiagnosticsEvidenceEpoch = DiagnosticsCoordinator.currentEvidenceEpoch,
+        write: @escaping (DiagnosticsLogLevel, [String: DiagLogAttributeValue]) -> Void = { level, attrs in
             DiagTrace.breadcrumb(
                 .essential,
-                level: summary.errorCount > 0 || summary.rebufferCount > 0 ? .warning : .info,
+                level: level,
                 category: .playback,
                 tag: PlaybackSessionSummary.diagnosticsTag,
                 message: PlaybackSessionSummary.diagnosticsMessage,
                 attrs: attrs
             )
         }
+    ) -> () -> Void {
+        let attrs = summary.diagnosticsAttributes(at: now)
+        let level: DiagnosticsLogLevel = summary.errorCount > 0 || summary.rebufferCount > 0 ? .warning : .info
+        let epoch = DiagnosticsEvidenceEpoch(owner: owner, erasureGeneration: currentEpoch().erasureGeneration)
+        return {
+            guard currentEpoch() == epoch else { return }
+            write(level, attrs)
+        }
     }
 }
 #else
 extension PlaybackSessionSummaryRecorder {
-    static func recordDiagnostics(_ summary: PlaybackSessionSummary, at now: TimeInterval) {}
+    static func recordDiagnostics(_ summary: PlaybackSessionSummary, at now: TimeInterval, owner: String?) {}
     static func currentDiagnosticsOwner() -> String? { nil }
 }
 #endif

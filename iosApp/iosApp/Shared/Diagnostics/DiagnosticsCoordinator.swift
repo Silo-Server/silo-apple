@@ -275,6 +275,16 @@ enum HostedDiagnosticsHTTPFailureDisposition: Equatable {
     case invalidLocalBundle
 }
 
+/// Who diagnostics evidence captured now belongs to: the active binding and
+/// profile (`PlaybackSessionSummaryRecorder.diagnosticsOwner`) and how many
+/// times captured evidence has been erased. Work queued with one writes
+/// nothing if the epoch has moved by the time it runs, so evidence cannot
+/// outlive a profile switch or a Turn Off and Delete.
+struct DiagnosticsEvidenceEpoch: Equatable {
+    let owner: String?
+    let erasureGeneration: UInt64
+}
+
 actor DiagnosticsCoordinator {
     static let shared = DiagnosticsCoordinator()
 
@@ -359,6 +369,10 @@ actor DiagnosticsCoordinator {
     /// change can start a new `/profiles` request before the old one completes;
     /// only the newest generation may publish into the synchronous capture gate.
     nonisolated(unsafe) private static var activeProfileEligibilityGeneration: UInt64 = 0
+    /// Bumped by every erasure of captured evidence (`purgeBreadcrumbJournal`).
+    /// Its own lock: some purges run while `breadcrumbContextLock` is held.
+    nonisolated(unsafe) private static var evidenceErasureGeneration: UInt64 = 0
+    nonisolated private static let evidenceErasureLock = NSLock()
     /// Memo of the synchronous capture gate. Not a second source of truth: see
     /// `breadcrumbCaptureEnabled()`. Invalidated by every mutation of the state
     /// above, so it never survives a consent, destination, or profile boundary.
@@ -2315,8 +2329,16 @@ actor DiagnosticsCoordinator {
     /// it. Folding the discard in here rather than at each call site also
     /// covers the "Never" path, which reaches this from the consent store.
     nonisolated static func purgeBreadcrumbJournal() {
+        evidenceErasureLock.withLock { evidenceErasureGeneration &+= 1 }
         breadcrumbJournal.purge()
         discardEarlyBootBuffer()
+    }
+
+    nonisolated static func currentEvidenceEpoch() -> DiagnosticsEvidenceEpoch {
+        DiagnosticsEvidenceEpoch(
+            owner: PlaybackSessionSummaryRecorder.currentDiagnosticsOwner(),
+            erasureGeneration: evidenceErasureLock.withLock { evidenceErasureGeneration }
+        )
     }
 
     #if DEBUG

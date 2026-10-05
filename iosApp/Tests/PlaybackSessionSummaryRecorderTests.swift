@@ -27,7 +27,7 @@ final class PlaybackSessionSummaryRecorderTests: XCTestCase {
     private func makeRecorder() -> PlaybackSessionSummaryRecorder {
         PlaybackSessionSummaryRecorder(
             now: { [unowned self] in time },
-            emit: { [unowned self] summary, _ in emitted.append(summary) },
+            emit: { [unowned self] summary, _, _ in emitted.append(summary) },
             currentOwner: { [unowned self] in currentOwner }
         )
     }
@@ -233,5 +233,46 @@ final class PlaybackSessionSummaryRecorderTests: XCTestCase {
         XCTAssertEqual(finished.stallCount, 1)
         XCTAssertEqual(finished.stallTotalMs, 50_000)
         XCTAssertEqual(PlaybackSessionSummaryRecorder.latestSummary(owner: Self.owner, now: time + 60)?.summary, finished)
+    }
+
+    // MARK: - Queued breadcrumb write
+
+    /// The breadcrumb is written on a background queue. A write queued before
+    /// a profile purge, or before the active profile changed, must not land in
+    /// the journal afterwards under whoever is active then.
+    func testQueuedSummaryWriteIsDroppedAfterAPurgeOrOwnerChange() {
+        let summary = PlaybackSessionSummary(playMethod: "original_http", startedAt: 100)
+        let other = PlaybackSessionSummaryRecorder.diagnosticsOwner(binding: Self.binding, profileID: "profile-b")
+        var epoch = DiagnosticsEvidenceEpoch(owner: Self.owner, erasureGeneration: 7)
+        var writes = 0
+        func queuedWrite() -> () -> Void {
+            PlaybackSessionSummaryRecorder.diagnosticsWrite(
+                for: summary,
+                at: 160,
+                owner: Self.owner,
+                currentEpoch: { epoch },
+                write: { _, _ in writes += 1 }
+            )
+        }
+
+        let unchanged = queuedWrite()
+        unchanged()
+        XCTAssertEqual(writes, 1)
+
+        let beforePurge = queuedWrite()
+        epoch = DiagnosticsEvidenceEpoch(owner: Self.owner, erasureGeneration: 8)
+        beforePurge()
+        XCTAssertEqual(writes, 1, "a purge ran before the queued write")
+
+        let beforeSwitch = queuedWrite()
+        epoch = DiagnosticsEvidenceEpoch(owner: other, erasureGeneration: 8)
+        beforeSwitch()
+        XCTAssertEqual(writes, 1, "another profile became active before the queued write")
+    }
+
+    func testPurgingTheJournalMovesTheEvidenceEpoch() {
+        let before = DiagnosticsCoordinator.currentEvidenceEpoch()
+        DiagnosticsCoordinator.purgeBreadcrumbJournal()
+        XCTAssertNotEqual(DiagnosticsCoordinator.currentEvidenceEpoch(), before)
     }
 }
