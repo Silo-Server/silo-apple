@@ -87,10 +87,18 @@ struct AetherSubtitleOverlay: View {
             guard needsEngineClock else { return }
             aetherSourceTime = time
         }
-        // A delay change or timeline switch moves every cue clock at once.
+        // A delay change or timeline switch moves every cue clock at once. A
+        // switch can start reading the engine clock, whose ticks were skipped
+        // while nothing needed them, so it resyncs before repositioning.
         .onChange(of: subtitleSyncMs) { _, _ in repositionCursors() }
-        .onChange(of: primaryUsesMovieTimeline) { _, _ in primaryCursor.reposition() }
-        .onChange(of: secondaryUsesMovieTimeline) { _, _ in secondaryCursor.reposition() }
+        .onChange(of: primaryUsesMovieTimeline) { _, _ in
+            aetherSourceTime = engine.clock.sourceTime
+            primaryCursor.reposition()
+        }
+        .onChange(of: secondaryUsesMovieTimeline) { _, _ in
+            aetherSourceTime = engine.clock.sourceTime
+            secondaryCursor.reposition()
+        }
     }
 
     private func repositionCursors() {
