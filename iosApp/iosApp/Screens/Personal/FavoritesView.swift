@@ -128,7 +128,7 @@ struct IOSPersonalMediaPosterLayout: View {
                     }
                     .scrollTargetLayout()
                 }
-                .scrollTargetBehavior(.viewAligned(limitBehavior: .always))
+                .mediaRailScrolling()
                 .scrollPosition(
                     id: rowScrollPositionBinding(for: rowIndex),
                     anchor: .center

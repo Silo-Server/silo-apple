@@ -469,8 +469,10 @@ struct WatchPartyMediaPicker: View {
                         }
                     }
                 }
-                .padding(.horizontal, HomeFeedMetrics.gutter)
+                .scrollTargetLayout()
             }
+            .contentMargins(.horizontal, HomeFeedMetrics.gutter, for: .scrollContent)
+            .mediaRailScrolling()
             .scrollClipDisabled()
         }
     }

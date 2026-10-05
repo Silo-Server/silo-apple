@@ -44,10 +44,12 @@ struct PhoneCastRail: View {
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, SiloTheme.safePadding)
+            .scrollTargetLayout()
             .padding(.vertical, 4)
             .phoneMediaRailBounds()
         }
+        .contentMargins(.horizontal, SiloTheme.safePadding, for: .scrollContent)
+        .mediaRailScrolling()
     }
 
     @ViewBuilder

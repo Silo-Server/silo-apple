@@ -37,9 +37,11 @@ struct RequestCardRail<Item: Identifiable, Card: View>: View {
             #if os(tvOS)
             .padding(.vertical, RequestsUI.railVerticalPadding)
             #else
+            .scrollTargetLayout()
             .phoneMediaRailBounds()
             #endif
         }
+        .mediaRailScrolling()
         #if os(tvOS)
         .scrollClipDisabled()
         // Pull the rail back to the header rhythm the padding pushed out.

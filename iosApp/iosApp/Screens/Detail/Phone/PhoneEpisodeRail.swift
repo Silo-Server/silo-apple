@@ -59,7 +59,7 @@ struct PhoneEpisodeRail: View {
             .phoneMediaRailBounds()
         }
         .contentMargins(.horizontal, HorizontalMediaRailLayout.isPhone ? SiloTheme.safePadding : 0, for: .scrollContent)
-        .scrollTargetBehavior(HorizontalMediaRailLayout.targetBehavior)
+        .mediaRailScrolling()
         .scrollPosition(id: $visibleEpisodeId, anchor: HorizontalMediaRailLayout.scrollAnchor)
         .onAppear {
             visibleEpisodeId = currentContentId ?? episodes.first?.contentId

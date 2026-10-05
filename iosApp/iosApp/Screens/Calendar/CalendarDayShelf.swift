@@ -76,11 +76,19 @@ struct CalendarDayShelf: View {
                     )
                 }
             }
+            #if os(tvOS)
             .padding(.horizontal, SiloTheme.safePadding)
+            #else
+            .scrollTargetLayout()
+            #endif
             .padding(.vertical, verticalCardPadding)
             .phoneMediaRailBounds()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        #if !os(tvOS)
+        .contentMargins(.horizontal, SiloTheme.safePadding, for: .scrollContent)
+        .mediaRailScrolling()
+        #endif
         #if os(tvOS)
         .scrollClipDisabled()
         .applyDefaultFirstEventFocus(

@@ -67,7 +67,7 @@ struct HomeFeedRow: View {
     @ViewBuilder
     private var rowScroller: some View {
         cardsScroll
-            .scrollTargetBehavior(HorizontalMediaRailLayout.targetBehavior)
+            .mediaRailScrolling()
             .scrollPosition(id: $visibleItemId, anchor: HorizontalMediaRailLayout.scrollAnchor)
             .environment(\.itemDetailBrowseSource, detailBrowseSource)
             .onAppear {

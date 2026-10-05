@@ -366,12 +366,17 @@ struct MediaRow: View {
                 }
             }
             #if !os(tvOS)
-            .padding(.horizontal, SiloTheme.safePadding)
+            .scrollTargetLayout()
             #endif
             .padding(.vertical, verticalCardPadding)
             .phoneMediaRailBounds()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        #if !os(tvOS)
+        // A content margin, not padding, so settled cards keep the gutter.
+        .contentMargins(.horizontal, SiloTheme.safePadding, for: .scrollContent)
+        .mediaRailScrolling()
+        #endif
         #if os(tvOS)
         // Keep the gutter outside the scroll view. With content margins,
         // tvOS adds the gutter to the resting offset again when focus leaves

@@ -146,10 +146,12 @@ struct PhonePosterRailCards: View {
                     .accessibilityLabel(item.accessibilityDescription)
                 }
             }
-            .padding(.horizontal, SiloTheme.safePadding)
+            .scrollTargetLayout()
             .padding(.vertical, 4)
             .phoneMediaRailBounds()
         }
+        .contentMargins(.horizontal, SiloTheme.safePadding, for: .scrollContent)
+        .mediaRailScrolling()
     }
 }
 
