@@ -742,7 +742,10 @@ struct LibraryCollectionDetailView: View {
             }
         }
         .siloPageBackground()
-        .environment(\.browseLibraryId, libraryId)
+        // Collection items can live in other libraries, and a library-scoped
+        // item read 404s for those. Keep cards and play actions unscoped, like
+        // the web client.
+        .environment(\.browseLibraryId, nil)
         .navigationTitle(title ?? "Collection")
         .siloNavigationTitleDisplayMode(.large)
         .task(id: "\(libraryId)-\(collectionId)") {
@@ -766,7 +769,7 @@ struct LibraryCollectionDetailView: View {
                     hasMore: hasMore,
                     forcesThreeColumnsOnPhone: true,
                     onItemTap: { item in
-                        router.navigate(to: .itemDetail(browseItem: item, libraryId: libraryId))
+                        router.navigate(to: .itemDetail(browseItem: item))
                     },
                     onLoadMore: {
                         Task { await loadMoreIfNeeded() }
