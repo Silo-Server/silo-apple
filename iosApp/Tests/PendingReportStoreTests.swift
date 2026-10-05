@@ -251,6 +251,56 @@ final class PendingReportStoreTests: XCTestCase {
         XCTAssertNil(store.report(id: first.id, now: start)?.manifest.report.occurrenceCount)
     }
 
+    /// An upload builds from the report reloaded when it starts, so a repeat
+    /// counted after the caller loaded its copy is sent, whether or not the
+    /// consent on the manifest changes.
+    func testPreparingDeliveryKeepsRepeatsCountedAfterTheCallerLoadedTheReport() throws {
+        for consent in [
+            DiagnosticsManifest.Consent(mode: .prompt, noticeVersion: 1),
+            DiagnosticsManifest.Consent(mode: .always, noticeVersion: 2),
+        ] {
+            let store = try makeStore()
+            let binding = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "42")
+            let start = Date(timeIntervalSince1970: 100_000)
+            let loaded = try store.save(makeCapture(binding: binding, fingerprint: "event-1", capturedAt: start, issue: "issue-a"))
+            _ = try store.save(makeCapture(
+                binding: binding,
+                fingerprint: "event-2",
+                capturedAt: start.addingTimeInterval(60),
+                issue: "issue-a"
+            ))
+
+            let prepared = try store.preparingDelivery(of: loaded, consent: consent)
+
+            XCTAssertEqual(prepared.manifest.report.occurrenceCount, 2)
+            XCTAssertEqual(prepared.manifest.consent, consent)
+            let stored = try XCTUnwrap(store.report(id: loaded.id, now: start))
+            XCTAssertEqual(stored.manifest, prepared.manifest)
+        }
+    }
+
+    /// Once an upload has started building, a repeat starts a new report: the
+    /// count already read cannot grow, and counting it there would mark the
+    /// repeat seen without ever sending it.
+    func testRepeatDuringDeliveryPreparationStartsANewReport() throws {
+        let store = try makeStore()
+        let binding = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "42")
+        let start = Date(timeIntervalSince1970: 100_000)
+        let first = try store.save(makeCapture(binding: binding, fingerprint: "event-1", capturedAt: start, issue: "issue-a"))
+
+        let prepared = try store.preparingDelivery(of: first, consent: first.manifest.consent)
+        let repeated = try store.save(makeCapture(
+            binding: binding,
+            fingerprint: "event-2",
+            capturedAt: start.addingTimeInterval(60),
+            issue: "issue-a"
+        ))
+
+        XCTAssertNotEqual(repeated.id, first.id)
+        XCTAssertNil(repeated.manifest.report.occurrenceCount)
+        XCTAssertEqual(store.report(id: first.id, now: start)?.manifest, prepared.manifest)
+    }
+
     // MARK: - Eviction order
 
     func testFullStoreEvictsAppErrorsBeforeCrashesThenOldest() throws {

@@ -38,7 +38,10 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         let report = try store.save(makeCapture(noticeVersion: 1, consentMode: .always))
         XCTAssertEqual(report.manifest.consent.mode, .always)
 
-        let updated = store.updatingConsent(report, mode: .prompt, noticeVersion: 2)
+        let updated = try store.preparingDelivery(
+            of: report,
+            consent: DiagnosticsManifest.Consent(mode: .prompt, noticeVersion: 2)
+        )
         XCTAssertEqual(updated.manifest.consent.mode, .prompt)
         XCTAssertEqual(updated.manifest.consent.noticeVersion, 2)
         // Evidence stays frozen: the captured timestamp is unchanged.

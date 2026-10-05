@@ -103,6 +103,10 @@ struct PendingReportState: Codable, Equatable {
     /// reports live 7 days, so the same crash would re-prompt on a later
     /// foreground.
     var promptDeclined: Bool
+    /// An upload of this report has started building from its manifest, so a
+    /// later repeat of the issue must not change the count on disk: it would
+    /// be marked seen but never sent. Set by `preparingDelivery`.
+    var repeatsFrozen: Bool
     var hostedEnvelopeGeneration: String?
     var hostedConsentRefreshRequired: Bool
     var hostedRemoteShortID: String?
@@ -124,11 +128,12 @@ struct PendingReportState: Codable, Equatable {
         hostedRemoteShortID != nil && hostedRejectionCode == nil
     }
 
-    /// Delivery has not started, so the manifest can still count a repeat. A
-    /// built hosted envelope, a collector ID, or a self-hosted upload that may
-    /// have been sent has frozen what the destination receives.
+    /// Delivery has not started, so the manifest can still count a repeat. An
+    /// upload that began building, a built hosted envelope, a collector ID, or
+    /// a self-hosted upload that may have been sent has frozen what the
+    /// destination receives.
     var acceptsRepeats: Bool {
-        hostedEnvelopeGeneration == nil && hostedRemoteShortID == nil && !deliveryUncertain
+        !repeatsFrozen && hostedEnvelopeGeneration == nil && hostedRemoteShortID == nil && !deliveryUncertain
     }
 
     enum CodingKeys: String, CodingKey {
@@ -137,6 +142,7 @@ struct PendingReportState: Codable, Equatable {
         case serverRejected = "server_rejected"
         case deliveryUncertain = "delivery_uncertain"
         case promptDeclined = "prompt_declined"
+        case repeatsFrozen = "repeats_frozen"
         case hostedEnvelopeGeneration = "hosted_envelope_generation"
         case hostedConsentRefreshRequired = "hosted_consent_refresh_required"
         case hostedRemoteShortID = "hosted_remote_short_id"
@@ -149,6 +155,7 @@ struct PendingReportState: Codable, Equatable {
         serverRejected: Bool = false,
         deliveryUncertain: Bool = false,
         promptDeclined: Bool = false,
+        repeatsFrozen: Bool = false,
         hostedEnvelopeGeneration: String? = nil,
         hostedConsentRefreshRequired: Bool = false,
         hostedRemoteShortID: String? = nil,
@@ -159,6 +166,7 @@ struct PendingReportState: Codable, Equatable {
         self.serverRejected = serverRejected
         self.deliveryUncertain = deliveryUncertain
         self.promptDeclined = promptDeclined
+        self.repeatsFrozen = repeatsFrozen
         self.hostedEnvelopeGeneration = hostedEnvelopeGeneration
         self.hostedConsentRefreshRequired = hostedConsentRefreshRequired
         self.hostedRemoteShortID = hostedRemoteShortID
@@ -172,6 +180,7 @@ struct PendingReportState: Codable, Equatable {
         serverRejected = try container.decodeIfPresent(Bool.self, forKey: .serverRejected) ?? false
         deliveryUncertain = try container.decodeIfPresent(Bool.self, forKey: .deliveryUncertain) ?? false
         promptDeclined = try container.decodeIfPresent(Bool.self, forKey: .promptDeclined) ?? false
+        repeatsFrozen = try container.decodeIfPresent(Bool.self, forKey: .repeatsFrozen) ?? false
         hostedEnvelopeGeneration = try container.decodeIfPresent(
             String.self,
             forKey: .hostedEnvelopeGeneration
@@ -843,39 +852,41 @@ final class PendingReportStore {
         updateState(of: report) { $0.promptDeclined = true }
     }
 
-    /// Rewrites the stored manifest's consent `mode` and `notice_version` so an
-    /// upload built from this report reflects the current consent record. If
-    /// the server's notice advanced after capture and demoted the account
+    /// Starts building an upload of `report` and returns the report to build
+    /// it from. Reloads the report under the lock, stops it counting repeats
+    /// (later ones start a new pending report), and rewrites the manifest's
+    /// consent from the current consent record. Never build from the
+    /// caller's snapshot instead: a repeat counted after it was loaded would
+    /// be marked seen but never sent.
+    ///
+    /// Both consent `mode` and `notice_version` are refreshed. If the
+    /// server's notice advanced after capture and demoted the account
     /// Always→Ask, refreshing only the notice version would leave the manifest
-    /// claiming `mode = always` for the new notice; refreshing the mode too
-    /// keeps it honest. Everything else — crash evidence, logs, device summary
-    /// — stays frozen as captured. Returns the updated report, or the original
-    /// if nothing changed or the rewrite failed.
-    @discardableResult
-    func updatingConsent(_ report: PendingReport, mode: ConsentMode, noticeVersion: Int) -> PendingReport {
+    /// claiming `mode = always` for the new notice. Everything else — crash
+    /// evidence, logs, device summary — stays frozen as captured.
+    func preparingDelivery(of report: PendingReport, consent: DiagnosticsManifest.Consent) throws -> PendingReport {
         lock.lock()
         defer { lock.unlock() }
 
-        guard report.manifest.consent.mode != mode
-            || report.manifest.consent.noticeVersion != noticeVersion else {
-            return report
+        guard let current = loadReport(from: report.directoryURL) else {
+            throw DiagnosticsStoreError.unreadableReport(report.id)
         }
-        var manifest = report.manifest
-        manifest.consent = DiagnosticsManifest.Consent(
-            mode: mode,
-            noticeVersion: noticeVersion
-        )
-        do {
-            try writeJSON(manifest, to: report.directoryURL.appendingPathComponent("manifest.json"))
-        } catch {
-            return report
+        var state = current.state
+        if !state.repeatsFrozen {
+            state.repeatsFrozen = true
+            try writeJSON(state, to: current.directoryURL.appendingPathComponent("state.json"))
+        }
+        var manifest = current.manifest
+        if manifest.consent != consent {
+            manifest.consent = consent
+            try writeJSON(manifest, to: current.directoryURL.appendingPathComponent("manifest.json"))
         }
         return PendingReport(
-            id: report.id,
-            directoryURL: report.directoryURL,
-            binding: report.binding,
+            id: current.id,
+            directoryURL: current.directoryURL,
+            binding: current.binding,
             manifest: manifest,
-            state: report.state
+            state: state
         )
     }
 
