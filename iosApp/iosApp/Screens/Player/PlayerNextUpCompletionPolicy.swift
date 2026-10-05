@@ -35,7 +35,8 @@ enum PlayerNextUpCompletionPolicy {
     /// `skippedCredits` means the viewer skipped credits that run to the end
     /// of the file. The credits keep playing, but the item is finished, as a
     /// jump to EOF would have made it. An end of file that stopped short of
-    /// the duration is a lost source, not a finish.
+    /// the duration is a lost source, not a finish, even inside the prompt
+    /// window: the lost-source postroll shows Next Up too.
     static func shouldFinalizeAsCompleted(
         isNextUpPresented: Bool,
         hasReachedEndOfFile: Bool,
@@ -47,9 +48,8 @@ enum PlayerNextUpCompletionPolicy {
         if skippedCredits {
             return true
         }
-        if hasReachedEndOfFile,
-           PlayerEndOfFilePolicy.isFinish(position: currentTime, duration: duration) {
-            return true
+        if hasReachedEndOfFile {
+            return PlayerEndOfFilePolicy.isFinish(position: currentTime, duration: duration)
         }
         guard isNextUpPresented else { return false }
         return isInPromptWindow(

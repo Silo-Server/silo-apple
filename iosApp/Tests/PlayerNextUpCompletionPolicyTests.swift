@@ -105,6 +105,46 @@ final class PlayerNextUpCompletionPolicyTests: XCTestCase {
         XCTAssertEqual(position, 1_200)
     }
 
+    /// The lost-source postroll shows Next Up, so a drop inside the prompt
+    /// window must not count as reaching the prompt.
+    func testPrematureEndOfFileInsideThePromptWindowKeepsTheResumePoint() {
+        XCTAssertFalse(
+            PlayerNextUpCompletionPolicy.shouldFinalizeAsCompleted(
+                isNextUpPresented: true,
+                hasReachedEndOfFile: true,
+                currentTime: 175,
+                duration: 200,
+                promptSeconds: 30
+            )
+        )
+        let position = PlayerNextUpCompletionPolicy.progressPosition(
+            isNextUpPresented: true,
+            hasReachedEndOfFile: true,
+            currentTime: 175,
+            duration: 200,
+            promptSeconds: 30
+        )
+        XCTAssertEqual(position, 175)
+    }
+
+    /// A late reopen that ends again at once resolves to a finish, and the
+    /// end-of-playback path moves the playhead to the duration before
+    /// anything reads completion.
+    func testLateStalledReopenFinishStillFinalizes() {
+        var budget = PlayerPrematureEndReopenBudget()
+        XCTAssertEqual(budget.resolveEnd(position: 3_580, duration: 3_600, skippedCredits: false), .reopen)
+        XCTAssertEqual(budget.resolveEnd(position: 3_580, duration: 3_600, skippedCredits: false), .finish)
+        XCTAssertTrue(
+            PlayerNextUpCompletionPolicy.shouldFinalizeAsCompleted(
+                isNextUpPresented: true,
+                hasReachedEndOfFile: true,
+                currentTime: 3_600,
+                duration: 3_600,
+                promptSeconds: 30
+            )
+        )
+    }
+
     func testEndOfFileStillFinalizesAfterSkippingCreditsToTheEnd() {
         XCTAssertTrue(
             PlayerNextUpCompletionPolicy.shouldFinalizeAsCompleted(
