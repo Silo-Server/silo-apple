@@ -139,6 +139,10 @@ final class ResponseCache {
     /// Identity boundary that keeps the saved snapshots: a remote-playback
     /// handoff and its end. The owner's snapshots stay for their next launch.
     func clearMemory() {
+        // Every key, so a fetch that began under the previous identity
+        // cannot repopulate the cache after the boundary.
+        writeToken &+= 1
+        prefixInvalidations[""] = writeToken
         entries.removeAll()
         seededScope = nil
     }
@@ -148,6 +152,8 @@ final class ResponseCache {
     /// launch restoring that profile seeds from right after. Invalidations
     /// use `removeAll(withPrefix:)` instead.
     func clearMemory(withPrefix prefix: String) {
+        writeToken &+= 1
+        prefixInvalidations[prefix] = writeToken
         for key in entries.keys where key.hasPrefix(prefix) {
             entries.removeValue(forKey: key)
         }
