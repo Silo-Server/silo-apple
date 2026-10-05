@@ -72,7 +72,32 @@ final class TrackLabelsTests: XCTestCase {
             XCTAssertNil(TrackLabels.audioTitle(codecTitle), codecTitle)
         }
         for title in ["Commentary by Isaac", "Midtsommar Director's Cut", "Flack Interview"] {
-            XCTAssertNotNil(TrackLabels.audioTitle(title), title)
+            XCTAssertEqual(TrackLabels.audioTitle(title), title)
         }
+    }
+
+    /// A role named alongside the codec is the part worth showing; without
+    /// it, "Main AAC" and "Director Commentary AAC" read the same.
+    func testAudioTitleKeepsTheRoleBesideTheCodec() {
+        let cases: [(String, String)] = [
+            ("Main AAC", "Main"),
+            ("Director Commentary AAC", "Director Commentary"),
+            ("Commentary (DTS-HD MA 5.1)", "Commentary"),
+            ("Descriptive Audio - Dolby Digital Plus 5.1", "Descriptive Audio"),
+            ("AAC2.0 Isolated Score", "Isolated Score"),
+        ]
+        for (title, expected) in cases {
+            XCTAssertEqual(TrackLabels.audioTitle(title), expected, title)
+        }
+        for codecTitle in ["DTS-HD Master Audio 7.1", "DTS:X", "Dolby Digital Plus 5.1", "DD+ 5.1", "Stereo", "6ch", "atsc a/52b (ac-3, e-ac-3)"] {
+            XCTAssertNil(TrackLabels.audioTitle(codecTitle), codecTitle)
+        }
+
+        let commentary = playerTrack(kind: .audio, title: "Director Commentary AAC", lang: "eng", codec: "aac", channels: 2)
+        let main = playerTrack(kind: .audio, title: "Main AAC", lang: "eng", codec: "aac", channels: 2)
+        XCTAssertEqual(commentary.attributesLabel, "Director Commentary · AAC · Stereo")
+        XCTAssertEqual(main.attributesLabel, "Main · AAC · Stereo")
+        // What is left is only the language the row already leads with.
+        XCTAssertNil(playerTrack(kind: .audio, title: "English AC3 5.1", lang: "eng", codec: "ac3", channels: 6).detailLabel)
     }
 }

@@ -83,17 +83,28 @@ enum TrackLabels {
         }
     }
 
-    /// An audio title worth showing, or nil when it only restates the codec.
+    /// An audio title without the codec and channel layout the row already
+    /// shows: "Director Commentary AAC" reads "Director Commentary", and
+    /// "DTS-HD MA 5.1" leaves nothing, so it is nil.
     static func audioTitle(_ title: String?) -> String? {
         guard let title = nonEmpty(title) else { return nil }
-        // Whole words only, so "Commentary by Isaac" keeps its title while
-        // "AAC2.0" and "DTSHD" still count as codec names.
-        let technicalTerm = #"\b(atsc|a/52|e?-?ac-?3|truehd|dts(-?hd)?|aac|flac)(?![a-z])"#
-        if title.range(of: technicalTerm, options: [.regularExpression, .caseInsensitive]) != nil {
-            return nil
-        }
-        return displayTitle(title)
+        let remainder = title
+            .replacingOccurrences(of: audioTechnicalTerm, with: " ", options: [.regularExpression, .caseInsensitive])
+            .replacingOccurrences(of: #"\([^\p{L}\p{N}]*\)|\[[^\p{L}\p{N}]*\]"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-_:/|,.+·").union(.whitespaces))
+        // A lone leftover letter ("X" from "DTS:X") says nothing.
+        guard remainder.filter(\.isLetter).count > 1 else { return nil }
+        return displayTitle(remainder)
     }
+
+    /// Codec names and their qualifiers as whole words, so "Commentary by
+    /// Isaac" keeps its title while "AAC2.0" and "DTSHD" still match; and
+    /// channel layouts such as "5.1" or "6ch".
+    private static let audioTechnicalTerm = #"(?<![0-9.])(?:\d\.\d(?:ch)?|\d+ch)(?![0-9a-z])"#
+        + #"|\b(?:atsc|a/52b?|e?-?ac-?3|truehd|aac|flac|atmos|joc|dd\+?|ddp|stereo|mono|surround"#
+        + #"|dolby|digital(?:\s*plus)?"#
+        + #"|dts(?:-?hd)?(?:[\s:-]*(?:ma|master\s+audio|hra?|high\s+resolution(?:\s+audio)?|es|x))?)(?![a-z])"#
 
     /// A subtitle title worth showing: not a format name, the codec, the
     /// language, or a flag the row already shows (Forced, SDH). "Signs &

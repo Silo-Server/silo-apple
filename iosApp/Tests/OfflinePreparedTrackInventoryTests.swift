@@ -96,7 +96,8 @@ final class OfflinePreparedTrackInventoryTests: XCTestCase {
         XCTAssertEqual(tracks.map(\.title), ["English 5.1", nil, "Commentary"])
         XCTAssertEqual(tracks.map(\.lang), ["eng", "jpn", "en"])
         XCTAssertEqual(tracks.map(\.primaryLabel), ["English", "Japanese", "English"])
-        XCTAssertEqual(tracks.map(\.detailLabel), ["English 5.1", nil, "Commentary"])
+        // "English 5.1" without its layout is just the language the row leads with.
+        XCTAssertEqual(tracks.map(\.detailLabel), [nil, nil, "Commentary"])
         XCTAssertEqual(tracks.map(\.trackId), [1, 2, 3])
         XCTAssertEqual(tracks.map(\.isDefault), [true, false, false])
     }
