@@ -49,6 +49,8 @@ struct MacSidebar: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, SiloTheme.padding)
                 .padding(.vertical, SiloTheme.spacing)
+                // Opaque, so rows scrolling underneath do not show through.
+                .background(Color.siloSidebarCanvas)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             ProfileAvatarMenu(
@@ -63,6 +65,7 @@ struct MacSidebar: View {
             .menuIndicator(.hidden)
             .padding(.horizontal, SiloTheme.padding)
             .padding(.vertical, SiloTheme.smallPadding)
+            .background(Color.siloSidebarCanvas)
             .overlay(alignment: .top) {
                 Divider().overlay(Color.siloDivider)
             }
