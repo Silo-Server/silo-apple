@@ -32,6 +32,17 @@ final class ArtworkRetryPolicyTests: XCTestCase {
         XCTAssertFalse(ArtworkRetryPolicy.isRetryable(URLError(.timedOut)), "unwrapped errors do not come from a load")
     }
 
+    func testActivationRetriesOnlyARetryableFailureWhileLoadingIsAllowed() {
+        let transient = loadingFailed(URLError(.timedOut))
+        XCTAssertTrue(ArtworkRetryPolicy.retriesOnActivation(after: transient, loadingEnabled: true))
+        XCTAssertFalse(ArtworkRetryPolicy.retriesOnActivation(after: transient, loadingEnabled: false))
+        XCTAssertFalse(ArtworkRetryPolicy.retriesOnActivation(after: nil, loadingEnabled: true))
+        XCTAssertFalse(ArtworkRetryPolicy.retriesOnActivation(
+            after: loadingFailed(DataLoader.Error.statusCodeUnacceptable(404)),
+            loadingEnabled: true
+        ))
+    }
+
     private func loadingFailed(_ error: Error) -> Error {
         ImagePipeline.Error.dataLoadingFailed(error: error)
     }

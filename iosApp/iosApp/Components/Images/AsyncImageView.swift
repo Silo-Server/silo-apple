@@ -74,34 +74,17 @@ struct AsyncImageView: View {
                         : .easeOut(duration: SiloTheme.fastDuration)
                 )
             ) { state in
-                if let image = state.image {
-                    image
-                        .resizable()
-                        .aspectRatio(contentMode: contentMode)
-                        .framed(frame)
-                        .clipped()
-                        .transition(.opacity)
-                        .onAppear(perform: notifyImageLoaded)
-                } else if let cached = resolved.cached {
-                    artworkImage(cached.image, frame: frame)
-                } else if state.error != nil && artworkLoadingEnabled {
-                    placeholder(frame: frame)
-                        .overlay {
-                            if placeholderStyle.showsErrorIcon {
-                                Image(systemName: "film")
-                                    .foregroundColor(.siloOnSurface.opacity(0.3))
-                            }
+                loadState(state, resolved: resolved, frame: frame)
+                    // On every state, not just the failure placeholder: a
+                    // failed load can also be showing a smaller cached decode.
+                    .onReceive(NotificationCenter.default.publisher(for: Self.appDidBecomeActive)) { _ in
+                        if ArtworkRetryPolicy.retriesOnActivation(
+                            after: state.error,
+                            loadingEnabled: artworkLoadingEnabled
+                        ) {
+                            retry(resettingBackoff: true)
                         }
-                        // Subscribed only while showing a failure, so idle
-                        // artwork costs nothing.
-                        .onReceive(NotificationCenter.default.publisher(for: Self.appDidBecomeActive)) { _ in
-                            if let error = state.error, ArtworkRetryPolicy.isRetryable(error) {
-                                retry(resettingBackoff: true)
-                            }
-                        }
-                } else {
-                    placeholder(frame: frame)
-                }
+                    }
             }
             // Ahead of warm-ups, which run at normal priority or lower.
             .priority(.high)
@@ -109,6 +92,31 @@ struct AsyncImageView: View {
             .onCompletion { handleCompletion($0) }
             .id(LoadIdentity(url: url, attempt: loadAttempt))
             .onDisappear(perform: cancelPendingRetry)
+        }
+    }
+
+    @ViewBuilder
+    private func loadState(_ state: any LazyImageState, resolved: ResolvedArtwork, frame: CGSize?) -> some View {
+        if let image = state.image {
+            image
+                .resizable()
+                .aspectRatio(contentMode: contentMode)
+                .framed(frame)
+                .clipped()
+                .transition(.opacity)
+                .onAppear(perform: notifyImageLoaded)
+        } else if let cached = resolved.cached {
+            artworkImage(cached.image, frame: frame)
+        } else if state.error != nil && artworkLoadingEnabled {
+            placeholder(frame: frame)
+                .overlay {
+                    if placeholderStyle.showsErrorIcon {
+                        Image(systemName: "film")
+                            .foregroundColor(.siloOnSurface.opacity(0.3))
+                    }
+                }
+        } else {
+            placeholder(frame: frame)
         }
     }
 

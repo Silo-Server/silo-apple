@@ -33,6 +33,13 @@ enum ArtworkRetryPolicy {
         return delays[failedAttempts - 1]
     }
 
+    /// Whether the app becoming active should start a fresh load: the
+    /// current load failed on a retryable error and loading is allowed.
+    static func retriesOnActivation(after error: Error?, loadingEnabled: Bool) -> Bool {
+        guard loadingEnabled, let error else { return false }
+        return isRetryable(error)
+    }
+
     static func isRetryable(_ error: Error) -> Bool {
         guard case let ImagePipeline.Error.dataLoadingFailed(underlying) = error else { return false }
         if case let DataLoader.Error.statusCodeUnacceptable(status) = underlying {
