@@ -131,6 +131,19 @@ final class MacSidebarSectionsTests: XCTestCase {
         )
     }
 
+    func testFallbackLibrariesSelectionMovesToTheFirstLoadedLibrary() {
+        let loaded = sections(menu: nil, libraries: [movies, series]).flatMap(\.items)
+        XCTAssertEqual(
+            resolvedRequestedMainTabDestination(.libraries, visibleDestinations: loaded),
+            .library(1)
+        )
+        let empty = sections(menu: nil, libraries: []).flatMap(\.items)
+        XCTAssertEqual(
+            resolvedRequestedMainTabDestination(.libraries, visibleDestinations: empty),
+            .app(.libraries)
+        )
+    }
+
     func testRemovingTheSelectedLibraryFallsBackToHome() {
         let remaining = sections(menu: nil, libraries: [movies, series]).flatMap(\.items)
         XCTAssertEqual(

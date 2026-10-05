@@ -2414,6 +2414,17 @@ struct MainTabView: View {
             )
         }
         .onChange(of: librarySnapshot) { _, _ in
+            #if os(macOS)
+            // The fallback Libraries row gives way to the real library rows
+            // once the list loads; stay in libraries instead of going Home.
+            if selectedDestinationID == .app(.libraries) {
+                selectedDestinationID = resolvedRequestedMainTabDestination(
+                    .libraries,
+                    visibleDestinations: visibleDestinations
+                )
+                return
+            }
+            #endif
             selectedDestinationID = resolvedVisibleMainTabDestination(
                 selectedDestinationID,
                 visibleDestinations: visibleDestinations
