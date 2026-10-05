@@ -2269,6 +2269,10 @@ struct MainTabView: View {
     @State private var librarySnapshot = MainTabLibrarySnapshot.cachedForCurrentAuthority()
     @State private var librariesStaleSinceBackground = false
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    #if os(macOS)
+    /// The sidebar's state before the player hid it, restored afterwards.
+    @State private var columnVisibilityBeforePlayback: NavigationSplitViewVisibility?
+    #endif
     @State private var iPadColumnVisibility: NavigationSplitViewVisibility = .detailOnly
     @Environment(AudioPlaybackStore.self) private var audioStore
     @Environment(\.scenePhase) private var scenePhase
@@ -2738,6 +2742,26 @@ struct MainTabView: View {
         // strip sits beside the sidebar.
         .containerBackground(Color.siloPageCanvas, for: .window)
         .toolbarBackground(.hidden, for: .windowToolbar)
+        .onChange(of: isPlayerOnScreen) { _, isPlaying in
+            // The player gets the whole window; the sidebar comes back as it
+            // was when playback ends.
+            withAnimation(.easeInOut(duration: SiloTheme.normalDuration)) {
+                if isPlaying {
+                    columnVisibilityBeforePlayback = columnVisibility
+                    columnVisibility = .detailOnly
+                } else if let previous = columnVisibilityBeforePlayback {
+                    columnVisibility = previous
+                    columnVisibilityBeforePlayback = nil
+                }
+            }
+        }
+    }
+
+    private var isPlayerOnScreen: Bool {
+        switch router.visiblePushedRoutes.last {
+        case .player, .playerWithFile, .offlinePlayer: return true
+        default: return false
+        }
     }
     #endif
 

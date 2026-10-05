@@ -84,8 +84,7 @@ private struct MacPlayerScreen: View {
                     MacPlayerControls(
                         viewModel: viewModel,
                         isOptionsPresented: $isOptionsPresented,
-                        selectedOptionsTab: $selectedOptionsTab,
-                        onDismiss: { dismiss() }
+                        selectedOptionsTab: $selectedOptionsTab
                     )
                     .transition(.opacity)
                 }
@@ -169,6 +168,10 @@ private struct MacPlayerScreen: View {
             viewModel.cleanup()
         }
         .preferredColorScheme(.dark)
+        // One header: the window's title bar carries what is playing and its
+        // format beside the back button.
+        .navigationTitle(viewModel.title.isEmpty ? "Silo" : viewModel.title)
+        .navigationSubtitle(viewModel.metadata.badges.joined(separator: " · "))
         .animation(.easeOut(duration: 0.16), value: shouldShowControls)
         .animation(.easeOut(duration: 0.16), value: isOptionsPresented)
         .animation(.easeOut(duration: 0.2), value: viewModel.showIntroSkip)
@@ -187,7 +190,10 @@ private struct MacPlayerScreen: View {
             AetherPlayerSurface(engine: viewModel.aetherEngine)
             MacSubtitleLayer(viewModel: viewModel)
         }
-        .ignoresSafeArea()
+        // Keep the leading inset: ignoring it centred the picture on the
+        // whole window, so part of it sat behind the sidebar and the
+        // letterboxing landed on one side only.
+        .ignoresSafeArea(edges: .vertical)
     }
 
     private func handleCommand(_ command: MacPlayerCommand) {
