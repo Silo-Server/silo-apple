@@ -19,6 +19,10 @@ struct AetherSubtitleOverlay: View {
     @State private var primary: [SubtitleCue] = []
     @State private var secondary: [SubtitleCue] = []
     @State private var aetherSourceTime: Double = 0
+    @State private var primaryCursor = SubtitleCueCursor<SubtitleCue>()
+    @State private var secondaryCursor = SubtitleCueCursor<SubtitleCue>()
+    @State private var livePrimaryCursor = SubtitleCueCursor<LiveSubtitleCue>()
+    @State private var liveSecondaryCursor = SubtitleCueCursor<LiveSubtitleCue>()
     @State private var primaryTrack = LTRAuthoredSubtitles.Track()
     @State private var secondaryTrack = LTRAuthoredSubtitles.Track()
 
@@ -26,6 +30,13 @@ struct AetherSubtitleOverlay: View {
     /// backwards. This preserves Silo's existing subtitle-sync sign contract.
     private var subtitleDelaySeconds: Double {
         Double(subtitleSyncMs) / 1_000
+    }
+
+    /// Only embedded cues read the engine clock. Without them, its ticks
+    /// would rewrite state that nothing reads.
+    private var needsEngineClock: Bool {
+        (!primary.isEmpty && !primaryUsesMovieTimeline)
+            || (!secondary.isEmpty && !secondaryUsesMovieTimeline)
     }
 
     var body: some View {
@@ -38,13 +49,15 @@ struct AetherSubtitleOverlay: View {
                 if assSubtitles.handlesCurrentTrack {
                     ASSSubtitleLayer(session: assSubtitles, videoRect: videoRect, delaySeconds: subtitleDelaySeconds)
                 } else {
-                    cueLayer(activeCues(in: primary, usesMovieTimeline: primaryUsesMovieTimeline),
+                    cueLayer(activeCues(primaryCursor, usesMovieTimeline: primaryUsesMovieTimeline),
                              style: style, videoRect: videoRect, secondary: false)
                 }
-                cueLayer(activeCues(in: secondary, usesMovieTimeline: secondaryUsesMovieTimeline),
+                cueLayer(activeCues(secondaryCursor, usesMovieTimeline: secondaryUsesMovieTimeline),
                          style: style, videoRect: videoRect, secondary: true)
-                liveCueLayer(activeLiveCues(in: livePrimaryCues), style: style, videoRect: videoRect, secondary: false)
-                liveCueLayer(activeLiveCues(in: liveSecondaryCues), style: style, videoRect: videoRect, secondary: true)
+                liveCueLayer(activeLiveCues(livePrimaryCursor, in: livePrimaryCues),
+                             style: style, videoRect: videoRect, secondary: false)
+                liveCueLayer(activeLiveCues(liveSecondaryCursor, in: liveSecondaryCues),
+                             style: style, videoRect: videoRect, secondary: true)
             }
         }
         .allowsHitTesting(false)
@@ -56,6 +69,8 @@ struct AetherSubtitleOverlay: View {
             // cues until the new ones arrive.
             if $0.isEmpty, cueHold.holds(.primary, trackID: engine.activeSubtitleTrackIndex) { return }
             primary = primaryTrack.laidOutAsAuthored($0, trackID: engine.activeSubtitleTrackIndex)
+            primaryCursor.reset(primary)
+            aetherSourceTime = engine.clock.sourceTime
         }
         // The engine publishes no secondary index. It clears the secondary
         // cues whenever it selects a secondary track, so an empty publication
@@ -65,25 +80,43 @@ struct AetherSubtitleOverlay: View {
             if $0.isEmpty, cueHold.holds(.secondary, trackID: nil) { return }
             if $0.isEmpty { secondaryTrack = LTRAuthoredSubtitles.Track() }
             secondary = secondaryTrack.laidOutAsAuthored($0, trackID: nil)
+            secondaryCursor.reset(secondary)
+            aetherSourceTime = engine.clock.sourceTime
         }
-        .onReceive(engine.clock.$sourceTime) { aetherSourceTime = $0 }
+        .onReceive(engine.clock.$sourceTime) { time in
+            guard needsEngineClock else { return }
+            aetherSourceTime = time
+        }
+        // A delay change or timeline switch moves every cue clock at once.
+        .onChange(of: subtitleSyncMs) { _, _ in repositionCursors() }
+        .onChange(of: primaryUsesMovieTimeline) { _, _ in primaryCursor.reposition() }
+        .onChange(of: secondaryUsesMovieTimeline) { _, _ in secondaryCursor.reposition() }
+    }
+
+    private func repositionCursors() {
+        primaryCursor.reposition()
+        secondaryCursor.reposition()
+        livePrimaryCursor.reposition()
+        liveSecondaryCursor.reposition()
     }
 
     static func renderClock(movieTime: Double, engineTime: Double, usesMovieTimeline: Bool, delaySeconds: Double) -> Double {
         (usesMovieTimeline ? movieTime : engineTime) - delaySeconds
     }
 
-    private func activeCues(in cues: [SubtitleCue], usesMovieTimeline: Bool) -> [SubtitleCue] {
+    private func activeCues(_ cursor: SubtitleCueCursor<SubtitleCue>, usesMovieTimeline: Bool) -> [SubtitleCue] {
         // Complete sidecars use original movie timestamps; embedded cues use
         // the served stream's clock, which may be rebased by a server remux.
         let renderClock = Self.renderClock(movieTime: sourceTime, engineTime: aetherSourceTime,
                                           usesMovieTimeline: usesMovieTimeline, delaySeconds: subtitleDelaySeconds)
-        return cues.filter { $0.startTime <= renderClock && renderClock < $0.endTime }
+        return cursor.active(at: renderClock)
     }
 
-    private func activeLiveCues(in cues: [LiveSubtitleCue]) -> [LiveSubtitleCue] {
-        let renderClock = sourceTime - subtitleDelaySeconds
-        return cues.filter { $0.startTime <= renderClock && renderClock < $0.endTime }
+    private func activeLiveCues(
+        _ cursor: SubtitleCueCursor<LiveSubtitleCue>,
+        in cues: [LiveSubtitleCue]
+    ) -> [LiveSubtitleCue] {
+        cursor.active(at: sourceTime - subtitleDelaySeconds, in: cues)
     }
 
     @ViewBuilder
