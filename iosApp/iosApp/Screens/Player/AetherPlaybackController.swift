@@ -557,6 +557,10 @@ final class AetherPlaybackController {
             .canReleaseSharedSession(excluding: aetherSessionClaim)
         engine.stop(finalTeardown: true)
         refreshExternalPlaybackState()
+        #if os(macOS)
+        // No successor follows a stop, so there is no gap to bridge.
+        releaseDisplaySleepPrevention()
+        #endif
         publishSystemMediaChanged()
     }
 
@@ -679,12 +683,17 @@ final class AetherPlaybackController {
             displaySleepReleaseTask = Task { [weak self] in
                 try? await Task.sleep(nanoseconds: Self.displaySleepReleaseDelay)
                 guard !Task.isCancelled, let self else { return }
-                displaySleepReleaseTask = nil
-                if let activity = displaySleepActivity {
-                    ProcessInfo.processInfo.endActivity(activity)
-                    displaySleepActivity = nil
-                }
+                releaseDisplaySleepPrevention()
             }
+        }
+    }
+
+    private func releaseDisplaySleepPrevention() {
+        displaySleepReleaseTask?.cancel()
+        displaySleepReleaseTask = nil
+        if let activity = displaySleepActivity {
+            ProcessInfo.processInfo.endActivity(activity)
+            displaySleepActivity = nil
         }
     }
     #endif
