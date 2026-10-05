@@ -212,9 +212,9 @@ struct TVSkylineSectionFeed: View {
 
     /// Decode the leading cards of the rows below one that came into view,
     /// so a Down press reveals painted artwork rather than thumbhashes.
-    private func warmRows(after index: Int) {
+    private func warmRows(after index: Int) -> [CardArtwork] {
         let next = sections.dropFirst(index + 1).prefix(ArtworkLookahead.rowsAhead)
-        ArtworkLookahead.warmRows(next, items: \.items) { section, item in
+        return ArtworkLookahead.warmRows(next, items: \.items) { section, item in
             MediaRow.cardArtwork(
                 for: item,
                 layout: SectionRow.layout(for: section),
@@ -308,16 +308,24 @@ struct TVSkylineSectionFeed: View {
 /// Cancel artwork work when a row leaves the viewport without removing its
 /// buttons from the native focus graph. Visibility changes only at the edge.
 private struct TVSkylineArtworkVisibility: ViewModifier {
-    /// Runs each time the row comes into view.
-    let onVisible: () -> Void
+    /// Runs each time the row comes into view and returns the artwork it
+    /// warmed, which is cancelled when the row leaves the viewport.
+    let onVisible: () -> [CardArtwork]
     @State private var isVisible = false
+    @State private var warmed: [CardArtwork] = []
 
     func body(content: Content) -> some View {
         content
             .environment(\.tvArtworkLoadingEnabled, isVisible)
             .onScrollVisibilityChange(threshold: 0.01) { visible in
                 isVisible = visible
-                if visible { onVisible() }
+                if visible {
+                    warmed = onVisible()
+                } else {
+                    // Cards already on screen keep their own requests.
+                    PosterImageCache.stopPrefetchingArtwork(warmed)
+                    warmed = []
+                }
             }
     }
 }

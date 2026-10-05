@@ -29,11 +29,15 @@ enum ArtworkLookahead {
     }
 
     /// Warms the leading cards of each row.
+    /// Returns what it warmed, so the caller can cancel it.
+    @discardableResult
     static func warmRows<Row, Item>(
         _ rows: some Sequence<Row>,
         items: (Row) -> [Item],
         artwork: (Row, Item) -> CardArtwork?
-    ) {
-        PosterImageCache.prefetchArtwork(rows.flatMap { row in items(row).prefix(cardsAhead).compactMap { artwork(row, $0) } })
+    ) -> [CardArtwork] {
+        let cards = rows.flatMap { row in items(row).prefix(cardsAhead).compactMap { artwork(row, $0) } }
+        PosterImageCache.prefetchArtwork(cards)
+        return cards
     }
 }

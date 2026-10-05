@@ -1063,9 +1063,9 @@ private struct ItemDetailPhoneContent: View {
             let watchDetail = try await MetadataRequestPool.shared.watchDetail(
                 contentId: requestedContentId, libraryId: libraryId
             )
-            ResponseCache.shared.set(watchDetail, for: cacheKey)
             guard !Task.isCancelled,
                   playbackEpisode(for: detail)?.contentId == requestedContentId else { return }
+            ResponseCache.shared.set(watchDetail, for: cacheKey)
             // Keep any pick made on the cached selectors while this ran.
             let isUntouched = preferredNextUpFileId == nil
                 && preferredNextUpAudioTrackIndex == nil

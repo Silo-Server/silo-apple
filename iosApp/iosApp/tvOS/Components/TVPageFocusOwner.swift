@@ -51,6 +51,8 @@ struct TVPageFocusOwner: ViewModifier {
                 // claim made in the same transaction loses to the engine's own
                 // repair from the resigning view.
                 await Task.yield()
+                // The menu can take focus during the yield.
+                guard !Task.isCancelled, !isTopMenuFocused else { return }
                 isFocused = true
             }
     }
