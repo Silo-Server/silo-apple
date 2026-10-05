@@ -124,7 +124,9 @@ struct TopShelfHTTPClient {
         _ path: String,
         query: [String: String] = [:]
     ) async throws -> T {
-        guard let credentials else { throw Error.notAuthenticated }
+        // Rechecked per request: a timed profile policy can expire while an
+        // earlier request in the same refresh was in flight.
+        guard isPersonalizedContentAllowed, let credentials else { throw Error.notAuthenticated }
 
         guard var components = URLComponents(string: credentials.serverURL) else {
             throw Error.invalidURL

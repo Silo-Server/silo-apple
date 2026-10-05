@@ -204,7 +204,12 @@ struct TVMainTabView: View {
         )) {
             AudioFullPlayerView()
         }
-        .fullScreenCover(item: $router.presentedPlayer) { payload in
+        // A phone's Play on TV can arrive under the startup splash; the
+        // player waits for it to lift instead of covering it.
+        .fullScreenCover(item: Binding(
+            get: { isStartupSplashVisible ? nil : router.presentedPlayer },
+            set: { router.presentedPlayer = $0 }
+        )) { payload in
             PlayerView(
                 contentId: payload.contentId,
                 libraryId: payload.libraryId,

@@ -25,7 +25,12 @@ enum ResponseSnapshotStore {
 
     private static let queue = DispatchQueue(label: "org.siloserver.silo.response-snapshots", qos: .utility)
 
+    /// A file name is one path component, limited to 255 bytes. A grid key
+    /// with many filter selections can encode longer; that grid is not saved.
+    private static let maxFileNameBytes = 255
+
     static func store(_ value: any Encodable, forKey key: String, scope: Scope, in root: URL = defaultRoot) {
+        guard fileName(forKey: key).utf8.count <= maxFileNameBytes else { return }
         queue.async {
             guard let data = try? JSONEncoder().encode(value) else { return }
             let directory = directory(for: scope, in: root)

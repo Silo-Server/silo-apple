@@ -418,9 +418,10 @@ final class RemotePlaybackIdentityManager {
             if activationGenerationPending == generationID {
                 activationGenerationPending = nil
             }
-            // A rollback may leave the previous handoff's identity in place;
-            // snapshots resume only when a handoff ends.
-            AuthService.shared.clearCachesForTemporaryIdentityChange(temporaryIdentityActive: true)
+            // Snapshots stay off only while a handoff identity remains: a
+            // rollback to no handoff gets no later `end()` to resume them.
+            let handoffRemains = await TokenStore.shared.getTemporaryScope() != nil
+            AuthService.shared.clearCachesForTemporaryIdentityChange(temporaryIdentityActive: handoffRemains)
             let rolledBack = await releaseIdentityTransition(transitionLease, returning: false)
             // Rollback restored (or cleared) the previous scope above, so the
             // identity that is live now is whatever `activeIdentity` reflects.
