@@ -85,6 +85,10 @@ struct DiagnosticsManifest: Codable, Equatable {
         let platform: Platform
         let osVersion: String
         let profileID: String?
+        /// How many times this issue happened before the report was sent, when
+        /// more than once. Repeats of one issue within a day share a pending
+        /// report instead of each taking a slot (see `PendingReportStore`).
+        var occurrenceCount: Int? = nil
 
         enum CodingKeys: String, CodingKey {
             case type
@@ -95,6 +99,7 @@ struct DiagnosticsManifest: Codable, Equatable {
             case platform
             case osVersion = "os_version"
             case profileID = "profile_id"
+            case occurrenceCount = "occurrence_count"
         }
 
         func validate() throws {
@@ -112,6 +117,9 @@ struct DiagnosticsManifest: Codable, Equatable {
             }
             guard !osVersion.isEmpty else {
                 throw DiagnosticsValidationError.invalidField("report.os_version")
+            }
+            if let occurrenceCount, occurrenceCount < 1 {
+                throw DiagnosticsValidationError.invalidField("report.occurrence_count")
             }
         }
     }

@@ -44,6 +44,9 @@ struct PendingReportBinding: Codable, Equatable {
     let capturedAt: String
     let type: ReportType
     let fingerprint: String
+    /// Identifies the issue rather than the event; see
+    /// `PendingReportCapture.issueFingerprint`.
+    var issueFingerprint: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case serverInstanceID = "server_instance_id"
@@ -52,6 +55,7 @@ struct PendingReportBinding: Codable, Equatable {
         case capturedAt = "captured_at"
         case type
         case fingerprint
+        case issueFingerprint = "issue_fingerprint"
     }
 
     var binding: DiagnosticsBinding {
@@ -118,6 +122,13 @@ struct PendingReportState: Codable, Equatable {
     /// poll its status rather than offering to send it again.
     var isAwaitingHostedStatus: Bool {
         hostedRemoteShortID != nil && hostedRejectionCode == nil
+    }
+
+    /// Delivery has not started, so the manifest can still count a repeat. A
+    /// built hosted envelope, a collector ID, or a self-hosted upload that may
+    /// have been sent has frozen what the destination receives.
+    var acceptsRepeats: Bool {
+        hostedEnvelopeGeneration == nil && hostedRemoteShortID == nil && !deliveryUncertain
     }
 
     enum CodingKeys: String, CodingKey {
@@ -214,11 +225,16 @@ struct PendingReportCapture {
     let binding: DiagnosticsBinding
     let profileID: String?
     let type: ReportType
+    /// Identifies this event, so the same evidence is never stored twice.
     let fingerprint: String
     let capturedAt: Date
     let manifest: DiagnosticsManifestDraft
     let deviceSnapshot: DeviceSnapshotPayload
     let artifacts: [PendingReportArtifact]
+    /// Identifies the issue: the same for every repeat of one crash, hang, or
+    /// abnormal exit, independent of run IDs and timestamps. Nil for reports
+    /// that are never grouped, such as manual ones.
+    var issueFingerprint: String? = nil
 }
 
 struct DiagnosticsCaptureContext {
@@ -315,6 +331,9 @@ final class PendingReportStore {
     static let hostedReadyReceiptInterval: TimeInterval = 37 * 24 * 60 * 60
 
     private static let maxPendingPerBinding = 3
+    /// A repeat of an issue within this long of its pending report's capture
+    /// counts on that report instead of taking another slot.
+    static let repeatGroupingWindow: TimeInterval = 24 * 60 * 60
     private static let maxHostedReadyReceipts = 4_096
     private static let maxHostedDeletionIntents = 4_096
     /// Bounds defensive reads before allocating ledger contents. Four thousand
@@ -367,6 +386,15 @@ final class PendingReportStore {
             _ = try loadHostedErasureLedgersLocked()
         }
         try cleanupExpiredLocked(now: capture.capturedAt)
+        if let repeated = try countRepeatLocked(capture) {
+            return repeated
+        }
+        if wouldEvictOnArrivalLocked(capture) {
+            // Writing it only to delete it again would leave the caller
+            // retrying the same capture forever. Settle it here instead.
+            markFingerprintSeenLocked(capture.fingerprint, now: capture.capturedAt)
+            throw DiagnosticsStoreError.evictedOnArrival
+        }
 
         let reportDirectory = pendingDirectory.appendingPathComponent(capture.id.uuidString.lowercased(), isDirectory: true)
         let stagingDirectory = pendingDirectory.appendingPathComponent(
@@ -381,7 +409,8 @@ final class PendingReportStore {
             profileID: capture.profileID,
             capturedAt: DiagnosticsTimestamp.string(from: capture.capturedAt),
             type: capture.type,
-            fingerprint: capture.fingerprint
+            fingerprint: capture.fingerprint,
+            issueFingerprint: capture.issueFingerprint
         )
 
         do {
@@ -419,9 +448,8 @@ final class PendingReportStore {
         guard let report = loadReport(from: reportDirectory) else {
             throw DiagnosticsStoreError.unreadableReport(capture.id)
         }
-        // A delayed capture can be older than every retained report and be
-        // evicted immediately by the cap. Only suppress future delivery after
-        // confirming this report actually survived retention.
+        // Suppress future delivery only once the report is confirmed to have
+        // survived retention and is readable.
         markFingerprintSeenLocked(capture.fingerprint, now: capture.capturedAt)
         return report
     }
@@ -1120,10 +1148,68 @@ final class PendingReportStore {
         pruneFingerprintStateLocked(now: now)
     }
 
+    /// Count `capture` on the newest pending report of the same issue, binding
+    /// and profile captured within `repeatGroupingWindow`, if one still
+    /// accepts repeats. Returns that report, or nil to store a new one.
+    private func countRepeatLocked(_ capture: PendingReportCapture) throws -> PendingReport? {
+        guard let issue = capture.issueFingerprint else { return nil }
+        let existing = scanReportsLocked()
+            .filter { report in
+                report.binding.issueFingerprint == issue
+                    && report.binding.binding == capture.binding
+                    && report.binding.profileID == capture.profileID
+                    && report.state.acceptsRepeats
+                    && abs(capture.capturedAt.timeIntervalSince(report.binding.capturedAtDate))
+                        <= Self.repeatGroupingWindow
+            }
+            .max { $0.binding.capturedAtDate < $1.binding.capturedAtDate }
+        guard let existing else { return nil }
+
+        var manifest = existing.manifest
+        manifest.report.occurrenceCount = (manifest.report.occurrenceCount ?? 1) + 1
+        try writeJSON(manifest, to: existing.directoryURL.appendingPathComponent("manifest.json"))
+        markFingerprintSeenLocked(capture.fingerprint, now: capture.capturedAt)
+        guard let report = loadReport(from: existing.directoryURL) else {
+            throw DiagnosticsStoreError.unreadableReport(existing.id)
+        }
+        return report
+    }
+
+    /// Which reports a full store gives up first: non-fatal app errors, then
+    /// unconfirmed exits, then crashes, and the user's own reports last. The
+    /// oldest goes first within a rank.
+    private static func evictionRank(_ type: ReportType) -> Int {
+        switch type {
+        case .hang, .anr:
+            return 0
+        case .abnormalExit:
+            return 1
+        case .crash, .nativeCrash:
+            return 2
+        case .manual:
+            return 3
+        }
+    }
+
+    /// Whether the cap would evict `capture` itself as soon as it is stored:
+    /// the binding already holds a full store of reports that all outrank it.
+    /// A tie goes to the report already stored.
+    private func wouldEvictOnArrivalLocked(_ capture: PendingReportCapture) -> Bool {
+        let incoming = (Self.evictionRank(capture.type), capture.capturedAt)
+        let outranking = scanReportsLocked().filter { report in
+            report.binding.binding == capture.binding
+                && (Self.evictionRank(report.binding.type), report.binding.capturedAtDate) >= incoming
+        }
+        return outranking.count >= Self.maxPendingPerBinding
+    }
+
     private func enforceCapLocked(for binding: DiagnosticsBinding) throws {
         let reports = scanReportsLocked()
             .filter { $0.binding.binding == binding }
-            .sorted { $0.binding.capturedAtDate < $1.binding.capturedAtDate }
+            .sorted {
+                (Self.evictionRank($0.binding.type), $0.binding.capturedAtDate)
+                    < (Self.evictionRank($1.binding.type), $1.binding.capturedAtDate)
+            }
         guard reports.count > Self.maxPendingPerBinding else {
             return
         }
@@ -1386,6 +1472,10 @@ final class PendingReportStore {
 enum DiagnosticsStoreError: Error, Equatable {
     case invalidArtifactPath(String)
     case unreadableReport(UUID)
+    /// The store is full of reports that outrank this capture, so it was not
+    /// kept. Its fingerprint is marked seen: the capture is settled, and a
+    /// caller holding a retry marker for it can clear that marker.
+    case evictedOnArrival
     case invalidHostedEnvelope
     case invalidHostedDeletionIntent
     case invalidHostedReadyReceipt

@@ -1913,7 +1913,12 @@ actor DiagnosticsCoordinator {
                 capturedAt: capturedAt,
                 manifest: manifest,
                 deviceSnapshot: device,
-                artifacts: artifacts
+                artifacts: artifacts,
+                // An abnormal exit carries no stack, so every one from the
+                // same build is the same issue.
+                issueFingerprint: DiagnosticsSHA256.hex(
+                    data: Data("exit_sentinel|\(boundContext.appBuild)".utf8)
+                )
             ))
             return true
         } catch {

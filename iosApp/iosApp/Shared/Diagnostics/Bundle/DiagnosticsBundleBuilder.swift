@@ -425,6 +425,8 @@ struct DiagnosticsBundleBuilder {
         )
     }
 
+    /// `occurrence_count` is left out on purpose: the hosted collector has
+    /// not adopted it yet, so the repeat count stays local for hosted reports.
     private static func sanitizeHostedReport(
         _ report: DiagnosticsManifest.Report
     ) -> DiagnosticsManifest.Report {
