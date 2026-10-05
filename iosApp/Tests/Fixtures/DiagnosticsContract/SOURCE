@@ -1,6 +1,6 @@
 Source: silo-server docs/design/schemas/client-diagnostics/v1
-Server ref: 349a95c4ab8e8f3f0d62705ba7fee9e16091606c
-Server commit: 349a95c4ab8e8f3f0d62705ba7fee9e16091606c (2026-10-04)
+Server ref: e3949bd4c7a81040a794bbcc8c95330cd3b52da8 (Silo-Server/silo-server#1986)
+Server commit: e3949bd4c7a81040a794bbcc8c95330cd3b52da8 (2026-10-05)
 
 Mirrored with git show <commit>:<path>, the same step scripts/sync-apiv2-fixtures.sh
 runs for this directory, without re-vendoring Tests/Fixtures/APIv2. README.md and
