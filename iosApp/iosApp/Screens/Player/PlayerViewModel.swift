@@ -1630,7 +1630,8 @@ class PlayerViewModel {
     }
 
     /// Only static-header transports need replacement after API rotation.
-    /// Native HLS resolves the current credential for each upstream request.
+    /// HLS and direct play resolve the current credential for each request;
+    /// audio-only progressive media keeps the headers it opened with.
     private func attemptProtocolV3AuthenticationReloadAfterProgress(
         _ result: PlaybackProgressReportResult
     ) async {
@@ -3030,9 +3031,10 @@ class PlayerViewModel {
             let requestAuthorization: HTTPRequestAuthorization?
             let subtitleRequestAuthorization: HTTPRequestAuthorization?
             if v3.serverFeatures.contains(PlaybackProtocolV3.headerAuthenticatedMediaFeature),
-               [PlaybackProtocolV3.PlanDelivery.remuxHLS,
-                PlaybackProtocolV3.PlanDelivery.transcodeHLS].contains(v3.plan.delivery),
-               v3.plan.effectiveRecipe.videoCodec != nil {
+               AetherAuthenticationRecoveryPolicy.resolvesRequestCredentials(
+                   delivery: v3.plan.delivery,
+                   hasVideo: v3.plan.effectiveRecipe.videoCodec != nil
+               ) {
                 guard let owner = streamRequest.capturedAuth else {
                     throw HTTPError.requestIdentityChanged
                 }

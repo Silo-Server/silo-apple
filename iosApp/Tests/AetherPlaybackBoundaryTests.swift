@@ -190,6 +190,26 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         ))
     }
 
+    func testDirectPlayAndHLSResolveCredentialsButAudioOnlyProgressiveReloads() {
+        typealias Delivery = PlaybackProtocolV3.PlanDelivery
+        for delivery in [Delivery.originalHTTP, Delivery.remuxProgressive, Delivery.remuxHLS, Delivery.transcodeHLS] {
+            XCTAssertTrue(AetherAuthenticationRecoveryPolicy.resolvesRequestCredentials(
+                delivery: delivery, hasVideo: true
+            ), delivery)
+        }
+        for delivery in [Delivery.remuxHLS, Delivery.transcodeHLS] {
+            XCTAssertTrue(AetherAuthenticationRecoveryPolicy.resolvesRequestCredentials(
+                delivery: delivery, hasVideo: false
+            ), delivery)
+        }
+        // AVPlayer plays natively decodable audio with the headers it opened with.
+        for delivery in [Delivery.originalHTTP, Delivery.remuxProgressive] {
+            XCTAssertFalse(AetherAuthenticationRecoveryPolicy.resolvesRequestCredentials(
+                delivery: delivery, hasVideo: false
+            ), delivery)
+        }
+    }
+
     func testPeriodicProgressReloadsOnlyAfterSuccessWithChangedAuthorization() {
         let active = ["Authorization": "Bearer old-token"]
         let refreshed = ["authorization": "Bearer new-token"]
