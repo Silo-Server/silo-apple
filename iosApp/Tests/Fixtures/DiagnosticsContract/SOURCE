@@ -1,17 +1,18 @@
 Source: silo-server docs/design/schemas/client-diagnostics/v1
-Server ref: e3949bd4c7a81040a794bbcc8c95330cd3b52da8 (Silo-Server/silo-server#1986)
-Server commit: e3949bd4c7a81040a794bbcc8c95330cd3b52da8 (2026-10-05)
+Server ref: 7425ed292653c7f0e1a2387877aea61739b3d37a (Silo-Server/silo-server#1986)
+Server commit: 7425ed292653c7f0e1a2387877aea61739b3d37a (2026-10-05)
 
 Mirrored with git show <commit>:<path>, the same step scripts/sync-apiv2-fixtures.sh
 runs for this directory, without re-vendoring Tests/Fixtures/APIv2. README.md and
 this SOURCE are the only files not copied from the server. Do not hand-edit the rest.
 
-Vendored from the server, 19 files:
+Vendored from the server, 20 files:
   attr-registry.json
   device.schema.json
   fixtures/invalid/archive-entry-outside-allowlist.json
   fixtures/invalid/bad-schema-version.json
   fixtures/invalid/missing-consent.json
+  fixtures/invalid/occurrence-count-null.json
   fixtures/invalid/occurrence-count-zero.json
   fixtures/invalid/platform-macos-reserved.json
   fixtures/invalid/stack-excerpt-over-8kib.json
