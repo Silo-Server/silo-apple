@@ -1645,13 +1645,10 @@ actor HTTPClient {
     }
     #endif
 
-    /// Runs after every response, so it reads the monitor's lock-protected
-    /// snapshot first: while the server is already `.reachable`,
-    /// `noteServerResponded()` changes nothing and the main-actor hop is
-    /// skipped. Any other status still hops and awaits the update, so a
-    /// responded/unreachable pair keeps its order.
+    /// Runs after every response. Always hops to the main actor, like
+    /// `noteServerUnreachable`, so a failure queued there before this
+    /// success cannot be applied after it and mark a live server unreachable.
     private static func noteServerResponded() async {
-        guard !ConnectionMonitor.isKnownReachable else { return }
         await MainActor.run {
             ConnectionMonitor.shared.noteServerResponded()
         }

@@ -43,12 +43,7 @@ final class ConnectionMonitor {
     /// download may use. Kept in memory only: like every property of the
     /// path it can describe where the user is, so it's never logged.
     private(set) var isOnWiFiOrWired = true
-    private(set) var serverStatus: ServerStatus = .unknown {
-        didSet {
-            let reachable = serverStatus == .reachable
-            Self.requestPathSnapshot.withLock { $0.serverReachable = reachable }
-        }
-    }
+    private(set) var serverStatus: ServerStatus = .unknown
     private(set) var contractStatus: ServerContractStatus = .unknown {
         didSet {
             let updateRequired = contractStatus == .updateRequired
@@ -90,19 +85,12 @@ final class ConnectionMonitor {
 
     /// Lock-protected mirror of the state every request consults, so the
     /// request path can skip a main-actor hop in the common case. Written
-    /// from the `didSet`s above.
+    /// from the `didSet` above.
     private struct RequestPathSnapshot {
-        var serverReachable = false
         var hasUpdateRequiredVerdict = false
     }
 
     private nonisolated static let requestPathSnapshot = Mutex(RequestPathSnapshot())
-
-    /// Whether `serverStatus` is `.reachable`. `noteServerResponded()` changes
-    /// nothing in that state, so `HTTPClient` skips calling it.
-    nonisolated static var isKnownReachable: Bool {
-        requestPathSnapshot.withLock { $0.serverReachable }
-    }
 
     /// Whether any `.updateRequired` verdict is recorded. While false,
     /// `isServerUpdateRequired` is false too; while true, read that property
