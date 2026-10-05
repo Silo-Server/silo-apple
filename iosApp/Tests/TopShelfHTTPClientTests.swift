@@ -12,6 +12,13 @@ final class TopShelfHTTPClientTests: XCTestCase {
         let client: TopShelfHTTPClient
         let keychain: SharedKeychain
         let stub: APIv2TestStub
+        let defaults: UserDefaults
+
+        /// The user picks another profile, so the remembered one no longer
+        /// allows personalized content.
+        func switchProfile() {
+            defaults.set("other-profile", forKey: SharedStorage.profileIdKey)
+        }
     }
 
     private func harness() throws -> Harness {
@@ -42,7 +49,7 @@ final class TopShelfHTTPClientTests: XCTestCase {
             keychain: keychain,
             session: stub.makeSession()
         )
-        return Harness(client: try XCTUnwrap(client.authenticated()), keychain: account, stub: stub)
+        return Harness(client: try XCTUnwrap(client.authenticated()), keychain: account, stub: stub, defaults: suite)
     }
 
     func testExpiredAccessTokenRefreshesInMemoryAndRetriesOnce() async throws {
@@ -111,5 +118,49 @@ final class TopShelfHTTPClientTests: XCTestCase {
         // token and gives up on its 401 without another refresh.
         XCTAssertEqual(h.stub.requestedPaths,
                        [Self.sectionsPath, Self.refreshPath, Self.sectionsPath, Self.sectionsPath])
+    }
+
+    func testProfileChangeDuringTheRefreshSendsNoRetry() async throws {
+        let h = try harness()
+        h.stub.sequence(path: Self.sectionsPath, [.json(401, "{}")])
+        h.stub.reply(path: Self.refreshPath, 200, Self.refreshedTokens)
+        h.stub.reply(path: Self.sectionsPath, 200, #"{"sections":[]}"#)
+        h.stub.hold(path: Self.refreshPath)
+
+        let fetch = Task { try await h.client.fetchHomeSections(imageSizeQuery: [:]) }
+        await h.stub.waitUntilHeld()
+        h.switchProfile()
+        h.stub.release()
+
+        await assertNotAuthenticated(fetch)
+        XCTAssertEqual(h.stub.requestedPaths, [Self.sectionsPath, Self.refreshPath])
+    }
+
+    func testProfileChangeDuringASuccessfulRequestReturnsNothing() async throws {
+        let h = try harness()
+        h.stub.reply(path: Self.sectionsPath, 200, #"{"sections":[]}"#)
+        h.stub.hold(path: Self.sectionsPath)
+
+        let fetch = Task { try await h.client.fetchHomeSections(imageSizeQuery: [:]) }
+        await h.stub.waitUntilHeld()
+        h.switchProfile()
+        h.stub.release()
+
+        await assertNotAuthenticated(fetch)
+        XCTAssertEqual(h.stub.requestedPaths, [Self.sectionsPath])
+    }
+
+    private func assertNotAuthenticated<T>(
+        _ fetch: Task<T, Error>,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        do {
+            _ = try await fetch.value
+            XCTFail("Expected no personalized content", file: file, line: line)
+        } catch TopShelfHTTPClient.Error.notAuthenticated {
+        } catch {
+            XCTFail("Unexpected error \(error)", file: file, line: line)
+        }
     }
 }

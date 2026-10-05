@@ -28,10 +28,7 @@ final class ContentProvider: TVTopShelfContentProvider {
 
         let client = TopShelfHTTPClient()
         guard client.isPersonalizedContentAllowed else {
-            defaults.set(
-                "profile-selection-required",
-                forKey: SharedStorage.topShelfLastStatusKey
-            )
+            Self.recordProfileSelectionRequired(in: defaults)
             return nil
         }
         guard let http = client.authenticated() else {
@@ -67,6 +64,12 @@ final class ContentProvider: TVTopShelfContentProvider {
             using: http,
             imageSizeQuery: imageSizeQuery
         )
+        // The profile policy can expire while the requests above are in
+        // flight; never publish one profile's shelf after it has.
+        guard client.isPersonalizedContentAllowed else {
+            Self.recordProfileSelectionRequired(in: defaults)
+            return nil
+        }
 
         let continueWatching = collection(
             title: "Continue Watching",
@@ -91,6 +94,10 @@ final class ContentProvider: TVTopShelfContentProvider {
         guard !collections.isEmpty else { return nil }
 
         return TVTopShelfSectionedContent(sections: collections)
+    }
+
+    private static func recordProfileSelectionRequired(in defaults: UserDefaults) {
+        defaults.set("profile-selection-required", forKey: SharedStorage.topShelfLastStatusKey)
     }
 
     // MARK: - Series / season poster lookup
