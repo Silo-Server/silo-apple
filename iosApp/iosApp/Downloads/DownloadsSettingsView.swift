@@ -90,7 +90,11 @@ struct DownloadsSettingsView: View {
             } header: {
                 Text("Cleanup")
             } footer: {
+                #if os(macOS)
+                Text("When off, the Downloads page suggests freeing up space by removing items you've finished watching.")
+                #else
                 Text("When off, the Downloads tab suggests freeing up space by removing items you've finished watching.")
+                #endif
             }
             .listRowBackground(Color.siloGroupedCell)
 

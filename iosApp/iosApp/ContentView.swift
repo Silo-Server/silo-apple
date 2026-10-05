@@ -2743,6 +2743,11 @@ struct MainTabView: View {
         // strip sits beside the sidebar.
         .containerBackground(Color.siloPageCanvas, for: .window)
         .toolbarBackground(.hidden, for: .windowToolbar)
+        .onReceive(NotificationCenter.default.publisher(for: .siloOpenSettings)) { _ in
+            // Already on Settings: leave the stack as it is.
+            if case .settings = router.visiblePushedRoutes.last { return }
+            router.navigate(to: .settings)
+        }
         .onChange(of: isPlayerOnScreen) { _, isPlaying in
             // The player gets the whole window; the sidebar comes back as it
             // was when playback ends.

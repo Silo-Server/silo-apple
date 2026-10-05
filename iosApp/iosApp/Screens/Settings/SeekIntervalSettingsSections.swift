@@ -8,13 +8,23 @@ import SwiftUI
 struct SeekIntervalSettingsSections: View {
     @State private var store = SeekIntervalPreferences.shared
 
+    /// The Mac has no touch gestures or remote, so its footer names only
+    /// the inputs it has.
+    private static var videoFooter: String {
+        #if os(macOS)
+        "Used by the on-screen skip buttons and the arrow keys."
+        #else
+        "Used by the on-screen skip buttons, double-tap, arrow keys, and remote clicks."
+        #endif
+    }
+
     var body: some View {
         Group {
             section(
                 title: "Video",
                 media: .video,
                 surface: .videoPlayer,
-                footer: "Used by the on-screen skip buttons, double-tap, arrow keys, and remote clicks."
+                footer: Self.videoFooter
             )
             // On one child: some SwiftUI releases apply a Group's modifiers to
             // every child, which would refresh once per section.

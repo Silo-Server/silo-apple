@@ -84,6 +84,9 @@ enum SiloTheme {
     /// Dimming of the seasons that are not selected.
     static let macSeasonUnselectedOpacity: Double = 0.75
 
+    /// Widest a settings page's column grows in a Mac window.
+    static let macSettingsColumnWidth: CGFloat = 720
+
     /// Height of the soft fade below the scrolling header strip.
     static let macPageChromeFadeLength: CGFloat = 32
     #endif

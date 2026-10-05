@@ -56,6 +56,9 @@ struct SiloApp: App {
                 .background(MacWindowPlacement())
                 #endif
         }
+        #if os(macOS)
+        .commands { MacSettingsCommands() }
+        #endif
     }
 }
 

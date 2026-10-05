@@ -289,10 +289,20 @@ struct SettingsRowLabel: View {
     let color: Color
     var value: String? = nil
 
+    /// The Mac keeps its chrome monochrome, so every tile is the same grey
+    /// there; iOS keeps the per-row colours of its Settings app.
+    private var tileFill: AnyShapeStyle {
+        #if os(macOS)
+        AnyShapeStyle(Color.siloIconTile)
+        #else
+        AnyShapeStyle(color.gradient)
+        #endif
+    }
+
     var body: some View {
         HStack(spacing: 12) {
             RoundedRectangle(cornerRadius: 7)
-                .fill(color.gradient)
+                .fill(tileFill)
                 .frame(width: 29, height: 29)
                 .overlay {
                     Image(systemName: systemImage)
