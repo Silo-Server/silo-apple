@@ -85,7 +85,7 @@ enum SiloTheme {
     static let macSeasonUnselectedOpacity: Double = 0.75
 
     /// Widest a settings page's column grows in a Mac window.
-    static let macSettingsColumnWidth: CGFloat = 720
+    static let macSettingsColumnWidth: CGFloat = 860
     /// Size of the monochrome switch on the Mac's settings pages.
     static let macSettingsSwitchSize = CGSize(width: 34, height: 18)
 
