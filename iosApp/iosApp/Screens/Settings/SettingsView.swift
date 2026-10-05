@@ -71,11 +71,7 @@ struct SettingsView: View {
             aboutSection
             signOutSection
         }
-        #if os(macOS)
         .settingsListChrome()
-        #else
-        .siloGroupedListStyle()
-        #endif
         .navigationTitle("Settings")
         .siloNavigationTitleDisplayMode(.large)
         .siloToolbarColorSchemeDark()
@@ -246,23 +242,7 @@ struct SettingsView: View {
                     .foregroundStyle(Color.siloOnSurface)
             }
 
-            Link(destination: SiloLegalLinks.privacyPolicy) {
-                #if os(macOS)
-                // Monochrome like the rest of the Mac's chrome; the arrow
-                // marks it as opening in the browser.
-                HStack {
-                    Text("Privacy Policy")
-                        .foregroundStyle(Color.siloOnSurface)
-                    Spacer(minLength: 8)
-                    Image(systemName: "arrow.up.right")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(Color.siloSecondaryText.opacity(0.6))
-                }
-                .contentShape(Rectangle())
-                #else
-                Text("Privacy Policy")
-                #endif
-            }
+            externalLink("Privacy Policy", SiloLegalLinks.privacyPolicy)
 
             NavigationLink {
                 AcknowledgementsView()
@@ -274,7 +254,23 @@ struct SettingsView: View {
                 )
             }
 
-            Link("Source Code", destination: SiloLegalLinks.sourceCode)
+            externalLink("Source Code", SiloLegalLinks.sourceCode)
+        }
+    }
+
+    /// A row that opens a web page. Monochrome like the rest of the Mac's
+    /// chrome; the arrow marks it as opening in the browser.
+    private func externalLink(_ title: String, _ destination: URL) -> some View {
+        Link(destination: destination) {
+            HStack {
+                Text(title)
+                    .foregroundStyle(Color.siloOnSurface)
+                Spacer(minLength: 8)
+                Image(systemName: "arrow.up.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(Color.siloSecondaryText.opacity(0.6))
+            }
+            .contentShape(Rectangle())
         }
     }
 
@@ -285,7 +281,6 @@ struct SettingsView: View {
             Button(role: .destructive) {
                 showSignOutConfirm = true
             } label: {
-                #if os(macOS)
                 Text("Sign Out")
                     .font(.siloBody.weight(.semibold))
                     .foregroundStyle(Color.siloErrorInk)
@@ -296,14 +291,8 @@ struct SettingsView: View {
                             .fill(Color.siloErrorInk.opacity(0.12))
                     )
                     .contentShape(Rectangle())
-                #else
-                Text("Sign Out")
-                    .frame(maxWidth: .infinity)
-                #endif
             }
-            #if os(macOS)
             .buttonStyle(.plain)
-            #endif
         }
     }
     #endif
@@ -322,14 +311,8 @@ struct SettingsRowLabel: View {
     var value: String? = nil
 
     /// The Mac keeps its chrome monochrome, so every tile is the same grey
-    /// there; iOS keeps the per-row colours of its Settings app.
-    private var tileFill: AnyShapeStyle {
-        #if os(macOS)
-        AnyShapeStyle(Color.siloIconTile)
-        #else
-        AnyShapeStyle(color.gradient)
-        #endif
-    }
+    /// whatever `color` a row passes.
+    private var tileFill: Color { .siloIconTile }
 
     var body: some View {
         HStack(spacing: 12) {
