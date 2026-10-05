@@ -234,15 +234,14 @@ struct SettingsView: View {
 
     private var aboutSection: some View {
         Section("About") {
-            LabeledContent {
-                Text(SettingsViewModel.versionString)
-                    .foregroundStyle(Color.siloSecondaryText)
-            } label: {
-                Text("Version")
-                    .foregroundStyle(Color.siloOnSurface)
-            }
+            SettingsRowLabel(
+                title: "Version",
+                systemImage: "info",
+                color: .gray,
+                value: SettingsViewModel.versionString
+            )
 
-            externalLink("Privacy Policy", SiloLegalLinks.privacyPolicy)
+            externalLink("Privacy Policy", systemImage: "hand.raised.fill", SiloLegalLinks.privacyPolicy)
 
             NavigationLink {
                 AcknowledgementsView()
@@ -254,18 +253,25 @@ struct SettingsView: View {
                 )
             }
 
-            externalLink("Source Code", SiloLegalLinks.sourceCode)
+            externalLink(
+                "Source Code",
+                systemImage: "chevron.left.forwardslash.chevron.right",
+                SiloLegalLinks.sourceCode
+            )
         }
     }
 
-    /// A row that opens a web page. Monochrome like the rest of the Mac's
-    /// chrome; the arrow marks it as opening in the browser.
-    private func externalLink(_ title: String, _ destination: URL) -> some View {
+    /// A row that opens a web page, with the same icon tile as the rows
+    /// around it so every label in the section shares one leading edge. The
+    /// arrow marks it as opening in the browser.
+    private func externalLink(
+        _ title: String,
+        systemImage: String,
+        _ destination: URL
+    ) -> some View {
         Link(destination: destination) {
             HStack {
-                Text(title)
-                    .foregroundStyle(Color.siloOnSurface)
-                Spacer(minLength: 8)
+                SettingsRowLabel(title: title, systemImage: systemImage, color: .gray)
                 Image(systemName: "arrow.up.right")
                     .font(.footnote.weight(.semibold))
                     .foregroundStyle(Color.siloSecondaryText.opacity(0.6))
