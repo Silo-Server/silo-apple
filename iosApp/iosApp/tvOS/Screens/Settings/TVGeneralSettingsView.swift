@@ -97,6 +97,9 @@ struct TVGeneralSettingsPane: View {
                 .disabled(advisoryAgePreference.isSaving)
 
                 TVSettingsFooter("Show a suggested minimum viewer age, such as Common Sense Media’s, on movie and show details. This does not change what the profile may watch.")
+                if let writeError = advisoryAgePreference.writeError {
+                    TVSettingsFooter(writeError)
+                }
             }
 
             presetRow
@@ -184,7 +187,7 @@ struct TVGeneralSettingsPane: View {
         }
         .task {
             async let preferencesRefresh: Void = preferences.refresh()
-            async let advisoryRefresh: Void = advisoryAgePreference.hydrateIfNeeded()
+            async let advisoryRefresh: Void = advisoryAgePreference.refresh()
             _ = await (preferencesRefresh, advisoryRefresh)
         }
         .task(id: currentLibraryAuthority) {

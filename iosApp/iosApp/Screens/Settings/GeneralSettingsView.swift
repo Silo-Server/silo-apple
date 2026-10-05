@@ -18,7 +18,7 @@ struct GeneralSettingsView: View {
         .navigationTitle("General")
         .siloNavigationTitleDisplayMode(.inline)
         .siloToolbarColorSchemeDark()
-        .task { await advisoryAgePreference.hydrateIfNeeded() }
+        .task { await advisoryAgePreference.refresh() }
     }
 
     private var profileSection: some View {
@@ -64,8 +64,13 @@ struct GeneralSettingsView: View {
             Text("Ratings")
                 .foregroundStyle(Color.siloSecondaryText)
         } footer: {
-            Text("Show a suggested minimum viewer age, such as Common Sense Media’s, on movie and show details. This does not change what the profile may watch.")
-                .foregroundStyle(Color.siloSecondaryText)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Show a suggested minimum viewer age, such as Common Sense Media’s, on movie and show details. This does not change what the profile may watch.")
+                if let writeError = advisoryAgePreference.writeError {
+                    Text(writeError)
+                }
+            }
+            .foregroundStyle(Color.siloSecondaryText)
         }
         .listRowBackground(Color.siloGroupedCell)
     }

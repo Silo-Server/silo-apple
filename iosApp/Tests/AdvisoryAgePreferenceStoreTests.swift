@@ -59,12 +59,12 @@ final class AdvisoryAgePreferenceStoreTests: XCTestCase {
         XCTAssertTrue(transport.writes.isEmpty)
     }
 
-    func testHydrationCannotOverwriteANewerToggle() async {
-        transport.readGate = AsyncTestGate()
-        transport.effectiveValue = false
+    func testRefreshCannotOverwriteANewerToggle() async {
         let store = makeStore()
+        await store.refresh()
+        transport.readGate = AsyncTestGate()
         let refresh = Task { await store.refresh() }
-        await waitUntil { store.isSupported }
+        await waitUntil { self.transport.readIdentities.count == 2 }
 
         await store.setShowsAdvisoryAge(true)
         transport.readGate?.open()
@@ -89,20 +89,90 @@ final class AdvisoryAgePreferenceStoreTests: XCTestCase {
         XCTAssertTrue(store.showsAdvisoryAge)
     }
 
-    func testFailedWriteDoesNotDiscardConcurrentHydration() async {
-        transport.readGate = AsyncTestGate()
+    func testFailedWriteDoesNotDiscardConcurrentRefresh() async {
+        let store = makeStore()
+        await store.refresh()
         transport.effectiveValue = true
         transport.writeError = TestWriteError.failed
-        let store = makeStore()
+        transport.readGate = AsyncTestGate()
         let refresh = Task { await store.refresh() }
-        await waitUntil { store.isSupported }
+        await waitUntil { self.transport.readIdentities.count == 2 }
 
-        await store.setShowsAdvisoryAge(false)
+        await store.setShowsAdvisoryAge(true)
+        XCTAssertFalse(store.showsAdvisoryAge)
         transport.readGate?.open()
         await refresh.value
 
         XCTAssertTrue(store.showsAdvisoryAge)
         XCTAssertFalse(store.isSaving)
+    }
+
+    func testToggleShowsChoiceWhileSaving() async {
+        let store = makeStore()
+        await store.refresh()
+        transport.writeGate = AsyncTestGate()
+        let write = Task { await store.setShowsAdvisoryAge(true) }
+        await waitUntil { store.isSaving }
+
+        XCTAssertTrue(store.showsAdvisoryAge)
+        transport.writeGate?.open()
+        await write.value
+        XCTAssertTrue(store.showsAdvisoryAge)
+        XCTAssertFalse(store.isSaving)
+    }
+
+    func testFailedWriteRollsBackAndExplains() async {
+        let store = makeStore()
+        await store.refresh()
+        transport.writeError = SettingsAPIError.transport(description: "offline")
+
+        await store.setShowsAdvisoryAge(true)
+
+        XCTAssertFalse(store.showsAdvisoryAge)
+        XCTAssertEqual(store.writeError, "Couldn't save Show Advisory Age. Check the connection and try again.")
+        transport.writeError = nil
+        await store.setShowsAdvisoryAge(true)
+        XCTAssertTrue(store.showsAdvisoryAge)
+        XCTAssertNil(store.writeError)
+    }
+
+    func testSettingStaysHiddenUntilItsValueLoads() async {
+        transport.effectiveError = TestWriteError.failed
+        let store = makeStore()
+        await store.refresh()
+        XCTAssertFalse(store.isSupported)
+
+        transport.effectiveError = nil
+        transport.effectiveValue = true
+        await store.hydrateIfNeeded()
+        XCTAssertTrue(store.isSupported)
+        XCTAssertTrue(store.showsAdvisoryAge)
+    }
+
+    func testUnavailableSettingsRetryOnNextRead() async {
+        transport.capabilities = .unavailable
+        let store = makeStore()
+        await store.hydrateIfNeeded()
+        XCTAssertFalse(store.isSupported)
+
+        transport.capabilities = .available(advisoryCapabilities(revision: 14))
+        transport.effectiveValue = true
+        await store.hydrateIfNeeded()
+        XCTAssertTrue(store.isSupported)
+        XCTAssertTrue(store.showsAdvisoryAge)
+    }
+
+    func testStaleValueIsReadAgainAfterForeground() async {
+        let store = makeStore()
+        await store.hydrateIfNeeded()
+        XCTAssertFalse(store.showsAdvisoryAge)
+
+        transport.effectiveValue = true
+        await store.hydrateIfNeeded()
+        XCTAssertFalse(store.showsAdvisoryAge, "a hydrated value is reused until marked stale")
+        store.markStale()
+        await store.hydrateIfNeeded()
+        XCTAssertTrue(store.showsAdvisoryAge)
     }
 
     func testWriteCompletionAfterClearCannotRestorePreviousProfileState() async {
@@ -147,6 +217,7 @@ private final class FakeAdvisoryAgePreferenceTransport: AdvisoryAgePreferenceTra
     var readGate: AsyncTestGate?
     var writeGate: AsyncTestGate?
     var writeError: Error?
+    var effectiveError: Error?
     private(set) var capabilityRequests = 0
     private(set) var readIdentities: [HTTPRequestIdentity] = []
     private(set) var writes: [Write] = []
@@ -160,6 +231,7 @@ private final class FakeAdvisoryAgePreferenceTransport: AdvisoryAgePreferenceTra
     func effectiveValue(requestIdentity: HTTPRequestIdentity) async throws -> EffectiveSettingValuesResponse {
         readIdentities.append(requestIdentity)
         await readGate?.wait()
+        if let effectiveError { throw effectiveError }
         return try advisoryEffectiveResponse(effectiveValue)
     }
 

@@ -578,18 +578,22 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
 
     @ViewBuilder
     private var ratingView: some View {
-        HStack(spacing: 6) {
-            ForEach(Array(ratingChips.enumerated()), id: \.offset) { _, chip in
-                Text(chip)
-                    .font(.system(size: 11, weight: .heavy))
-                    .tracking(0.7)
-                    .foregroundStyle(Color.siloOnSurface)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 4)
-                            .stroke(Color.siloOnSurface.opacity(0.55), lineWidth: 1)
-                    )
+        // No view at all without chips: an empty stack would still take the
+        // parent's spacing and push the metadata off centre.
+        if !ratingChips.isEmpty {
+            HStack(spacing: 6) {
+                ForEach(Array(ratingChips.enumerated()), id: \.offset) { _, chip in
+                    Text(chip)
+                        .font(.system(size: 11, weight: .heavy))
+                        .tracking(0.7)
+                        .foregroundStyle(Color.siloOnSurface)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(Color.siloOnSurface.opacity(0.55), lineWidth: 1)
+                        )
+                }
             }
         }
     }

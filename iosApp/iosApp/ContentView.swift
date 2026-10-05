@@ -498,6 +498,9 @@ struct ContentView: View {
             Task { await ImageSizeCapability.shared.refresh() }
             Task { await RequestsFeatureStore.shared.refresh() }
             Task { await SubtitleProvidersStore.shared.refresh() }
+            // Detail pages read this lazily, so the next one re-reads it
+            // instead of every foreground paying for a request.
+            AdvisoryAgePreferenceStore.shared.markStale()
             Task { await uiCustomization.refresh() }
             Task { await SeekIntervalPreferences.shared.refresh() }
             #if os(iOS)

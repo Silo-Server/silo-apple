@@ -38,13 +38,20 @@ final class SiloAdvisoryAgePreferenceTransport: AdvisoryAgePreferenceTransport {
 /// the web client, Apple first verifies that the connected settings contract
 /// supports `catalog.show_advisory_age`, then resolves the active profile's
 /// effective value. A missing setting or an older server fails closed.
+///
+/// The Apple app does not subscribe to settings change events, so a change
+/// made on another device arrives at the next read: opening Settings, or the
+/// first detail page after the app returns to the foreground.
 @MainActor
 final class AdvisoryAgePreferenceStore: ObservableObject {
     static let shared = AdvisoryAgePreferenceStore()
 
     @Published private(set) var showsAdvisoryAge = false
+    /// True once the server supports the setting and this profile's value has
+    /// been read, so the toggle never shows a value the app doesn't know.
     @Published private(set) var isSupported = false
     @Published private(set) var isSaving = false
+    @Published private(set) var writeError: String?
 
     private let transport: AdvisoryAgePreferenceTransport
     private let requestIdentity: @MainActor () -> HTTPRequestIdentity?
@@ -52,7 +59,8 @@ final class AdvisoryAgePreferenceStore: ObservableObject {
     private var hydrationTask: Task<Void, Never>?
     private var generation: UInt = 0
     private var localMutationRevision: UInt = 0
-    private var writeSequence: UInt = 0
+    /// The last value the server confirmed; a failed write rolls back to it.
+    private var confirmedValue = false
 
     init(
         transport: AdvisoryAgePreferenceTransport = SiloAdvisoryAgePreferenceTransport(),
@@ -66,6 +74,12 @@ final class AdvisoryAgePreferenceStore: ObservableObject {
     func hydrateIfNeeded() async {
         guard !hasHydrated else { return }
         await refresh()
+    }
+
+    /// Lets the next ``hydrateIfNeeded()`` read again while keeping the last
+    /// answer on screen. Called when the app returns to the foreground.
+    func markStale() {
+        hasHydrated = false
     }
 
     func refresh() async {
@@ -88,70 +102,95 @@ final class AdvisoryAgePreferenceStore: ObservableObject {
             let capabilities = await self.transport.contractCapabilities(requestIdentity: identity)
             guard self.canApply(generation: currentGeneration, identity: identity) else { return }
 
-            guard let contract = capabilities.capabilities,
-                  contract.supports(.catalogShowAdvisoryAge) else {
+            switch capabilities {
+            case .available(let contract) where contract.supports(.catalogShowAdvisoryAge):
+                break
+            case .available, .serverUpgradeRequired:
                 guard self.localMutationRevision == mutationRevision else { return }
                 self.isSupported = false
                 self.showsAdvisoryAge = false
-                if case .failed = capabilities {
-                    return
-                }
+                self.confirmedValue = false
                 self.hasHydrated = true
                 return
+            case .unavailable, .failed:
+                // Not a verdict about the server's version: keep the last
+                // answer and retry on the next read.
+                return
             }
-            self.isSupported = true
 
             do {
                 let response = try await self.transport.effectiveValue(requestIdentity: identity)
+                // A write that succeeded while this read ran is newer than its answer.
                 guard self.canApply(generation: currentGeneration, identity: identity),
                       self.localMutationRevision == mutationRevision else { return }
-                self.showsAdvisoryAge = response.value(for: .catalogShowAdvisoryAge)?
-                    .value.boolValue == true
+                let value = response.value(for: .catalogShowAdvisoryAge)?.value.boolValue == true
+                self.confirmedValue = value
+                self.isSupported = true
                 self.hasHydrated = true
+                // A save still in flight keeps showing the choice; if it fails,
+                // it rolls back to this answer.
+                if !self.isSaving {
+                    self.showsAdvisoryAge = value
+                }
             } catch {
-                // Keep the badge hidden. A later detail visit retries.
+                // Keep the last answer. The next read retries.
             }
         }
         hydrationTask = task
         await task.value
     }
 
+    /// Shows the choice at once and saves it at profile scope. A failed save
+    /// rolls back to the last confirmed value and sets ``writeError``.
     func setShowsAdvisoryAge(_ enabled: Bool) async {
         guard isSupported, !isSaving, let identity = requestIdentity() else { return }
-        writeSequence &+= 1
-        let currentWrite = writeSequence
         let currentGeneration = generation
+        writeError = nil
+        showsAdvisoryAge = enabled
         isSaving = true
         defer {
-            if generation == currentGeneration, writeSequence == currentWrite {
+            if generation == currentGeneration {
                 isSaving = false
             }
         }
         do {
             try await transport.putValue(enabled, requestIdentity: identity)
-            guard canApply(generation: currentGeneration, identity: identity),
-                  writeSequence == currentWrite else { return }
+            guard canApply(generation: currentGeneration, identity: identity) else { return }
             localMutationRevision &+= 1
-            showsAdvisoryAge = enabled
+            confirmedValue = enabled
             hasHydrated = true
         } catch {
-            // Keep the acknowledged server value visible; a later attempt can retry.
+            guard canApply(generation: currentGeneration, identity: identity) else { return }
+            showsAdvisoryAge = confirmedValue
+            writeError = Self.writeFailureMessage(for: error)
         }
     }
 
     func clear() {
         generation &+= 1
-        writeSequence &+= 1
         hydrationTask?.cancel()
         hydrationTask = nil
         showsAdvisoryAge = false
+        confirmedValue = false
         isSupported = false
         isSaving = false
+        writeError = nil
         hasHydrated = false
     }
 
     private func canApply(generation: UInt, identity: HTTPRequestIdentity) -> Bool {
         !Task.isCancelled && self.generation == generation && requestIdentity() == identity
+    }
+
+    static func writeFailureMessage(for error: Error) -> String {
+        switch SettingsAPIError.from(error) {
+        case .transport:
+            return "Couldn't save Show Advisory Age. Check the connection and try again."
+        case .serverUpgradeRequired, .unknownSetting:
+            return "This server can't save Show Advisory Age."
+        default:
+            return "The server didn't save Show Advisory Age. Try again."
+        }
     }
 
     private static func activeRequestIdentity() -> HTTPRequestIdentity? {
