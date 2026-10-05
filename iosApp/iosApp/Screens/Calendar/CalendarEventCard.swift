@@ -250,13 +250,13 @@ private struct CalendarCardCaption: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(event.title)
-                .font(.siloSubheadline)
+                .font(.siloCardTitle)
                 .foregroundColor(isFocused ? .siloOnSurface : .siloOnSurface.opacity(0.85))
                 .lineLimit(2, reservesSpace: true)
 
             if showsMetadata, let subtitle {
                 Text(subtitle)
-                    .font(.siloCaption)
+                    .font(.siloCardMetadata)
                     .foregroundColor(.siloSecondaryText)
                     .lineLimit(1)
             }

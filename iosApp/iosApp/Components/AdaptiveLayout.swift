@@ -12,6 +12,17 @@ enum AdaptiveColumns {
         posterSize: CardPosterSize = .standard,
         spacing: CGFloat = 12
     ) -> [GridItem] {
+        #if os(macOS)
+        // A Mac window can be any width, so fit as many fixed-size cards as
+        // the row holds instead of spreading a fixed count of columns apart.
+        return [
+            GridItem(
+                .adaptive(minimum: SiloTheme.posterCardWidth * posterSize.scale),
+                spacing: spacing,
+                alignment: .top
+            ),
+        ]
+        #else
         let standardCount = (sizeClass == .regular) ? 5 : 3
         let count: Int
         switch posterSize {
@@ -26,6 +37,7 @@ enum AdaptiveColumns {
             repeating: GridItem(.flexible(), spacing: spacing),
             count: count
         )
+        #endif
     }
 
     /// Keeps tvOS poster grids dense enough for compact artwork while making

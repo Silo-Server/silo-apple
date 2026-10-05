@@ -52,8 +52,8 @@ enum SiloTheme {
     /// How much of the window the hero leaves for the next row's heading.
     static let macHeroNextRowPeek: CGFloat = 52
     /// Largest a title's logo artwork is drawn in the hero.
-    static let macHeroLogoWidth: CGFloat = 420
-    static let macHeroLogoHeight: CGFloat = 130
+    static let macHeroLogoWidth: CGFloat = 320
+    static let macHeroLogoHeight: CGFloat = 110
     /// Width of a poster in the hero's title list.
     static let macHeroThumbnailWidth: CGFloat = 88
     /// Outline around the title currently on show in the hero's list.
@@ -106,6 +106,14 @@ enum SiloTheme {
     static let thumbnailCardWidth: CGFloat = 360
     /// Episode/thumbnail card height
     static let thumbnailCardHeight: CGFloat = 200
+    #elseif os(macOS)
+    // Desktop cards sit between the phone and TV sizes: a phone-sized card
+    // reads as a thumbnail in a Mac window. The poster is a true 2:3, so the
+    // artwork is not cropped at the sides.
+    static let posterCardWidth: CGFloat = 170
+    static let posterCardHeight: CGFloat = 255
+    static let thumbnailCardWidth: CGFloat = 240
+    static let thumbnailCardHeight: CGFloat = 135
     #else
     static let posterCardWidth: CGFloat = 120
     static let posterCardHeight: CGFloat = 198

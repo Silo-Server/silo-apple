@@ -358,7 +358,7 @@ struct MediaCard: View {
 
     private var titleText: some View {
         Text(title)
-            .font(.siloSubheadline)
+            .font(.siloCardTitle)
             .foregroundColor(.siloOnSurface)
             #if os(macOS)
             // One truncated line, like Home's feed cards. Reserving a second
@@ -378,7 +378,7 @@ struct MediaCard: View {
     private var yearText: some View {
         if let secondLine = subtitle ?? year.map(String.init) {
             Text(secondLine)
-                .font(.siloCaption)
+                .font(.siloCardMetadata)
                 .foregroundColor(.siloSecondaryText)
                 // One line, tail-truncated: an episode title must never wrap
                 // and push the row below it.
