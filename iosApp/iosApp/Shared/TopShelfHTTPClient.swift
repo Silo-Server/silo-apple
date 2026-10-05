@@ -160,8 +160,9 @@ struct TopShelfHTTPClient {
         _ path: String,
         query: [String: String] = [:]
     ) async throws -> T {
-        // Rechecked per request: a timed profile policy can expire while an
-        // earlier request in the same refresh was in flight.
+        // Rechecked per request and after every await: a timed profile policy
+        // can expire, or the profile change, while a request or the token
+        // refresh is in flight.
         guard isPersonalizedContentAllowed, let credentials else { throw Error.notAuthenticated }
         guard let url = Self.url(credentials.serverURL, path: path, query: query) else {
             throw Error.invalidURL
@@ -174,11 +175,13 @@ struct TopShelfHTTPClient {
            let fresh = await credentials.tokens.replacement(for: token, refreshing: { [session] refreshToken in
                await Self.refreshedAccessToken(serverURL: serverURL, refreshToken: refreshToken, session: session)
            }) {
+            guard isPersonalizedContentAllowed else { throw Error.notAuthenticated }
             (data, http) = try await send(url, credentials: credentials, bearer: fresh)
         }
         guard (200..<300).contains(http.statusCode) else {
             throw Error.unexpectedStatus(http.statusCode)
         }
+        guard isPersonalizedContentAllowed else { throw Error.notAuthenticated }
 
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
