@@ -89,12 +89,12 @@ final class AdvisoryAgePreferenceStore: ObservableObject {
     }
 
     func refresh() async {
-        // Join a read in flight, unless it started before the value was
-        // marked stale; then read again once it finishes.
+        // Join a read in flight, and read again once it finishes if the value
+        // was marked stale before or while it ran.
         while let hydrationTask {
-            let isCurrent = hydrationStaleMark == staleMarks
+            let taskStaleMark = hydrationStaleMark
             await hydrationTask.value
-            if isCurrent { return }
+            if taskStaleMark == staleMarks { return }
         }
         guard let identity = requestIdentity() else { return }
 
