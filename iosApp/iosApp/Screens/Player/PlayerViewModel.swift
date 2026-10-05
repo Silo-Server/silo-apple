@@ -5659,10 +5659,11 @@ class PlayerViewModel {
     /// new session, and every other load clears it.
     private func currentCreditsSkipKey(for range: TimeRange) -> String? {
         guard activePlaybackSessionId != nil,
+              let contentId = currentWatchDetail?.contentId,
               let fileId = currentSelectedVersion?.fileId else {
             return nil
         }
-        return "\(fileId):credits:\(range.start):\(range.end)"
+        return "\(contentId):\(fileId):credits:\(range.start):\(range.end)"
     }
 
     func beginScrub(fraction: Double) {
