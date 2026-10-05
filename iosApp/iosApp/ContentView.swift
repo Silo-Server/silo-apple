@@ -56,6 +56,11 @@ struct ContentView: View {
     /// Set when the scene enters the background, so `.active` refreshes only
     /// on a real return to the app.
     @State private var isReturningFromBackground = false
+    #if os(iOS)
+    /// When the scene last entered the background, for the Home refresh
+    /// threshold on return.
+    @State private var sceneBackgroundedAt: Date?
+    #endif
 
     // The root modifier chain runs presentedContent -> appEventContent ->
     // sessionTaskContent -> body. Swift 6.2 cannot type-check it as one
@@ -491,6 +496,9 @@ struct ContentView: View {
 
             if newPhase == .background {
                 isReturningFromBackground = true
+                #if os(iOS)
+                sceneBackgroundedAt = .now
+                #endif
                 markProfileAwayStartIfNeeded()
                 return
             }
@@ -1047,6 +1055,10 @@ struct ContentView: View {
     private func handleReturnFromBackgroundIfNeeded() {
         guard isReturningFromBackground else { return }
         isReturningFromBackground = false
+        #if os(iOS)
+        let backgroundedAt = sceneBackgroundedAt
+        sceneBackgroundedAt = nil
+        #endif
         guard router.authState == .authenticated else { return }
         if keepsProfileActiveInBackground {
             launchPreferences.clearBackgroundedAt()
@@ -1079,6 +1091,10 @@ struct ContentView: View {
         #endif
         #if os(tvOS)
         NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil)
+        #elseif os(iOS)
+        if HomeForegroundRefreshPolicy.shouldRefresh(backgroundedAt: backgroundedAt) {
+            NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil)
+        }
         #endif
         #if !os(tvOS)
         Task { await DownloadManager.shared.onAppActive() }

@@ -9,6 +9,9 @@ import Nuke
 /// - Otherwise the artwork is decoded on the size ladder just above its drawn
 ///   size, showing a smaller cached decode or the ThumbHash meanwhile, and
 ///   fades in quickly so the placeholder is gone as soon as it can be.
+/// - A load that fails on a transient error retries with backoff while the
+///   view is on screen (see `ArtworkRetryPolicy`), and again when the app
+///   becomes active.
 struct AsyncImageView: View {
     let url: String
     var thumbhash: String? = nil
@@ -26,6 +29,11 @@ struct AsyncImageView: View {
     #else
     private let artworkLoadingEnabled = true
     #endif
+
+    /// Bumped to rebuild the `LazyImage`, which starts a fresh load.
+    @State private var loadAttempt = 0
+    @State private var failedAttempts = 0
+    @State private var pendingRetry: Task<Void, Never>?
 
     var body: some View {
         if let targetSize {
@@ -73,6 +81,13 @@ struct AsyncImageView: View {
                                     .foregroundColor(.siloOnSurface.opacity(0.3))
                             }
                         }
+                        // Subscribed only while showing a failure, so idle
+                        // artwork costs nothing.
+                        .onReceive(NotificationCenter.default.publisher(for: Self.appDidBecomeActive)) { _ in
+                            if let error = state.error, ArtworkRetryPolicy.isRetryable(error) {
+                                retry(resettingBackoff: true)
+                            }
+                        }
                 } else {
                     placeholder(frame: frame)
                 }
@@ -80,7 +95,56 @@ struct AsyncImageView: View {
             // Ahead of warm-ups, which run at normal priority or lower.
             .priority(.high)
             .onDisappear(.cancel)
+            .onCompletion { handleCompletion($0) }
+            .id(LoadIdentity(url: url, attempt: loadAttempt))
+            .onChange(of: url) {
+                cancelPendingRetry()
+                failedAttempts = 0
+            }
+            .onDisappear(perform: cancelPendingRetry)
         }
+    }
+
+    // MARK: - Retry
+
+    private struct LoadIdentity: Hashable {
+        let url: String
+        let attempt: Int
+    }
+
+    #if os(macOS)
+    private static let appDidBecomeActive = NSApplication.didBecomeActiveNotification
+    #else
+    private static let appDidBecomeActive = UIApplication.didBecomeActiveNotification
+    #endif
+
+    private func handleCompletion(_ result: Result<ImageResponse, Error>) {
+        switch result {
+        case .success:
+            failedAttempts = 0
+        case let .failure(error):
+            // Cancellation and permanent failures leave the backoff alone.
+            guard ArtworkRetryPolicy.isRetryable(error) else { return }
+            failedAttempts += 1
+            guard let delay = ArtworkRetryPolicy.delay(afterFailure: error, failedAttempts: failedAttempts) else { return }
+            cancelPendingRetry()
+            pendingRetry = Task { @MainActor in
+                try? await Task.sleep(for: delay)
+                guard !Task.isCancelled else { return }
+                retry(resettingBackoff: false)
+            }
+        }
+    }
+
+    private func retry(resettingBackoff: Bool) {
+        cancelPendingRetry()
+        if resettingBackoff { failedAttempts = 0 }
+        loadAttempt += 1
+    }
+
+    private func cancelPendingRetry() {
+        pendingRetry?.cancel()
+        pendingRetry = nil
     }
 
     private struct ResolvedArtwork {
