@@ -1023,7 +1023,10 @@ private struct WatchPartyEpisodePicker: View {
             let values = try await SiloAPI.shared.apiV2Client.catalogEpisodes(seriesId: series.contentId,
                 seasonNumber: seasonNumber, imageSize: nil, auth: auth)
             guard !Task.isCancelled, roomId == session.room?.roomId, self.seasonNumber == seasonNumber else { return }
+            // In episode order, as on the series page, so the resume episode is
+            // the earliest unwatched one.
             episodes = try values.map { try EpisodeListItem(catalog: $0) }
+                .sorted { $0.episodeNumber < $1.episodeNumber }
         } catch {
             guard !Task.isCancelled, roomId == session.room?.roomId, self.seasonNumber == seasonNumber else { return }
             errorMessage = error.localizedDescription

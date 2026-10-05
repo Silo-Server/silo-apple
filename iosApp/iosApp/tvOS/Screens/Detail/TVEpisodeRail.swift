@@ -141,6 +141,8 @@ struct TVEpisodeRail: View {
     /// The plain rail centers the current card once. Returning from a pushed
     /// page re-runs onAppear and must not scroll away from the focused card.
     @State private var hasCenteredCurrent = false
+    /// Re-entering the plain rail returns to the card the viewer last focused.
+    @State private var lastFocusedCardId: String?
     @Namespace private var anchoredFocusScope
     /// The card the anchored row is positioned on: the focused card while the
     /// row has focus, otherwise the last one it selected or scrolled to.
@@ -157,6 +159,13 @@ struct TVEpisodeRail: View {
         }
     }
 
+    private var legacyEntryContentId: String? {
+        if let lastFocusedCardId, episodes.contains(where: { $0.contentId == lastFocusedCardId }) {
+            return lastFocusedCardId
+        }
+        return currentContentId
+    }
+
     private var legacyRail: some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
@@ -170,10 +179,12 @@ struct TVEpisodeRail: View {
                 .padding(.vertical, 12)
             }
             .focusSection()
-            // Entering the row lands on the current episode.
-            .defaultFocus($focusedCardId, currentContentId, priority: .userInitiated)
+            // Entering the row lands on the last focused card, else the
+            // current episode.
+            .defaultFocus($focusedCardId, legacyEntryContentId, priority: .userInitiated)
             .scrollClipDisabled()
             .onChange(of: focusedCardId) { _, contentId in
+                if let contentId { lastFocusedCardId = contentId }
                 onFocusedEpisodeChange?(contentId)
             }
             .onDisappear {
