@@ -54,9 +54,10 @@ final class ContentProvider: TVTopShelfContentProvider {
             using: http,
             imageSizeQuery: imageSizeQuery
         )
-        // The profile policy can expire while the requests above are in
-        // flight; never publish one profile's shelf after it has.
-        guard client.isPersonalizedContentAllowed else {
+        // The profile policy can expire, or the account or profile change,
+        // while the requests above are in flight; never publish one
+        // profile's shelf after that.
+        guard http.isCurrentScope else {
             Self.recordProfileSelectionRequired(in: defaults)
             return nil
         }

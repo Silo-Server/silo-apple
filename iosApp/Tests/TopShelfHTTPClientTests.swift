@@ -19,6 +19,16 @@ final class TopShelfHTTPClientTests: XCTestCase {
         func switchProfile() {
             defaults.set("other-profile", forKey: SharedStorage.profileIdKey)
         }
+
+        /// The user picks another profile that is also remembered, so the
+        /// profile policy still allows personalized content, but for them.
+        func switchToAnotherAllowedProfile() throws {
+            defaults.set("other-profile", forKey: SharedStorage.profileIdKey)
+            let state = ProfileLaunchState(rememberedByServerID: [
+                "server": RememberedProfile(profileID: "other-profile", requiredPINAtSelection: false, accountEpoch: "epoch"),
+            ])
+            defaults.set(try JSONEncoder().encode(state), forKey: SharedStorage.profileLaunchStateKey)
+        }
     }
 
     private func harness() throws -> Harness {
@@ -148,6 +158,21 @@ final class TopShelfHTTPClientTests: XCTestCase {
 
         await assertNotAuthenticated(fetch)
         XCTAssertEqual(h.stub.requestedPaths, [Self.sectionsPath])
+    }
+
+    func testSwitchToAnotherAllowedProfileDuringARequestReturnsNothing() async throws {
+        let h = try harness()
+        h.stub.reply(path: Self.sectionsPath, 200, #"{"sections":[]}"#)
+        h.stub.hold(path: Self.sectionsPath)
+
+        let fetch = Task { try await h.client.fetchHomeSections(imageSizeQuery: [:]) }
+        await h.stub.waitUntilHeld()
+        try h.switchToAnotherAllowedProfile()
+        XCTAssertTrue(h.client.isPersonalizedContentAllowed)
+        h.stub.release()
+
+        await assertNotAuthenticated(fetch)
+        XCTAssertFalse(h.client.isCurrentScope)
     }
 
     private func assertNotAuthenticated<T>(
