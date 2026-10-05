@@ -62,7 +62,6 @@ enum OpenSourceAcknowledgements {
         Resource(title: "HarfBuzz", name: "HarfBuzz"),
         Resource(title: "libpng", name: "libpng"),
         Resource(title: "ThumbHash decoder — MIT", name: "ThumbHash-MIT"),
-        Resource(title: "Go Noto Current font — SIL Open Font License 1.1", name: "GoNoto-OFL-1.1"),
     ]
 
     /// One titled license text per resource.

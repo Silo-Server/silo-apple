@@ -81,12 +81,6 @@ ThumbHash decoder
   Silo includes an adapted copy of the reference Swift decode path with input
   validation, cross-platform image creation, and a bounded asynchronous cache.
 
-Go Noto Current font
-  Release: Go Noto Universal v7.0, GoNotoCurrent-Regular.ttf, bundled
-  unmodified as go-noto-current-regular.ttf
-  License: SIL Open Font License 1.1 (GoNoto-OFL-1.1.txt)
-  Source: https://github.com/satbyy/go-noto-universal/releases/tag/v7.0
-
 SMBClient 0.3.1 is present in SwiftPM's resolution graph only because
 AetherEngine publishes a separate optional AetherEngineSMB product. Silo links
 the AetherEngine product, not AetherEngineSMB, so SMBClient is not included in

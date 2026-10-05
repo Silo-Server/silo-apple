@@ -182,18 +182,6 @@ and a bounded asynchronous cache around the reference algorithm.
   <https://github.com/evanw/thumbhash/tree/a652ce6ed691242f459f468f0a8756cda3b90a82>
 - Bundled text: `ThumbHash-MIT.txt`
 
-## Go Noto Current font
-
-`iosApp/Resources/Fonts/go-noto-current-regular.ttf` is byte-for-byte
-`GoNotoCurrent-Regular.ttf` from Go Noto Universal v7.0 (SHA-256
-`882afbab965608c2d2bc627fd8016b962aa5a6be2d358f9de24a7b5967c5632e`).
-Go Noto Universal's scripts are under the Unlicense; the fonts it builds from
-Noto sources are licensed under the SIL Open Font License 1.1, Copyright 2022
-The Noto Project Authors.
-
-- Exact source: <https://github.com/satbyy/go-noto-universal/releases/tag/v7.0>
-- Bundled text: `GoNoto-OFL-1.1.txt`
-
 ## Runtime attributions
 
 These services are not shipped in the app bundle, but the app shows their
