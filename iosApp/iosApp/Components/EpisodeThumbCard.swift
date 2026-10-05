@@ -7,7 +7,8 @@ import SwiftUI
 /// Episode numbering stays in accessibility and detail metadata rather than
 /// being drawn over the artwork.
 /// On tvOS the image sits inside a `.card` button for focus lift/parallax and
-/// a FocusState binding drives the title highlight.
+/// a FocusState binding drives the title highlight. Only small focus subviews
+/// read that binding, so a focus move re-evaluates them, not every card body.
 struct EpisodeThumbCard: View {
     let item: SectionItem
     var showProgress: Bool = false
@@ -37,7 +38,6 @@ struct EpisodeThumbCard: View {
     @State private var uiCustomization = UICustomizationPreferences.shared
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
     #if os(tvOS)
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var continueWatchingMetadata = TVContinueWatchingPlaybackMetadataStore.shared
     #endif
     #if !os(tvOS)
@@ -57,9 +57,12 @@ struct EpisodeThumbCard: View {
     #if os(tvOS)
     @FocusState private var standaloneFocused: Bool
 
-    private var isFocused: Bool {
-        guard let focusedItemId else { return standaloneFocused }
-        return focusedItemId.wrappedValue == item.contentId
+    private var focusSource: TVEpisodeCardFocusSource {
+        TVEpisodeCardFocusSource(
+            focusedItemId: focusedItemId,
+            itemId: item.contentId,
+            standaloneFocused: $standaloneFocused
+        )
     }
     #endif
 
@@ -74,18 +77,7 @@ struct EpisodeThumbCard: View {
 
             if uiCustomization.cardPresentation.caption.showsTitle {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(displayTitle)
-                        .font(.siloPosterTitle)
-                        .foregroundStyle(
-                            isFocused
-                                ? Color.siloOnSurface
-                                : Color.siloOnSurface.opacity(0.85)
-                        )
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .frame(width: cardWidth, alignment: .leading)
-                        .clipped()
-                        .animation(.easeOut(duration: 0.15), value: isFocused)
+                    TVEpisodeCardTitle(title: displayTitle, cardWidth: cardWidth, focus: focusSource)
 
                     if uiCustomization.cardPresentation.caption.showsMetadata,
                        let subtitle = subtitleLine {
@@ -354,13 +346,7 @@ struct EpisodeThumbCard: View {
             itemId: item.contentId,
             standaloneBinding: $standaloneFocused
         )
-        .scaleEffect(isFocused && !reduceMotion ? 1.025 : 1)
-        .shadow(
-            color: .black.opacity(isFocused ? 0.5 : 0.2),
-            radius: isFocused ? 20 : 8,
-            y: isFocused ? 10 : 4
-        )
-        .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+        .modifier(TVEpisodeCardFocusLift(focus: focusSource))
         .applyEpisodePlayPauseAction(playAction)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityDescription)
@@ -476,6 +462,61 @@ struct EpisodeThumbCard: View {
 }
 
 #if os(tvOS)
+/// Where a card's focus lives: the row's shared item ID, or the card's own
+/// Boolean when it stands alone. Only the subviews below read it.
+private struct TVEpisodeCardFocusSource {
+    let focusedItemId: FocusState<String?>.Binding?
+    let itemId: String
+    let standaloneFocused: FocusState<Bool>.Binding
+
+    var isFocused: Bool {
+        guard let focusedItemId else { return standaloneFocused.wrappedValue }
+        return focusedItemId.wrappedValue == itemId
+    }
+}
+
+private struct TVEpisodeCardTitle: View {
+    let title: String
+    let cardWidth: CGFloat
+    let focus: TVEpisodeCardFocusSource
+
+    var body: some View {
+        let isFocused = focus.isFocused
+        Text(title)
+            .font(.siloPosterTitle)
+            .foregroundStyle(
+                isFocused
+                    ? Color.siloOnSurface
+                    : Color.siloOnSurface.opacity(0.85)
+            )
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .frame(width: cardWidth, alignment: .leading)
+            .clipped()
+            .animation(.easeOut(duration: 0.15), value: isFocused)
+    }
+}
+
+/// The focused card's scale and shadow. As a modifier, a focus change
+/// re-evaluates only this body and passes the wrapped button and its
+/// artwork through untouched.
+private struct TVEpisodeCardFocusLift: ViewModifier {
+    let focus: TVEpisodeCardFocusSource
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        let isFocused = focus.isFocused
+        content
+            .scaleEffect(isFocused && !reduceMotion ? 1.025 : 1)
+            .shadow(
+                color: .black.opacity(isFocused ? 0.5 : 0.2),
+                radius: isFocused ? 20 : 8,
+                y: isFocused ? 10 : 4
+            )
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+    }
+}
+
 private extension View {
     @ViewBuilder
     func applyEpisodePlayPauseAction(_ action: (() -> Void)?) -> some View {
