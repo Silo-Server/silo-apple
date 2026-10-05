@@ -2026,6 +2026,24 @@ private enum DebugAutoPlayError: LocalizedError {
 
 // MARK: - Main Tab View
 
+#if os(macOS)
+/// Root pages have no window title, so the transparent toolbar strip above
+/// them is dead space. Let the page rise into it, keeping a page margin.
+private struct MacRootPageTopInset: ViewModifier {
+    let reclaimsToolbarStrip: Bool
+
+    func body(content: Content) -> some View {
+        if reclaimsToolbarStrip {
+            content
+                .padding(.top, SiloTheme.padding)
+                .ignoresSafeArea(.container, edges: .top)
+        } else {
+            content
+        }
+    }
+}
+#endif
+
 enum MainTabDestinationID: Hashable {
     case app(AppTab)
     case libraryCategory(PrimaryMenuBuiltin)
@@ -2530,6 +2548,26 @@ struct MainTabView: View {
     /// `DownloadManager.shared.downloadsEnabled` here registers the tab bar
     /// as an observer, so the tab appears as soon as capability loads.
     private var visibleDestinations: [MainTabDestination] {
+        #if os(macOS)
+        macSidebarSectionList.flatMap(\.items)
+        #else
+        projectedDestinations
+        #endif
+    }
+
+    #if os(macOS)
+    /// The Mac sidebar's groups. Every library the profile can open gets its
+    /// own row; the synced menu only orders the other destinations.
+    private var macSidebarSectionList: [MacSidebarSection] {
+        macSidebarSections(
+            destinations: projectedDestinations,
+            libraries: librarySnapshot.availableLibraries(for: currentLibraryAuthority),
+            showAudiobooks: navPrefs.showAudiobooks
+        )
+    }
+    #endif
+
+    private var projectedDestinations: [MainTabDestination] {
         var destinations = projectedMainTabDestinations(
             primaryMenu: uiCustomization.primaryMenu,
             availableLibraries: librarySnapshot.availableLibraries(
@@ -2635,8 +2673,9 @@ struct MainTabView: View {
                 )
                 .environment(\.reservesSidebarToggleSpace, true)
             #else
+            // The title bar's system toggle is the Mac's only sidebar
+            // toggle, so pages are handed none of their own.
             macSidebarLayout
-                .environment(\.sidebarToggle, SidebarToggleAction(perform: toggleSidebar))
             #endif
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -2717,15 +2756,27 @@ struct MainTabView: View {
     #else
     private var macSidebarLayout: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            sidebarList(
-                dismissAfterSelection: false,
-                nestsPinnedLibraries: false
+            MacSidebar(
+                sections: macSidebarSectionList,
+                highlight: macSidebarHighlight(
+                    selected: selectedDestinationID,
+                    pushedRoutes: router.visiblePushedRoutes
+                ),
+                onSelect: selectSidebarDestination
             )
                 .navigationTitle(sidebarTitle)
-                .navigationSplitViewColumnWidth(min: 240, ideal: 260, max: 280)
+                .navigationSplitViewColumnWidth(
+                    min: SiloTheme.macSidebarMinWidth,
+                    ideal: SiloTheme.macSidebarIdealWidth,
+                    max: SiloTheme.macSidebarMaxWidth
+                )
         } detail: {
             sidebarDetailContent
         }
+        // One canvas for the window, title bar and page, so no separate
+        // strip sits beside the sidebar.
+        .containerBackground(Color.siloPageCanvas, for: .window)
+        .toolbarBackground(.hidden, for: .windowToolbar)
     }
     #endif
 
@@ -2733,6 +2784,15 @@ struct MainTabView: View {
         NavigationStack(path: $router.path) {
             destinationContent(for: selectedDestination)
                 .id(selectedDestination.id)
+                #if os(macOS)
+                // The sidebar shows the logo and the selected row; a window
+                // title on root pages would repeat them.
+                .toolbar(removing: .title)
+                .modifier(MacRootPageTopInset(
+                    // Search keeps the toolbar strip: its field lives there.
+                    reclaimsToolbarStrip: selectedDestination.id != .app(.search)
+                ))
+                #endif
                 #if os(iOS)
                 .toolbar {
                     if destinationNeedsSidebarToggle(selectedDestination.id) {

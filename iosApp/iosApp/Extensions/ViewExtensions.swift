@@ -35,6 +35,11 @@ struct SiloPageBackdrop: View {
         .ignoresSafeArea()
         .allowsHitTesting(false)
         .accessibilityHidden(true)
+        #elseif os(macOS)
+        Color.siloPageCanvas
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
         #else
         Color.siloBackground
             .ignoresSafeArea()

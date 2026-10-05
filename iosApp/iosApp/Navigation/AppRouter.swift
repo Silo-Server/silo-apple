@@ -142,6 +142,24 @@ final class AppRouter {
     /// Navigation path for push/pop within the current flow.
     var path = NavigationPath()
 
+    #if os(macOS)
+    /// Routes pushed through the router, mirrored because `NavigationPath` is
+    /// opaque. Entries past `path.count` are stale (the system Back button
+    /// pops the path directly), so read `visiblePushedRoutes` instead.
+    @ObservationIgnored private var pushedRoutes: [Route] = []
+
+    /// The routes currently on the stack, oldest first. The Mac sidebar reads
+    /// this to highlight the row that matches the page in view.
+    var visiblePushedRoutes: [Route] {
+        Array(pushedRoutes.prefix(path.count))
+    }
+
+    private func recordPush(_ route: Route, replacingTop: Bool = false) {
+        let kept = max(0, path.count - (replacingTop ? 1 : 0))
+        pushedRoutes = Array(pushedRoutes.prefix(kept)) + [route]
+    }
+    #endif
+
     // MARK: - Item Detail Presentation
 
     /// iPhone and iPad present catalog details as a native bottom sheet instead
@@ -591,6 +609,9 @@ final class AppRouter {
         }
         #endif
 
+        #if os(macOS)
+        recordPush(route)
+        #endif
         path.append(route)
     }
 
@@ -661,6 +682,9 @@ final class AppRouter {
     /// stack up — Back exits the chain in one step.
     func replaceCurrent(with route: Route) {
         recordScreenBreadcrumb(target: route.diagnosticsTarget, action: "replace")
+        #if os(macOS)
+        recordPush(route, replacingTop: true)
+        #endif
         if !path.isEmpty {
             path.removeLast()
         }

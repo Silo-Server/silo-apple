@@ -152,8 +152,10 @@ struct HomeView: View {
                 // over the glass strip instead of scrolling away with the feed.
                 // It occupies the same 44pt row as the icon buttons so its
                 // centre lines up with theirs.
+                #if !os(macOS)
                 SiloWordmarkView(width: 72)
                     .frame(height: SiloTheme.topBarIconHitSize)
+                #endif
                 Spacer(minLength: 8)
 
                 // Trailing action cluster shared by every root page.
@@ -320,6 +322,12 @@ struct HomeView: View {
         // Mirror the floating header's vertical footprint (icon-frame height +
         // bottom padding) so the first row clears it. LazyVStack supplies the
         // remaining row gap; don't double-count it here.
+        #if os(macOS)
+        // The Mac sidebar carries the logo and utilities, so Home has no
+        // floating header to clear, and the feed already starts below the
+        // title bar. The stack's section spacing is the only top gap.
+        return 0
+        #else
         var runway = topSafeAreaInset + SiloTheme.topBarIconHitSize + SiloTheme.smallPadding
         #if os(iOS)
         runway += headerTopInset + headerToContentGap
@@ -327,6 +335,7 @@ struct HomeView: View {
         runway += SiloTheme.largePadding + SiloTheme.smallPadding
         #endif
         return runway
+        #endif
     }
     #endif
 }

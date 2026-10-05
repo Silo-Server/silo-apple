@@ -120,7 +120,11 @@ struct OpenSourceAcknowledgementsView: View {
             .textSelection(.enabled)
             #endif
         }
+        #if os(macOS)
+        .siloPageBackground()
+        #else
         .background(Color.siloBackground)
+        #endif
         .navigationTitle("Open Source Licenses")
         .siloNavigationTitleDisplayMode(.inline)
         .siloToolbarColorSchemeDark()
