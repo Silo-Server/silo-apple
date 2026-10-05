@@ -2,7 +2,8 @@
 import SwiftUI
 
 /// The tvOS intro-skip pill: "Skip Intro" for `ask`, and a muted
-/// "Intro skipped" caption over "Watch Intro" for `always`'s undo.
+/// "Intro skipped" caption over "Watch Intro" for `always`'s undo. A recap
+/// uses the same pill with its own labels.
 ///
 /// Same treatment as the Android TV pill so the two remotes feel alike: a dark
 /// capsule whose fill creeps left to right as the timer runs out, dimmed while
@@ -18,7 +19,7 @@ struct TVIntroSkipPill: View {
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 10) {
-            if let caption = pill.kind.caption {
+            if let caption = pill.caption {
                 Text(caption)
                     .font(.system(size: 22, weight: .medium))
                     .foregroundStyle(.white.opacity(0.72))
@@ -27,12 +28,12 @@ struct TVIntroSkipPill: View {
                     .accessibilityHidden(true)
             }
             Button(action: action) {
-                Text(pill.kind.actionTitle)
+                Text(pill.actionTitle)
                     .lineLimit(1)
                     .fixedSize()
             }
             .buttonStyle(TVIntroSkipPillButtonStyle(pill: pill, isSelectTarget: isSelectTarget))
-            .accessibilityLabel(pill.kind.accessibilityLabel)
+            .accessibilityLabel(pill.accessibilityLabel)
         }
     }
 }

@@ -310,8 +310,10 @@ struct PlaybackRealtimeMarkersUpdatedPayload: Equatable {
     let fileId: Int
     let intro: TimeRange?
     let credits: TimeRange?
+    let recap: TimeRange?
     let introUpdate: PlaybackRealtimeMarkerRangeUpdate
     let creditsUpdate: PlaybackRealtimeMarkerRangeUpdate
+    let recapUpdate: PlaybackRealtimeMarkerRangeUpdate
 
     init?(payload: PlaybackRealtimePayload) {
         guard let fileId = payload.int(forKeys: "file_id", "fileId") else {
@@ -321,8 +323,10 @@ struct PlaybackRealtimeMarkersUpdatedPayload: Equatable {
         self.fileId = fileId
         introUpdate = payload.markerRangeUpdate(forKey: "intro")
         creditsUpdate = payload.markerRangeUpdate(forKey: "credits")
+        recapUpdate = payload.markerRangeUpdate(forKey: "recap")
         self.intro = introUpdate.range
         self.credits = creditsUpdate.range
+        self.recap = recapUpdate.range
     }
 }
 

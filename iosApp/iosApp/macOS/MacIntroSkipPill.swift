@@ -2,7 +2,8 @@
 import SwiftUI
 
 /// The macOS intro-skip pill: "Skip Intro" for `ask`, and a small "Intro
-/// skipped" caption over "Watch Intro" for `always`'s undo.
+/// skipped" caption over "Watch Intro" for `always`'s undo. A recap uses the
+/// same pill with its own labels.
 ///
 /// Pointer rules, like the web player: click is Select, Return selects too
 /// while the pill is up, and Escape dismisses it (both routed by
@@ -15,7 +16,7 @@ struct MacIntroSkipPill: View {
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 5) {
-            if let caption = pill.kind.caption {
+            if let caption = pill.caption {
                 Text(caption)
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.white.opacity(0.75))
@@ -24,7 +25,7 @@ struct MacIntroSkipPill: View {
                     .accessibilityHidden(true)
             }
             Button(action: action) {
-                Text(pill.kind.actionTitle)
+                Text(pill.actionTitle)
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 20)
@@ -45,7 +46,7 @@ struct MacIntroSkipPill: View {
             .buttonStyle(.plain)
             .onHover { isHovered = $0 }
             .shadow(color: .black.opacity(0.4), radius: 12, y: 4)
-            .accessibilityLabel(pill.kind.accessibilityLabel)
+            .accessibilityLabel(pill.accessibilityLabel)
         }
     }
 }

@@ -275,6 +275,8 @@ class PlayerViewModel {
     private var subtitleOrderingLanguage: String?
     var chapters: [PlayerChapterInfo] = []
     var introRange: TimeRange?
+    /// The "previously on" segment.
+    var recapRange: TimeRange?
     var creditsRange: TimeRange? {
         didSet { updateCreditsWindow() }
     }
@@ -285,6 +287,8 @@ class PlayerViewModel {
     /// The intro-skip pill — `ask`'s "Skip Intro" offer or `always`'s undo.
     /// See IntroSkipPrompt.swift and the server's intro-skip-mode spec.
     let introSkipPrompt = IntroSkipPrompt()
+    /// The same pill for a recap, driven by `playback.auto_skip_recap`.
+    let recapSkipPrompt = IntroSkipPrompt(marker: .recap)
     var selectedAudioId: Int64?
     var selectedSubtitleId: Int64? {
         didSet {
@@ -375,11 +379,21 @@ class PlayerViewModel {
     /// on an indirection flag. Driven by `openHUD()` / `closeHUD()`.
     var isHUDPresented = false
 
-    /// True while the intro-skip pill is on screen. Its timer, not the intro's
-    /// range, decides this: the pill is up for a few seconds, not the whole
-    /// intro.
-    var showIntroSkip: Bool {
-        introSkipPrompt.isVisible
+    /// True while the intro or recap pill is on screen. Its timer, not the
+    /// marker's range, decides this: the pill is up for a few seconds, not
+    /// the whole intro.
+    var showMarkerSkipPrompt: Bool {
+        visibleMarkerSkipPrompt != nil
+    }
+
+    /// The pill to draw. The two segments do not overlap in practice; if
+    /// they did, the intro would take the slot.
+    var markerSkipPill: IntroSkipPrompt.Pill? {
+        visibleMarkerSkipPrompt?.pill
+    }
+
+    private var visibleMarkerSkipPrompt: IntroSkipPrompt? {
+        [introSkipPrompt, recapSkipPrompt].first(where: \.isVisible)
     }
 
     var showCreditsSkip: Bool {
@@ -1247,7 +1261,7 @@ class PlayerViewModel {
             case .loading, .seeking:
                 break
             }
-            syncIntroSkipPrompt()
+            syncMarkerSkipPrompts()
         case .phase(let phase):
             switch phase {
             case .loading, .rebuffering, .stalled:
@@ -1256,7 +1270,7 @@ class PlayerViewModel {
                 isLoading = false
             }
             refreshPlaybackStats(force: true)
-            syncIntroSkipPrompt()
+            syncMarkerSkipPrompts()
         case .playerTime(let playerSeconds):
             guard !hasReachedEndOfFile,
                   playerSeconds.isFinite,
@@ -1283,7 +1297,7 @@ class PlayerViewModel {
             prematureEndReopenBudget.notePlayhead(from: currentTime, to: movieTime)
             currentTime = movieTime
             updateNextUpPresentation(for: movieTime)
-            syncIntroSkipPrompt()
+            syncMarkerSkipPrompts()
             autoSkipCreditsIfNeeded(at: movieTime)
             pushNowPlayingIfDue()
             refreshPlaybackStats()
@@ -1304,7 +1318,7 @@ class PlayerViewModel {
         case .buffering(let buffering):
             isBuffering = buffering
             refreshPlaybackStats(force: true)
-            syncIntroSkipPrompt()
+            syncMarkerSkipPrompts()
         case .subtitleLoading(let loading):
             isLoadingSubtitles = loading
         case .firstFrame:
@@ -1705,7 +1719,7 @@ class PlayerViewModel {
         bufferingProgress = nil
         // The credential refresh runs before any engine event; hold the intro
         // pill's timer through it like any other stall.
-        syncIntroSkipPrompt()
+        syncMarkerSkipPrompts()
         streamLoadGeneration &+= 1
         let recoveryGeneration = streamLoadGeneration
 
@@ -2047,7 +2061,7 @@ class PlayerViewModel {
         bufferingProgress = nil
         // The replan is prepared before any engine event; hold the intro
         // pill's timer through it like any other stall.
-        syncIntroSkipPrompt()
+        syncMarkerSkipPrompts()
         streamLoadGeneration &+= 1
         let currentStreamLoadGeneration = streamLoadGeneration
         protocolV3ReplanTask = Task { @MainActor [weak self] in
@@ -3993,6 +4007,7 @@ class PlayerViewModel {
         liveSecondarySubtitleCues = []
         chapters = []
         introRange = nil
+        recapRange = nil
         creditsRange = nil
         markerReconcileTask?.cancel()
         markerReconcileTask = nil
@@ -4208,6 +4223,7 @@ class PlayerViewModel {
         // its end.
         if lastLoadRequest?.contentId != request.contentId {
             introSkipPrompt.reset()
+            recapSkipPrompt.reset()
             prematureEndReopenBudget = PlayerPrematureEndReopenBudget()
         }
         lastLoadRequest = request
@@ -4245,7 +4261,7 @@ class PlayerViewModel {
         // No engine event arrives while the replacement session is prepared,
         // so hand the pill the stall now. A same-content reload keeps the
         // `always` undo, and its timer must hold through the spinner.
-        syncIntroSkipPrompt()
+        syncMarkerSkipPrompts()
 
         // The prior item's timer reads bridge state at each tick. Stop it
         // before a replacement session becomes provisional or it can publish
@@ -4422,7 +4438,8 @@ class PlayerViewModel {
                 self.currentTime = self.movieTime(for: session)
                 self.applyMarkerRanges(
                     intro: prepared.selectedVersion.intro ?? prepared.watchDetail.intro,
-                    credits: prepared.selectedVersion.credits ?? prepared.watchDetail.credits
+                    credits: prepared.selectedVersion.credits ?? prepared.watchDetail.credits,
+                    recap: prepared.selectedVersion.recap ?? prepared.watchDetail.recap
                 )
 
                 guard let streamRequest = await self.makeStreamRequest(
@@ -4662,6 +4679,7 @@ class PlayerViewModel {
             // The reload froze the pill's timer; with no playback left under
             // it, it would sit over the dead player indefinitely.
             introSkipPrompt.withdraw()
+            recapSkipPrompt.withdraw()
             showNotice(
                 title: "Playback recovery failed",
                 message: message,
@@ -4708,6 +4726,7 @@ class PlayerViewModel {
         // The error view hides the pill, but Menu, Escape and Return still
         // reach it; a reload's stall froze its timer, so it would never leave.
         introSkipPrompt.withdraw()
+        recapSkipPrompt.withdraw()
         error = message
         isLoading = false
         isPlaying = false
@@ -5092,22 +5111,24 @@ class PlayerViewModel {
         return true
     }
 
-    /// The intro pill's action: past the intro for `ask`, back to its start
-    /// for `always`'s undo. Either way the intro is decided and the pill goes.
-    func selectIntroSkipPrompt() {
-        guard let target = withoutAnimation({ introSkipPrompt.select() }) else { return }
+    /// The pill's action: past the segment for `ask`, back to its start for
+    /// `always`'s undo. Either way the segment is decided and the pill goes.
+    func selectMarkerSkipPrompt() {
+        guard let prompt = visibleMarkerSkipPrompt,
+              let target = withoutAnimation({ prompt.select() }) else { return }
         Self.logger.info(
-            "[CMP-MARKERS] intro prompt selected target=\(target, privacy: .public) current=\(self.currentTime, privacy: .public)"
+            "[CMP-MARKERS] \(String(describing: prompt.marker), privacy: .public) prompt selected target=\(target, privacy: .public) current=\(self.currentTime, privacy: .public)"
         )
         seekTo(seconds: target)
     }
 
-    /// Back / Menu / Escape while the intro pill is up. Returns true when it
-    /// took the pill down, so the caller consumes the press only then.
+    /// Back / Menu / Escape while the pill is up. Returns true when it took
+    /// the pill down, so the caller consumes the press only then.
     @discardableResult
-    func dismissIntroSkipPrompt() -> Bool {
-        guard withoutAnimation({ introSkipPrompt.dismiss() }) else { return false }
-        Self.logger.info("[CMP-MARKERS] intro prompt dismissed")
+    func dismissMarkerSkipPrompt() -> Bool {
+        guard let prompt = visibleMarkerSkipPrompt,
+              withoutAnimation({ prompt.dismiss() }) else { return false }
+        Self.logger.info("[CMP-MARKERS] \(String(describing: prompt.marker), privacy: .public) prompt dismissed")
         return true
     }
 
@@ -5388,7 +5409,7 @@ class PlayerViewModel {
         // Last, after this seek is fully issued: a seek into an unresolved
         // intro under `always` commits its own skip from in here, and that
         // later seek must replace this one rather than be cancelled by it.
-        syncIntroSkipPrompt()
+        syncMarkerSkipPrompts()
         return requiresReplan
     }
 
@@ -5405,12 +5426,18 @@ class PlayerViewModel {
         scheduleHideControls()
     }
 
-    private func applyMarkerRanges(intro: TimeRange?, credits: TimeRange?) {
+    private func applyMarkerRanges(intro: TimeRange?, credits: TimeRange?, recap: TimeRange?) {
         introRange = validTimeRange(intro)
         creditsRange = validTimeRange(credits)
+        recapRange = validTimeRange(recap)
         if let introRange {
             Self.logger.info(
                 "[CMP-MARKERS] intro range active start=\(introRange.start, privacy: .public) end=\(introRange.end, privacy: .public)"
+            )
+        }
+        if let recapRange {
+            Self.logger.info(
+                "[CMP-MARKERS] recap range active start=\(recapRange.start, privacy: .public) end=\(recapRange.end, privacy: .public)"
             )
         }
         if let creditsRange {
@@ -5418,13 +5445,13 @@ class PlayerViewModel {
                 "[CMP-MARKERS] credits range active start=\(creditsRange.start, privacy: .public) end=\(creditsRange.end, privacy: .public)"
             )
         }
-        syncIntroSkipPrompt()
+        syncMarkerSkipPrompts()
         autoSkipCreditsIfNeeded(at: currentTime)
     }
 
     private func reconcileMarkersAfterRealtimeConnect() {
         guard offlinePlaybackContext == nil,
-              introRange == nil || creditsRange == nil,
+              introRange == nil || creditsRange == nil || recapRange == nil,
               let sessionId = activePlaybackSessionId,
               markerReconciledSessionId != sessionId,
               let contentId = currentWatchDetail?.contentId,
@@ -5451,9 +5478,11 @@ class PlayerViewModel {
                 }
                 let refreshedIntro = version.intro ?? detail.intro
                 let refreshedCredits = version.credits ?? detail.credits
+                let refreshedRecap = version.recap ?? detail.recap
                 self.applyMarkerRanges(
                     intro: self.introRange ?? refreshedIntro,
-                    credits: self.creditsRange ?? refreshedCredits
+                    credits: self.creditsRange ?? refreshedCredits,
+                    recap: self.recapRange ?? refreshedRecap
                 )
             } catch {
                 if self.activePlaybackSessionId == sessionId {
@@ -5477,46 +5506,67 @@ class PlayerViewModel {
         return range
     }
 
-    /// Feeds the intro pill the latest playback state.
+    /// Feeds the intro and recap pills the latest playback state.
     ///
-    /// Called wherever one of its inputs moves: the playhead, the markers, and
-    /// the play/pause, loading and buffering state. The pill's own timer runs
-    /// in between. The one seek it can ask for is `always`'s immediate skip.
-    private func syncIntroSkipPrompt() {
-        let range = introRange
-        let target = introSkipPrompt.update(
-            IntroSkipPrompt.Inputs(
-                position: currentTime,
-                range: range,
-                key: range.flatMap(currentIntroSkipKey(for:)),
-                mode: introSkipMode,
-                activity: introSkipActivity
+    /// Called wherever one of their inputs moves: the playhead, the markers,
+    /// and the play/pause, loading and buffering state. The pills' own timers
+    /// run in between. The one seek they can ask for is `always`'s immediate
+    /// skip.
+    private func syncMarkerSkipPrompts() {
+        let effectiveMode = { (mode: IntroSkipMode) in
+            Self.markerSkipMode(mode, isWatchParty: self.isWatchPartyPlayback, canRequestSeek: self.canRequestSeek)
+        }
+        let prompts: [(IntroSkipPrompt, TimeRange?, IntroSkipMode)] = [
+            (introSkipPrompt, introRange, effectiveMode(settings.introSkipMode)),
+            (recapSkipPrompt, recapRange, effectiveMode(Self.recapSkipMode(autoSkip: settings.autoSkipRecap))),
+        ]
+        for (prompt, range, mode) in prompts {
+            let target = prompt.update(
+                IntroSkipPrompt.Inputs(
+                    position: currentTime,
+                    range: range,
+                    key: range.flatMap(currentMarkerSkipKey(for:)),
+                    mode: mode,
+                    activity: markerSkipActivity
+                )
             )
-        )
-        guard let target, !hasReachedEndOfFile else { return }
-        Self.logger.info(
-            "[CMP-MARKERS] auto-skip intro target=\(target, privacy: .public) current=\(self.currentTime, privacy: .public)"
-        )
-        // Not `seekTo`: that reveals the transport, and nobody touched the
-        // remote. The undo pill is the feedback for this seek.
-        skipDebounceTask?.cancel()
-        skipDebounceTask = nil
-        commitSeek(to: target, source: "introAutoSkip")
+            guard let target, !hasReachedEndOfFile else { continue }
+            Self.logger.info(
+                "[CMP-MARKERS] auto-skip \(String(describing: prompt.marker), privacy: .public) target=\(target, privacy: .public) current=\(self.currentTime, privacy: .public)"
+            )
+            // Not `seekTo`: that reveals the transport, and nobody touched the
+            // remote. The undo pill is the feedback for this seek. The seek
+            // syncs both pills again.
+            skipDebounceTask?.cancel()
+            skipDebounceTask = nil
+            commitSeek(to: target, source: "markerAutoSkip")
+            return
+        }
     }
 
-    /// A Watch Party never skips an intro on its own, because the seek would
-    /// move every member. A member who may seek gets the offer instead; one
-    /// who may not gets no pill to press.
-    private var introSkipMode: IntroSkipMode {
-        guard isWatchPartyPlayback else { return settings.introSkipMode }
+    /// `playback.auto_skip_recap` is a switch: on skips like the intro's
+    /// `always`, off offers the pill like `ask`.
+    nonisolated static func recapSkipMode(autoSkip: Bool) -> IntroSkipMode {
+        autoSkip ? .always : .ask
+    }
+
+    /// A Watch Party never skips an intro or recap on its own, because the
+    /// seek would move every member. A member who may seek gets the offer
+    /// instead; one who may not gets no pill to press.
+    nonisolated static func markerSkipMode(
+        _ mode: IntroSkipMode,
+        isWatchParty: Bool,
+        canRequestSeek: Bool
+    ) -> IntroSkipMode {
+        guard isWatchParty else { return mode }
         guard canRequestSeek else { return .never }
-        return settings.introSkipMode == .never ? .never : .ask
+        return mode == .never ? .never : .ask
     }
 
-    /// Playback as the intro pill's timer sees it. Loading and buffering are a
-    /// stall, which the pill only treats as a pause once it outlasts the grace
+    /// Playback as the pills' timers see it. Loading and buffering are a
+    /// stall, which a pill only treats as a pause once it outlasts the grace
     /// window; a paused player freezes the timer at once.
-    private var introSkipActivity: IntroSkipPrompt.Activity {
+    private var markerSkipActivity: IntroSkipPrompt.Activity {
         if hasReachedEndOfFile { return .paused }
         if isLoading || isBuffering { return .stalled }
         return isPlaying ? .playing : .paused
@@ -5587,11 +5637,11 @@ class PlayerViewModel {
         return true
     }
 
-    /// Identifies an intro across seeks and stream reloads of the same file.
-    /// Deliberately not keyed on the playback session: a protocol-v3 replan
-    /// can replace the session id mid-playback, and the intro must stay
-    /// decided across it.
-    private func currentIntroSkipKey(for range: TimeRange) -> String? {
+    /// Identifies an intro or recap across seeks and stream reloads of the
+    /// same file. Deliberately not keyed on the playback session: a
+    /// protocol-v3 replan can replace the session id mid-playback, and the
+    /// segment must stay decided across it.
+    private func currentMarkerSkipKey(for range: TimeRange) -> String? {
         guard let contentId = currentWatchDetail?.contentId,
               let fileId = currentSelectedVersion?.fileId else {
             return nil
@@ -6653,11 +6703,13 @@ class PlayerViewModel {
         currentSelectedVersion = nil
         clearPlaybackStats()
         introRange = nil
+        recapRange = nil
         creditsRange = nil
         markerReconcileTask?.cancel()
         markerReconcileTask = nil
         markerReconciledSessionId = nil
         introSkipPrompt.reset()
+        recapSkipPrompt.reset()
         autoSkippedCreditsKey = nil
         knownExternalSubtitles = []
         locallyRegisteredSidecarSubtitleTracks = []
@@ -6842,7 +6894,8 @@ class PlayerViewModel {
             }
             applyMarkerRanges(
                 intro: payload.introUpdate.resolving(current: introRange),
-                credits: payload.creditsUpdate.resolving(current: creditsRange)
+                credits: payload.creditsUpdate.resolving(current: creditsRange),
+                recap: payload.recapUpdate.resolving(current: recapRange)
             )
         case .chapterThumbnailReady:
             break
@@ -8247,6 +8300,7 @@ extension PlayerViewModel {
         #endif
         endHoldFastForward()
         introSkipPrompt.reset()
+        recapSkipPrompt.reset()
         cancelNextUpFlow()
         sleepTimer.cancel()
         var request = LoadRequest(

@@ -134,7 +134,7 @@ struct TVPlayerControls: View {
             .frame(width: 1, height: 1)
         }
         .animation(.easeOut(duration: SiloTheme.fastDuration), value: isHUDPresented)
-        .animation(.easeOut(duration: 0.2), value: viewModel.showIntroSkip)
+        .animation(.easeOut(duration: 0.2), value: viewModel.showMarkerSkipPrompt)
         // Menu / exit handling intentionally lives at the `PlayerView` level
         // rather than here. That higher handler reads `viewModel.isHUDPresented`
         // directly so it catches Menu presses even when focus has drifted off
@@ -149,7 +149,7 @@ struct TVPlayerControls: View {
                 isScrubberFocused = true
             }
         }
-        .onChange(of: viewModel.showIntroSkip) { _, visible in
+        .onChange(of: viewModel.showMarkerSkipPrompt) { _, visible in
             if visible {
                 // The pill takes focus as it appears, except from a viewer who
                 // is mid-interaction: the HUD's focus graph, or a timeline
@@ -238,7 +238,7 @@ struct TVPlayerControls: View {
         } else if viewModel.showControls {
             // The skip pills are disabled during a timeline scrub, so a claim
             // on them would land nowhere; the scrubber owns focus then.
-            if viewModel.showIntroSkip && !isTimelineScrubbing && !isIntroSkipFocused {
+            if viewModel.showMarkerSkipPrompt && !isTimelineScrubbing && !isIntroSkipFocused {
                 isIntroSkipFocused = true
             } else if viewModel.showCreditsSkip && !isTimelineScrubbing && !isCreditsSkipFocused {
                 isCreditsSkipFocused = true
@@ -290,7 +290,7 @@ struct TVPlayerControls: View {
             // controls keeps the scrubber: the pills are disabled mid-scrub.
             if isTimelineScrubbing {
                 isScrubberFocused = true
-            } else if viewModel.showIntroSkip {
+            } else if viewModel.showMarkerSkipPrompt {
                 isScrubberFocused = false
                 isIntroSkipFocused = true
             } else if viewModel.showCreditsSkip {
@@ -337,7 +337,7 @@ struct TVPlayerControls: View {
     /// Lower right, above the transport while the controls are up and closer
     /// to the corner when they hide. Fades in, and fades out when its timer
     /// runs out; Select and Menu take it down instantly (see
-    /// `PlayerViewModel.selectIntroSkipPrompt`).
+    /// `PlayerViewModel.selectMarkerSkipPrompt`).
     ///
     /// One focus owner at a time (docs/tvos-focus.md). With the controls
     /// hidden, the shell's press capture owns the remote and routes Select to
@@ -346,12 +346,12 @@ struct TVPlayerControls: View {
     /// focus graph, and Down moves on to the transport while its timer runs.
     @ViewBuilder
     private var introSkipLayer: some View {
-        if let pill = viewModel.introSkipPrompt.pill {
+        if let pill = viewModel.markerSkipPill {
             TVIntroSkipPill(
                 pill: pill,
                 isSelectTarget: !viewModel.showControls && !isHUDPresented
             ) {
-                viewModel.selectIntroSkipPrompt()
+                viewModel.selectMarkerSkipPrompt()
             }
             // Out of the focus graph during a timeline scrub, like the
             // transport row: a drag that drifts upward would otherwise land
@@ -419,7 +419,7 @@ struct TVPlayerControls: View {
                 onExitWhenIdle: {
                     // The intro pill is the most transient thing on screen, so
                     // Menu takes it down first and the press ends there.
-                    if viewModel.dismissIntroSkipPrompt() { return }
+                    if viewModel.dismissMarkerSkipPrompt() { return }
                     // While paused, Menu exits the player instead of hiding
                     // the controls over a frozen frame.
                     if viewModel.isPlaying {

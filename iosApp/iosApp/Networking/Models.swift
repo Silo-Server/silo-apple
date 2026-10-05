@@ -763,6 +763,8 @@ struct FileVersion: Codable, Identifiable, Hashable {
     let chapters: [VersionChapter]?
     let intro: TimeRange?
     let credits: TimeRange?
+    /// The "previously on" segment.
+    let recap: TimeRange?
     let presentationKind: String?
     let presentationGroupKey: String?
     let presentationPartIndex: Int?
@@ -797,6 +799,7 @@ struct FileVersion: Codable, Identifiable, Hashable {
         chapters: [VersionChapter]?,
         intro: TimeRange? = nil,
         credits: TimeRange? = nil,
+        recap: TimeRange? = nil,
         presentationKind: String? = nil,
         presentationGroupKey: String? = nil,
         presentationPartIndex: Int? = nil,
@@ -822,6 +825,7 @@ struct FileVersion: Codable, Identifiable, Hashable {
         self.chapters = chapters
         self.intro = intro
         self.credits = credits
+        self.recap = recap
         self.presentationKind = presentationKind
         self.presentationGroupKey = presentationGroupKey
         self.presentationPartIndex = presentationPartIndex
@@ -1100,6 +1104,7 @@ struct WatchDetail: Codable {
     let subtitles: [SubtitleInfoBasic]?
     let intro: TimeRange?
     let credits: TimeRange?
+    let recap: TimeRange?
     let userData: LeafItemUserData?
     let seriesId: String?
     let seriesTitle: String?
@@ -1125,6 +1130,7 @@ struct WatchDetail: Codable {
         subtitles = try c.decodeIfPresent([SubtitleInfoBasic].self, forKey: .subtitles)
         intro = try c.decodeIfPresent(TimeRange.self, forKey: .intro)
         credits = try c.decodeIfPresent(TimeRange.self, forKey: .credits)
+        recap = try c.decodeIfPresent(TimeRange.self, forKey: .recap)
         userData = try c.decodeIfPresent(LeafItemUserData.self, forKey: .userData)
         seriesId = try c.decodeIfPresent(String.self, forKey: .seriesId)
         seriesTitle = try c.decodeIfPresent(String.self, forKey: .seriesTitle)

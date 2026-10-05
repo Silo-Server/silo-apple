@@ -91,7 +91,8 @@ final class LiveIntroSkipPromptClock: IntroSkipPromptClock {
 }
 
 /// The intro-skip pill's state machine, shared by the iOS, tvOS and macOS
-/// players.
+/// players. A recap runs through the same machine with its own instance and
+/// labels.
 ///
 /// The player feeds it playback inputs through ``update(_:)`` and acts on the
 /// pill through ``select()`` and ``dismiss()``. Everything else — the timer,
@@ -118,6 +119,13 @@ final class IntroSkipPrompt {
     /// rebuffer and does not touch the timer.
     static let pauseGraceSeconds: TimeInterval = 1.5
 
+    /// The segment a prompt skips. Only the labels differ.
+    enum Marker: Equatable {
+        case intro
+        /// A "previously on" segment.
+        case recap
+    }
+
     enum Kind: Equatable {
         /// `ask`: "Skip Intro". Select seeks to the intro's end.
         case skip
@@ -137,6 +145,7 @@ final class IntroSkipPrompt {
     }
 
     struct Pill: Equatable {
+        let marker: Marker
         let kind: Kind
         /// When the timer runs out; nil while a pause holds it.
         let deadline: Date?
@@ -169,6 +178,7 @@ final class IntroSkipPrompt {
 
     var isVisible: Bool { pill != nil }
 
+    @ObservationIgnored let marker: Marker
     @ObservationIgnored private let clock: IntroSkipPromptClock
     @ObservationIgnored private let duration: TimeInterval
 
@@ -188,9 +198,11 @@ final class IntroSkipPrompt {
     @ObservationIgnored private var graceTimer: IntroSkipPromptTimer?
 
     init(
+        marker: Marker = .intro,
         clock: IntroSkipPromptClock? = nil,
         duration: TimeInterval = IntroSkipPrompt.promptSeconds
     ) {
+        self.marker = marker
         self.clock = clock ?? LiveIntroSkipPromptClock()
         self.duration = duration
     }
@@ -382,7 +394,7 @@ final class IntroSkipPrompt {
 
     private func publish(deadline: Date?, remaining: TimeInterval) {
         guard let active else { return }
-        pill = Pill(kind: active.kind, deadline: deadline, remaining: remaining, total: duration)
+        pill = Pill(marker: marker, kind: active.kind, deadline: deadline, remaining: remaining, total: duration)
     }
 
     /// The timer ran out. The two pills differ here and only here: the `ask`

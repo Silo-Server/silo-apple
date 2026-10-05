@@ -93,8 +93,8 @@ struct MobilePlayerControls: View {
         .animation(.easeOut(duration: 0.18), value: viewModel.showControls)
         .animation(.easeOut(duration: 0.18), value: showsStats)
         // Fades in, and out when its timer runs out. Tap takes it down at once
-        // (see `PlayerViewModel.selectIntroSkipPrompt`).
-        .animation(.easeOut(duration: 0.2), value: viewModel.showIntroSkip)
+        // (see `PlayerViewModel.selectMarkerSkipPrompt`).
+        .animation(.easeOut(duration: 0.2), value: viewModel.showMarkerSkipPrompt)
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
             case .tracks:
@@ -532,13 +532,14 @@ struct MobilePlayerControls: View {
     /// The intro-skip pill: "Skip Intro" for `ask`, and a small "Intro
     /// skipped" caption over "Watch Intro" for `always`'s undo. The same state
     /// machine and copy as the TV, web and Android pills, with pointer rules: a
-    /// tap is Select, and a tap elsewhere is not a dismissal.
+    /// tap is Select, and a tap elsewhere is not a dismissal. A recap uses
+    /// the same pill with its own labels.
     @ViewBuilder
     private var introSkipPill: some View {
-        if let pill = viewModel.introSkipPrompt.pill {
+        if let pill = viewModel.markerSkipPill {
             VStack(alignment: .trailing, spacing: 4) {
                 Spacer()
-                if let caption = pill.kind.caption {
+                if let caption = pill.caption {
                     Text(caption)
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.white.opacity(0.75))
@@ -547,11 +548,11 @@ struct MobilePlayerControls: View {
                         .accessibilityHidden(true)
                 }
                 Button {
-                    viewModel.selectIntroSkipPrompt()
+                    viewModel.selectMarkerSkipPrompt()
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: pill.kind == .skip ? "forward.end.fill" : "arrow.counterclockwise")
-                        Text(pill.kind.actionTitle)
+                        Text(pill.actionTitle)
                     }
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(.white)
@@ -559,7 +560,7 @@ struct MobilePlayerControls: View {
                     .frame(height: SiloTheme.topBarIconHitSize)
                 }
                 .buttonStyle(MobileIntroSkipPillButtonStyle(pill: pill))
-                .accessibilityLabel(pill.kind.accessibilityLabel)
+                .accessibilityLabel(pill.accessibilityLabel)
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
             .padding(.horizontal, 24)
