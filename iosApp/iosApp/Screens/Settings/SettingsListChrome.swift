@@ -8,13 +8,44 @@ import SwiftUI
 private struct MacSettingsToggleStyle: ToggleStyle {
     func makeBody(configuration: Configuration) -> some View {
         LabeledContent {
-            Toggle(isOn: configuration.$isOn) { EmptyView() }
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.small)
+            Button {
+                configuration.isOn.toggle()
+            } label: {
+                MacSettingsSwitch(isOn: configuration.isOn)
+            }
+            .buttonStyle(.plain)
+            .accessibilityAddTraits(.isToggle)
+            .accessibilityValue(configuration.isOn ? "On" : "Off")
         } label: {
             configuration.label
         }
+    }
+}
+
+/// A monochrome switch: white with a dark knob when on, a dim track with a
+/// light knob when off. The system switch is green when on, which was the
+/// only colour on the Mac's settings pages, and a white tint on it hides
+/// its white knob.
+private struct MacSettingsSwitch: View {
+    let isOn: Bool
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let size = SiloTheme.macSettingsSwitchSize
+        let knob = size.height - 4
+        Capsule()
+            .fill(isOn ? Color.siloPrimary : Color.white.opacity(0.16))
+            .frame(width: size.width, height: size.height)
+            .overlay(alignment: isOn ? .trailing : .leading) {
+                Circle()
+                    .fill(isOn ? Color.siloPageCanvas : Color.white.opacity(0.85))
+                    .frame(width: knob, height: knob)
+                    .padding(2)
+            }
+            .opacity(isEnabled ? 1 : 0.4)
+            .contentShape(Capsule())
+            .animation(reduceMotion ? nil : .easeOut(duration: SiloTheme.fastDuration), value: isOn)
     }
 }
 #endif
