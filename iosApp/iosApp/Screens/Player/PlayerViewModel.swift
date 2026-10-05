@@ -6810,7 +6810,7 @@ class PlayerViewModel {
         realtimeConnectivityObserverToken = nil
         let unavailabilityToken = realtimeUnavailabilityObserverToken
         realtimeUnavailabilityObserverToken = nil
-        cleanupCompletionTask = Task {
+        let cleanupCompletion = Task {
             await scrubPreviewShutdown?.value
             // Remove our availability observer before tearing down the realtime
             // client; normal fresh-load unbinds preserve this observer.
@@ -6829,6 +6829,8 @@ class PlayerViewModel {
             refreshHomeAfterPlaybackWrite?()
             #endif
         }
+        cleanupCompletionTask = cleanupCompletion
+        PlayerCleanupBarrier.record(cleanupCompletion)
     }
 
     func waitForCleanupCompletion() async {
