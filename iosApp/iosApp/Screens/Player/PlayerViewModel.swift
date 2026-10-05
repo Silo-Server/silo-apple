@@ -168,7 +168,7 @@ class PlayerViewModel {
         category: "Player"
     )
 
-    fileprivate let aetherPlaybackController: AetherPlaybackController
+    let aetherPlaybackController: AetherPlaybackController
     @ObservationIgnored
     private var activeAetherLoadEpoch: AetherPlaybackController.LoadEpoch?
     /// The epoch whose `finishLoad` has returned, i.e. whose engine startup ran
@@ -1011,6 +1011,9 @@ class PlayerViewModel {
         /// Same-content reopen after a premature end of file. Keeps the
         /// viewer's choices about the item.
         case prematureEndReopen
+        /// Keep Watching from the end-of-playback screen. Keeps the viewer's
+        /// choices about the item; a failure surfaces like a user pick.
+        case resumeAfterEnd
     }
 
     private enum BeginFreshLoadError: Error {
@@ -2791,18 +2794,13 @@ class PlayerViewModel {
 
         if shouldResumeAfterEnd,
            duration.isFinite,
-           duration > 0,
-           hasActiveAetherSession {
-            // Returning from the terminal postroll needs a real playable
-            // position; resuming at exact EOF would immediately present the
-            // postroll again. Replay a short tail of the current episode, or
-            // resume where a lost source stopped.
-            hasReachedEndOfFile = false
+           duration > 0 {
+            // Aether keeps an ended session terminal, so a local seek and
+            // play would leave it stopped. Remount at a playable position:
+            // a short tail of a finished episode (resuming at exact EOF would
+            // end again at once), or where a lost source stopped.
             let target = max(0, min(currentTime, duration - 10))
-            let reloadsPlaybackPipeline = commitSeek(to: target, source: "nextUpBack")
-            if !reloadsPlaybackPipeline {
-                aetherPlaybackController.play()
-            }
+            remountCurrentPlayback(at: target, origin: .resumeAfterEnd)
         } else if !isPlaying {
             aetherPlaybackController.play()
         }
@@ -4212,7 +4210,8 @@ class PlayerViewModel {
         PosterImageCache.trimDecodedMemory()
         #endif
         isNextUpTransitioning = origin == .autoplay && showNextUpScreen
-        let carriedViewerChoices = origin == .prematureEndReopen ? viewerChoices : nil
+        let carriedViewerChoices = origin == .prematureEndReopen || origin == .resumeAfterEnd
+            ? viewerChoices : nil
         let carriedNextUp = origin == .prematureEndReopen
             ? (episode: nextUpEpisode, onDeck: nextUpOnDeckItems) : nil
         recordCurrentPlaybackMutation()
@@ -4628,7 +4627,7 @@ class PlayerViewModel {
         }()
 
         switch origin {
-        case .userInitiated:
+        case .userInitiated, .resumeAfterEnd:
             finalizeTerminalPlaybackError(message)
         case .autoplay:
             let logMessage = MediaLogRedactor.sanitize(message)
