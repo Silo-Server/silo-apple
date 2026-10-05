@@ -30,6 +30,13 @@ enum DiagLog {
         DiagnosticsRedactor.resetSensitiveHostsForTesting()
     }
 
+    /// Applies the URL, address, email, and credential rules every log line
+    /// gets to text that did not come through the log, such as the free-text
+    /// fields of a MetricKit payload.
+    static func redactFreeText(_ value: String, maxLength: Int) -> String {
+        DiagnosticsRedactor.sanitize(value, maxLength: maxLength)
+    }
+
     static func d(_ category: Category, _ tag: String, _ message: String, _ attrs: [String: DiagLogAttributeValue] = [:]) {
         append(level: .debug, category: category, tag: tag, message: message, attrs: attrs)
     }
@@ -256,6 +263,33 @@ private enum DiagnosticsRedactor {
         options: [.caseInsensitive]
     )
 
+    // Network addresses written without a scheme, as socket, reachability,
+    // and resolver errors print them: bare IPv4 and IPv6 literals and
+    // `host:port` endpoints. Each candidate is validated before it is hashed
+    // so timestamps, `file.swift:line` locations, and C++ scopes stay literal.
+    private static let bareIPv4Regex = try! NSRegularExpression(
+        pattern: #"(?<![\w.:])((?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3})(?::\d{1,5})?(?!\.?\w)"#,
+        options: []
+    )
+    private static let bracketedIPv6Regex = try! NSRegularExpression(
+        pattern: #"\[([0-9A-Fa-f:.]+)(?:%[\w.-]+)?\](?::\d{1,5})?"#,
+        options: []
+    )
+    private static let bareIPv6Regex = try! NSRegularExpression(
+        pattern: #"(?<![\w:.%])([0-9A-Fa-f.]*:[0-9A-Fa-f.:]*:[0-9A-Fa-f.:]*)(?:%[A-Za-z0-9.-]+)?(?![\w:])"#,
+        options: []
+    )
+    private static let hostPortRegex = try! NSRegularExpression(
+        pattern: #"(?<![\w.@-])((?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}):\d{1,5}(?![\w.:])"#,
+        options: []
+    )
+    // `name.ext:line` source and file locations that `hostPortRegex` would
+    // otherwise read as `host:port`.
+    private static let fileLocationExtensions: Set<String> = [
+        "swift", "mm", "cc", "cpp", "hpp", "kt", "java", "js", "ts", "go", "py", "rb", "rs",
+        "metal", "json", "plist", "txt", "log", "xib", "storyboard", "m3u8", "mp4", "mkv",
+    ]
+
     // The active/remembered server hostnames, registered by ServerRegistry.
     // These are the identifiers most likely to leak as bare text (outside
     // URL syntax), and matching known strings avoids false positives that a
@@ -375,6 +409,7 @@ private enum DiagnosticsRedactor {
         result = replaceMatches(in: result, regex: emailRegex, replacement: "[redacted_email]")
         result = replaceSecretKeyValues(in: result)
         result = replaceMatches(in: result, regex: tokenWrapperRegex, replacement: "$1(…[redacted])")
+        result = replaceBareNetworkAddresses(in: result)
         result = replaceKnownHosts(in: result)
         // Filesystem paths and bare media filenames are the one class this
         // layer never covered on its own, and every DiagTrace, breadcrumb, and
@@ -441,6 +476,70 @@ private enum DiagnosticsRedactor {
             result = (result as NSString).replacingCharacters(in: match.range, with: normalized + suffix)
         }
         return result
+    }
+
+    /// Hash the host of every scheme-less address and drop its port and IPv6
+    /// zone, matching what `normalizedURLString` does for URLs. Loopback
+    /// stays literal there too.
+    private static func replaceBareNetworkAddresses(in value: String) -> String {
+        var result = replaceHostMatches(in: value, regex: bracketedIPv6Regex, isHost: isIPv6Literal)
+        result = replaceBareIPv6(in: result)
+        result = replaceHostMatches(in: result, regex: bareIPv4Regex) { !$0.hasPrefix("127.") }
+        return replaceHostMatches(in: result, regex: hostPortRegex) { host in
+            guard let ext = host.split(separator: ".").last else { return false }
+            return !fileLocationExtensions.contains(ext.lowercased())
+        }
+    }
+
+    /// Replace each whole match whose first capture group passes `isHost`
+    /// with that host's token.
+    private static func replaceHostMatches(
+        in value: String,
+        regex: NSRegularExpression,
+        isHost: (String) -> Bool
+    ) -> String {
+        let source = value as NSString
+        let matches = regex.matches(in: value, range: NSRange(location: 0, length: source.length))
+        var result = value
+        for match in matches.reversed() {
+            let host = source.substring(with: match.range(at: 1))
+            guard isHost(host), !isLoopbackHost(host.lowercased()) else { continue }
+            result = (result as NSString).replacingCharacters(in: match.range, with: hostToken(host))
+        }
+        return result
+    }
+
+    /// The bare-IPv6 pattern also takes in the punctuation that ends a
+    /// sentence or a `host: reason` clause ("2001:db8::1234." or "fd00::5:"),
+    /// which no address parser accepts. Give back trailing dots and colons
+    /// until the candidate parses, then keep them after the token. A lone
+    /// `::` is a C++ scope or a separator far more often than an address.
+    private static func replaceBareIPv6(in value: String) -> String {
+        let source = value as NSString
+        let matches = bareIPv6Regex.matches(in: value, range: NSRange(location: 0, length: source.length))
+        var result = value
+        for match in matches.reversed() {
+            let whole = source.substring(with: match.range)
+            var host = source.substring(with: match.range(at: 1))
+            var suffix = ""
+            if whole.count > host.count {
+                // A zone (`%en0`) follows the address, so only the zone can
+                // end in punctuation, and only in dots.
+                suffix = String(whole.reversed().prefix { $0 == "." })
+            } else {
+                while !isIPv6Literal(host), let last = host.last, last == "." || last == ":" {
+                    suffix.insert(host.removeLast(), at: suffix.startIndex)
+                }
+            }
+            guard host != "::", isIPv6Literal(host), !isLoopbackHost(host.lowercased()) else { continue }
+            result = (result as NSString).replacingCharacters(in: match.range, with: hostToken(host) + suffix)
+        }
+        return result
+    }
+
+    private static func isIPv6Literal(_ candidate: String) -> Bool {
+        var address = in6_addr()
+        return inet_pton(AF_INET6, candidate, &address) == 1
     }
 
     private static func splitTrailingPunctuation(_ value: String) -> (String, String) {
