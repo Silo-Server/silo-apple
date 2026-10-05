@@ -20,7 +20,11 @@ final class PendingReportStoreTests: XCTestCase {
         XCTAssertEqual(reports.map(\.binding.fingerprint), ["fp-1", "fp-2", "fp-3"])
     }
 
-    func testCapDoesNotMarkImmediatelyEvictedCaptureAsSeen() throws {
+    /// A capture the full store would evict straight away is not written at
+    /// all. It counts as handled (its fingerprint is seen), so a caller such
+    /// as the exit sentinel can clear its retry marker instead of retrying
+    /// the same capture on every foreground.
+    func testCaptureEvictedOnArrivalIsSettledWithoutBeingWritten() throws {
         let store = try makeStore()
         let binding = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "42")
         let start = Date(timeIntervalSince1970: 1_000)
@@ -33,12 +37,19 @@ final class PendingReportStoreTests: XCTestCase {
             ))
         }
 
+        let pendingBefore = try FileManager.default.contentsOfDirectory(atPath: store.pendingDirectory.path)
         XCTAssertThrowsError(try store.save(makeCapture(
             binding: binding,
             fingerprint: "delayed-old",
             capturedAt: start
-        )))
-        XCTAssertFalse(store.hasSeenFingerprint("delayed-old", now: start.addingTimeInterval(10)))
+        ))) { error in
+            XCTAssertEqual(error as? DiagnosticsStoreError, .evictedOnArrival)
+        }
+        XCTAssertTrue(store.hasSeenFingerprint("delayed-old", now: start.addingTimeInterval(10)))
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: store.pendingDirectory.path).sorted(),
+            pendingBefore.sorted()
+        )
         XCTAssertEqual(
             store.listReports(for: binding, now: start.addingTimeInterval(10)).map(\.binding.fingerprint),
             ["new-1", "new-2", "new-3"]
@@ -119,6 +130,218 @@ final class PendingReportStoreTests: XCTestCase {
         XCTAssertTrue(store.canAutoUpload(fingerprint: "fp", binding: binding, now: now.addingTimeInterval(25 * 60 * 60)))
     }
 
+    // MARK: - Repeats of one issue
+
+    func testRepeatWithinADayCountsOnTheExistingReport() throws {
+        let store = try makeStore()
+        let binding = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "42")
+        let start = Date(timeIntervalSince1970: 100_000)
+
+        let first = try store.save(makeCapture(binding: binding, fingerprint: "event-1", capturedAt: start, issue: "issue-a"))
+        let second = try store.save(makeCapture(
+            binding: binding,
+            fingerprint: "event-2",
+            capturedAt: start.addingTimeInterval(60 * 60),
+            issue: "issue-a"
+        ))
+        let third = try store.save(makeCapture(
+            binding: binding,
+            fingerprint: "event-3",
+            capturedAt: start.addingTimeInterval(23 * 60 * 60),
+            issue: "issue-a"
+        ))
+
+        XCTAssertNil(first.manifest.report.occurrenceCount)
+        XCTAssertEqual(second.id, first.id)
+        XCTAssertEqual(third.id, first.id)
+        XCTAssertEqual(third.manifest.report.occurrenceCount, 3)
+        XCTAssertEqual(store.listReports(for: binding).map(\.id), [first.id])
+        // Each event is still recorded, so the same evidence is never re-added.
+        XCTAssertTrue(store.hasSeenFingerprint("event-3", now: start.addingTimeInterval(23 * 60 * 60)))
+
+        let manifestJSON = try String(
+            contentsOf: first.directoryURL.appendingPathComponent("manifest.json"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(manifestJSON.contains(#""occurrence_count":3"#) || manifestJSON.contains(#""occurrence_count" : 3"#))
+    }
+
+    /// The contract caps `occurrence_count` at 1,000,000, so counting stops
+    /// there instead of producing a manifest every destination rejects.
+    func testRepeatCountStopsAtTheContractMaximum() throws {
+        let store = try makeStore()
+        let binding = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "42")
+        let start = Date(timeIntervalSince1970: 100_000)
+        let max = DiagnosticsManifest.Report.maxOccurrenceCount
+
+        let first = try store.save(makeCapture(binding: binding, fingerprint: "event-1", capturedAt: start, issue: "issue-a"))
+        var nearMax = first.manifest
+        nearMax.report.occurrenceCount = max - 1
+        try DiagnosticsJSONCoding.makeEncoder().encode(nearMax)
+            .write(to: first.directoryURL.appendingPathComponent("manifest.json"))
+
+        for index in 2...3 {
+            let repeated = try store.save(makeCapture(
+                binding: binding,
+                fingerprint: "event-\(index)",
+                capturedAt: start.addingTimeInterval(TimeInterval(index)),
+                issue: "issue-a"
+            ))
+            XCTAssertEqual(repeated.id, first.id)
+            XCTAssertEqual(repeated.manifest.report.occurrenceCount, max)
+            XCTAssertNoThrow(try repeated.manifest.report.validate())
+        }
+
+        var overMax = first.manifest.report
+        overMax.occurrenceCount = max + 1
+        XCTAssertThrowsError(try overMax.validate())
+    }
+
+    func testRepeatAfterTheWindowStartsANewReport() throws {
+        let store = try makeStore()
+        let binding = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "42")
+        let start = Date(timeIntervalSince1970: 100_000)
+
+        _ = try store.save(makeCapture(binding: binding, fingerprint: "event-1", capturedAt: start, issue: "issue-a"))
+        let later = try store.save(makeCapture(
+            binding: binding,
+            fingerprint: "event-2",
+            capturedAt: start.addingTimeInterval(PendingReportStore.repeatGroupingWindow + 60),
+            issue: "issue-a"
+        ))
+
+        XCTAssertEqual(store.listReports(for: binding).count, 2)
+        XCTAssertNil(later.manifest.report.occurrenceCount)
+    }
+
+    func testOtherIssuesProfilesAndUngroupedReportsAreNotCounted() throws {
+        let store = try makeStore()
+        let binding = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "42")
+        let start = Date(timeIntervalSince1970: 100_000)
+
+        _ = try store.save(makeCapture(binding: binding, fingerprint: "a", capturedAt: start, issue: "issue-a"))
+        _ = try store.save(makeCapture(binding: binding, fingerprint: "b", capturedAt: start.addingTimeInterval(1), issue: "issue-b"))
+        _ = try store.save(makeCapture(
+            binding: binding,
+            fingerprint: "c",
+            capturedAt: start.addingTimeInterval(2),
+            issue: "issue-a",
+            profileID: "profile-b"
+        ))
+
+        XCTAssertEqual(store.listReports(for: binding).count, 3)
+        XCTAssertTrue(store.listReports(for: binding).allSatisfy { $0.manifest.report.occurrenceCount == nil })
+    }
+
+    func testRepeatDoesNotJoinAReportWhoseDeliveryStarted() throws {
+        let store = try makeStore()
+        let binding = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "42")
+        let start = Date(timeIntervalSince1970: 100_000)
+
+        let first = try store.save(makeCapture(binding: binding, fingerprint: "event-1", capturedAt: start, issue: "issue-a"))
+        store.markHostedProcessing(first, shortID: "SILO-ABC")
+        let second = try store.save(makeCapture(
+            binding: binding,
+            fingerprint: "event-2",
+            capturedAt: start.addingTimeInterval(60),
+            issue: "issue-a"
+        ))
+
+        XCTAssertNotEqual(second.id, first.id)
+        XCTAssertNil(store.report(id: first.id, now: start)?.manifest.report.occurrenceCount)
+    }
+
+    /// An upload builds from the report reloaded when it starts, so a repeat
+    /// counted after the caller loaded its copy is sent, whether or not the
+    /// consent on the manifest changes.
+    func testPreparingDeliveryKeepsRepeatsCountedAfterTheCallerLoadedTheReport() throws {
+        for consent in [
+            DiagnosticsManifest.Consent(mode: .prompt, noticeVersion: 1),
+            DiagnosticsManifest.Consent(mode: .always, noticeVersion: 2),
+        ] {
+            let store = try makeStore()
+            let binding = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "42")
+            let start = Date(timeIntervalSince1970: 100_000)
+            let loaded = try store.save(makeCapture(binding: binding, fingerprint: "event-1", capturedAt: start, issue: "issue-a"))
+            _ = try store.save(makeCapture(
+                binding: binding,
+                fingerprint: "event-2",
+                capturedAt: start.addingTimeInterval(60),
+                issue: "issue-a"
+            ))
+
+            let prepared = try store.preparingDelivery(of: loaded, consent: consent)
+
+            XCTAssertEqual(prepared.manifest.report.occurrenceCount, 2)
+            XCTAssertEqual(prepared.manifest.consent, consent)
+            let stored = try XCTUnwrap(store.report(id: loaded.id, now: start))
+            XCTAssertEqual(stored.manifest, prepared.manifest)
+        }
+    }
+
+    /// Once an upload has started building, a repeat starts a new report: the
+    /// count already read cannot grow, and counting it there would mark the
+    /// repeat seen without ever sending it.
+    func testRepeatDuringDeliveryPreparationStartsANewReport() throws {
+        let store = try makeStore()
+        let binding = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "42")
+        let start = Date(timeIntervalSince1970: 100_000)
+        let first = try store.save(makeCapture(binding: binding, fingerprint: "event-1", capturedAt: start, issue: "issue-a"))
+
+        let prepared = try store.preparingDelivery(of: first, consent: first.manifest.consent)
+        let repeated = try store.save(makeCapture(
+            binding: binding,
+            fingerprint: "event-2",
+            capturedAt: start.addingTimeInterval(60),
+            issue: "issue-a"
+        ))
+
+        XCTAssertNotEqual(repeated.id, first.id)
+        XCTAssertNil(repeated.manifest.report.occurrenceCount)
+        XCTAssertEqual(store.report(id: first.id, now: start)?.manifest, prepared.manifest)
+    }
+
+    // MARK: - Eviction order
+
+    func testFullStoreEvictsAppErrorsBeforeCrashesThenOldest() throws {
+        let store = try makeStore()
+        let binding = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "42")
+        let start = Date(timeIntervalSince1970: 100_000)
+        func save(_ fingerprint: String, _ type: ReportType, at offset: TimeInterval) throws {
+            _ = try store.save(makeCapture(
+                binding: binding,
+                fingerprint: fingerprint,
+                capturedAt: start.addingTimeInterval(offset),
+                type: type
+            ))
+        }
+        func remaining() -> [String] {
+            store.listReports(for: binding).map(\.binding.fingerprint)
+        }
+
+        try save("manual", .manual, at: 0)
+        try save("crash-1", .crash, at: 1)
+        try save("hang", .hang, at: 2)
+
+        // The hang goes before the older crash and the user's own report.
+        try save("exit", .abnormalExit, at: 3)
+        XCTAssertEqual(remaining(), ["manual", "crash-1", "exit"])
+
+        // A new hang is the least important report, so it is the one dropped.
+        XCTAssertThrowsError(try save("hang-2", .hang, at: 4)) { error in
+            XCTAssertEqual(error as? DiagnosticsStoreError, .evictedOnArrival)
+        }
+        XCTAssertEqual(remaining(), ["manual", "crash-1", "exit"])
+
+        // An unconfirmed exit goes before a crash.
+        try save("crash-2", .crash, at: 5)
+        XCTAssertEqual(remaining(), ["manual", "crash-1", "crash-2"])
+
+        // Within a rank the oldest goes first; the manual report stays.
+        try save("crash-3", .crash, at: 6)
+        XCTAssertEqual(remaining(), ["manual", "crash-2", "crash-3"])
+    }
+
     private func makeStore() throws -> PendingReportStore {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("PendingReportStoreTests-\(UUID().uuidString)", isDirectory: true)
@@ -132,7 +355,10 @@ final class PendingReportStoreTests: XCTestCase {
         binding: DiagnosticsBinding,
         fingerprint: String,
         capturedAt: Date = Date(timeIntervalSince1970: 1_000),
-        artifacts: [PendingReportArtifact] = []
+        artifacts: [PendingReportArtifact] = [],
+        type: ReportType = .abnormalExit,
+        issue: String? = nil,
+        profileID: String = "profile-a"
     ) -> PendingReportCapture {
         let device = makeDeviceSnapshot(capturedAt: capturedAt)
         let crash = DiagnosticsCrashInfo(
@@ -155,7 +381,7 @@ final class PendingReportStoreTests: XCTestCase {
             osVersion: "26.0"
         )
         let manifest = context.makeManifestDraft(
-            type: .abnormalExit,
+            type: type,
             capturedAt: capturedAt,
             crash: crash,
             deviceSummary: DiagnosticsManifest.DeviceSummary(
@@ -168,13 +394,14 @@ final class PendingReportStoreTests: XCTestCase {
         )
         return PendingReportCapture(
             binding: binding,
-            profileID: "profile-a",
-            type: .abnormalExit,
+            profileID: profileID,
+            type: type,
             fingerprint: fingerprint,
             capturedAt: capturedAt,
             manifest: manifest,
             deviceSnapshot: device,
-            artifacts: artifacts
+            artifacts: artifacts,
+            issueFingerprint: issue
         )
     }
 

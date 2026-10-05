@@ -252,6 +252,7 @@ enum APIv2CatalogRead {
         let presentationKind: String?
         let presentationPartIndex: Int64?
         let presentationPartTotal: Int64?
+        let recap: Marker?
         let resolution: String
         let subtitleTracks: [VersionSubtitleTrack]?
         let videoTracks: [VideoTrack]?
@@ -285,6 +286,7 @@ enum APIv2CatalogRead {
         let presentationKind: String?
         let presentationPartIndex: Int64?
         let presentationPartTotal: Int64?
+        let recap: WatchMarker?
         let resolution: String
         let subtitleTracks: [VersionSubtitleTrack]?
         let videoTracks: [VideoTrack]?
@@ -300,6 +302,7 @@ enum APIv2CatalogRead {
         let subtitles: [SubtitleInfo]
         let intro: WatchMarker?
         let credits: WatchMarker?
+        let recap: WatchMarker?
         let userData: WatchRollup?
         let seriesId: String?
         let seriesTitle: String?

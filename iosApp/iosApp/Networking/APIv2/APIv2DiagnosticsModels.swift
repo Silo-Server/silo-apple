@@ -18,6 +18,8 @@ struct APIv2DiagnosticsCapabilities: Decodable, Equatable, Sendable {
     let consentNoticeVersion: Int
     /// Zero when this server does not offer the chunked upload routes.
     let uploadChunkBytes: Int
+    /// Absent on servers that predate it.
+    let acceptedCrashSources: [String]?
 
     /// Projects the document onto the status the coordinator stores and
     /// persists. Uploads are available only when the principal is allowed
@@ -32,7 +34,8 @@ struct APIv2DiagnosticsCapabilities: Decodable, Equatable, Sendable {
             maxManifestBytes: maxManifestBytes,
             retentionDays: retentionDays,
             consentNoticeVersion: consentNoticeVersion,
-            uploadChunkBytes: uploadChunkBytes
+            uploadChunkBytes: uploadChunkBytes,
+            acceptedCrashSources: acceptedCrashSources
         )
     }
 

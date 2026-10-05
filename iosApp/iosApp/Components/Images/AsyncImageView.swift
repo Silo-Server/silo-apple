@@ -9,6 +9,9 @@ import Nuke
 /// - Otherwise the artwork is decoded on the size ladder just above its drawn
 ///   size, showing a smaller cached decode or the ThumbHash meanwhile, and
 ///   fades in quickly so the placeholder is gone as soon as it can be.
+/// - A load that fails on a transient error retries with backoff while the
+///   view is on screen (see `ArtworkRetryPolicy`), and again when the app
+///   becomes active.
 struct AsyncImageView: View {
     let url: String
     var thumbhash: String? = nil
@@ -27,6 +30,11 @@ struct AsyncImageView: View {
     private let artworkLoadingEnabled = true
     #endif
 
+    /// Bumped to rebuild the `LazyImage`, which starts a fresh load.
+    @State private var loadAttempt = 0
+    @State private var failedAttempts = 0
+    @State private var pendingRetry: Task<Void, Never>?
+
     var body: some View {
         if let targetSize {
             // Callers that know the size frame this view themselves, so the
@@ -41,8 +49,19 @@ struct AsyncImageView: View {
 
     /// `frame` is the measured container when there is one; otherwise the
     /// artwork fills whatever frame the caller gives this view.
-    @ViewBuilder
     private func artwork(drawnAt pointSize: CGSize, frame: CGSize?) -> some View {
+        // Outside both branches: a URL change can also move the view between
+        // them, and the old URL's backoff and pending retry must not carry
+        // over to the new one.
+        loadedArtwork(drawnAt: pointSize, frame: frame)
+            .onChange(of: url) {
+                cancelPendingRetry()
+                failedAttempts = 0
+            }
+    }
+
+    @ViewBuilder
+    private func loadedArtwork(drawnAt pointSize: CGSize, frame: CGSize?) -> some View {
         let resolved = resolveArtwork(drawnAt: pointSize)
         if let cached = resolved.cached, cached.isSufficient {
             artworkImage(cached.image, frame: frame)
@@ -55,32 +74,92 @@ struct AsyncImageView: View {
                         : .easeOut(duration: SiloTheme.fastDuration)
                 )
             ) { state in
-                if let image = state.image {
-                    image
-                        .resizable()
-                        .aspectRatio(contentMode: contentMode)
-                        .framed(frame)
-                        .clipped()
-                        .transition(.opacity)
-                        .onAppear(perform: notifyImageLoaded)
-                } else if let cached = resolved.cached {
-                    artworkImage(cached.image, frame: frame)
-                } else if state.error != nil && artworkLoadingEnabled {
-                    placeholder(frame: frame)
-                        .overlay {
-                            if placeholderStyle.showsErrorIcon {
-                                Image(systemName: "film")
-                                    .foregroundColor(.siloOnSurface.opacity(0.3))
-                            }
+                loadState(state, resolved: resolved, frame: frame)
+                    // On every state, not just the failure placeholder: a
+                    // failed load can also be showing a smaller cached decode.
+                    .onReceive(NotificationCenter.default.publisher(for: Self.appDidBecomeActive)) { _ in
+                        if ArtworkRetryPolicy.retriesOnActivation(
+                            after: state.error,
+                            loadingEnabled: artworkLoadingEnabled
+                        ) {
+                            retry(resettingBackoff: true)
                         }
-                } else {
-                    placeholder(frame: frame)
-                }
+                    }
             }
             // Ahead of warm-ups, which run at normal priority or lower.
             .priority(.high)
             .onDisappear(.cancel)
+            .onCompletion { handleCompletion($0) }
+            .id(LoadIdentity(url: url, attempt: loadAttempt))
+            .onDisappear(perform: cancelPendingRetry)
         }
+    }
+
+    @ViewBuilder
+    private func loadState(_ state: any LazyImageState, resolved: ResolvedArtwork, frame: CGSize?) -> some View {
+        if let image = state.image {
+            image
+                .resizable()
+                .aspectRatio(contentMode: contentMode)
+                .framed(frame)
+                .clipped()
+                .transition(.opacity)
+                .onAppear(perform: notifyImageLoaded)
+        } else if let cached = resolved.cached {
+            artworkImage(cached.image, frame: frame)
+        } else if state.error != nil && artworkLoadingEnabled {
+            placeholder(frame: frame)
+                .overlay {
+                    if placeholderStyle.showsErrorIcon {
+                        Image(systemName: "film")
+                            .foregroundColor(.siloOnSurface.opacity(0.3))
+                    }
+                }
+        } else {
+            placeholder(frame: frame)
+        }
+    }
+
+    // MARK: - Retry
+
+    private struct LoadIdentity: Hashable {
+        let url: String
+        let attempt: Int
+    }
+
+    #if os(macOS)
+    private static let appDidBecomeActive = NSApplication.didBecomeActiveNotification
+    #else
+    private static let appDidBecomeActive = UIApplication.didBecomeActiveNotification
+    #endif
+
+    private func handleCompletion(_ result: Result<ImageResponse, Error>) {
+        switch result {
+        case .success:
+            failedAttempts = 0
+        case let .failure(error):
+            // Cancellation and permanent failures leave the backoff alone.
+            guard ArtworkRetryPolicy.isRetryable(error) else { return }
+            failedAttempts += 1
+            guard let delay = ArtworkRetryPolicy.delay(afterFailure: error, failedAttempts: failedAttempts) else { return }
+            cancelPendingRetry()
+            pendingRetry = Task { @MainActor in
+                try? await Task.sleep(for: delay)
+                guard !Task.isCancelled else { return }
+                retry(resettingBackoff: false)
+            }
+        }
+    }
+
+    private func retry(resettingBackoff: Bool) {
+        cancelPendingRetry()
+        if resettingBackoff { failedAttempts = 0 }
+        loadAttempt += 1
+    }
+
+    private func cancelPendingRetry() {
+        pendingRetry?.cancel()
+        pendingRetry = nil
     }
 
     private struct ResolvedArtwork {

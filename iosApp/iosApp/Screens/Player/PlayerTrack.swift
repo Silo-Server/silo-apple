@@ -45,108 +45,77 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
         return code
     }
 
+    /// The row name, in the detail page's vocabulary (`TrackLabels`): the
+    /// language, else a meaningful title, else "Track N".
     var primaryLabel: String {
-        if let title = normalizedTitle {
-            return title
+        switch kind {
+        case .audio, .sub:
+            return TrackLabels.name(
+                language: normalizedLanguageCode,
+                meaningfulTitle: meaningfulTitle,
+                fallback: "Track \(trackId)"
+            )
+        case .video, .unknown:
+            return normalizedTitle ?? TrackLabels.languageName(normalizedLanguageCode) ?? "Track \(trackId)"
         }
-        if let lang = normalizedLanguageCode {
-            return languageDisplayName(lang)
-        }
-        return "Track \(trackId)"
     }
 
-    var attributesLabel: String? {
-        let parts = attributePillLabels()
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
-    }
-
-    /// Language-first display name for subtitle pickers. Embedded subtitle
-    /// titles are unreliable (frequently the format name or the media
-    /// filename), so the language leads and the title demotes to
-    /// `languageFirstDetailLabel` when it actually carries meaning.
-    var languageFirstPrimaryLabel: String {
-        if let lang = normalizedLanguageCode {
-            return languageDisplayName(lang)
-        }
-        return primaryLabel
-    }
-
-    /// The embedded title, but only when it says something the language,
-    /// codec, and flags don't already — e.g. "Dub (SDH)" or "Signs & Songs"
-    /// survives; "ASS", "SubRip", or a repeat of the language is dropped.
-    var languageFirstDetailLabel: String? {
-        guard let lang = normalizedLanguageCode else { return nil }
-        guard let title = normalizedTitle else { return nil }
-
-        let lowered = title.lowercased()
-        let formatNames: Set<String> = [
-            "ass", "ssa", "srt", "subrip", "pgs", "sup", "sub",
-            "vtt", "webvtt", "vobsub", "dvdsub", "mov_text",
-        ]
-        if formatNames.contains(lowered) { return nil }
-        if let codec, lowered == codec.lowercased() { return nil }
-        if title.caseInsensitiveCompare(languageDisplayName(lang)) == .orderedSame { return nil }
-        if title.caseInsensitiveCompare(lang) == .orderedSame { return nil }
+    /// The track's own title when it says something the name, codec, and
+    /// flags don't — e.g. "Commentary" or "Signs & Songs", never "ASS".
+    var detailLabel: String? {
+        guard let title = meaningfulTitle, title != primaryLabel else { return nil }
         return title
     }
 
-    /// Same attributes as `attributesLabel`, unjoined — for UIs that render
-    /// each attribute as its own pill. Rows that already show the language as
-    /// the primary name pass `includeLanguage: false`.
-    func attributePillLabels(includeLanguage: Bool = true) -> [String] {
+    /// `detailLabel` followed by the attribute pills, for rows that show one
+    /// secondary line.
+    var attributesLabel: String? {
+        let parts = [detailLabel].compactMap { $0 } + attributePillLabels()
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// Codec, channel layout, and flags, unjoined, for UIs that render each
+    /// attribute as its own pill. Same order and names as the detail page.
+    func attributePillLabels() -> [String] {
         var parts: [String] = []
-
-        if includeLanguage,
-           let lang = normalizedLanguageCode,
-           let title = normalizedTitle,
-           !title.localizedCaseInsensitiveContains(lang) {
-            parts.append(languageDisplayName(lang))
-        }
-
-        if kind == .audio, let label = channelCountLabel {
-            parts.append(label)
-        }
-
-        if let codec = Self.normalizedText(codec) {
-            parts.append(codec.uppercased())
+        switch kind {
+        case .audio:
+            if let codec = TrackLabels.audioCodec(Self.normalizedText(codec)) { parts.append(codec) }
+            if let layout = channelCountLabel { parts.append(layout) }
+        case .sub:
+            if let codec = TrackLabels.subtitleCodec(Self.normalizedText(codec)) { parts.append(codec) }
+        case .video, .unknown:
+            if let codec = Self.normalizedText(codec) { parts.append(codec.uppercased()) }
         }
         if isDefault {
             parts.append("Default")
         }
-        if isForced {
+        // Like the detail page, a subtitle titled "Forced" or "SDH" shows the
+        // flag even when the container did not set it.
+        if isForced || (kind == .sub && title?.localizedCaseInsensitiveContains("forced") == true) {
             parts.append("Forced")
         }
-        if isHearingImpaired {
+        if isHearingImpaired || (kind == .sub && SubtitleAutoResolver.titleIndicatesHearingImpaired(title)) {
             parts.append("SDH")
         }
         if isExternal {
             parts.append("External")
         }
-
         return parts
     }
 
-    /// Human-readable channel count for audio tracks (e.g. "5.1"), or nil when
-    /// the demuxer reported no usable count.
+    /// Human-readable channel layout for audio tracks (e.g. "5.1"), or nil
+    /// when the demuxer reported no usable count.
     var channelCountLabel: String? {
-        guard let count = audioChannelCount, count > 0 else { return nil }
-        return Self.formatChannelCount(count)
+        TrackLabels.audioLayout(channelLayout: nil, channels: audioChannelCount)
     }
 
-    private static func formatChannelCount(_ count: Int) -> String {
-        switch count {
-        case 1: return "mono"
-        case 2: return "stereo"
-        case 6: return "5.1"
-        case 8: return "7.1"
-        default: return "\(count)ch"
+    private var meaningfulTitle: String? {
+        switch kind {
+        case .audio: return TrackLabels.audioTitle(normalizedTitle)
+        case .sub: return TrackLabels.subtitleTitle(normalizedTitle, language: normalizedLanguageCode, codec: codec)
+        case .video, .unknown: return normalizedTitle
         }
-    }
-
-    private static let englishLocale = Locale(identifier: "en")
-
-    private func languageDisplayName(_ code: String) -> String {
-        Self.englishLocale.localizedString(forLanguageCode: code)?.capitalized ?? code.uppercased()
     }
 
     static func normalizedText(_ value: String?) -> String? {

@@ -57,6 +57,20 @@ struct ServerEntry: Codable, Identifiable, Equatable, Hashable {
         self.verifiedServerId = ServerIdentity.usable(verifiedServerId)
     }
 
+    /// This entry under `existing`'s id and URL.
+    fileprivate func keepingIdentity(of existing: ServerEntry) -> ServerEntry {
+        guard existing.id != id else { return self }
+        var copy = ServerEntry(
+            id: existing.id,
+            url: existing.url,
+            fetchedName: fetchedName,
+            lastUsedAt: lastUsedAt,
+            verifiedServerId: verifiedServerId
+        )
+        copy.legacyProfileId = legacyProfileId
+        return copy
+    }
+
     private enum CodingKeys: String, CodingKey {
         case id
         case url
@@ -228,9 +242,13 @@ final class ServerRegistry {
     func addOrUpdate(_ entry: ServerEntry, preservingProfile: Bool = true) -> ServerEntry? {
         let previousEntries = entries
         var merged = entry
-        let existingIndex = entries.firstIndex(where: { $0.id == entry.id })
+        let existingIndex = index(matching: entry.id)
         if let existingIndex {
             let existing = entries[existingIndex]
+            // A saved entry for the same origin keeps its id and URL, which
+            // key its credentials and settings, even when this one differs
+            // only in scheme or host case.
+            merged = entry.keepingIdentity(of: existing)
             if merged.fetchedName == nil || merged.fetchedName?.isEmpty == true {
                 merged.fetchedName = existing.fetchedName
             }
@@ -265,9 +283,20 @@ final class ServerRegistry {
             reason: isExistingEntry ? "updatedExisting" : "addedNew"
         )
         if !preservingProfile {
-            launchPreferences.clearRememberedProfile(for: entry.id)
+            launchPreferences.clearRememberedProfile(for: merged.id)
         }
         return merged
+    }
+
+    /// The saved entry for `serverId`'s origin: an exact id, else one whose
+    /// scheme and host differ only in case (or that spells out a default port).
+    func entry(matching serverId: String) -> ServerEntry? {
+        index(matching: serverId).map { entries[$0] }
+    }
+
+    private func index(matching serverId: String) -> Int? {
+        entries.firstIndex(where: { $0.id == serverId })
+            ?? entries.firstIndex(where: { Self.serverIdsMatch($0.id, serverId) })
     }
 
     @discardableResult

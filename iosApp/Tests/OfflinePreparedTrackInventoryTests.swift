@@ -95,7 +95,9 @@ final class OfflinePreparedTrackInventoryTests: XCTestCase {
 
         XCTAssertEqual(tracks.map(\.title), ["English 5.1", nil, "Commentary"])
         XCTAssertEqual(tracks.map(\.lang), ["eng", "jpn", "en"])
-        XCTAssertEqual(tracks.map(\.primaryLabel), ["English 5.1", "Japanese", "Commentary"])
+        XCTAssertEqual(tracks.map(\.primaryLabel), ["English", "Japanese", "English"])
+        // "English 5.1" without its layout is just the language the row leads with.
+        XCTAssertEqual(tracks.map(\.detailLabel), [nil, nil, "Commentary"])
         XCTAssertEqual(tracks.map(\.trackId), [1, 2, 3])
         XCTAssertEqual(tracks.map(\.isDefault), [true, false, false])
     }
@@ -162,7 +164,7 @@ final class OfflinePreparedTrackInventoryTests: XCTestCase {
         XCTAssertEqual(tracks.map(\.isDefault), [false, false, false, false])
         XCTAssertEqual(tracks.map(\.title), [nil, "SDH", nil, "Japanese"])
         XCTAssertEqual(tracks.map(\.isForced), [false, false, true, false])
-        XCTAssertEqual(tracks.map(\.languageFirstPrimaryLabel), ["English", "English", "French", "Japanese"])
+        XCTAssertEqual(tracks.map(\.primaryLabel), ["English", "English", "French", "Japanese"])
         XCTAssertNil(tracks[0].attributesLabel?.range(of: "Default"))
     }
 

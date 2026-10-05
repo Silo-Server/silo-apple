@@ -46,6 +46,17 @@ final class DiagnosticsAttributeRegistryParityTests: XCTestCase {
             "play_method": .string,
             "reason": .string,
             "position_ms": .integer,
+            "first_frame_ms": .integer,
+            "stall_count": .integer,
+            "stall_total_ms": .integer,
+            "rebuffer_count": .integer,
+            "rebuffer_total_ms": .integer,
+            "rebuffer_max_ms": .integer,
+            "bitrate_change_count": .integer,
+            "plan_change_count": .integer,
+            "error_count": .integer,
+            "failure_code": .string,
+            "session_ms": .integer,
         ])
         XCTAssertEqual(canonical[.focus], [
             "target": .string,
@@ -67,6 +78,7 @@ final class DiagnosticsAttributeRegistryParityTests: XCTestCase {
             "outcome": .string,
             "reason": .string,
             "launch_type": .string,
+            "resident_mb": .integer,
         ])
         XCTAssertEqual(canonical[.crash], [
             "fingerprint": .string,
@@ -181,6 +193,10 @@ final class DiagnosticsAttributeRegistryParityTests: XCTestCase {
     ///   fails the `privacy_fields` check and shows as `privacy_flagged`. Since
     ///   a routine 401-token-refresh retry emits it, forwarding it would flag
     ///   ordinary reports as privacy incidents.
+    /// - The playback session summary keys and `lifecycle.resident_mb` are newer
+    ///   than the hosted collector's vendored registry, which rejects a whole
+    ///   bundle on an unregistered key. They join the allowlist once the
+    ///   collector re-vendors the contract.
     ///
     /// Stated explicitly so that widening the allowlist has to be a deliberate
     /// edit here rather than a side effect of a re-vendor.
@@ -198,8 +214,14 @@ final class DiagnosticsAttributeRegistryParityTests: XCTestCase {
         }
 
         XCTAssertEqual(withheld, [
-            .playback: ["session_id", "play_method", "reason", "position_ms"],
+            .playback: [
+                "session_id", "play_method", "reason", "position_ms",
+                "first_frame_ms", "stall_count", "stall_total_ms", "rebuffer_count",
+                "rebuffer_total_ms", "rebuffer_max_ms", "bitrate_change_count",
+                "plan_change_count", "error_count", "failure_code", "session_ms",
+            ],
             .network: ["attempt"],
+            .lifecycle: ["resident_mb"],
         ])
 
         // Called out on its own so the failure names the consequence rather than

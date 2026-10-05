@@ -697,10 +697,14 @@ final class ReceiverPairingCoordinator {
 
     /// Commit the now-trusted server + tokens. Runs only after a successful poll.
     static func persistServer(_ pairing: PersistedPairing) async -> Bool {
-        let url = pairing.url
+        // A server already saved under a differently cased URL keeps that
+        // entry's id and URL, which key its credentials and settings.
+        let pairedID = ServerRegistry.serverId(for: pairing.url)
+        let saved = ServerRegistry.shared.entry(matching: pairedID)
+        let url = saved?.url ?? pairing.url
+        let id = saved?.id ?? pairedID
         let access = pairing.accessToken
         let refresh = pairing.refreshToken
-        let id = ServerRegistry.serverId(for: url)
         let entry = ServerEntry(
             id: id,
             url: url,

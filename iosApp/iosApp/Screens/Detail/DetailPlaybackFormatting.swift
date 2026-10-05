@@ -196,9 +196,11 @@ enum DetailPlaybackFormatting {
     }
 
     static func audioTitle(_ track: AudioTrack, ordinal: Int) -> String {
-        if let language = languageDisplayName(track.language) { return language }
-        if let title = usefulAudioTitle(track) { return title }
-        return "Track \(ordinal + 1)"
+        TrackLabels.name(
+            language: track.language,
+            meaningfulTitle: usefulAudioTitle(track),
+            fallback: "Track \(ordinal + 1)"
+        )
     }
 
     static func audioDetail(_ track: AudioTrack, ordinal: Int, version: FileVersion?) -> String {
@@ -517,9 +519,11 @@ enum DetailPlaybackFormatting {
     }
 
     static func subtitleTitle(_ track: SubtitleTrack, ordinal: Int) -> String {
-        if let language = languageDisplayName(track.language) { return language }
-        if let title = meaningfulSubtitleTitle(track) { return title }
-        return "Track \(ordinal + 1)"
+        TrackLabels.name(
+            language: track.language,
+            meaningfulTitle: meaningfulSubtitleTitle(track),
+            fallback: "Track \(ordinal + 1)"
+        )
     }
 
     static func subtitleDetail(_ track: SubtitleTrack, isSelectable: Bool) -> String {
@@ -576,29 +580,11 @@ enum DetailPlaybackFormatting {
     }
 
     static func normalizedAudioCodec(_ codec: String?) -> String? {
-        guard let codec = codec?.lowercased(), !codec.isEmpty else { return nil }
-        if codec.contains("eac3") || codec.contains("e-ac-3") || codec.contains("ec-3") {
-            return "EAC3"
-        }
-        if codec.contains("ac3") || codec.contains("ac-3") { return "AC3" }
-        if codec.contains("aac") { return "AAC" }
-        if codec.contains("mp3") { return "MP3" }
-        if codec.contains("truehd") { return "TrueHD" }
-        if codec.contains("dts") { return "DTS" }
-        if codec.contains("flac") { return "FLAC" }
-        return codec.uppercased()
+        TrackLabels.audioCodec(codec)
     }
 
     static func normalizedSubtitleCodec(_ codec: String?) -> String? {
-        guard let codec = codec?.lowercased(), !codec.isEmpty else { return nil }
-        if codec == "srt" || codec.contains("subrip") { return "SRT" }
-        if codec.contains("ass") { return "ASS" }
-        if codec.contains("ssa") { return "SSA" }
-        if codec == "vtt" || codec.contains("webvtt") { return "WebVTT" }
-        if codec == "sup" || codec.contains("pgs") || codec.contains("hdmv") { return "PGS" }
-        if codec.contains("dvd") || codec.contains("vobsub") { return "VobSub" }
-        if codec.contains("mov_text") || codec.contains("tx3g") { return "TX3G" }
-        return codec.uppercased()
+        TrackLabels.subtitleCodec(codec)
     }
 
     private static let fileSizeFormatter: ByteCountFormatter = {
@@ -615,22 +601,7 @@ enum DetailPlaybackFormatting {
     }
 
     private static func compactAudioLayout(_ track: AudioTrack) -> String? {
-        if let layout = nonEmpty(track.channelLayout) {
-            let lowered = layout.lowercased()
-            if lowered.contains("atmos") { return "Atmos" }
-            if lowered.contains("7.1") { return "7.1" }
-            if lowered.contains("5.1") { return "5.1" }
-            if lowered.contains("stereo") { return "Stereo" }
-            return layout
-        }
-        switch track.channels {
-        case 1: return "Mono"
-        case 2: return "Stereo"
-        case 6: return "5.1"
-        case 8: return "7.1"
-        case let channels?: return "\(channels)ch"
-        case nil: return nil
-        }
+        TrackLabels.audioLayout(channelLayout: track.channelLayout, channels: track.channels)
     }
 
     private static func subtitleType(_ track: SubtitleTrack) -> String? {
@@ -645,8 +616,8 @@ enum DetailPlaybackFormatting {
             if lowered.contains("forced") {
                 return "Forced"
             }
-            if !isRedundantSubtitleTitle(title, track: track) {
-                return displayTitle(title)
+            if let meaningful = TrackLabels.subtitleTitle(title, language: track.language, codec: track.codec) {
+                return meaningful
             }
         }
         if track.forced == true {
@@ -659,35 +630,15 @@ enum DetailPlaybackFormatting {
     }
 
     private static func usefulAudioTitle(_ track: AudioTrack) -> String? {
-        guard let title = nonEmpty(track.title) ?? nonEmpty(track.embeddedTitle) else { return nil }
-        let lowered = title.lowercased()
-        let technicalTerms = [
-            "atsc",
-            "a/52",
-            "ac-3",
-            "e-ac-3",
-            "eac3",
-            "truehd",
-            "dts",
-            "aac",
-            "flac",
-        ]
-        if technicalTerms.contains(where: { lowered.contains($0) }) {
-            return nil
-        }
-        return displayTitle(title)
+        TrackLabels.audioTitle(nonEmpty(track.title) ?? nonEmpty(track.embeddedTitle))
     }
 
     private static func meaningfulSubtitleTitle(_ track: SubtitleTrack) -> String? {
-        guard let title = nonEmpty(track.title) ?? nonEmpty(track.embeddedTitle),
-              !isRedundantSubtitleTitle(title, track: track) else {
-            return nil
-        }
-        let lowered = title.lowercased()
-        if lowered == "forced" || ["sdh", "cc", "hi", "hearing impaired"].contains(lowered) {
-            return nil
-        }
-        return displayTitle(title)
+        TrackLabels.subtitleTitle(
+            nonEmpty(track.title) ?? nonEmpty(track.embeddedTitle),
+            language: track.language,
+            codec: track.codec
+        )
     }
 
     private static func isHearingImpaired(_ track: SubtitleTrack) -> Bool {
@@ -711,55 +662,8 @@ enum DetailPlaybackFormatting {
             || lowered.contains("hearing impaired")
     }
 
-    private static func isRedundantSubtitleTitle(_ title: String, track: SubtitleTrack) -> Bool {
-        let lowered = title.lowercased()
-        let language = languageDisplayName(track.language)?.lowercased()
-        let languageCode = nonEmpty(track.language)?.lowercased()
-        if lowered == "subtitle" || lowered == "subtitles" {
-            return true
-        }
-        if let language, lowered == language {
-            return true
-        }
-        if let languageCode, lowered == languageCode {
-            return true
-        }
-        if let codec = normalizedSubtitleCodec(track.codec)?.lowercased(),
-           lowered == codec || lowered == track.codec?.lowercased() {
-            return true
-        }
-        return false
-    }
-
-    private static func displayTitle(_ title: String) -> String {
-        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        switch trimmed.lowercased() {
-        case "sdh": return "SDH"
-        case "cc": return "CC"
-        case "srt", "subrip": return "SubRip"
-        case "webvtt", "vtt": return "WebVTT"
-        default: return trimmed
-        }
-    }
-
     private static func languageDisplayName(_ value: String?) -> String? {
-        guard let value = nonEmpty(value) else { return nil }
-        let primary = value
-            .lowercased()
-            .replacingOccurrences(of: "_", with: "-")
-            .split(separator: "-").first.map(String.init) ?? ""
-        // A token longer than a 3-letter ISO tag is already a spelled-out
-        // name (e.g. free-text metadata); show it as-is.
-        if primary.count > 3 {
-            return value.capitalized
-        }
-        // Share the canonical ISO 639 folding + English display-name table
-        // with the track-ordering core so the detail page's grouping and
-        // its row labels never disagree on a language.
-        if let key = SubtitleDisplayOrder.canonicalLanguageKey(value) {
-            return SubtitleDisplayOrder.languageDisplayName(key)
-        }
-        return value.uppercased()
+        TrackLabels.languageName(value)
     }
 
     private static func normalizedFileName(_ value: String?) -> String? {

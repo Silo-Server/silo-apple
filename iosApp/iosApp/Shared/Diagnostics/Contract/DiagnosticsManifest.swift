@@ -85,6 +85,13 @@ struct DiagnosticsManifest: Codable, Equatable {
         let platform: Platform
         let osVersion: String
         let profileID: String?
+        /// How many times this issue happened before the report was sent, when
+        /// more than once. Repeats of one issue within a day share a pending
+        /// report instead of each taking a slot (see `PendingReportStore`).
+        var occurrenceCount: Int? = nil
+
+        /// The contract's ceiling for `occurrence_count`.
+        static let maxOccurrenceCount = 1_000_000
 
         enum CodingKeys: String, CodingKey {
             case type
@@ -95,6 +102,7 @@ struct DiagnosticsManifest: Codable, Equatable {
             case platform
             case osVersion = "os_version"
             case profileID = "profile_id"
+            case occurrenceCount = "occurrence_count"
         }
 
         func validate() throws {
@@ -112,6 +120,9 @@ struct DiagnosticsManifest: Codable, Equatable {
             }
             guard !osVersion.isEmpty else {
                 throw DiagnosticsValidationError.invalidField("report.os_version")
+            }
+            if let occurrenceCount, !(1...Self.maxOccurrenceCount).contains(occurrenceCount) {
+                throw DiagnosticsValidationError.invalidField("report.occurrence_count")
             }
         }
     }
@@ -250,6 +261,26 @@ struct DiagnosticsManifest: Codable, Equatable {
                 throw DiagnosticsValidationError.invalidField("archive.sha256")
             }
         }
+    }
+}
+
+extension DiagnosticsManifest.Report {
+    /// Matches the server: `occurrence_count` may be omitted, meaning one
+    /// occurrence, but an explicit `null` is not an integer and fails to
+    /// decode. The synthesized decoder would read both as nil.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        type = try container.decode(ReportType.self, forKey: .type)
+        capturedAt = try container.decode(String.self, forKey: .capturedAt)
+        captureSessionID = try container.decode(String.self, forKey: .captureSessionID)
+        appVersion = try container.decode(String.self, forKey: .appVersion)
+        appBuild = try container.decode(String.self, forKey: .appBuild)
+        platform = try container.decode(Platform.self, forKey: .platform)
+        osVersion = try container.decode(String.self, forKey: .osVersion)
+        profileID = try container.decodeIfPresent(String.self, forKey: .profileID)
+        occurrenceCount = container.contains(.occurrenceCount)
+            ? try container.decode(Int.self, forKey: .occurrenceCount)
+            : nil
     }
 }
 

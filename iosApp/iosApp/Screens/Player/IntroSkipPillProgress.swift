@@ -1,28 +1,30 @@
 import SwiftUI
 
-extension IntroSkipPrompt.Kind {
-    /// The pill's action, fixed by the cross-platform spec.
+extension IntroSkipPrompt.Pill {
+    /// The pill's action. The intro labels are fixed by the cross-platform
+    /// spec; "Skip Recap" matches the web player.
     var actionTitle: String {
-        switch self {
-        case .skip: return "Skip Intro"
-        case .undo: return "Watch Intro"
+        switch (marker, kind) {
+        case (.intro, .skip): return "Skip Intro"
+        case (.intro, .undo): return "Watch Intro"
+        case (.recap, .skip): return "Skip Recap"
+        case (.recap, .undo): return "Watch Recap"
         }
     }
 
     /// The muted confirmation above `always`'s undo. It stays a separate line
     /// so the confirmation and the action never read as one instruction.
     var caption: String? {
-        switch self {
-        case .skip: return nil
-        case .undo: return "Intro skipped"
+        switch (marker, kind) {
+        case (_, .skip): return nil
+        case (.intro, .undo): return "Intro skipped"
+        case (.recap, .undo): return "Recap skipped"
         }
     }
 
     var accessibilityLabel: String {
-        switch self {
-        case .skip: return "Skip Intro"
-        case .undo: return "Intro skipped. Watch Intro"
-        }
+        guard let caption else { return actionTitle }
+        return "\(caption). \(actionTitle)"
     }
 }
 

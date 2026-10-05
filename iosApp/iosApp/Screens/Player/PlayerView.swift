@@ -196,8 +196,8 @@ struct PlayerView: View {
                                 onSelect: {
                                     if viewModel.isHoldSeeking {
                                         viewModel.commitHoldSeek()
-                                    } else if viewModel.showIntroSkip {
-                                        viewModel.selectIntroSkipPrompt()
+                                    } else if viewModel.showMarkerSkipPrompt {
+                                        viewModel.selectMarkerSkipPrompt()
                                     } else if viewModel.isPlaying {
                                         timelinePreviewContactCanToggle = false
                                         hideTimelinePreview(immediately: true)
@@ -350,7 +350,7 @@ struct PlayerView: View {
                 viewModel.closeHUD()
             } else if viewModel.isLoading {
                 dismissPlayer()
-            } else if viewModel.dismissIntroSkipPrompt() {
+            } else if viewModel.dismissMarkerSkipPrompt() {
                 // The intro pill is the most transient thing on screen: Menu
                 // takes it down and the press ends there, so it can neither
                 // hide the controls nor exit. The next Menu behaves normally.
@@ -848,6 +848,13 @@ struct PlayerNextUpScreen: View {
         #if os(tvOS)
         .ignoresSafeArea()
         #endif
+        // The player's notice layer is hidden behind this screen, and an end
+        // that stopped short explains itself here.
+        .overlay(alignment: .top) {
+            if let notice = viewModel.activeNotice {
+                PlayerNoticeOverlay(notice: notice)
+            }
+        }
         .animation(.easeInOut(duration: 0.2), value: viewModel.nextUpCountdownSeconds)
         .animation(.easeInOut(duration: 0.2), value: viewModel.nextUpEpisode)
         .animation(.easeInOut(duration: 0.2), value: viewModel.nextUpCarouselItems)

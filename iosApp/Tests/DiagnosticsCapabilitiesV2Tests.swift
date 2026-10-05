@@ -17,9 +17,10 @@ final class DiagnosticsCapabilitiesV2Tests: XCTestCase {
         state: String = "available",
         allowed: Bool = true,
         status: String = "available",
-        uploadChunkBytes: Int = 786_432
+        uploadChunkBytes: Int = 786_432,
+        acceptedCrashSources: String = ""
     ) -> String {
-        #"{"revision":"r1","state":"\#(state)","allowed":\#(allowed),"status":"\#(status)","server_instance_id":"srv_123","accepted_schema_versions":[1],"max_bundle_bytes":10485760,"max_manifest_bytes":65536,"retention_days":30,"consent_notice_version":2,"upload_chunk_bytes":\#(uploadChunkBytes)}"#
+        #"{"revision":"r1","state":"\#(state)","allowed":\#(allowed),"status":"\#(status)","server_instance_id":"srv_123","accepted_schema_versions":[1],"max_bundle_bytes":10485760,"max_manifest_bytes":65536,"retention_days":30,"consent_notice_version":2,"upload_chunk_bytes":\#(uploadChunkBytes)\#(acceptedCrashSources)}"#
     }
 
     private func makeClient(_ response: StubURLProtocol.Response) async throws -> (APIv2Client, StubURLProtocol.Handler) {
@@ -80,6 +81,49 @@ final class DiagnosticsCapabilitiesV2Tests: XCTestCase {
         let request = try XCTUnwrap(handler.requests.first)
         XCTAssertEqual(handler.requests.count, 1)
         XCTAssertEqual(request.header("Authorization"), "Bearer access")
+    }
+
+    /// A server that predates `accepted_crash_sources` rejects a watchdog
+    /// report as an invalid manifest, so none is filed for it.
+    func testWatchdogHangsAreFiledOnlyForServersThatListTheSource() async throws {
+        let (legacyClient, _) = try await makeClient(.json(document()))
+        let legacy = try await legacyClient.diagnosticsCapabilities()
+        XCTAssertNil(legacy.acceptedCrashSources)
+
+        let (currentClient, _) = try await makeClient(.json(document(
+            acceptedCrashSources: #","accepted_crash_sources":["ueh","exit_info","metrickit","exit_sentinel","watchdog"]"#
+        )))
+        let current = try await currentClient.diagnosticsCapabilities()
+        XCTAssertEqual(current.acceptedCrashSources?.last, "watchdog")
+
+        // The list survives the last-known-status cache an offline capture uses.
+        let cached = try DiagnosticsJSONCoding.makeDecoder().decode(
+            DiagnosticsStatusResponse.self,
+            from: DiagnosticsJSONCoding.makeEncoder().encode(current)
+        )
+        XCTAssertEqual(cached, current)
+
+        func context(_ status: DiagnosticsStatusResponse, binding: DiagnosticsBinding) -> DiagnosticsCaptureContext {
+            DiagnosticsCaptureContext(
+                binding: binding,
+                profileID: nil,
+                consentMode: .prompt,
+                noticeVersion: 2,
+                appVersion: "1.0",
+                appBuild: "1",
+                platform: .tvos,
+                osVersion: "27.0",
+                acceptedCrashSources: status.acceptedCrashSources
+            )
+        }
+        let selfHosted = DiagnosticsBinding(serverInstanceID: "srv_123", accountUserID: "42")
+        XCTAssertFalse(DiagnosticsCoordinator.canFileWatchdogHang(to: context(legacy, binding: selfHosted)))
+        XCTAssertTrue(DiagnosticsCoordinator.canFileWatchdogHang(to: context(current, binding: selfHosted)))
+        XCTAssertFalse(DiagnosticsCoordinator.canFileWatchdogHang(to: context(
+            current,
+            binding: .hosted(serverRegistryID: Self.serverID, accountUserID: "42")
+        )))
+        XCTAssertTrue(DiagnosticsStatusResponse.acceptsCrashSource(.exitSentinel, listed: nil))
     }
 
     func testAvailabilityRequiresAllowedAndAvailableState() async throws {

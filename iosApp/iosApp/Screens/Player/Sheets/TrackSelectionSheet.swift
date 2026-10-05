@@ -77,7 +77,7 @@ struct TrackSelectionSheet: View {
         ForEach(viewModel.audioTracks) { track in
             TrackSelectionRow(
                 name: track.primaryLabel,
-                attributes: track.attributesLabel,
+                detail: track.detailLabel,
                 pills: track.attributePillLabels(),
                 isSelected: viewModel.selectedAudioId == track.trackId
             ) {
@@ -94,7 +94,6 @@ struct TrackSelectionSheet: View {
 
         TrackSelectionRow(
             name: "Off",
-            attributes: nil,
             isSelected: isOffSelected
         ) {
             if isSecondary {
@@ -113,15 +112,11 @@ struct TrackSelectionSheet: View {
                 ? viewModel.selectedSecondarySubtitleId == track.trackId
                 : viewModel.selectedSubtitleId == track.trackId
             let isDisabled = isSecondary && viewModel.selectedSubtitleId == track.trackId
-            let pills = track.attributePillLabels(
-                includeLanguage: track.normalizedLanguageCode == nil
-            )
 
             TrackSelectionRow(
-                name: track.languageFirstPrimaryLabel,
-                detail: track.languageFirstDetailLabel,
-                attributes: pills.isEmpty ? nil : pills.joined(separator: " · "),
-                pills: pills,
+                name: track.primaryLabel,
+                detail: track.detailLabel,
+                pills: track.attributePillLabels(),
                 status: viewModel.subtitleSyncStatus(for: track),
                 isSelected: isSelected,
                 isDisabled: isDisabled
@@ -235,7 +230,6 @@ struct TrackSelectionSheet: View {
 private struct TrackSelectionRow: View {
     let name: String
     var detail: String? = nil
-    let attributes: String?
     var pills: [String] = []
     /// A subtitle's sync status ("Syncing… 40%", "Synced −3.0 s").
     var status: String? = nil
@@ -261,10 +255,6 @@ private struct TrackSelectionRow: View {
 
                     if !pills.isEmpty {
                         pillRow
-                    } else if let attributes {
-                        Text(attributes)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
                     }
 
                     if let status {

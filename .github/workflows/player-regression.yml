@@ -44,7 +44,8 @@ jobs:
             '[{"scheme":"Silo","destination":"platform=iOS Simulator,name=iPhone 17 Pro","action":"test","platform":"iOS","test_target":"SiloTests"}]' ||
             '[{"scheme":"Silo","destination":"platform=iOS Simulator,name=iPhone 17 Pro","action":"test","platform":"iOS","test_target":"SiloTests"},
               {"scheme":"SiloTV","destination":"platform=tvOS Simulator,name=Apple TV 4K (3rd generation)","action":"test","platform":"tvOS","test_target":"SiloTVTests"},
-              {"scheme":"SiloMac","destination":"generic/platform=macOS","action":"build"}]') }}
+              {"scheme":"SiloMac","destination":"generic/platform=macOS","action":"build"},
+              {"scheme":"Silo","destination":"platform=iOS Simulator,name=iPhone 17 Pro","action":"test","platform":"iOS","test_target":"SiloTests","optimized":true}]') }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -117,14 +118,24 @@ jobs:
           SCHEME: ${{ matrix.scheme }}
           DESTINATION: ${{ matrix.destination }}
           ACTION: ${{ matrix.action }}
+          OPTIMIZED: ${{ matrix.optimized && 'true' || 'false' }}
         run: |
           set -o pipefail
+          optimization=()
+          if [ "$OPTIMIZED" = true ]; then
+            # Release-style Swift optimisation on the Debug configuration, which
+            # keeps testability and the test host. Some faults only appear in
+            # optimised (TestFlight) builds. -Osize rather than -O: with Debug
+            # plus -O, swift-frontend in Xcode 26.3 and 27 crashes emitting IR
+            # for the IssueReporting dependency (swift-issue-reporting).
+            optimization=(SWIFT_OPTIMIZATION_LEVEL=-Osize SWIFT_COMPILATION_MODE=wholemodule)
+          fi
           if [ "$ACTION" = test ]; then
             # Simulator-only ad-hoc signing supplies the application identifier
             # required by Keychain. No certificate or release secret is used.
             xcodebuild build-for-testing -project iosApp/Silo.xcodeproj -scheme "$SCHEME" \
               -destination "$SILO_TEST_DESTINATION" -derivedDataPath /tmp/silo-derived \
-              CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- | tee /tmp/player-build.log
+              CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- "${optimization[@]}" | tee /tmp/player-build.log
           else
             xcodebuild build -project iosApp/Silo.xcodeproj -scheme "$SCHEME" \
               -destination "$DESTINATION" -derivedDataPath /tmp/silo-derived \
@@ -132,10 +143,10 @@ jobs:
               CODE_SIGNING_ALLOWED=NO | tee /tmp/player-validation.log
           fi
       - name: Package simulator tests for focused visual verification
-        if: matrix.action == 'test' && matrix.platform == 'iOS' && !inputs.baseline_ref
+        if: matrix.action == 'test' && matrix.platform == 'iOS' && !matrix.optimized && !inputs.baseline_ref
         run: ditto -c -k --keepParent /tmp/silo-derived/Build/Products /tmp/Silo-simulator-tests.zip
       - name: Upload compiled simulator tests
-        if: matrix.action == 'test' && matrix.platform == 'iOS' && !inputs.baseline_ref
+        if: matrix.action == 'test' && matrix.platform == 'iOS' && !matrix.optimized && !inputs.baseline_ref
         uses: actions/upload-artifact@v4
         with:
           name: Silo-simulator-tests
@@ -157,7 +168,7 @@ jobs:
             -resultBundlePath /tmp/player-validation.xcresult \
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- | tee /tmp/player-validation.log
       - name: Record synthetic preview expansion and successor playback
-        if: matrix.action == 'test' && matrix.platform == 'iOS' && !inputs.baseline_ref && steps.build.outcome == 'success' && !cancelled() && github.event_name == 'workflow_dispatch' && inputs.record_preview
+        if: matrix.action == 'test' && matrix.platform == 'iOS' && !matrix.optimized && !inputs.baseline_ref && steps.build.outcome == 'success' && !cancelled() && github.event_name == 'workflow_dispatch' && inputs.record_preview
         timeout-minutes: 10
         shell: bash
         run: |
@@ -192,7 +203,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: player-validation-${{ matrix.scheme }}
+          name: player-validation-${{ matrix.scheme }}${{ matrix.optimized && '-optimized' || '' }}
           path: |
             /tmp/player-build.log
             /tmp/player-validation.log

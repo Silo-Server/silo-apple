@@ -312,10 +312,11 @@ struct DiagnosticsBundleBuilder {
     }
 
     /// MetricKit's JSON representation is useful crash evidence, but it can
-    /// include a process-container path in `virtualMemoryRegionInfo` and other
-    /// free-form strings. Keep the raw payload on disk for self-hosted reports;
-    /// hosted archives instead drop that field and structurally sanitize every
-    /// remaining string so a JSON escape or key ordering change cannot bypass
+    /// include a process-container path in `virtualMemoryRegionInfo`, the
+    /// process id, the device region, and whatever Apple adds next. Keep the
+    /// raw payload on disk for self-hosted reports; hosted archives keep only
+    /// `hostedMetricKitAllowedKeys` and structurally sanitize every remaining
+    /// string so a JSON escape or key ordering change cannot bypass
     /// destination-specific redaction.
     static func sanitizeHostedMetricKitJSON(_ data: Data) throws -> Data {
         let raw: Any
@@ -338,31 +339,63 @@ struct DiagnosticsBundleBuilder {
         }
     }
 
-    private static func sanitizeHostedMetricKitValue(_ value: Any) -> Any {
+    /// The MetricKit crash and hang fields a reader needs to symbolicate the
+    /// stack and classify the failure. Keys are matched exactly at any depth;
+    /// everything else is dropped, including fields Apple adds later. Left out
+    /// on purpose: `address` (ASLR-sensitive; the binary UUID plus offset
+    /// symbolicate), `virtualMemoryRegionInfo` (container paths), `pid`,
+    /// `regionFormat`, `bundleIdentifier`, and the exception reason's
+    /// `arguments` and `formatString` (the composed message already carries
+    /// them, sanitized).
+    static let hostedMetricKitAllowedKeys: Set<String> = [
+        // MXDiagnostic envelope
+        "version", "callStackTree", "diagnosticMetaData",
+        // MXCallStackTree
+        "callStacks", "callStackPerThread", "threadAttributed", "callStackRootFrames", "subFrames",
+        "binaryUUID", "binaryName", "offsetIntoBinaryTextSegment", "sampleCount",
+        // MXMetaData
+        "appBuildVersion", "appVersion", "osVersion", "deviceType", "platformArchitecture",
+        "isTestFlightApp", "lowPowerModeEnabled",
+        // MXCrashDiagnostic / MXHangDiagnostic
+        "exceptionType", "exceptionCode", "signal", "terminationReason", "hangDuration",
+        "exceptionReason", "objectiveCexceptionReason", "composedMessage", "exceptionName", "className",
+    ]
+
+    /// The allowed MetricKit members whose strings the OS composes from app
+    /// state, such as an exception message quoting a URL. Unlike log lines
+    /// they never passed through `DiagLog`'s redaction, so hosted archives
+    /// apply it here before the hosted rules.
+    private static let hostedMetricKitFreeTextKeys: Set<String> = [
+        "terminationReason", "exceptionReason", "objectiveCexceptionReason",
+        "composedMessage", "exceptionName", "className",
+    ]
+    /// Matches the message cap of a rendered log line.
+    private static let hostedMetricKitFreeTextMaxLength = 2048
+
+    private static func sanitizeHostedMetricKitValue(_ value: Any, isFreeText: Bool = false) -> Any {
         if let object = value as? [String: Any] {
             return object.reduce(into: [String: Any]()) { result, entry in
-                let normalizedKey = entry.key.lowercased().filter { $0.isLetter || $0.isNumber }
-                // `address` is an ASLR-sensitive absolute frame address. The
-                // binary UUID plus offset retain the symbolication value, so
-                // hosted reports omit it and the collector can reject this
-                // otherwise ambiguous network-identity key globally.
-                guard normalizedKey != "virtualmemoryregioninfo",
-                      normalizedKey != "address",
-                      !hasHostedBareUUID(in: entry.key) else { return }
-                if normalizedKey == "binaryuuid",
+                guard hostedMetricKitAllowedKeys.contains(entry.key) else { return }
+                if entry.key == "binaryUUID",
                    let binaryUUID = entry.value as? String,
                    isHostedMetricKitBinaryUUID(binaryUUID) {
                     result[entry.key] = binaryUUID
                 } else {
-                    result[entry.key] = sanitizeHostedMetricKitValue(entry.value)
+                    result[entry.key] = sanitizeHostedMetricKitValue(
+                        entry.value,
+                        isFreeText: isFreeText || hostedMetricKitFreeTextKeys.contains(entry.key)
+                    )
                 }
             }
         }
         if let array = value as? [Any] {
-            return array.map(sanitizeHostedMetricKitValue)
+            return array.map { sanitizeHostedMetricKitValue($0, isFreeText: isFreeText) }
         }
         if let string = value as? String {
-            return sanitizeHostedCrashText(string)
+            let redacted = isFreeText
+                ? DiagLog.redactFreeText(string, maxLength: hostedMetricKitFreeTextMaxLength)
+                : string
+            return sanitizeHostedCrashText(redacted)
         }
         return value
     }
@@ -392,6 +425,8 @@ struct DiagnosticsBundleBuilder {
         )
     }
 
+    /// `occurrence_count` is left out on purpose: the hosted collector has
+    /// not adopted it yet, so the repeat count stays local for hosted reports.
     private static func sanitizeHostedReport(
         _ report: DiagnosticsManifest.Report
     ) -> DiagnosticsManifest.Report {
@@ -928,6 +963,11 @@ struct DiagnosticsBundleBuilder {
     //    one check that catches real leaks. The retry line's `msg` ("401 retry"
     //    / "401 not retried") carries the distinction on its own, so hosted
     //    evidence loses nothing by dropping the attribute.
+    //
+    // 3. Keys newer than the hosted collector's vendored registry: the playback
+    //    session summary keys and `lifecycle.resident_mb`. The collector
+    //    rejects a whole bundle on an unregistered key, so these stay
+    //    self-hosted until it re-vendors the contract.
     //
     // Before adding a key here, normalize it and check it against
     // `FORBIDDEN_KEYS`, `FORBIDDEN_COMPACT_KEYS` and the credential/identifier

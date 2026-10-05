@@ -1439,7 +1439,26 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
         let calls = harness.transport.effectiveCalls()
         XCTAssertEqual(calls.count, 1, "a refresh must be one round trip, not one per key")
-        XCTAssertEqual(Set(calls[0]), Set(SettingKey.playerDeviceSettings))
+        XCTAssertEqual(Set(calls[0]), Set(SettingKey.playerReadSettings))
+    }
+
+    /// Apple has no recap control: the player follows the value set on the web
+    /// or Android, and nothing here writes it back over that choice.
+    func testRefreshFollowsAutoSkipRecapWithoutWritingIt() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.effective = [
+            EffectiveSettingValue(
+                key: SettingKey.playbackAutoSkipRecap.rawValue,
+                value: .bool(true),
+                source: .scope(.profile),
+                scope: .profile
+            ),
+        ]
+
+        await harness.settings.refreshFromServer()
+
+        XCTAssertTrue(harness.settings.autoSkipRecap)
+        XCTAssertNil(harness.transport.writesByKey()[.playbackAutoSkipRecap])
     }
 
     func testRefreshAdoptsEverySyncedPlayerSetting() async throws {

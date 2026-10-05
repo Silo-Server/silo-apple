@@ -163,18 +163,19 @@ final class AuthService: @unchecked Sendable {
             lastUsedAt: Date(),
             verifiedServerId: verifiedServerId
         )
-        guard serverRegistry.addOrUpdate(entry) != nil else {
+        // A saved entry for the same origin keeps its own id.
+        guard let saved = serverRegistry.addOrUpdate(entry) else {
             throw ServerRegistryError.persistenceFailed
         }
-        if serverRegistry.activeServerId != id {
-            guard await serverRegistry.switchTo(serverId: id) else {
+        if serverRegistry.activeServerId != saved.id {
+            guard await serverRegistry.switchTo(serverId: saved.id) else {
                 throw ServerRegistryError.persistenceFailed
             }
         }
         // Now that the candidate is the active server, establish the v2
         // contract verdict the pilot gate reads. Recorded after the switch so
         // a candidate that is not committed never touches the active verdict.
-        await recordContractVerdict(serverId: id, serverURL: normalized)
+        await recordContractVerdict(serverId: saved.id, serverURL: saved.url)
         try Task.checkCancellation()
 
         return status

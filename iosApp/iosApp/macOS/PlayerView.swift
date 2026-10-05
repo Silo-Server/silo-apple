@@ -102,9 +102,9 @@ private struct MacPlayerScreen: View {
                     .transition(.opacity.combined(with: .scale(scale: 0.98)))
                 }
 
-                if let pill = viewModel.introSkipPrompt.pill {
+                if let pill = viewModel.markerSkipPill {
                     MacIntroSkipPill(pill: pill) {
-                        viewModel.selectIntroSkipPrompt()
+                        viewModel.selectMarkerSkipPrompt()
                     }
                     .padding(.trailing, 24)
                     // Above the control bar while it shows; toward the corner
@@ -171,7 +171,7 @@ private struct MacPlayerScreen: View {
         .preferredColorScheme(.dark)
         .animation(.easeOut(duration: 0.16), value: shouldShowControls)
         .animation(.easeOut(duration: 0.16), value: isOptionsPresented)
-        .animation(.easeOut(duration: 0.2), value: viewModel.showIntroSkip)
+        .animation(.easeOut(duration: 0.2), value: viewModel.showMarkerSkipPrompt)
     }
 
     private var shouldShowControls: Bool {
@@ -215,7 +215,7 @@ private struct MacPlayerScreen: View {
         case .escape:
             if isOptionsPresented {
                 isOptionsPresented = false
-            } else if viewModel.dismissIntroSkipPrompt() {
+            } else if viewModel.dismissMarkerSkipPrompt() {
                 // The intro pill takes Escape before the window does; the next
                 // Escape closes the player as usual.
             } else {
@@ -223,7 +223,7 @@ private struct MacPlayerScreen: View {
             }
         case .confirm:
             // Return acts on the intro pill; with none showing it does nothing.
-            viewModel.selectIntroSkipPrompt()
+            viewModel.selectMarkerSkipPrompt()
         case .speedDown:
             viewModel.setPlaybackSpeed(nextSpeed(offset: -1))
         case .speedUp:

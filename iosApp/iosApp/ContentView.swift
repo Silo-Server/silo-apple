@@ -56,6 +56,11 @@ struct ContentView: View {
     /// Set when the scene enters the background, so `.active` refreshes only
     /// on a real return to the app.
     @State private var isReturningFromBackground = false
+    #if os(iOS)
+    /// When the scene last entered the background, for the Home refresh
+    /// threshold on return.
+    @State private var sceneBackgroundedAt: Date?
+    #endif
 
     // The root modifier chain runs presentedContent -> appEventContent ->
     // sessionTaskContent -> body. Swift 6.2 cannot type-check it as one
@@ -275,9 +280,7 @@ struct ContentView: View {
             // distinguishable from an abnormal exit at the same point in the
             // timeline: the abnormal one simply lacks this line.
             LaunchTimeline.recordTermination(state: Self.diagnosticsScenePhase(scenePhase))
-            #if os(tvOS)
             ExitSentinel.shared.appWillTerminate()
-            #endif
         }
         #endif
         #if os(tvOS)
@@ -361,6 +364,8 @@ struct ContentView: View {
                 drainPendingDeepLinkIfReady()
                 #if os(tvOS)
                 restoreTrailerReturnIfNeeded(hasPriorityLaunchIntent: hasPendingDeepLink)
+                #endif
+                #if os(iOS) || os(tvOS)
                 await ExitSentinel.shared.captureLeftoverIfNeeded()
                 #endif
                 await refreshSessionStores()
@@ -470,13 +475,26 @@ struct ContentView: View {
                 break
             }
             #endif
-            #if os(tvOS)
+            #if os(iOS) || os(tvOS)
             switch newPhase {
             case .active:
                 ExitSentinel.shared.appDidEnterForeground()
+                #if os(tvOS)
+                HangWatchdog.shared.start()
+                #endif
             case .background:
                 ExitSentinel.shared.appDidEnterBackground()
-            default:
+                #if os(tvOS)
+                HangWatchdog.shared.stop()
+                #endif
+            case .inactive:
+                #if os(iOS)
+                // An iPhone app the user swipes away in the app switcher is
+                // inactive, not backgrounded, when it is killed. Disarm here
+                // so that kill is not reported as an unclean exit.
+                ExitSentinel.shared.appDidEnterBackground()
+                #endif
+            @unknown default:
                 break
             }
             #endif
@@ -491,6 +509,9 @@ struct ContentView: View {
 
             if newPhase == .background {
                 isReturningFromBackground = true
+                #if os(iOS)
+                sceneBackgroundedAt = .now
+                #endif
                 markProfileAwayStartIfNeeded()
                 return
             }
@@ -1047,6 +1068,10 @@ struct ContentView: View {
     private func handleReturnFromBackgroundIfNeeded() {
         guard isReturningFromBackground else { return }
         isReturningFromBackground = false
+        #if os(iOS)
+        let backgroundedAt = sceneBackgroundedAt
+        sceneBackgroundedAt = nil
+        #endif
         guard router.authState == .authenticated else { return }
         if keepsProfileActiveInBackground {
             launchPreferences.clearBackgroundedAt()
@@ -1059,13 +1084,11 @@ struct ContentView: View {
 
         // Capabilities and settings may have changed while the app was
         // away. Most of these refreshes go to the network every time.
-        #if os(tvOS)
+        #if os(iOS) || os(tvOS)
         Task {
             await ExitSentinel.shared.captureLeftoverIfNeeded()
             await diagnosticsModel.handleForeground()
         }
-        #elseif os(iOS)
-        Task { await diagnosticsModel.handleForeground() }
         #endif
         // Detail pages read this lazily, so the next one re-reads it
         // instead of every foreground paying for a request.
@@ -1079,6 +1102,10 @@ struct ContentView: View {
         #endif
         #if os(tvOS)
         NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil)
+        #elseif os(iOS)
+        if HomeForegroundRefreshPolicy.shouldRefresh(backgroundedAt: backgroundedAt) {
+            NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil)
+        }
         #endif
         #if !os(tvOS)
         Task { await DownloadManager.shared.onAppActive() }

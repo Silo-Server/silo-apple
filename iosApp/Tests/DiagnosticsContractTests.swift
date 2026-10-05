@@ -13,6 +13,7 @@ final class DiagnosticsContractTests: XCTestCase {
         "android-tv-crash-ueh.json",
         "ios-hang-metrickit.json",
         "tvos-abnormal-exit.json",
+        "tvos-hang-watchdog.json",
     ]
     private let validDeviceFixture = "device.json"
     private let validLogLineFixture = "loglines.jsonl"
@@ -20,6 +21,8 @@ final class DiagnosticsContractTests: XCTestCase {
         "archive-entry-outside-allowlist.json": .validate,
         "bad-schema-version.json": .validate,
         "missing-consent.json": .decode,
+        "occurrence-count-null.json": .decode,
+        "occurrence-count-zero.json": .validate,
         "platform-macos-reserved.json": .decode,
         "stack-excerpt-over-8kib.json": .validate,
         "unknown-report-type.json": .decode,
