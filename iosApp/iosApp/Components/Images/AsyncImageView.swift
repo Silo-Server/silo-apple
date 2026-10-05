@@ -83,6 +83,7 @@ struct AsyncImageView: View {
             // Ahead of warm-ups, which run at normal priority or lower.
             .priority(.high)
             .onDisappear(.cancel)
+            .id(url)
         }
     }
 

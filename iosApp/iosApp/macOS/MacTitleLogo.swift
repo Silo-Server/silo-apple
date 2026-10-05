@@ -23,6 +23,9 @@ struct MacTitleLogo: View {
                     .onAppear { onLoaded?() }
             }
         }
+        // LazyImage compares requests by cache identity, which a re-signed
+        // URL keeps; reload on the URL itself.
+        .id(url)
         .frame(maxWidth: size.width, maxHeight: size.height)
     }
 
