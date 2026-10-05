@@ -524,8 +524,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(plan.subtitle.inventory[3].delivery, "burn_in_only")
         XCTAssertNil(plan.subtitle.inventory[3].url)
         let qualityOptions = ApplePlaybackQuality.playbackOptions(
-            serverQualities: plan.availableQualities,
-            fallbackVersion: nil
+            serverQualities: plan.availableQualities
         )
         XCTAssertEqual(qualityOptions.map(\.id), ["auto", "original"])
         XCTAssertEqual(qualityOptions.map(\.bitrateKbps), [0, 8_000])
@@ -878,11 +877,13 @@ final class PlaybackProtocolV3Tests: XCTestCase {
     func testCancelledStartReclaimsTheSessionItStillAllocated() async {
         let reclaimed = PlaybackTestActorBox<String>()
         let requestStarted = XCTestExpectation(description: "shielded request started")
+        // The request stays in flight until the caller has given up.
+        let (response, respond) = AsyncStream<Void>.makeStream()
 
         let caller = Task<String, Error> {
             try await PlaybackCancellationShield.run {
                 requestStarted.fulfill()
-                try? await Task.sleep(nanoseconds: 200_000_000)
+                for await _ in response { break }
                 // The POST landed despite the caller's cancellation.
                 return "session-allocated"
             } reclaim: { allocated in
@@ -892,6 +893,12 @@ final class PlaybackProtocolV3Tests: XCTestCase {
 
         await fulfillment(of: [requestStarted], timeout: 5)
         caller.cancel()
+        // A caller that waited for the request would hang; answer it after
+        // a bound so that case fails instead.
+        let watchdog = Task {
+            try await Task.sleep(for: .seconds(5))
+            respond.finish()
+        }
 
         do {
             _ = try await caller.value
@@ -902,14 +909,12 @@ final class PlaybackProtocolV3Tests: XCTestCase {
                 "the caller must give up promptly so its start timeout still fires"
             )
         }
+        watchdog.cancel()
+        respond.finish()
 
         // The shielded request keeps running and retires what it allocated.
-        var observed: String?
-        for _ in 0..<100 where observed == nil {
-            observed = await reclaimed.value
-            if observed == nil { try? await Task.sleep(nanoseconds: 20_000_000) }
-        }
-        XCTAssertEqual(observed, "session-allocated")
+        let retired = await eventually { await reclaimed.value == "session-allocated" }
+        XCTAssertTrue(retired, "the abandoned allocation must be reclaimed")
     }
 
     func testReplanAgainstUncommittedStartKeepsTheSharedSession() {
@@ -2196,8 +2201,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
                     bitrateKbps: 320,
                     preservesSource: false
                 )
-            ],
-            fallbackVersion: nil
+            ]
         )
         XCTAssertEqual(options.map(\.id), ["auto", "audio_high"])
         XCTAssertEqual(options.last?.resolution, "")
@@ -2215,8 +2219,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             )
         ]
         let options = ApplePlaybackQuality.playbackOptions(
-            serverQualities: serverQualities,
-            fallbackVersion: nil
+            serverQualities: serverQualities
         )
 
         XCTAssertEqual(options.last?.id, "1080p-medium")
@@ -2243,12 +2246,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
 
     func testEmptyServerQualityCatalogOnlyOffersAuto() {
         let options = ApplePlaybackQuality.playbackOptions(
-            serverQualities: [],
-            fallbackVersion: makeVersion(
-                container: "mp4",
-                videoCodec: "h264",
-                audioCodec: "aac"
-            )
+            serverQualities: []
         )
         XCTAssertEqual(options.map(\.id), [ApplePlaybackQuality.autoId])
     }

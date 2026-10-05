@@ -81,7 +81,6 @@ enum OfflineProgressQueue {
     /// Returns claimed entries to pending when their batch provably never
     /// reached the server, for a flush that can no longer resolve them in
     /// place. Only entries still `dispatched` change. Returns whether any did.
-    @discardableResult
     static func releaseClaims(_ queue: inout [QueuedProgress], ids: Set<UUID>) -> Bool {
         var changed = false
         for index in queue.indices where ids.contains(queue[index].id) && queue[index].state == .dispatched {

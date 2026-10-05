@@ -6,7 +6,7 @@ import SwiftUI
 /// the appearance block is a per-device override with a server
 /// fallback.
 struct SubtitleSettingsView: View {
-    @Bindable var viewModel: SettingsViewModel
+    let viewModel: SettingsViewModel
 
     var body: some View {
         List {
@@ -56,11 +56,7 @@ struct SubtitleSettingsView: View {
                 }
             }
             .foregroundStyle(Color.siloOnSurface)
-            #if os(macOS)
-            .pickerStyle(.menu)
-            #else
-            .pickerStyle(.navigationLink)
-            #endif
+            .settingsPickerStyle()
         } header: {
             Text("Metadata")
                 .foregroundStyle(Color.siloSecondaryText)
@@ -88,11 +84,7 @@ struct SubtitleSettingsView: View {
                 }
             }
             .foregroundStyle(Color.siloOnSurface)
-            #if os(macOS)
-            .pickerStyle(.menu)
-            #else
-            .pickerStyle(.navigationLink)
-            #endif
+            .settingsPickerStyle()
 
             Picker("Behavior", selection: $prefs.subtitleMode) {
                 ForEach(SubtitleMode.allCases, id: \.rawValue) { mode in
@@ -100,11 +92,7 @@ struct SubtitleSettingsView: View {
                 }
             }
             .foregroundStyle(Color.siloOnSurface)
-            #if os(macOS)
-            .pickerStyle(.menu)
-            #else
-            .pickerStyle(.navigationLink)
-            #endif
+            .settingsPickerStyle()
 
             Toggle(
                 "Show Forced Subtitles",
@@ -170,9 +158,7 @@ struct SubtitleSettingsView: View {
                 "Use Device Settings",
                 isOn: Binding(
                     get: { viewModel.subtitleMatchesSystemAppearance },
-                    set: { enabled in
-                        Task { await viewModel.setSubtitleMatchesSystemAppearance(enabled) }
-                    }
+                    set: { viewModel.setSubtitleMatchesSystemAppearance($0) }
                 )
             )
             .foregroundStyle(Color.siloOnSurface)
@@ -216,11 +202,7 @@ struct SubtitleSettingsView: View {
                 }
             }
             .foregroundStyle(Color.siloOnSurface)
-            #if os(macOS)
-            .pickerStyle(.menu)
-            #else
-            .pickerStyle(.navigationLink)
-            #endif
+            .settingsPickerStyle()
 
             Picker("Font Family", selection: appearanceBinding(\.fontFamily)) {
                 ForEach(SubtitleFontFamilyPreset.allCases) { option in
@@ -228,11 +210,7 @@ struct SubtitleSettingsView: View {
                 }
             }
             .foregroundStyle(Color.siloOnSurface)
-            #if os(macOS)
-            .pickerStyle(.menu)
-            #else
-            .pickerStyle(.navigationLink)
-            #endif
+            .settingsPickerStyle()
 
             ColorChoicePicker(
                 title: "Font Color",
@@ -281,11 +259,7 @@ struct SubtitleSettingsView: View {
                 }
             }
             .foregroundStyle(Color.siloOnSurface)
-            #if os(macOS)
-            .pickerStyle(.menu)
-            #else
-            .pickerStyle(.navigationLink)
-            #endif
+            .settingsPickerStyle()
 
             opacityRow
                 .disabled(viewModel.subtitleAppearance.backgroundStyle != .box)
@@ -313,11 +287,7 @@ struct SubtitleSettingsView: View {
                 }
             }
             .foregroundStyle(Color.siloOnSurface)
-            #if os(macOS)
-            .pickerStyle(.menu)
-            #else
-            .pickerStyle(.navigationLink)
-            #endif
+            .settingsPickerStyle()
         } header: {
             Text("Layout")
                 .foregroundStyle(Color.siloSecondaryText)
@@ -395,9 +365,8 @@ struct SubtitleSettingsView: View {
 
 // MARK: - Color choice row
 
-/// A named-color picker rendered as a standard row (navigation link on
-/// iOS, menu on macOS) so every option gets a full-size tap target,
-/// unlike the previous row of 24pt swatches.
+/// A named-color picker rendered as a standard row so every option gets a
+/// full-size tap target.
 private struct ColorChoicePicker: View {
     let title: String
     let colors: [(hex: String, label: String)]
@@ -422,11 +391,7 @@ private struct ColorChoicePicker: View {
             Text(title)
                 .foregroundStyle(Color.siloOnSurface)
         }
-        #if os(macOS)
-        .pickerStyle(.menu)
-        #else
-        .pickerStyle(.navigationLink)
-        #endif
+        .settingsPickerStyle()
     }
 
     /// Stored hex values may differ in case from the option list.

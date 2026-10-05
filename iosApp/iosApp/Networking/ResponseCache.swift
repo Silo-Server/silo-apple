@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Process-wide stale-while-revalidate cache for decoded API responses.
 ///
@@ -17,7 +20,20 @@ final class ResponseCache {
 
     private var entries: [String: Any] = [:]
 
-    private init() {}
+    private init() {
+        #if canImport(UIKit)
+        // Item pages are the bulk of the cache and the cheapest to refetch.
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            MainActor.assumeIsolated {
+                ResponseCache.shared.removeAll(withPrefix: "item:")
+            }
+        }
+        #endif
+    }
 
     /// Returns the cached value typed as `T` if one exists. Mismatched
     /// types return nil rather than crashing — the caller falls back to
@@ -28,6 +44,7 @@ final class ResponseCache {
 
     func set<T>(_ value: T, for key: String) {
         entries[key] = value
+        storeSnapshot(value, for: key)
     }
 
     func remove(_ key: String) {
@@ -48,12 +65,15 @@ final class ResponseCache {
         guard var value = entries[key] as? T else { return }
         transform(&value)
         entries[key] = value
+        storeSnapshot(value, for: key)
     }
 
     /// Drop every entry whose key starts with `prefix`. Useful for
     /// invalidating a family (e.g. "item:" after a profile switch).
     func removeAll(withPrefix prefix: String) {
-        entries = entries.filter { !$0.key.hasPrefix(prefix) }
+        for key in entries.keys where key.hasPrefix(prefix) {
+            entries.removeValue(forKey: key)
+        }
     }
 
     /// Drop every cached response whose contents carry a translatable
@@ -71,24 +91,52 @@ final class ResponseCache {
         removeAll(withPrefix: "item:")
         remove(CacheKey.homeSections)
         remove(CacheKey.recommendations)
+        if let scope = Self.snapshotScope {
+            ResponseSnapshotStore.remove(keys: [CacheKey.homeSections, CacheKey.recommendations], scope: scope)
+        }
     }
 
+    /// Sign-out boundary: memory and the on-disk snapshots of every scope.
     func clearAll() {
         entries.removeAll()
+        ResponseSnapshotStore.removeAll()
+    }
+
+    // MARK: - Snapshots
+
+    /// Fill keys this process has not loaded yet from the active profile's
+    /// last-known responses, so the first screens can paint before the
+    /// network answers.
+    func seedFromSnapshots() {
+        guard let scope = Self.snapshotScope else { return }
+        for (key, value) in ResponseSnapshotStore.load(scope: scope) where entries[key] == nil {
+            entries[key] = value
+        }
+    }
+
+    private func storeSnapshot<T>(_ value: T, for key: String) {
+        guard ResponseSnapshotStore.snapshotType(forKey: key) != nil,
+              let encodable = value as? any Encodable,
+              let scope = Self.snapshotScope else { return }
+        ResponseSnapshotStore.store(encodable, forKey: key, scope: scope)
+    }
+
+    /// The server and profile that own responses cached right now.
+    private static var snapshotScope: ResponseSnapshotStore.Scope? {
+        guard let serverId = ServerRegistry.activeServerIDSnapshot,
+              let profileId = AuthService.shared.profileId else { return nil }
+        return ResponseSnapshotStore.Scope(serverId: serverId, profileId: profileId)
     }
 }
 
 /// Canonical key strings. Centralizing them keeps cache reads and
 /// writes from drifting apart and makes prefix-invalidation safe.
 enum CacheKey {
-    /// Versioned with the wire: rows from `/api/v2/home/sections` live under
-    /// a key that no v1-era writer uses.
     static let homeSections = "home:sections:v2"
     static let recommendations = "recommendations:discover"
     static let collections = "collections:list"
     static let profiles = "profiles:list"
     static let favorites = "personal:favorites"
-    /// Versioned with the wire: history pages from the v2 catalog.
     static let history = "personal:history:v2"
     static let watchlist = "personal:watchlist"
     /// Libraries visible to the active profile — drives the Skyline
@@ -107,10 +155,8 @@ enum CacheKey {
     }
     static func itemUserState(_ contentId: String) -> String { "\(itemDetail(contentId)):userState" }
     static func itemWatchDetail(_ contentId: String, libraryId: Int? = nil) -> String { "\(itemDetail(contentId, libraryId: libraryId)):watchDetail" }
-    /// Browse grid page-1 cache, keyed by the full filter/sort state so
-    /// distinct filter combinations never collide (the old genre+sort-only
-    /// key did). `filterKey` is `CatalogFilterState.cacheKeyFragment`.
-    /// Versioned with the wire: pages from the v2 catalog.
+    /// Browse grid page-1 cache, keyed by the full filter/sort state
+    /// (`CatalogFilterState.cacheKeyFragment`).
     static func browse(libraryId: Int?, filterKey: String) -> String {
         "browse:v2:\(libraryId.map(String.init) ?? "all"):\(filterKey)"
     }

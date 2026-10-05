@@ -115,8 +115,7 @@ enum HomeFeedMeta {
 
 // MARK: - Navigation
 
-/// Shared tap handling so every variant card pushes detail the same way,
-/// including the iOS 26 zoom transition the shipping `MediaCard` uses.
+/// Shared tap handling so every variant card opens detail the same way.
 private struct HomeCardTap<Label: View>: View {
     let contentId: String
     let accessibilityLabel: String
@@ -132,13 +131,10 @@ private struct HomeCardTap<Label: View>: View {
     @Environment(AppRouter.self) private var router
     @Environment(\.browseLibraryId) private var browseLibraryId
     @Environment(\.itemDetailBrowseSource) private var detailBrowseSource
-    @Environment(\.zoomNamespace) private var zoomNamespace
-    @State private var zoomInstanceID = UUID()
 
     var body: some View {
         Button {
             if let onTap { onTap(); return }
-            router.pendingZoomSourceID = zoomInstanceID.uuidString
             if let continueWatchingItem {
                 router.presentContinueWatchingDetail(for: continueWatchingItem, libraryId: browseLibraryId, browseSource: detailBrowseSource)
             } else {
@@ -147,7 +143,6 @@ private struct HomeCardTap<Label: View>: View {
             }
         } label: {
             label()
-                .zoomTransitionSource(id: zoomInstanceID.uuidString, in: zoomNamespace)
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
@@ -334,10 +329,13 @@ struct HomePosterCard: View {
 
     private var isPlayed: Bool { playedOverride ?? (item.userState?.played == true) }
 
-    private var height: CGFloat {
+    private var height: CGFloat { Self.artworkSize(width: width, aspect: aspect).height }
+
+    /// The size a poster card of `width` draws its artwork at.
+    static func artworkSize(width: CGFloat, aspect: MediaCardAspect) -> CGSize {
         switch aspect {
-        case .poster: (width * HomeFeedMetrics.posterAspect).rounded()
-        case .square: width
+        case .poster: CGSize(width: width, height: (width * HomeFeedMetrics.posterAspect).rounded())
+        case .square: CGSize(width: width, height: width)
         }
     }
 
@@ -478,18 +476,25 @@ struct HomeStillCard: View {
 
     private var isPlayed: Bool { playedOverride ?? (item.userState?.played == true) }
 
-    private var height: CGFloat { (width * 9.0 / 16.0).rounded() }
+    private var height: CGFloat { Self.artworkSize(width: width).height }
+
+    /// The size a still card of `width` draws its artwork at.
+    static func artworkSize(width: CGFloat) -> CGSize {
+        CGSize(width: width, height: (width * 9.0 / 16.0).rounded())
+    }
 
     /// Backdrop when the payload actually has one — some send `""` rather
     /// than omitting the field — otherwise the poster, with the thumbhash
     /// kept in lockstep so the blur placeholder previews the image that
     /// will actually load.
-    private var art: (url: String, thumbhash: String?) {
+    static func art(for item: SectionItem) -> (url: String, thumbhash: String?) {
         if let backdrop = item.backdropUrl, !backdrop.isEmpty {
             return (backdrop, item.backdropThumbhash)
         }
         return (item.posterUrl ?? "", item.posterThumbhash)
     }
+
+    private var art: (url: String, thumbhash: String?) { Self.art(for: item) }
 
     var body: some View {
         HomeCardTap(
@@ -678,28 +683,12 @@ struct HomeStillCard: View {
 // MARK: - Section header
 
 /// Section header. Tighter and quieter than the shipping one: negative
-/// tracking at this size stops the label sprawling, and the count/chevron
-/// pair replaces the text "See All" button.
+/// tracking at this size stops the label sprawling.
 struct HomeSectionHeader: View {
     let title: String
     var icon: String? = nil
-    var style: Style = .standard
-    var onSeeAll: (() -> Void)? = nil
-
-    enum Style {
-        case standard
-        /// Small uppercase label over a hairline rule — Poster Wall.
-        case rule
-    }
 
     var body: some View {
-        switch style {
-        case .standard: standardHeader
-        case .rule: ruleHeader
-        }
-    }
-
-    private var standardHeader: some View {
         HStack(spacing: 7) {
             if let icon {
                 Image(systemName: icon)
@@ -714,43 +703,6 @@ struct HomeSectionHeader: View {
                 .lineLimit(1)
 
             Spacer(minLength: 8)
-
-            if let onSeeAll {
-                Button(action: onSeeAll) {
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(Color.siloOnSurface.opacity(0.35))
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, HomeFeedMetrics.gutter)
-    }
-
-    private var ruleHeader: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 8) {
-                Text(title.uppercased())
-                    .font(.caption2.weight(.heavy))
-                    .tracking(1.4)
-                    .foregroundStyle(Color.siloOnSurface.opacity(0.72))
-                    .lineLimit(1)
-
-                Spacer(minLength: 8)
-
-                if let onSeeAll {
-                    Button(action: onSeeAll) {
-                        Image(systemName: "arrow.right")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(Color.siloOnSurface.opacity(0.35))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-
-            Rectangle()
-                .fill(Color.white.opacity(0.10))
-                .frame(height: 0.5)
         }
         .padding(.horizontal, HomeFeedMetrics.gutter)
     }

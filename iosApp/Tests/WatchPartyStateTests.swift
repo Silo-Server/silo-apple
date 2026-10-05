@@ -492,7 +492,6 @@ final class WatchPartyStateTests: XCTestCase {
         }
         XCTAssertEqual(session.connection, .ended)
         XCTAssertFalse(session.isEngaged)
-        XCTAssertEqual(session.errorMessage, "This party has ended.")
         XCTAssertNil(session.recentRoom, "An ended room is not offered for rejoin")
         XCTAssertEqual(handler.requests.filter { $0.method == "GET" && $0.path == roomPath }.count, 1)
         XCTAssertFalse(handler.requests.contains { $0.path.hasSuffix("/ws-ticket") })

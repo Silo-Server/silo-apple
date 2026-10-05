@@ -29,9 +29,9 @@ final class TVPairingAdvertiser {
     ///     holds. A `login` TV without one is not advertised at all.
     ///   - onConnection: called on the main actor with an opened
     ///     session + its inbound stream for the coordinator to drive.
-    func start(
-        state: PairingReceiverState = .setup,
-        serverIdentity: String? = nil,
+    private func start(
+        state: PairingReceiverState,
+        serverIdentity: String?,
         onConnection: @escaping (PairingSession, AsyncThrowingStream<PairingMessage, Error>) -> Void
     ) {
         stop()
@@ -43,22 +43,13 @@ final class TVPairingAdvertiser {
         startListener()
     }
 
-    /// Advertises while the calling task runs, but only while `isCurrent`
-    /// holds; it stops when the app leaves the route and starts again when
-    /// it comes back.
-    ///
-    /// Call this from the owning screen's `.task`, with `isCurrent` checking
-    /// that the app is on the route the screen was built for (captured in the
-    /// view's `init`). View lifecycle alone is not reliable here: a
-    /// successful nearby setup changes the active server, which re-keys the
-    /// routed subtree while the app is still on the setup route, and the app
-    /// moves on to profiles in the next update. The setup screen built by
-    /// that re-key appears without ever getting `onDisappear` or a cancelled
-    /// task, and SwiftUI shows that same instance again when the user later
-    /// picks "Change server". Tying the listener to the view's lifetime left
-    /// the TV advertising `st=setup` on the profile and sign-in screens (so
-    /// phones offered setup for a TV that already had a server); ending it
-    /// for good on the first route change left "Change server" silent.
+    /// Advertises while the calling task runs and `isCurrent` holds, stopping
+    /// and restarting as it changes. Call it from the screen's `.task`, with
+    /// `isCurrent` comparing the router's route to the one captured in the
+    /// view's `init`. SwiftUI can keep or reshow this screen without
+    /// `onDisappear` or task cancellation (a nearby setup re-keys the routed
+    /// subtree), so view lifetime alone would leave `st=setup` advertised on
+    /// later screens.
     func advertise(
         state: PairingReceiverState = .setup,
         serverIdentity: String? = nil,
@@ -102,7 +93,7 @@ final class TVPairingAdvertiser {
         if let serverIdentity { fields[PairingProtocol.TXTKey.serverIdentity] = serverIdentity }
         let txt = NWTXTRecord(fields)
         do {
-            let listener = try NWListener(using: PairingTransport.tlsParameters())
+            let listener = try NWListener(using: PairingSession.tlsParameters())
             listener.service = NWListener.Service(name: device.name, type: PairingProtocol.serviceType, txtRecord: txt)
             listener.newConnectionHandler = { [weak self] connection in
                 Task { @MainActor in
@@ -117,8 +108,9 @@ final class TVPairingAdvertiser {
                     onConnection(session, stream)
                 }
             }
+            // Runs on `.main` (see `start(queue:)` below).
             listener.stateUpdateHandler = { [weak self] state in
-                Task { @MainActor in
+                MainActor.assumeIsolated {
                     guard let self, self.generation == gen else { return }
                     switch state {
                     case .failed(let error):

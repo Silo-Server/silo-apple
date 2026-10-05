@@ -36,9 +36,7 @@ struct TVBrowseControlRow: View {
             }
             .buttonStyle(TVBrowseControlPillStyle())
             .focused($focusedControl, equals: .sort)
-            .onMoveCommand { direction in
-                handleMove(from: .sort, direction)
-            }
+            .onMoveCommand(perform: handleMove)
 
             Button(action: onFilter) {
                 HStack(spacing: 10) {
@@ -55,9 +53,7 @@ struct TVBrowseControlRow: View {
             }
             .buttonStyle(TVBrowseControlPillStyle(active: filterCount > 0))
             .focused($focusedControl, equals: .filter)
-            .onMoveCommand { direction in
-                handleMove(from: .filter, direction)
-            }
+            .onMoveCommand(perform: handleMove)
 
             Spacer(minLength: 0)
         }
@@ -73,7 +69,7 @@ struct TVBrowseControlRow: View {
         focusedControl = .sort
     }
 
-    private func handleMove(from control: TVBrowseControlFocus, _ direction: MoveCommandDirection) {
+    private func handleMove(_ direction: MoveCommandDirection) {
         switch direction {
         case .up:
             onMoveUp?()
@@ -160,7 +156,6 @@ struct TVBrowseSortPanel: View {
 // MARK: - Filter panel (list → values)
 
 struct TVBrowseFilterPanel: View {
-    let mediaType: BrowseMediaType
     let facets: CatalogFacets
     let onApply: (CatalogFilterState) -> Void
     let onPreserveChange: (Bool) -> Void
@@ -201,7 +196,6 @@ struct TVBrowseFilterPanel: View {
          onApply: @escaping (CatalogFilterState) -> Void,
          onPreserveChange: @escaping (Bool) -> Void,
          onClose: @escaping () -> Void) {
-        self.mediaType = mediaType
         self.facets = facets
         self.onApply = onApply
         self.onPreserveChange = onPreserveChange

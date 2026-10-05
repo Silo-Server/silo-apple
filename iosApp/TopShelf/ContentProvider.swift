@@ -23,10 +23,17 @@ final class ContentProvider: TVTopShelfContentProvider {
             forKey: SharedStorage.topShelfLastRunAtKey
         )
 
-        let http = TopShelfHTTPClient()
-        guard http.isPersonalizedContentAllowed else {
+        let client = TopShelfHTTPClient()
+        guard client.isPersonalizedContentAllowed else {
             defaults.set(
                 "profile-selection-required",
+                forKey: SharedStorage.topShelfLastStatusKey
+            )
+            return nil
+        }
+        guard let http = client.authenticated() else {
+            defaults.set(
+                "fetch-failed: \(TopShelfHTTPClient.Error.notAuthenticated)",
                 forKey: SharedStorage.topShelfLastStatusKey
             )
             return nil
@@ -176,15 +183,15 @@ final class ContentProvider: TVTopShelfContentProvider {
 
     // MARK: - Section selection
 
-    /// Matches the home screen's `SectionRow.isContinueWatching` check.
+    /// Matches the home screen's `ResolvedSection.isContinueWatchingSection`.
     private static func isContinueWatching(_ section: TopShelfSection) -> Bool {
-        section.sectionType == "continue_watching" || section.sectionType == "in_progress"
+        let type = section.sectionType.lowercased()
+        return type == "continue_watching" || type == "in_progress"
     }
 
-    /// Matches the home screen's `SectionRow.isEpisodeRow` next-up check.
+    /// Matches the next-up half of the home screen's `SectionRow.isEpisodeRow`.
     private static func isNextUp(_ section: TopShelfSection) -> Bool {
-        let t = section.sectionType
-        return t.contains("next") || t.contains("up_next") || t.contains("next_up")
+        section.sectionType.lowercased().contains("next")
     }
 
     // MARK: - Item construction

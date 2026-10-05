@@ -11,16 +11,18 @@ struct WatchPartyClientMessage: Encodable, Sendable {
     var ready: Bool? = nil
     var clientSentAt: Date? = nil
 
-    func encoded() throws -> String {
+    private static let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
         encoder.dateEncodingStrategy = .custom { date, encoder in
-            let formatter = ISO8601DateFormatter()
-            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
             var container = encoder.singleValueContainer()
-            try container.encode(formatter.string(from: date))
+            try container.encode(date.formatted(Date.ISO8601FormatStyle(includingFractionalSeconds: true)))
         }
-        return String(decoding: try encoder.encode(self), as: UTF8.self)
+        return encoder
+    }()
+
+    func encoded() throws -> String {
+        String(decoding: try Self.encoder.encode(self), as: UTF8.self)
     }
 }
 
@@ -79,8 +81,7 @@ final class WatchPartySocket: NSObject, URLSessionWebSocketDelegate {
             throw WatchPartySocketError.invalidURL
         }
         url.scheme = url.scheme == "https" ? "wss" : "ws"
-        url.percentEncodedPath = url.percentEncodedPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            .split(separator: "/").map(String.init).reduce("") { $0 + "/" + $1 }
+        url.percentEncodedPath = WatchPartyLobbyPolicy.basePath(url.percentEncodedPath)
             + "/api/v2/watch-together/rooms/\(roomPath)/ws"
         url.query = nil
         url.fragment = nil

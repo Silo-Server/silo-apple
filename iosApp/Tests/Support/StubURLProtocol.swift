@@ -114,10 +114,6 @@ final class StubURLProtocol: URLProtocol {
             Response(status: status, headers: ["Content-Type": contentType], body: Data(body.utf8))
         }
 
-        static func data(_ body: Data, status: Int = 200, contentType: String) -> Response {
-            Response(status: status, headers: ["Content-Type": contentType], body: body)
-        }
-
         /// An empty body with only a status code.
         static func status(_ status: Int) -> Response {
             Response(status: status)
@@ -137,14 +133,6 @@ final class StubURLProtocol: URLProtocol {
 
     static func method(_ method: String, path: String) -> Matcher {
         { $0.method == method && $0.path == path }
-    }
-
-    static func method(_ method: String) -> Matcher {
-        { $0.method == method }
-    }
-
-    static func pathPrefix(_ prefix: String) -> Matcher {
-        { $0.path.hasPrefix(prefix) }
     }
 
     static func pathSuffix(_ suffix: String) -> Matcher {

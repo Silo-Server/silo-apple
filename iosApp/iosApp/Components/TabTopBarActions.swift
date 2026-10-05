@@ -28,8 +28,7 @@ struct TabTopBarActions: View {
     #endif
 
     var body: some View {
-        // Icons spaced evenly, matching the clean top-right cluster used by
-        // Plex. Order is fixed: Search, Remote (iOS), Profile.
+        // Icons spaced evenly. Order is fixed: Search, Remote (iOS), Profile.
         HStack(spacing: SiloTheme.topBarIconSpacing) {
             TopBarIconButton(
                 systemImage: "magnifyingglass",
@@ -63,7 +62,7 @@ struct TabTopBarActions: View {
 
 /// Plain icon button used for utility actions (Search) in the top bar.
 /// The 44×44 frame keeps a comfortable tap target while the glyph itself
-/// stays small and chrome-free, matching Plex's top-right icons.
+/// stays small and chrome-free.
 private struct TopBarIconButton: View {
     let systemImage: String
     let accessibilityLabel: String
@@ -82,10 +81,8 @@ private struct TopBarIconButton: View {
     }
 }
 
-/// Profile avatar rendered via `ProfileAvatarView` (which handles DiceBear
-/// presets, URLs, emojis, and initials uniformly). Wraps a Menu exposing
-/// Settings / Switch Profile / Sign Out so the user can reach app settings
-/// and manage their account without leaving the current tab.
+/// Profile avatar opening the account menu (Watch Party, Requests, Settings,
+/// Switch Profile, Switch Server, Sign Out).
 private struct ProfileAvatarMenu: View {
     @Environment(AppRouter.self) private var router
     let profile: UserProfile?

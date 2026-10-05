@@ -13,7 +13,7 @@ import SwiftUI
 ///   scrolling, which is why it renders the compact row set and not the
 ///   full one the tvOS pane pages through.
 /// - It outlives the controls. It sits outside the `showControls` gate in
-///   `MobilePlayerControls`, so the 3 s auto-hide takes the transport away
+///   `MobilePlayerControls`, so the auto-hide takes the transport away
 ///   and leaves the stats up. Toggled off from where it was toggled on
 ///   (settings sheet → Stats), which is why there is no dismiss control.
 struct MobilePlaybackStatsOverlay: View {

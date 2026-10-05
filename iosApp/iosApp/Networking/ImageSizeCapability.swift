@@ -1,40 +1,25 @@
 import Foundation
+import Synchronization
 
-/// Cached holder for the server's image-size capability probe, used to
-/// decide whether catalog/section/detail requests may ask for a larger
-/// baked-in image variant.
+/// The server's image-size capability (`GET /api/v2/images/capabilities`),
+/// which tells tvOS whether image-bearing requests may ask for a larger
+/// artwork variant. Image URLs stay opaque: the server bakes the chosen
+/// variant into the URLs it returns.
 ///
-/// Follows the ``AICapabilities`` precedent: a `.shared` singleton
-/// fetched once per session and reset on sign-out and profile/server
-/// switch, with a generation counter so a probe still in flight across
-/// a reset discards its result instead of repopulating the next
-/// account's capabilities. A `404`/network error leaves the slot `nil`,
-/// which ``isAvailable`` reads as "feature off", so older servers
-/// degrade silently.
+/// The probe runs once per session and is reset on sign-out and on server or
+/// profile switches. A generation counter makes a probe still in flight across
+/// a reset discard its result. A failed probe leaves the feature off.
 ///
-/// Unlike `AICapabilities` this is **not** `@MainActor @Observable`: no
-/// view observes it, and its one consumer is the `SiloAPI` actor,
-/// which needs a synchronous read while building a request. State is
-/// guarded by a lock instead — same shape as `ServerRegistry`'s
-/// `ActiveServerIDSnapshot`.
+/// The last answer is remembered per server, so a launch sends the right size
+/// immediately instead of holding its first requests behind the probe.
 ///
-/// Image URLs stay opaque: the server bakes the chosen variant into the
-/// URLs it returns. Relative artwork is bound to the response origin at
-/// decode time; encoded paths and signature queries stay intact. A larger variant
-/// simply arrives as a different URL, which `CachedAsyncImage` /
-/// `PosterImageCache` cache independently.
-final class ImageSizeCapability: @unchecked Sendable {
+/// Not main-actor: its consumer is the `SiloAPI` actor, which reads it while
+/// building a request.
+final class ImageSizeCapability: Sendable {
     static let shared = ImageSizeCapability()
 
-    /// The query parameter name and size token this client asks for.
-    /// `large` is a deliberate stop short of `original`: TV posters and
-    /// stills render at w780 without paying for full-size art on every
-    /// card in a shelf.
-    static let requestedSize = ImageSizeSelection.requestedSize
-
-    /// Whether this platform wants larger images at all. tvOS renders
-    /// full-screen shelves and detail art on a 4K panel; iOS and macOS
-    /// keep the server's default sizes, so their requests are unchanged.
+    /// tvOS renders full-screen shelves and detail art on a 4K panel; iOS and
+    /// macOS keep the server's default sizes and never send the parameter.
     static var platformPrefersLargeImages: Bool {
         #if os(tvOS)
         true
@@ -43,124 +28,152 @@ final class ImageSizeCapability: @unchecked Sendable {
         #endif
     }
 
-    /// The extra query entries to merge into an image-bearing request.
-    ///
-    /// Pure and parameterized so both branches are testable from the
-    /// iOS-hosted test target, which cannot exercise `#if os(tvOS)`.
-    static func queryEntries(
-        capability: ImageSizeCapabilityResponse?,
-        platformPrefersLargeImages: Bool
-    ) -> [String: String] {
-        ImageSizeSelection.queryEntries(
-            capability: capability,
-            prefersLargeImages: platformPrefersLargeImages
+    /// Per-server memory of the last successful probe.
+    struct Memory: Sendable {
+        let activeServerID: @Sendable () -> String?
+        let load: @Sendable (_ serverID: String) -> ImageSizeCapabilityResponse?
+        let save: @Sendable (_ serverID: String, _ capability: ImageSizeCapabilityResponse) -> Void
+
+        static let userDefaults = Memory(
+            activeServerID: { ServerRegistry.activeServerIDSnapshot },
+            load: { serverID in
+                UserDefaults.standard.data(forKey: key(serverID)).flatMap {
+                    try? JSONDecoder().decode(ImageSizeCapabilityResponse.self, from: $0)
+                }
+            },
+            save: { serverID, capability in
+                guard let data = try? JSONEncoder().encode(capability) else { return }
+                UserDefaults.standard.set(data, forKey: key(serverID))
+            }
         )
+
+        private static func key(_ serverID: String) -> String {
+            "imageSizeCapability.v1.\(serverID)"
+        }
     }
 
     private struct Probe {
         let id: Int
         let generation: Int
+        let serverID: String?
         let task: Task<ImageSizeCapabilityResponse?, Never>
+    }
+
+    private struct State {
+        var probedCapability: ImageSizeCapabilityResponse?
+        /// Server ID → remembered capability, read from `memory` once per server.
+        var remembered: (serverID: String, capability: ImageSizeCapabilityResponse?)?
+        var hasAttemptedProbe = false
+        var generation = 0
+        var nextProbeID = 0
+        var inFlightProbe: Probe?
     }
 
     private let fetchCapability: @Sendable () async throws -> ImageSizeCapabilityResponse
     private let prefersLargeImages: Bool
-    private let lock = NSLock()
-    private var storedCapability: ImageSizeCapabilityResponse?
-    private var hasAttemptedProbe = false
-    private var generation = 0
-    private var nextProbeID = 0
-    private var inFlightProbe: Probe?
+    private let memory: Memory?
+    private let state = Mutex(State())
 
     init(
         api: SiloAPI = .shared,
-        platformPrefersLargeImages: Bool = ImageSizeCapability.platformPrefersLargeImages
+        platformPrefersLargeImages: Bool = ImageSizeCapability.platformPrefersLargeImages,
+        memory: Memory? = .userDefaults
     ) {
         self.prefersLargeImages = platformPrefersLargeImages
+        self.memory = memory
         self.fetchCapability = { try await api.imageSizeCapability() }
     }
 
     init(
         platformPrefersLargeImages: Bool,
+        memory: Memory? = nil,
         fetchCapability: @escaping @Sendable () async throws -> ImageSizeCapabilityResponse
     ) {
         self.prefersLargeImages = platformPrefersLargeImages
+        self.memory = memory
         self.fetchCapability = fetchCapability
     }
 
-    // MARK: - Gating convenience
-
-    /// The decoded probe, or `nil` before it lands / after `reset()`.
+    /// This session's probe result, else the active server's remembered one.
     var capability: ImageSizeCapabilityResponse? {
-        lock.withLock { storedCapability }
+        state.withLock { state in
+            state.probedCapability ?? remembered(in: &state)
+        }
     }
 
-    /// Whether this client will actually send a size on this platform.
-    var isAvailable: Bool { !requestQuery.isEmpty }
-
-    /// Query entries for the current platform and probe state. `[:]`
-    /// when the probe hasn't landed, the server doesn't support the
-    /// feature, or this isn't tvOS.
     var requestQuery: [String: String] {
-        Self.queryEntries(
-            capability: capability,
-            platformPrefersLargeImages: prefersLargeImages
-        )
+        ImageSizeSelection.queryEntries(capability: capability, prefersLargeImages: prefersLargeImages)
     }
 
-    // MARK: - Lifecycle
+    /// Entries for an image-bearing request. Waits for the probe only when
+    /// this platform asks for larger images and nothing is known for the
+    /// active server yet; a failed probe is not retried here.
+    func requestQueryForImageRequest() async -> [String: String] {
+        guard prefersLargeImages else { return [:] }
+        if capability == nil {
+            await refresh(retryFailed: false)
+        }
+        return requestQuery
+    }
 
-    /// Probe the server once per session. Failure-tolerant and
-    /// idempotent: a `404` from an older server, or any transport
-    /// error, leaves the feature off and is retried on the next
-    /// foreground refresh.
-    ///
-    /// Delivery capabilities are retained on every platform; only tvOS
-    /// sends the large-image query parameter.
-    /// Image-bearing requests pass `false`; lifecycle refreshes may retry a
-    /// failed probe so an unavailable endpoint never delays every catalog read.
+    /// Probe the server once per session. Image-bearing requests pass
+    /// `retryFailed: false`; lifecycle refreshes may retry a failed probe.
     func refresh(retryFailed: Bool = true) async {
-        guard let probe = lock.withLock({ () -> Probe? in
-            if storedCapability != nil { return nil }
-            if let inFlightProbe, inFlightProbe.generation == generation {
-                return inFlightProbe
+        let serverID = memory?.activeServerID()
+        guard let probe = state.withLock({ state -> Probe? in
+            if state.probedCapability != nil { return nil }
+            if let inFlight = state.inFlightProbe, inFlight.generation == state.generation {
+                return inFlight
             }
-            if hasAttemptedProbe && !retryFailed { return nil }
-            hasAttemptedProbe = true
-            nextProbeID &+= 1
+            if state.hasAttemptedProbe && !retryFailed { return nil }
+            state.hasAttemptedProbe = true
+            state.nextProbeID &+= 1
             let probe = Probe(
-                id: nextProbeID,
-                generation: generation,
+                id: state.nextProbeID,
+                generation: state.generation,
+                serverID: serverID,
                 task: Task { [fetchCapability] in try? await fetchCapability() }
             )
-            inFlightProbe = probe
+            state.inFlightProbe = probe
             return probe
         }) else { return }
 
         let probed = await probe.task.value
-        lock.withLock {
-            // Discard if a reset happened while the probe was in flight, or a
-            // newer probe superseded this one. A nil result remains retryable
-            // on the next foreground; successful results are cached.
-            guard generation == probe.generation,
-                  inFlightProbe?.id == probe.id else { return }
-            inFlightProbe = nil
-            storedCapability = probed
+        let accepted = state.withLock { state -> Bool in
+            guard state.generation == probe.generation,
+                  state.inFlightProbe?.id == probe.id else { return false }
+            state.inFlightProbe = nil
+            state.probedCapability = probed
+            return true
+        }
+        if accepted, let probed, let serverID = probe.serverID {
+            memory?.save(serverID, probed)
         }
     }
 
-    /// Drop the cached probe so capabilities don't leak across accounts
-    /// or servers. Bumps `generation` first so any in-flight refresh
-    /// discards its result instead of clobbering this reset.
+    /// Drop this session's probe so capabilities don't leak across accounts or
+    /// servers. Bumps `generation` first so an in-flight refresh discards its
+    /// result.
     func reset() {
-        let task = lock.withLock { () -> Task<ImageSizeCapabilityResponse?, Never>? in
-            generation &+= 1
-            storedCapability = nil
-            hasAttemptedProbe = false
-            let task = inFlightProbe?.task
-            inFlightProbe = nil
+        let task = state.withLock { state -> Task<ImageSizeCapabilityResponse?, Never>? in
+            state.generation &+= 1
+            state.probedCapability = nil
+            state.remembered = nil
+            state.hasAttemptedProbe = false
+            let task = state.inFlightProbe?.task
+            state.inFlightProbe = nil
             return task
         }
         task?.cancel()
+    }
+
+    private func remembered(in state: inout State) -> ImageSizeCapabilityResponse? {
+        guard let memory, let serverID = memory.activeServerID() else { return nil }
+        if let remembered = state.remembered, remembered.serverID == serverID {
+            return remembered.capability
+        }
+        let capability = memory.load(serverID)
+        state.remembered = (serverID, capability)
+        return capability
     }
 }

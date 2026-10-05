@@ -26,10 +26,8 @@ extension ButtonStyle where Self == SiloFlatButtonStyle {
 
 // MARK: - Ghost chip button style (shared)
 
-/// Translucent pill with a focus-aware outline. Used for utility actions
-/// (Sign Out / Cancel) so they read as "secondary" next to the identity
-/// tiles and primary buttons. Shared by `ProfileSelectionView` and
-/// `CreateProfileView` (previously duplicated byte-for-byte in both).
+/// Translucent pill with a focus-aware outline for secondary utility actions
+/// (Sign Out, Cancel).
 struct GhostChipButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         GhostChipBody(configuration: configuration)

@@ -1,23 +1,19 @@
 #if os(iOS)
 import Foundation
 
-@MainActor
-final class ApplePushDeepLinkCoordinator {
-    static let shared = ApplePushDeepLinkCoordinator()
-
-    private init() {}
-
-    func postDeepLink(from userInfo: [AnyHashable: Any]) {
-        guard let url = Self.deepLinkURL(from: userInfo) else { return }
+enum ApplePushDeepLinkCoordinator {
+    @MainActor
+    static func postDeepLink(from userInfo: [AnyHashable: Any]) {
+        guard let url = deepLinkURL(from: userInfo) else { return }
         SiloDeepLinkCoordinator.shared.receive(url)
     }
 
-    nonisolated static func deepLinkURL(from userInfo: [AnyHashable: Any]) -> URL? {
+    static func deepLinkURL(from userInfo: [AnyHashable: Any]) -> URL? {
         guard let raw = userInfo[ApplePushDisplayWire.urlUserInfoKey] as? String else { return nil }
         return deepLinkURL(fromDisplayURL: raw)
     }
 
-    nonisolated static func deepLinkURL(fromDisplayURL rawValue: String) -> URL? {
+    static func deepLinkURL(fromDisplayURL rawValue: String) -> URL? {
         let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 

@@ -39,13 +39,9 @@ let supportedApplePlaybackRealtimeCommands: [PlaybackRealtimeCommandName] = [
 /// Names of `type:"event"` envelopes the server pushes over the playback
 /// control websocket.
 ///
-/// Tolerant by design: the raw enum used to be strict (`String`-backed), so
-/// an unrecognized event name failed to decode the whole envelope and the
-/// event was silently dropped — a future server event would simply vanish.
-/// This is now a custom-decoded enum with an ``unknown(_:)`` fallback, so
-/// every well-formed `event` envelope decodes; consumers switch on the known
-/// cases and ignore ``unknown(_:)``. New cases can be added here without
-/// changing the parser.
+/// Decodes unknown event names to ``unknown(_:)`` so a newer server event
+/// never fails the whole envelope. Consumers switch on the known cases and
+/// ignore ``unknown(_:)``.
 enum PlaybackRealtimeEventName: Codable, Equatable {
     case chapterThumbnailReady
     case markersUpdated
@@ -530,12 +526,9 @@ private struct PlaybackRealtimeBaseEnvelope: Decodable {
     let type: PlaybackRealtimeMessageType
 }
 
-// Stable protocol-level client ids, deliberately NOT the human-facing
-// `X-Silo-Client` product names: the server has stored these since Silo
-// and only checks that they are non-empty. macOS previously fell through to
-// the iOS id, so a Mac session announced itself as iOS on the realtime socket
-// while its HTTP headers said `Silo Mac` — the same session named two
-// contradictory ways.
+// Each platform sends its own stable protocol client id. These are not the
+// human-facing `X-Silo-Client` product names; the server stores them and only
+// checks that they are non-empty.
 #if os(tvOS)
 private let applePlaybackRealtimeClientName = "silo-tvos"
 #elseif os(macOS)

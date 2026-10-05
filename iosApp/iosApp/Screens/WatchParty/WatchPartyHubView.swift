@@ -215,16 +215,12 @@ private struct WatchPartyEntryView: View {
     let isCheckingSupport: Bool
     let onCheckSupport: () -> Void
     @State private var invitation = ""
-    @State private var selectionMode: WatchPartySelectionMode = .hostPick
     #if os(tvOS)
     @FocusState private var focused: EntryFocus?
     private enum EntryFocus: Hashable { case create, vote, rejoin, code, join, retry }
     #endif
 
-    private var canEnter: Bool {
-        session.capabilities?.supportsSocket == true
-            && session.capabilities?.connectionReplaced == true && session.supportsPlayback
-    }
+    private var canEnter: Bool { session.canEnterParty }
 
     var body: some View {
         ZStack {
@@ -238,7 +234,7 @@ private struct WatchPartyEntryView: View {
     }
 
     private var headline: some View {
-        VStack(alignment: leadingAlignment, spacing: WatchPartyMetrics.body * 0.6) {
+        VStack(alignment: .leading, spacing: WatchPartyMetrics.body * 0.6) {
             WatchPartyEyebrow(text: "Watch Party")
             Text("Watch something\ntogether")
                 .font(.system(size: WatchPartyMetrics.heroTitle, weight: .bold))
@@ -250,7 +246,7 @@ private struct WatchPartyEntryView: View {
                 .foregroundStyle(Color.siloSecondaryText)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .multilineTextAlignment(textAlignment)
+        .multilineTextAlignment(.leading)
     }
 
     @ViewBuilder
@@ -369,9 +365,6 @@ private struct WatchPartyEntryView: View {
     }
 
     #if os(tvOS)
-    private var leadingAlignment: HorizontalAlignment { .leading }
-    private var textAlignment: TextAlignment { .leading }
-
     private var tvLayout: some View {
         HStack(alignment: .top, spacing: 120) {
             VStack(alignment: .leading, spacing: 40) {
@@ -403,9 +396,6 @@ private struct WatchPartyEntryView: View {
         .defaultFocus($focused, session.recentRoom != nil ? .rejoin : .create, priority: .userInitiated)
     }
     #else
-    private var leadingAlignment: HorizontalAlignment { .leading }
-    private var textAlignment: TextAlignment { .leading }
-
     private var phoneLayout: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
@@ -442,7 +432,7 @@ struct WatchPartyLobbyView: View {
     @Environment(AppRouter.self) private var router
     #if os(tvOS)
     @FocusState private var focused: LobbyFocus?
-    private enum LobbyFocus: Hashable { case code, primary, secondary, more, suggest }
+    private enum LobbyFocus: Hashable { case code, primary, secondary, more }
     @State private var showsHostControls = false
     #endif
 

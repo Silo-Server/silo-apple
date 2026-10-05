@@ -137,7 +137,7 @@ final class CompanionPairingCoordinator {
         tvName: String = "TV",
         fixedServer: ServerEntry? = nil,
         api: any PairingDeviceAuthorizing = PairingDeviceAPI(),
-        deviceModel: String = UIDevice.current.model,
+        deviceModel: String? = nil,
         availableServers: @escaping @MainActor () async -> [ServerEntry] = CompanionPairingCoordinator.serversWithTokens,
         // Renewed first when it has expired or is about to: an approval is
         // sent once and never replayed after a 401.
@@ -152,7 +152,7 @@ final class CompanionPairingCoordinator {
         self.tvName = tvName
         self.fixedServer = fixedServer
         self.api = api
-        self.deviceModel = deviceModel
+        self.deviceModel = deviceModel ?? UIDevice.current.model
         self.availableServers = availableServers
         self.accessToken = accessToken
         self.serverEndpoints = serverEndpoints
@@ -436,7 +436,7 @@ final class CompanionPairingCoordinator {
         }
     }
 
-    private func recordResult(signedInOK: Bool, code: PairingFailureCode = .authFailed) {
+    private func recordResult(signedInOK: Bool, code: PairingFailureCode) {
         guard let server = queue.first else { return }
         if signedInOK {
             signedIn.append(server.displayName)

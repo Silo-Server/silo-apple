@@ -50,11 +50,18 @@ struct PairingDeviceAPI: PairingDeviceAuthorizing {
 
     // MARK: Receiver (unauthenticated)
 
-    /// `POST /api/v2/auth/device/start` (`non_retryable`, 201).
     func start(serverURL: String, deviceName: String, devicePlatform: String) async throws -> DeviceLoginStartResponse {
+        try await start(
+            serverURL: serverURL,
+            request: DeviceLoginStartRequest(deviceName: deviceName, devicePlatform: devicePlatform)
+        )
+    }
+
+    /// `POST /api/v2/auth/device/start` (`non_retryable`, 201).
+    private func start(serverURL: String, request: DeviceLoginStartRequest) async throws -> DeviceLoginStartResponse {
         let value: APIv2DeviceStart = try await post(
             serverURL, "/api/v2/auth/device/start", bearer: nil, expectedStatus: 201,
-            body: Self.encode(DeviceLoginStartRequest(deviceName: deviceName, devicePlatform: devicePlatform))
+            body: Self.encode(request)
         )
         return value.presentation
     }
@@ -84,28 +91,17 @@ struct PairingDeviceAPI: PairingDeviceAuthorizing {
         try await get(serverURL, "/api/v2/auth/device/capability", query: [:], bearer: nil)
     }
 
-    func remotePlaybackCapability(serverURL: String) async throws -> APIv2DeviceCapability {
-        try await capability(serverURL: serverURL)
-    }
-
     func startRemotePlayback(
         serverURL: String,
         deviceName: String,
         devicePlatform: String
     ) async throws -> DeviceLoginStartResponse {
-        let value: APIv2DeviceStart = try await post(
-            serverURL,
-            "/api/v2/auth/device/start",
-            bearer: nil,
-            expectedStatus: 201,
-            body: Self.encode(DeviceLoginStartRequest(
-                deviceName: deviceName,
-                devicePlatform: devicePlatform,
-                clientPurpose: "remote_playback",
-                temporary: true
-            ))
-        )
-        return value.presentation
+        try await start(serverURL: serverURL, request: DeviceLoginStartRequest(
+            deviceName: deviceName,
+            devicePlatform: devicePlatform,
+            clientPurpose: "remote_playback",
+            temporary: true
+        ))
     }
 
     // MARK: Companion (authenticated with the chosen server's token)

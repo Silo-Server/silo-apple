@@ -382,9 +382,8 @@ struct DownloadSeriesRow: View {
     var selected: Bool = false
     let isWatched: (DownloadRecord) -> Bool
     var onSelectToggle: () -> Void = {}
-    /// When non-nil, tapping the header opens the offline browse detail
-    /// (Phase 3). When nil, the header simply toggles inline expansion.
-    var onOpenSeries: (() -> Void)? = nil
+    /// Tapping the header opens the offline series browse screen.
+    let onOpenSeries: () -> Void
     var onPlayEpisode: (DownloadRecord) -> Void = { _ in }
     var onDeleteEpisode: (DownloadRecord) -> Void = { _ in }
 
@@ -455,10 +454,8 @@ struct DownloadSeriesRow: View {
     private func headerTap() {
         if selecting {
             onSelectToggle()
-        } else if let onOpenSeries {
-            onOpenSeries()
         } else {
-            withAnimation(.easeInOut(duration: 0.2)) { expanded.toggle() }
+            onOpenSeries()
         }
     }
 

@@ -9,15 +9,9 @@ private enum EpisodeHomeHoverMetrics {
     }
 }
 
-/// Horizontal rail of episode cards for the tvOS series/season/episode
-/// detail screens. The caller owns Select semantics: legacy season/episode
-/// pages can still navigate, while the Series overview launches playback
-/// directly and uses focus changes to update its in-place episode state.
-///
-/// Pass `currentContentId` to highlight the episode currently represented
-/// by the surrounding detail experience. Legacy rails center that card on
-/// first appearance. Series can instead pin focused cards to the leading
-/// carousel slot until the content reaches its trailing scroll boundary.
+/// Horizontal rail of episode cards. Series uses the anchored layout: the
+/// focused card is pinned to the leading slot, and Select quick-plays. The
+/// Watch Party picker uses the plain native-focus layout.
 struct TVEpisodeRail: View {
     let episodes: [EpisodeListItem]
     let onSelect: (String) -> Void
@@ -32,15 +26,11 @@ struct TVEpisodeRail: View {
     /// When non-nil, the matching card is visually highlighted and anchored
     /// at first appearance.
     var currentContentId: String? = nil
-    var currentContentIsFavorite = false
     var favoriteStates: [String: Bool] = [:]
     var watchlistStates: [String: Bool] = [:]
-    var prefersCurrentContentFocus = false
-    /// Series opts into a larger carousel card. The default keeps the
-    /// approved 480-point geometry on existing season/episode pages.
+    /// Card width before the poster-size scale.
     var baseCardWidth: CGFloat = 480
-    /// Series can exactly reuse Home's 360×200 thumbnail aspect while legacy
-    /// episode pages retain their existing 16:9 geometry.
+    /// Still aspect ratio for the anchored layout.
     var cardHeightRatio: CGFloat = 9 / 16
     var cardSpacing: CGFloat = 54
     var anchorsFocusedCard = false
@@ -165,41 +155,22 @@ struct TVEpisodeRail: View {
     }
 
     private var legacyRail: some View {
-        ScrollViewReader { proxy in
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(alignment: .top, spacing: cardSpacing) {
-                    ForEach(episodes) { episode in
-                        episodeCard(episode)
-                            .id(episode.contentId)
-                            .focused($focusedCardId, equals: episode.contentId)
-                    }
-                }
-                .scrollTargetLayout()
-                .padding(.vertical, 12)
-            }
-            .applyEpisodeScrollTargetBehavior(anchorsFocusedCard)
-            .focusSection()
-            .applyCurrentEpisodeDefaultFocus(
-                prefersCurrentContentFocus ? currentContentId : nil,
-                binding: $focusedCardId
-            )
-            .scrollClipDisabled()
-            .onChange(of: focusedCardId) { _, contentId in
-                onFocusedEpisodeChange?(contentId)
-            }
-            .onDisappear {
-                onFocusedEpisodeChange?(nil)
-            }
-            .onAppear {
-                guard let id = currentContentId else { return }
-                // Run on next tick so the LazyHStack has instantiated the
-                // target cell before we try to anchor on it.
-                DispatchQueue.main.async {
-                    withAnimation(.easeOut(duration: SiloTheme.normalDuration)) {
-                        proxy.scrollTo(id, anchor: anchorsFocusedCard ? .leading : .center)
-                    }
+        ScrollView(.horizontal, showsIndicators: false) {
+            LazyHStack(alignment: .top, spacing: cardSpacing) {
+                ForEach(episodes) { episode in
+                    episodeCard(episode)
+                        .focused($focusedCardId, equals: episode.contentId)
                 }
             }
+            .padding(.vertical, 12)
+        }
+        .focusSection()
+        .scrollClipDisabled()
+        .onChange(of: focusedCardId) { _, contentId in
+            onFocusedEpisodeChange?(contentId)
+        }
+        .onDisappear {
+            onFocusedEpisodeChange?(nil)
         }
     }
 
@@ -213,13 +184,11 @@ struct TVEpisodeRail: View {
             onSelect: { onSelect(episode.contentId) },
             onPlay: onPlay,
             onSetWatched: onSetWatched,
-            initialIsFavorite: currentContentId == episode.contentId
-                ? currentContentIsFavorite
-                : favoriteStates[episode.contentId] ?? false,
+            initialIsFavorite: favoriteStates[episode.contentId] ?? false,
             onSetFavorite: onSetFavorite,
             onSetWatchlist: onSetWatchlist,
             initialInWatchlist: watchlistStates[episode.contentId] ?? false,
-            cardHeightRatio: anchorsFocusedCard ? cardHeightRatio : 9 / 16,
+            cardHeightRatio: cardHeightRatio,
             usesAnchoredStyle: anchorsFocusedCard
         )
     }
@@ -243,7 +212,7 @@ struct TVEpisodeRail: View {
                     else { return }
                     appliedScrollRequest = scrollRequest
                     anchoredContentId = episodes[index].contentId
-                    scrollToSelectedSeason(at: index, viewportWidth: geometry.size.width)
+                    moveAnchoredScroll(to: index, viewportWidth: geometry.size.width, timing: .season)
                 }
                 .onChange(of: episodeIdentityKey) { oldIds, newIds in
                     // Paging changes coordinates, not the user's selection.
@@ -294,7 +263,7 @@ struct TVEpisodeRail: View {
                             focusTrace.recordMove(index - oldIndex)
                         }
                         anchoredContentId = contentId
-                        moveAnchoredScroll(to: index, viewportWidth: geometry.size.width, animated: true)
+                        moveAnchoredScroll(to: index, viewportWidth: geometry.size.width, timing: .episode)
                         requestEpisodesNearBoundary(at: index)
                     }
                     onFocusedEpisodeChange?(contentId)
@@ -369,14 +338,18 @@ struct TVEpisodeRail: View {
         baseCardWidth * uiCustomization.cardPresentation.posterSize.scale
     }
 
-    private var anchoredStillHeight: CGFloat {
-        anchoredCardWidth * cardHeightRatio
+    private var anchoredRailHeight: CGFloat {
+        Self.anchoredHeight(
+            cardWidth: anchoredCardWidth,
+            cardHeightRatio: cardHeightRatio,
+            showsTitle: uiCustomization.cardPresentation.caption.showsTitle
+        )
     }
 
-    private var anchoredRailHeight: CGFloat {
-        anchoredStillHeight
-            + (uiCustomization.cardPresentation.caption.showsTitle ? 46 : 0)
-            + 24
+    /// Height of the anchored rail: still, optional caption, and vertical
+    /// padding. Series reserves the same height while a season loads.
+    static func anchoredHeight(cardWidth: CGFloat, cardHeightRatio: CGFloat, showsTitle: Bool) -> CGFloat {
+        cardWidth * cardHeightRatio + (showsTitle ? 46 : 0) + 24
     }
 
     private var episodeIdentityKey: [String] {
@@ -421,8 +394,7 @@ struct TVEpisodeRail: View {
 
     private func seedAnchoredSelection(
         viewportWidth: CGFloat,
-        targetContentId: String? = nil,
-        animated: Bool = false
+        targetContentId: String? = nil
     ) {
         let target = targetContentId ?? focusedCardId ?? currentContentId
         let episode = episodes.first(where: { $0.contentId == target })
@@ -431,7 +403,7 @@ struct TVEpisodeRail: View {
         guard let episode,
               let index = episodes.firstIndex(where: { $0.contentId == episode.contentId }) else { return }
         anchoredContentId = episode.contentId
-        moveAnchoredScroll(to: index, viewportWidth: viewportWidth, animated: animated)
+        moveAnchoredScroll(to: index, viewportWidth: viewportWidth, timing: nil)
     }
 
     /// Focus can only reach loaded cards, so ask for the neighbouring season
@@ -441,19 +413,16 @@ struct TVEpisodeRail: View {
         if index == episodes.count - 1 { onRequestNext?() }
     }
 
-    private func scrollToSelectedSeason(at index: Int, viewportWidth: CGFloat) {
+    /// `timing` nil (or Reduce Motion) jumps without animating.
+    private func moveAnchoredScroll(
+        to index: Int,
+        viewportWidth: CGFloat,
+        timing: SeriesSeasonScroll.Timing?
+    ) {
         scrollViewport.move(
             to: anchoredContentOffset(for: index, viewportWidth: viewportWidth),
             maximumOffset: anchoredContentOffset(for: episodes.count - 1, viewportWidth: viewportWidth),
-            timing: reduceMotion ? nil : .season
-        )
-    }
-
-    private func moveAnchoredScroll(to index: Int, viewportWidth: CGFloat, animated: Bool) {
-        scrollViewport.move(
-            to: anchoredContentOffset(for: index, viewportWidth: viewportWidth),
-            maximumOffset: anchoredContentOffset(for: episodes.count - 1, viewportWidth: viewportWidth),
-            timing: animated && !reduceMotion ? .episode : nil
+            timing: reduceMotion ? nil : timing
         )
     }
 }
@@ -481,29 +450,8 @@ private extension View {
         }
     }
 
-    @ViewBuilder
-    func applyEpisodeScrollTargetBehavior(_ enabled: Bool) -> some View {
-        if enabled {
-            scrollTargetBehavior(.viewAligned)
-        } else {
-            self
-        }
-    }
-
-    @ViewBuilder
-    func applyCurrentEpisodeDefaultFocus(
-        _ contentId: String?,
-        binding: FocusState<String?>.Binding
-    ) -> some View {
-        if let contentId {
-            defaultFocus(binding, contentId, priority: .userInitiated)
-        } else {
-            self
-        }
-    }
-
     /// Reproduce Home's artwork-only lift for the anchored episode buttons.
-    /// Legacy rails retain their existing native `.card` appearance.
+    /// Plain rails use `TVCardFocusButtonStyle`.
     @ViewBuilder
     func episodeHomeHoverEffect(
         enabled: Bool,
@@ -602,10 +550,7 @@ struct TVEpisodeCard: View {
                 stillHeight: stillHeight,
                 stillCornerRadius: stillCornerRadius,
                 captionStyle: captionStyle,
-                hidesEpisodeTitle: usesAnchoredStyle,
-                usesHomeHoverEffect: usesAnchoredStyle,
-                showsFocusOutline: !usesAnchoredStyle,
-                showsCurrentOutline: !usesAnchoredStyle
+                usesAnchoredStyle: usesAnchoredStyle
             )
         }
         .applyEpisodeButtonStyle(anchored: usesAnchoredStyle)
@@ -663,11 +608,7 @@ struct TVEpisodeCard: View {
             parts.append(airDate)
         }
         if let runtime = episode.runtime, runtime > 0 {
-            if runtime >= 60 {
-                parts.append("\(runtime / 60)h \(runtime % 60)m")
-            } else {
-                parts.append("\(runtime)m")
-            }
+            parts.append(episodeRuntimeText(runtime))
         }
         return parts.isEmpty ? nil : parts.joined(separator: "  ·  ")
     }
@@ -742,18 +683,15 @@ private struct EpisodeCardLabel: View {
     let stillHeight: CGFloat
     let stillCornerRadius: CGFloat
     let captionStyle: CardCaptionStyle
-    var focusOverride: Bool? = nil
-    var hidesEpisodeTitle = false
-    var usesHomeHoverEffect = false
-    var showsFocusOutline = true
-    var showsCurrentOutline = true
+    /// The Series carousel's look: compact caption, Home's artwork-only lift,
+    /// and no focus or current outline.
+    let usesAnchoredStyle: Bool
 
-    @Environment(\.isFocused) private var environmentIsFocused
+    @Environment(\.isFocused) private var isFocused
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var isFocused: Bool {
-        focusOverride ?? environmentIsFocused
-    }
+    private var hidesEpisodeTitle: Bool { usesAnchoredStyle }
+    private var showsOutlines: Bool { !usesAnchoredStyle }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -786,7 +724,7 @@ private struct EpisodeCardLabel: View {
                             if captionStyle.showsMetadata,
                                let runtime = episode.runtime,
                                runtime > 0 {
-                                Text(formatRuntime(runtime))
+                                Text(episodeRuntimeText(runtime))
                                     .font(.system(size: 18, weight: .medium))
                                     .foregroundStyle(Color.siloSecondaryText)
                                     .lineLimit(1)
@@ -817,27 +755,16 @@ private struct EpisodeCardLabel: View {
         return "\(code) · \(title)"
     }
 
-    private var episodeMetadataLine: String? {
-        var parts: [String] = []
-        if let airDate = DetailDateFormatting.abbreviatedDate(episode.airDate) {
-            parts.append(airDate)
-        }
-        if let runtime = episode.runtime, runtime > 0 {
-            parts.append(formatRuntime(runtime))
-        }
-        return parts.isEmpty ? nil : parts.joined(separator: "  ·  ")
-    }
-
     private var still: some View {
         ZStack(alignment: .bottom) {
             Color.siloSurfaceElevated
                 .frame(width: cardWidth, height: stillHeight)
 
             if let url = episode.stillUrl, !url.isEmpty {
-                CachedAsyncImage(
+                AsyncImageView(
                     url: url,
-                    targetSize: CGSize(width: cardWidth, height: stillHeight),
                     thumbhash: episode.stillThumbhash,
+                    targetSize: CGSize(width: cardWidth, height: stillHeight),
                     contentMode: .fill
                 )
                 .frame(width: cardWidth, height: stillHeight)
@@ -851,9 +778,7 @@ private struct EpisodeCardLabel: View {
             if isPlayed {
                 Color.black.opacity(0.35)
                     .frame(width: cardWidth, height: stillHeight)
-            }
 
-            if isPlayed {
                 VStack {
                     HStack {
                         Spacer()
@@ -871,14 +796,14 @@ private struct EpisodeCardLabel: View {
         .frame(width: cardWidth, height: stillHeight)
         .clipShape(RoundedRectangle(cornerRadius: stillCornerRadius))
         .tvFocusRing(
-            isFocused: showsFocusOutline && isFocused,
+            isFocused: showsOutlines && isFocused,
             cornerRadius: stillCornerRadius
         )
         .overlay(
             RoundedRectangle(cornerRadius: stillCornerRadius)
                 .stroke(
-                    Color.white.opacity(showsCurrentOutline && isCurrent && !isFocused ? 0.7 : 0),
-                    lineWidth: showsCurrentOutline && isCurrent && !isFocused ? 2 : 0
+                    Color.white.opacity(showsOutlines && isCurrent && !isFocused ? 0.7 : 0),
+                    lineWidth: showsOutlines && isCurrent && !isFocused ? 2 : 0
                 )
         )
         // Home lifts only the artwork button, not its caption. Doing the same
@@ -886,7 +811,7 @@ private struct EpisodeCardLabel: View {
         // Match the rail's 0.30-second smooth curve so the hover transfers at
         // exactly the same rate as the episode slide instead of snapping early.
         .episodeHomeHoverEffect(
-            enabled: usesHomeHoverEffect,
+            enabled: usesAnchoredStyle,
             isFocused: isFocused,
             reduceMotion: reduceMotion,
             cornerRadius: stillCornerRadius
@@ -906,17 +831,14 @@ private struct EpisodeCardLabel: View {
     }
 
     private func progressBar(fraction: Double) -> some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Rectangle()
-                    .fill(Color.black.opacity(0.6))
-                    .frame(height: 5)
-                Rectangle()
-                    .fill(Color.white)
-                    .frame(width: geo.size.width * CGFloat(fraction), height: 5)
-            }
+        ZStack(alignment: .leading) {
+            Rectangle()
+                .fill(Color.black.opacity(0.6))
+            Rectangle()
+                .fill(Color.white)
+                .frame(width: cardWidth * CGFloat(fraction))
         }
-        .frame(height: 5)
+        .frame(width: cardWidth, height: 5)
     }
 
     private var progressFraction: Double? {
@@ -928,22 +850,18 @@ private struct EpisodeCardLabel: View {
         return pos / dur
     }
 
-    private func formatRuntime(_ minutes: Int) -> String {
-        if minutes >= 60 {
-            return "\(minutes / 60)h \(minutes % 60)m"
-        }
-        return "\(minutes)m"
-    }
 }
 
-/// Reserves the approved 480-point episode-card geometry while an uncached
-/// season loads. Keeping artwork and caption blocks in the tree prevents the
-/// lower detail sections from jumping when real episodes arrive.
+private func episodeRuntimeText(_ minutes: Int) -> String {
+    minutes >= 60 ? "\(minutes / 60)h \(minutes % 60)m" : "\(minutes)m"
+}
+
+/// Reserves the anchored rail's card geometry while a season loads so lower
+/// sections don't jump when real episodes arrive.
 struct TVEpisodeRailPlaceholder: View {
-    var cardWidth: CGFloat = 480
-    var cardHeightRatio: CGFloat = 9 / 16
-    var cardSpacing: CGFloat = 54
-    var hidesEpisodeTitle = false
+    let cardWidth: CGFloat
+    let cardHeightRatio: CGFloat
+    let cardSpacing: CGFloat
     private var stillHeight: CGFloat { cardWidth * cardHeightRatio }
 
     var body: some View {
@@ -957,18 +875,12 @@ struct TVEpisodeRailPlaceholder: View {
                         RoundedRectangle(cornerRadius: 4)
                             .fill(Color.white.opacity(0.22))
                             .frame(width: 112, height: 15)
-                        if !hidesEpisodeTitle {
-                            RoundedRectangle(cornerRadius: 5)
-                                .fill(Color.white.opacity(0.28))
-                                .frame(width: 310, height: 22)
-                        }
                     }
                     .frame(width: cardWidth, alignment: .leading)
                 }
             }
             .padding(.vertical, 12)
         }
-        .redacted(reason: .placeholder)
         .allowsHitTesting(false)
         .focusable(false)
         .accessibilityHidden(true)

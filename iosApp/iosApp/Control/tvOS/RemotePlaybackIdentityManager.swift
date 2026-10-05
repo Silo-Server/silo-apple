@@ -58,9 +58,6 @@ final class RemotePlaybackIdentityManager {
     struct ActiveIdentity: Equatable {
         let generationID: UUID
         let serverId: String
-        /// The address this TV reached the server at. May differ from the
-        /// phone's when the handoff carried a deployment identity.
-        let serverURL: String
         let serverName: String?
         let serverIdentity: String?
         let profileId: String
@@ -180,10 +177,10 @@ final class RemotePlaybackIdentityManager {
         // With a deployment identity the phone's URL is one candidate among
         // the deployment's addresses; the first that answers with the same
         // identity from here is the one this TV can actually use. Without
-        // one (older phone) the offered URL is used exactly, as before.
+        // one (older phone) the offered URL is used as-is.
         let normalizedURL = try await resolveReachableURL(offer: offer, offeredURL: offeredURL)
 
-        let capability = try await api.remotePlaybackCapability(serverURL: normalizedURL)
+        let capability = try await api.capability(serverURL: normalizedURL)
         guard capability.offersRemotePlaybackHandoff(protocolVersion: SiloControlProtocol.version) else {
             throw HandoffError.unsupportedServer
         }
@@ -431,7 +428,6 @@ final class RemotePlaybackIdentityManager {
         activeIdentity = ActiveIdentity(
             generationID: generationID,
             serverId: scope.serverId,
-            serverURL: scope.serverURL,
             serverName: serverName,
             serverIdentity: serverIdentity,
             profileId: scope.profileId,
@@ -452,32 +448,12 @@ final class RemotePlaybackIdentityManager {
         return activated
     }
 
-    /// Re-probe the subtitle-provider capability after a temporary-identity
-    /// transition settles.
-    ///
-    /// Needed because `clearCachesForTemporaryIdentityChange()` calls
-    /// `SubtitleProvidersStore.reset()`, and that store fails *open*: reset
-    /// restores `isAvailable = true`. So an affirmative "no providers here"
-    /// learned about the current server is thrown away on every handoff, and
-    /// — unlike sign-in — a temporary-identity swap changes no auth state, so
-    /// no other probe fires. Without this the "Search Subtitles…" row silently
-    /// re-enables and can run the empty 20–30s search this gate exists to
-    /// prevent.
-    ///
-    /// Same shape as `ServerRegistry.refreshFeaturesAfterServerSwitch()`,
-    /// which re-probes after a switch between already-signed-in servers for
-    /// exactly this reason.
-    ///
-    /// Deliberately *not* called from every
-    /// `clearCachesForTemporaryIdentityChange()` site: two of the three run
-    /// while the scope is mid-swap (before `beginTemporaryScope`), where a
-    /// probe would be answered by the outgoing identity. Each call site below
-    /// instead fires this once its scope is fully installed or restored and
-    /// the HTTP identity-transition lease has been released, so the request
-    /// isn't gated shut either. Fire-and-forget: any failure leaves the
-    /// optimistic `true` in place, which is the fail-open contract — including
-    /// the case where a queued transition takes the lease first and blocks
-    /// this probe, since that transition fires its own once it settles.
+    /// Re-probes subtitle-provider availability after a temporary-identity
+    /// transition settles. `clearCachesForTemporaryIdentityChange()` resets
+    /// `SubtitleProvidersStore` to its fail-open `true`, and an identity swap
+    /// fires no other probe (same reason as `refreshFeaturesAfterServerSwitch()`).
+    /// Call only once the scope is installed or restored and the transition
+    /// lease is released; earlier, the outgoing identity answers. Fire-and-forget.
     private func refreshSubtitleProvidersAfterIdentityChange() {
         Task { await SubtitleProvidersStore.shared.refresh() }
     }
@@ -491,7 +467,7 @@ final class RemotePlaybackIdentityManager {
     }
 
     private static func iso8601(_ date: Date) -> String {
-        ISO8601DateFormatter().string(from: date)
+        date.ISO8601Format()
     }
 }
 #endif

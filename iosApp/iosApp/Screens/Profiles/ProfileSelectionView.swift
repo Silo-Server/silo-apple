@@ -1,12 +1,8 @@
 import SwiftUI
 
-/// "Who's watching?" profile picker. Cinematic household layout: the tint
-/// of each tile carries the profile's identity, focus lifts the tile with
-/// a colored halo, and a soft radial gradient grounds the row so the black
-/// background doesn't feel like dead space.
+/// "Who's watching?" profile picker over the shared backdrop.
 struct ProfileSelectionView: View {
     var router: AppRouter
-    var journeyLabels: [String] = ["Server", "Account", "Profile"]
     @State private var viewModel = ProfileSelectionViewModel()
     @State private var launchPreferences = ProfileLaunchPreferences.shared
     @State private var pinEntryContext: PINEntryContext?
@@ -308,12 +304,8 @@ struct ProfileSelectionView: View {
             AddProfileTile { handleAddProfileTap() }
         }
 
-        // Mirror of the header's `focusSection()`. Without this, pressing
-        // Down from the Sign Out chip (top-right) has no section to
-        // descend into — the focus engine's spatial search can't find
-        // the centered tile grid from a corner anchor and focus gets
-        // stuck on Sign Out. Making the grid a focus section gives the
-        // engine a guaranteed target below the header.
+        // A focus section, so Up from either footer button finds the
+        // centered grid.
         return grid
             .focusScope(profileFocusNamespace)
             .focusSection()
@@ -429,11 +421,9 @@ struct ProfileSelectionView: View {
         Task {
             do {
                 try await viewModel.prepareForProfileManagement()
-                await MainActor.run { showCreateProfile = true }
+                showCreateProfile = true
             } catch {
-                await MainActor.run {
-                    viewModel.error = ErrorState(error)
-                }
+                viewModel.error = ErrorState(error)
             }
         }
     }
@@ -474,7 +464,7 @@ struct ProfileSelectionView: View {
     #if os(tvOS)
     private func dismissSignOutConfirmation() {
         showSignOutConfirm = false
-        Task { @MainActor in
+        Task {
             await Task.yield()
             isSignOutFocused = true
         }
@@ -499,7 +489,7 @@ struct ProfileSelectionView: View {
         #if os(tvOS)
         // The picker is enabled again in this update; once it is, send focus
         // to the profile that opened the prompt.
-        Task { @MainActor in
+        Task {
             await Task.yield()
             resetFocus(in: profileFocusNamespace)
         }
@@ -522,22 +512,18 @@ struct ProfileSelectionView: View {
                 case .profileManagement:
                     try await viewModel.prepareForProfileManagement(pin: pin)
                     MarqueeHaptics.success()
-                    await MainActor.run {
-                        closePINEntry()
-                        showCreateProfile = true
-                    }
+                    closePINEntry()
+                    showCreateProfile = true
                 }
-                await MainActor.run { isVerifyingPIN = false }
+                isVerifyingPIN = false
             } catch {
-                await MainActor.run {
-                    isVerifyingPIN = false
-                    if case ProfileTransitionError.incorrectPIN = error {
-                        wrongPINCount += 1
-                        pinError = "Wrong PIN. Try again."
-                    } else {
-                        closePINEntry()
-                        viewModel.error = ErrorState(error)
-                    }
+                isVerifyingPIN = false
+                if case ProfileTransitionError.incorrectPIN = error {
+                    wrongPINCount += 1
+                    pinError = "Wrong PIN. Try again."
+                } else {
+                    closePINEntry()
+                    viewModel.error = ErrorState(error)
                 }
             }
         }
@@ -558,9 +544,6 @@ struct ProfileSelectionView: View {
     private let footerSpacing: CGFloat = 4
     #endif
 }
-
-// `GhostChipButtonStyle` now lives in `Theme/SiloButtonStyles.swift`
-// (shared with `CreateProfileView`).
 
 #if !os(tvOS)
 /// How "Who's watching?" arranges its tiles (profiles plus "Add profile") in

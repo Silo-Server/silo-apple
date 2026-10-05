@@ -7,5 +7,14 @@ extension View {
             .siloScrollContentBackgroundHidden()
             .background(SettingsBackdrop())
     }
+
+    /// Settings pickers open as a menu on macOS and push a choice list on iOS.
+    func settingsPickerStyle() -> some View {
+        #if os(macOS)
+        return pickerStyle(.menu)
+        #else
+        return pickerStyle(.navigationLink)
+        #endif
+    }
 }
 #endif

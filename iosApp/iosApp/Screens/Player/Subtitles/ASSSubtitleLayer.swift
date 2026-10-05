@@ -3,7 +3,7 @@ import SwiftUI
 /// The layer's lifetime bounds the render loop. Awaiting each render prevents
 /// queued frames from accumulating when a complex ASS animation is expensive.
 struct ASSSubtitleLayer: View {
-    @ObservedObject var session: ASSSubtitleSession
+    let session: ASSSubtitleSession
     let videoRect: CGRect
     let delaySeconds: Double
     @Environment(\.displayScale) private var displayScale

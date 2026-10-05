@@ -2,9 +2,8 @@
 //  LiveSubtitleCoordinator.swift
 //  Silo (iOS + tvOS)
 //
-//  The live AI-subtitle state machine (Milestone 4). Layers a real-time,
-//  playhead-first cue experience over the websocket on top of the M3 polling
-//  authority:
+//  The live AI-subtitle state machine. Layers a real-time, playhead-first cue
+//  experience over the websocket on top of the polling authority:
 //
 //    started   → snapshot the current subtitle selection; pause if playing
 //                (remember `wasPlaying`); install + select a synthetic Aether-
@@ -14,7 +13,7 @@
 //    cues      → feed each cue to the live track; on the FIRST batch, cancel
 //                the safety timer, hide the overlay, and resume playback
 //                (playhead-first) if we paused.
-//    completed → hand the persisted subtitle off (via the M3 controller
+//    completed → hand the persisted subtitle off (via the controller
 //                handoff, which the poller may have already performed — the
 //                two share ONE terminal action and must not double-register);
 //                swap selection from the live track to the persisted one;
@@ -23,7 +22,7 @@
 //                completion: close the live track, restore the prior
 //                selection, resume if we paused, surface a soft notice.
 //
-//  Design contract (matches the spec's Data flow (e)):
+//  Design contract:
 //    - The coordinator is the SINGLE owner of pause/resume intent. Nothing
 //      else pauses/resumes during a live job; the coordinator tracks
 //      `wasPlaying` and resumes exactly once.
@@ -59,8 +58,8 @@ protocol LivePlaybackControls: AnyObject {
 
 /// The live-track surface the coordinator manipulates: a synthetic overlay
 /// track, its selection, the persisted-track handoff, and the "Preparing…"
-/// notice. Implemented as an adapter over the M2 live-track primitives, the
-/// M3 completion handoff, the VM's selection plumbing, and the notice surface.
+/// notice. Implemented as an adapter over the live-track primitives, the
+/// completion handoff, the VM's selection plumbing, and the notice surface.
 @MainActor
 protocol LiveSubtitleSink: AnyObject {
     /// Open a synthetic styled live track (and add its picker row) for the
@@ -77,11 +76,11 @@ protocol LiveSubtitleSink: AnyObject {
     /// where no persisted track is arriving to take over the caption.
     func closeLiveTrack(trackKey: String)
     /// Close the synthetic live track for `trackKey`, but DEFER the row removal
-    /// until AFTER the handed-off persisted track is selected
-    /// (M5 seamless swap). Used on the success path so there is never a frame
-    /// with no subtitle selected between dropping the live row and the persisted
-    /// track landing. If the persisted selection never lands (handoff failed),
-    /// the deferred close is dropped — the failure path closes the track itself.
+    /// until AFTER the handed-off persisted track is selected. Used on the
+    /// success path so there is never a frame with no subtitle selected
+    /// between dropping the live row and the persisted track landing. If the
+    /// persisted selection never lands (handoff failed), the deferred close is
+    /// dropped — the failure path closes the track itself.
     func closeLiveTrackAfterPersistedSelected(trackKey: String)
     /// Restore whatever subtitle selection was active before the live job
     /// began (the snapshot the coordinator captured and passed back here).
@@ -193,13 +192,9 @@ final class LiveSubtitleCoordinator {
     private let sink: LiveSubtitleSink
     private let clock: LiveSubtitleClock
 
-    /// `@MainActor`-isolated (the type default). The owning `PlayerViewModel`
-    /// is a Swift-5-mode type that isn't globally `@MainActor`, so it builds
-    /// this coordinator inside a `MainActor.assumeIsolated` block (see
-    /// `makeLiveSubtitleCoordinator`) — the same construction `SubtitleAIController`
-    /// uses. The selection snapshot hook is injected here as an immutable `let`
-    /// (constructor injection) rather than a settable property, so the seam is
-    /// fixed at construction and the Swift-6 actor-isolation warnings stay off.
+    /// Main-actor isolated. The selection snapshot hook is injected as an
+    /// immutable `let` rather than a settable property, so the seam is fixed
+    /// at construction.
     init(
         controls: LivePlaybackControls,
         sink: LiveSubtitleSink,
@@ -402,7 +397,7 @@ final class LiveSubtitleCoordinator {
         }
         sink.registerPersisted(subtitleId: subtitleId)
 
-        // M5 seamless swap: the persisted track is being registered + selected
+        // Seamless swap: the persisted track is being registered + selected
         // asynchronously (the registration hops the main queue). Defer closing
         // the synthetic live row until that selection lands so there is no
         // no-subtitle flicker; the live track keeps rendering its last cues in
@@ -474,7 +469,7 @@ final class LiveSubtitleCoordinator {
         didResume = true
         sink.hidePreparingNotice()
         if let active = activeTrackKey {
-            // M5 seamless swap: the poller authority has already registered +
+            // Seamless swap: the poller authority has already registered +
             // selected the persisted track (or is doing so on the main queue);
             // defer the live-row close until that selection lands so there is no
             // no-subtitle flicker.

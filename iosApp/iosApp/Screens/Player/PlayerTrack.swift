@@ -56,20 +56,8 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
     }
 
     var attributesLabel: String? {
-        let parts = attributeParts()
+        let parts = attributePillLabels()
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
-    }
-
-    /// Same attributes as `attributesLabel`, unjoined — for UIs that render
-    /// each attribute as its own pill instead of a dot-separated line.
-    var attributePillLabels: [String] {
-        attributeParts()
-    }
-
-    /// Pill labels with the language optionally omitted — for rows that
-    /// already surface the language as the primary name.
-    func attributePillLabels(includeLanguage: Bool) -> [String] {
-        attributeParts(includeLanguage: includeLanguage)
     }
 
     /// Language-first display name for subtitle pickers. Embedded subtitle
@@ -102,7 +90,10 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
         return title
     }
 
-    private func attributeParts(includeLanguage: Bool = true) -> [String] {
+    /// Same attributes as `attributesLabel`, unjoined — for UIs that render
+    /// each attribute as its own pill. Rows that already show the language as
+    /// the primary name pass `includeLanguage: false`.
+    func attributePillLabels(includeLanguage: Bool = true) -> [String] {
         var parts: [String] = []
 
         if includeLanguage,
@@ -135,43 +126,6 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
         return parts
     }
 
-    /// Rich human-readable label for track pickers,
-    /// e.g. "English · 5.1 · EAC3 · default".
-    var displayLabel: String {
-        var parts: [String] = []
-
-        if let title = normalizedTitle {
-            parts.append(title)
-        }
-        if let lang = normalizedLanguageCode,
-           !(normalizedTitle?.localizedCaseInsensitiveContains(lang) ?? false) {
-            parts.append(languageDisplayName(lang))
-        }
-        if kind == .audio, let label = channelCountLabel {
-            parts.append(label)
-        }
-        if let codec = Self.normalizedText(codec) {
-            parts.append(codec.uppercased())
-        }
-        if isDefault {
-            parts.append("default")
-        }
-        if isForced {
-            parts.append("forced")
-        }
-        if isHearingImpaired {
-            parts.append("SDH")
-        }
-        if isExternal {
-            parts.append("external")
-        }
-
-        if parts.isEmpty {
-            parts.append("Track \(trackId)")
-        }
-        return parts.joined(separator: " · ")
-    }
-
     /// Human-readable channel count for audio tracks (e.g. "5.1"), or nil when
     /// the demuxer reported no usable count.
     var channelCountLabel: String? {
@@ -189,9 +143,10 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
         }
     }
 
+    private static let englishLocale = Locale(identifier: "en")
+
     private func languageDisplayName(_ code: String) -> String {
-        let locale = Locale(identifier: "en")
-        return locale.localizedString(forLanguageCode: code)?.capitalized ?? code.uppercased()
+        Self.englishLocale.localizedString(forLanguageCode: code)?.capitalized ?? code.uppercased()
     }
 
     static func normalizedText(_ value: String?) -> String? {

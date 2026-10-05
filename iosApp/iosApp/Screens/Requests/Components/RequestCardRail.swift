@@ -28,27 +28,22 @@ struct RequestCardRail<Item: Identifiable, Card: View>: View {
     @ViewBuilder let card: (Item) -> Card
 
     var body: some View {
-        #if os(tvOS)
         ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(alignment: .top, spacing: RequestsUI.railSpacing) {
                 ForEach(items) { item in
                     card(item)
                 }
             }
+            #if os(tvOS)
             .padding(.vertical, RequestsUI.railVerticalPadding)
+            #else
+            .phoneMediaRailBounds()
+            #endif
         }
+        #if os(tvOS)
         .scrollClipDisabled()
         // Pull the rail back to the header rhythm the padding pushed out.
         .padding(.vertical, -RequestsUI.railVerticalPadding)
-        #else
-        ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(alignment: .top, spacing: RequestsUI.railSpacing) {
-                ForEach(items) { item in
-                    card(item)
-                }
-            }
-            .phoneMediaRailBounds()
-        }
         #endif
     }
 }

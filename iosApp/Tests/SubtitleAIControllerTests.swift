@@ -3,7 +3,7 @@
 //  SiloTests
 //
 //  Controller-level tests for the poller-vs-websocket completion race — the
-//  highest-risk untested seam in the AI subtitle pipeline (M4 FIX 10). The
+//  highest-risk seam in the AI subtitle pipeline. The
 //  websocket `completed` path and the poller-authority terminal path BOTH route
 //  through `completePersistedHandoff`, guarded by the `handoffJobId` latch, so
 //  the persisted track must register EXACTLY once regardless of which driver
@@ -278,7 +278,7 @@ final class SubtitleAIControllerTests: XCTestCase {
         XCTAssertEqual(h.coordinator.phase, .completed)
     }
 
-    // MARK: - (c) poller-wins-after-socket-drop (FIX 2)
+    // MARK: - (c) poller-wins-after-socket-drop
 
     func testPollerWinsAfterSocketDropClosesCoordinator() async {
         let h = makeHarness(downloaded: [persisted(id: 321)])
@@ -295,7 +295,7 @@ final class SubtitleAIControllerTests: XCTestCase {
         h.controller.deliverPollerTerminalForTesting(completedJob(id: "5", resultSubtitleId: 321))
         await h.waitForRegisterSelectCount(1)
 
-        // FIX 2: the persisted track registers once AND the coordinator closes
+        // The persisted track registers once AND the coordinator closes
         // the orphaned live track + reaches `.completed` (not stuck `.streaming`).
         XCTAssertEqual(h.registerSelectCount(), 1, "registered exactly once")
         XCTAssertEqual(h.coordinator.phase, .completed, "coordinator must not strand in .streaming")
@@ -304,7 +304,7 @@ final class SubtitleAIControllerTests: XCTestCase {
         XCTAssertFalse(h.controller.livePresentationActive)
     }
 
-    // MARK: - (c2) ready-broadcast dedup against the owned WS completion (M5 FIX 1)
+    // MARK: - (c2) ready-broadcast dedup against the owned WS completion
 
     /// The server broadcasts `subtitle_ready` for a file to ALL its sessions —
     /// INCLUDING the session that just completed the job. When the websocket

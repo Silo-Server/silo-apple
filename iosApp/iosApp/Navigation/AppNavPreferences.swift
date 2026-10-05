@@ -68,10 +68,8 @@ final class AppNavPreferences {
         "skyline.nav.showAudiobooks"
         #elseif os(iOS)
         "ios.nav.showAudiobooks"
-        #elseif os(macOS)
-        "mac.nav.showAudiobooks"
         #else
-        "apple.nav.showAudiobooks"
+        "mac.nav.showAudiobooks"
         #endif
     }
 }

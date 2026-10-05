@@ -32,7 +32,7 @@ final class RequestSearchSectionViewModel {
         }
         searchTask = Task {
             // Same 300ms debounce as `SearchViewModel` for a single feel.
-            try? await Task.sleep(nanoseconds: 300_000_000)
+            try? await Task.sleep(for: .milliseconds(300))
             guard !Task.isCancelled else { return }
             await performSearch(trimmed)
         }

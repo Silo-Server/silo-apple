@@ -6,10 +6,10 @@ import Foundation
 /// its first active record, updates it as `DownloadManager` publishes
 /// progress, and ends it when the queue drains.
 ///
-/// Fed exclusively from `DownloadManager.file`'s `didSet`, so every state
-/// mutation flows through here; identical content states are deduped before
-/// touching ActivityKit, and the manager's 1s progress-publish cadence
-/// already keeps update frequency readable.
+/// Fed by `DownloadManager.syncLiveActivity()` on store and app-lifecycle
+/// changes; identical content states are deduped before touching
+/// ActivityKit, and the manager's 1s progress-publish cadence already keeps
+/// update frequency readable.
 ///
 /// Known limitation, by design: transfers run on a background `URLSession`,
 /// whose progress callbacks stop once iOS suspends the app. The content is

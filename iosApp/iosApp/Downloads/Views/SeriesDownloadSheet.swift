@@ -463,10 +463,8 @@ struct SeriesDownloadSheet: View {
 
     private func title(for row: Rule) -> String {
         switch row {
-        case .mode(.all): return "All Episodes"
-        case .mode(.future): return "Future Episodes"
-        case .mode(.latestSeason): return "Last Season"
-        case .mode(.specificSeasons), .custom: return "Custom"
+        case .mode(let mode): return mode.displayName
+        case .custom: return "Custom"
         }
     }
 

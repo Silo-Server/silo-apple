@@ -44,23 +44,6 @@ extension OverlayData {
         return data
     }
 
-    static func from(_ detail: ItemDetail) -> OverlayData {
-        var data = OverlayData()
-        applySummary(detail.overlaySummary, into: &data)
-        data.ratingImdb        = detail.ratingImdb
-        data.ratingTmdb        = detail.ratingTmdb
-        data.ratingRtCritic    = detail.ratingRtCritic
-        data.ratingRtAudience  = detail.ratingRtAudience
-        data.contentRating     = detail.contentRating
-        data.year              = detail.year
-        data.runtime           = detail.runtime
-        data.originalLanguage  = detail.originalLanguage
-        data.studio            = firstNonEmpty(detail.studios)
-        data.network           = firstNonEmpty(detail.networks)
-        data.showStatus        = detail.showStatus
-        return data
-    }
-
     private static func applySummary(_ summary: OverlaySummary?, into data: inout OverlayData) {
         guard let summary else { return }
         data.resolution     = summary.resolution

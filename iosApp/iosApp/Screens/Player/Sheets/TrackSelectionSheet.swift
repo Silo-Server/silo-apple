@@ -78,7 +78,7 @@ struct TrackSelectionSheet: View {
             TrackSelectionRow(
                 name: track.primaryLabel,
                 attributes: track.attributesLabel,
-                pills: track.attributePillLabels,
+                pills: track.attributePillLabels(),
                 isSelected: viewModel.selectedAudioId == track.trackId
             ) {
                 viewModel.selectAudio(track)

@@ -36,7 +36,13 @@ enum OpenSourceAcknowledgements {
         Resource(title: "ThumbHash decoder — MIT", name: "ThumbHash-MIT"),
     ]
 
-    static let text: String = resources.map { resource in
+    /// One titled license text per resource.
+    struct Entry: Identifiable, Sendable {
+        let id: String
+        let text: String
+    }
+
+    static let entries: [Entry] = resources.map { resource in
         let body: String
         if let url = resourceURL(named: resource.name),
            let contents = try? String(contentsOf: url, encoding: .utf8) {
@@ -45,9 +51,15 @@ enum OpenSourceAcknowledgements {
             body = "The bundled license resource \(resource.name).txt is unavailable."
         }
 
-        return "\(resource.title)\n\(String(repeating: "=", count: resource.title.count))\n\n\(body)"
+        return Entry(
+            id: resource.name,
+            text: "\(resource.title)\n\(String(repeating: "=", count: resource.title.count))\n\n\(body)"
+        )
     }
-    .joined(separator: "\n\n\n")
+
+    #if os(tvOS)
+    static let text: String = entries.map(\.text).joined(separator: "\n\n\n")
+    #endif
 
     private static func resourceURL(named name: String) -> URL? {
         Bundle.main.url(
@@ -61,14 +73,20 @@ enum OpenSourceAcknowledgements {
 struct OpenSourceAcknowledgementsView: View {
     var body: some View {
         ScrollView {
-            Text(OpenSourceAcknowledgements.text)
-                .font(.system(.footnote, design: .monospaced))
-                .foregroundStyle(Color.siloOnSurface)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding()
-                #if !os(tvOS)
-                .textSelection(.enabled)
-                #endif
+            // One Text per license, laid out lazily: a single Text of every
+            // bundled license would lay out about 150 KB as the page opens.
+            LazyVStack(alignment: .leading, spacing: 32) {
+                ForEach(OpenSourceAcknowledgements.entries) { entry in
+                    Text(entry.text)
+                }
+            }
+            .font(.system(.footnote, design: .monospaced))
+            .foregroundStyle(Color.siloOnSurface)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding()
+            #if !os(tvOS)
+            .textSelection(.enabled)
+            #endif
         }
         .background(Color.siloBackground)
         .navigationTitle("Open Source Licenses")

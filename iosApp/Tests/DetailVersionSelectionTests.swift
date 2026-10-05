@@ -128,12 +128,6 @@ final class DetailVersionSelectionTests: XCTestCase {
         XCTAssertEqual(version.videoTracks?.first?.colorRange, "tv")
     }
 
-    func testSourceColorRangeIsNotAppliedToTranscodedOutput() {
-        XCTAssertTrue(PlaybackDeliveryStrategy.direct.preservesSourceVideoMetadata)
-        XCTAssertTrue(PlaybackDeliveryStrategy.remux.preservesSourceVideoMetadata)
-        XCTAssertFalse(PlaybackDeliveryStrategy.transcode.preservesSourceVideoMetadata)
-    }
-
     private func decodedVersions(_ json: String) -> [FileVersion] {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase

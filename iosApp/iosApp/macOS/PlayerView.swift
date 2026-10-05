@@ -3,6 +3,50 @@ import AetherEngine
 import SwiftUI
 
 struct PlayerView: View {
+    private let request: MacPlayerRequest
+    private let libraryId: Int?
+
+    /// Created once on appear. A `State` initial value would build, and then
+    /// discard, a full playback engine (with its audio-session claim) on
+    /// every init of this view.
+    @State private var viewModel: PlayerViewModel?
+
+    init(
+        contentId: String,
+        libraryId: Int? = nil,
+        preferredFileId: Int? = nil,
+        preferredAudioTrackIndex: Int? = nil,
+        preferredSubtitleTrackIndex: Int? = nil,
+        startFromBeginning: Bool = false,
+        resumePositionOverride: Double? = nil,
+        prefersLastUsedVersion: Bool = false,
+        offlineDownloadId: String? = nil
+    ) {
+        self.libraryId = libraryId
+        request = MacPlayerRequest(
+            contentId: contentId,
+            preferredFileId: preferredFileId,
+            preferredAudioTrackIndex: preferredAudioTrackIndex,
+            preferredSubtitleTrackIndex: preferredSubtitleTrackIndex,
+            startFromBeginning: startFromBeginning,
+            resumePositionOverride: resumePositionOverride,
+            prefersLastUsedVersion: prefersLastUsedVersion,
+            offlineDownloadId: offlineDownloadId
+        )
+    }
+
+    var body: some View {
+        if let viewModel {
+            MacPlayerScreen(request: request, viewModel: viewModel)
+        } else {
+            Color.black
+                .ignoresSafeArea()
+                .onAppear { viewModel = PlayerViewModel(libraryId: libraryId) }
+        }
+    }
+}
+
+private struct MacPlayerRequest {
     let contentId: String
     let preferredFileId: Int?
     let preferredAudioTrackIndex: Int?
@@ -17,33 +61,15 @@ struct PlayerView: View {
     /// + local media file, no server session) so playback works with no
     /// network.
     let offlineDownloadId: String?
+}
+
+private struct MacPlayerScreen: View {
+    let request: MacPlayerRequest
+    let viewModel: PlayerViewModel
 
     @Environment(\.dismiss) private var dismiss
-    @State private var viewModel: PlayerViewModel
     @State private var isOptionsPresented = false
     @State private var selectedOptionsTab: MacPlayerOptionsPanel.Tab = .audio
-
-    init(
-        contentId: String,
-        libraryId: Int? = nil,
-        preferredFileId: Int? = nil,
-        preferredAudioTrackIndex: Int? = nil,
-        preferredSubtitleTrackIndex: Int? = nil,
-        startFromBeginning: Bool = false,
-        resumePositionOverride: Double? = nil,
-        prefersLastUsedVersion: Bool = false,
-        offlineDownloadId: String? = nil
-    ) {
-        self.contentId = contentId
-        _viewModel = State(initialValue: PlayerViewModel(libraryId: libraryId))
-        self.preferredFileId = preferredFileId
-        self.preferredAudioTrackIndex = preferredAudioTrackIndex
-        self.preferredSubtitleTrackIndex = preferredSubtitleTrackIndex
-        self.startFromBeginning = startFromBeginning
-        self.resumePositionOverride = resumePositionOverride
-        self.prefersLastUsedVersion = prefersLastUsedVersion
-        self.offlineDownloadId = offlineDownloadId
-    }
 
     var body: some View {
         ZStack {
@@ -129,14 +155,14 @@ struct PlayerView: View {
         }
         .onAppear {
             viewModel.loadAndPlay(
-                contentId: contentId,
-                preferredFileId: preferredFileId,
-                preferredAudioTrackIndex: preferredAudioTrackIndex,
-                preferredSubtitleTrackIndex: preferredSubtitleTrackIndex,
-                startFromBeginning: startFromBeginning,
-                resumePositionOverride: resumePositionOverride,
-                prefersLastUsedVersion: prefersLastUsedVersion,
-                offlineDownloadId: offlineDownloadId
+                contentId: request.contentId,
+                preferredFileId: request.preferredFileId,
+                preferredAudioTrackIndex: request.preferredAudioTrackIndex,
+                preferredSubtitleTrackIndex: request.preferredSubtitleTrackIndex,
+                startFromBeginning: request.startFromBeginning,
+                resumePositionOverride: request.resumePositionOverride,
+                prefersLastUsedVersion: request.prefersLastUsedVersion,
+                offlineDownloadId: request.offlineDownloadId
             )
         }
         .onDisappear {
@@ -156,26 +182,10 @@ struct PlayerView: View {
             || isOptionsPresented
     }
 
-    @ViewBuilder
     private var playerSurface: some View {
         ZStack {
             AetherPlayerSurface(engine: viewModel.aetherEngine)
-            AetherSubtitleOverlay(
-                engine: viewModel.aetherEngine,
-                assSubtitles: viewModel.assSubtitles,
-                cueHold: viewModel.subtitleCueHold,
-                sourceTime: viewModel.currentTime,
-                primaryUsesMovieTimeline: viewModel.subtitleUsesMovieTimeline(viewModel.selectedSubtitleId),
-                secondaryUsesMovieTimeline: viewModel.subtitleUsesMovieTimeline(viewModel.selectedSecondarySubtitleId, slot: .secondary),
-                livePrimaryCues: viewModel.selectedSubtitleId.map(SubtitleTrackIdSpace.isAILive) == true
-                    ? viewModel.livePrimarySubtitleCues
-                    : [],
-                liveSecondaryCues: viewModel.selectedSecondarySubtitleId.map(SubtitleTrackIdSpace.isAILive) == true
-                    ? viewModel.liveSecondarySubtitleCues
-                    : [],
-                appearance: viewModel.settings.effectiveSubtitleAppearance,
-                subtitleSyncMs: viewModel.settings.subtitleSyncMs
-            )
+            MacSubtitleLayer(viewModel: viewModel)
         }
         .ignoresSafeArea()
     }
@@ -224,7 +234,7 @@ struct PlayerView: View {
     }
 
     private func nextSpeed(offset: Int) -> Double {
-        let speeds = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
+        let speeds = MacPlayerOptionsPanel.playbackSpeeds
         let current = viewModel.settings.playbackSpeed
         let index = speeds.enumerated().min { lhs, rhs in
             abs(lhs.element - current) < abs(rhs.element - current)
@@ -261,6 +271,31 @@ struct PlayerView: View {
         }
         .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// Subtitles read `currentTime`, so they live in their own view: playback
+/// ticks then re-render only this layer, not the whole player.
+private struct MacSubtitleLayer: View {
+    let viewModel: PlayerViewModel
+
+    var body: some View {
+        AetherSubtitleOverlay(
+            engine: viewModel.aetherEngine,
+            assSubtitles: viewModel.assSubtitles,
+            cueHold: viewModel.subtitleCueHold,
+            sourceTime: viewModel.currentTime,
+            primaryUsesMovieTimeline: viewModel.subtitleUsesMovieTimeline(viewModel.selectedSubtitleId),
+            secondaryUsesMovieTimeline: viewModel.subtitleUsesMovieTimeline(viewModel.selectedSecondarySubtitleId, slot: .secondary),
+            livePrimaryCues: viewModel.selectedSubtitleId.map(SubtitleTrackIdSpace.isAILive) == true
+                ? viewModel.livePrimarySubtitleCues
+                : [],
+            liveSecondaryCues: viewModel.selectedSecondarySubtitleId.map(SubtitleTrackIdSpace.isAILive) == true
+                ? viewModel.liveSecondarySubtitleCues
+                : [],
+            appearance: viewModel.settings.effectiveSubtitleAppearance,
+            subtitleSyncMs: viewModel.settings.subtitleSyncMs
+        )
     }
 }
 #endif

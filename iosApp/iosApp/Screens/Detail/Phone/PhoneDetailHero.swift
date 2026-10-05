@@ -9,18 +9,29 @@ import SwiftUI
 final class PhoneDetailScrollState {
     private(set) var offset: CGFloat = 0
 
-    func update(_ rawOffset: CGFloat) {
-        // Nothing in the chrome changes below 150 points or above 480. Folding
-        // those plateaus onto their endpoints avoids invalidating even the
-        // small chrome views while their rendered output is completely static.
-        let clamped = min(max(0, rawOffset), 480)
-        let normalized = clamped <= 150 ? 0 : clamped
-        guard abs(normalized - offset) >= 0.5 else { return }
-        offset = normalized
+    /// Takes an offset already folded by `phoneDetailScrollTracking`.
+    func update(_ offset: CGFloat) {
+        guard abs(offset - self.offset) >= 0.5 else { return }
+        self.offset = offset
     }
 
     func reset() {
         offset = 0
+    }
+}
+
+extension View {
+    /// Feeds the native scroll offset into `state`. Nothing in the chrome
+    /// changes below 150 points or above 480, so those plateaus fold onto
+    /// their endpoints and the small chrome views stay untouched while their
+    /// rendered output is static.
+    func phoneDetailScrollTracking(_ state: PhoneDetailScrollState) -> some View {
+        onScrollGeometryChange(for: CGFloat.self) { geometry in
+            let offset = max(0, geometry.contentOffset.y + geometry.contentInsets.top)
+            return offset <= 150 ? 0 : min(offset, 480)
+        } action: { _, offset in
+            state.update(offset)
+        }
     }
 }
 
@@ -278,9 +289,6 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     /// all of them in the expanded one.
     var ratings: [DisplayRating] = []
     var creditText: String? = nil
-    /// Retained at the call boundary for source compatibility. Detail artwork
-    /// intentionally renders no card-overlay badges in this redesigned surface.
-    var overlayData: OverlayData? = nil
     var enablesArtworkParallax = false
     var artworkStyle: PhoneDetailArtworkStyle = .backdrop
     @ViewBuilder let actions: () -> Actions

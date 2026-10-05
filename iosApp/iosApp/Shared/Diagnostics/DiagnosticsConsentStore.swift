@@ -1,6 +1,6 @@
 #if os(iOS) || os(tvOS)
 import Foundation
-import os
+import Synchronization
 
 struct DiagnosticsBinding: Codable, Equatable, Hashable, Sendable {
     let serverInstanceID: String
@@ -52,28 +52,6 @@ struct DiagnosticsSentReport: Codable, Equatable, Identifiable, Sendable {
     var id: String { "\(shortID)|\(sentAt)" }
 }
 
-/// Monotonic counter for consent mutations, read from the synchronous log
-/// gate on every thread. Its only job is to let a cached capture decision
-/// notice that stored consent changed underneath it, so it is deliberately
-/// separate from the store's `NSLock`: it is bumped *after* a write is durable
-/// and is never held across a `UserDefaults` access.
-final class DiagnosticsConsentMutationCounter: @unchecked Sendable {
-    /// `OSAllocatedUnfairLock` rather than a stored `os_unfair_lock_s`: locking
-    /// the latter through `&lock` passes an inout access, which the compiler may
-    /// satisfy with a temporary copy, so concurrent callers can end up locking
-    /// different memory and the mutual exclusion silently disappears. This type
-    /// owns stable allocated storage, so every caller locks the same word.
-    private let generation = OSAllocatedUnfairLock(initialState: UInt64(0))
-
-    var value: UInt64 {
-        generation.withLock { $0 }
-    }
-
-    func bump() {
-        generation.withLock { $0 &+= 1 }
-    }
-}
-
 final class DiagnosticsConsentStore {
     static let shared = DiagnosticsConsentStore()
 
@@ -85,13 +63,22 @@ final class DiagnosticsConsentStore {
     private let defaults: SharedDefaults
     private let onNeverSelected: (DiagnosticsBinding) -> Void
     private let lock = NSLock()
-    private let mutationCounter = DiagnosticsConsentMutationCounter()
+    /// Monotonic counter for consent mutations, read from the synchronous log
+    /// gate on every thread. Its only job is to let a cached capture decision
+    /// notice that stored consent changed underneath it, so it is deliberately
+    /// separate from the store's `NSLock`: it is bumped *after* a write is
+    /// durable and is never held across a `UserDefaults` access.
+    private let mutationCounter = Atomic<UInt64>(0)
+    /// In-memory copy of the Debug Logging toggle, because the log gate reads
+    /// it on every line. Loaded on first read and written through by the
+    /// setter; no other process writes the key.
+    private let debugLogging = Mutex<Bool?>(nil)
 
     /// Bumped by every mutation that can change what `persistentCaptureEnabled`
-    /// answers for some binding: mode changes, record removal, and test resets.
+    /// answers for some binding: mode changes and record removal.
     /// Callers that memoize a capture decision key it on this value so a
     /// consent revocation invalidates the memo immediately.
-    var mutationGeneration: UInt64 { mutationCounter.value }
+    var mutationGeneration: UInt64 { mutationCounter.load(ordering: .acquiring) }
 
     init(
         defaults: SharedDefaults = .shared,
@@ -117,8 +104,20 @@ final class DiagnosticsConsentStore {
     }
 
     var debugLoggingEnabled: Bool {
-        get { defaults.bool(forKey: Self.debugLoggingKey) }
-        set { defaults.set(newValue, forKey: Self.debugLoggingKey) }
+        get {
+            debugLogging.withLock { cached in
+                if let cached { return cached }
+                let stored = defaults.bool(forKey: Self.debugLoggingKey)
+                cached = stored
+                return stored
+            }
+        }
+        set {
+            // Outside the lock: a defaults write posts its change notification
+            // synchronously, and an observer that logs would re-enter the getter.
+            defaults.set(newValue, forKey: Self.debugLoggingKey)
+            debugLogging.withLock { $0 = newValue }
+        }
     }
 
     /// Resolve *and persist* the effective consent record, applying the notice
@@ -147,7 +146,7 @@ final class DiagnosticsConsentStore {
             saveRecords(records)
             // Persisted consent for this binding changed shape; any memoized
             // capture decision keyed on the generation must re-resolve.
-            mutationCounter.bump()
+            bumpMutationGeneration()
         }
 
         return record
@@ -221,7 +220,7 @@ final class DiagnosticsConsentStore {
         // Publish before the purge callback runs: `onNeverSelected` clears the
         // ring and journal, and any log emitted during that teardown must
         // already see the revoked decision rather than a stale cached `true`.
-        mutationCounter.bump()
+        bumpMutationGeneration()
 
         if mode == .never, purgeImmediately {
             onNeverSelected(binding)
@@ -247,11 +246,13 @@ final class DiagnosticsConsentStore {
         ).mode != .never
     }
 
+    #if DEBUG
+    /// Test hook; the app removes by server with `remove(serverInstanceID:)`.
     func remove(binding: DiagnosticsBinding) {
         lock.lock()
         defer {
             lock.unlock()
-            mutationCounter.bump()
+            bumpMutationGeneration()
         }
 
         var records = loadRecords()
@@ -261,12 +262,13 @@ final class DiagnosticsConsentStore {
         history.removeValue(forKey: binding.storageKey)
         saveSentHistory(history)
     }
+    #endif
 
     func remove(serverInstanceID: String) {
         lock.lock()
         defer {
             lock.unlock()
-            mutationCounter.bump()
+            bumpMutationGeneration()
         }
 
         var records = loadRecords()
@@ -305,16 +307,8 @@ final class DiagnosticsConsentStore {
         return loadSentHistory()[binding.storageKey] ?? []
     }
 
-    func resetForTests() {
-        lock.lock()
-        defer {
-            lock.unlock()
-            mutationCounter.bump()
-        }
-
-        defaults.removeObject(forKey: Self.recordsKey)
-        defaults.removeObject(forKey: Self.debugLoggingKey)
-        defaults.removeObject(forKey: Self.sentHistoryKey)
+    private func bumpMutationGeneration() {
+        _ = mutationCounter.wrappingAdd(1, ordering: .releasing)
     }
 
     static func canManageDiagnostics(profile: UserProfile?) -> Bool {

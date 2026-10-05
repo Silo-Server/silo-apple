@@ -169,8 +169,6 @@ final class ApplePushDisplayClient {
             throw ApplePushDisplayClientError.invalidURL
         }
         var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.timeoutInterval = 4
         request.setValue("Bearer \(state.bearerToken)", forHTTPHeaderField: "Authorization")
         request.setValue(state.profileID, forHTTPHeaderField: "X-Profile-Id")
         if !state.profileToken.isEmpty {

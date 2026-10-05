@@ -8,7 +8,9 @@ import SwiftUI
 final class CalendarViewModel {
     private static let filterDefaultsKey = "calendar.filter"
 
-    var days: [CalendarDay] = []
+    private(set) var days: [CalendarDay] = []
+    /// Each day's events keyed by its "YYYY-MM-DD" date; set with `days`.
+    private var eventsByDay: [String: [CalendarEvent]] = [:]
     var isLoading = false
     var error: ErrorState?
 
@@ -36,8 +38,7 @@ final class CalendarViewModel {
     }
 
     func events(on date: Date) -> [CalendarEvent] {
-        let key = DateFormatters.isoDate.string(from: date)
-        return days.first(where: { $0.date == key })?.items ?? []
+        eventsByDay[DateFormatters.isoDate.string(from: date)] ?? []
     }
 
     func hasEvents(on date: Date) -> Bool {
@@ -95,10 +96,10 @@ final class CalendarViewModel {
         let key = CacheKey.calendarWeek(week.startString, filter: filter.rawValue)
 
         if let cached: CalendarResponse = ResponseCache.shared.get(key) {
-            days = cached.events
+            setDays(cached.events)
             isLoading = false
         } else {
-            days = []
+            setDays([])
             isLoading = true
         }
         error = nil
@@ -112,7 +113,7 @@ final class CalendarViewModel {
             )
             guard token == requestToken else { return }
             ResponseCache.shared.set(response, for: key)
-            days = response.events
+            setDays(response.events)
         } catch let err {
             guard token == requestToken else { return }
             // A cancelled load (the tab was switched away mid-fetch) is
@@ -126,10 +127,8 @@ final class CalendarViewModel {
         isLoading = false
     }
 
-    func refresh() async {
-        ResponseCache.shared.remove(
-            CacheKey.calendarWeek(week.startString, filter: filter.rawValue)
-        )
-        await load()
+    private func setDays(_ newDays: [CalendarDay]) {
+        days = newDays
+        eventsByDay = Dictionary(newDays.map { ($0.date, $0.items) }, uniquingKeysWith: { first, _ in first })
     }
 }

@@ -1,5 +1,6 @@
 import Foundation
 import OSLog
+import Synchronization
 
 /// A single Silo server the user has added to the device.
 ///
@@ -7,15 +8,15 @@ import OSLog
 /// Keychain keyed by `id`, never in the entry itself. The display name is
 /// always server-administered through the advertised `fetchedName`.
 struct ServerEntry: Codable, Identifiable, Equatable, Hashable {
-    /// Stable client-derived ID: base64url of the normalized URL's UTF-8
-    /// bytes. Reversible — but the registry treats it as opaque.
+    /// Stable client-derived ID: base64url of the normalized URL; reversible
+    /// via `url(forServerId:)`.
     let id: String
 
     /// Normalized base URL (trailing slash stripped, whitespace trimmed).
     var url: String
 
-    /// Advertised by native branding, with a legacy health-name fallback.
-    /// Filled on first successful connect and refreshed on server activation.
+    /// Advertised by native branding. Filled on first successful connect and
+    /// refreshed on server activation.
     var fetchedName: String?
 
     /// When this server was last activated. Used only for sorting the
@@ -111,23 +112,6 @@ enum ServerRegistryError: LocalizedError {
     }
 }
 
-private final class ActiveServerIDSnapshot: @unchecked Sendable {
-    private let lock = NSLock()
-    private var storedValue: String?
-
-    func read() -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return storedValue
-    }
-
-    func write(_ value: String?) {
-        lock.lock()
-        storedValue = value
-        lock.unlock()
-    }
-}
-
 /// Owns the list of known Silo servers and which one is currently
 /// active. Singleton via `.shared`; observed by SwiftUI via `@Observable`.
 ///
@@ -148,13 +132,13 @@ private final class ActiveServerIDSnapshot: @unchecked Sendable {
 final class ServerRegistry {
     static let shared = ServerRegistry()
 
-    private let activeServerSnapshot = ActiveServerIDSnapshot()
+    private let activeServerSnapshot = Mutex<String?>(nil)
 
     /// Actor-safe identity snapshot for background coordinators. SwiftUI uses
     /// the observable instance property below, while async services use this
     /// lock-protected mirror instead of racing that mutable UI state.
     static var activeServerIDSnapshot: String? {
-        shared.activeServerSnapshot.read()
+        shared.activeServerSnapshot.withLock { $0 }
     }
 
     static let defaultsKey = "siloServerRegistry.v1"
@@ -175,7 +159,10 @@ final class ServerRegistry {
     // sync.
     private(set) var entries: [ServerEntry] = []
     private(set) var activeServerId: String? {
-        didSet { activeServerSnapshot.write(activeServerId) }
+        didSet {
+            let value = activeServerId
+            activeServerSnapshot.withLock { $0 = value }
+        }
     }
 
     private let defaults: SharedDefaults
@@ -203,7 +190,8 @@ final class ServerRegistry {
         load()
         migrateLegacyIfNeeded()
         migrateLegacyProfileMappingsIfNeeded()
-        activeServerSnapshot.write(activeServerId)
+        let initialActiveServerId = activeServerId
+        activeServerSnapshot.withLock { $0 = initialActiveServerId }
     }
 
     // MARK: - Sync accessors (SwiftUI-safe)
@@ -234,27 +222,26 @@ final class ServerRegistry {
 
     // MARK: - Mutations
 
-    /// Insert or update an entry. `preservingProfile` remains as an account-
-    /// replacement signal for existing callers; profile state itself lives in
-    /// `ProfileLaunchPreferences`, never in the shared registry payload.
+    /// Insert or update an entry. `preservingProfile: false` forgets the
+    /// server's remembered launch profile.
     @discardableResult
     func addOrUpdate(_ entry: ServerEntry, preservingProfile: Bool = true) -> ServerEntry? {
         let previousEntries = entries
         var merged = entry
-        if let existing = self.entries.first(where: { $0.id == entry.id }) {
+        let existingIndex = entries.firstIndex(where: { $0.id == entry.id })
+        if let existingIndex {
+            let existing = entries[existingIndex]
             if merged.fetchedName == nil || merged.fetchedName?.isEmpty == true {
                 merged.fetchedName = existing.fetchedName
             }
             if merged.verifiedServerId == nil {
                 merged.verifiedServerId = existing.verifiedServerId
             }
-        }
-        let isExistingEntry = self.entries.contains(where: { $0.id == entry.id })
-        if let idx = self.entries.firstIndex(where: { $0.id == entry.id }) {
-            self.entries[idx] = merged
+            entries[existingIndex] = merged
         } else {
-            self.entries.append(merged)
+            entries.append(merged)
         }
+        let isExistingEntry = existingIndex != nil
         guard persist() else {
             entries = previousEntries
             _ = persist()
@@ -286,8 +273,11 @@ final class ServerRegistry {
     @discardableResult
     func updateFetchedName(for serverId: String, fetchedName: String?) -> Bool {
         guard let idx = entries.firstIndex(where: { $0.id == serverId }) else { return false }
+        // Runs on launch, every switch and every reachability recovery; skip
+        // the persist (a Keychain round trip on tvOS) when nothing changed.
+        guard let name = fetchedName, !name.isEmpty, entries[idx].fetchedName != name else { return true }
         let previousEntries = entries
-        if let name = fetchedName, !name.isEmpty { entries[idx].fetchedName = name }
+        entries[idx].fetchedName = name
         guard persist() else {
             entries = previousEntries
             _ = persist()
@@ -324,15 +314,10 @@ final class ServerRegistry {
 
     // MARK: - Server switching
 
-    /// Activate a server. Updates the active ID, mirrors the URL, clears the
-    /// previous request profile,
-    /// into the legacy `UserDefaults` keys (read by sync callers like
-    /// `ProfileAvatarView` and `AuthService`), and retargets `TokenStore`
-    /// at the new server's Keychain slot.
-    ///
-    /// Ordering matters: legacy mirrors are written *before* the observable
-    /// `activeServerId` change so any view that reacts to the change reads
-    /// consistent UserDefaults values.
+    /// Activate a server: write the URL/active-ID mirrors and clear the
+    /// profile id, then publish `activeServerId` and retarget TokenStore.
+    /// Mirrors are written first so views reacting to the change read
+    /// consistent defaults.
     @discardableResult
     func switchTo(
         serverId: String,
@@ -425,44 +410,11 @@ final class ServerRegistry {
         await refreshFeaturesAfterServerSwitch()
     }
 
-    /// Single commit funnel for both the plain and the lease-holding switch.
-    ///
-    /// Deliberately records no breadcrumb, and neither does the window just
-    /// before it. Both callers open with
-    /// `DiagnosticsCoordinator.activeProfileWillChange()`, which synchronously
-    /// makes the active profile ineligible and closes the capture gate; the
-    /// matching `activeProfileDidChange()` does not run until after this
-    /// returns. A line emitted inside the funnel is therefore offered to a
-    /// disabled journal and dropped.
-    ///
-    /// Moving it a few statements earlier — to just before the boundary, while
-    /// the outgoing account can still capture — does not rescue it either, and
-    /// that is the non-obvious part. `activeProfileWillChange()` does not only
-    /// close the gate: once this launch's capture decision is in effect it
-    /// calls `purgeBreadcrumbJournal()`, which deletes the journal directory
-    /// outright and discards the early-boot staging buffer with it. A line
-    /// written microseconds earlier is inside exactly the trail that purge
-    /// destroys, so a pre-boundary "attempted" is not a durable
-    /// last-word-of-the-outgoing-account — it is erased on every switch that
-    /// gets far enough to matter, and survives only on the launches where the
-    /// gate never opened and it was never written in the first place.
-    ///
-    /// Nor can the outcome be re-emitted after the boundary. This function
-    /// *is* the identity change: it retargets the URL, active id, profile key,
-    /// and token slot. A line written after `activeProfileDidChange()` lands
-    /// in the destination account's journal, where an outgoing-account failure
-    /// reason ("the switch away from your other server did not persist") is
-    /// exactly the cross-account evidence the boundary exists to prevent.
-    ///
-    /// So this transition is deliberately not breadcrumbed on either side.
-    /// The pre-boundary guards that reject a switch before any identity work
-    /// (`unknownServer`, `transitionUnavailable`, `staleTransitionLease`) keep
-    /// their lines: those return without ever reaching the boundary, so
-    /// nothing purges them and they are unambiguously the outgoing account's.
-    /// Failures *inside* the funnel go to OSLog only. What makes the switch
-    /// readable in a report is the destination's own trail, which opens fresh
-    /// immediately afterward: a user who switched servers and landed nowhere
-    /// shows a journal whose first lines are the new server's.
+    /// Single commit funnel for both switch paths. Records no breadcrumb:
+    /// callers already called `activeProfileWillChange()`, which closes the
+    /// capture gate and purges the outgoing journal, and anything written
+    /// after `activeProfileDidChange()` lands in the destination account's
+    /// journal. Failures here go to OSLog only.
     @discardableResult
     private func commitSwitchTo(
         serverId: String,
@@ -483,7 +435,7 @@ final class ServerRegistry {
         let previousMirroredServerID = defaults.string(forKey: SharedStorage.activeServerIdKey)
         let previousProfileID = defaults.string(forKey: SharedStorage.profileIdKey)
 
-        defaults.set(entry.url, forKey: "serverUrl")
+        defaults.set(entry.url, forKey: SharedStorage.serverUrlKey)
         defaults.set(serverId, forKey: SharedStorage.activeServerIdKey)
         defaults.removeObject(forKey: SharedStorage.profileIdKey)
         activeServerId = serverId
@@ -497,11 +449,6 @@ final class ServerRegistry {
             defaults.set(previousServerURL, forKey: SharedStorage.serverUrlKey)
             defaults.set(previousMirroredServerID, forKey: SharedStorage.activeServerIdKey)
             defaults.set(previousProfileID, forKey: SharedStorage.profileIdKey)
-            // A rolled-back persist leaves the *outgoing* server active, so
-            // this is the one failure whose account is unambiguous. It still
-            // cannot be recorded here — the gate closed above — and the
-            // caller's `attempted` line with no successful switch afterward is
-            // what makes it visible.
             Self.logger.error("switchTo failed to persist the destination server")
             return false
         }
@@ -641,13 +588,13 @@ final class ServerRegistry {
 
         entries.removeAll(where: { $0.id == serverId })
         if removesActiveServer {
-            let fallback = entries.sorted { $0.lastUsedAt > $1.lastUsedAt }.first
+            let fallback = entries.max { $0.lastUsedAt < $1.lastUsedAt }
             if let fallback {
-                defaults.set(fallback.url, forKey: "serverUrl")
+                defaults.set(fallback.url, forKey: SharedStorage.serverUrlKey)
                 defaults.set(fallback.id, forKey: SharedStorage.activeServerIdKey)
                 defaults.removeObject(forKey: SharedStorage.profileIdKey)
             } else {
-                defaults.removeObject(forKey: "serverUrl")
+                defaults.removeObject(forKey: SharedStorage.serverUrlKey)
                 defaults.removeObject(forKey: SharedStorage.activeServerIdKey)
                 defaults.removeObject(forKey: SharedStorage.profileIdKey)
             }
@@ -704,15 +651,8 @@ final class ServerRegistry {
             return false
         }
 
-        // Only the non-active removal can say anything here. Its gate was never
-        // closed, and this position — after the registry-wide purge — is the
-        // one `signOut` uses: the purge empties the journal without clearing
-        // the consent context, so this line appends and explains why the trail
-        // above it is gone. The active-server outcomes that would be more
-        // valuable (`activeServerNoFallback` / `activeServerFellBack`) are the
-        // ones the boundary makes unrecordable; see this function's doc
-        // comment. Emitting them anyway would put a line in the source that no
-        // report can ever contain.
+        // Only a non-active removal can be breadcrumbed; active-server outcomes
+        // fall inside the closed diagnostics gate (see `commitSwitchTo`).
         if !removesActiveServer {
             recordRegistryEvent(
                 phase: "removeServer",
@@ -746,25 +686,9 @@ final class ServerRegistry {
         #endif
         await httpClient.endIdentityTransition(transitionLease)
         if removesActiveServer {
-            await MainActor.run {
-                AICapabilities.shared.reset()
-                ImageSizeCapability.shared.reset()
-                WatchPartySession.shared.leave(forgetRecent: true)
-                RequestsFeatureStore.shared.reset()
-                CurrentProfileStore.shared.reset()
-                SubtitleProvidersStore.shared.reset()
-                RequestsEventBus.shared.reset()
-                // Same rationale as `switchTo`: the fallback server may
-                // already be signed in, with no auth-state change to
-                // trigger the usual probe.
-                Task { await RequestsFeatureStore.shared.refresh() }
-                Task { await CurrentProfileStore.shared.refresh() }
-                Task { await ImageSizeCapability.shared.refresh() }
-                Task { await SubtitleProvidersStore.shared.refresh() }
-                #if os(iOS) || os(tvOS)
-                if WatchPartyEntry.isEnabled { Task { await WatchPartySession.shared.refreshCapabilities() } }
-                #endif
-            }
+            // The fallback server may already be signed in, with no
+            // auth-state change to trigger the usual probes.
+            await refreshFeaturesAfterServerSwitch()
         }
         return true
     }
@@ -1086,7 +1010,7 @@ final class ServerRegistry {
             return
         }
 
-        guard let raw = defaults.string(forKey: "serverUrl")?
+        guard let raw = defaults.string(forKey: SharedStorage.serverUrlKey)?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
               !raw.isEmpty else {
             defaults.set(true, forKey: Self.migratedKey)
@@ -1114,7 +1038,7 @@ final class ServerRegistry {
             id: id,
             url: normalized,
             fetchedName: nil,
-            profileId: defaults.string(forKey: "profileId"),
+            profileId: defaults.string(forKey: SharedStorage.profileIdKey),
             lastUsedAt: Date()
         )
         self.entries = [entry]
@@ -1125,7 +1049,7 @@ final class ServerRegistry {
         // first post-upgrade launch.
         registerDiagnosticsSensitiveHosts([entry])
         if normalized != raw {
-            defaults.set(normalized, forKey: "serverUrl")
+            defaults.set(normalized, forKey: SharedStorage.serverUrlKey)
         }
         guard persist() else {
             self.entries = []
@@ -1136,6 +1060,7 @@ final class ServerRegistry {
             guard keychain.delete(legacy) else { return }
         }
         defaults.set(true, forKey: Self.migratedKey)
-        Self.logger.info("Migrated legacy single-server state to registry id=\(id, privacy: .public)")
+        // The id is the server's hostname in disguise, so it is never logged.
+        Self.logger.info("Migrated legacy single-server state to the registry")
     }
 }

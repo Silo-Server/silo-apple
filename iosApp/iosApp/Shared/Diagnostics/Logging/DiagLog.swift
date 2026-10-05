@@ -1,5 +1,6 @@
 #if os(iOS) || os(tvOS)
 import Foundation
+import Synchronization
 
 enum DiagLogAttributeValue {
     case string(String)
@@ -259,25 +260,37 @@ private enum DiagnosticsRedactor {
     // These are the identifiers most likely to leak as bare text (outside
     // URL syntax), and matching known strings avoids false positives that a
     // generic domain regex would hit (bundle ids, file names, versions).
-    private static let knownHostsLock = NSLock()
-    private static var knownSensitiveHosts: [String] = []
+    private static let knownSensitiveHosts = Mutex<[KnownHost]>([])
+
+    private struct KnownHost: Sendable {
+        /// Lowercased at registration.
+        let host: String
+        /// The host's first character when it is a single ASCII byte, which
+        /// lets `replaceKnownHosts` rule out most positions without building
+        /// a candidate. Nil disables that shortcut for this host.
+        let firstASCII: UInt8?
+
+        init(_ host: String) {
+            self.host = host
+            let first = host.first
+            firstASCII = first?.utf8.count == 1 ? first?.asciiValue : nil
+        }
+    }
 
     static func registerSensitiveHost(_ host: String) {
         let normalized = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !normalized.isEmpty, !isLoopbackHost(normalized) else { return }
-        knownHostsLock.lock()
-        defer { knownHostsLock.unlock() }
-        if !knownSensitiveHosts.contains(normalized) {
-            // Longest first so "media.example.com" wins over "example.com".
-            knownSensitiveHosts.append(normalized)
-            knownSensitiveHosts.sort { $0.count > $1.count }
+        knownSensitiveHosts.withLock { hosts in
+            if !hosts.contains(where: { $0.host == normalized }) {
+                // Longest first so "media.example.com" wins over "example.com".
+                hosts.append(KnownHost(normalized))
+                hosts.sort { $0.host.count > $1.host.count }
+            }
         }
     }
 
     static func resetSensitiveHostsForTesting() {
-        knownHostsLock.lock()
-        knownSensitiveHosts.removeAll()
-        knownHostsLock.unlock()
+        knownSensitiveHosts.withLock { $0.removeAll() }
     }
 
     private static func isLoopbackHost(_ host: String) -> Bool {
@@ -289,9 +302,7 @@ private enum DiagnosticsRedactor {
     }
 
     private static func replaceKnownHosts(in value: String) -> String {
-        knownHostsLock.lock()
-        let hosts = knownSensitiveHosts
-        knownHostsLock.unlock()
+        let hosts = knownSensitiveHosts.withLock { $0 }
         guard !hosts.isEmpty else { return value }
         // Single forward pass over the original text. At each position we try
         // the registered hosts (already sorted longest-first, so the longest
@@ -304,7 +315,16 @@ private enum DiagnosticsRedactor {
         var index = value.startIndex
         while index < value.endIndex {
             var matched = false
-            for host in hosts {
+            // When the character here is a single ASCII byte, a host can only
+            // match if its own first character is that byte lowercased: a
+            // lowercased candidate starts with the same scalar, and it equals
+            // `host` only if their first scalars agree. Anything else (a
+            // non-ASCII or multi-scalar character) takes the full comparison.
+            let current = value[index]
+            let currentASCII = current.utf8.count == 1 ? current.asciiValue.map(Self.lowercasedASCII) : nil
+            for known in hosts {
+                if let currentASCII, let first = known.firstASCII, currentASCII != first { continue }
+                let host = known.host
                 guard let end = value.index(index, offsetBy: host.count, limitedBy: value.endIndex) else {
                     continue
                 }
@@ -319,11 +339,15 @@ private enum DiagnosticsRedactor {
                 }
             }
             if !matched {
-                result.append(value[index])
+                result.append(current)
                 index = value.index(after: index)
             }
         }
         return result
+    }
+
+    private static func lowercasedASCII(_ byte: UInt8) -> UInt8 {
+        (UInt8(ascii: "A")...UInt8(ascii: "Z")).contains(byte) ? byte + 32 : byte
     }
 
     static func sanitizedError(_ error: any Error) -> String {

@@ -23,21 +23,23 @@ import OSLog
 /// absolute URLs, because the iOS app-container path can change between
 /// launches. Absolute URLs are rebuilt here against the current container.
 enum DownloadFilePaths {
-    private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
-        category: "Downloads"
-    )
+    private static let logger = Logger.downloads
 
     private static let rootFolderName = "SiloDownloads"
     static let storeFileName = "store.json"
 
+    /// `<AppSupport>/SiloDownloads` as a path only; `rootDirectory()`
+    /// creates it.
+    private static let rootURL = FileManager.default
+        .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent(rootFolderName, isDirectory: true)
+
     /// `<AppSupport>/SiloDownloads`, created on first use and excluded from
     /// iCloud/iTunes backup (downloads are large and not re-uploadable).
+    /// Re-checked on each call: the legacy removal recreates the folder.
     static func rootDirectory() -> URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let root = base.appendingPathComponent(rootFolderName, isDirectory: true)
-        ensureDirectory(root, excludeFromBackup: true)
-        return root
+        ensureDirectory(rootURL, excludeFromBackup: true)
+        return rootURL
     }
 
     static func scopeDirectory(serverId: String, profileId: String, root: URL = rootDirectory()) -> URL {
@@ -92,7 +94,20 @@ enum DownloadFilePaths {
     }
 
     /// Absolute URL for a relative filename stored on a `DownloadRecord`.
+    /// Path math only, with no file-system calls, so list rows can resolve
+    /// artwork on every render. Use `fileURLForWriting` to create a file.
     static func fileURL(
+        serverId: String,
+        profileId: String,
+        downloadId: String,
+        filename: String
+    ) -> URL {
+        downloadPath(serverId: serverId, profileId: profileId, downloadId: downloadId)
+            .appendingPathComponent(filename, isDirectory: false)
+    }
+
+    /// `fileURL`, after creating the download's directory.
+    static func fileURLForWriting(
         serverId: String,
         profileId: String,
         downloadId: String,
@@ -105,9 +120,16 @@ enum DownloadFilePaths {
     /// Delete every on-disk asset for one download (media, manifest,
     /// artwork, subtitles). The JSON store record is removed separately.
     static func removeDownloadDirectory(serverId: String, profileId: String, downloadId: String) {
-        let dir = scopeDirectory(serverId: serverId, profileId: profileId)
+        try? FileManager.default.removeItem(
+            at: downloadPath(serverId: serverId, profileId: profileId, downloadId: downloadId)
+        )
+    }
+
+    private static func downloadPath(serverId: String, profileId: String, downloadId: String) -> URL {
+        rootURL
+            .appendingPathComponent(sanitize(serverId), isDirectory: true)
+            .appendingPathComponent(sanitize(profileId), isDirectory: true)
             .appendingPathComponent(sanitize(downloadId), isDirectory: true)
-        try? FileManager.default.removeItem(at: dir)
     }
 
     /// Total bytes used by all download assets in a scope.
@@ -127,28 +149,24 @@ enum DownloadFilePaths {
         return total
     }
 
-    /// Total and available bytes on the device volume, for the storage hero
-    /// "X of Y on this iPhone" context. Best-effort; zero when unavailable.
-    struct DeviceStorage: Sendable {
-        let total: Int64
-        let available: Int64
-    }
+    #if !os(tvOS)
+    /// Capacity of the device volume, for the storage hero's "X of Y on this
+    /// iPhone" context. Fixed for the process, so it's read once. Zero when
+    /// unavailable.
+    static let totalCapacity: Int64 = {
+        let values = try? URL(fileURLWithPath: NSHomeDirectory())
+            .resourceValues(forKeys: [.volumeTotalCapacityKey])
+        return Int64(values?.volumeTotalCapacity ?? 0)
+    }()
 
-    static func deviceStorage() -> DeviceStorage {
-#if os(tvOS)
-        DeviceStorage(total: 0, available: 0)
-#else
-        let url = URL(fileURLWithPath: NSHomeDirectory())
-        let values = try? url.resourceValues(forKeys: [
-            .volumeTotalCapacityKey,
-            .volumeAvailableCapacityForImportantUsageKey,
-        ])
-        return DeviceStorage(
-            total: Int64(values?.volumeTotalCapacity ?? 0),
-            available: values?.volumeAvailableCapacityForImportantUsage ?? 0
-        )
-#endif
+    /// Free space for new downloads. A volume query; keep it out of view
+    /// bodies. Zero when unavailable.
+    static func availableCapacity() -> Int64 {
+        let values = try? URL(fileURLWithPath: NSHomeDirectory())
+            .resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        return values?.volumeAvailableCapacityForImportantUsage ?? 0
     }
+    #endif
 
     // MARK: - Helpers
 
@@ -187,4 +205,12 @@ enum DownloadFilePaths {
         if result.isEmpty || result.allSatisfy({ $0 == "." }) { return "_" }
         return result
     }
+}
+
+extension Logger {
+    /// The category every Downloads type logs under.
+    static let downloads = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
+        category: "Downloads"
+    )
 }

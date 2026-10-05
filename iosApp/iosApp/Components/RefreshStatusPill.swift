@@ -14,19 +14,27 @@ struct RefreshStatusPill: View {
                 .fontWeight(.semibold)
                 .foregroundColor(.siloOnSurface)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 9)
-        #if os(iOS)
-        .background(Color(white: 0.10), in: Capsule())
-        #else
-        .background(.ultraThinMaterial, in: Capsule())
-        #endif
-        .overlay {
-            Capsule()
-                .stroke(Color.white.opacity(0.14), lineWidth: 0.8)
-        }
-        .shadow(color: .black.opacity(0.28), radius: 14, x: 0, y: 8)
+        .statusPillChrome()
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Refreshing")
+    }
+}
+
+extension View {
+    /// Capsule chrome shared by the overlay status pills.
+    func statusPillChrome() -> some View {
+        self
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            #if os(iOS)
+            .background(Color(white: 0.10), in: Capsule())
+            #else
+            .background(.ultraThinMaterial, in: Capsule())
+            #endif
+            .overlay {
+                Capsule()
+                    .stroke(Color.white.opacity(0.14), lineWidth: 0.8)
+            }
+            .shadow(color: .black.opacity(0.28), radius: 14, x: 0, y: 8)
     }
 }

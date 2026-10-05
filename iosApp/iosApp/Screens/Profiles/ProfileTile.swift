@@ -16,9 +16,7 @@ enum ProfileTilePalette {
         Color(red: 0.780, green: 0.640, blue: 0.380),  // amber
     ]
 
-    /// Stable derivation from profile id. `hashValue` varies per-launch under
-    /// some Swift versions but within a single launch it's consistent, which
-    /// is enough — the screen regenerates each session.
+    /// djb2 over the id's UTF-8, so a profile keeps its tint across launches.
     static func tint(for profileId: String) -> Color {
         var h: UInt64 = 5381
         for byte in profileId.utf8 {
@@ -156,7 +154,8 @@ struct ProfileTile: View {
             } else {
                 initialFallback
             }
-        } else if !avatar.isEmpty {
+        } else if !avatar.isEmpty, !avatar.lowercased().hasPrefix("upload:") {
+            // An `upload:` ref is only loadable through `avatar_url`.
             Text(avatar)
                 .font(.system(size: emojiSize * scale))
         } else {
@@ -293,9 +292,7 @@ struct AddProfileTile: View {
     }
 }
 
-/// Helpers extracted from `ProfileAvatarView` so the tile can render
-/// avatars in a tile shape rather than a circle. Kept as a small local
-/// utility rather than adjusting the shared view's API surface.
+/// Turns a profile's avatar ref or `avatar_url` into a loadable image URL.
 enum ProfileAvatarResolver {
     /// Resolve the server-supplied `avatar_url`. Absolute URLs (presigned
     /// upload URLs, DiceBear) are used verbatim; a server-relative path is
@@ -334,12 +331,6 @@ enum ProfileAvatarResolver {
     static func isImage(_ value: String) -> Bool {
         let lowercased = value.lowercased()
         return lowercased.hasPrefix("preset:dicebear:")
-            || lowercased.hasPrefix("http://")
-            || lowercased.hasPrefix("https://")
-            || lowercased.hasPrefix("data:image/")
-            || lowercased.hasPrefix("content://")
-            || lowercased.hasPrefix("file://")
-            || lowercased.hasPrefix("/")
             || lowercased.contains("/")
             || lowercased.contains(".png")
             || lowercased.contains(".jpg")
@@ -380,8 +371,6 @@ enum ProfileAvatarResolver {
         let style = String(parts[2]).trimmingCharacters(in: .whitespacesAndNewlines)
         let seed = String(parts[3]).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !style.isEmpty, !seed.isEmpty else { return nil }
-        let s = style.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? style
-        let d = seed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? seed
-        return "https://api.dicebear.com/9.x/\(s)/png?seed=\(d)&size=256"
+        return ProfileAvatarPresets.imageURL(styleId: style, seed: seed)
     }
 }

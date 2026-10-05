@@ -521,6 +521,8 @@ final class PendingReportStore {
         }
     }
 
+    #if DEBUG
+    /// Test hook.
     func hostedReadyReceiptIDs(for binding: DiagnosticsBinding? = nil) throws -> [UUID] {
         lock.lock()
         defer { lock.unlock() }
@@ -533,6 +535,7 @@ final class PendingReportStore {
             }
             .sorted { $0.uuidString < $1.uuidString }
     }
+    #endif
 
     /// Makes a hosted erasure request durable before removing the evidence it
     /// refers to. The collector DELETE endpoint is idempotent, so a response
@@ -592,29 +595,11 @@ final class PendingReportStore {
         guard binding.destinationChoice == .hosted else {
             throw DiagnosticsStoreError.invalidHostedEnvelope
         }
-        lock.lock()
-        defer { lock.unlock() }
-
-        let erasureState = try loadHostedErasureLedgersLocked()
-        let reports = scanReportsLocked().filter { $0.binding.binding == binding }
-        var intents = erasureState.deletionIntents
-        for report in reports where report.binding.binding.destinationChoice == .hosted
-            && (report.state.hostedEnvelopeGeneration != nil || report.state.hostedRemoteShortID != nil) {
-            intents[report.id.uuidString.lowercased()] = DiagnosticsTimestamp.string(from: now)
-        }
-        if binding.destinationChoice == .hosted {
-            for (reportID, receipt) in erasureState.readyReceipts
-                where receipt.binding == binding {
-                intents[reportID] = DiagnosticsTimestamp.string(from: now)
-            }
-            for reportID in additionalRemoteReportIDs {
-                intents[reportID.uuidString.lowercased()] = DiagnosticsTimestamp.string(from: now)
-            }
-        }
-        try saveHostedDeletionIntentsLocked(intents)
-        for report in reports {
-            try fileManager.removeItem(at: report.directoryURL)
-        }
+        try stageHostedDeletionsAndPurge(
+            matching: { $0 == binding },
+            additionalRemoteReportIDs: additionalRemoteReportIDs,
+            now: now
+        )
     }
 
     func stageHostedDeletionsAndPurge(
@@ -622,18 +607,29 @@ final class PendingReportStore {
         additionalRemoteReportIDs: Set<UUID> = [],
         now: Date = Date()
     ) throws {
+        try stageHostedDeletionsAndPurge(
+            matching: { $0.serverInstanceID == serverInstanceID },
+            additionalRemoteReportIDs: additionalRemoteReportIDs,
+            now: now
+        )
+    }
+
+    private func stageHostedDeletionsAndPurge(
+        matching matches: (DiagnosticsBinding) -> Bool,
+        additionalRemoteReportIDs: Set<UUID>,
+        now: Date
+    ) throws {
         lock.lock()
         defer { lock.unlock() }
 
         let erasureState = try loadHostedErasureLedgersLocked()
-        let reports = scanReportsLocked().filter { $0.binding.serverInstanceID == serverInstanceID }
+        let reports = scanReportsLocked().filter { matches($0.binding.binding) }
         var intents = erasureState.deletionIntents
         for report in reports where report.binding.binding.destinationChoice == .hosted
             && (report.state.hostedEnvelopeGeneration != nil || report.state.hostedRemoteShortID != nil) {
             intents[report.id.uuidString.lowercased()] = DiagnosticsTimestamp.string(from: now)
         }
-        for (reportID, receipt) in erasureState.readyReceipts
-            where receipt.binding.serverInstanceID == serverInstanceID {
+        for (reportID, receipt) in erasureState.readyReceipts where matches(receipt.binding) {
             intents[reportID] = DiagnosticsTimestamp.string(from: now)
         }
         for reportID in additionalRemoteReportIDs {
@@ -760,30 +756,27 @@ final class PendingReportStore {
     }
 
     func markNeedsServerUpdate(_ report: PendingReport) {
-        lock.lock()
-        defer { lock.unlock() }
-
-        var state = report.state
-        state.needsServerUpdate = true
-        try? writeJSON(state, to: report.directoryURL.appendingPathComponent("state.json"))
+        updateState(of: report) { $0.needsServerUpdate = true }
     }
 
     func markTooLarge(_ report: PendingReport) {
-        lock.lock()
-        defer { lock.unlock() }
-
-        var state = report.state
-        state.tooLarge = true
-        try? writeJSON(state, to: report.directoryURL.appendingPathComponent("state.json"))
+        updateState(of: report) { $0.tooLarge = true }
     }
 
     func markServerRejected(_ report: PendingReport) {
+        updateState(of: report) { $0.serverRejected = true }
+    }
+
+    /// Applies `change` to the report's stored state, reloaded under the lock.
+    /// The caller's `report.state` is a snapshot; writing it back would erase
+    /// fields saved since (for example, a hosted envelope's generation).
+    private func updateState(of report: PendingReport, _ change: (inout PendingReportState) -> Void) {
         lock.lock()
         defer { lock.unlock() }
 
         guard let current = loadReport(from: report.directoryURL) else { return }
         var state = current.state
-        state.serverRejected = true
+        change(&state)
         try? writeJSON(state, to: current.directoryURL.appendingPathComponent("state.json"))
     }
 
@@ -809,24 +802,13 @@ final class PendingReportStore {
     /// Clears the delivery claim after a definite failure: the server
     /// answered without storing the report, or nothing was sent.
     func releaseSelfHostedDelivery(_ report: PendingReport) {
-        lock.lock()
-        defer { lock.unlock() }
-
-        guard let current = loadReport(from: report.directoryURL) else { return }
-        var state = current.state
-        state.deliveryUncertain = false
-        try? writeJSON(state, to: current.directoryURL.appendingPathComponent("state.json"))
+        updateState(of: report) { $0.deliveryUncertain = false }
     }
 
     /// Records that the user declined this report's prompt, suppressing further
     /// prompts for its lifetime while leaving it sendable from settings.
     func markPromptDeclined(_ report: PendingReport) {
-        lock.lock()
-        defer { lock.unlock() }
-
-        var state = report.state
-        state.promptDeclined = true
-        try? writeJSON(state, to: report.directoryURL.appendingPathComponent("state.json"))
+        updateState(of: report) { $0.promptDeclined = true }
     }
 
     /// Rewrites the stored manifest's consent `mode` and `notice_version` so an
@@ -982,36 +964,22 @@ final class PendingReportStore {
     }
 
     func markHostedConsentRefreshRequired(_ report: PendingReport) {
-        lock.lock()
-        defer { lock.unlock() }
-
-        guard let current = loadReport(from: report.directoryURL) else { return }
-        var state = current.state
-        state.hostedConsentRefreshRequired = true
-        try? writeJSON(state, to: current.directoryURL.appendingPathComponent("state.json"))
+        updateState(of: report) { $0.hostedConsentRefreshRequired = true }
     }
 
     func markHostedProcessing(_ report: PendingReport, shortID: String) {
         guard !shortID.isEmpty else { return }
-        lock.lock()
-        defer { lock.unlock() }
-
-        guard let current = loadReport(from: report.directoryURL) else { return }
-        var state = current.state
-        state.hostedRemoteShortID = shortID
-        state.hostedRejectionCode = nil
-        try? writeJSON(state, to: current.directoryURL.appendingPathComponent("state.json"))
+        updateState(of: report) { state in
+            state.hostedRemoteShortID = shortID
+            state.hostedRejectionCode = nil
+        }
     }
 
     func markHostedRejected(_ report: PendingReport, code: String?) {
-        lock.lock()
-        defer { lock.unlock() }
-
-        guard let current = loadReport(from: report.directoryURL) else { return }
-        var state = current.state
-        state.hostedRemoteShortID = nil
-        state.hostedRejectionCode = code?.isEmpty == false ? code : "rejected"
-        try? writeJSON(state, to: current.directoryURL.appendingPathComponent("state.json"))
+        updateState(of: report) { state in
+            state.hostedRemoteShortID = nil
+            state.hostedRejectionCode = code?.isEmpty == false ? code : "rejected"
+        }
     }
 
     private func readHostedEnvelope(
@@ -1059,13 +1027,6 @@ final class PendingReportStore {
               bundle.manifest.report.type == report.binding.type else {
             throw DiagnosticsStoreError.invalidHostedEnvelope
         }
-    }
-
-    func resetForTests() {
-        lock.lock()
-        defer { lock.unlock() }
-
-        try? fileManager.removeItem(at: rootDirectory)
     }
 
     private func scanReportsLocked() -> [PendingReport] {
@@ -1124,12 +1085,6 @@ final class PendingReportStore {
 
     private func cleanupExpiredLocked(now: Date) throws {
         let hostedErasureStateIsReadable = (try? loadHostedErasureLedgersLocked()) != nil
-        if !hostedErasureStateIsReadable {
-            // Without trustworthy erasure state an unreadable directory could
-            // be the only surviving copy of a report already marked READY or
-            // deleting. Preserve every hosted directory; self-hosted expiry
-            // remains independent of this collector-local state.
-        }
         guard let urls = try? fileManager.contentsOfDirectory(
             at: pendingDirectory,
             includingPropertiesForKeys: nil
@@ -1143,6 +1098,10 @@ final class PendingReportStore {
                 }
                 continue
             }
+            // Without trustworthy erasure state an unreadable directory could
+            // be the only surviving copy of a report already marked READY or
+            // deleting. Preserve every hosted directory; self-hosted expiry
+            // remains independent of this collector-local state.
             if report.binding.binding.destinationChoice == .hosted,
                !hostedErasureStateIsReadable {
                 continue
@@ -1187,14 +1146,16 @@ final class PendingReportStore {
         saveDateMap(state, fileName: Self.seenFingerprintsFile)
     }
 
+    /// Rewrites each file only when an entry expired: this runs on every
+    /// list, lookup, save and fingerprint check.
     private func pruneFingerprintStateLocked(now: Date) {
-        var seen = loadDateMap(Self.seenFingerprintsFile)
-        seen = seen.filter { now.timeIntervalSince($0.value) <= 30 * 24 * 60 * 60 }
-        saveDateMap(seen, fileName: Self.seenFingerprintsFile)
-
-        var throttle = loadDateMap(Self.throttleFile)
-        throttle = throttle.filter { now.timeIntervalSince($0.value) <= 30 * 24 * 60 * 60 }
-        saveDateMap(throttle, fileName: Self.throttleFile)
+        for fileName in [Self.seenFingerprintsFile, Self.throttleFile] {
+            let stored = loadDateMap(fileName)
+            let kept = stored.filter { now.timeIntervalSince($0.value) <= 30 * 24 * 60 * 60 }
+            if kept.count != stored.count {
+                saveDateMap(kept, fileName: fileName)
+            }
+        }
     }
 
     private func throttleKey(fingerprint: String, binding: DiagnosticsBinding) -> String {
@@ -1433,20 +1394,8 @@ enum DiagnosticsStoreError: Error, Equatable {
 }
 
 enum DiagnosticsDates {
-    private static let fractional: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }()
-
-    private static let whole: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter
-    }()
-
     static func date(from value: String) -> Date? {
-        fractional.date(from: value) ?? whole.date(from: value)
+        DateFormatters.parseRFC3339(value)
     }
 }
 

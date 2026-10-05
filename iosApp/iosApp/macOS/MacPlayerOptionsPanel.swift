@@ -16,7 +16,7 @@ struct MacPlayerOptionsPanel: View {
     @Binding var selectedTab: Tab
     let onDismiss: () -> Void
 
-    private let playbackSpeeds: [Double] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
+    static let playbackSpeeds: [Double] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -126,7 +126,7 @@ struct MacPlayerOptionsPanel: View {
                     .padding(.top, 2)
 
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 82), spacing: 8)], spacing: 8) {
-                    ForEach(playbackSpeeds, id: \.self) { speed in
+                    ForEach(Self.playbackSpeeds, id: \.self) { speed in
                         Button {
                             viewModel.setPlaybackSpeed(speed)
                         } label: {
@@ -143,9 +143,7 @@ struct MacPlayerOptionsPanel: View {
                 routeStatus
                     .padding(.top, 8)
 
-                // Same rows tvOS and iOS report, in the single-column
-                // sectioned dressing — the panel is narrow, so the tvOS
-                // two-column split would crush the value column.
+                // Shared stats rows, single-column for the narrow panel.
                 PlaybackStatsPanel(stats: viewModel.playbackStats)
                     .padding(.horizontal, 12)
                     .padding(.top, 4)

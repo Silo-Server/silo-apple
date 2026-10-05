@@ -3,24 +3,14 @@ import OSLog
 
 /// One section of the user's personal-collections page: a named group
 /// or the anonymous Ungrouped bucket plus the collections it contains.
-struct UserCollectionSection: Identifiable, Hashable {
+struct UserCollectionSection: Identifiable {
     /// Stable identity — the group id for named sections, `nil` only for
-    /// Ungrouped. Hashable wraps it via [id].
+    /// Ungrouped.
     let groupId: String?
     let name: String
     let collections: [UserCollection]
 
     var id: String { groupId ?? "__ungrouped__" }
-
-    static func == (lhs: UserCollectionSection, rhs: UserCollectionSection) -> Bool {
-        lhs.id == rhs.id && lhs.name == rhs.name && lhs.collections.map(\.id) == rhs.collections.map(\.id)
-    }
-
-    func hash(into hasher: inout Hasher) {
-        hasher.combine(id)
-        hasher.combine(name)
-        hasher.combine(collections.map(\.id))
-    }
 }
 
 /// Whether this account can use collection groups, from
@@ -220,10 +210,6 @@ class CollectionsViewModel {
             _ = try await api.createCollection(name: name)
             newCollectionName = ""
             showCreateSheet = false
-            // Drop the cached snapshot so the upcoming loadCollections()
-            // is forced to fetch fresh (the new collection isn't in the
-            // local arrays yet).
-            ResponseCache.shared.remove(CacheKey.collections)
             await loadCollections()
         } catch let err {
             createError = createFailureMessage(err, fallback: "Failed to create collection")
@@ -313,7 +299,7 @@ class CollectionsViewModel {
         }
     }
 
-    func renameGroup(id: String, name: String) async {
+    func renameGroup(name: String) async {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else {
             groupError = "Name is required"
@@ -362,7 +348,7 @@ class CollectionsViewModel {
         }
     }
 
-    func moveCollection(id: String, toGroupId targetGroupId: String?) async {
+    func moveCollection(toGroupId targetGroupId: String?) async {
         guard let edit = beginEdit() else { return }
         defer { isSaving = false }
         do {

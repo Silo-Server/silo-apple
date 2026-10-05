@@ -58,7 +58,6 @@ struct TVPlaybackSettingsPane: View {
         ) {
             let value = !viewModel.dolbyVisionEnabled
             viewModel.dolbyVisionEnabled = value
-            Task { await viewModel.setDolbyVisionEnabled(value) }
         }
 
         TVSettingsToggleRow(
@@ -67,7 +66,6 @@ struct TVPlaybackSettingsPane: View {
         ) {
             let value = !viewModel.seekCacheEnabled
             viewModel.seekCacheEnabled = value
-            Task { await viewModel.setSeekCacheEnabled(value) }
         }
 
         TVSettingsPickerRow(
@@ -82,7 +80,6 @@ struct TVPlaybackSettingsPane: View {
         ) {
             let value = !viewModel.losslessAudioEnabled
             viewModel.losslessAudioEnabled = value
-            Task { await viewModel.setLosslessAudioEnabled(value) }
         }
 
         TVSettingsToggleRow(
@@ -91,7 +88,6 @@ struct TVPlaybackSettingsPane: View {
         ) {
             let value = !viewModel.trueHDAtmosEnabled
             viewModel.trueHDAtmosEnabled = value
-            Task { await viewModel.setTrueHDAtmosEnabled(value) }
         }
 
         TVSettingsPickerRow(
@@ -131,7 +127,6 @@ struct TVPlaybackSettingsPane: View {
         ) {
             let value = !viewModel.autoPlayNext
             viewModel.autoPlayNext = value
-            Task { await viewModel.setAutoPlayNext(value) }
         }
 
         TVSettingsPickerRow(
@@ -152,7 +147,6 @@ struct TVPlaybackSettingsPane: View {
         ) {
             let value = !viewModel.skipCredits
             viewModel.skipCredits = value
-            Task { await viewModel.setSkipCredits(value) }
         }
     }
 
@@ -255,7 +249,6 @@ struct TVPlaybackSettingsPane: View {
         switch kind {
         case .quality:
             TVSettingsPickerRequest(
-                id: kind.id,
                 title: "Quality",
                 options: TVSettingsOptions.quality(
                     // A stored pair no preset covers gets its own entry
@@ -269,28 +262,25 @@ struct TVPlaybackSettingsPane: View {
                     get: { viewModel.preferredQualityPresetId ?? TVSettingsOptions.customQualityId },
                     set: { value in
                         guard value != TVSettingsOptions.customQualityId else { return }
-                        Task { await viewModel.setQualityPreset(value) }
+                        viewModel.setQualityPreset(value)
                     }
                 ),
                 returnFocus: .top
             )
         case .audioLanguage:
             TVSettingsPickerRequest(
-                id: kind.id,
                 title: "Audio Language",
                 options: TVSettingsOptions.audioLanguage(viewModel.audioLanguageOptions),
                 selection: Binding(
                     get: { viewModel.preferredAudioLanguage },
                     set: { value in
                         viewModel.preferredAudioLanguage = value
-                        Task { await viewModel.setPreferredAudioLanguage(value) }
                     }
                 ),
                 returnFocus: .playbackAudioLanguage
             )
         case .bufferAhead:
             TVSettingsPickerRequest(
-                id: kind.id,
                 title: "Buffer Ahead",
                 options: TVSettingsOptions.bufferAhead,
                 selection: Binding(
@@ -298,14 +288,12 @@ struct TVPlaybackSettingsPane: View {
                     set: { value in
                         guard let mode = BufferAheadMode(rawValue: value) else { return }
                         viewModel.bufferAhead = mode
-                        Task { await viewModel.setBufferAhead(mode) }
                     }
                 ),
                 returnFocus: .playbackBufferAhead
             )
         case .deinterlaceMode:
             TVSettingsPickerRequest(
-                id: kind.id,
                 title: "Deinterlacing",
                 options: TVSettingsOptions.deinterlaceMode,
                 selection: Binding(
@@ -313,14 +301,12 @@ struct TVPlaybackSettingsPane: View {
                     set: { value in
                         guard let mode = DeinterlacePreference(rawValue: value) else { return }
                         viewModel.deinterlaceMode = mode
-                        Task { await viewModel.setDeinterlaceMode(mode) }
                     }
                 ),
                 returnFocus: .playbackDeinterlaceMode
             )
         case .deinterlaceFieldRate:
             TVSettingsPickerRequest(
-                id: kind.id,
                 title: "Deinterlacing Field Rate",
                 options: TVSettingsOptions.deinterlaceFieldRate,
                 selection: Binding(
@@ -330,14 +316,12 @@ struct TVPlaybackSettingsPane: View {
                             return
                         }
                         viewModel.deinterlaceFieldRate = rate
-                        Task { await viewModel.setDeinterlaceFieldRate(rate) }
                     }
                 ),
                 returnFocus: .playbackDeinterlaceFieldRate
             )
         case .nextUpPrompt:
             TVSettingsPickerRequest(
-                id: kind.id,
                 title: "Show Next Up",
                 options: TVSettingsOptions.nextUpPrompt,
                 selection: Binding(
@@ -345,14 +329,12 @@ struct TVPlaybackSettingsPane: View {
                     set: { value in
                         guard let seconds = Int(value) else { return }
                         viewModel.nextUpPromptSeconds = seconds
-                        Task { await viewModel.setNextUpPromptSeconds(seconds) }
                     }
                 ),
                 returnFocus: .playbackNextUpPrompt
             )
         case .introSkipMode:
             TVSettingsPickerRequest(
-                id: kind.id,
                 title: "Skip Intros",
                 options: TVSettingsOptions.introSkipMode,
                 selection: Binding(
@@ -360,14 +342,12 @@ struct TVPlaybackSettingsPane: View {
                     set: { value in
                         guard let mode = IntroSkipMode(wireValue: value) else { return }
                         viewModel.introSkipMode = mode
-                        Task { await viewModel.setIntroSkipMode(mode) }
                     }
                 ),
                 returnFocus: .playbackIntroSkipMode
             )
         case .skipInterval(let media, let direction):
             TVSettingsPickerRequest(
-                id: kind.id,
                 title: "\(media == .video ? "Video" : "Audiobook") \(direction == .backward ? "Skip Back" : "Skip Forward")",
                 options: SeekIntervalContract.choices.map {
                     TVSettingsOption(id: String($0), label: SeekIntervalLabel.choiceLabel($0))
@@ -384,7 +364,7 @@ struct TVPlaybackSettingsPane: View {
         }
     }
 
-    enum PickerKind: Identifiable {
+    enum PickerKind {
         case quality
         case audioLanguage
         case bufferAhead
@@ -393,20 +373,6 @@ struct TVPlaybackSettingsPane: View {
         case nextUpPrompt
         case introSkipMode
         case skipInterval(SeekMedia, SeekDirection)
-
-        var id: String {
-            switch self {
-            case .quality: return "quality"
-            case .audioLanguage: return "audioLanguage"
-            case .bufferAhead: return "bufferAhead"
-            case .deinterlaceMode: return "deinterlaceMode"
-            case .deinterlaceFieldRate: return "deinterlaceFieldRate"
-            case .nextUpPrompt: return "nextUpPrompt"
-            case .introSkipMode: return "introSkipMode"
-            case .skipInterval(let media, let direction):
-                return "skipInterval.\(media.rawValue).\(direction.rawValue)"
-            }
-        }
     }
 }
 #endif

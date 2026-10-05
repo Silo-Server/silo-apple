@@ -31,7 +31,11 @@ struct PlayerView: View {
     let onPlaybackStarted: (() -> Void)?
     let onDismissRequested: (() -> Void)?
 
-    @State private var viewModel: PlayerViewModel
+    @StateObject private var viewModelBox: PlayerViewModelBox
+    private var viewModel: PlayerViewModel {
+        get { viewModelBox.model }
+        nonmutating set { viewModelBox.model = newValue }
+    }
     @State private var didNotifyPlaybackStarted = false
     @State private var showsPartyPanel = false
     @Environment(\.dismiss) var dismiss
@@ -66,7 +70,7 @@ struct PlayerView: View {
     ) {
         self.contentId = contentId
         self.libraryId = libraryId
-        _viewModel = State(initialValue: PlayerViewModel(libraryId: libraryId))
+        _viewModelBox = StateObject(wrappedValue: PlayerViewModelBox(PlayerViewModel(libraryId: libraryId)))
         self.preferredFileId = preferredFileId
         self.preferredAudioTrackIndex = preferredAudioTrackIndex
         self.preferredSubtitleTrackIndex = preferredSubtitleTrackIndex
@@ -249,8 +253,7 @@ struct PlayerView: View {
                         // mounts once the decoder opens the file, so a standalone
                         // close control must remain available through a tap
                         // during the load/buffer phase. tvOS gets this via Menu in
-                        // `onExitCommand`; macOS keeps its controls (and Escape)
-                        // during loading.
+                        // `onExitCommand`.
                         if viewModel.isLoading {
                             loadingCloseButton
                         }
@@ -633,22 +636,7 @@ struct PlayerView: View {
         AetherPlayerSurface(engine: viewModel.aetherEngine)
             .background(Color.black)
             .overlay {
-                AetherSubtitleOverlay(
-                    engine: viewModel.aetherEngine,
-                    assSubtitles: viewModel.assSubtitles,
-                    cueHold: viewModel.subtitleCueHold,
-                    sourceTime: viewModel.currentTime,
-                    primaryUsesMovieTimeline: viewModel.subtitleUsesMovieTimeline(viewModel.selectedSubtitleId),
-                    secondaryUsesMovieTimeline: viewModel.subtitleUsesMovieTimeline(viewModel.selectedSecondarySubtitleId, slot: .secondary),
-                    livePrimaryCues: viewModel.selectedSubtitleId.map(SubtitleTrackIdSpace.isAILive) == true
-                        ? viewModel.livePrimarySubtitleCues
-                        : [],
-                    liveSecondaryCues: viewModel.selectedSecondarySubtitleId.map(SubtitleTrackIdSpace.isAILive) == true
-                        ? viewModel.liveSecondarySubtitleCues
-                        : [],
-                    appearance: viewModel.settings.effectiveSubtitleAppearance,
-                    subtitleSyncMs: viewModel.settings.subtitleSyncMs
-                )
+                PlayerSubtitleLayer(viewModel: viewModel)
             }
     }
 
@@ -713,12 +701,7 @@ struct PlayerView: View {
                     .foregroundStyle(.white)
                     .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
             }
-            #if os(iOS)
             .buttonStyle(MobilePlayerGlassButtonStyle())
-            #else
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
-            #endif
             .accessibilityLabel("Close Player")
             .accessibilityIdentifier("player.close")
 
@@ -727,9 +710,7 @@ struct PlayerView: View {
         .padding(.horizontal)
         .padding(.top)
         .transition(.opacity)
-        #if os(iOS)
         .modifier(MobilePlayerChromeVisibility(isVisible: viewModel.shouldShowMobilePlayerChrome))
-        #endif
     }
     #endif
 
@@ -758,6 +739,43 @@ struct PlayerView: View {
                     .frame(minWidth: 140)
             }
         }
+    }
+}
+
+/// Holds the player's view model for the life of the presentation.
+/// `StateObject` evaluates its initial value once; a `State` initial value
+/// would build a `PlayerViewModel` (an AetherEngine plus an audio-session
+/// claim) on every `PlayerView` init.
+private final class PlayerViewModelBox: ObservableObject {
+    @Published var model: PlayerViewModel
+
+    init(_ model: PlayerViewModel) {
+        self.model = model
+    }
+}
+
+/// Subtitle overlay. It reads the playback clock, so clock ticks re-render
+/// this layer rather than the player shell.
+private struct PlayerSubtitleLayer: View {
+    let viewModel: PlayerViewModel
+
+    var body: some View {
+        AetherSubtitleOverlay(
+            engine: viewModel.aetherEngine,
+            assSubtitles: viewModel.assSubtitles,
+            cueHold: viewModel.subtitleCueHold,
+            sourceTime: viewModel.currentTime,
+            primaryUsesMovieTimeline: viewModel.subtitleUsesMovieTimeline(viewModel.selectedSubtitleId),
+            secondaryUsesMovieTimeline: viewModel.subtitleUsesMovieTimeline(viewModel.selectedSecondarySubtitleId, slot: .secondary),
+            livePrimaryCues: viewModel.selectedSubtitleId.map(SubtitleTrackIdSpace.isAILive) == true
+                ? viewModel.livePrimarySubtitleCues
+                : [],
+            liveSecondaryCues: viewModel.selectedSecondarySubtitleId.map(SubtitleTrackIdSpace.isAILive) == true
+                ? viewModel.liveSecondarySubtitleCues
+                : [],
+            appearance: viewModel.settings.effectiveSubtitleAppearance,
+            subtitleSyncMs: viewModel.settings.subtitleSyncMs
+        )
     }
 }
 
@@ -815,16 +833,8 @@ struct PlayerNextUpScreen: View {
                 } panel: { compact in
                     mobileNextUpPanel(compact: compact)
                         .anchorPreference(key: PlayerPreviewBoundsKey.self, value: .bounds) { .init(actions: $0) }
-                } extras: {
-                    #if !os(iOS)
-                    if !viewModel.nextUpCarouselItems.isEmpty {
-                        onDeckSection
-                    }
-                    #endif
                 }
-                #if os(iOS)
                 .padding(.top, MobilePlayerChromeVisibility.topClearance)
-                #endif
                 #endif
             }
             #if os(iOS)
@@ -849,8 +859,9 @@ struct PlayerNextUpScreen: View {
         #endif
     }
 
+    #if os(tvOS)
     private func screenContent(columnWidth: CGFloat) -> some View {
-        let content = VStack(spacing: sectionSpacing) {
+        VStack(spacing: sectionSpacing) {
             mainContent(columnWidth: columnWidth)
                 .id(playerNextUpMainScrollTarget)
 
@@ -863,13 +874,9 @@ struct PlayerNextUpScreen: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .top)
-
-        #if os(tvOS)
-        return content.focusScope(defaultFocusNamespace)
-        #else
-        return content
-        #endif
+        .focusScope(defaultFocusNamespace)
     }
+    #endif
 
     @ViewBuilder
     private var backgroundImage: some View {
@@ -884,23 +891,20 @@ struct PlayerNextUpScreen: View {
         }
     }
 
-    @ViewBuilder
+    #if os(tvOS)
     private func mainContent(columnWidth: CGFloat) -> some View {
-        #if os(tvOS)
         // Split the column on the On Deck card grid: the preview spans the
         // first two cards and the panel starts at the third.
         let previewWidth = onDeckCardWidth * 2 + tvCardSpacing
-        HStack(alignment: .center, spacing: tvCardSpacing) {
+        return HStack(alignment: .center, spacing: tvCardSpacing) {
             miniPlayerPane
                 .frame(width: previewWidth)
             nextUpPanel
                 .frame(width: columnWidth - previewWidth - tvCardSpacing, alignment: .leading)
         }
         .frame(width: columnWidth)
-        #else
-        EmptyView()
-        #endif
     }
+    #endif
 
     #if !os(tvOS)
     func mobileNextUpPanel(compact: Bool = false) -> some View {
@@ -921,11 +925,7 @@ struct PlayerNextUpScreen: View {
             }
             actionRow(hasNextEpisode: viewModel.nextUpEpisode != nil, compact: compact)
             if viewModel.nextUpEpisode != nil {
-                #if os(iOS)
                 if !compact { autoPlayToggle }
-                #else
-                autoPlayToggle
-                #endif
             } else if !viewModel.isLoadingNextUpEpisode {
                 Text(finishedMessage)
                     .font(.caption)
@@ -1142,18 +1142,12 @@ struct PlayerNextUpScreen: View {
                 }
                 .siloSecondaryButton()
                 .frame(minHeight: 44)
-                #if os(iOS)
                 if compact && hasNextEpisode { autoPlayToggle }
-                #endif
             }
         }
         .font(.callout)
         .lineLimit(1)
-        #if os(iOS)
         .frame(maxWidth: compact ? 560 : 380)
-        #else
-        .frame(maxWidth: 380)
-        #endif
         #endif
     }
 
@@ -1345,7 +1339,6 @@ struct PlayerNextUpScreen: View {
     private var horizontalPadding: CGFloat { isTV ? 80 : 24 }
     private var verticalTopPadding: CGFloat { isTV ? 112 : 24 }
     private var verticalBottomPadding: CGFloat { isTV ? 260 : 24 }
-    private var verticalPadding: CGFloat { isTV ? 58 : 24 }
     private var sectionSpacing: CGFloat { isTV ? 34 : 22 }
     private var panelSpacing: CGFloat { isTV ? 22 : 14 }
     private var eyebrowSize: CGFloat { isTV ? 18 : 12 }

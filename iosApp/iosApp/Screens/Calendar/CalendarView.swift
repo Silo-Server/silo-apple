@@ -32,7 +32,7 @@ struct CalendarView: View {
             }
         #if !os(tvOS)
             .refreshable {
-                await viewModel.refresh()
+                await viewModel.load()
             }
         #endif
     }
@@ -70,10 +70,8 @@ struct CalendarView: View {
         ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    // The scope sits in the scrolling content so it slides
-                    // away as you read down the agenda — only the week rail
-                    // (pinned via the safe-area inset below) stays put. That
-                    // is the room win: one slim sticky bar instead of three.
+                    // The scope control scrolls away; only the week card
+                    // (the safe-area inset below) stays pinned.
                     CalendarFilterBar(
                         selected: viewModel.filter,
                         onSelect: { viewModel.select(filter: $0) }
@@ -94,12 +92,9 @@ struct CalendarView: View {
         }
     }
 
-    /// The single pinned element: a floating Liquid-Glass calendar card. It
-    /// carries the relocated top-bar actions (so the agenda reclaims the old
-    /// title bar's height) and rides the scroll view's top safe-area inset —
-    /// the agenda scrolls *under* its glass. Tapping a day still lands its
-    /// shelf just below the card (the inset offsets `scrollTo`). No opaque
-    /// backing, so content refracts through the glass as it passes beneath.
+    /// Pinned glass card holding the top-bar actions and week strip; content
+    /// scrolls under it. The top safe-area inset offsets `scrollTo`, so a
+    /// tapped day's shelf lands just below the card.
     private func phoneWeekStrip(proxy: ScrollViewProxy) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
@@ -256,10 +251,8 @@ struct CalendarView: View {
         }
     }
 
-    /// On tvOS the loading state must contain at least one focusable
-    /// element so Menu/Back keeps working — see `RecommendationsView`.
-    /// Here the always-rendered filter bar already provides one; the
-    /// clear spacer just keeps the layout from collapsing.
+    /// Holds the shelf area's height while a week loads. Focusable on tvOS
+    /// so focus moving down from the week strip has somewhere to land.
     private var loadingState: some View {
         Color.clear
             .frame(minHeight: 320)
@@ -286,7 +279,7 @@ struct CalendarView: View {
 
             // Every view links to the other two, which also gives tvOS
             // focus a target below the week strip so d-pad down from it
-            // doesn't dead-end (see RecommendationsView's empty state).
+            // doesn't dead-end.
             HStack(spacing: SiloTheme.padding) {
                 ForEach(viewModel.filter.emptyStateLinks) { filter in
                     Button {

@@ -1,5 +1,6 @@
 #if os(iOS) || os(tvOS)
 import Foundation
+import Synchronization
 
 enum DiagnosticsDestinationChoice: String, Codable, CaseIterable, Sendable {
     case hosted
@@ -15,37 +16,35 @@ enum DiagnosticsDestinationChoice: String, Codable, CaseIterable, Sendable {
     }
 }
 
-final class DiagnosticsDestinationStore: @unchecked Sendable {
+final class DiagnosticsDestinationStore: Sendable {
     static let shared = DiagnosticsDestinationStore()
 
     private static let selectedDestinationKey = "diagnostics.destination.v1"
     private let defaults: SharedDefaults
-    private let lock = NSLock()
+    /// In-memory copy of the choice, because the log gate reads it on every
+    /// line. Loaded on first read and written through by `select`; no other
+    /// process writes the key.
+    private let selection = Mutex<DiagnosticsDestinationChoice?>(nil)
 
     init(defaults: SharedDefaults = .shared) {
         self.defaults = defaults
     }
 
     var selectedDestination: DiagnosticsDestinationChoice {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let rawValue = defaults.string(forKey: Self.selectedDestinationKey),
-              let destination = DiagnosticsDestinationChoice(rawValue: rawValue) else {
-            return .hosted
+        selection.withLock { selection in
+            if let selection { return selection }
+            let stored = defaults.string(forKey: Self.selectedDestinationKey)
+                .flatMap(DiagnosticsDestinationChoice.init(rawValue:)) ?? .hosted
+            selection = stored
+            return stored
         }
-        return destination
     }
 
     func select(_ destination: DiagnosticsDestinationChoice) {
-        lock.lock()
+        // Outside the lock: a defaults write posts its change notification
+        // synchronously, and an observer that logs would re-enter the getter.
         defaults.set(destination.rawValue, forKey: Self.selectedDestinationKey)
-        lock.unlock()
-    }
-
-    func resetForTests() {
-        lock.lock()
-        defaults.removeObject(forKey: Self.selectedDestinationKey)
-        lock.unlock()
+        selection.withLock { $0 = destination }
     }
 }
 

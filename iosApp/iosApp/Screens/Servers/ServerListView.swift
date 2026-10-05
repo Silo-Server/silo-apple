@@ -251,14 +251,12 @@ struct ServerListView: View {
                 serverId: entry.id,
                 resolveDestinationProfile: true
             ) else {
-                await MainActor.run { isResolvingServer = false }
+                isResolvingServer = false
                 return
             }
             let state = await RestoredSessionAuthResolver.resolveValidated()
-            await MainActor.run {
-                isResolvingServer = false
-                router.resetAfterServerResolution(to: state)
-            }
+            isResolvingServer = false
+            router.resetAfterServerResolution(to: state)
         }
     }
 
@@ -266,7 +264,7 @@ struct ServerListView: View {
         guard !isResolvingServer else { return }
         isResolvingServer = true
         let wasActive = entry.id == registry.activeServerId
-        Task { @MainActor in
+        Task {
             let removed = await registry.remove(serverId: entry.id, resolveFallbackProfile: wasActive)
             isResolvingServer = false
             removeTarget = nil
@@ -286,10 +284,8 @@ struct ServerListView: View {
         isResolvingServer = true
         Task {
             let state = await RestoredSessionAuthResolver.resolveValidated()
-            await MainActor.run {
-                isResolvingServer = false
-                router.resetAfterServerResolution(to: state)
-            }
+            isResolvingServer = false
+            router.resetAfterServerResolution(to: state)
         }
     }
 }

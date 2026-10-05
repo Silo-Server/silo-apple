@@ -4,8 +4,8 @@ import XCTest
 
 /// The trusted-origin rule that decides whether the Silo bearer travels with a
 /// subtitle sidecar. Implicit ports are the interesting case: an explicit `:443`
-/// on one side of the comparison used to strip the header from a same-origin
-/// artifact, which Aether surfaces as a 401 on the sidecar only.
+/// on one side of the comparison is still the same origin, so the header stays;
+/// dropping it would surface in Aether as a 401 on the sidecar only.
 final class AetherSubtitleOriginTests: XCTestCase {
     private let headers = ["Authorization": "Bearer token"]
 

@@ -1,9 +1,7 @@
 import Foundation
 
-/// Presentation models for the redesigned Downloads screen. These are
-/// derived synchronously from the flat `[DownloadRecord]` registry by
-/// `DownloadManager` (see its "Grouped surface" section) so SwiftUI bodies
-/// never group/aggregate inline.
+/// Presentation models for the Downloads screen, built from the flat
+/// `[DownloadRecord]` registry by `DownloadGroupBuilder`.
 
 /// One season's worth of downloaded leaves within a series.
 struct DownloadSeasonGroup: Identifiable, Hashable, Sendable {
@@ -12,12 +10,10 @@ struct DownloadSeasonGroup: Identifiable, Hashable, Sendable {
     /// Completed/revoked episode records, sorted by episode number.
     let records: [DownloadRecord]
     let totalBytes: Int64
-    let watchedCount: Int
 
     var id: Int { seasonNumber }
     var episodeCount: Int { records.count }
     var isSpecials: Bool { seasonNumber <= 0 }
-    var allWatched: Bool { !records.isEmpty && watchedCount == records.count }
 }
 
 /// All downloaded episodes for one series, grouped by season.
@@ -138,8 +134,7 @@ enum DownloadGroupBuilder {
                 return DownloadSeasonGroup(
                     seasonNumber: season,
                     records: sorted,
-                    totalBytes: sorted.reduce(0) { $0 + $1.fileSize },
-                    watchedCount: sorted.filter(isWatched).count
+                    totalBytes: sorted.reduce(0) { $0 + $1.fileSize }
                 )
             }
             .sorted { lhs, rhs in

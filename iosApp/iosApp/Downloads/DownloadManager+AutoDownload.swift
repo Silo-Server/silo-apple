@@ -17,8 +17,6 @@ extension DownloadManager {
             }
     }
 
-    /// Episodes of the series this device already holds a download for, in
-    /// any state, so "what's next" never names one of them.
     /// Episodes of the series this device has or is getting. A failed
     /// download doesn't count, so its episode can still be named as next.
     func knownEpisodeIds(forSeriesId seriesId: String) -> Set<String> {
@@ -30,7 +28,7 @@ extension DownloadManager {
     func autoDownloadStatus(
         for subscription: DownloadSubscription,
         upcoming: [UpcomingEpisode],
-        scheduleKnown: Bool = true
+        scheduleKnown: Bool
     ) -> AutoDownloadStatus {
         AutoDownloadRules.status(
             for: subscription,

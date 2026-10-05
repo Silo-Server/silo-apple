@@ -58,7 +58,14 @@ struct CatalogGrid: View {
     #endif
 
     var body: some View {
+        let widthOverride = phoneCardWidthOverride
         LazyVGrid(columns: columns, spacing: rowSpacing) {
+            if items.isEmpty && isLoading {
+                // First page still loading: the grid's own shape, unfilled.
+                ForEach(0..<(columns.count * 4), id: \.self) { _ in
+                    PosterSkeletonCard()
+                }
+            }
             ForEach(items) { item in
                 MediaCard(
                     title: item.title,
@@ -71,7 +78,7 @@ struct CatalogGrid: View {
                     playAction: playAction(for: item),
                     contentId: item.contentId,
                     aspect: item.isAudiobook ? .square : .poster,
-                    cardWidthOverride: phoneCardWidthOverride
+                    cardWidthOverride: widthOverride
                 )
                 .frame(maxWidth: .infinity)
                 .onAppear {
@@ -90,17 +97,18 @@ struct CatalogGrid: View {
         }
         #endif
         #if !os(tvOS)
-        .scrollTargetLayout()
         .environment(\.itemDetailBrowseSource, detailBrowseSource)
-        .onChange(of: items.map(\.contentId), initial: true) { _, contentIDs in
+        // Keyed on a cheap fingerprint rather than every ID: a paged grid
+        // holds thousands of items and this runs on each body pass.
+        .onChange(of: ItemsFingerprint(items), initial: true) {
             detailBrowseSource = ItemDetailBrowseSource(
                 originID: detailBrowseOriginID,
-                contentIDs: contentIDs
+                contentIDs: items.map(\.contentId)
             )
         }
         #endif
 
-        if isLoading {
+        if isLoading && !items.isEmpty {
             HStack {
                 Spacer()
                 ProgressView()
@@ -158,3 +166,18 @@ struct CatalogGrid: View {
         return fittedWidth / uiCustomization.cardPresentation.posterSize.scale
     }
 }
+
+#if !os(tvOS)
+/// Changes when a paged list is replaced, extended, or reordered at its ends.
+private struct ItemsFingerprint: Equatable {
+    let count: Int
+    let first: String?
+    let last: String?
+
+    init(_ items: [BrowseItem]) {
+        count = items.count
+        first = items.first?.contentId
+        last = items.last?.contentId
+    }
+}
+#endif

@@ -87,7 +87,7 @@ struct DiagnosticsBundleBuilder {
 
         let manifestDraftData = try DiagnosticsJSONCoding.makeEncoder().encode(draft)
         try appendEntry("manifest.json", manifestDraftData)
-        try appendEntry("device.json", try readRequired("device.json", from: report.directoryURL))
+        try appendEntry("device.json", try Data(contentsOf: report.directoryURL.appendingPathComponent("device.json")))
         try appendEntry("logs.jsonl", logsData)
 
         if let crash = draft.crash {
@@ -224,10 +224,6 @@ struct DiagnosticsBundleBuilder {
         )
     }
 
-    private func readRequired(_ relativePath: String, from directory: URL) throws -> Data {
-        try Data(contentsOf: directory.appendingPathComponent(relativePath))
-    }
-
     static func scrubExactTokenMatches(in data: Data, tokens: [String]) -> Data {
         let uniqueTokens = tokens.reduce(into: [String]()) { result, token in
             guard !token.isEmpty, !result.contains(token) else {
@@ -274,7 +270,7 @@ struct DiagnosticsBundleBuilder {
                 }
                 if line.cat == .network,
                    case .string(let path) = safeAttributes?["path"] {
-                    safeAttributes?["path"] = .string(templateHostedPrivatePathSegments(path))
+                    safeAttributes?["path"] = .string(DiagnosticsPathTemplate.template(path))
                 }
                 safeAttributes = safeAttributes?.mapValues(sanitizeHostedJSONValue)
                 let sanitized = DiagnosticsLogLine(
@@ -733,7 +729,7 @@ struct DiagnosticsBundleBuilder {
             let trailingText = String(trailing.reversed())
             let core = String(candidate.dropLast(trailingText.count))
             guard var components = URLComponents(string: core) else { continue }
-            let templatedPath = templateHostedPrivatePathSegments(components.percentEncodedPath)
+            let templatedPath = DiagnosticsPathTemplate.template(components.percentEncodedPath)
                 .replacingOccurrences(of: "{id}", with: "%7Bid%7D")
             components.percentEncodedPath = templatedPath
             guard let encoded = components.string else { continue }
@@ -746,13 +742,6 @@ struct DiagnosticsBundleBuilder {
             rendered.replaceSubrange(range, with: sanitized + trailingText)
         }
         return rendered
-    }
-
-    // The segment rules moved to DiagnosticsPathTemplate so networking can
-    // template `network.path` at emission time using the same regexes; these
-    // stay as the hosted-path spelling of that shared logic.
-    private static func templateHostedPrivatePathSegments(_ value: String) -> String {
-        DiagnosticsPathTemplate.template(value)
     }
 
     private static func replaceMatches(
@@ -809,8 +798,6 @@ struct DiagnosticsBundleBuilder {
     private static let hostedAuthorityURLRegex = try! NSRegularExpression(
         pattern: #"(?i)\b(?:https?|wss?)://[^\s<>\"']+"#
     )
-    // The path-segment regexes (UUID / numeric / hex / opaque) live in
-    // DiagnosticsPathTemplate, shared with emission-time network templating.
     private static let hostedBareUUIDRegex = try! NSRegularExpression(
         pattern: #"(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"#
     )

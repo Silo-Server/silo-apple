@@ -83,22 +83,18 @@ struct TVServerNeedsSetupView: View {
                 let status = try await AuthService.shared.checkServer(
                     url: expectedServerURL
                 )
-                await MainActor.run {
-                    isChecking = false
-                    guard !Task.isCancelled,
-                          AuthService.shared.serverUrl == expectedServerURL else { return }
-                    if status.needsSetup {
-                        error = "This server still needs administrator setup."
-                    } else {
-                        router.goBack()
-                    }
+                isChecking = false
+                guard !Task.isCancelled,
+                      AuthService.shared.serverUrl == expectedServerURL else { return }
+                if status.needsSetup {
+                    error = "This server still needs administrator setup."
+                } else {
+                    router.goBack()
                 }
             } catch {
-                await MainActor.run {
-                    isChecking = false
-                    guard !Task.isCancelled else { return }
-                    self.error = "Could not reach the server. Check that it is running and try again."
-                }
+                isChecking = false
+                guard !Task.isCancelled else { return }
+                self.error = "Could not reach the server. Check that it is running and try again."
             }
         }
     }

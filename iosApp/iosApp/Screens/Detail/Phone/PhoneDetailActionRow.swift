@@ -3,15 +3,7 @@ import SwiftUI
 
 // MARK: - Labelled secondary action
 
-/// One named secondary action — a filled circle with no outline, over a
-/// caption. This mirrors the approved detail treatment: the icon remains a
-/// generous touch target while the caption removes any guesswork.
-///
-/// The shipping page gives favourite, watchlist, watched, download, and the
-/// overflow menu the same 44pt circular silhouette, centred under Play with
-/// nothing tying them to it. Five identical circles is a guessing game; a
-/// heart and a bookmark are not self-evidently different commitments. Naming
-/// them costs one line of 10pt text each and removes the guess entirely.
+/// One named secondary action: a filled circle over a caption.
 struct PhoneLabeledAction: View {
     let icon: String
     var iconActive: String? = nil

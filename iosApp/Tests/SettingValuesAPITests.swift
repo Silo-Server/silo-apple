@@ -2479,72 +2479,30 @@ final class SettingValuesAPITests: XCTestCase {
     }
 
     private func waitForPendingOrdinaryRefresh() async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(2)
-        while ContinuousClock.now < deadline {
-            if SettingsStubProtocol.hasPendingOrdinaryRefresh() {
-                return true
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        return false
+        await eventually(timeout: .seconds(2)) { SettingsStubProtocol.hasPendingOrdinaryRefresh() }
     }
 
     private func waitForPendingOrdinaryUnauthorized() async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(2)
-        while ContinuousClock.now < deadline {
-            if SettingsStubProtocol.hasPendingOrdinaryUnauthorized() {
-                return true
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        return false
+        await eventually(timeout: .seconds(2)) { SettingsStubProtocol.hasPendingOrdinaryUnauthorized() }
     }
 
     private func waitForCounter(_ counter: LockedCounter, atLeast target: Int) async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(2)
-        while ContinuousClock.now < deadline {
-            if counter.value >= target {
-                return true
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        return false
+        await eventually(timeout: .seconds(2)) { counter.value >= target }
     }
 
     private func waitForCancellationPass(
         _ barrier: SerializedCancellationPassBarrier,
         count: Int
     ) async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(2)
-        while ContinuousClock.now < deadline {
-            if await barrier.entryCount >= count {
-                return true
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        return false
+        await eventually(timeout: .seconds(2)) { await barrier.entryCount >= count }
     }
 
     private func waitForIdentityTransitionWaiter(_ http: HTTPClient) async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(2)
-        while ContinuousClock.now < deadline {
-            if await http.pendingIdentityTransitionCount() > 0 {
-                return true
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        return false
+        await eventually(timeout: .seconds(2)) { await http.pendingIdentityTransitionCount() > 0 }
     }
 
     private func waitForRequestDispatchWaiter(_ http: HTTPClient) async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(2)
-        while ContinuousClock.now < deadline {
-            if await http.pendingRequestDispatchWaiterCount() > 0 {
-                return true
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        return false
+        await eventually(timeout: .seconds(2)) { await http.pendingRequestDispatchWaiterCount() > 0 }
     }
 }
 

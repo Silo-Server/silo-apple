@@ -33,7 +33,7 @@ extension APIv2Client {
 
     /// `201` with the new group. A lost answer may still have created it.
     func createCollectionGroup(name: String, auth: CapturedOrdinaryRequestAuth) async throws -> CollectionGroup {
-        let body = try Self.collectionEncoder.encode(CreateCollectionGroupRequest(name: name))
+        let body = try Self.collectionEncoder.encode(CollectionGroupNameBody(name: name))
         let raw = try await collectionRequest("POST", path: "/api/v2/collections/groups", body: body, status: 201, auth: auth)
         return try HTTPClient.makeJSONDecoder().decode(CollectionGroup.self, from: raw.data)
     }
@@ -56,7 +56,7 @@ extension APIv2Client {
     }
 
     func renameCollectionGroup(_ version: CollectionEditVersion, name: String) async throws -> CollectionGroup {
-        let body = try Self.collectionEncoder.encode(UpdateCollectionGroupRequest(name: name))
+        let body = try Self.collectionEncoder.encode(CollectionGroupNameBody(name: name))
         let raw = try await collectionRequest("PATCH", path: version.path, body: body, ifMatch: version.etag,
                                               status: 200, auth: version.auth)
         return try HTTPClient.makeJSONDecoder().decode(CollectionGroup.self, from: raw.data)
@@ -86,7 +86,7 @@ extension APIv2Client {
         var items = result.value.items
         for pageNumber in 1...100 {
             guard let continuation = result.continuation else {
-                return CatalogResponse(collectionCards: items)
+                return CatalogResponse(completeItems: items)
             }
             guard pageNumber < 100 else { throw APIv2Error.incompleteCollection }
             result = try await nextCatalogPage(continuation)
@@ -100,17 +100,12 @@ extension APIv2Client {
     private func editorRead<Value: Decodable & Identifiable>(
         id: String, under prefix: String, auth: CapturedOrdinaryRequestAuth
     ) async throws -> CollectionEditor<Value> where Value.ID == String {
-        let path = prefix + (try Self.collectionSegment(id))
+        let path = prefix + (try catalogPathSegment(id))
         let raw = try await collectionRequest("GET", path: path, status: 200, auth: auth)
         let tag = try Self.entityTag(raw.header("ETag"))
         let value = try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(Value.self, from: raw.data)
         guard value.id == id else { throw APIv2Error.incompleteCollection }
         return CollectionEditor(value: value, version: CollectionEditVersion(path: path, etag: tag, auth: auth))
-    }
-
-    private static func collectionSegment(_ id: String) throws -> String {
-        guard let segment = CatalogPathSegment.encode(id) else { throw APIv2Error.invalidCatalogQuery }
-        return segment
     }
 
     private static var collectionEncoder: JSONEncoder {
@@ -122,9 +117,9 @@ extension APIv2Client {
 }
 
 extension CatalogResponse {
-    /// A complete personal-collection card list assembled from v2 catalog
-    /// pages. There is no further page by construction.
-    init(collectionCards: [BrowseItem]) {
-        self.init(items: collectionCards, total: collectionCards.count, totalExact: true, hasMore: false)
+    /// A complete card list assembled from every v2 page. There is no
+    /// further page by construction.
+    init(completeItems items: [BrowseItem]) {
+        self.init(items: items, total: items.count, totalExact: true, hasMore: false)
     }
 }

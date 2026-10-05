@@ -99,12 +99,7 @@ struct MacPlayerControls: View {
                 .disabled(viewModel.chapters.isEmpty)
                 .opacity(viewModel.chapters.isEmpty ? 0.45 : 1)
 
-                iconButton("speedometer", help: "Playback speed") {
-                    selectedOptionsTab = .playback
-                    isOptionsPresented.toggle()
-                }
-
-                iconButton("chart.line.uptrend.xyaxis", help: "Stats and route") {
+                iconButton("speedometer", help: "Playback speed, stats and route") {
                     selectedOptionsTab = .playback
                     isOptionsPresented.toggle()
                 }

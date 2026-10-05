@@ -94,9 +94,6 @@ class ServerSetupViewModel {
         var candidates: [String]
         do {
             candidates = try buildCandidateURLs()
-        } catch let validationError as ServerSetupValidationError {
-            error = FormError(validationError.localizedDescription)
-            return
         } catch {
             self.error = FormError(error.localizedDescription)
             return
@@ -221,7 +218,7 @@ class ServerSetupViewModel {
                     }
                 }
                 insecurePrompt = InsecurePrompt(
-                    address: Self.displayAddress(candidate),
+                    address: ServerBranding.hostLabel(candidate),
                     remaining: Array(candidates[index...]),
                     attempted: attempted,
                     source: source
@@ -276,12 +273,6 @@ class ServerSetupViewModel {
         let raw = host.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let range = raw.range(of: "://") else { return nil }
         return raw[..<range.lowerBound].lowercased()
-    }
-
-    static func displayAddress(_ url: String) -> String {
-        guard let components = URLComponents(string: url), let host = components.host else { return url }
-        if let port = components.port { return "\(host):\(port)" }
-        return host
     }
 
     func buildCandidateURLs() throws -> [String] {
@@ -409,5 +400,24 @@ extension View {
         onChange(of: model.host) { model.restoreSubmittedInputs() }
             .onChange(of: model.selectedScheme) { model.restoreSubmittedInputs() }
             .onChange(of: model.port) { model.restoreSubmittedInputs() }
+    }
+
+    /// Asks before a connect continues over plain HTTP (`insecurePrompt`).
+    func serverInsecurePromptAlert(_ model: ServerSetupViewModel, router: AppRouter) -> some View {
+        alert(
+            "Connect without encryption?",
+            isPresented: Binding(
+                get: { model.insecurePrompt != nil },
+                set: { if !$0 { model.dismissInsecurePrompt() } }
+            ),
+            presenting: model.insecurePrompt
+        ) { prompt in
+            Button("Cancel", role: .cancel) { model.cancelInsecure(prompt) }
+            Button("Connect") {
+                Task { await model.confirmInsecure(prompt, router: router) }
+            }
+        } message: { prompt in
+            Text("Your password and what you watch will be sent unencrypted to \(prompt.address). Only do this on a network you trust.")
+        }
     }
 }

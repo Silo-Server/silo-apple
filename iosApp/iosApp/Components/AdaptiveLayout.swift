@@ -3,10 +3,9 @@ import SwiftUI
 /// Size-class-aware poster grid columns.
 ///
 /// iPhone portrait and iPad in narrow split view report `.compact` and get
-/// 3 columns — matching the original iPhone-only layout. iPad full-screen
-/// and landscape report `.regular` and get 5 columns, so posters render at
-/// their intended density instead of stretching to nearly 2× width.
-///
+/// 3 columns. iPad full-screen and landscape report `.regular` and get 5
+/// columns, so posters render at their intended density instead of
+/// stretching to nearly 2× width.
 enum AdaptiveColumns {
     static func posters(
         for sizeClass: UserInterfaceSizeClass?,

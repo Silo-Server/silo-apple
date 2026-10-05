@@ -1,5 +1,6 @@
 import Foundation
 import MediaPlayer
+import Nuke
 import OSLog
 #if canImport(UIKit)
 import UIKit
@@ -88,11 +89,8 @@ final class AetherVideoNowPlayingCoordinator {
         case none
         case shared
         #if os(iOS) || os(tvOS)
-        /// Deliberately payload-free. Keying this on `ObjectIdentifier` made
-        /// destination equality an address comparison, and a session held only
-        /// weakly can be freed and replaced at the same address, so a
-        /// genuinely different session compared equal and skipped the unbind.
-        /// The bound session is retained and compared by reference instead.
+        /// Payload-free: the bound session is retained and compared by
+        /// reference, never by address.
         case session
         #endif
     }
@@ -209,10 +207,6 @@ final class AetherVideoNowPlayingCoordinator {
         nowPlayingInfo = [:]
     }
 
-    func setPreferredSkipInterval(_ seconds: TimeInterval) {
-        setPreferredSkipIntervals(backward: seconds, forward: seconds)
-    }
-
     func setPreferredSkipIntervals(backward: TimeInterval, forward: TimeInterval) {
         preferredSkipIntervals = SkipIntervals(
             backward: max(1, backward),
@@ -274,35 +268,33 @@ final class AetherVideoNowPlayingCoordinator {
         }
     }
 
+    /// Loads through the shared Nuke pipeline, so a poster already in its disk
+    /// cache is not downloaded again. macOS publishes no artwork, so it skips
+    /// the fetch.
     private func fetchArtwork(from url: URL) async {
+        #if canImport(UIKit)
         do {
-            let (data, response) = try await URLSession.shared.data(from: url)
+            // No memory-cache write: playback keeps decoded-image memory low,
+            // and the published artwork already holds this image.
+            let image = try await ImagePipeline.shared.image(
+                for: ImageRequest(url: url, options: [.disableMemoryCacheWrites])
+            )
             try Task.checkCancellation()
-            if let response = response as? HTTPURLResponse,
-               !(200..<300).contains(response.statusCode) {
-                Self.logger.warning("Artwork fetch HTTP \(response.statusCode)")
-                return
-            }
-            #if canImport(UIKit)
-            guard let image = UIImage(data: data) else {
-                Self.logger.warning("Artwork decode failed")
-                return
-            }
             guard artworkURL == url, handlers != nil else { return }
             nowPlayingInfo[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(
                 boundsSize: image.size
             ) { _ in image }
             publishNowPlayingInfo()
-            #else
-            _ = data
-            #endif
         } catch is CancellationError {
+            return
+        } catch ImagePipeline.Error.cancelled {
             return
         } catch {
             Self.logger.warning(
                 "Artwork fetch failed: \(String(describing: error), privacy: .private)"
             )
         }
+        #endif
     }
 
     private func registerRemoteCommands() {

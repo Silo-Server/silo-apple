@@ -22,7 +22,9 @@ final class APIv2ContractTests: XCTestCase {
     // MARK: Index routing
 
     /// Every vendored fixture: its index entry names the status and media
-    /// type the model layer routes on, and the body decodes as that type.
+    /// type the model layer routes on. A problem body decodes as a problem; a
+    /// success body that no other test reads decodes through the type the
+    /// client reads that operation with.
     func testEveryVendoredFixtureRoutesByStatusAndMediaType() throws {
         let entries = try Support.index(bundleClass: Self.self)
         XCTAssertEqual(entries.count, 62, "vendored index must list exactly the selected fixtures")
@@ -33,12 +35,28 @@ final class APIv2ContractTests: XCTestCase {
             if (200..<300).contains(entry.expectedStatus) {
                 XCTAssertEqual(entry.responseMediaType, "application/json", entry.name)
                 XCTAssertFalse(entry.schema.hasSuffix("/Problem"), entry.name)
+                try decodeSuccessBody(of: entry, data)
             } else {
                 XCTAssertEqual(entry.responseMediaType, "application/problem+json", entry.name)
                 XCTAssertEqual(entry.schema, "#/components/schemas/Problem", entry.name)
                 let problem = try decoder.decode(APIv2Problem.self, from: data)
                 XCTAssertEqual(problem.status, entry.expectedStatus, entry.name)
             }
+        }
+    }
+
+    private func decodeSuccessBody(of entry: Support.IndexEntry, _ data: Data) throws {
+        switch entry.operationId ?? "" {
+        case "getDownloadCapability":
+            _ = DownloadCapability(try decoder.decode(APIv2DownloadCapability.self, from: data))
+        case "reportDownloadStatus":
+            XCTAssertTrue(try decoder.decode(APIv2DownloadEntry.self, from: data).isUsable, entry.name)
+        case "listDownloads":
+            _ = try decoder.decode(APIv2DownloadEntryPage.self, from: data)
+        case "listUserLibraries":
+            _ = try decoder.decode(APIv2CatalogReadCollection<APIv2UserLibrary>.self, from: data).completeItems()
+        default:
+            break
         }
     }
 
@@ -183,9 +201,6 @@ final class APIv2ContractTests: XCTestCase {
         }
         let page = try decoder.decode(APIv2ProgressPage.self, from: data)
         XCTAssertEqual(page.items.first?.mediaItemId, "movie-8f2c1a")
-        // The status filter enum the client sends stays open too.
-        XCTAssertEqual(APIv2ProgressStatus(wireValue: "paused"), .unknown("paused"))
-        XCTAssertEqual(APIv2ProgressStatus(wireValue: "in_progress"), .inProgress)
     }
 
     func testListProgressProblemFixtures() throws {

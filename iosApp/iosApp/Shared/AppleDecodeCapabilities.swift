@@ -82,13 +82,8 @@ enum AppleDecodeCapabilities {
         machineIdentifier == "AppleTV5,3"
     }
 
-    /// The narrower, fixture-bounded software set retained for downloads and
-    /// conservative streaming clients. H.264 High 10 is added as a separate
-    /// detailed entry below because ordinary H.264 is also hardware-backed.
-    static let softwareVideoCodecs = ["av1", "vp9", "mpeg2video", "vc1"]
-
-    /// Silo's declared online video set for AetherEngine 7.1.0 with
-    /// FFmpegBuild 3.3.0. Newly bundled formats await capability and playback
+    /// Silo's declared online video set for the pinned AetherEngine and
+    /// FFmpegBuild. Newly bundled formats await capability and playback
     /// validation in silo-apple#299. Aether routes H.264, HEVC, and
     /// hardware-decodable AV1 natively when the exact probed stream permits;
     /// every other decoder present in the build goes through libavcodec.
@@ -139,7 +134,7 @@ enum AppleDecodeCapabilities {
     /// Silo's declared containers for online original HTTP.
     /// Silo's scanner records MPEG program streams (`.mpg`/`.vob`) as `mpeg`,
     /// so that token is what carries FFmpegBuild's `mpegps` demuxer claim.
-    /// FFmpegBuild 3.3.0 includes ASF/WMV support. Advertising it together with
+    /// The pinned FFmpegBuild includes ASF/WMV support. Advertising it together with
     /// the matching audio codecs awaits playback validation in silo-apple#299.
     private static let aetherVideoContainers = [
         "mp4", "m4v", "mov", "mkv", "matroska", "avi", "mpegts", "ts", "m2ts",
@@ -207,10 +202,6 @@ enum AppleDecodeCapabilities {
 
     static func streamingMaxResolutionToken(for mode: StreamingVideoCapabilityMode) -> String {
         mode == .aetherDeclared ? "2160p" : maxResolutionToken
-    }
-
-    static var streamingMaxResolutionToken: String {
-        streamingMaxResolutionToken(for: streamingVideoCapabilityMode)
     }
 
     static var maxDecodeWidth: Int { maxDecodeHeight >= 2_160 ? 3_840 : 1_920 }

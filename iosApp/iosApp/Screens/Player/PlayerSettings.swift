@@ -126,40 +126,30 @@ enum DeinterlaceFieldRatePreference: String, CaseIterable {
     }
 }
 
-/// The device-scoped settings this client syncs, as generated contract keys.
-///
-/// The raw strings used to live here as a private enum, which is how
-/// `subtitle_appearance` kept its unprefixed name and how Apple and Android
-/// ended up disagreeing about `next_up_prompt_seconds`. They come from
-/// `SettingKey` now, so a key this client sends is a key the server's manifest
-/// declares — by construction, not by review.
-///
-/// Also the order a flush sends them in: `playback.preferred_quality` precedes
-/// `playback.max_bitrate_kbps` so the two axes of one compound tier always land
-/// resolution-first.
-let playerDeviceSettingKeys: [SettingKey] = [
-    .playbackPreferredQuality,
-    .playbackMaxBitrateKbps,
-    .playbackAudioLanguage,
-    .playbackIntroSkipMode,
-    .playbackAutoSkipCredits,
-    .playbackAutoPlayNext,
-    .playbackNextUpPromptSeconds,
-    .playbackSubtitleAppearance,
-    .playerHdrEnabled,
-    .playerDolbyVisionEnabled,
-    .playerSeekCacheEnabled,
-    .playerPlaybackSpeed,
-    .playerSubtitleSyncMs,
-    .playerVideoGravity,
-    .playerOrientationMode,
-]
-
-private typealias PlayerDeviceSettingKey = SettingKey
-
 extension SettingKey {
-    /// The keys this screen syncs, in a stable order for the flush loop.
-    static var playerDeviceSettings: [SettingKey] { playerDeviceSettingKeys }
+    /// The device-scoped settings this client syncs. Generated contract keys,
+    /// so every key this client sends is one the server's manifest declares.
+    ///
+    /// Also the order a flush sends them in: `playback.preferred_quality`
+    /// precedes `playback.max_bitrate_kbps` so the two axes of one compound
+    /// tier always land resolution-first.
+    static let playerDeviceSettings: [SettingKey] = [
+        .playbackPreferredQuality,
+        .playbackMaxBitrateKbps,
+        .playbackAudioLanguage,
+        .playbackIntroSkipMode,
+        .playbackAutoSkipCredits,
+        .playbackAutoPlayNext,
+        .playbackNextUpPromptSeconds,
+        .playbackSubtitleAppearance,
+        .playerHdrEnabled,
+        .playerDolbyVisionEnabled,
+        .playerSeekCacheEnabled,
+        .playerPlaybackSpeed,
+        .playerSubtitleSyncMs,
+        .playerVideoGravity,
+        .playerOrientationMode,
+    ]
 }
 
 private extension SettingKey {
@@ -391,9 +381,10 @@ final class PlayerSettings {
 
     var subtitleAppearance: SubtitleAppearance {
         didSet {
-            let sanitized = subtitleAppearance.sanitized()
-            defaults.set(sanitized.jsonString, forKey: Self.cacheKey(Keys.subtitleAppearance))
-            syncLegacySubtitleFields(from: sanitized)
+            defaults.set(
+                subtitleAppearance.sanitized().jsonString,
+                forKey: Self.cacheKey(Keys.subtitleAppearance)
+            )
         }
     }
 
@@ -442,34 +433,6 @@ final class PlayerSettings {
         return subtitleUsesDeviceAppearanceOverride
             ? subtitleAppearance
             : inheritedSubtitleAppearance
-    }
-
-    var subtitleFontSize: Double {
-        didSet { defaults.set(subtitleFontSize, forKey: Keys.subtitleFontSize) }
-    }
-
-    var subtitleTextColor: String {
-        didSet { defaults.set(subtitleTextColor, forKey: Keys.subtitleTextColor) }
-    }
-
-    var subtitleBorderSize: Double {
-        didSet { defaults.set(subtitleBorderSize, forKey: Keys.subtitleBorderSize) }
-    }
-
-    var subtitleBorderColor: String {
-        didSet { defaults.set(subtitleBorderColor, forKey: Keys.subtitleBorderColor) }
-    }
-
-    var subtitleBackgroundColor: String {
-        didSet { defaults.set(subtitleBackgroundColor, forKey: Keys.subtitleBackgroundColor) }
-    }
-
-    var subtitleBackgroundOpacityPercent: Int {
-        didSet { defaults.set(subtitleBackgroundOpacityPercent, forKey: Keys.subtitleBackgroundOpacityPercent) }
-    }
-
-    var subtitlePosition: Int {
-        didSet { defaults.set(subtitlePosition, forKey: Keys.subtitlePosition) }
     }
 
     var subtitleSyncMs: Int {
@@ -542,13 +505,6 @@ final class PlayerSettings {
             Keys.inheritedSubtitleAppearance: SubtitleAppearance.default.jsonString,
             Keys.subtitleUsesDeviceAppearanceOverride: false,
             Keys.subtitleMatchesSystemAppearance: false,
-            Keys.subtitleFontSize: 44.0,
-            Keys.subtitleTextColor: "#FFFFFF",
-            Keys.subtitleBorderSize: 0.0,
-            Keys.subtitleBorderColor: "#000000",
-            Keys.subtitleBackgroundColor: "#000000",
-            Keys.subtitleBackgroundOpacityPercent: 0,
-            Keys.subtitlePosition: 100,
             Keys.subtitleSyncMs: 0,
             Keys.playbackSpeed: 1.0,
             Keys.videoGravity: VideoGravity.fit.rawValue,
@@ -601,13 +557,6 @@ final class PlayerSettings {
             key: Keys.subtitleMatchesSystemAppearance,
             defaultValue: false
         )
-        subtitleFontSize = defaults.double(forKey: Keys.subtitleFontSize)
-        subtitleTextColor = defaults.string(forKey: Keys.subtitleTextColor) ?? "#FFFFFF"
-        subtitleBorderSize = defaults.double(forKey: Keys.subtitleBorderSize)
-        subtitleBorderColor = defaults.string(forKey: Keys.subtitleBorderColor) ?? "#000000"
-        subtitleBackgroundColor = defaults.string(forKey: Keys.subtitleBackgroundColor) ?? "#000000"
-        subtitleBackgroundOpacityPercent = defaults.integer(forKey: Keys.subtitleBackgroundOpacityPercent)
-        subtitlePosition = defaults.integer(forKey: Keys.subtitlePosition)
         subtitleSyncMs = defaults.integer(forKey: Self.cacheKey(Keys.subtitleSyncMs))
         playbackSpeed = Self.cachedDouble(defaults, key: Keys.playbackSpeed, defaultValue: 1.0)
         videoGravity = VideoGravity(rawValue: defaults.string(forKey: Self.cacheKey(Keys.videoGravity)) ?? VideoGravity.fit.rawValue) ?? .fit
@@ -623,7 +572,6 @@ final class PlayerSettings {
         nextUpPromptSeconds = Self.clampNextUpPromptSeconds(
             Self.cachedInt(defaults, key: Keys.nextUpPromptSeconds, defaultValue: 30)
         )
-        syncLegacySubtitleFields(from: subtitleAppearance)
 
         flusher.observeHeldKeys { [weak self] keys in
             Task { @MainActor in self?.heldDeviceSettingKeys = keys }
@@ -671,8 +619,8 @@ final class PlayerSettings {
 
     /// Pull every synced setting from the server and adopt it.
     ///
-    /// One batched call: the server resolves all seventeen keys in a single
-    /// store read, and asking per key would be seventeen round trips on every
+    /// One batched call: the server resolves every synced key in a single
+    /// store read, and asking per key would be one round trip per key on every
     /// app launch, profile switch and settings-screen open.
     @discardableResult
     @MainActor
@@ -726,15 +674,8 @@ final class PlayerSettings {
                     effectiveByKey: effectiveByKey
                 )
                 if imported {
-                    // The migration just pushed legacy device-setting values
-                    // to the server. Local state already holds those values
-                    // (they came from local UserDefaults), so a second
-                    // effective-values round-trip just to mirror the
-                    // server's echo is wasted bandwidth on every session
-                    // start until migration completes — and re-applying
-                    // those same values overwrites any in-flight local
-                    // edits anyway. Drain the queue and mark the migration
-                    // done.
+                    // Migration just pushed this device's legacy values; skip
+                    // a second effective read and only drain the queue.
                     await flushPendingDeviceSettings()
                     markMigrationComplete(for: scopeID)
                 }
@@ -752,17 +693,6 @@ final class PlayerSettings {
             // Keep using the last cached values when offline.
             return .unavailable
         }
-    }
-
-    /// Set the quality from a tier id on this client's in-player ladder.
-    ///
-    /// The in-player switcher's entry point: it offers ``ApplePlaybackQuality``
-    /// rungs, so the id is decomposed into the contract's two axes before it is
-    /// stored. Sending the compound id would fail the enum with
-    /// `invalid_value`; see AppleQualityAxes.swift.
-    func setPreferredQuality(_ value: String) {
-        let axes = AppleQualityAxes.split(ApplePlaybackQuality.normalizeStoredId(value))
-        setQualityAxes(resolution: axes.resolution, bitrateKbps: axes.bitrateKbps)
     }
 
     /// Set the quality from a shared preset — the settings screens' entry
@@ -1113,11 +1043,8 @@ final class PlayerSettings {
     }
 
     /// Split the resolved appearance between the device override and the
-    /// inherited value.
-    ///
-    /// "Has a device override" is now a fact the server reports — the resolved
-    /// row names the scope it came from — rather than something the legacy
-    /// endpoint had to carry as a separate `hasDeviceOverride` boolean.
+    /// inherited value. The resolved row's scope says whether it is a device
+    /// override.
     private func applyEffectiveSubtitleAppearance(_ entry: EffectiveSettingValue?) {
         guard let entry else {
             subtitleUsesDeviceAppearanceOverride = false
@@ -1138,18 +1065,10 @@ final class PlayerSettings {
         }
     }
 
-    /// A bool from a resolved row, falling back to the contract's typed default
-    /// only when the server sent no row for the key at all.
-    ///
-    /// The `effectiveValue.isEmpty` guard this replaces existed because the
-    /// legacy endpoint had no way to say "unset": it answered with an empty
-    /// string, which is not a bool, so every default-ON toggle flipped off on
-    /// the first refresh against a server that predated the key. The canonical
-    /// endpoint sends a typed value with `source: "default"` instead, so
-    /// "absent" and "false" are now distinct on the wire and the guard is not
-    /// only unnecessary but wrong — it would swallow a genuine `false`.
+    /// A bool from a resolved row; falls back only when the server sent no row
+    /// (a typed `false` is a real value).
     private func effectiveBool(
-        _ key: PlayerDeviceSettingKey,
+        _ key: SettingKey,
         in effectiveByKey: [SettingKey: EffectiveSettingValue],
         default fallback: Bool
     ) -> Bool {
@@ -1370,16 +1289,6 @@ final class PlayerSettings {
         return !flusher.hasPendingWrites
     }
 
-    private func syncLegacySubtitleFields(from appearance: SubtitleAppearance) {
-        subtitleFontSize = appearance.fontSize.pointSize
-        subtitleTextColor = appearance.fontColor.uppercased()
-        subtitleBorderSize = appearance.backgroundStyle == .outline || appearance.textOutline ? 2 : 0
-        subtitleBorderColor = appearance.textOutlineColor.uppercased()
-        subtitleBackgroundColor = appearance.backgroundColor.uppercased()
-        subtitleBackgroundOpacityPercent = appearance.backgroundStyle == .box ? appearance.backgroundOpacity : 0
-        subtitlePosition = appearance.position.legacyPosition
-    }
-
     /// The (server, profile, device) triple this device's settings belong to.
     ///
     /// Non-private because the flusher's write journal partitions the persisted
@@ -1587,13 +1496,6 @@ final class PlayerSettings {
         static let inheritedSubtitleAppearance = "player.inheritedSubtitleAppearance"
         static let subtitleUsesDeviceAppearanceOverride = "player.subtitleUsesDeviceAppearanceOverride"
         static let subtitleMatchesSystemAppearance = "player.subtitleMatchesSystemAppearance"
-        static let subtitleFontSize = "player.subtitleFontSize"
-        static let subtitleTextColor = "player.subtitleTextColor"
-        static let subtitleBorderSize = "player.subtitleBorderSize"
-        static let subtitleBorderColor = "player.subtitleBorderColor"
-        static let subtitleBackgroundColor = "player.subtitleBackgroundColor"
-        static let subtitleBackgroundOpacityPercent = "player.subtitleBackgroundOpacityPercent"
-        static let subtitlePosition = "player.subtitlePosition"
         static let subtitleSyncMs = "player.subtitleSyncMs"
         static let playbackSpeed = "player.playbackSpeed"
         static let videoGravity = "player.videoGravity"

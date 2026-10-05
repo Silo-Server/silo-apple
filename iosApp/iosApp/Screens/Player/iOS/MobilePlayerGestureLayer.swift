@@ -55,6 +55,8 @@ struct MobilePlayerGestureLayer: View {
 
     /// Width of the brightness/volume strips along each screen edge.
     private static let edgeZoneWidth: CGFloat = 88
+    /// Track height of the brightness/volume gauge.
+    private static let gaugeHeight: CGFloat = 130
 
     /// Screen hosting the app's foreground scene. `UIScreen.main` is
     /// deprecated on iOS 26; the player always lives in the single
@@ -191,8 +193,9 @@ struct MobilePlayerGestureLayer: View {
     }
 
     private var videoGravityPinchGesture: some Gesture {
-        MagnificationGesture()
-            .onEnded { scale in
+        MagnifyGesture()
+            .onEnded { value in
+                let scale = value.magnification
                 let current = viewModel.settings.videoGravity
                 let gravity: VideoGravity
                 if scale > 1.08 {
@@ -344,16 +347,14 @@ struct MobilePlayerGestureLayer: View {
 
     private func edgeGauge(for adjustment: EdgeAdjustment) -> some View {
         VStack(spacing: 8) {
-            GeometryReader { proxy in
-                ZStack(alignment: .bottom) {
-                    Capsule()
-                        .fill(Color.white.opacity(0.25))
-                    Capsule()
-                        .fill(Color.white)
-                        .frame(height: max(proxy.size.height * gaugeFraction, 6))
-                }
+            ZStack(alignment: .bottom) {
+                Capsule()
+                    .fill(Color.white.opacity(0.25))
+                Capsule()
+                    .fill(Color.white)
+                    .frame(height: max(Self.gaugeHeight * gaugeFraction, 6))
             }
-            .frame(width: 6, height: 130)
+            .frame(width: 6, height: Self.gaugeHeight)
 
             Image(systemName: adjustment == .brightness
                 ? "sun.max.fill"

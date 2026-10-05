@@ -9,7 +9,6 @@ final class DeviceSnapshotBuilderTests: XCTestCase {
             DiagnosticsCapabilityProbe.AudioRouteOutput(
                 portType: "HDMI",
                 rawUID: rawUID,
-                portName: "Receiver",
                 channels: 8
             ),
         ])
@@ -21,7 +20,6 @@ final class DeviceSnapshotBuilderTests: XCTestCase {
 
         XCTAssertTrue(encoded.contains(expectedHash))
         XCTAssertFalse(encoded.contains(rawUID))
-        XCTAssertFalse(encoded.contains("Receiver"))
         XCTAssertTrue(encoded.contains(#""passthrough":"unknown""#))
     }
 

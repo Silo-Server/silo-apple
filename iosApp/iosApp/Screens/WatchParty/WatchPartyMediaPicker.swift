@@ -317,13 +317,14 @@ struct WatchPartyMediaPicker: View {
     /// carries the purpose, search, and Close; Up from the first row hands
     /// focus to it, exactly as Home hands focus to the top bar.
     private var tvBody: some View {
-        ZStack(alignment: .top) {
+        let shelves = sections
+        return ZStack(alignment: .top) {
             Color.siloBackground.ignoresSafeArea()
-            if sections.isEmpty {
+            if shelves.isEmpty {
                 tvEmptyState
             } else {
                 TVSkylineSectionFeed(
-                    sections: sections,
+                    sections: shelves,
                     focusRequest: feedFocusRequest,
                     isTopMenuFocused: chromeHasFocus,
                     onTopMenuFocusRequest: { chromeFocus = .search },
@@ -347,7 +348,7 @@ struct WatchPartyMediaPicker: View {
         .onChange(of: chromeFocus) { _, focus in
             if focus == nil { feedFocusRequest += 1 }
         }
-        .onChange(of: sections.map(\.id)) { _, ids in
+        .onChange(of: shelves.map(\.id)) { _, ids in
             if !ids.isEmpty, chromeFocus == nil { feedFocusRequest += 1 }
         }
     }
@@ -417,11 +418,14 @@ struct WatchPartyMediaPicker: View {
             LazyVStack(alignment: .leading, spacing: HomeFeedMetrics.sectionSpacing) {
                 if isSearching {
                     searchResults
-                } else if sections.isEmpty {
-                    phoneEmptyState
                 } else {
-                    ForEach(sections) { section in
-                        phoneRow(section)
+                    let shelves = sections
+                    if shelves.isEmpty {
+                        phoneEmptyState
+                    } else {
+                        ForEach(shelves) { section in
+                            phoneRow(section)
+                        }
                     }
                 }
             }
@@ -587,9 +591,10 @@ struct WatchPartyMediaPicker: View {
         if reset { continuation = nil; items = [] }
         defer { if loadID == requestID { isLoading = false } }
         if reset {
-            async let picker: Void = session.capabilities?.picker == true ? session.refreshPicker() : ()
-            async let watchlist: Void = session.capabilities?.picker != true && watchlistItems.isEmpty
-                ? loadWatchlistFallback(roomId: roomId) : ()
+            let usesPicker = session.capabilities?.picker == true
+            let needsWatchlist = !usesPicker && watchlistItems.isEmpty
+            async let picker: Void = usesPicker ? session.refreshPicker() : ()
+            async let watchlist: Void = needsWatchlist ? loadWatchlistFallback(roomId: roomId) : ()
             async let home: Void = loadHomeShelves(roomId: roomId)
             async let series: Void = loadRecentSeries(roomId: roomId)
             _ = await (picker, watchlist, home, series)
@@ -709,7 +714,7 @@ private struct WatchPartySearchPage: View {
                         .font(.siloCaption)
                         .foregroundColor(.siloSecondaryText)
                     TVCatalogGrid(
-                        items: viewModel.results.filter { !$0.isAudiobook },
+                        items: viewModel.results,
                         isLoading: viewModel.isSearching,
                         hasMore: viewModel.hasMore,
                         onItemTap: onPick,
@@ -925,7 +930,7 @@ private struct WatchPartyEpisodePicker: View {
             Group {
                 if let still = episode.stillUrl, !still.isEmpty {
                     AsyncImageView(url: still, thumbhash: episode.stillThumbhash,
-                                   targetSize: CGSize(width: Self.stillWidth * 2, height: Self.stillWidth * 9 / 8))
+                                   targetSize: CGSize(width: Self.stillWidth, height: Self.stillWidth * 9 / 16))
                 } else {
                     Rectangle().fill(Color.siloSurfaceElevated)
                         .overlay { Image(systemName: "tv").foregroundStyle(Color.siloSecondaryText) }

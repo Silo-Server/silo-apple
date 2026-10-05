@@ -896,15 +896,6 @@ final class UICustomizationPreferencesTests: XCTestCase {
             ).isEmpty,
             "an inaccessible pinned ID must not fall through to another library"
         )
-        XCTAssertFalse(
-            libraryRootCanSwitch(fixedLibraryId: second.id, visibleLibraryCount: 1),
-            "a direct root with no same-type siblings disables the library picker"
-        )
-        XCTAssertTrue(
-            libraryRootCanSwitch(fixedLibraryId: second.id, visibleLibraryCount: 2),
-            "a direct root with same-type siblings allows switching via the top selector"
-        )
-        XCTAssertTrue(libraryRootCanSwitch(fixedLibraryId: nil, visibleLibraryCount: 2))
 
         XCTAssertEqual(
             resolvedLibraryIdForRoot(
@@ -1248,7 +1239,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         }
         await transport.waitForCompletedWrites(2)
         await release.value
-        try await Task.sleep(nanoseconds: 20_000_000)
+        await preferences.waitForPendingSaves()
 
         let snapshot = await transport.snapshot()
         let presentations = try snapshot.values.map {
@@ -1397,7 +1388,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
             .builtin(.forYou),
         ])
         await transport.waitForCompletedWrites(2)
-        try await Task.sleep(nanoseconds: 20_000_000)
+        await preferences.waitForPendingSaves()
         let writtenKeys = await transport.writtenKeys()
         let wholeShortcutPutCount = await transport.wholeShortcutPutCount()
 
@@ -1623,7 +1614,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         preferences.setLibraryPinned(first, isPinned: true)
         preferences.setLibraryPinned(second, isPinned: true)
         await transport.waitForCompletedWrites(3)
-        try await Task.sleep(nanoseconds: 30_000_000)
+        await preferences.waitForPendingSaves()
 
         XCTAssertTrue(preferences.isLibraryPinned(7))
         XCTAssertFalse(
@@ -1737,7 +1728,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         await transport.releaseFirstShortcutOperation()
         await transport.waitForCompletedShortcutOperations(1)
         await transport.waitForGenericPuts(1)
-        try await Task.sleep(nanoseconds: 30_000_000)
+        await preferences.waitForPendingSaves()
 
         let snapshot = await transport.snapshot()
         XCTAssertEqual(snapshot.genericPutCount, 1)
@@ -1832,7 +1823,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         await transport.releaseFirstShortcutOperation()
         await transport.waitForCompletedShortcutOperations(1)
         await transport.waitForGenericPuts(1)
-        try await Task.sleep(nanoseconds: 30_000_000)
+        await preferences.waitForPendingSaves()
 
         let snapshot = await transport.snapshot()
         XCTAssertEqual(snapshot.genericPutCount, 1)
@@ -2710,7 +2701,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         }
         XCTAssertTrue(preferences.hasHeldChanges, "the change is held once the bound runs out")
         XCTAssertEqual(preferences.syncErrorMessage, HeldSettingChange.message)
-        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertFalse(preferences.hasArmedOutboxRetry, "no retry after the bound")
         let heldEvents = await transport.snapshot().events
         XCTAssertEqual(heldEvents, ["put-failed", "put-failed", "put-failed"], "no retry after the bound")
 
@@ -2868,7 +2859,6 @@ final class UICustomizationPreferencesTests: XCTestCase {
         XCTAssertFalse(unavailable.allowsEditing)
         XCTAssertEqual(unavailable.cardPresentation, .standard)
         XCTAssertNil(unavailable.primaryMenu)
-        XCTAssertFalse(unavailable.hasExplicitPrimaryMenu)
         XCTAssertEqual(
             snapshot.putAttempts,
             2,
@@ -3006,7 +2996,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
             clientFamily: "mobile"
         )
         await transport.releaseFirstWrite()
-        try await Task.sleep(nanoseconds: 50_000_000)
+        await preferences.waitForPendingSaves()
 
         let snapshot = await transport.snapshot()
         XCTAssertEqual(snapshot.identities, [testRequestIdentity(family: "mobile")])

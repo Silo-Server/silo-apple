@@ -12,7 +12,7 @@ struct AudioFullPlayerView: View {
     var body: some View {
         let player = audioStore.player
         ZStack {
-            AudioPlayerBackground(palette: player.palette)
+            AudioPlayerBackground(palette: player.palette, isPlaying: player.isPlaying)
             content(player: player)
         }
         #if os(tvOS)

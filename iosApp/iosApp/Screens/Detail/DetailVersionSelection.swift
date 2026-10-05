@@ -1,8 +1,6 @@
 import Foundation
 
 enum DetailVersionSelection {
-    private static let autoId = "auto"
-
     static func displayVersion(
         versions: [FileVersion],
         selectedFileId: Int?,
@@ -26,26 +24,15 @@ enum DetailVersionSelection {
         }
     }
 
+    /// The stored quality as a resolution cap, or nil when it caps nothing.
     private static func normalizedQualityPreference(_ quality: String?) -> String? {
-        let normalized = normalizeStoredQualityId(quality)
-        return normalized == autoId ? nil : normalized
-    }
-
-    private static func normalizeStoredQualityId(_ raw: String?) -> String {
-        let value = raw?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased() ?? ""
-        switch value {
-        case "", autoId, "original", "2160p", "4k", "uhd":
-            return autoId
-        case "420p":
-            return "328p"
-        case "1080p-high", "1080p-medium", "1080p", "1080p-8",
-             "720p-high", "720p-medium", "720p", "480p", "328p":
-            return value
-        default:
-            return autoId
-        }
+        let id = ApplePlaybackQuality.normalizeStoredId(quality)
+        let uncapped = [
+            ApplePlaybackQuality.autoId,
+            ApplePlaybackQuality.originalId,
+            ApplePlaybackQuality.ultraHDId,
+        ]
+        return uncapped.contains(id) ? nil : id
     }
 
     private static func score(for version: FileVersion, preferredQuality: String?) -> Int {

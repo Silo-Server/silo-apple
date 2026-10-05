@@ -140,7 +140,7 @@ struct PhonePlaybackSelectorRow: View {
         for kind: PhonePlaybackSelectorKind
     ) -> PhonePlaybackSelectorSheet {
         PhonePlaybackSelectorSheet(
-            kinds: [kind],
+            kind: kind,
             versions: versions,
             currentVersion: currentVersion,
             selectedVersionFileId: selectedVersionFileId,
@@ -162,15 +162,7 @@ struct PhonePlaybackSelectorRow: View {
     }
 
     /// Settings-style rows: icon and label lead, value trails, chevron last.
-    ///
-    /// Replaced a two-column `LazyVGrid` that stranded the third selector
-    /// alone in the leading column, so the common version / audio /
-    /// subtitles case always read as a broken form. A horizontally
-    /// scrollable chip strip was tried first and was worse: three chips need
-    /// more width than a phone has, so subtitles fell off the edge entirely
-    /// and the most-hunted control became the invisible one. Rows never
-    /// truncate, never go ragged, and absorb a fourth edition picker by
-    /// simply growing.
+    /// Rows never truncate and grow to fit the edition selector.
     private var selectorCard: some View {
         VStack(spacing: 0) {
             ForEach(Array(selectorKinds.enumerated()), id: \.element.id) { index, kind in
@@ -323,9 +315,7 @@ struct PhonePlaybackSelectorRow: View {
     }
 }
 private struct PhonePlaybackSelectorSheet: View {
-    /// One entry when opened from a single control, all of them when opened
-    /// from the `.summary` row.
-    let kinds: [PhonePlaybackSelectorKind]
+    let kind: PhonePlaybackSelectorKind
     let versions: [FileVersion]
     let currentVersion: FileVersion?
     let selectedVersionFileId: Int?
@@ -366,7 +356,7 @@ private struct PhonePlaybackSelectorSheet: View {
                 await ProfilePrefsStore.shared.hydrateIfNeeded()
                 preferredSubtitleLanguage = ProfilePrefsStore.shared.preferredSubtitleLanguage
             }
-            .navigationTitle(sheetTitle)
+            .navigationTitle(kind.title)
             #if !os(macOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
@@ -401,30 +391,15 @@ private struct PhonePlaybackSelectorSheet: View {
 
     @ViewBuilder
     private var optionContent: some View {
-        ForEach(kinds) { kind in
-            switch kind {
-            case .edition:
-                editionOptions
-            case .version:
-                versionOptions
-            case .audio:
-                audioOptions
-            case .subtitles:
-                subtitleOptions
-            }
-        }
-    }
-
-    private var sheetTitle: String {
-        kinds.count == 1 ? (kinds.first?.title ?? "Playback") : "Playback"
-    }
-
-    /// Section headers only earn their space when the sheet holds more than
-    /// one selector; a single-selector sheet already says so in its title.
-    @ViewBuilder
-    private func sectionHeader(_ kind: PhonePlaybackSelectorKind) -> some View {
-        if kinds.count > 1 {
-            Text(kind.title)
+        switch kind {
+        case .edition:
+            editionOptions
+        case .version:
+            versionOptions
+        case .audio:
+            audioOptions
+        case .subtitles:
+            subtitleOptions
         }
     }
 
@@ -451,8 +426,6 @@ private struct PhonePlaybackSelectorSheet: View {
                     }
                 }
             }
-        } header: {
-            sectionHeader(.edition)
         }
     }
 
@@ -477,8 +450,6 @@ private struct PhonePlaybackSelectorSheet: View {
                     dismiss()
                 }
             }
-        } header: {
-            sectionHeader(.version)
         }
     }
 
@@ -518,8 +489,6 @@ private struct PhonePlaybackSelectorSheet: View {
                     }
                 }
             }
-        } header: {
-            sectionHeader(.audio)
         }
     }
 
@@ -559,8 +528,6 @@ private struct PhonePlaybackSelectorSheet: View {
                     }
                 }
             }
-        } header: {
-            sectionHeader(.subtitles)
         }
     }
 

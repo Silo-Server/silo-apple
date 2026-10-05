@@ -53,29 +53,15 @@ struct AudioMiniPlayerView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, isInline ? 4 : 8)
             .modifier(NowPlayingBarChrome(style: style))
-            .overlay(alignment: .bottomLeading) {
-                GeometryReader { proxy in
-                    Capsule()
-                        .fill(player.palette.accent)
-                        .frame(
-                            width: proxy.size.width * progressFraction(player: player),
-                            height: 2
-                        )
-                        .frame(maxHeight: .infinity, alignment: .bottom)
-                }
-                // Inset so the hairline stays inside the card's rounded
-                // corners; the GeometryReader reads the inset width.
-                .padding(.horizontal, 12)
-                .accessibilityHidden(true)
+            .overlay(alignment: .bottom) {
+                AudioMiniProgressLine(player: player)
+                    // Inset so the hairline stays inside the card's rounded corners.
+                    .padding(.horizontal, 12)
+                    .accessibilityHidden(true)
             }
             .padding(.horizontal, style == .card ? 16 : 0)
             .padding(.bottom, style == .card ? 8 : 0)
         }
-    }
-
-    private func progressFraction(player: AudioPlayerViewModel) -> CGFloat {
-        guard player.duration > 0 else { return 0 }
-        return CGFloat(min(max(player.currentTime / player.duration, 0), 1))
     }
 
     private func subtitleLine(player: AudioPlayerViewModel) -> String {
@@ -83,5 +69,24 @@ struct AudioMiniPlayerView: View {
             return chapter.title ?? "Chapter \(chapter.index + 1)"
         }
         return player.subtitle ?? PlayerTimeFormatter.formatHMS(player.currentTime)
+    }
+}
+
+/// Accent progress hairline. A separate view so only it, not the whole bar,
+/// re-renders on each playhead tick.
+private struct AudioMiniProgressLine: View {
+    let player: AudioPlayerViewModel
+
+    private var fraction: CGFloat {
+        guard player.duration > 0 else { return 0 }
+        return CGFloat(min(max(player.currentTime / player.duration, 0), 1))
+    }
+
+    var body: some View {
+        Capsule()
+            .fill(player.palette.accent)
+            .frame(height: 2)
+            .scaleEffect(x: fraction, y: 1, anchor: .leading)
+            .allowsHitTesting(false)
     }
 }

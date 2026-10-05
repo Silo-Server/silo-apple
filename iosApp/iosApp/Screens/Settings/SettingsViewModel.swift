@@ -31,43 +31,101 @@ final class SettingsViewModel {
         #endif
     }
 
-    // Playback preferences (server-backed for this device/profile).
+    // Playback preferences (server-backed for this device/profile). Each one
+    // reads and writes ``PlayerSettings`` directly. It is observable, so the
+    // screens follow a reset, a refresh or an in-player change without a copy.
 
     /// The selected shared preset's id, or nil when the stored pair is a
     /// combination no preset covers. The picker shows ``preferredQualityLabel``
     /// in that case rather than snapping to a nearby preset, which would show
     /// the user a choice they did not make.
-    var preferredQualityPresetId: String? = PlayerSettings.shared.currentQualityPreset?.id
+    var preferredQualityPresetId: String? { PlayerSettings.shared.currentQualityPreset?.id }
     /// A label for whatever pair is stored, preset or not.
-    var preferredQualityLabel: String = PlayerSettings.shared.preferredQualityLabel
-    var preferredAudioLanguage: String = PlayerSettings.shared.audioLanguage
-    var autoPlayNext: Bool = PlayerSettings.shared.autoPlayNextEpisode
-    var nextUpPromptSeconds: Int = PlayerSettings.shared.nextUpPromptSeconds
-    var introSkipMode: IntroSkipMode = PlayerSettings.shared.introSkipMode
-    var skipCredits: Bool = PlayerSettings.shared.autoSkipCredits
-    var dolbyVisionEnabled: Bool = PlayerSettings.shared.dolbyVisionEnabled
-    var seekCacheEnabled: Bool = PlayerSettings.shared.seekCacheEnabled
+    var preferredQualityLabel: String { PlayerSettings.shared.preferredQualityLabel }
+
+    var preferredAudioLanguage: String {
+        get { PlayerSettings.shared.audioLanguage }
+        set { PlayerSettings.shared.setAudioLanguage(newValue) }
+    }
+
+    var autoPlayNext: Bool {
+        get { PlayerSettings.shared.autoPlayNextEpisode }
+        set { PlayerSettings.shared.setAutoPlayNextEpisode(newValue) }
+    }
+
+    var nextUpPromptSeconds: Int {
+        get { PlayerSettings.shared.nextUpPromptSeconds }
+        set { PlayerSettings.shared.setNextUpPromptSeconds(newValue) }
+    }
+
+    var introSkipMode: IntroSkipMode {
+        get { PlayerSettings.shared.introSkipMode }
+        set { PlayerSettings.shared.setIntroSkipMode(newValue) }
+    }
+
+    var skipCredits: Bool {
+        get { PlayerSettings.shared.autoSkipCredits }
+        set { PlayerSettings.shared.setAutoSkipCredits(newValue) }
+    }
+
+    var dolbyVisionEnabled: Bool {
+        get { PlayerSettings.shared.dolbyVisionEnabled }
+        set { PlayerSettings.shared.setDolbyVisionEnabled(newValue) }
+    }
+
+    var seekCacheEnabled: Bool {
+        get { PlayerSettings.shared.seekCacheEnabled }
+        set { PlayerSettings.shared.setSeekCacheEnabled(newValue) }
+    }
+
     /// Local — it describes this device's audio sink, not the profile.
-    var losslessAudioEnabled: Bool = PlayerSettings.shared.losslessAudioEnabled
+    var losslessAudioEnabled: Bool {
+        get { PlayerSettings.shared.losslessAudioEnabled }
+        set { PlayerSettings.shared.setLosslessAudioEnabled(newValue) }
+    }
+
     #if !os(tvOS)
     /// Local — it is a habit of this device, not of the profile.
-    var backgroundPlaybackEnabled: Bool = PlayerSettings.shared.backgroundPlaybackEnabled
+    var backgroundPlaybackEnabled: Bool {
+        get { PlayerSettings.shared.backgroundPlaybackEnabled }
+        set { PlayerSettings.shared.setBackgroundPlaybackEnabled(newValue) }
+    }
     #endif
+
     /// Local — it spends this device's temporary storage, not the profile's.
-    var bufferAhead: BufferAheadMode = PlayerSettings.shared.bufferAhead
+    var bufferAhead: BufferAheadMode {
+        get { PlayerSettings.shared.bufferAhead }
+        set { PlayerSettings.shared.setBufferAhead(newValue) }
+    }
+
     /// Local — it describes this device's GPU, not the profile.
-    var deinterlaceMode: DeinterlacePreference = PlayerSettings.shared.deinterlaceMode
+    var deinterlaceMode: DeinterlacePreference {
+        get { PlayerSettings.shared.deinterlaceMode }
+        set { PlayerSettings.shared.setDeinterlaceMode(newValue) }
+    }
+
     /// Local, for the same reason as ``deinterlaceMode``.
-    var deinterlaceFieldRate: DeinterlaceFieldRatePreference =
-        PlayerSettings.shared.deinterlaceFieldRate
+    var deinterlaceFieldRate: DeinterlaceFieldRatePreference {
+        get { PlayerSettings.shared.deinterlaceFieldRate }
+        set { PlayerSettings.shared.setDeinterlaceFieldRate(newValue) }
+    }
+
     /// Local — what this device plays into is a fact about its room.
-    var trueHDAtmosEnabled: Bool = PlayerSettings.shared.trueHDAtmosEnabled
+    var trueHDAtmosEnabled: Bool {
+        get { PlayerSettings.shared.trueHDAtmosEnabled }
+        set { PlayerSettings.shared.setTrueHDAtmosEnabled(newValue) }
+    }
 
     // Subtitle styling (local — applies to renderer overrides, not the
-    // language/behavior selection that lives server-side).
-    var subtitleAppearance: SubtitleAppearance = PlayerSettings.shared.subtitleAppearance
-    var subtitleUsesDeviceAppearanceOverride: Bool = PlayerSettings.shared.subtitleUsesDeviceAppearanceOverride
-    var subtitleMatchesSystemAppearance: Bool = PlayerSettings.shared.subtitleMatchesSystemAppearance
+    // language/behavior selection that lives server-side). Changed through
+    // the subtitle setters below.
+    var subtitleAppearance: SubtitleAppearance { PlayerSettings.shared.subtitleAppearance }
+    var subtitleUsesDeviceAppearanceOverride: Bool {
+        PlayerSettings.shared.subtitleUsesDeviceAppearanceOverride
+    }
+    var subtitleMatchesSystemAppearance: Bool {
+        PlayerSettings.shared.subtitleMatchesSystemAppearance
+    }
 
     /// What the player will actually render with: system captions, the
     /// device override, or the inherited server appearance.
@@ -133,6 +191,61 @@ final class SettingsViewModel {
     var profileAvatarImageUrl: String? {
         activeProfile?.avatarImageUrl
     }
+    #else
+    /// Account card title. Tapping the card switches profiles, so with no
+    /// name to show it says that instead.
+    var displayName: String {
+        if let name = activeProfile?.name, !name.isEmpty {
+            return name
+        }
+        if let username = userInfo?.username, !username.isEmpty {
+            return username
+        }
+        return "Switch Profile"
+    }
+
+    /// Account card subtitle: the username when the title is not already
+    /// showing it, and the server host.
+    var accountSubtitleLine: String {
+        let host = serverHost
+        let username = userInfo?.username
+        switch (username, host) {
+        case let (user?, host?) where !user.isEmpty && user != displayName:
+            return "\(user) · \(host)"
+        case let (_, host?):
+            return host
+        case let (user?, _) where !user.isEmpty && user != displayName:
+            return user
+        default:
+            return "Tap to switch profile"
+        }
+    }
+
+    private var serverHost: String? {
+        guard let url = URL(string: serverUrl), let host = url.host else {
+            return serverUrl.isEmpty ? nil : serverUrl
+        }
+        return host
+    }
+
+    /// The Subtitles row's value: the profile's subtitle language.
+    var subtitleLanguageName: String {
+        let tag = prefs.subtitleLanguage
+        if tag == PlaybackPrefSentinel.none || tag.isEmpty { return "None" }
+        return PlaybackLanguageOption.label(forCode: tag)
+    }
+
+    /// The app version, with the build number when it adds anything.
+    static let versionString: String = {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "1.0"
+        guard let build = info?["CFBundleVersion"] as? String,
+              !build.isEmpty,
+              build != version else {
+            return version
+        }
+        return "\(version) (\(build))"
+    }()
     #endif
 
     /// Main-actor isolated: it publishes into observable state the settings
@@ -142,25 +255,6 @@ final class SettingsViewModel {
     func loadSettings() async {
         prefs.bindProfile(id: AuthService.shared.profileId)
         await PlayerSettings.shared.refreshFromServer()
-        adoptQualityFromPlayerSettings()
-        preferredAudioLanguage = PlayerSettings.shared.audioLanguage
-        autoPlayNext = PlayerSettings.shared.autoPlayNextEpisode
-        nextUpPromptSeconds = PlayerSettings.shared.nextUpPromptSeconds
-        introSkipMode = PlayerSettings.shared.introSkipMode
-        skipCredits = PlayerSettings.shared.autoSkipCredits
-        dolbyVisionEnabled = PlayerSettings.shared.dolbyVisionEnabled
-        seekCacheEnabled = PlayerSettings.shared.seekCacheEnabled
-        losslessAudioEnabled = PlayerSettings.shared.losslessAudioEnabled
-        #if !os(tvOS)
-        backgroundPlaybackEnabled = PlayerSettings.shared.backgroundPlaybackEnabled
-        #endif
-        bufferAhead = PlayerSettings.shared.bufferAhead
-        deinterlaceMode = PlayerSettings.shared.deinterlaceMode
-        deinterlaceFieldRate = PlayerSettings.shared.deinterlaceFieldRate
-        trueHDAtmosEnabled = PlayerSettings.shared.trueHDAtmosEnabled
-        subtitleAppearance = PlayerSettings.shared.subtitleAppearance
-        subtitleUsesDeviceAppearanceOverride = PlayerSettings.shared.subtitleUsesDeviceAppearanceOverride
-        subtitleMatchesSystemAppearance = PlayerSettings.shared.subtitleMatchesSystemAppearance
 
         async let user: UserInfo? = try? SiloAPI.shared.currentUser()
         async let profiles: [UserProfile] = (try? AuthService.shared.getProfiles()) ?? []
@@ -184,102 +278,15 @@ final class SettingsViewModel {
     }
 
     /// Apply a shared quality preset, which stores the contract's two axes.
-    @MainActor
-    func setQualityPreset(_ presetId: String) async {
+    func setQualityPreset(_ presetId: String) {
         guard let preset = SiloQualityPresets.preset(id: presetId) else { return }
         PlayerSettings.shared.setQualityPreset(preset)
-        adoptQualityFromPlayerSettings()
-    }
-
-    private func adoptQualityFromPlayerSettings() {
-        preferredQualityPresetId = PlayerSettings.shared.currentQualityPreset?.id
-        preferredQualityLabel = PlayerSettings.shared.preferredQualityLabel
-    }
-
-    @MainActor
-    func setPreferredAudioLanguage(_ value: String) async {
-        PlayerSettings.shared.setAudioLanguage(value)
-        preferredAudioLanguage = PlayerSettings.shared.audioLanguage
-    }
-
-    @MainActor
-    func setAutoPlayNext(_ enabled: Bool) async {
-        PlayerSettings.shared.setAutoPlayNextEpisode(enabled)
-        autoPlayNext = PlayerSettings.shared.autoPlayNextEpisode
-    }
-
-    @MainActor
-    func setNextUpPromptSeconds(_ seconds: Int) async {
-        PlayerSettings.shared.setNextUpPromptSeconds(seconds)
-        nextUpPromptSeconds = PlayerSettings.shared.nextUpPromptSeconds
-    }
-
-    @MainActor
-    func setIntroSkipMode(_ mode: IntroSkipMode) async {
-        PlayerSettings.shared.setIntroSkipMode(mode)
-        introSkipMode = PlayerSettings.shared.introSkipMode
-    }
-
-    @MainActor
-    func setSkipCredits(_ enabled: Bool) async {
-        PlayerSettings.shared.setAutoSkipCredits(enabled)
-        skipCredits = PlayerSettings.shared.autoSkipCredits
-    }
-
-    @MainActor
-    func setDolbyVisionEnabled(_ enabled: Bool) async {
-        PlayerSettings.shared.setDolbyVisionEnabled(enabled)
-        dolbyVisionEnabled = PlayerSettings.shared.dolbyVisionEnabled
-    }
-
-    @MainActor
-    func setSeekCacheEnabled(_ enabled: Bool) async {
-        PlayerSettings.shared.setSeekCacheEnabled(enabled)
-        seekCacheEnabled = PlayerSettings.shared.seekCacheEnabled
-    }
-
-    @MainActor
-    func setLosslessAudioEnabled(_ enabled: Bool) async {
-        PlayerSettings.shared.setLosslessAudioEnabled(enabled)
-        losslessAudioEnabled = PlayerSettings.shared.losslessAudioEnabled
-    }
-
-    #if !os(tvOS)
-    @MainActor
-    func setBackgroundPlaybackEnabled(_ enabled: Bool) async {
-        PlayerSettings.shared.setBackgroundPlaybackEnabled(enabled)
-        backgroundPlaybackEnabled = PlayerSettings.shared.backgroundPlaybackEnabled
-    }
-    #endif
-
-    @MainActor
-    func setBufferAhead(_ mode: BufferAheadMode) async {
-        PlayerSettings.shared.setBufferAhead(mode)
-        bufferAhead = PlayerSettings.shared.bufferAhead
-    }
-
-    @MainActor
-    func setDeinterlaceMode(_ mode: DeinterlacePreference) async {
-        PlayerSettings.shared.setDeinterlaceMode(mode)
-        deinterlaceMode = PlayerSettings.shared.deinterlaceMode
-    }
-
-    @MainActor
-    func setDeinterlaceFieldRate(_ rate: DeinterlaceFieldRatePreference) async {
-        PlayerSettings.shared.setDeinterlaceFieldRate(rate)
-        deinterlaceFieldRate = PlayerSettings.shared.deinterlaceFieldRate
-    }
-
-    @MainActor
-    func setTrueHDAtmosEnabled(_ enabled: Bool) async {
-        PlayerSettings.shared.setTrueHDAtmosEnabled(enabled)
-        trueHDAtmosEnabled = PlayerSettings.shared.trueHDAtmosEnabled
     }
 
     // MARK: Held and refused playback changes
 
     /// A device playback change ran out of automatic retries and is held on
-    /// this device (owner decision D4).
+    /// this device.
     var hasHeldPlaybackChanges: Bool { !PlayerSettings.shared.heldDeviceSettingKeys.isEmpty }
 
     /// The server definitively refused a device playback change.
@@ -313,7 +320,6 @@ final class SettingsViewModel {
         let held = PlayerSettings.shared.heldDeviceSettingKeys
         let discarded = await PlayerSettings.shared.discardHeldDeviceSettingChanges()
         undiscardedHeldPlaybackKeys = discarded ? nil : held
-        adoptPlaybackSettings()
     }
 
     /// Clears the notice and repaints what the server holds.
@@ -321,59 +327,24 @@ final class SettingsViewModel {
     func acknowledgeRejectedPlaybackChange() async {
         PlayerSettings.shared.dismissDeviceSettingRejection()
         await PlayerSettings.shared.refreshFromServer()
-        adoptPlaybackSettings()
     }
 
     @MainActor
     func resetPlaybackDeviceSettings() async {
         await PlayerSettings.shared.resetAllDeviceSettings()
-        adoptPlaybackSettings()
-    }
-
-    /// Mirror every playback row from ``PlayerSettings`` after it changed
-    /// underneath the screen (a reset, a discarded or refused change).
-    @MainActor
-    private func adoptPlaybackSettings() {
-        adoptQualityFromPlayerSettings()
-        preferredAudioLanguage = PlayerSettings.shared.audioLanguage
-        autoPlayNext = PlayerSettings.shared.autoPlayNextEpisode
-        nextUpPromptSeconds = PlayerSettings.shared.nextUpPromptSeconds
-        introSkipMode = PlayerSettings.shared.introSkipMode
-        skipCredits = PlayerSettings.shared.autoSkipCredits
-        dolbyVisionEnabled = PlayerSettings.shared.dolbyVisionEnabled
-        seekCacheEnabled = PlayerSettings.shared.seekCacheEnabled
-        // The device-local rows are restored by the same reset, so the screen
-        // has to re-adopt them too or it keeps showing the old choice.
-        losslessAudioEnabled = PlayerSettings.shared.losslessAudioEnabled
-        #if !os(tvOS)
-        backgroundPlaybackEnabled = PlayerSettings.shared.backgroundPlaybackEnabled
-        #endif
-        bufferAhead = PlayerSettings.shared.bufferAhead
-        deinterlaceMode = PlayerSettings.shared.deinterlaceMode
-        deinterlaceFieldRate = PlayerSettings.shared.deinterlaceFieldRate
-        trueHDAtmosEnabled = PlayerSettings.shared.trueHDAtmosEnabled
-        subtitleAppearance = PlayerSettings.shared.subtitleAppearance
-        subtitleUsesDeviceAppearanceOverride = PlayerSettings.shared.subtitleUsesDeviceAppearanceOverride
     }
 
     @MainActor
     func setSubtitleAppearance(_ appearance: SubtitleAppearance) async {
         await PlayerSettings.shared.setSubtitleAppearance(appearance)
-        subtitleAppearance = PlayerSettings.shared.subtitleAppearance
-        subtitleUsesDeviceAppearanceOverride = PlayerSettings.shared.subtitleUsesDeviceAppearanceOverride
-        subtitleMatchesSystemAppearance = PlayerSettings.shared.subtitleMatchesSystemAppearance
     }
 
     @MainActor
     func setSubtitleDeviceOverrideEnabled(_ enabled: Bool) async {
         await PlayerSettings.shared.setSubtitleDeviceOverrideEnabled(enabled)
-        subtitleAppearance = PlayerSettings.shared.subtitleAppearance
-        subtitleUsesDeviceAppearanceOverride = PlayerSettings.shared.subtitleUsesDeviceAppearanceOverride
     }
 
-    @MainActor
-    func setSubtitleMatchesSystemAppearance(_ enabled: Bool) async {
+    func setSubtitleMatchesSystemAppearance(_ enabled: Bool) {
         PlayerSettings.shared.setSubtitleMatchesSystemAppearance(enabled)
-        subtitleMatchesSystemAppearance = PlayerSettings.shared.subtitleMatchesSystemAppearance
     }
 }

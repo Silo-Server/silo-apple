@@ -18,7 +18,7 @@ struct PhoneSimilarRail: View {
     @State private var items: [SimilarPosterItem] = []
     @State private var isLoading = true
     @State private var loadedFor: String? = nil
-    @State private var uiCustomization = UICustomizationPreferences.shared
+    private var uiCustomization: UICustomizationPreferences { .shared }
 
     var body: some View {
         Group {
@@ -32,8 +32,6 @@ struct PhoneSimilarRail: View {
     }
 
     private func section(@ViewBuilder content: () -> some View) -> some View {
-        // Header-to-content gap matches the parents' former
-        // `VStack(spacing: 14)` so the page rhythm is unchanged.
         VStack(alignment: .leading, spacing: 14) {
             PhoneSectionHeader(title: "More Like This")
                 .padding(.horizontal, SiloTheme.safePadding)
@@ -74,7 +72,6 @@ struct PhoneSimilarRail: View {
     private func load() async {
         // Bail if we already populated for this id.
         guard loadedFor != contentId else { return }
-        loadedFor = contentId
         isLoading = true
         items = []
 
@@ -85,8 +82,12 @@ struct PhoneSimilarRail: View {
             )
             items = cards.map(SimilarPosterItem.init(card:))
         } catch {
+            // Cancelled because the page left the screen (e.g. Play was
+            // pressed early): load again when it comes back.
+            guard !Task.isCancelled else { return }
             items = []
         }
+        loadedFor = contentId
         isLoading = false
     }
 }
@@ -99,7 +100,6 @@ struct PhoneSimilarRail: View {
 /// for audiobook covers.
 struct PhonePosterRail: View {
     let title: String
-    var trailingText: String? = nil
     let items: [SimilarPosterItem]
     var aspectRatio: CGFloat = SiloTheme.posterCardWidth / SiloTheme.posterCardHeight
     var placeholderSymbol: String = "film"
@@ -108,7 +108,7 @@ struct PhonePosterRail: View {
     var body: some View {
         if !items.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
-                PhoneSectionHeader(title: title, trailingText: trailingText)
+                PhoneSectionHeader(title: title)
                     .padding(.horizontal, SiloTheme.safePadding)
                 PhonePosterRailCards(
                     items: items,
@@ -198,7 +198,7 @@ private struct PhonePosterCard: View {
     let item: SimilarPosterItem
     let aspectRatio: CGFloat
     let placeholderSymbol: String
-    @State private var uiCustomization = UICustomizationPreferences.shared
+    private var uiCustomization: UICustomizationPreferences { .shared }
 
     private var cardWidth: CGFloat {
         SiloTheme.posterCardWidth * uiCustomization.cardPresentation.posterSize.scale

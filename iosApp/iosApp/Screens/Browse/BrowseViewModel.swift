@@ -5,7 +5,9 @@ import Foundation
 class BrowseViewModel {
     var items: [BrowseItem] = []
     var isLoading = false
-    var isRefreshing = false
+    /// False until this library's first load finishes, so the grid shows its
+    /// placeholder rather than "No items found" before anything was fetched.
+    private(set) var hasLoaded = false
     var error: ErrorState?
     var hasMore = true
 
@@ -44,6 +46,7 @@ class BrowseViewModel {
             generation += 1
             continuation = nil
             hasMore = true
+            hasLoaded = false
             items = []
             filterState = BrowsePrefsStore.shared.savedState(libraryId: libraryId) ?? .none
         }
@@ -59,14 +62,9 @@ class BrowseViewModel {
     func loadItems(reset: Bool = false) async {
         if reset {
             generation += 1
-            if !items.isEmpty {
-                isRefreshing = true
-            } else {
-                // Surface the cached page-1 snapshot instantly so the grid
-                // doesn't blank out while the network call runs.
-                hydratePage1FromCache()
-                isRefreshing = !items.isEmpty
-            }
+            // Surface the cached page-1 snapshot instantly so the grid
+            // doesn't blank out while the network call runs.
+            hydratePage1FromCache()
             continuation = nil
             hasMore = true
         } else if isLoading {
@@ -146,12 +144,6 @@ class BrowseViewModel {
         await apply(next)
     }
 
-    func resetFilters() async {
-        var next = filterState
-        next.resetFilters()
-        await apply(next)
-    }
-
     /// Load the live facet vocabulary for the filter sheet.
     func loadFacetsIfNeeded() async {
         if facets != nil { return }
@@ -190,7 +182,7 @@ class BrowseViewModel {
     private func finishLoading(for completedGeneration: Int) {
         guard completedGeneration == generation else { return }
         isLoading = false
-        isRefreshing = false
+        hasLoaded = true
     }
 
     private func resolveMediaType(libraryId: Int?, libraryType: String?) async -> BrowseMediaType {

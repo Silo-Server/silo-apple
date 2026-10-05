@@ -44,7 +44,6 @@ struct APIv2DownloadEntry: Decodable, Hashable, Sendable {
     /// Opaque; compared and stored as a string.
     let mediaFileId: String
     let fileSize: Int64
-    let bytesSent: Int64
     let kind: String
     let status: String
     let quality: String
@@ -56,7 +55,6 @@ struct APIv2DownloadEntry: Decodable, Hashable, Sendable {
     let revision: Int
     let createdAt: Date
     let completedAt: Date?
-    let statusEventAt: Date?
     /// Listed preparing entries only, on a server with `preparationProgress`.
     let preparation: DownloadPreparation?
 

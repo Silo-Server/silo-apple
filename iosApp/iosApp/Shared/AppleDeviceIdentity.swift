@@ -28,10 +28,8 @@ struct AppleDeviceIdentity: Sendable {
     /// describe a running binary (see the memberwise init below).
     let channel: String
 
-    /// The new client-identity fields default to visibly-unresolved
-    /// placeholders. Only `current` is a real snapshot of this process; any
-    /// other construction (tests, synthetic identities) is not expected to
-    /// describe a shipped build.
+    /// Fields beyond the device identity default to visibly unresolved
+    /// placeholders; only `current` describes this process.
     init(
         id: String,
         name: String,

@@ -26,24 +26,6 @@ struct SiloControlHello: Codable, Equatable, Sendable {
     /// it. Lets a phone and a TV on different addresses of one server
     /// recognise each other. Optional on the wire: older peers omit it.
     var serverIdentity: String? = nil
-
-    init(
-        role: SiloControlPeerRole,
-        deviceName: String,
-        deviceId: String,
-        serverId: String?,
-        serverName: String?,
-        supportedVersions: [Int],
-        serverIdentity: String? = nil
-    ) {
-        self.role = role
-        self.deviceName = deviceName
-        self.deviceId = deviceId
-        self.serverId = serverId
-        self.serverName = serverName
-        self.supportedVersions = supportedVersions
-        self.serverIdentity = serverIdentity
-    }
 }
 
 struct SiloControlPlaybackRequest: Codable, Equatable, Sendable {
@@ -80,26 +62,6 @@ struct SiloControlHandoffOffer: Codable, Equatable, Sendable {
     /// Other addresses the deployment offers, from its connections document.
     /// Public first, then providers. Reachability is the TV's to test.
     var serverEndpoints: [ServerEndpoint]? = nil
-
-    init(
-        requestId: String,
-        serverId: String,
-        serverURL: String,
-        serverName: String?,
-        profileId: String,
-        profileName: String?,
-        serverIdentity: String? = nil,
-        serverEndpoints: [ServerEndpoint]? = nil
-    ) {
-        self.requestId = requestId
-        self.serverId = serverId
-        self.serverURL = serverURL
-        self.serverName = serverName
-        self.profileId = profileId
-        self.profileName = profileName
-        self.serverIdentity = serverIdentity
-        self.serverEndpoints = serverEndpoints
-    }
 
     /// Whether `serverId` is the registry key of `serverURL`
     /// (`ServerRegistry.serverId(for:)`). A TV refuses an offer that fails
@@ -167,18 +129,11 @@ struct SiloControlPlaybackState: Codable, Equatable, Sendable {
     let videoGravity: String
     let hdrEnabled: Bool
     let supportsVideoGravity: Bool
-    /// v2 WIRE COMPATIBILITY — do not remove without bumping
-    /// `SiloControlProtocol.version`.
-    ///
-    /// This build dropped the HDR toggle, but v2 peers that predate the removal
-    /// still require the key: Android's `SiloCastPlaybackState.supportsHDRToggle`
-    /// is a non-null `Boolean` with no kotlinx default, and older Apple builds
-    /// declared it non-optional too, so omitting it makes their whole state
-    /// frame fail to decode — which tears the session down, not just the field.
-    /// Always encoded as `false`, which is also the truth: this build has no
-    /// toggle to offer, so old peers correctly hide the control. Declared
-    /// `Optional` so an inbound frame that omits it still decodes. Nothing on
-    /// this side reads it.
+    /// v2 wire compatibility; keep until `SiloControlProtocol.version` bumps.
+    /// Older v2 peers (Android `SiloCastPlaybackState`, earlier Apple builds)
+    /// decode this as a required Bool, so omitting it fails the whole state
+    /// frame and drops the session. Always `false` (no HDR toggle here);
+    /// optional so frames without it still decode. Not read here.
     var supportsHDRToggle: Bool? = false
     var subtitleSyncMs: Int? = nil
     var subtitlePosition: String? = nil
@@ -249,8 +204,8 @@ struct SiloControlCommand: Codable, Equatable, Sendable {
         self.milliseconds = milliseconds
     }
 
-    // Explicit keys matching the previously synthesized ones, so the wire
-    // format is unchanged. `encode(to:)` stays synthesized against them.
+    // Wire keys. `encode(to:)` stays synthesized; fileprivate so
+    // `SiloControlMessage` can re-encode `.unsupportedControl`.
     fileprivate enum CodingKeys: String, CodingKey {
         case name, seconds, trackId, speed, volume, value, enabled, milliseconds
     }

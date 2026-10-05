@@ -1,7 +1,3 @@
-//
-//  OverlayPrefsStore.swift
-//  Silo (iOS + tvOS)
-//
 //  Cached card-overlay configuration for the signed-in profile.
 //  Resolves a single rendered `CardOverlayPrefs` from one of three
 //  sources, in this priority:
@@ -45,8 +41,10 @@ final class OverlayPrefsStore: ObservableObject {
     /// Resolved prefs (user value > admin defaults > registry
     /// defaults). Card views read this directly.
     @Published private(set) var prefs: CardOverlayPrefs = OverlaySchema.buildDefaults()
-    @Published private(set) var isLoading: Bool = false
-    @Published private(set) var lastError: String?
+    // Every mounted card observes this store, so only `enabled` and `prefs`
+    // publish, and only when they change. These two are read imperatively.
+    private(set) var isLoading: Bool = false
+    private(set) var lastError: String?
 
     private var hasHydrated = false
     private var adminDefaultsRaw: String?
@@ -115,12 +113,20 @@ final class OverlayPrefsStore: ObservableObject {
             }
         }
 
+        // The two reads are independent, so they run together.
+        let api = self.api
+        async let configRead = Self.result { try await api.overlayConfig() }
+        async let valuesRead = Self.result {
+            try await api.getEffectiveValues(keys: [.uiCardOverlays, .uiCardOverlaysEnabled])
+        }
+        let (configResult, valuesResult) = await (configRead, valuesRead)
+
         var resolvedEnabled = true
         var resolvedAdminDefaults: String?
         var resolvedError: String?
         var configFetchFailed = false
         do {
-            let config = try await api.overlayConfig()
+            let config = try configResult.get()
             resolvedEnabled = config.enabled
             resolvedAdminDefaults = config.defaults
         } catch {
@@ -134,9 +140,7 @@ final class OverlayPrefsStore: ObservableObject {
         var userFetchFailed = false
         var userUpgradeRequired = false
         do {
-            let response = try await api.getEffectiveValues(
-                keys: [.uiCardOverlays, .uiCardOverlaysEnabled]
-            )
+            let response = try valuesResult.get()
             if let entry = response.value(for: .uiCardOverlays),
                entry.source == .scope(.profile),
                entry.value != .null {
@@ -176,7 +180,8 @@ final class OverlayPrefsStore: ObservableObject {
         }
         // An explicit profile choice overrides the server-wide default in
         // either direction, matching the web's `useOverlayPrefs.ts`.
-        self.enabled = profileEnabled ?? serverEnabled
+        let effectiveEnabled = profileEnabled ?? serverEnabled
+        if enabled != effectiveEnabled { enabled = effectiveEnabled }
         // A transient user-read failure keeps the prior prefs. An
         // update-required answer is not transient and the user value can't
         // be read at all, so render the admin baseline instead (`userRaw`
@@ -186,7 +191,8 @@ final class OverlayPrefsStore: ObservableObject {
             // fall back to the cached value when the config fetch failed
             // this round but a prior refresh had captured it.
             let defaults = configFetchFailed ? adminDefaultsRaw : resolvedAdminDefaults
-            self.prefs = OverlaySchema.parse(userRaw ?? defaults)
+            let resolvedPrefs = OverlaySchema.parse(userRaw ?? defaults)
+            if prefs != resolvedPrefs { prefs = resolvedPrefs }
         }
         // Only complete hydration when BOTH endpoints gave a definitive
         // answer. Either failure leaves `hasHydrated` false so the
@@ -210,6 +216,14 @@ final class OverlayPrefsStore: ObservableObject {
         adminDefaultsRaw = nil
         hasHydrated = false
         lastError = nil
+    }
+
+    nonisolated private static func result<T>(_ operation: () async throws -> T) async -> Result<T, Error> {
+        do {
+            return .success(try await operation())
+        } catch {
+            return .failure(error)
+        }
     }
 
     // MARK: - Wire bridging

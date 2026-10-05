@@ -5,7 +5,7 @@ import Foundation
 /// survives an app suspension, so a reconcile must leave its record alone;
 /// re-queuing it would start a second transfer of the file. Also tracks the
 /// artwork and subtitle fetch that follows a started transfer.
-struct DownloadRestartOwners: Equatable {
+struct DownloadRestartOwners {
     /// Record id → token of the one pipeline allowed to start its transfer.
     private var pipelines: [String: UUID] = [:]
     /// Record id → when its scheduled retry fires.

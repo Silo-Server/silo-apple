@@ -1,7 +1,6 @@
 #if os(tvOS)
 import Foundation
 import Observation
-import Nuke
 
 /// View model backing the tvOS library grid. Purpose-built for 100k-item
 /// libraries; does not share state with the iOS `BrowseViewModel`, but both
@@ -39,37 +38,25 @@ final class TVLibraryGridViewModel {
     /// Whether to send the `type` media-scope param (video libraries only;
     /// audiobook/music libraries are scoped by `library_id`).
     private let sendsType: Bool
-    private let pageSize: Int = 100
+    private static let pageSize = 100
 
     /// Where the next page starts; `nil` before the live page 1 arrives and
     /// after the last page. A cached page 1 has no continuation.
     private var continuation: APIv2CatalogContinuation?
     @ObservationIgnored private var prefetchedPosterURLs: Set<URL> = []
     @ObservationIgnored private var visiblePosterRows: [Int: Range<Int>] = [:]
-    /// Decoded into the memory cache so a cell scrolling into view paints the
-    /// warmed image on its first frame via `CachedAsyncImage.prefetchedImage()`
-    /// instead of paying the decode + resize on arrival. The window is small
-    /// (two rows either side, 48 URLs) and low priority, so visible cells and
-    /// their own requests still win the pipeline.
-    private let posterPrefetcher = ImagePrefetcher(
-        pipeline: ImagePipeline.shared,
-        destination: .memoryCache,
-        maxConcurrentRequestCount: 2
-    )
     private var generation: Int = 0
 
     init(libraryId: Int, libraryType: String, initialFilter: CatalogFilterState = .none) {
         self.libraryId = libraryId
         self.mediaType = BrowseMediaType.from(libraryType: libraryType)
-        self.sendsType = SiloMediaType.isSeries(libraryType) || SiloMediaType.isMovieLibrary(libraryType)
+        self.sendsType = Self.sendsType(libraryType: libraryType)
         // A non-default initial filter (a deep-linked landing tap) wins;
         // otherwise restore the persisted per-library state.
         if !initialFilter.isDefault {
             self.filter = initialFilter
-        } else if let saved = BrowsePrefsStore.shared.savedState(libraryId: libraryId) {
-            self.filter = saved
         } else {
-            self.filter = initialFilter
+            self.filter = Self.savedFilter(libraryId: libraryId)
         }
         facets = FacetLoader.shared.cachedFacets(libraryId: libraryId)
         hydratePage1FromCache()
@@ -77,6 +64,29 @@ final class TVLibraryGridViewModel {
 
     private var currentCacheKey: String {
         CacheKey.tvLibrary(libraryId: libraryId, filterKey: filter.cacheKeyFragment)
+    }
+
+    // MARK: - First page
+
+    /// The filter a grid opened without a deep-linked filter starts with.
+    static func savedFilter(libraryId: Int) -> CatalogFilterState {
+        BrowsePrefsStore.shared.savedState(libraryId: libraryId) ?? .none
+    }
+
+    /// Page 1 for `filter`. The startup prefetch sends this same query and
+    /// caches the result under the key the grid hydrates from.
+    static func firstPageQuery(libraryId: Int, libraryType: String, filter: CatalogFilterState) -> APIv2CatalogQuery {
+        CatalogQueryBuilder.build(
+            filter,
+            libraryId: libraryId,
+            mediaType: BrowseMediaType.from(libraryType: libraryType),
+            limit: pageSize,
+            includeType: sendsType(libraryType: libraryType)
+        )
+    }
+
+    private static func sendsType(libraryType: String) -> Bool {
+        SiloMediaType.isSeries(libraryType) || SiloMediaType.isMovieLibrary(libraryType)
     }
 
     private func hydratePage1FromCache() {
@@ -178,8 +188,9 @@ final class TVLibraryGridViewModel {
         let staleURLs = prefetchedPosterURLs.subtracting(desiredURLs)
         let newURLs = urls.filter { !prefetchedPosterURLs.contains($0) }
         prefetchedPosterURLs = desiredURLs
-        posterPrefetcher.stopPrefetching(with: staleURLs.map(PosterImageCache.cardWarmRequest(for:)))
-        posterPrefetcher.startPrefetching(with: newURLs.map(PosterImageCache.cardWarmRequest(for:)))
+        let cardSize = PosterImageCache.gridPosterArtworkSize
+        PosterImageCache.stopPrefetchingArtwork(Array(staleURLs), pointSize: cardSize)
+        PosterImageCache.prefetchArtwork(newURLs, pointSize: cardSize)
     }
 
     func cancelPosterPrefetch() {
@@ -188,7 +199,7 @@ final class TVLibraryGridViewModel {
     }
 
     private func stopPosterPrefetchRequests() {
-        posterPrefetcher.stopPrefetching()
+        PosterImageCache.stopPrefetchingArtwork(Array(prefetchedPosterURLs), pointSize: PosterImageCache.gridPosterArtworkSize)
         prefetchedPosterURLs.removeAll()
     }
 
@@ -231,7 +242,7 @@ final class TVLibraryGridViewModel {
                     filter,
                     libraryId: libraryId,
                     mediaType: mediaType,
-                    limit: pageSize,
+                    limit: Self.pageSize,
                     includeType: sendsType
                 ))
             }

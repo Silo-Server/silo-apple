@@ -8,9 +8,9 @@ import os
 /// `BreadcrumbJournal` is the only diagnostics artifact that survives a crash,
 /// but it refuses every write until `breadcrumbCaptureEnabled()` passes, which
 /// needs a resolved binding *and* an available status — both of which land
-/// after authentication. Everything before that (launch crashes, restored
-/// session failures, an unreachable server at boot) was previously discarded,
-/// including the `app launched` breadcrumb emitted from `SiloApp.init`.
+/// after authentication. Without it, everything before that (launch crashes,
+/// restored-session failures, an unreachable server at boot) is lost,
+/// including the `app launched` breadcrumb from `SiloApp.init`.
 ///
 /// Staging is not only about keeping those lines. A refused journal write
 /// *purges the journal directory*, so routing a pre-consent line through it
@@ -72,11 +72,6 @@ final class EarlyBootBuffer {
     private var stagingGeneration: UInt64 = 0
     // Matches `LogRing`: an uncontended in-memory append on a hot path. The
     // journal uses NSLock because it also performs file I/O under the lock.
-    // `OSAllocatedUnfairLock` and not a stored `os_unfair_lock_s`: locking the
-    // latter through `&lock` is an inout access the compiler may satisfy with a
-    // temporary copy, so callers on the URLSession threads, the HTTPClient
-    // actor, and the main actor could each lock a different word and lose
-    // mutual exclusion over the staged lines and the seal.
     private let lock = OSAllocatedUnfairLock()
 
     init(

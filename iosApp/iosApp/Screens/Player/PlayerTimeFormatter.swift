@@ -1,9 +1,6 @@
 import Foundation
 
-/// Time formatters shared across player overlays. Consolidated so the HMS
-/// format, runtime shorthand, and sleep-timer countdown all render
-/// identically — previously each view re-implemented the HMS path and the
-/// copies were starting to drift.
+/// Time formatters shared across player overlays.
 enum PlayerTimeFormatter {
     /// `h:mm:ss` for durations ≥ 1 hour, otherwise `m:ss`. Clamps negative
     /// and non-finite input to `0:00` so mid-load / missing-duration

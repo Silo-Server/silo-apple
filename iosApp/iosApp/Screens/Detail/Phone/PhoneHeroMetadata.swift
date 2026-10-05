@@ -2,11 +2,10 @@
 import Foundation
 
 /// A token in the hero's facts row. `.text` items get a middle-dot
-/// separator between them; `.rating` renders a green check + maturity
-/// label; `.chip` renders an outlined uppercase pill (4K / HDR / ATMOS / CC).
+/// separator between them; `.chip` is an outlined uppercase pill
+/// (4K / HDR / ATMOS / CC).
 enum PhoneHeroFactToken: Hashable {
     case text(String)
-    case rating(String)
     case chip(String)
 }
 
@@ -38,16 +37,6 @@ enum PhoneHeroMetadata {
             return [genres.prefix(2).joined(separator: ", ")]
         }
         return []
-    }
-
-    static func seasonSourceTokens(from detail: ItemDetail, episodeCount: Int) -> [String] {
-        var tokens: [String] = []
-        let count = detail.episodeCount ?? episodeCount
-        if count > 0 { tokens.append("\(count) Episode\(count == 1 ? "" : "s")") }
-        if let genres = detail.genres, !genres.isEmpty {
-            tokens.append(contentsOf: genres.prefix(2))
-        }
-        return tokens
     }
 
     static func contentRatingChip(from detail: ItemDetail) -> String? {

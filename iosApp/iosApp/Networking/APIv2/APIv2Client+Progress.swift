@@ -26,8 +26,9 @@ extension APIv2Client {
         var cursors: Set<String> = []
         var cursor: String?
         for _ in 0..<Self.progressMaxPages {
-            var query = ["limit": String(Self.progressPageLimit)]
-            if let cursor { query["cursor"] = cursor }
+            var pageQuery = ["limit": String(Self.progressPageLimit)]
+            if let cursor { pageQuery["cursor"] = cursor }
+            let query = pageQuery
             let response = try await tokenStore.withOwnerFence(auth) {
                 try await mapErrors {
                     try await http.requestData(method: "GET", path: "/api/v2/progress", query: query,

@@ -47,6 +47,7 @@ struct TVMainTabView: View {
         return cached.first(where: { $0.id == profileId })
     }()
     @State private var showSignOutConfirm = false
+    @State private var librariesStaleSinceBackground = false
     @State private var registry = ServerRegistry.shared
     /// Local, per-profile tab-visibility prefs (e.g. whether the Audiobooks
     /// tab is opted in). Observed so the bar re-derives `visibleRoots` the
@@ -126,6 +127,9 @@ struct TVMainTabView: View {
     @Environment(AudioPlaybackStore.self) private var audioStore
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The shell builds under the startup splash with input disabled, so its
+    /// first-appear focus claim lands on nothing; it claims again at reveal.
+    @Environment(\.isStartupSplashVisible) private var isStartupSplashVisible
 
     private static let panelFocusExitCloseDelayNanoseconds: UInt64 = 80_000_000
 
@@ -266,6 +270,9 @@ struct TVMainTabView: View {
                 }
             }
         }
+        .onChange(of: isStartupSplashVisible) { _, isVisible in
+            if !isVisible { contentFocusRequest += 1 }
+        }
         .onChange(of: router.requestedTab) { _, requestedTab in
             guard let requestedTab else { return }
             router.requestedTab = nil
@@ -296,11 +303,15 @@ struct TVMainTabView: View {
             // Returning from a suspension can leave the Bonjour listener dead
             // (its state handler nils it out); restart so phones can still
             // find this TV. No-op when the listener is healthy.
-            if newPhase == .active {
-                controlReceiver.start(router: router)
-                let authority = currentLibraryAuthority
-                Task { await loadLibraries(for: authority) }
-            }
+            if newPhase == .background { librariesStaleSinceBackground = true }
+            guard newPhase == .active else { return }
+            controlReceiver.start(router: router)
+            // Libraries refresh only on a real return from background, not on
+            // an `.inactive` blip such as the TV button's Control Center.
+            guard librariesStaleSinceBackground else { return }
+            librariesStaleSinceBackground = false
+            let authority = currentLibraryAuthority
+            Task { await loadLibraries(for: authority) }
         }
         .tvFocusWatchdog(
             isActive: focusWatchdogIsActive,
@@ -314,6 +325,7 @@ struct TVMainTabView: View {
     /// focused item by definition.
     private var focusWatchdogIsActive: Bool {
         scenePhase == .active
+            && !isStartupSplashVisible
             && router.presentedPlayer == nil
             && !audioStore.isShowingFullPlayer
             && !showSignOutConfirm
@@ -421,7 +433,6 @@ struct TVMainTabView: View {
             let active = activeLibrary(for: type)
             TVLibraryTypeTabView(
                 type: type,
-                libraries: libraries(of: type),
                 activeLibrary: active,
                 selectedPill: pillSelection(for: type),
                 focusRequest: contentFocusRequest,
@@ -437,7 +448,6 @@ struct TVMainTabView: View {
                let type = tabType(for: library) {
                 TVLibraryTypeTabView(
                     type: type,
-                    libraries: [library],
                     activeLibrary: library,
                     selectedPill: shortcutPillSelection(for: libraryId, categoryType: type),
                     focusRequest: contentFocusRequest,

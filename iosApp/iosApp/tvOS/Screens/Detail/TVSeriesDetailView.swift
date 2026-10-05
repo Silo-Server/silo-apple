@@ -2,10 +2,9 @@
 import SwiftUI
 import UIKit
 
-/// Single-page Series experience for tvOS. `Show` and every season are
-/// in-place modes: the series backdrop never changes, episode focus updates
-/// the editorial details and selectors, and selecting an episode quick-plays
-/// it without pushing a second detail page.
+/// Single-page Series experience. Episode focus updates the hero details and
+/// selectors in place; Select quick-plays without pushing a second page.
+/// More > Show Series Info restores the series overview.
 struct TVSeriesDetailView<BelowSynopsis: View>: View {
     private enum PrimaryFocusRegion {
         case outside
@@ -190,7 +189,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     let episodes: [EpisodeListItem]
     let episodeWindow: SeriesEpisodeWindow
     let carouselLoadFailed: Bool
-    let onLoadMoreEpisodes: (Int) -> Void
+    let onLoadMoreEpisodes: () -> Void
     let activeEpisodeContentId: String?
     /// Non-zero changes move the episode row to `activeEpisodeContentId`,
     /// even while the row holds focus.
@@ -261,10 +260,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let noSeasonModeId = "series-season-none"
-    private let episodeSectionScrollId = "series-episode-section"
-    private let castSectionScrollId = "series-cast-section"
     private let heroScrollId = "series-hero"
-    private let similarSectionScrollId = "series-similar-section"
 
     var body: some View {
         TVDetailPageSurface(backdropURL: detail.backdropUrl) {
@@ -276,14 +272,11 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
 
                         VStack(alignment: .leading, spacing: TVDetailLayout.bodySectionSpacing) {
                             episodeExperience
-                                .id(episodeSectionScrollId)
                             if let cast = detail.cast, !cast.isEmpty {
                                 castSection(cast: cast)
-                                    .id(castSectionScrollId)
                             }
                             trailersSection
                             similarSection
-                                .id(similarSectionScrollId)
                             detailsSection
                         }
                         .padding(.horizontal, TVDetailLayout.horizontalInset)
@@ -300,15 +293,15 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 .defaultFocus($playFocused, true, priority: .userInitiated)
                 .detailFocusScroll(
                     proxy: scrollProxy,
-                    seasonRowFocused: false,
                     actionRowFocused: showActionRowFocused,
-                    episodeSectionId: episodeSectionScrollId,
                     heroId: heroScrollId
                 )
                 .tvActionPopoverHost()
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIFocusSystem.didUpdateNotification)) { notification in
+            // Nothing resets this flag, so stop walking the hierarchy once set.
+            guard !userNavigated else { return }
             // Automatic fallback has no heading. Observe native movement; do
             // not intercept remote presses or infer intent from focus alone.
             guard let context = notification.userInfo?[UIFocusSystem.focusUpdateContextUserInfoKey]
@@ -323,12 +316,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             guard directionalMove || leftPage else { return }
             userNavigated = true
         }
-        .onAppear {
-            if activeEpisodeContentId != nil {
-                isShowingSeriesOverview = false
-            }
-        }
-        .onChange(of: activeEpisodeContentId) { _, contentId in
+        .onChange(of: activeEpisodeContentId, initial: true) { _, contentId in
             if contentId != nil {
                 isShowingSeriesOverview = false
             }
@@ -398,14 +386,10 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             // row lands at ~690 and the rail finishes just above the bottom
             // safe area with Cast & Crew fully below the fold.
             heroHeight: TVDetailLayout.heroHeight,
-            editorialContentWidth: TVDetailLayout.heroContentWidth,
-            // Raise only the controls by 20 points. The 112-point synopsis slot
-            // remains unchanged, so episode copy still renders three full lines.
+            // Reserves the action controls plus the fixed three-line synopsis slot.
             editorialReservedHeight: 435,
             metadataReservedHeight: 36,
-            // Three 26-point synopsis lines plus their line spacing must fit
-            // inside the fixed slot; 88 clipped the selected episode's final
-            // line even though the synopsis itself was correctly line-limited.
+            // Fits three 26-point synopsis lines plus line spacing.
             synopsisReservedHeight: 112,
             creditReservedHeight: 28,
             actionSpacing: 4,
@@ -521,6 +505,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                         : matchingPlaybackDetail?.effectiveSubtitleTrackSignature,
                     showForcedSubtitles: matchingPlaybackDetail?.effectiveShowForcedSubtitles
                         ?? false,
+                    preferredSubtitleLanguage: profilePrefsStore.preferredSubtitleLanguage,
                     onSelectVersion: onSelectNextUpVersion,
                     onSelectAudioTrack: onSelectNextUpAudioTrack,
                     onSelectSubtitleTrack: onSelectNextUpSubtitleTrack
@@ -558,16 +543,12 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             if let hierarchyError, !episodeWindow.episodes.isEmpty {
                 HStack {
                     Text(hierarchyError)
-                    Button("Retry") {
-                        userNavigated = true
-                        hierarchyRetryTask?.cancel()
-                        hierarchyRetryTask = Task { await onRetryHierarchy() }
-                    }
+                    Button("Retry", action: retryHierarchy)
                 }
                 .font(.system(size: 18))
             }
             if carouselLoadFailed {
-                Text("Couldn't load more episodes. Press again to retry.")
+                Text("Couldn't load more episodes. Move away and back to retry.")
                     .font(.system(size: 18))
                     .foregroundStyle(Color.siloSecondaryText)
             }
@@ -711,6 +692,12 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         selectedSeason?.id ?? noSeasonModeId
     }
 
+    private func retryHierarchy() {
+        userNavigated = true
+        hierarchyRetryTask?.cancel()
+        hierarchyRetryTask = Task { await onRetryHierarchy() }
+    }
+
     private func showSeriesOverview() {
         modeActivationTask?.cancel()
         modeActivationTask = nil
@@ -776,11 +763,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             VStack(alignment: .leading, spacing: 18) {
                 Text(hierarchyError)
                     .font(.system(size: 22))
-                Button("Retry") {
-                    userNavigated = true
-                    hierarchyRetryTask?.cancel()
-                    hierarchyRetryTask = Task { await onRetryHierarchy() }
-                }
+                Button("Retry", action: retryHierarchy)
             }
             .frame(maxWidth: .infinity, minHeight: episodeRailReservedHeight, alignment: .topLeading)
             .focusSection()
@@ -789,8 +772,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 cardWidth: SiloTheme.thumbnailCardWidth
                     * uiCustomization.cardPresentation.posterSize.scale,
                 cardHeightRatio: SiloTheme.thumbnailCardHeight / SiloTheme.thumbnailCardWidth,
-                cardSpacing: 40,
-                hidesEpisodeTitle: true
+                cardSpacing: 40
             )
             .frame(height: episodeRailReservedHeight)
         } else if carouselEpisodes.isEmpty {
@@ -808,9 +790,6 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 onSetFavorite: onSetEpisodeFavorite,
                 onSetWatchlist: onSetEpisodeWatchlist,
                 currentContentId: displayedEpisode?.contentId,
-                currentContentIsFavorite: displayedEpisode.map {
-                    episodeFavoriteStates[$0.contentId] ?? false
-                } ?? false,
                 favoriteStates: episodeFavoriteStates,
                 watchlistStates: episodeWatchlistStates,
                 baseCardWidth: SiloTheme.thumbnailCardWidth,
@@ -822,21 +801,19 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 selectionRequest: episodeSelectionRequest,
                 selectionTargetContentId: activeEpisodeContentId,
                 isSelectingSeason: primaryFocusRegion == .mode,
-                onRequestPrevious: episodeWindow.previousSeason == nil ? nil : { onLoadMoreEpisodes(-1) },
-                onRequestNext: episodeWindow.nextSeason == nil ? nil : { onLoadMoreEpisodes(1) }
+                onRequestPrevious: episodeWindow.previousSeason == nil ? nil : onLoadMoreEpisodes,
+                onRequestNext: episodeWindow.nextSeason == nil ? nil : onLoadMoreEpisodes
             )
             .padding(.trailing, -TVDetailLayout.horizontalInset)
         }
     }
 
     private var episodeRailReservedHeight: CGFloat {
-        let width = SiloTheme.thumbnailCardWidth
-            * uiCustomization.cardPresentation.posterSize.scale
-        let stillHeight = width
-            * (SiloTheme.thumbnailCardHeight / SiloTheme.thumbnailCardWidth)
-        return stillHeight
-            + (uiCustomization.cardPresentation.caption.showsTitle ? 46 : 0)
-            + 24
+        TVEpisodeRail.anchoredHeight(
+            cardWidth: SiloTheme.thumbnailCardWidth * uiCustomization.cardPresentation.posterSize.scale,
+            cardHeightRatio: SiloTheme.thumbnailCardHeight / SiloTheme.thumbnailCardWidth,
+            showsTitle: uiCustomization.cardPresentation.caption.showsTitle
+        )
     }
 
     private func focusSupportingRail() {
@@ -862,8 +839,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         guard let contentId else { return }
         seasonSelection.cancel()
 
-        // Cancel a queued Episodes -> Cast handoff if focus has already moved
-        // back into the fixed top viewport before the next focus update.
+        // Cancel a pending season-row -> Cast handoff once an episode claims focus.
         supportingRailFocusGeneration &+= 1
         let previousRegion = primaryFocusRegion
         primaryFocusRegion = .episodes
@@ -1136,7 +1112,7 @@ private struct TVSeriesAnchorResolver: UIViewRepresentable {
     }
 }
 
-/// Stable Show/Season tab shared by Series detail and the Watch Party picker. It changes
+/// Season tab shared by Series detail and the Watch Party picker. It changes
 /// fill and outline on focus without scaling, so neighboring tabs never move.
 struct TVSeriesModeTab: View {
     let title: String
@@ -1166,20 +1142,6 @@ private struct TVSeriesModeTabStyle: ButtonStyle {
     let rendersFocusedAppearance: Bool
 
     func makeBody(configuration: Configuration) -> some View {
-        TVSeriesModeTabBody(
-            configuration: configuration,
-            isSelected: isSelected,
-            rendersFocusedAppearance: rendersFocusedAppearance
-        )
-    }
-}
-
-private struct TVSeriesModeTabBody: View {
-    let configuration: ButtonStyleConfiguration
-    let isSelected: Bool
-    let rendersFocusedAppearance: Bool
-
-    var body: some View {
         configuration.label
             .foregroundColor(rendersFocusedAppearance ? .black : .white)
             .background(

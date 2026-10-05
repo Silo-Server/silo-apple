@@ -88,7 +88,7 @@ enum DiagnosticsUploadError: Error, Equatable {
 ///   connecting or the owner changed before the request was sent.
 /// - A chunk failure is definite for the whole upload: nothing is ingested
 ///   without `complete`.
-actor DiagnosticsAPI {
+struct DiagnosticsAPI: Sendable {
     static let shared = DiagnosticsAPI()
 
     static let destinationChanged = "destination_changed"

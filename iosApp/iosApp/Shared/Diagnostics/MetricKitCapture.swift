@@ -48,8 +48,7 @@ final class MetricKitCapture: NSObject, MXMetricManagerSubscriber {
             // later (often at the next launch), so this binds the report to
             // the server/account active at delivery time via captureContext().
             // If the user switched servers/accounts between the incident and
-            // delivery, the report binds to the current one. A crash-time
-            // binding timeline is out of scope for this slice.
+            // delivery, the report binds to the current one.
             guard let context = await DiagnosticsCoordinator.shared.captureContext(
                 applicationVersionOverride: applicationVersion
             ) else {
@@ -114,7 +113,7 @@ final class MetricKitCapture: NSObject, MXMetricManagerSubscriber {
             PendingReportArtifact(relativePath: "crash/metrickit.json", data: rawJSON),
             // Freeze the intentional absence of attributable logs. Without
             // this sentinel, bundle construction falls back to the live ring
-            // and OSLog from the later launch that receives MetricKit data.
+            // of the later launch that receives MetricKit data.
             PendingReportArtifact(relativePath: "logs.jsonl", data: Data()),
         ]
 

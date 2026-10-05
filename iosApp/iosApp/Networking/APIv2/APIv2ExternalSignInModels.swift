@@ -95,8 +95,9 @@ struct APIv2ExternalSignInCapabilities: Decodable, Equatable, Sendable {
 struct APIv2AccountIdentity: Decodable, Hashable, Sendable, Identifiable {
     let id: String
     let installationId: String
-    /// Empty while that provider is not enabled.
-    let providerId: String
+    /// Empty while that provider is not enabled. Unread by the app, so
+    /// optional: its absence must not fail the identity list.
+    let providerId: String?
     /// Empty while that provider is not enabled.
     let providerName: String
     let username: String

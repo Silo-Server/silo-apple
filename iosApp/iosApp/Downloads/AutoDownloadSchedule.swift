@@ -18,10 +18,7 @@ final class AutoDownloadSchedule {
         let posterThumbhash: String?
     }
 
-    private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
-        category: "Downloads"
-    )
+    private static let logger = Logger.downloads
     /// The calendar answers at most 31 days at once.
     private static let windowDays = 30
     private static let refreshInterval: TimeInterval = 15 * 60

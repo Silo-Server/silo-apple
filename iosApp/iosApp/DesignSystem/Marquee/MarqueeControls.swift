@@ -92,7 +92,6 @@ extension ButtonStyle where Self == MarqueePressableStyle {
 }
 
 extension ButtonStyle where Self == MarqueeButtonStyle {
-    static var marqueePrimary: MarqueeButtonStyle { .init(kind: .primary) }
     static var marqueeGlass: MarqueeButtonStyle { .init(kind: .glass) }
     static var marqueePlain: MarqueeButtonStyle { .init(kind: .plain) }
     static func marquee(_ kind: MarqueeButtonStyle.Kind, fullWidth: Bool = true, isLoading: Bool = false,
@@ -311,7 +310,7 @@ struct MarqueeErrorText: View {
             Image(systemName: "exclamationmark.circle")
         }
         .font(.system(size: font))
-        .foregroundStyle(Color(hex: "#FF6961"))
+        .foregroundStyle(Color.siloErrorInk)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Error: \(text)")
@@ -335,6 +334,10 @@ struct MarqueeServerMark: View {
     var name: String?
     var imageURL: URL?
     var size: CGFloat = 48
+
+    private static let initialGradient = [Color(hex: "#EAA65C"), Color(hex: "#A8521D"), Color(hex: "#5E290D")]
+    private static let initialInk = Color(hex: "#FFF6EA")
+    private static let placeholderGradient = [Color(hex: "#2B2D33"), Color(hex: "#15171C")]
 
     var body: some View {
         ZStack {
@@ -363,16 +366,16 @@ struct MarqueeServerMark: View {
     private var fallback: some View {
         if let initial = name?.trimmingCharacters(in: .whitespaces).first {
             LinearGradient(
-                colors: [Color(hex: "#EAA65C"), Color(hex: "#A8521D"), Color(hex: "#5E290D")],
+                colors: Self.initialGradient,
                 startPoint: .topLeading, endPoint: .bottomTrailing
             )
             .overlay(
                 Text(String(initial).uppercased())
                     .font(.system(size: size * 0.54, weight: .bold, design: .serif))
-                    .foregroundStyle(Color(hex: "#FFF6EA"))
+                    .foregroundStyle(Self.initialInk)
             )
         } else {
-            LinearGradient(colors: [Color(hex: "#2B2D33"), Color(hex: "#15171C")], startPoint: .top, endPoint: .bottom)
+            LinearGradient(colors: Self.placeholderGradient, startPoint: .top, endPoint: .bottom)
                 .overlay(
                     Image(systemName: "server.rack")
                         .font(.system(size: size * 0.42))
@@ -428,7 +431,7 @@ struct MarqueeServerCard: View {
                 Divider().overlay(Color.white.opacity(0.08)).padding(.top, gap)
                 HStack(spacing: 8) {
                     Circle()
-                        .fill(status.tone == .live ? Color(hex: "#30D158") : Color(hex: "#F4C869"))
+                        .fill(status.tone == .live ? Color.siloStatusLive : Color.siloStatusWarning)
                         .frame(width: dot, height: dot)
                     Text(status.text)
                         .font(.system(size: addressFont))
@@ -482,13 +485,13 @@ struct MarqueeBadge: View {
         }
         .font(.system(size: font, weight: .semibold))
         .kerning(0.8)
-        .foregroundStyle(warning ? Color(hex: "#F4C869") : Color.siloOnSurface)
+        .foregroundStyle(warning ? Color.siloStatusWarning : Color.siloOnSurface)
         .padding(.horizontal, font * 0.9)
         .frame(height: font * 2.1)
         .background(
             Capsule()
-                .fill(warning ? Color(hex: "#F4C869").opacity(0.08) : Color.black.opacity(0.45))
-                .overlay(Capsule().strokeBorder(warning ? Color(hex: "#F4C869").opacity(0.35) : Color.white.opacity(0.14), lineWidth: 1))
+                .fill(warning ? Color.siloStatusWarning.opacity(0.08) : Color.black.opacity(0.45))
+                .overlay(Capsule().strokeBorder(warning ? Color.siloStatusWarning.opacity(0.35) : Color.white.opacity(0.14), lineWidth: 1))
         )
         .fixedSize()
     }
@@ -621,6 +624,8 @@ struct ProviderMark: View {
     var iconURL: URL?
     var size: CGFloat
 
+    private static let letterGradient = [Color(hex: "#FD4B2D"), Color(hex: "#A21D5C")]
+
     var body: some View {
         Group {
             if let iconURL {
@@ -641,7 +646,7 @@ struct ProviderMark: View {
     }
 
     private var letter: some View {
-        LinearGradient(colors: [Color(hex: "#FD4B2D"), Color(hex: "#A21D5C")], startPoint: .topLeading, endPoint: .bottomTrailing)
+        LinearGradient(colors: Self.letterGradient, startPoint: .topLeading, endPoint: .bottomTrailing)
             .overlay(
                 Text(String(name.first ?? "S").lowercased())
                     .font(.system(size: size * 0.55, weight: .heavy))

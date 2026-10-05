@@ -109,7 +109,7 @@ struct TVLoginView: View {
         .onChange(of: qrVM.status) { _, newValue in
             if case .approved = newValue {
                 StartupContentPrefetcher.prefetchProfiles()
-                Task { @MainActor in
+                Task {
                     // Let "Signed in as …" register before moving on.
                     try? await Task.sleep(for: .seconds(1))
                     goToProfiles()
@@ -416,16 +416,7 @@ struct TVLoginView: View {
             .focusSection()
             .defaultFocus($focusedField, .signIn, priority: .userInitiated)
         } card: {
-            MarqueeTVCard {
-                MarqueeTVCardSymbol(systemImage: "iphone")
-                Text("Type on your phone")
-                    .font(.system(size: 40, weight: .bold))
-                    .padding(.top, 34)
-                Text("When you select a field, a keyboard notification appears on nearby iPhones and iPads. Type there instead of with the remote.")
-                    .font(.system(size: 24))
-                    .foregroundStyle(Color.siloOnSurface.opacity(0.62))
-                    .padding(.top, 14)
-            }
+            TVTypeOnPhoneCard()
         }
         .defaultFocus($focusedField, passwordScreenFocus, priority: .userInitiated)
         .marqueeTVSeedFocus($focusedField, passwordScreenFocus)
@@ -553,10 +544,7 @@ struct TVLoginView: View {
     // MARK: - Computed helpers
 
     /// The host this TV talks to, for "Can't reach <host>".
-    private var serverHost: String {
-        let url = ServerRegistry.shared.activeServerUrl.isEmpty ? AuthService.shared.serverUrl : ServerRegistry.shared.activeServerUrl
-        return TVSignInPresentation.host(of: url)
-    }
+    private var serverHost: String { TVSignInPresentation.host(of: ServerRegistry.shared.activeServerUrl) }
 
     /// `<host>/activate` from the latest code (the server's public URL when
     /// it has one). The code on screen always set `lastVerificationUris`.
@@ -572,7 +560,7 @@ struct TVLoginView: View {
     private func submitPassword() {
         guard !loginVM.isLoading, !isSubmittingPassword, !isSubmittingNetwork else { return }
         isSubmittingPassword = true
-        Task { @MainActor in
+        Task {
             defer { isSubmittingPassword = false }
             guard await qrVM.suspendForPasswordSignIn() else { return }
             let succeeded = await loginVM.login(router: router)
@@ -606,7 +594,7 @@ struct TVLoginView: View {
     private func continueWithNetworkIdentity(_ provider: APIv2AuthProvider) {
         guard !loginVM.isBusy, !isSubmittingPassword, !isSubmittingNetwork else { return }
         isSubmittingNetwork = true
-        Task { @MainActor in
+        Task {
             defer { isSubmittingNetwork = false }
             guard await qrVM.suspendForPasswordSignIn() else { return }
             let succeeded = await loginVM.signInWithNetworkIdentity(provider, router: router)
@@ -679,6 +667,23 @@ struct TVLoginView: View {
     private static var deviceName: String {
         let name = UIDevice.current.name
         return name.isEmpty ? "Apple TV" : name
+    }
+}
+
+/// The card beside a TV text form: tvOS offers its keyboard on nearby
+/// iPhones and iPads.
+struct TVTypeOnPhoneCard: View {
+    var body: some View {
+        MarqueeTVCard {
+            MarqueeTVCardSymbol(systemImage: "iphone")
+            Text("Type on your phone")
+                .font(.system(size: 40, weight: .bold))
+                .padding(.top, 34)
+            Text("When you select a field, a keyboard notification appears on nearby iPhones and iPads. Type there instead of with the remote.")
+                .font(.system(size: 24))
+                .foregroundStyle(Color.siloOnSurface.opacity(0.62))
+                .padding(.top, 14)
+        }
     }
 }
 

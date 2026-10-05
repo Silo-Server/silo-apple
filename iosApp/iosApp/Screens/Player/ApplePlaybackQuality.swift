@@ -123,8 +123,7 @@ enum ApplePlaybackQuality {
     /// catalog here would let the user request qualities the active plan never
     /// offered.
     static func playbackOptions(
-        serverQualities: [PlaybackV3AvailableQuality],
-        fallbackVersion: FileVersion?
+        serverQualities: [PlaybackV3AvailableQuality]
     ) -> [ApplePlaybackQualityOption] {
         guard !serverQualities.isEmpty else {
             return [auto]

@@ -1,7 +1,3 @@
-//
-//  SubtitleSearchModels.swift
-//  Silo (iOS + tvOS)
-//
 //  Player-side values for silo-server's external subtitle-provider search
 //  (OpenSubtitles / SubDL / Subsource). Both calls are synchronous —
 //  no job, no polling, no websocket (contrast the AI flow in AIModels):
@@ -153,8 +149,11 @@ enum SubtitleDownloadOutcome: Equatable {
     var holdsResult: Bool { self == .stored || self == .unconfirmed }
 
     static func isUnconfirmed(_ error: Error) -> Bool {
+        // A post-dispatch owner change already arrives as
+        // `.outcomeUnknownOwnerChanged`, so any other owner change was raised
+        // before dispatch.
         (error as? APIv2SubtitleRequestError) == .outcomeUnknownOwnerChanged
-            || APIv2DispatchFailure.isUncertain(error)
+            || APIv2MutationOutcome(error, dispatched: false).mayHaveApplied
     }
 
     /// The server's own words for a refusal, when it sent any.

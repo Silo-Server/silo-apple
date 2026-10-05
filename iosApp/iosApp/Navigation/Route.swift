@@ -90,10 +90,8 @@ enum Route: Hashable {
     /// Every series this device auto-downloads, reached from the Downloads tab.
     case autoDownloads
 
-    // tvOS-specific: deep-linked library grid with a pre-applied filter.
-    // Pushed from `TVLibraryLandingView` when the user picks a genre,
-    // decade, sort order, or "Browse All". Handled only by `TVMainTabView`;
-    // iOS's `MainTabView` falls through to the unknown-route placeholder.
+    // tvOS-specific: library grid with a pre-applied filter. Handled only by
+    // `TVMainTabView`; nothing constructs it today.
     case tvLibraryGrid(
         libraryId: Int,
         libraryName: String,
@@ -152,7 +150,7 @@ struct TVItemDetailRouteSeed: Hashable {
 
     /// Continue Watching episodes open their parent Series. Keep the immediate
     /// title/logo, but do not promote episode metadata into the Series frame.
-    private init(parentSeriesFrom episode: SectionItem) {
+    fileprivate init(parentSeriesFrom episode: SectionItem) {
         let seriesTitle = episode.seriesTitle?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         mediaType = "series"
@@ -167,24 +165,6 @@ struct TVItemDetailRouteSeed: Hashable {
         posterThumbhash = episode.posterThumbhash
         backdropUrl = nil
         backdropThumbhash = nil
-    }
-
-    static func destination(
-        contentId: String,
-        from item: SectionItem
-    ) -> TVItemDetailRouteSeed {
-        let seriesId = item.seriesId?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let isEpisode = item.type.trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased() == "episode" || item.episodeNumber != nil
-
-        if isEpisode,
-           seriesId?.isEmpty == false,
-           seriesId == contentId,
-           contentId != item.contentId {
-            return TVItemDetailRouteSeed(parentSeriesFrom: item)
-        }
-        return TVItemDetailRouteSeed(item)
     }
 }
 
@@ -202,7 +182,10 @@ extension Route {
         let entryContext = isSeriesLink || isEpisodeLink ? context : nil
         let resolvedID = entryContext?.seriesContentId ?? destinationContentId
         #if os(tvOS)
-        let seed: TVItemDetailRouteSeed? = .destination(contentId: resolvedID, from: sectionItem)
+        // An entry context means the card links to its parent Series.
+        let seed: TVItemDetailRouteSeed? = entryContext == nil
+            ? TVItemDetailRouteSeed(sectionItem)
+            : TVItemDetailRouteSeed(parentSeriesFrom: sectionItem)
         #else
         let seed: TVItemDetailRouteSeed? = nil
         #endif

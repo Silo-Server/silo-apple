@@ -7,10 +7,7 @@ import OSLog
 actor DownloadStore {
     static let shared = DownloadStore()
 
-    private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
-        category: "Downloads"
-    )
+    private static let logger = Logger.downloads
 
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
@@ -51,10 +48,7 @@ actor DownloadStore {
             return .empty
         }
         do {
-            var file = try decoder.decode(DownloadStoreFile.self, from: data)
-            if file.version != DownloadStoreFile.currentVersion {
-                file.version = DownloadStoreFile.currentVersion
-            }
+            let file = try decoder.decode(DownloadStoreFile.self, from: data)
             unsavableScopes.remove(scope)
             return file
         } catch {

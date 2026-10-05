@@ -1,12 +1,9 @@
 #if os(tvOS)
 import SwiftUI
 
-/// tvOS-only poster card. Uses the cached Nuke renderer so scrolling through
-/// a large grid doesn't re-download posters as cells are reused.
-///
-/// `.buttonStyle(.card)` gives us native focus lift + parallax + shadow, so
-/// we do not roll our own scale animation. A title caption lives below the
-/// card and brightens on focus.
+/// tvOS poster card on the cached Nuke renderer. `.nativeCard` uses the system
+/// `.card` lift and parallax; `.ring` uses a white ring and scale to match the
+/// episode and cast rails. A caption below brightens on focus.
 struct TVMediaCard: View {
     let title: String
     let posterUrl: String
@@ -163,34 +160,46 @@ struct TVMediaCard: View {
     private var posterButton: some View {
         switch focusTreatment {
         case .nativeCard:
-            Button(action: action) { posterImage }
-                .buttonStyle(.card)
-                .focused($isFocused)
-                .applyDefaultFocusIfNeeded(prefersDefaultFocus, namespace: defaultFocusNamespace)
-                .applyRailFocus(focusBinding, contentId: focusContentId)
-                .applyTVCardPlayPauseAction(playAction)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(accessibilityDescription)
+            wired(Button(action: action) { posterImage }.buttonStyle(.card))
         case .ring:
-            Button(action: action) { posterImage }
-                .buttonStyle(TVPosterRingButtonStyle())
-                .focused($isFocused)
-                .applyDefaultFocusIfNeeded(prefersDefaultFocus, namespace: defaultFocusNamespace)
-                .applyRailFocus(focusBinding, contentId: focusContentId)
-                .applyTVCardPlayPauseAction(playAction)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(accessibilityDescription)
+            // The ring is the focus cue; the style suppresses the system halo.
+            wired(
+                Button(action: action) {
+                    posterImage.tvFocusRing(
+                        isFocused: isFocused,
+                        cornerRadius: SiloTheme.cornerRadius,
+                        lineWidth: 4
+                    )
+                }
+                .buttonStyle(TVCardFocusButtonStyle(
+                    unfocusedShadowOpacity: 0,
+                    unfocusedShadowRadius: 0,
+                    unfocusedShadowY: 0
+                ))
+            )
         }
+    }
+
+    /// Focus and accessibility wiring, attached directly to the styled
+    /// Button: a `.focused` on a wrapping container silently no-ops.
+    private func wired(_ button: some View) -> some View {
+        button
+            .focused($isFocused)
+            .applyDefaultFocusIfNeeded(prefersDefaultFocus, namespace: defaultFocusNamespace)
+            .tvFocused(focusBinding, equals: focusContentId)
+            .applyTVCardPlayPauseAction(playAction)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(accessibilityDescription)
     }
 
     // MARK: - Subviews
 
     private var posterImage: some View {
         ZStack(alignment: .topTrailing) {
-            CachedAsyncImage(
+            AsyncImageView(
                 url: posterUrl,
-                targetSize: CGSize(width: resolvedCardWidth, height: cardHeight),
                 thumbhash: posterThumbhash,
+                targetSize: CGSize(width: resolvedCardWidth, height: cardHeight),
                 contentMode: .fill
             )
             .frame(width: resolvedCardWidth, height: cardHeight)
@@ -208,16 +217,6 @@ struct TVMediaCard: View {
             }
         }
         .frame(width: resolvedCardWidth, height: cardHeight)
-        .overlay {
-            // The `.ring` treatment supplies its own focus cue (the native
-            // halo is suppressed in TVPosterRingButtonStyle), matching the
-            // episode/cast cards.
-            if focusTreatment == .ring {
-                RoundedRectangle(cornerRadius: SiloTheme.cornerRadius)
-                    .stroke(Color.white.opacity(isFocused ? 0.9 : 0), lineWidth: isFocused ? 4 : 0)
-                    .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
-            }
-        }
     }
 
     // Plex-style: centered title with year directly underneath in a
@@ -282,52 +281,6 @@ private extension View {
         } else {
             self
         }
-    }
-
-    /// Binds the inner button to a parent rail's `@FocusState` so the rail can
-    /// route d-pad-entry default focus onto this specific card. No-op when the
-    /// rail doesn't manage focus. Mirrors `MediaCard.applyRowFocus`.
-    @ViewBuilder
-    func applyRailFocus(_ binding: FocusState<String?>.Binding?, contentId: String?) -> some View {
-        if let binding, let contentId {
-            self.focused(binding, equals: contentId)
-        } else {
-            self
-        }
-    }
-}
-
-/// Poster focus style matching the episode/cast cards: scale + drop shadow
-/// with the system halo suppressed. The white ring overlay on the poster
-/// (driven by `isFocused`) is the focus cue.
-private struct TVPosterRingButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        TVPosterRingButtonBody(configuration: configuration)
-    }
-}
-
-private struct TVPosterRingButtonBody: View {
-    let configuration: ButtonStyleConfiguration
-
-    @Environment(\.isFocused) private var isFocused
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        configuration.label
-            .scaleEffect(scale)
-            .shadow(
-                color: .black.opacity(isFocused ? 0.45 : 0.0),
-                radius: isFocused ? 18 : 0,
-                y: isFocused ? 8 : 0
-            )
-            .focusEffectDisabled()
-            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
-            .animation(.easeOut(duration: SiloTheme.fastDuration), value: configuration.isPressed)
-    }
-
-    private var scale: CGFloat {
-        let base: CGFloat = isFocused && !reduceMotion ? 1.05 : 1.0
-        return configuration.isPressed ? base * 0.97 : base
     }
 }
 #endif

@@ -2,11 +2,10 @@
 import Foundation
 import SwiftUI
 
-/// Native "now-playing" remote for controlling Silo playback on an Apple TV.
-/// Thin wrapper: observes the control session and drives the presentational
-/// `RemoteNowPlayingContent` with plain state + a command callback.
+/// Full-screen TV remote: connection states, toolbar, and hardware-volume
+/// interception around `RemoteNowPlayingContent`.
 struct SiloControlRemoteView: View {
-    @Bindable var controller: SiloControlClient
+    let controller: SiloControlClient
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @State private var artwork = SiloControlArtworkResolver()
@@ -115,8 +114,8 @@ struct SiloControlRemoteView: View {
     private var content: some View {
         if controller.isReconnecting {
             reconnectingView
-        } else if let state = controller.state, state.contentId == nil {
-            idleConnectedView(state: state)
+        } else if controller.state != nil, !hasActivePlayback {
+            idleConnectedView
         } else if let state = controller.state {
             RemoteNowPlayingContent(
                 state: state,
@@ -136,7 +135,7 @@ struct SiloControlRemoteView: View {
         }
     }
 
-    private func idleConnectedView(state: SiloControlPlaybackState) -> some View {
+    private var idleConnectedView: some View {
         VStack(spacing: 18) {
             Image(systemName: "appletvremote.gen4")
                 .font(.system(size: 44, weight: .medium))
@@ -301,7 +300,8 @@ private struct RemoteNowPlayingContent: View {
     }
 
     private var scrubber: some View {
-        TimelineView(.periodic(from: .now, by: 0.25)) { ctx in
+        // Ticks only while playing; a paused clock's time doesn't move.
+        TimelineView(.animation(minimumInterval: 0.25, paused: !clock.isPlaying())) { ctx in
             let live = scrubPreview ?? clock.displayTime(asOf: ctx.date)
             VStack(spacing: 8) {
                 Slider(
@@ -549,7 +549,7 @@ private struct RemoteNowPlayingContent: View {
     }
 
     private func subtitleDelaySelectionSystemImage(_ milliseconds: Int) -> String {
-        abs((state.subtitleSyncMs ?? 0) - milliseconds) < 1 ? "checkmark" : "timer"
+        (state.subtitleSyncMs ?? 0) == milliseconds ? "checkmark" : "timer"
     }
 
     private var qualityMenu: some View {
@@ -576,14 +576,7 @@ private struct RemoteNowPlayingContent: View {
     }
 
     private func speedLabel(_ speed: Double) -> String {
-        switch speed {
-        case 1.0: return "1.0×"
-        case 0.75: return "0.75×"
-        case 1.25: return "1.25×"
-        case 1.5: return "1.5×"
-        case 2.0: return "2.0×"
-        default: return "\(speed)×"
-        }
+        "\(speed)×"
     }
 
     private func subtitleDelayLabel(_ milliseconds: Int) -> String {

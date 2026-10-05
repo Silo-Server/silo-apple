@@ -64,6 +64,9 @@ final class SiloControlClient {
         SeekIntervalPreferences.shared.pair(for: .videoRemoteControl)
     }
     @ObservationIgnored private var isObservingSeekIntervals = false
+    /// Handlers and skip intervals are set once per attach, not per state
+    /// frame; the seek-interval observer keeps the intervals current.
+    @ObservationIgnored private var isNowPlayingAttached = false
 
     private var volumeReconciler = RemoteVolumeReconciler()
 
@@ -204,7 +207,7 @@ final class SiloControlClient {
             return true
         }
 
-        await closeCurrentSession(sendClose: true)
+        await closeCurrentSession()
 
         Self.logger.info("control: connecting origin=\(String(describing: origin), privacy: .public)")
         isConnecting = true
@@ -283,9 +286,10 @@ final class SiloControlClient {
 
         let connectionId = self.connectionId
         do {
-            let profileName = (try? await AuthService.shared.getProfiles())?
-                .first(where: { $0.id == profileId })?
-                .name
+            // Display name only; the shared store has it cached after launch.
+            await CurrentProfileStore.shared.refresh()
+            let profileName = CurrentProfileStore.shared.profile
+                .flatMap { $0.id == profileId ? $0.name : nil }
             let ready = try await prepareRemoteIdentity(
                 server: activeServer,
                 profileId: profileId,
@@ -310,6 +314,10 @@ final class SiloControlClient {
         profileName: String?,
         session: SiloControlSession
     ) async throws -> SiloControlHandoffReady {
+        // The deployment's other addresses let a TV that can't reach the
+        // phone's URL still prepare the profile. Best effort: without them
+        // the TV uses `serverURL` as-is. Fetched while the version settles.
+        async let endpointsFetch = Self.offeredEndpoints(for: server)
         guard await waitForVersionNegotiation() == 2 else {
             throw SiloControlHandoffError.updateRequired
         }
@@ -330,11 +338,7 @@ final class SiloControlClient {
         handoffReady = nil
         handoffCancellation = nil
 
-        // The deployment's other addresses let a TV that cannot reach the
-        // phone's URL (a network-plugin origin, say) still prepare the
-        // profile at the address it can reach. Best effort: without them the
-        // TV falls back to `serverURL` exactly, as before.
-        let endpoints = await Self.offeredEndpoints(for: server)
+        let endpoints = await endpointsFetch
         try ensureActiveIdentity(serverId: server.id, profileId: profileId)
         try await session.send(.handoffOffer(SiloControlHandoffOffer(
             requestId: requestId,
@@ -347,11 +351,10 @@ final class SiloControlClient {
             serverEndpoints: endpoints
         )))
 
-        // A TV that still holds this phone's profile answers `handoff_ready`
-        // (reused) with no challenge at all. Waiting for a challenge there
-        // timed the launch out, so every second title sent to a TV failed.
+        // A TV that already holds this phone's profile answers `handoff_ready`
+        // (reused) without a challenge.
         let challenge: SiloControlHandoffChallenge
-        switch try await waitForHandoffChallengeOrReady(requestId: requestId) {
+        switch try await waitForHandoffReply(requestId: requestId, acceptsChallenge: true) {
         case .ready(let ready):
             try ensureActiveIdentity(serverId: server.id, profileId: profileId)
             resetPendingHandoff()
@@ -372,7 +375,12 @@ final class SiloControlClient {
             try await api.decideDeviceLogin(code: challenge.userCode, approveHandoff: true, identity: identity,
                 expectedAccount: auth.account, expectedAuth: auth)
 
-            let ready = try await waitForHandoffReady(requestId: requestId)
+            guard case .ready(let ready) = try await waitForHandoffReply(
+                requestId: requestId,
+                acceptsChallenge: false
+            ) else {
+                throw SiloControlHandoffError.invalidResponse
+            }
             guard await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
                 throw SiloControlHandoffError.identityChanged
             }
@@ -407,16 +415,15 @@ final class SiloControlClient {
         return nil
     }
 
-    private enum HandoffFirstReply {
+    private enum HandoffReply {
         case challenge(SiloControlHandoffChallenge)
         case ready(SiloControlHandoffReady)
     }
 
-    /// The TV's first reply to an offer: a challenge to approve, or, when it
-    /// already holds this phone's profile, a ready frame straight away.
-    /// Identity probing on the TV can precede the challenge, so this waits
-    /// longer than the old challenge-only wait did.
-    private func waitForHandoffChallengeOrReady(requestId: String) async throws -> HandoffFirstReply {
+    /// Waits for the TV's reply to an offer: a ready frame, or, when
+    /// `acceptsChallenge`, a challenge to approve. TV-side identity probing
+    /// can precede the challenge, hence the 30 s budget.
+    private func waitForHandoffReply(requestId: String, acceptsChallenge: Bool) async throws -> HandoffReply {
         for _ in 0..<600 {
             if let cancellation = handoffCancellation, cancellation.requestId == requestId {
                 throw SiloControlHandoffError.cancelled(cancellation.message ?? "The TV cancelled profile setup.")
@@ -424,21 +431,8 @@ final class SiloControlClient {
             if let ready = handoffReady, ready.requestId == requestId {
                 return .ready(ready)
             }
-            if let challenge = handoffChallenge, challenge.requestId == requestId {
+            if acceptsChallenge, let challenge = handoffChallenge, challenge.requestId == requestId {
                 return .challenge(challenge)
-            }
-            try await Task.sleep(for: .milliseconds(50))
-        }
-        throw SiloControlHandoffError.timedOut
-    }
-
-    private func waitForHandoffReady(requestId: String) async throws -> SiloControlHandoffReady {
-        for _ in 0..<600 {
-            if let cancellation = handoffCancellation, cancellation.requestId == requestId {
-                throw SiloControlHandoffError.cancelled(cancellation.message ?? "The TV cancelled profile setup.")
-            }
-            if let ready = handoffReady, ready.requestId == requestId {
-                return ready
             }
             try await Task.sleep(for: .milliseconds(50))
         }
@@ -556,10 +550,6 @@ final class SiloControlClient {
         guard hasActiveSession || isReconnecting else { return }
         sessionIsAutoResumed = false
         isShowingRemoteControl = true
-    }
-
-    func turnOffControlMode() {
-        disconnect()
     }
 
     /// User-initiated disconnect: also forgets the persisted target so a
@@ -702,20 +692,17 @@ final class SiloControlClient {
         connectionId: UUID
     ) {
         readTask?.cancel()
+        // Inherits the main actor, so frames are handled without a hop.
         readTask = Task { [weak self] in
             do {
                 for try await message in stream {
-                    await MainActor.run { self?.handle(message, connectionId: connectionId) }
+                    self?.handle(message, connectionId: connectionId)
                 }
-                await MainActor.run {
-                    guard let self, self.isLiveConnection(connectionId) else { return }
-                    self.beginReconnect(reason: "Lost connection to the TV.")
-                }
+                guard let self, self.isLiveConnection(connectionId) else { return }
+                self.beginReconnect(reason: "Lost connection to the TV.")
             } catch {
-                await MainActor.run {
-                    guard let self, self.isLiveConnection(connectionId) else { return }
-                    self.beginReconnect(reason: error.localizedDescription)
-                }
+                guard let self, self.isLiveConnection(connectionId) else { return }
+                self.beginReconnect(reason: error.localizedDescription)
             }
         }
     }
@@ -868,13 +855,14 @@ final class SiloControlClient {
         guard connectionId == nil || self.connectionId == connectionId else { return }
         if !quiet {
             errorMessage = message
-            // Surface user-initiated connect/play failures in the remote cover;
-            // bare connect (which no longer auto-presents) would fail
-            // silently. Reconnect attempts and auto-resume probes stay quiet —
-            // popping the cover for a failure the user didn't initiate would
-            // hijack whatever they're doing.
+            // Surface user-initiated failures in the remote cover. Reconnects
+            // and auto-resume probes stay quiet so a failure the user didn't
+            // start never takes over the screen.
             isShowingRemoteControl = true
         }
+        // The session is gone: drop its last state so the cover shows the
+        // error and "Choose a TV" instead of a frozen now-playing view.
+        state = nil
         isConnecting = false
         isAutoResuming = false
         sessionIsAutoResumed = false
@@ -914,7 +902,7 @@ final class SiloControlClient {
         wasBackgroundedWithActiveSession = false
     }
 
-    private func closeCurrentSession(sendClose: Bool) async {
+    private func closeCurrentSession() async {
         let read = readTask
         let session = self.session
         // Invalidate the connection id first so any messages the still-running
@@ -926,13 +914,7 @@ final class SiloControlClient {
         connectionId = nil
         heartbeatTask?.cancel(); heartbeatTask = nil
         missedHeartbeats = 0
-        if let session {
-            if sendClose {
-                await session.closeGracefully()
-            } else {
-                await session.close()
-            }
-        }
+        await session?.closeGracefully()
         read?.cancel()
         state = nil
         activeTarget = nil
@@ -1024,6 +1006,8 @@ final class SiloControlClient {
     }
 
     private func attachNowPlayingIfNeeded() {
+        guard !isNowPlayingAttached else { return }
+        isNowPlayingAttached = true
         nowPlaying.attach(handlers: NowPlayingController.Handlers(
             play: { [weak self] in self?.send(.play) },
             pause: { [weak self] in self?.send(.pause) },
@@ -1088,6 +1072,7 @@ final class SiloControlClient {
         nowPlayingArtworkTask?.cancel()
         nowPlayingArtworkTask = nil
         nowPlayingArtworkContentId = nil
+        isNowPlayingAttached = false
         nowPlaying.detach()
     }
 }

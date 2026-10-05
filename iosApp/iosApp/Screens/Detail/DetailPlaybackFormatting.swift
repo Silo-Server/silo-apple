@@ -21,13 +21,18 @@ enum DetailPlaybackFormatting {
 
     static func versionShortLabel(_ version: FileVersion?) -> String {
         guard let version else { return "Auto" }
-        let tokens = [
+        let tokens = qualityTokens(version)
+        return tokens.isEmpty ? "Auto" : tokens.joined(separator: " · ")
+    }
+
+    /// Resolution, video codec, HDR family and audio codec, when known.
+    private static func qualityTokens(_ version: FileVersion) -> [String] {
+        [
             nonEmpty(version.resolution),
             nonEmpty(normalizedVideoCodec(version.codecVideo)),
             dynamicRangeLabel(version),
             nonEmpty(normalizedAudioCodec(version.codecAudio)),
         ].compactMap { $0 }
-        return tokens.isEmpty ? "Auto" : tokens.joined(separator: " · ")
     }
 
     /// Resting-state video summary for the compact tvOS selector segment.
@@ -52,12 +57,7 @@ enum DetailPlaybackFormatting {
     }
 
     static func versionPrimaryText(_ version: FileVersion) -> String {
-        let tokens = [
-            nonEmpty(version.resolution),
-            nonEmpty(normalizedVideoCodec(version.codecVideo)),
-            dynamicRangeLabel(version),
-            nonEmpty(normalizedAudioCodec(version.codecAudio)),
-        ].compactMap { $0 }
+        let tokens = qualityTokens(version)
         if !tokens.isEmpty {
             return tokens.joined(separator: " · ")
         }
@@ -68,10 +68,7 @@ enum DetailPlaybackFormatting {
     }
 
     static func versionSecondaryText(_ version: FileVersion) -> String? {
-        let tokens = [
-            nonEmpty(versionDetailLabel(version)),
-        ].compactMap { $0 }
-        return tokens.isEmpty ? nil : tokens.joined(separator: " · ")
+        nonEmpty(versionDetailLabel(version))
     }
 
     static func currentEdition(
@@ -332,14 +329,11 @@ enum DetailPlaybackFormatting {
     ) -> (track: SubtitleTrack, ordinal: Int)? {
         let catalog = Array((version?.subtitleTracks ?? []).enumerated())
         guard !catalog.isEmpty else { return nil }
-        // Search in the Protocol V3 combined order (externals first) that
-        // `SubtitleTrackCandidates` and the plan inventory use, so a first-match
-        // tie resolves to the same track playback will start. The returned
-        // ordinal stays the catalog offset so "Track N" labels line up with
-        // `subtitleOptions`.
-        // Same candidate set and order as `SubtitleTrackCandidates`: externals
-        // first, then embedded. An embedded row with no index is FFmpeg stream
-        // 0 (the wire omits a zero index), so it stays selectable.
+        // V3 combined order (externals first, as SubtitleTrackCandidates), so
+        // a first-match tie lands on the track playback starts. The returned
+        // ordinal stays the catalog offset so "Track N" labels match
+        // subtitleOptions. An embedded row with no index is FFmpeg stream 0
+        // (the wire omits a zero index), so it stays selectable.
         let ordered = catalog.filter { $0.element.external == true }
             + catalog.filter { $0.element.external != true }
         guard let pick = autoResolvedSubtitle(in: ordered.map(\.element), context: context) else {
@@ -449,8 +443,8 @@ enum DetailPlaybackFormatting {
         let ordered = SubtitleDisplayOrder.order(
             indexed,
             preferredLanguage: preferredLanguage
-        ) { ordinal, track in
-            let type = subtitleType(track, ordinal: ordinal)
+        ) { _, track in
+            let type = subtitleType(track)
             return SubtitleDisplayOrder.Descriptor(
                 language: track.language,
                 codec: track.codec,
@@ -598,8 +592,8 @@ enum DetailPlaybackFormatting {
     static func normalizedSubtitleCodec(_ codec: String?) -> String? {
         guard let codec = codec?.lowercased(), !codec.isEmpty else { return nil }
         if codec == "srt" || codec.contains("subrip") { return "SRT" }
-        if codec == "ass" || codec.contains("ass") { return "ASS" }
-        if codec == "ssa" || codec.contains("ssa") { return "SSA" }
+        if codec.contains("ass") { return "ASS" }
+        if codec.contains("ssa") { return "SSA" }
         if codec == "vtt" || codec.contains("webvtt") { return "WebVTT" }
         if codec == "sup" || codec.contains("pgs") || codec.contains("hdmv") { return "PGS" }
         if codec.contains("dvd") || codec.contains("vobsub") { return "VobSub" }
@@ -607,13 +601,17 @@ enum DetailPlaybackFormatting {
         return codec.uppercased()
     }
 
-    static func formatFileSize(_ bytes: Int64) -> String {
+    private static let fileSizeFormatter: ByteCountFormatter = {
         let formatter = ByteCountFormatter()
         formatter.allowedUnits = [.useMB, .useGB]
         formatter.countStyle = .file
         formatter.includesUnit = true
         formatter.isAdaptive = true
-        return formatter.string(fromByteCount: bytes)
+        return formatter
+    }()
+
+    static func formatFileSize(_ bytes: Int64) -> String {
+        fileSizeFormatter.string(fromByteCount: bytes)
     }
 
     private static func compactAudioLayout(_ track: AudioTrack) -> String? {
@@ -635,7 +633,7 @@ enum DetailPlaybackFormatting {
         }
     }
 
-    private static func subtitleType(_ track: SubtitleTrack, ordinal: Int) -> String? {
+    private static func subtitleType(_ track: SubtitleTrack) -> String? {
         if let title = nonEmpty(track.title) {
             let lowered = title.lowercased()
             if lowered.contains("sdh") || lowered.contains("hearing") {
@@ -727,7 +725,7 @@ enum DetailPlaybackFormatting {
             return true
         }
         if let codec = normalizedSubtitleCodec(track.codec)?.lowercased(),
-           lowered == codec.lowercased() || lowered == track.codec?.lowercased() {
+           lowered == codec || lowered == track.codec?.lowercased() {
             return true
         }
         return false

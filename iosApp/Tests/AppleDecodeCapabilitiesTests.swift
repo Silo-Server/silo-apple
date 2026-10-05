@@ -26,11 +26,8 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
             AppleDecodeCapabilities.playbackV3VideoDecodeAttestation()
         )
         XCTAssertEqual(caps.clientFeatures, [PlaybackProtocolV3.softwareVideoDecodeFeature])
-        XCTAssertTrue(
-            Set(AppleDecodeCapabilities.softwareVideoCodecs).isDisjoint(
-                with: Set(caps.codecsVideo)
-            )
-        )
+        // Software-decoded codecs are never claimed as hardware video codecs.
+        XCTAssertTrue(Set(["av1", "vp9", "mpeg2video", "vc1"]).isDisjoint(with: Set(caps.codecsVideo)))
     }
 
     func testDownloadSoftwareClaimsRetainTheirOwnBounds() {

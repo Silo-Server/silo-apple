@@ -81,19 +81,7 @@ struct TVServerSetupView: View {
             advertiser.stop()
             Task { await coordinator.cancel() }
         }
-        .alert(
-            "Connect without encryption?",
-            isPresented: Binding(
-                get: { viewModel.insecurePrompt != nil },
-                set: { if !$0 { viewModel.dismissInsecurePrompt() } }
-            ),
-            presenting: viewModel.insecurePrompt
-        ) { prompt in
-            Button("Connect") { Task { await viewModel.confirmInsecure(prompt, router: router) } }
-            Button("Cancel", role: .cancel) { viewModel.cancelInsecure(prompt) }
-        } message: { prompt in
-            Text("Your password and what you watch will be sent unencrypted to \(prompt.address). Only do this on a network you trust.")
-        }
+        .serverInsecurePromptAlert(viewModel, router: router)
     }
 
     // MARK: - Set up with a phone (default)
@@ -259,16 +247,7 @@ struct TVServerSetupView: View {
             .focusSection()
             .defaultFocus($focusedField, .connect, priority: .userInitiated)
         } card: {
-            MarqueeTVCard {
-                MarqueeTVCardSymbol(systemImage: "iphone")
-                Text("Type on your phone")
-                    .font(.system(size: 40, weight: .bold))
-                    .padding(.top, 34)
-                Text("When you select a field, a keyboard notification appears on nearby iPhones and iPads. Type there instead of with the remote.")
-                    .font(.system(size: 24))
-                    .foregroundStyle(Color.siloOnSurface.opacity(0.62))
-                    .padding(.top, 14)
-            }
+            TVTypeOnPhoneCard()
         }
         .defaultFocus($focusedField, .host, priority: .userInitiated)
         .marqueeTVFocusAfterKeyboard($focusedField, pending: $focusAfterKeyboard)

@@ -1,7 +1,3 @@
-//
-//  AIJobPoller.swift
-//  Silo (iOS + tvOS)
-//
 //  Generic poller for an AI subtitle job. Emits each fetched ``SubtitleJob``
 //  snapshot on a fixed cadence and stops once the job reaches a terminal
 //  state (`completed` / `failed` / `cancelled`).
@@ -11,9 +7,9 @@
 //  return a scripted sequence of snapshots (see `AIJobPollerTests`). In
 //  production the controller passes `{ try await api.subtitleJob(id: $0, auth: auth) }`.
 //
-//  This is the authority/fallback layer under the (M4) live websocket path:
-//  the poller owns `result_subtitle_id` and the completion handoff, so a
-//  dropped socket still completes the job over polling.
+//  The websocket path streams cues; this poller stays the authority for
+//  `result_subtitle_id` and completion, so a dropped socket still completes
+//  the job.
 //
 
 import Foundation
@@ -28,9 +24,6 @@ import Foundation
 /// `onTermination`).
 actor AIJobPoller {
 
-    /// Cadence between successive job fetches. Matches the Android client's
-    /// ~1.5s job-poll interval.
-    static let pollInterval: Duration = .milliseconds(1500)
 
     /// Consecutive fetch failures tolerated before the stream gives up and
     /// finishes. A transient error (server hiccup, brief network drop) is
@@ -43,7 +36,12 @@ actor AIJobPoller {
     /// can stop it. One poller drives at most one job at a time.
     private var task: Task<Void, Never>?
 
-    init() {}
+    /// Cadence between successive job fetches; matches the Android client.
+    private let pollInterval: Duration
+
+    init(pollInterval: Duration = .milliseconds(1500)) {
+        self.pollInterval = pollInterval
+    }
 
     /// Begin polling `jobId`, emitting each fetched snapshot until the job
     /// is terminal. The first fetch happens immediately (no leading delay)
@@ -85,7 +83,7 @@ actor AIJobPoller {
                     // Sleep between ticks; `Task.sleep` throws on
                     // cancellation, which exits the loop cleanly.
                     do {
-                        try await Task.sleep(for: Self.pollInterval)
+                        try await Task.sleep(for: pollInterval)
                     } catch {
                         break
                     }

@@ -98,55 +98,22 @@ private extension View {
 struct TVSecondaryPillButton: View {
     let icon: String
     let title: String
-    var collapsesWhenUnfocused: Bool = false
-    var stabilizesFocusMotion = false
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            TVSecondaryPillLabel(
-                icon: icon,
-                title: title,
-                collapsesWhenUnfocused: collapsesWhenUnfocused,
-                stabilizesFocusMotion: stabilizesFocusMotion
-            )
-        }
-        .buttonStyle(TVPillButtonStyle(
-            kind: .secondary,
-            focusTreatment: .compact,
-            collapsesWhenUnfocused: collapsesWhenUnfocused,
-            stabilizesFocusMotion: stabilizesFocusMotion
-        ))
-        .accessibilityLabel(title)
-    }
-}
-
-private struct TVSecondaryPillLabel: View {
-    let icon: String
-    let title: String
-    let collapsesWhenUnfocused: Bool
-    let stabilizesFocusMotion: Bool
-
-    @Environment(\.isFocused) private var isFocused
-
-    var body: some View {
-        HStack(spacing: 16) {
-            Image(systemName: icon)
-                .font(.system(size: 28, weight: .semibold))
-                .frame(width: 36, height: 36, alignment: .center)
-            if !stabilizesFocusMotion && (!collapsesWhenUnfocused || isFocused) {
+            HStack(spacing: 16) {
+                Image(systemName: icon)
+                    .font(.system(size: 28, weight: .semibold))
+                    .frame(width: 36, height: 36, alignment: .center)
                 Text(title)
                     .font(.system(size: 26, weight: .semibold))
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
-                    .transition(
-                        stabilizesFocusMotion
-                            ? .opacity
-                            : .opacity.combined(with: .move(edge: .leading))
-                    )
             }
         }
-        .animation(.easeInOut(duration: 0.18), value: isFocused)
+        .buttonStyle(TVPillButtonStyle(kind: .secondary, focusTreatment: .compact))
+        .accessibilityLabel(title)
     }
 }
 
@@ -263,7 +230,7 @@ struct TVCircleMenuButton: View {
                 if attempt == 0 {
                     await Task.yield()
                 } else {
-                    try? await Task.sleep(nanoseconds: 32_000_000)
+                    try? await Task.sleep(for: .milliseconds(32))
                 }
                 if Task.isCancelled || isFocused || isPresented { return }
                 isFocused = true
@@ -500,79 +467,65 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
     var body: some View {
         HStack(spacing: stabilizesFocusMotion ? 18 : 36) {
             if playTitle != nil || stabilizesFocusMotion {
-                actionSlot {
-                    TVPrimaryPillButton(
-                        icon: "play.fill",
-                        title: playTitle ?? (isPlaybackLoading ? "Loading episodes…" : "Play"),
-                        subtitle: playSubtitle,
-                        stabilizesFocusMotion: stabilizesFocusMotion,
-                        fixedWidth: primaryButtonWidth,
-                        action: onPlay,
-                        focused: playFocused
-                    )
-                    .disabled(playTitle == nil)
-                    .focused($focusedAction, equals: .play)
-                    .onGeometryChange(for: Bool.self) { proxy in
-                        proxy.size.width > 0 && proxy.size.height > 0
-                    } action: { isLaidOut in
-                        // Series mounts a disabled placeholder while its first
-                        // playable episode is still loading. Do not consume
-                        // the page's one-shot focus claim until Play is live.
-                        guard isLaidOut, playTitle != nil else { return }
-                        resetInitialPlayFocus()
-                    }
+                TVPrimaryPillButton(
+                    icon: "play.fill",
+                    title: playTitle ?? (isPlaybackLoading ? "Loading episodes…" : "Play"),
+                    subtitle: playSubtitle,
+                    stabilizesFocusMotion: stabilizesFocusMotion,
+                    fixedWidth: primaryButtonWidth,
+                    action: onPlay,
+                    focused: playFocused
+                )
+                .disabled(playTitle == nil)
+                .focused($focusedAction, equals: .play)
+                .onGeometryChange(for: Bool.self) { proxy in
+                    proxy.size.width > 0 && proxy.size.height > 0
+                } action: { isLaidOut in
+                    // Series mounts a disabled placeholder while its first
+                    // playable episode is still loading. Do not consume
+                    // the page's one-shot focus claim until Play is live.
+                    guard isLaidOut, playTitle != nil else { return }
+                    resetInitialPlayFocus()
                 }
 
                 if let onStartOver {
-                    actionSlot {
-                        TVCircleActionButton(
-                            icon: "backward.end.fill",
-                            title: "Start Over",
-                            accessibilityLabel: "Start Over",
-                            stabilizesFocusMotion: stabilizesFocusMotion,
-                            action: onStartOver
-                        )
-                        .focused($focusedAction, equals: .startOver)
-                    }
+                    TVCircleActionButton(
+                        icon: "backward.end.fill",
+                        title: "Start Over",
+                        accessibilityLabel: "Start Over",
+                        stabilizesFocusMotion: stabilizesFocusMotion,
+                        action: onStartOver
+                    )
+                    .focused($focusedAction, equals: .startOver)
                 }
 
-                actionSlot {
-                    playbackSelectors()
-                        .focused($playbackSelectorsFocused)
-                }
+                playbackSelectors()
+                    .focused($playbackSelectorsFocused)
             }
 
-            actionSlot {
-                TVCircleActionButton(
-                    icon: "bookmark",
-                    iconActive: "bookmark.fill",
-                    isActive: inWatchlist,
-                    title: stabilizesFocusMotion
-                        ? "Watchlist"
-                        : (inWatchlist ? "Remove from Watchlist" : "Watchlist"),
-                    accessibilityLabel: inWatchlist ? "Remove from watchlist" : "Add to watchlist",
-                    stabilizesFocusMotion: stabilizesFocusMotion,
-                    action: onToggleWatchlist
-                )
-                .focused($focusedAction, equals: .watchlist)
-            }
+            TVCircleActionButton(
+                icon: "bookmark",
+                iconActive: "bookmark.fill",
+                isActive: inWatchlist,
+                title: stabilizesFocusMotion
+                    ? "Watchlist"
+                    : (inWatchlist ? "Remove from Watchlist" : "Watchlist"),
+                accessibilityLabel: inWatchlist ? "Remove from watchlist" : "Add to watchlist",
+                stabilizesFocusMotion: stabilizesFocusMotion,
+                action: onToggleWatchlist
+            )
+            .focused($focusedAction, equals: .watchlist)
 
-            actionSlot {
-                moreMenu()
-                    .focused($focusedAction, equals: .more)
-            }
+            moreMenu()
+                .focused($focusedAction, equals: .more)
         }
         .focused(rowFocused)
         .frame(maxWidth: .infinity, alignment: .leading)
         .focusSection()
-        .onMoveCommand { direction in
-            // This is a hard top boundary for a pushed detail page. Consuming
-            // Up here keeps focus on the action row; it must never behave like
-            // Back/Menu or pop the movie/series page to the root.
-            if direction == .up {
-                return
-            }
-        }
+        // Attaching the handler consumes Up at this hard top boundary of a
+        // pushed detail page, keeping focus on the action row; Up must never
+        // behave like Back/Menu or pop the page to the root.
+        .onMoveCommand { _ in }
         .onChange(of: allowsInitialPlayFocus) { _, allowed in
             if !allowed {
                 didResetInitialPlayFocus = true
@@ -612,13 +565,6 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
         }
     }
 
-    @ViewBuilder
-    private func actionSlot<Content: View>(
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        content()
-    }
-
     private var seasonKey: String? {
         guard case .season(let key) = initialFocusScope else { return nil }
         return key
@@ -646,7 +592,7 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
                        focusedNow != .play {
                         return
                     }
-                    try? await Task.sleep(nanoseconds: 50_000_000)
+                    try? await Task.sleep(for: .milliseconds(50))
                     if Task.isCancelled { return }
                     if playFocused.wrappedValue { return }
                     if !tracksInitialFocusNavigation, let focusedNow = actionFocus.wrappedValue,
@@ -686,20 +632,17 @@ struct TVPillButtonStyle: ButtonStyle {
 
     let kind: Kind
     let focusTreatment: FocusTreatment
-    let collapsesWhenUnfocused: Bool
     let stabilizesFocusMotion: Bool
     let fixedWidth: CGFloat?
 
     init(
         kind: Kind,
         focusTreatment: FocusTreatment = .hero,
-        collapsesWhenUnfocused: Bool = false,
         stabilizesFocusMotion: Bool = false,
         fixedWidth: CGFloat? = nil
     ) {
         self.kind = kind
         self.focusTreatment = focusTreatment
-        self.collapsesWhenUnfocused = collapsesWhenUnfocused
         self.stabilizesFocusMotion = stabilizesFocusMotion
         self.fixedWidth = fixedWidth
     }
@@ -709,7 +652,6 @@ struct TVPillButtonStyle: ButtonStyle {
             configuration: configuration,
             kind: kind,
             focusTreatment: focusTreatment,
-            collapsesWhenUnfocused: collapsesWhenUnfocused,
             stabilizesFocusMotion: stabilizesFocusMotion,
             fixedWidth: fixedWidth
         )
@@ -720,7 +662,6 @@ private struct TVPillButtonBody: View {
     let configuration: ButtonStyleConfiguration
     let kind: TVPillButtonStyle.Kind
     let focusTreatment: TVPillButtonStyle.FocusTreatment
-    let collapsesWhenUnfocused: Bool
     let stabilizesFocusMotion: Bool
     let fixedWidth: CGFloat?
 
@@ -745,12 +686,7 @@ private struct TVPillButtonBody: View {
             .animation(.easeOut(duration: SiloTheme.fastDuration), value: configuration.isPressed)
     }
 
-    private var foreground: Color {
-        switch kind {
-        case .primary: return isFocused ? .black : .white
-        case .secondary: return isFocused ? .black : .white
-        }
-    }
+    private var foreground: Color { isFocused ? .black : .white }
 
     private var horizontalPadding: CGFloat {
         switch kind {
@@ -758,8 +694,7 @@ private struct TVPillButtonBody: View {
             if stabilizesFocusMotion { return 22 }
             return isFocused ? 70 : 20
         case .secondary:
-            if stabilizesFocusMotion { return 20 }
-            return collapsesWhenUnfocused && !isFocused ? 20 : 40
+            return stabilizesFocusMotion ? 20 : 40
         }
     }
 

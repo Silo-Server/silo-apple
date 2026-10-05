@@ -104,7 +104,7 @@ struct CollectionsView: View {
             ForEach(viewModel.sections) { section in
                 Section {
                     if section.collections.isEmpty {
-                        Text("Drop collections here to add them to this group.")
+                        Text(emptyGroupHint)
                             .font(.siloSmall)
                             .foregroundColor(.siloSecondaryText)
                             .listRowBackground(Color.siloSurface)
@@ -142,6 +142,15 @@ struct CollectionsView: View {
         .listStyle(.insetGrouped)
         #endif
         .siloScrollContentBackgroundHidden()
+    }
+
+    /// tvOS has no Move action, so it only notes the group is empty.
+    private var emptyGroupHint: String {
+        #if os(tvOS)
+        "No collections in this group yet."
+        #else
+        "Use Move on a collection to add it to this group."
+        #endif
     }
 
     @ViewBuilder
@@ -442,12 +451,12 @@ private struct GroupActionSheet: View {
         switch action {
         case .create:
             await viewModel.createGroup(name: name)
-        case .rename(let group):
-            await viewModel.renameGroup(id: group.id, name: name)
+        case .rename:
+            await viewModel.renameGroup(name: name)
         case .delete(let group):
             await viewModel.deleteGroup(id: group.id)
-        case .move(let collection):
-            await viewModel.moveCollection(id: collection.id, toGroupId: pendingMoveTarget)
+        case .move:
+            await viewModel.moveCollection(toGroupId: pendingMoveTarget)
         case .deleteCollection(let collection):
             await viewModel.deleteCollection(id: collection.id)
         }
@@ -671,7 +680,6 @@ private struct LibraryCollectionCard: View {
                 contentMode: .fill
             )
             .frame(width: cardWidth, height: cardHeight)
-            .clipped()
         } else {
             ZStack {
                 Color.siloSurfaceVariant

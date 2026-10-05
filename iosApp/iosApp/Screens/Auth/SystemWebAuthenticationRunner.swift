@@ -150,7 +150,7 @@ final class SystemWebAuthenticationRunner: NSObject, WebAuthenticationRunning, A
 extension ExternalSignInService {
     /// The app's service: the shared v2 client and token store, the system
     /// browser, and the saved server's verified identity.
-    static let live = ExternalSignInService(
+    @MainActor static let live = ExternalSignInService(
         api: SiloAPI.shared.apiV2Client,
         tokenStore: .shared,
         runner: SystemWebAuthenticationRunner.shared,

@@ -80,6 +80,7 @@ targets:
           - "**/*.xcodeproj"
           - "**/*.xcworkspace"
           - "macOS/**"
+          - "tvOS-Info.plist"
       - path: Resources
         buildPhase: resources
     # PRODUCT_BUNDLE_IDENTIFIER and CODE_SIGN_ENTITLEMENTS live in
@@ -183,15 +184,11 @@ targets:
           - "Info.plist"
           - "tvOS-Info.plist"
           - "PrivacyInfo.xcprivacy"
-          - "TopShelf/**"
           - "tvOS/**"
           - "Screens/Player/iOS/**"
           - "Screens/Player/tvOS/**"
           - "Screens/Player/PlayerView.swift"
           - "Screens/WatchParty/**"
-      - path: iosApp/Screens/Player/PlayerTimeFormatter.swift
-      - path: iosApp/tvOS/Caching/CachedAsyncImage.swift
-      - path: iosApp/tvOS/Caching/PosterImageCache.swift
       - path: Resources
         buildPhase: resources
     configFiles:
@@ -373,10 +370,8 @@ targets:
           - "MetricKitCaptureTests.swift"
           # CompanionPairingCoordinator is declared under #if os(iOS).
           - "PairingCoordinatorTests.swift"
-          # RemotePlaybackClock / RemoteVolumeReconciler / SiloControlPlaybackState (Control/iOS).
+          # RemotePlaybackClock / RemoteVolumeReconciler / SiloControlClient (Control/iOS).
           - "SiloControlTests.swift"
-          # SiloControlPlaybackState (Control/iOS).
-          - "SiloControlWireCompatibilityTests.swift"
           # OnboardingTourViewModel / OnboardingTourAPI are declared under #if !os(tvOS).
           - "OnboardingInvitationTests.swift"
           # AutoDownloadRules / AutoDownloadSchedule are declared under #if !os(tvOS).

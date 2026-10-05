@@ -11,31 +11,19 @@ struct NowPlayingShelf: View {
     #endif
     @Environment(AudioPlaybackStore.self) private var audioStore
 
-    /// Single source of truth for "is a now-playing bar currently shown".
-    /// TV control (when not showing the full remote) takes priority over audio.
     #if os(iOS)
+    /// Whether a now-playing bar is showing. A TV control session takes
+    /// priority over audio.
     static func hasActiveAccessory(control: SiloControlClient, audio: AudioPlaybackStore) -> Bool {
-        if controlBarVisible(control) { return true }
-        return audio.player.hasActiveSession
-    }
-
-    /// Mirrors `SiloControlMiniBar.isVisible`: a live session (excluding a
-    /// still-unconfirmed auto-resume probe) or an in-flight reconnect. The bar
-    /// stays mounted while the full remote sheet is up — detaching the
-    /// tabViewBottomAccessory there made it re-insert (with a system slide-in)
-    /// every time the sheet was swiped away.
-    static func controlBarVisible(_ control: SiloControlClient) -> Bool {
-        control.remotePlaybackEngaged
-    }
-    #else
-    static func hasActiveAccessory(audio: AudioPlaybackStore) -> Bool {
-        audio.player.hasActiveSession
+        control.remotePlaybackEngaged || audio.player.hasActiveSession
     }
     #endif
 
     var body: some View {
         #if os(iOS)
-        if Self.controlBarVisible(siloControl) {
+        // Stays mounted under the full remote sheet so dismissing the sheet
+        // doesn't re-insert the accessory.
+        if siloControl.remotePlaybackEngaged {
             SiloControlMiniBar(controller: siloControl, style: style)
                 .animation(.snappy, value: siloControl.hasActiveSession)
                 .animation(.snappy, value: siloControl.isReconnecting)
@@ -65,7 +53,14 @@ struct NowPlayingShelfAttachment: ViewModifier {
     }
 
     func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
+        if #available(iOS 26.1, *) {
+            // Toggling `isEnabled` keeps the TabView's structural identity, so
+            // tabs keep their state when playback starts or stops.
+            content.tabViewBottomAccessory(isEnabled: isActive) {
+                NowPlayingShelf(style: .accessory)
+                    .modifier(NowPlayingAccessoryPlacementReader())
+            }
+        } else if #available(iOS 26.0, *) {
             if isActive {
                 content.tabViewBottomAccessory {
                     NowPlayingShelf(style: .accessory)

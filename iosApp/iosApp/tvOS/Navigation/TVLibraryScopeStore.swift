@@ -6,10 +6,9 @@ import Foundation
 ///
 /// Library scope is the one navigation state Skyline keeps **across
 /// launches** — unlike the selected pill, which is session-only. A
-/// multi-library type is always scoped to exactly one library (the
-/// merged `All <Type>` view was dropped in Rev 3); this store remembers
-/// which one per profile, per type, so reopening a tab lands on the user's
-/// last choice instead of snapping back to the first library.
+/// multi-library type is always scoped to exactly one library; this store
+/// remembers which one per profile, per type, so reopening a tab lands on
+/// the user's last choice instead of snapping back to the first library.
 ///
 /// Single-library types need no entry here — their scope is trivially the
 /// only library, resolved without touching persistence.
@@ -19,10 +18,15 @@ import Foundation
 /// other's choices when they share the same library type. Reads/writes go
 /// through `SharedDefaults` so the value survives the same way other Skyline
 /// preferences do.
-struct TVLibraryScopeStore {
+@MainActor
+final class TVLibraryScopeStore {
     static let shared = TVLibraryScopeStore()
 
     private let defaults: SharedDefaults
+    /// Choices already read or written this session, by defaults key. The
+    /// top menu resolves every type's scope on each body pass, and this store
+    /// is the only writer of these keys.
+    private var cache: [String: Int?] = [:]
 
     init(defaults: SharedDefaults = .shared) {
         self.defaults = defaults
@@ -30,15 +34,13 @@ struct TVLibraryScopeStore {
 
     /// The persisted library id for `type` under the active profile, or
     /// `nil` if nothing has been chosen yet (cold start).
-    func selectedLibraryId(for type: TVLibraryTabType) -> Int? {
+    private func selectedLibraryId(for type: TVLibraryTabType) -> Int? {
         guard let key = key(for: type) else { return nil }
+        if let cached = cache[key] { return cached }
         // `integer(forKey:)` can't distinguish "0" from "absent", so gate
         // on object presence — library ids are positive but be defensive.
-        guard defaults.suite.object(forKey: key) != nil
-            || UserDefaults.standard.object(forKey: key) != nil else {
-            return nil
-        }
-        let stored = defaults.integer(forKey: key)
+        let stored = defaults.containsObject(forKey: key) ? defaults.integer(forKey: key) : nil
+        cache[key] = stored
         return stored
     }
 
@@ -46,6 +48,7 @@ struct TVLibraryScopeStore {
     func setSelectedLibraryId(_ libraryId: Int, for type: TVLibraryTabType) {
         guard let key = key(for: type) else { return }
         defaults.set(libraryId, forKey: key)
+        cache[key] = libraryId
     }
 
     /// Resolve the effective scope for a type given the libraries available

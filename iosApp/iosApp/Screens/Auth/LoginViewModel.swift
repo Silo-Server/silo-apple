@@ -1,7 +1,8 @@
 import Foundation
 
+@MainActor
 @Observable
-class LoginViewModel {
+final class LoginViewModel {
     var username: String = ""
     var password: String = ""
     var isLoading: Bool = false
@@ -110,7 +111,7 @@ class LoginViewModel {
 
         do {
             try await auth.login(username: username, password: password)
-            await StartupContentPrefetcher.prefetchProfiles()
+            StartupContentPrefetcher.prefetchProfiles()
             router.skipsSingleProfilePicker = true
             router.showProfileSelection()
             return true
@@ -125,7 +126,6 @@ class LoginViewModel {
     /// as …"), then routes on like a password sign-in, unless the app left
     /// the sign-in screen meanwhile ("Change server"). Returns whether it
     /// succeeded. A refusal shows under the button (`networkSignInError`).
-    @MainActor
     @discardableResult
     func signInWithNetworkIdentity(_ provider: APIv2AuthProvider, router: AppRouter) async -> Bool {
         guard !isBusy else { return false }
@@ -137,7 +137,7 @@ class LoginViewModel {
         do {
             try await auth.signInWithNetworkIdentity(provider)
             guard router.authState == route else { return true }
-            await StartupContentPrefetcher.prefetchProfiles()
+            StartupContentPrefetcher.prefetchProfiles()
             router.skipsSingleProfilePicker = true
             router.showProfileSelection()
             return true
@@ -152,7 +152,6 @@ class LoginViewModel {
     /// a password sign-in. Closing the sheet is not an error. `choosingAccount`
     /// is "Use a different account"; the first browser sign-in after an
     /// explicit sign-out asks for an account choice too.
-    @MainActor
     func signIn(with provider: APIv2AuthProvider, router: AppRouter, choosingAccount: Bool = false) async {
         guard !isBusy else { return }
         let serverId = ServerRegistry.shared.activeServerId ?? ""
@@ -166,7 +165,7 @@ class LoginViewModel {
         do {
             try await ExternalSignInService.live.signIn(with: provider, selectAccount: selectAccount)
             prompt.clear(serverId: serverId)
-            await StartupContentPrefetcher.prefetchProfiles()
+            StartupContentPrefetcher.prefetchProfiles()
             router.skipsSingleProfilePicker = true
             router.showProfileSelection()
         } catch {
@@ -181,7 +180,6 @@ class LoginViewModel {
     /// here after the sign-out; that screen's task is already cancelled, so
     /// it leaves the request to the screen that stays, and hands it back if
     /// it goes away before the sign-in finished.
-    @MainActor
     func startRequestedSignIn(router: AppRouter) async {
         guard !Task.isCancelled, signInOptions != nil, let serverId = ServerRegistry.shared.activeServerId,
               SelectAccountPrompt.shared.consumeAutoStart(serverId: serverId),
@@ -196,12 +194,13 @@ class LoginViewModel {
     /// Whether a browser sign-in sends `prompt=select_account`: asked for
     /// ("Use a different account") or owed after an explicit sign-out, and
     /// only to a server that advertises it.
-    static func asksToSelectAccount(options: SignInOptions?, choosingAccount: Bool, afterSignOut: Bool) -> Bool {
+    nonisolated static func asksToSelectAccount(options: SignInOptions?, choosingAccount: Bool,
+                                                afterSignOut: Bool) -> Bool {
         options?.supportsSelectAccount == true && (choosingAccount || afterSignOut)
     }
 
     /// Copy for a failed browser sign-in; nil when the person canceled it.
-    static func browserSignInMessage(for error: Error) -> String? {
+    nonisolated static func browserSignInMessage(for error: Error) -> String? {
         if let external = error as? ExternalSignInError {
             return external == .canceled ? nil : external.message
         }
@@ -224,8 +223,8 @@ class LoginViewModel {
     /// `offersPhoneRoute` is false where the screen offers no phone route
     /// (see `LoginViewModel.offersPhoneRoute`); no message points there.
     /// Anything else falls back to the error's description.
-    static func message(for error: Error, browserProviders: [APIv2AuthProvider] = [],
-                        phoneHint: String? = nil, offersPhoneRoute: Bool = true) -> String {
+    nonisolated static func message(for error: Error, browserProviders: [APIv2AuthProvider] = [],
+                                    phoneHint: String? = nil, offersPhoneRoute: Bool = true) -> String {
         if let requirement = UpdateRequirement(error) { return requirement.message }
         let status: Int
         switch error {
@@ -251,8 +250,8 @@ class LoginViewModel {
         }
     }
 
-    private static func externalSignInText(_ identifier: String, browserProviders: [APIv2AuthProvider],
-                                           offersPhoneRoute: Bool) -> String? {
+    nonisolated private static func externalSignInText(_ identifier: String, browserProviders: [APIv2AuthProvider],
+                                                       offersPhoneRoute: Bool) -> String? {
         switch identifier {
         case "local_login_disabled":
             return localLoginDisabledText(browserProviders: browserProviders, offersPhoneRoute: offersPhoneRoute)
@@ -268,7 +267,8 @@ class LoginViewModel {
     /// a provider sign-in, so it points at the phone when the screen offers
     /// that route; elsewhere the screen's own provider is named when it
     /// offers exactly one.
-    static func localLoginDisabledText(browserProviders: [APIv2AuthProvider], offersPhoneRoute: Bool = true) -> String {
+    nonisolated static func localLoginDisabledText(browserProviders: [APIv2AuthProvider],
+                                                   offersPhoneRoute: Bool = true) -> String {
         let off = "Password sign-in is turned off on this server."
         #if os(tvOS)
         return offersPhoneRoute ? "\(off) Use your phone instead." : off
@@ -281,5 +281,5 @@ class LoginViewModel {
         #endif
     }
 
-    static let rateLimitedMessage = "Too many sign-in attempts. Wait a moment, then try again."
+    nonisolated static let rateLimitedMessage = "Too many sign-in attempts. Wait a moment, then try again."
 }

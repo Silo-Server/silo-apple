@@ -29,35 +29,36 @@ struct CompanionPairingCardModifier: ViewModifier {
     @State private var signedIn: [ServerEntry] = []
     /// True once the active offer's TV no longer advertises that offer.
     @State private var offerWithdrawn = false
-    /// False while the app is in the background: discovery is stopped and
-    /// `browser.found` is empty, which says nothing about the TV.
-    @State private var isBrowsing = true
-    /// Numbers `refreshSignedIn` reads and auth changes; only a read that
-    /// is still the newest publishes.
-    @State private var signedInGeneration = 0
     @Environment(\.scenePhase) private var scenePhase
+
+    /// When the signed-in servers are re-read: auth changes, a return to the
+    /// foreground, and a TV starting to advertise. A newer key cancels the
+    /// older read, so a slow read never overwrites a newer one.
+    private struct SignedInRefreshKey: Equatable {
+        let authState: AppRouter.AuthState
+        let isActive: Bool
+        let hasAdverts: Bool
+    }
 
     func body(content: Content) -> some View {
         content
             .task { browser.start() }
-            .task(id: authState) {
+            .task(id: SignedInRefreshKey(
+                authState: authState,
+                isActive: scenePhase == .active,
+                hasAdverts: !browser.found.isEmpty
+            )) {
                 // The candidate may have been discovered while signed out;
-                // a new token changes `candidate`, which latches it.
+                // a new token changes `candidate`, which latches it. With no
+                // TV advertising there is nothing to offer, so skip the
+                // keychain reads.
+                guard scenePhase == .active, !browser.found.isEmpty else { return }
                 await refreshSignedIn()
-            }
-            .onChange(of: authState) {
-                // Reads begun under the previous state no longer publish.
-                signedInGeneration += 1
             }
             .onChange(of: scenePhase) { _, phase in
                 switch phase {
-                case .active:
-                    browser.start()
-                    isBrowsing = true
-                    Task { await refreshSignedIn() }
-                case .background:
-                    browser.stop()
-                    isBrowsing = false
+                case .active: browser.start()
+                case .background: browser.stop()
                 default: break
                 }
             }
@@ -76,7 +77,7 @@ struct CompanionPairingCardModifier: ViewModifier {
                 // that vanished gets a short grace period for Bonjour flaps.
                 guard let offer = active else { offerWithdrawn = false; return }
                 // Reassessed once discovery resumes in the foreground.
-                guard isBrowsing else { return }
+                guard browser.isBrowsing else { return }
                 switch Self.advertStatus(of: offer.tv, in: browser.found) {
                 case .same:
                     offerWithdrawn = false
@@ -112,7 +113,7 @@ struct CompanionPairingCardModifier: ViewModifier {
     private var offerSignature: String {
         let offer = active.map { "\($0.tv.id)|\($0.tv.state.rawValue)|\($0.tv.sid ?? "")" } ?? ""
         let adverts = browser.found.map { "\($0.id)|\($0.state.rawValue)|\($0.sid ?? "")" }
-        return ([isBrowsing ? "browsing" : "paused", offer] + adverts).joined(separator: ",")
+        return ([browser.isBrowsing ? "browsing" : "paused", offer] + adverts).joined(separator: ",")
     }
 
     enum AdvertStatus: Equatable { case same, changed, gone }
@@ -139,14 +140,9 @@ struct CompanionPairingCardModifier: ViewModifier {
         active = offer
     }
 
-    /// Auth changes and returns to the foreground both refresh. A read
-    /// publishes only if nothing replaced it and auth hasn't changed since
-    /// it began; a slower, older read never overwrites a newer one.
     private func refreshSignedIn() async {
-        signedInGeneration += 1
-        let generation = signedInGeneration
         let servers = await CompanionPairingCoordinator.serversWithTokens()
-        guard !Task.isCancelled, generation == signedInGeneration else { return }
+        guard !Task.isCancelled else { return }
         if servers != signedIn { signedIn = servers }
     }
 }

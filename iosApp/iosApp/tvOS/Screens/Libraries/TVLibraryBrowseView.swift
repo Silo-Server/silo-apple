@@ -117,12 +117,9 @@ struct TVLibraryBrowseView: View {
     }
 }
 
-/// Passive first frame for a cold library tab.
-///
-/// The top bar stays interactive while section metadata is in flight, so this
-/// surface deliberately owns no focus. Its geometry mirrors the Skyline
-/// marquee and first landscape row closely enough that the real feed replaces
-/// it without the page appearing to build itself from an empty black canvas.
+/// Passive first frame for a cold library tab. The caller makes it the page's
+/// focus owner; its geometry mirrors the Skyline marquee and first row so the
+/// real feed replaces it in place.
 private struct TVLibraryBrowseLoadingView: View {
     let libraryName: String
 

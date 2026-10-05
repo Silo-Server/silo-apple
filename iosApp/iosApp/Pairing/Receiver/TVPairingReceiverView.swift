@@ -189,7 +189,7 @@ struct TVPairingReceiverView: View {
                     .truncationMode(.middle)
             }
         case .signedIn, .completed:
-            MarqueeTVCardSymbol(systemImage: "checkmark", tint: Color(hex: "#30D158"), size: 140)
+            MarqueeTVCardSymbol(systemImage: "checkmark", tint: Color.siloStatusLive, size: 140)
             cardTitle("Signed in")
         case let .reaching(serverName):
             ProgressView().scaleEffect(1.6).frame(height: 112)
@@ -199,11 +199,11 @@ struct TVPairingReceiverView: View {
             ProgressView().scaleEffect(1.6).frame(height: 112)
             cardTitle(serverName)
         case .unreachable:
-            MarqueeTVCardSymbol(systemImage: "wifi.exclamationmark", tint: Color(hex: "#F4C869"))
+            MarqueeTVCardSymbol(systemImage: "wifi.exclamationmark", tint: Color.siloStatusWarning)
             cardTitle("No answer")
             cardNote("This Apple TV couldn’t reach the address your phone sent.")
         case let .failed(name, _, _):
-            MarqueeTVCardSymbol(systemImage: "exclamationmark.triangle", tint: Color(hex: "#F4C869"))
+            MarqueeTVCardSymbol(systemImage: "exclamationmark.triangle", tint: Color.siloStatusWarning)
             cardTitle("Not finished")
             // Earlier servers in the same session may have signed in.
             cardNote("\(name) wasn't signed in.")
@@ -256,11 +256,9 @@ struct TVPairingReceiverView: View {
     }
 
     private func completedSummary(_ names: [String]) -> String {
-        switch names.count {
-        case 0: return "Taking you to your profiles…"
-        case 1: return "Signed in to \(names[0]). Taking you to your profiles…"
-        default: return "Signed in to \(names.joined(separator: ", ")). Taking you to your profiles…"
-        }
+        names.isEmpty
+            ? "Taking you to your profiles…"
+            : "Signed in to \(names.joined(separator: ", ")). Taking you to your profiles…"
     }
 
     /// The host of an address, for a button label. Falls back to the

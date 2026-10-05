@@ -1,6 +1,6 @@
 import Foundation
 
-struct DeviceLoginStartRequest: Codable {
+struct DeviceLoginStartRequest: Encodable {
     let deviceName: String?
     let devicePlatform: String?
     var clientPurpose: String? = nil
@@ -10,7 +10,7 @@ struct DeviceLoginStartRequest: Codable {
 /// `deviceCode` is the TV-only secret used for polling; it must never be
 /// displayed. `verificationUriComplete` is the URL encoded into the QR —
 /// scanning it deep-links into the web app's `/activate?token=…` page.
-struct DeviceLoginStartResponse: Codable, Equatable {
+struct DeviceLoginStartResponse: Equatable {
     let deviceCode: String
     let userCode: String
     let matchCode: String

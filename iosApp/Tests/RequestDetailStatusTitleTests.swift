@@ -5,14 +5,14 @@ import XCTest
 /// declined, and a title's requestability code (`already_requested`, …) is
 /// not the reason a request failed or was declined.
 final class RequestDetailStatusTitleTests: XCTestCase {
-    private func detailTitle(
+    private func display(
         availability: RequestAvailability = .missing,
         status: RequestStatus?,
         state: RequestUserState?,
         reason: String? = "already_requested"
-    ) -> String? {
+    ) -> RequestDisplayState? {
         let request = RequestState(status: status, state: state, requestable: false, reason: reason, requestId: "request-1")
-        return RequestDisplayState(availability: availability, request: request)?.detailTitle
+        return RequestDisplayState(availability: availability, request: request)
     }
 
     private func record(outcome: RequestOutcome, state: RequestUserState?, lastError: String?) -> MediaRequest {
@@ -27,32 +27,35 @@ final class RequestDetailStatusTitleTests: XCTestCase {
     }
 
     func testFailedRequestReadsAsFailedWithoutTheRequestabilityCode() {
-        XCTAssertEqual(detailTitle(status: .queued, state: .failed), "Request failed")
+        XCTAssertEqual(display(status: .queued, state: .failed), .needsAttention(.failed, reason: nil))
         // A series in the library with a failed request for its missing seasons.
-        XCTAssertEqual(detailTitle(availability: .available, status: .queued, state: .failed), "Request failed")
+        XCTAssertEqual(
+            display(availability: .available, status: .queued, state: .failed),
+            .needsAttention(.failed, reason: nil)
+        )
     }
 
     func testDeclinedRequestReadsAsDeclinedWithoutTheRequestabilityCode() {
-        XCTAssertEqual(detailTitle(status: .pending, state: .declined), "Declined")
+        XCTAssertEqual(display(status: .pending, state: .declined), .needsAttention(.declined, reason: nil))
     }
 
     func testRecordsKeepTheirOwnReasonAndKind() {
         // Servers without `state` decide from `outcome`.
         XCTAssertEqual(
-            RequestDisplayState(record: record(outcome: .declined, state: nil, lastError: "no space")).detailTitle,
-            "Declined · No space"
+            RequestDisplayState(record: record(outcome: .declined, state: nil, lastError: "no space")),
+            .needsAttention(.declined, reason: "no space")
         )
         XCTAssertEqual(
-            RequestDisplayState(record: record(outcome: .failed, state: nil, lastError: "grab failed")).detailTitle,
-            "Request failed · Grab failed"
+            RequestDisplayState(record: record(outcome: .failed, state: nil, lastError: "grab failed")),
+            .needsAttention(.failed, reason: "grab failed")
         )
-        XCTAssertEqual(
-            RequestDisplayState(record: record(outcome: .failed, state: .failed, lastError: "grab failed")).detailTitle,
-            "Request failed · Grab failed"
-        )
+        let failed = RequestDisplayState(record: record(outcome: .failed, state: .failed, lastError: "grab failed"))
+        XCTAssertEqual(failed, .needsAttention(.failed, reason: "grab failed"))
+        // The status line appends the reason to the kind.
+        XCTAssertEqual(failed.detailTitle, "Request failed · Grab failed")
     }
 
     func testTitleWithoutARequestStillShowsWhyItCantBeRequested() {
-        XCTAssertEqual(detailTitle(status: nil, state: nil, reason: "quota_exceeded"), "Request limit reached")
+        XCTAssertEqual(display(status: nil, state: nil, reason: "quota_exceeded"), .unavailable(reason: "quota_exceeded"))
     }
 }

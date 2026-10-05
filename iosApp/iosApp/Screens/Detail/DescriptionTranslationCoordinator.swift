@@ -67,7 +67,7 @@ final class DescriptionTranslationCoordinator {
 
     private func run(
         contentId: String,
-        libraryId: Int? = nil,
+        libraryId: Int?,
         targetLanguage: String,
         runID: UUID,
         apply: @MainActor @escaping (ItemDetail) -> Void
@@ -118,7 +118,6 @@ final class DescriptionTranslationCoordinator {
             ResponseCache.shared.set(refreshed, for: CacheKey.itemDetail(contentId, libraryId: libraryId))
 
             if refreshed.pendingTranslationLanguage == nil {
-                guard isCurrentRun(runID) else { return }
                 phase = .idle
                 return
             }

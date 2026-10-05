@@ -7,8 +7,7 @@
 //  translate. Owned by ``PlayerViewModel`` and constructed/reset alongside
 //  the playback session lifecycle.
 //
-//  Milestone 3 ships the complete feature over **polling**, the same contract
-//  the Android client uses:
+//  Polling is the source of truth, the same contract the Android client uses:
 //    POST /api/v2/subtitles/ai/translate  →  store the job  →  poll
 //    GET  /api/v2/subtitles/ai/jobs/{id}   until terminal    →  on `completed`,
 //    fetch GET /api/v2/subtitles/{media_file_id}, locate the result subtitle,
@@ -19,16 +18,16 @@
 //  the failure with a "Discard held request" action, and an identical request
 //  is not sent again until the user discards it.
 //
-//  Milestone 4 (now) layers REAL-TIME cue streaming over the websocket on top
-//  of that polling authority. The POST now passes `session_id` (the active
-//  playback session) so the server streams cues live; a ``LiveSubtitleCoordinator``
-//  drives the started→pause→synthetic-track→resume→handoff→fail experience
-//  while the poller keeps running underneath as the source of truth for
+//  Real-time cue streaming over the websocket runs on top of that polling
+//  authority. The POST passes `session_id` (the active playback session) so
+//  the server streams cues live; a ``LiveSubtitleCoordinator`` drives the
+//  started→pause→synthetic-track→resume→handoff→fail experience while the
+//  poller keeps running underneath as the source of truth for
 //  `result_subtitle_id`. The websocket and the poller SHARE ONE terminal
 //  action — the persisted-track handoff — guarded by `handoffJobId` so the
 //  track is registered exactly once regardless of which path wins. When the
 //  socket is unavailable (`PlaybackRealtimeClient.isRealtimeUnavailable`) the
-//  controller behaves exactly like M3: poll, no live cues.
+//  controller only polls, with no live cues.
 //
 //  Isolation: `@MainActor @Observable` so the UI binds its state directly and
 //  all mutations stay on main. The networking lives behind the ``SiloAI``
@@ -122,10 +121,10 @@ final class SubtitleAIController {
     private let mediaFileIdProvider: @MainActor () -> Int?
     private let currentTimeProvider: @MainActor () -> Double
 
-    /// The active playback session id. M4 passes this in the translate POST so
-    /// the server streams cues live over the playback control websocket. Nil
-    /// when no session is bound (then the POST omits `session_id` and the job
-    /// runs poll-only, exactly like M3).
+    /// The active playback session id, passed in the translate POST so the
+    /// server streams cues live over the playback control websocket. Nil when
+    /// no session is bound (then the POST omits `session_id` and the job runs
+    /// poll-only).
     private let sessionIdProvider: @MainActor () -> String?
 
     /// Whether the realtime websocket is currently unavailable (circuit broken
@@ -135,7 +134,7 @@ final class SubtitleAIController {
 
     /// The live cue state machine. Driven by the 5 websocket events the VM
     /// forwards (and, on the shared terminal action, by the poller). Optional
-    /// so unit tests that only exercise the M3 polling path can omit it.
+    /// so unit tests that only exercise the polling path can omit it.
     private let liveCoordinator: LiveSubtitleCoordinator?
 
     /// The job id whose persisted-track handoff has been (or is being)
@@ -192,7 +191,7 @@ final class SubtitleAIController {
     private let registerAndSelectDescriptor: @MainActor (SidecarSubtitleDescriptor) -> Void
 
     /// Register a synthesized descriptor in the picker WITHOUT selecting it.
-    /// Used for the `subtitle_ready` broadcast (M5): a translation finished
+    /// Used for the `subtitle_ready` broadcast: a translation finished
     /// elsewhere (or on another device) should become selectable, but must not
     /// hijack the current viewer's subtitle choice. Defaults to the selecting
     /// closure when not injected (older call sites / tests).
@@ -202,7 +201,7 @@ final class SubtitleAIController {
     /// submission, on `cancelActiveJob()`, and on `reset()`.
     private var pollDrainTask: Task<Void, Never>?
 
-    // MARK: - Early-frame buffer (M5)
+    // MARK: - Early-frame buffer
     //
     // The server dispatches the translate job on a background goroutine and can
     // emit `subtitle_translation_started`/`_cues` over the websocket BEFORE the
@@ -238,14 +237,7 @@ final class SubtitleAIController {
     /// register after a reset. Mirrors ``AICapabilities``'s `generation`.
     private var generation = 0
 
-    /// `@MainActor`-isolated (the type default). The owning ``PlayerViewModel``
-    /// is a Swift-5-mode type that isn't globally `@MainActor`, so it builds
-    /// this controller inside a `MainActor.assumeIsolated` block in its lazy
-    /// `subtitleAI` initializer — `subtitleAI` is documented to be accessed
-    /// only on the main actor (player UI, job commands, `cleanup()`). Isolating
-    /// the init (rather than marking it `nonisolated` and assigning to
-    /// main-actor `let`s from a nonisolated context) is what keeps the
-    /// Swift-6 actor-isolation warnings off this initializer.
+    /// Main-actor isolated.
     init(
         api: SiloAI = .shared,
         poller: AIJobPoller = AIJobPoller(),
@@ -260,7 +252,7 @@ final class SubtitleAIController {
         liveCoordinator: LiveSubtitleCoordinator? = nil,
         handoffContext: @escaping @MainActor () -> HandoffContext?,
         registerAndSelectDescriptor: @escaping @MainActor (SidecarSubtitleDescriptor) -> Void,
-        // M5: register-only (no auto-select) for the `subtitle_ready` broadcast.
+        // Register-only (no auto-select) for the `subtitle_ready` broadcast.
         // Falls back to the selecting closure when omitted.
         registerDescriptorWithoutSelecting: (@MainActor (SidecarSubtitleDescriptor) -> Void)? = nil,
         // Test seam for the handoff listing fetch. Nil in production → the call
@@ -425,11 +417,10 @@ final class SubtitleAIController {
         }
         let gen = beginSubmission()
 
-        // M4: pass `session_id` so the server streams cues live over the
-        // playback control websocket — UNLESS realtime is not live-ready, in
-        // which case we omit it and behave exactly like M3 (poll, no live
-        // cues). The poller runs regardless and remains the completion
-        // authority.
+        // Pass `session_id` so the server streams cues live over the playback
+        // control websocket — UNLESS realtime is not live-ready, in which case
+        // omit it and only poll (no live cues). The poller runs regardless and
+        // remains the completion authority.
         let liveSessionId = realtimeUnavailableProvider() ? nil : sessionIdProvider()
         let body = TranslateSubtitleBody(
             mediaFileId: mediaFileId,
@@ -514,7 +505,7 @@ final class SubtitleAIController {
             handleTerminal(job, isASR: job.kind != .translate, generation: generation)
         } else {
             phase = .running
-            // M5 — replay the early frames that beat the 202. Only the frames
+            // Replay the early frames that beat the 202. Only the frames
             // for THIS job's `track_key` (in arrival order); anything else
             // buffered (a stale racing job) is discarded with the buffer.
             replayEarlyFrames(for: job)
@@ -546,11 +537,13 @@ final class SubtitleAIController {
     // network, so `SubtitleAIControllerTests` can exercise the poller-vs-
     // websocket completion race headless. They are not called in production
     // (the real paths run through `submit`/`drainPoll`); kept internal so
-    // `@testable import` reaches them.
+    // `@testable import` reaches them. DEBUG-only: the test bundles build
+    // against Debug, the only configuration with `ENABLE_TESTABILITY`.
 
+    #if DEBUG
     /// Enter the in-flight submit window (`phase == .submitting`, no
     /// `activeJob`) without the network, so `SubtitleAIControllerTests` can
-    /// exercise the M5 early-frame buffer: frames delivered after this and
+    /// exercise the early-frame buffer: frames delivered after this and
     /// before `seedAcceptedJobForTesting` are buffered and then replayed.
     /// Test-only.
     func beginSubmitWindowForTesting() {
@@ -577,6 +570,7 @@ final class SubtitleAIController {
         activeJob = job
         handleTerminal(job, isASR: job.kind != .translate, generation: generation)
     }
+    #endif
 
     /// Drain the poller stream, updating `activeJob` per snapshot and acting
     /// on the terminal snapshot. `generation` is the value captured at submit
@@ -607,7 +601,7 @@ final class SubtitleAIController {
         }
         // Nothing else will report on the job. It may still finish on the
         // server; say so instead of showing progress forever.
-        failHandoff(Self.lostTrackMessage)
+        fail(with: Self.lostTrackMessage)
     }
 
     private func handleTerminal(_ job: SubtitleJob, isASR: Bool, generation gen: Int) {
@@ -629,7 +623,7 @@ final class SubtitleAIController {
             )
         case .failed:
             // Tear the live track down on a poller-observed failure too.
-            failHandoff(job.errorMessage ?? "Subtitle translation failed.")
+            fail(with: job.errorMessage ?? "Subtitle translation failed.")
         case .cancelled:
             liveCoordinator?.cancelActivePresentation()
             refreshLivePresentationState()
@@ -714,7 +708,7 @@ final class SubtitleAIController {
             // we own, let the coordinator restore the prior selection rather than
             // stranding the synthetic live track selected; for a `ready`
             // broadcast there's nothing to do.
-            if autoSelect { failHandoff("Translation finished but the track couldn't be added.") }
+            if autoSelect { fail(with: "Translation finished but the track couldn't be added.") }
             return
         }
 
@@ -735,7 +729,7 @@ final class SubtitleAIController {
             // restores selection; for a `ready` broadcast (register-only) it is
             // a silent no-op (nothing was selected, nothing to restore).
             let softFail: (String) -> Void = { [weak self] message in
-                if autoSelect { self?.failHandoff(message) }
+                if autoSelect { self?.fail(with: message) }
             }
 
             // Match by stored id (Android: `it.id == resultSubtitleId`). The
@@ -814,7 +808,7 @@ final class SubtitleAIController {
         }
     }
 
-    // MARK: - Live websocket events (M4)
+    // MARK: - Live websocket events
 
     /// Route a decoded subtitle event from the playback websocket. Track-scoped
     /// events (`started`/`cues`/`completed`/`failed`) for the active job drive
@@ -838,7 +832,7 @@ final class SubtitleAIController {
         // we've already torn down (or never started) is ignored.
         guard let trackKey = event.trackKey else { return }
 
-        // M5 — early-frame buffering: while a submit is in flight the 202 hasn't
+        // Early-frame buffering: while a submit is in flight the 202 hasn't
         // set `activeJob` yet, so we can't know the job's `track_key`. Stash the
         // racing frame (bounded) instead of dropping it; `onJobAccepted` replays
         // the ones that match the landed job. Only buffer during this in-flight
@@ -874,13 +868,13 @@ final class SubtitleAIController {
             // The coordinator already failed the live presentation out.
             fail(with: failed.message ?? "Subtitle translation failed.")
         case .completed where liveCoordinator?.isActive == true:
-            failHandoff(Self.lostTrackMessage)
+            fail(with: Self.lostTrackMessage)
         case .started, .cues, .completed, .ready:
             break
         }
     }
 
-    /// Handle a file-scoped `subtitle_ready` broadcast (M5).
+    /// Handle a file-scoped `subtitle_ready` broadcast.
     ///
     /// The server broadcasts `subtitle_ready` to **any** active session of a
     /// file when a downloaded subtitle becomes available — including a
@@ -949,7 +943,7 @@ final class SubtitleAIController {
     /// job, so it fails.
     func realtimeDidBecomeUnavailable() {
         if pollerLostTrack, phase == .running, liveCoordinator?.isActive == true {
-            failHandoff(Self.lostTrackMessage)
+            fail(with: Self.lostTrackMessage)
             return
         }
         liveCoordinator?.liveDriverDidGiveUp()
@@ -970,6 +964,9 @@ final class SubtitleAIController {
         livePresentationActive = liveCoordinator?.isActive ?? false
     }
 
+    /// Fails the job on both surfaces: the live coordinator restores the
+    /// presentation and shows the soft notice (covers a dismissed menu), and
+    /// `.failed` / `errorMessage` drive the open translate menu.
     private func fail(with message: String) {
         // A submit that fails (incl. the 202 never returning) ends the in-flight
         // window — discard any frames that were buffered waiting for it.
@@ -978,16 +975,6 @@ final class SubtitleAIController {
         refreshLivePresentationState()
         phase = .failed
         errorMessage = message
-    }
-
-    /// Fail a job over BOTH surfaces with the same message. This dual surfacing
-    /// is intentional: `liveDriverDidGiveUp` closes/restores the live
-    /// presentation and shows the soft notice (covers the dismissed-menu case),
-    /// while `fail` sets `errorMessage`/`.failed` for the open translate menu.
-    /// Extracted so the message literal lives in one place.
-    private func failHandoff(_ message: String) {
-        liveCoordinator?.liveDriverDidGiveUp(message: message)
-        fail(with: message)
     }
 
     private static func message(for error: Error) -> String {
@@ -1010,6 +997,6 @@ final class SubtitleAIController {
 
     private static let genericSubmitFailure = "Couldn't start subtitle translation."
 
-    private static let lostTrackMessage =
+    static let lostTrackMessage =
         "Silo lost track of this subtitle job. If it finishes, the subtitles will appear in the subtitle list."
 }

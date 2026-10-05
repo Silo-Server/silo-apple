@@ -89,6 +89,11 @@ actor ASSSubtitleRenderer {
 
     private var renderer: Track?
     private let pipeline = BlendImagePipeline()
+    /// The last header passed in and its NUL-stripped form. The session
+    /// passes the same header string every frame, so this skips re-cleaning it.
+    private var incomingHeader: String?
+    private var cleanedHeader = ""
+    /// The cleaned header the current `renderer` was built with.
     private var header: String?
     private var fonts: [FontAttachment] = []
     private var events: Set<Event> = []
@@ -103,7 +108,11 @@ actor ASSSubtitleRenderer {
               size.width > 0, size.height > 0,
               size.width * scale < CGFloat(Int32.max),
               size.height * scale < CGFloat(Int32.max) else { return nil }
-        let cleanHeader = header.replacingOccurrences(of: "\0", with: "")
+        if incomingHeader != header {
+            incomingHeader = header
+            cleanedHeader = header.replacingOccurrences(of: "\0", with: "")
+        }
+        let cleanHeader = cleanedHeader
         let nextEvents = self.revision == revision ? events : Set(incoming)
         // Aether prunes old cues and clears them at a seek. Rebuild on removal
         // so neither the font store nor the cue set grows for a whole session.

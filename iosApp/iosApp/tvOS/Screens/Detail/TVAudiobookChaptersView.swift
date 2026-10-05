@@ -19,49 +19,63 @@ struct TVAudiobookChaptersView: View {
     @Environment(\.dismiss) private var dismiss
     @FocusState private var focusedRow: String?
 
-    /// Stored, not computed — see `TVAudiobookViewModel`: its init stitches
-    /// the full part/chapter timeline, so it should run once per view.
     private let model: TVAudiobookViewModel
+    /// Real chapters when present, else the parts list. Built once here
+    /// because `body` re-runs on every focus move.
+    private let rows: [Row]
+    private let defaultRowId: String?
 
     init(detail: ItemDetail, libraryId: Int? = nil) {
         self.detail = detail
         self.libraryId = libraryId
-        self.model = TVAudiobookViewModel(detail: detail)
+        let model = TVAudiobookViewModel(detail: detail)
+        let rows = Self.makeRows(model)
+        self.model = model
+        self.rows = rows
+        self.defaultRowId = rows.first(where: \.isCurrent)?.id ?? rows.first?.id
     }
 
-    /// Rows shown: real chapters when present, else the parts list.
-    private var rows: [Row] {
-        let model = self.model
-        if !model.chapters.isEmpty {
-            return model.chapters.enumerated().map { index, chapter in
+    private static func makeRows(_ model: TVAudiobookViewModel) -> [Row] {
+        let chapters = model.chapters
+        guard !chapters.isEmpty else {
+            return model.tracks.map { track in
                 Row(
-                    id: chapter.id,
-                    number: index + 1,
-                    title: model.chapterTitle(index),
-                    duration: AudiobookProgress.chapterDuration(
-                        chapters: model.chapters, at: index, totalDuration: model.totalDuration
-                    ),
-                    startSeconds: chapter.startSeconds,
-                    isCurrent: model.currentChapterIndex == index,
-                    isDone: model.isFinished
-                        || AudiobookProgress.isChapterFinished(
-                            chapters: model.chapters, at: index,
-                            position: model.position, totalDuration: model.totalDuration
-                        ),
-                    progress: rowProgress(model: model, index: index)
+                    id: "part-\(track.index)",
+                    number: track.index + 1,
+                    title: partTitle(track),
+                    duration: track.durationSeconds,
+                    startSeconds: track.startOffsetSeconds,
+                    isCurrent: false,
+                    isDone: false,
+                    progress: nil
                 )
             }
         }
-        return model.tracks.map { track in
-            Row(
-                id: "part-\(track.index)",
-                number: track.index + 1,
-                title: partTitle(track),
-                duration: track.durationSeconds,
-                startSeconds: track.startOffsetSeconds,
-                isCurrent: false,
-                isDone: false,
-                progress: nil
+        let totalDuration = model.totalDuration
+        let position = model.position
+        let isFinished = model.isFinished
+        let currentIndex = model.currentChapterIndex
+        return chapters.enumerated().map { index, chapter in
+            let duration = AudiobookProgress.chapterDuration(
+                chapters: chapters, at: index, totalDuration: totalDuration
+            )
+            let isCurrent = currentIndex == index
+            return Row(
+                id: chapter.id,
+                number: index + 1,
+                title: model.chapterTitle(index),
+                duration: duration,
+                startSeconds: chapter.startSeconds,
+                isCurrent: isCurrent,
+                isDone: isFinished
+                    || AudiobookProgress.isChapterFinished(
+                        chapters: chapters, at: index,
+                        position: position, totalDuration: totalDuration
+                    ),
+                // Fraction listened within the current chapter.
+                progress: isCurrent && duration > 0
+                    ? min(1, max(0, position - chapter.startSeconds) / duration)
+                    : nil
             )
         }
     }
@@ -86,8 +100,8 @@ struct TVAudiobookChaptersView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .onAppear {
-                    if let target = rows.first(where: \.isCurrent)?.id ?? rows.first?.id {
-                        proxy.scrollTo(target, anchor: .center)
+                    if let defaultRowId {
+                        proxy.scrollTo(defaultRowId, anchor: .center)
                     }
                 }
             }
@@ -176,10 +190,6 @@ struct TVAudiobookChaptersView: View {
         .defaultFocus($focusedRow, defaultRowId, priority: .userInitiated)
     }
 
-    private var defaultRowId: String? {
-        rows.first(where: \.isCurrent)?.id ?? rows.first?.id
-    }
-
     private func rowButton(_ row: Row) -> some View {
         Button {
             audioStore.play(contentId: detail.contentId, restart: false, startPosition: row.startSeconds, libraryId: libraryId)
@@ -192,17 +202,7 @@ struct TVAudiobookChaptersView: View {
 
     // MARK: - Data helpers
 
-    private func rowProgress(model: TVAudiobookViewModel, index: Int) -> Double? {
-        guard model.currentChapterIndex == index else { return nil }
-        let duration = AudiobookProgress.chapterDuration(
-            chapters: model.chapters, at: index, totalDuration: model.totalDuration
-        )
-        guard duration > 0 else { return nil }
-        let into = max(0, model.position - model.chapters[index].startSeconds)
-        return min(1, into / duration)
-    }
-
-    private func partTitle(_ track: AudioPlaybackTrack) -> String {
+    private static func partTitle(_ track: AudioPlaybackTrack) -> String {
         if let fileName = track.fileName, !fileName.isEmpty { return fileName }
         return "Part \(track.index + 1)"
     }
@@ -222,9 +222,7 @@ struct TVAudiobookChaptersView: View {
 
 // MARK: - Row label
 
-/// Passive content of one picker row. Focus appearance is owned entirely by
-/// `TVAudiobookRowStyle` (via `@Environment(\.isFocused)`), so this view only
-/// describes the resting/current visuals.
+/// Content of one picker row; recolors its text for the style's focused fill.
 private struct TVAudiobookRowLabel: View {
     let row: TVAudiobookChaptersView.Row
 
@@ -290,10 +288,9 @@ private struct TVAudiobookRowLabel: View {
 
 // MARK: - Row style
 
-/// Native list-row focus grammar for the picker/info rows: white fill + black
-/// text on focus, faint white resting fill, gentle scale + shadow. Recreated
-/// from the old `TVAudiobookRowStyle` in `AudiobookDetailContent`. The current
-/// row keeps a raised fill and a bottom progress underline when resting.
+/// List-row focus grammar for the chapter picker and narration rows: white
+/// fill and dark text on focus, faint resting fill; the current row keeps a
+/// raised fill and a progress underline.
 struct TVAudiobookRowStyle: ButtonStyle {
     var isCurrent: Bool = false
     var progress: Double? = nil

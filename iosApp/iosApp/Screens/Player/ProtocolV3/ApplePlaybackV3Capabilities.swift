@@ -169,7 +169,7 @@ enum ApplePlaybackV3Capabilities {
         // emit directly to the native receiver path.
         let audioCodecs = AppleDecodeCapabilities.streamingAudioCodecs(for: videoCapabilityMode)
         let containers = AppleDecodeCapabilities.streamingContainers(for: videoCapabilityMode)
-        let hdr = output.hdrDetails.map { $0.hdr10 || $0.hlg || !$0.dolbyVisionProfiles.isEmpty } ?? false
+        let hdr = output.hdrDetails?.claimsAnyHDR ?? false
 
         let capabilities = PlaybackV3CodecCapabilities(
             videoEvidence: usesAetherDeclaration

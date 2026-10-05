@@ -1,11 +1,12 @@
 import XCTest
 @testable import Silo
 
-/// Focused coverage for the behavior fixes made in response to the PR #96
-/// review: permanent-failure gating, consent notice refresh on upload,
-/// binding-scoped playback sessions, and byte-safe stack truncation.
+/// Diagnostics report lifecycle: pending-report state, consent refresh before
+/// upload, binding-scoped playback sessions, stack truncation, breadcrumb
+/// consent gating, the profile-mismatch upload hold, the exit sentinel store,
+/// and multipart filenames.
 final class DiagnosticsReviewFixesTests: XCTestCase {
-    // MARK: - Permanent-failure state (#3 too_large, #9 needsServerUpdate)
+    // MARK: - Permanent-failure state (too_large, needsServerUpdate)
 
     func testPendingReportStateDecodesLegacyStateWithoutTooLarge() throws {
         let legacy = try DiagnosticsJSONCoding.makeDecoder().decode(
@@ -23,7 +24,7 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         XCTAssertTrue(PendingReportState(needsServerUpdate: false, tooLarge: true).isPermanentFailure)
     }
 
-    // MARK: - Consent notice + mode refresh before upload (#2, round 3)
+    // MARK: - Consent notice + mode refresh before upload
 
     func testUpdatingConsentRefreshesModeAndNoticeVersion() throws {
         let root = FileManager.default.temporaryDirectory
@@ -49,7 +50,7 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         XCTAssertEqual(reloaded?.manifest.consent.noticeVersion, 2)
     }
 
-    // MARK: - Binding-scoped playback sessions (#10)
+    // MARK: - Binding-scoped playback sessions
 
     func testRecentSessionsAreScopedToTheirBinding() {
         let suite = UserDefaults(suiteName: "diag-tests-\(UUID().uuidString)")!
@@ -117,7 +118,7 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         XCTAssertEqual(tracker.recentSessionIDs(for: binding), ["failed-run-session"])
     }
 
-    // MARK: - Byte-safe stack truncation (#11)
+    // MARK: - Byte-safe stack truncation
 
 #if os(iOS)
     // MetricKitDiagnosticParser is iOS-only.
@@ -141,7 +142,7 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
     }
 #endif
 
-    // MARK: - Declined-prompt suppression (round 2 #6)
+    // MARK: - Declined-prompt suppression
 
     func testPendingReportStateDecodesLegacyStateWithoutPromptDeclined() throws {
         let legacy = try DiagnosticsJSONCoding.makeDecoder().decode(
@@ -170,7 +171,7 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         XCTAssertFalse(reloaded.state.isPermanentFailure)
     }
 
-    // MARK: - Abnormal-exit marker binding (round 2 #3)
+    // MARK: - Abnormal-exit marker binding
 
     func testExitSentinelMarkerRoundTripsBindingAndProfile() throws {
         let binding = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "acct-a")
@@ -195,7 +196,7 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         XCTAssertNil(decoded.profileID)
     }
 
-    // MARK: - Breadcrumb capture defaults off (round 2 #4)
+    // MARK: - Breadcrumb capture defaults off
 
     func testBreadcrumbCaptureDisabledWithoutContext() {
         let store = makeConsentStore()
@@ -223,7 +224,7 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         XCTAssertTrue(DiagnosticsCoordinator.breadcrumbCaptureEnabled(for: askContext, consentStore: store))
     }
 
-    // MARK: - Breadcrumbs disabled when status unavailable (round 3)
+    // MARK: - Breadcrumbs disabled when status unavailable
 
     func testBreadcrumbCaptureDisabledWhenStatusUnavailable() {
         let store = makeConsentStore()
@@ -249,7 +250,7 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         XCTAssertTrue(DiagnosticsCoordinator.breadcrumbCaptureEnabled(for: available, consentStore: store))
     }
 
-    // MARK: - Offline capture fallback restricted to transient failures (round 4)
+    // MARK: - Offline capture fallback restricted to transient failures
 
     func testCaptureFallbackAllowsTransientFailures() {
         // Offline / transport failures and 5xx server errors are transient: a
@@ -329,7 +330,7 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         ))
     }
 
-    // MARK: - Profile-mismatch upload gate (round 4, finding 6)
+    // MARK: - Profile-mismatch upload gate
 
     func testProfileUploadMismatchHoldsOnlyOnBothPresentDisagreement() {
         // Both present and different -> the server would reject with
@@ -350,7 +351,7 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         XCTAssertFalse(DiagnosticsCoordinator.isProfileUploadMismatch(captured: "profile-a", active: "   "))
     }
 
-    // MARK: - Exit sentinel leftover preservation (round 6 #3)
+    // MARK: - Exit sentinel leftover preservation
 
     func testExitSentinelStorePreservesLeftoverAcrossArmAndTerminate() throws {
         let directory = FileManager.default.temporaryDirectory
@@ -456,7 +457,7 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
 
 #if os(iOS)
     // MetricKitCapture is iOS-only; the rest of this file runs on tvOS too.
-    // MARK: - MetricKit evidence isolation (PR #98)
+    // MARK: - MetricKit evidence isolation
 
     func testMetricKitCaptureOmitsUncorrelatedProcessEvidence() throws {
         let root = FileManager.default.temporaryDirectory
@@ -585,7 +586,7 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         )
     }
 
-    // MARK: - Offline profile eligibility cache (PR #98)
+    // MARK: - Offline profile eligibility cache
 
     func testProfileEligibilityCacheIsScopedToBindingAndProfile() {
         let suite = UserDefaults(suiteName: "diag-tests-\(UUID().uuidString)")!
@@ -606,7 +607,7 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         XCTAssertEqual(reloaded.isChild(profileID: "profile-1", binding: bindingA), false)
     }
 
-    // MARK: - Exit sentinel rebinding (PR #98)
+    // MARK: - Exit sentinel rebinding
 
     func testExitSentinelStoreRebindsCurrentRunAndResetsEvidenceWindow() throws {
         let directory = FileManager.default.temporaryDirectory
@@ -650,7 +651,7 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         XCTAssertEqual(unchanged, rebound)
     }
 
-    // MARK: - Diagnostics multipart filenames (PR #98)
+    // MARK: - Diagnostics multipart filenames
 
     func testDiagnosticsMultipartPartsIncludeStableFilenames() {
         let body = HTTPClient.multipartBody(

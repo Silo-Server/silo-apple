@@ -1,44 +1,13 @@
+//  Wire types for `/api/v2/settings/values/*` (effective read, PUT, DELETE,
+//  shortcut item). The v2 capability document lives in
+//  APIv2SettingsModels.swift.
 //
-//  SettingValueModels.swift
-//  Silo (iOS + tvOS + macOS)
-//
-//  Wire types for the canonical settings API — the typed
-//  `/settings/values/*` routes:
-//
-//    GET    /api/v2/settings/values/effective            — batched resolution
-//    PUT    /api/v2/settings/values/{key}                — write one scope
-//    PUT    /api/v2/settings/values/nav.shortcuts/item   — add or remove a shortcut
-//    DELETE /api/v2/settings/values/{key}                — clear one scope
-//
-//  The v2 capability document lives in APIv2SettingsModels.swift.
-//
-//  These types are deliberately *not* the legacy `/settings/{key}` registry types in
-//  SubtitleAppearance.swift: values here are typed JSON rather than strings,
-//  every value names the scope it lives at, and a key that is not in the
-//  manifest cannot be expressed because `SettingKey` is generated from it.
-//
-//  Coding note — read before adding a call site. Every type here spells its
-//  wire field names out in explicit `CodingKeys` and MUST be coded through
-//  ``SettingsWireCoding``, a coder carrying no key strategy. Passing one of
-//  these types to `HTTPClient.get`/`put` instead is a silent-data-loss bug,
-//  not a style preference (SettingValuesAPITests pins the failure).
-//
-//  Why the models are built this way: setting values are opaque JSON authored
-//  by the contract, and their object keys must survive byte-for-byte —
-//  `playback.subtitle_appearance` is camelCase on the wire (`fontSize`), other
-//  schemas use snake_case. Foundation's key strategy happens not to reach into
-//  `[String: …]` payloads today, but that is an implementation detail rather
-//  than a documented guarantee, and a value whose keys get rewritten is
-//  corrupted silently and permanently in the user's stored settings.
-//
-//  Why that forces the rest: with no strategy, the envelope's snake_case field
-//  names have to be written out by hand. That inverts HTTPClient's convention
-//  (camelCase properties, CodingKeys only for genuinely odd names), and the two
-//  do not mix — `.convertFromSnakeCase` camel-cases an incoming key *before*
-//  matching it, so `profile_id` looks for a CodingKey named `profileId`, misses
-//  the `"profile_id"` one, and decodes as nil without throwing. Hence the rule
-//  at the top. Nothing here changes the app-wide convention: the generated
-//  bindings and every other model keep it.
+//  Every type spells its wire keys in explicit `CodingKeys` and must be coded
+//  through ``SettingsWireCoding``, which has no key strategy. Setting values
+//  are opaque JSON whose object keys (camelCase in
+//  `playback.subtitle_appearance`) must survive byte for byte, and
+//  `.convertFromSnakeCase` would also make a `"profile_id"` CodingKey silently
+//  miss. SettingValuesAPITests pins this.
 //
 
 import Foundation
@@ -71,8 +40,7 @@ enum SettingsWireCoding {
 /// One setting value, exactly as the contract defines it.
 ///
 /// Settings are heterogeneous — bool, int, double, string, object, array, or
-/// null — so the client holds the JSON shape rather than pretending every
-/// value is a string the way the legacy registry did.
+/// null — so the client holds the JSON shape.
 enum SettingJSONValue: Codable, Hashable, Sendable {
     case null
     case bool(Bool)
@@ -339,18 +307,8 @@ enum SettingConstraintKind: RawRepresentable, Hashable, Sendable {
     }
 }
 
-// Coding for the three open enums above: one bare wire string in, one out.
-//
-// Written out per type rather than derived. Synthesis is wrong here — a
-// derived `Codable` for an enum with an associated value emits a nested
-// payload (`{"other":{"_0":"…"}}`) instead of the bare string the wire uses —
-// and a blanket `extension RawRepresentable where RawValue == String: Codable`
-// would be worse still, silently replacing the synthesized coding of every
-// string-backed enum in the app.
-//
-// The point of each is the same: an unfamiliar member decodes to `.other`
-// rather than throwing, which is what keeps a newer server's row from taking a
-// whole batched resolution down with it.
+// Coding for the three open enums above: one bare wire string; an unknown
+// member decodes to `.other`.
 
 extension SettingScope: Codable {
     init(from decoder: Decoder) throws {

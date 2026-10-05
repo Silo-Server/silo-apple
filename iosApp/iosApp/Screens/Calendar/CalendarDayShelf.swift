@@ -18,8 +18,8 @@ struct CalendarDayShelf: View {
     /// tvOS: called when focus enters this shelf from outside it.
     var onFocusGained: (() -> Void)? = nil
 
-    @FocusState private var focusedItemId: String?
     #if os(tvOS)
+    @FocusState private var focusedItemId: String?
     /// Each kick token claims focus exactly once, so `onAppear` re-fires
     /// (returning from a detail page) can't yank focus back to a
     /// previously-selected row while the user is browsing elsewhere.

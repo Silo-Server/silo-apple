@@ -17,10 +17,6 @@ final class PageChromeScrollState {
         guard abs(clamped - offset) >= 0.5 else { return }
         offset = clamped
     }
-
-    func reset() {
-        offset = 0
-    }
 }
 
 /// Full-width Liquid Glass strip that fades in behind pinned page chrome as

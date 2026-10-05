@@ -68,6 +68,11 @@ actor MetadataSingleFlight<Key: Hashable & Sendable, Value> {
             flights[key] = flight
         }
     }
+
+    /// How many callers share the flight for `key`. Read by tests.
+    func waiterCount(for key: Key) -> Int {
+        flights[key]?.waiters.count ?? 0
+    }
 }
 
 /// Opt-in shared flights for steady-state metadata reads.
@@ -77,7 +82,7 @@ actor MetadataSingleFlight<Key: Hashable & Sendable, Value> {
 /// identity. Callers whose freshness depends on an external revision can add
 /// that revision to `itemDetail`; mutation pollers should bypass this type and
 /// call `SiloAPI` directly.
-final class MetadataRequestPool: @unchecked Sendable {
+final class MetadataRequestPool: Sendable {
     static let shared = MetadataRequestPool()
 
     private struct RequestScope: Hashable, Sendable {

@@ -104,36 +104,30 @@ struct MediaCard: View {
     @State private var playedOverride: Bool?
     @State private var favoriteOverride: Bool?
     @State private var watchlistOverride: Bool?
-    @State private var uiCustomization = UICustomizationPreferences.shared
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
-    /// iOS 26 zoom transition namespace, shared from `MainTabView`. When
-    /// present (and `contentId` is non-nil) the poster acts as the
-    /// `.matchedTransitionSource` for the zoom into item detail. `nil` on
-    /// tvOS/macOS or when unset, in which case the tap falls back to a plain
-    /// push. (iOS branch only — tvOS uses focus-driven `.card` style.)
-    @Environment(\.zoomNamespace) private var zoomNamespace
     #if !os(tvOS)
     @Environment(AppRouter.self) private var router
     @Environment(\.browseLibraryId) private var browseLibraryId
     @Environment(\.itemDetailBrowseSource) private var detailBrowseSource
-    /// Stable per-placement id for the zoom source. A bare `contentId` collides
-    /// when the same item is visible in two rows (e.g. Continue Watching +
-    /// Recently Added), making SwiftUI pick an ambiguous source; a per-instance
-    /// id keeps each card's source unique and the tapped card's id is handed to
-    /// the destination via `router.pendingZoomSourceID`.
-    @State private var zoomInstanceID = UUID()
     #endif
 
-    private var cardWidth: CGFloat {
-        (cardWidthOverride ?? SiloTheme.posterCardWidth)
-            * uiCustomization.cardPresentation.posterSize.scale
+    private var uiCustomization: UICustomizationPreferences { .shared }
+
+    private var cardWidth: CGFloat { artworkSize.width }
+    private var cardHeight: CGFloat { artworkSize.height }
+    private var artworkSize: CGSize {
+        Self.artworkSize(cardWidthOverride: cardWidthOverride, aspect: aspect)
     }
-    private var cardHeight: CGFloat {
+
+    /// The size a card draws its artwork at, at the current card-size setting.
+    static func artworkSize(cardWidthOverride: CGFloat?, aspect: MediaCardAspect) -> CGSize {
+        let width = (cardWidthOverride ?? SiloTheme.posterCardWidth)
+            * UICustomizationPreferences.shared.cardPresentation.posterSize.scale
         switch aspect {
         case .poster:
-            cardWidth * (SiloTheme.posterCardHeight / SiloTheme.posterCardWidth)
+            return CGSize(width: width, height: width * (SiloTheme.posterCardHeight / SiloTheme.posterCardWidth))
         case .square:
-            cardWidth
+            return CGSize(width: width, height: width)
         }
     }
 
@@ -194,7 +188,6 @@ struct MediaCard: View {
         Group {
             if let contentId {
                 Button {
-                    router.pendingZoomSourceID = zoomInstanceID.uuidString
                     router.presentItemDetail(
                         contentId: contentId,
                         libraryId: browseLibraryId,
@@ -202,7 +195,6 @@ struct MediaCard: View {
                     )
                 } label: {
                     cardContent
-                        .zoomTransitionSource(id: zoomInstanceID.uuidString, in: zoomNamespace)
                 }
                 .buttonStyle(.plain)
             } else {
@@ -361,8 +353,6 @@ struct MediaCard: View {
                 contentMode: .fill
             )
                 .frame(width: cardWidth, height: cardHeight)
-                .clipped()
-                .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
 
             // Server / user-customized overlays (resolution, HDR, ratings, …)
             // sit under the watched check + progress bar so those built-in
@@ -370,17 +360,10 @@ struct MediaCard: View {
             if let overlayData, overlayStore.enabled {
                 CardOverlays(data: overlayData, prefs: overlayStore.prefs, variant: .poster)
                     .frame(width: cardWidth, height: cardHeight)
-                    .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
             }
 
-            // Progress bar at bottom of poster (inside rounded corners)
             if let progress, progress > 0 {
-                VStack {
-                    Spacer()
-                    ProgressBar(value: progress)
-                }
-                .frame(width: cardWidth, height: cardHeight)
-                .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
+                ProgressBar(value: progress)
             }
 
             // Watched indicator — white circle with check (Plezy style)
@@ -406,6 +389,9 @@ struct MediaCard: View {
             #endif
         }
         .frame(width: cardWidth, height: cardHeight)
+        // One mask for every layer, so overlays and the progress bar stay
+        // inside the rounded corners.
+        .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
     }
 
     private var isPlayed: Bool {
@@ -471,24 +457,6 @@ struct MediaCard: View {
         #endif
     }
 
-}
-
-// MARK: - Zoom transition source helper
-
-extension View {
-    /// Marks this view as the `.matchedTransitionSource` for the iOS 26
-    /// poster → detail zoom, keyed on the item's `contentId`. No-ops when the
-    /// namespace is `nil` (tvOS/macOS, or when the shared namespace is unset),
-    /// so callers get a plain push with no crash. Shared by `MediaCard` and
-    /// `EpisodeThumbCard` (both in this module).
-    @ViewBuilder
-    func zoomTransitionSource(id: String, in namespace: Namespace.ID?) -> some View {
-        if let namespace {
-            self.matchedTransitionSource(id: id, in: namespace)
-        } else {
-            self
-        }
-    }
 }
 
 // MARK: - tvOS Focusable wrapper

@@ -1,17 +1,8 @@
 import SwiftUI
 
-/// Central design token repository matching Plezy's mono theme.
+/// Central design token repository.
 /// On tvOS, spacing/radius tokens are scaled up to match 10-foot viewing distance.
-struct SiloTheme {
-
-    // MARK: - Platform scale
-
-    #if os(tvOS)
-    /// Uniform scale applied to tvOS — everything is ~2x bigger than iOS.
-    static let scale: CGFloat = 2.0
-    #else
-    static let scale: CGFloat = 1.0
-    #endif
+enum SiloTheme {
 
     // MARK: - Corner Radii
 
@@ -23,11 +14,11 @@ struct SiloTheme {
     /// Card container radius
     static let cardCornerRadius: CGFloat = 18
     #else
-    /// Standard card/poster corner radius (8pt — Plezy radiusSm)
+    /// Standard card/poster corner radius (8pt)
     static let cornerRadius: CGFloat = 8
     /// Smaller elements like episode thumbnail corners (6pt)
     static let smallCornerRadius: CGFloat = 6
-    /// Card container radius (14pt — Plezy CardTheme)
+    /// Card container radius (14pt)
     static let cardCornerRadius: CGFloat = 14
     #endif
 
@@ -37,8 +28,7 @@ struct SiloTheme {
     /// The glyph stays small; the frame keeps a comfortable 44pt hit area and
     /// sets the rhythm for the evenly spaced top-right cluster.
     static let topBarIconHitSize: CGFloat = 44
-    /// Gap between top-bar action items (cast / search / profile). Tuned so the
-    /// visible spacing between glyphs reads like Plex's top-right cluster.
+    /// Gap between top-bar action items (cast / search / profile).
     static let topBarIconSpacing: CGFloat = 2
 
     // MARK: - Spacing
@@ -55,7 +45,7 @@ struct SiloTheme {
     /// Screen safe-area padding — tvOS always wants overscan
     static let safePadding: CGFloat = 80
     #else
-    /// Base spacing unit (12pt — Plezy space token)
+    /// Base spacing unit (12pt)
     static let spacing: CGFloat = 12
     /// Standard content padding (16pt)
     static let padding: CGFloat = 16
@@ -85,14 +75,7 @@ struct SiloTheme {
     static let thumbnailCardHeight: CGFloat = 90
     #endif
 
-    /// Profile avatar size
-    #if os(tvOS)
-    static let profileAvatarSize: CGFloat = 160
-    #else
-    static let profileAvatarSize: CGFloat = 80
-    #endif
-
-    // MARK: - Animation Durations (Plezy mono_tokens)
+    // MARK: - Animation Durations
 
     /// Fast — focus state changes, hover effects (120ms)
     static let fastDuration: Double = 0.12

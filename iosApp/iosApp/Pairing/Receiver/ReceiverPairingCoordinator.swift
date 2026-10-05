@@ -21,7 +21,8 @@ protocol NearbySignInCodeSource: AnyObject {
 
 /// Drives the TV side of a pairing session over an accepted `PairingChannel`.
 /// Persist-on-success: a pushed server URL is written to ServerRegistry /
-/// TokenStore ONLY after its poll returns tokens (design spec §5/§6).
+/// TokenStore ONLY after its poll returns tokens (§5/§6 of
+/// docs/superpowers/specs/2026-06-14-companion-pairing-design.md).
 ///
 /// Two modes. `setup` (first-run screen, TXT `st=setup`) accepts any pushed
 /// server and runs its own device authorization per server. `login` (the
@@ -29,15 +30,13 @@ protocol NearbySignInCodeSource: AnyObject {
 /// only a push whose verified identity is that server, and answers with the
 /// code the sign-in screen already shows (`NearbySignInCodeSource`).
 ///
-/// State drives the in-place pairing panel (`TVPairingReceiverView`) inside
-/// `TVServerSetupView` (setup) and `TVLoginView` (sign-in):
-/// `idle` (advertising) → `linked` (phone connected, picking servers) →
-/// `consentRequested` (the session's one TV-side gate: the user must allow
-/// the first pushed server before ANY network call is made on its behalf) →
-/// `awaitingApproval` (match code shown) → `signedIn` (per server) →
-/// `completed` (all done; the view dwells then advances). A failure that ends
-/// the session STAYS on screen as `failed` so the user gets an explanation;
-/// cancels and drops return to `idle` so a fresh attempt just works.
+/// State drives `TVPairingReceiverView` in `TVServerSetupView` and
+/// `TVLoginView`: `idle` → `linked` → `consentRequested` (the user must allow
+/// the first push before any network call) → `reaching` (`unreachable` when
+/// the pushed address fails; sign-in mode uses `preparingCode` instead) →
+/// `awaitingApproval` → `signedIn` per server → `completed`. A failure that
+/// ends the session stays on screen as `failed`; cancels and drops return to
+/// `idle`.
 ///
 /// Compiled on every platform (only tvOS uses it) so the iOS test bundle can
 /// drive the state machine with a scripted channel.
@@ -187,9 +186,10 @@ final class ReceiverPairingCoordinator {
     }
 
     /// Consume the session stream. The stream is ALWAYS being read here; each
-    /// server's start+poll runs as a cancellable child task so a Cancel
+    /// server's start+poll runs as a cancellable separate task so a Cancel
     /// message or a dropped connection aborts the attempt immediately rather
-    /// than after the poll loop finishes (design spec §7).
+    /// than after the poll loop finishes (§7 of the companion-pairing design
+    /// spec).
     func run(session: any PairingChannel, stream: AsyncThrowingStream<PairingMessage, Error>) async {
         isCancelling = false
         signedInNames = []
@@ -215,8 +215,7 @@ final class ReceiverPairingCoordinator {
                     // The protocol is one-server-at-a-time: a new push while
                     // one is in flight means the phone gave up on the
                     // previous server — supersede it, don't ignore the push.
-                    pollTask?.cancel()
-                    await pollTask?.value
+                    await abandonAttempt()
                     guard !isCancelling else { return }
                     let push = PushedServer(
                         serverURL: serverURL,
@@ -232,14 +231,12 @@ final class ReceiverPairingCoordinator {
                     }
                 case .done:
                     // An in-flight server has no committed result; abandon it.
-                    pollTask?.cancel()
-                    await pollTask?.value
+                    await abandonAttempt()
                     await concludeSession(session)
                     return
                 case let .cancel(reason):
                     Self.logger.notice("peer cancelled: \(reason, privacy: .public)")
-                    pollTask?.cancel()
-                    await pollTask?.value
+                    await abandonAttempt()
                     if signedInNames.isEmpty {
                         await teardown(session: session, resetState: true)
                     } else {
@@ -265,9 +262,14 @@ final class ReceiverPairingCoordinator {
     }
 
     private func onStreamClosed(_ session: any PairingChannel) async {
+        await abandonAttempt()
+        await concludeSession(session)
+    }
+
+    /// Cancels the in-flight server attempt and waits for it to unwind.
+    private func abandonAttempt() async {
         pollTask?.cancel()
         await pollTask?.value
-        await concludeSession(session)
     }
 
     /// Land on the right terminal (or idle) state for however the session
@@ -577,7 +579,7 @@ final class ReceiverPairingCoordinator {
     /// Best effort; the answer changes nothing here.
     private func withdraw(_ deviceCode: String, at serverURL: String) {
         let api = self.api
-        Task.detached {
+        Task {
             let capability = try? await api.capability(serverURL: serverURL)
             await api.withdraw(serverURL: serverURL, deviceCode: deviceCode, capability: capability)
         }

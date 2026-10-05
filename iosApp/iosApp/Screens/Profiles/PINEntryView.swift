@@ -274,8 +274,8 @@ private struct NumberPadButton: View {
     let label: String
     var letters: String? = nil
     var isSystemImage: Bool = false
-    var focus: FocusState<String?>.Binding? = nil
-    var focusValue: String? = nil
+    let focus: FocusState<String?>.Binding
+    let focusValue: String
     let action: () -> Void
     static var size: CGFloat {
         #if os(tvOS)
@@ -285,17 +285,7 @@ private struct NumberPadButton: View {
         #endif
     }
 
-    @ViewBuilder
     var body: some View {
-        if let focus, let focusValue {
-            button
-                .focused(focus, equals: focusValue)
-        } else {
-            button
-        }
-    }
-
-    private var button: some View {
         Button(action: action) {
             if isSystemImage {
                 Image(systemName: label)
@@ -314,11 +304,11 @@ private struct NumberPadButton: View {
             }
         }
         .buttonStyle(NumberPadButtonStyle(isFocused: isFocused))
+        .focused(focus, equals: focusValue)
     }
 
     private var isFocused: Bool {
-        guard let focusValue else { return false }
-        return focus?.wrappedValue == focusValue
+        focus.wrappedValue == focusValue
     }
 
     private var symbolSize: CGFloat {

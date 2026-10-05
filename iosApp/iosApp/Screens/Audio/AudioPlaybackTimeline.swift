@@ -1,10 +1,11 @@
 import Foundation
 
 enum AudioPlaybackTimeline {
+    /// `tracks` must be in book order, as `AudiobookPlaybackContext` builds them.
     static func trackIndex(at globalTime: Double, tracks: [AudioPlaybackTrack]) -> Int? {
         guard !tracks.isEmpty else { return nil }
         let clamped = max(0, globalTime)
-        for track in tracks.sorted(by: { $0.index < $1.index }) {
+        for track in tracks {
             let start = track.startOffsetSeconds
             let end = start + max(0, track.durationSeconds)
             if clamped >= start && clamped < end {

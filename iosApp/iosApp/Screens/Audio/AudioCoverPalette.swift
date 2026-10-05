@@ -1,4 +1,5 @@
 import CoreImage
+import CoreImage.CIFilterBuiltins
 import Nuke
 import SwiftUI
 
@@ -90,10 +91,10 @@ enum AudioCoverPaletteSampler {
     }
 
     private static func averageColor(of image: CIImage, in rect: CGRect) -> RGB? {
-        let filter = CIFilter(name: "CIAreaAverage")
-        filter?.setValue(image, forKey: kCIInputImageKey)
-        filter?.setValue(CIVector(cgRect: rect), forKey: kCIInputExtentKey)
-        guard let output = filter?.outputImage else { return nil }
+        let filter = CIFilter.areaAverage()
+        filter.inputImage = image
+        filter.extent = rect
+        guard let output = filter.outputImage else { return nil }
 
         var bitmap = [UInt8](repeating: 0, count: 4)
         ciContext.render(

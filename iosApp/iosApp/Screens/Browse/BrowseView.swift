@@ -24,14 +24,14 @@ struct BrowseView: View {
 
     private var rootContent: some View {
         Group {
-            if !viewModel.items.isEmpty {
-                scrollContent
-            } else if let error = viewModel.error {
+            if viewModel.items.isEmpty, let error = viewModel.error {
                 ErrorView(state: error, onRetry: { Task { await viewModel.loadItems(reset: true) } })
-            } else if viewModel.isLoading {
-                Color.clear
-            } else {
+            } else if viewModel.items.isEmpty, viewModel.hasLoaded, !viewModel.isLoading {
                 emptyContent
+            } else {
+                // While the first page loads the grid draws placeholders under
+                // the search and sort controls.
+                scrollContent
             }
         }
         .siloPageBackground()
@@ -102,7 +102,7 @@ struct BrowseView: View {
 
                 CatalogGrid(
                     items: viewModel.items,
-                    isLoading: viewModel.isLoading,
+                    isLoading: viewModel.isLoading || !viewModel.hasLoaded,
                     hasMore: viewModel.hasMore,
                     forcesThreeColumnsOnPhone: libraryId != nil,
                     onItemTap: { router.navigate(to: .itemDetail(browseItem: $0, libraryId: libraryId)) },
@@ -311,7 +311,6 @@ struct LibraryPageTabSelector: View {
 struct LibraryDetailView: View {
     let libraryId: Int
     let initialTitle: String?
-    let initialLibraryType: String?
     let showsNavigationTitle: Bool
 
     @State private var selectedTab: LibraryPageTab = .recommended
@@ -326,7 +325,6 @@ struct LibraryDetailView: View {
     ) {
         self.libraryId = libraryId
         self.initialTitle = initialTitle
-        self.initialLibraryType = initialLibraryType
         self.showsNavigationTitle = showsNavigationTitle
         _title = State(initialValue: initialTitle ?? "Library")
         _libraryType = State(initialValue: initialLibraryType)
@@ -382,31 +380,22 @@ struct LibraryDetailView: View {
 @Observable
 @MainActor
 private class LibraryRecommendedViewModel {
+    /// Non-featured rows with items, in server order.
     var sections: [ResolvedSection] = []
     var isLoading = false
-    var isRefreshing = false
     var error: ErrorState?
 
-    var regularSections: [ResolvedSection] {
-        sections.filter { !$0.isFeatured && !$0.items.isEmpty }
-    }
-
     func loadSections(libraryId: Int) async {
-        let key = CacheKey.librarySections(libraryId)
         if sections.isEmpty,
-           let cached: SectionsResponse = ResponseCache.shared.get(key) {
-            sections = cached.sections.filter { !$0.items.isEmpty }
+           let cached: SectionsResponse = ResponseCache.shared.get(CacheKey.librarySections(libraryId)) {
+            sections = Self.displayed(cached.sections)
         }
-        if sections.isEmpty {
-            isLoading = true
-        } else {
-            isRefreshing = true
-        }
+        isLoading = sections.isEmpty
         error = nil
 
         do {
             let response = try await StartupContentPrefetcher.fetchLibrarySections(libraryId: libraryId)
-            sections = response.sections.filter { !$0.items.isEmpty }
+            sections = Self.displayed(response.sections)
         } catch let err {
             if sections.isEmpty {
                 error = ErrorState(err)
@@ -414,7 +403,10 @@ private class LibraryRecommendedViewModel {
         }
 
         isLoading = false
-        isRefreshing = false
+    }
+
+    private static func displayed(_ sections: [ResolvedSection]) -> [ResolvedSection] {
+        sections.filter { !$0.isFeatured && !$0.items.isEmpty }
     }
 }
 
@@ -422,20 +414,19 @@ struct LibraryRecommendedView: View {
     let libraryId: Int
 
     @State private var viewModel = LibraryRecommendedViewModel()
-    @State private var isRefreshing = false
-    @State private var refreshStartedAt: Date?
-    @State private var refreshHideTask: Task<Void, Never>?
+    @State private var refreshPill = RefreshStatusPillState()
     @Environment(AppRouter.self) private var router
 
     var body: some View {
         ZStack(alignment: .top) {
             Group {
-                if !viewModel.regularSections.isEmpty {
+                if !viewModel.sections.isEmpty {
                     content
                 } else if let error = viewModel.error {
                     ErrorView(state: error, onRetry: { Task { await viewModel.loadSections(libraryId: libraryId) } })
                 } else if viewModel.isLoading {
-                    Color.clear
+                    PosterRowsSkeleton()
+                        .padding(.top, SiloTheme.padding)
                 } else {
                     EmptyStateView(
                         icon: "rectangle.stack.fill",
@@ -445,19 +436,19 @@ struct LibraryRecommendedView: View {
                 }
             }
 
-            if isRefreshing {
+            if refreshPill.isVisible {
                 RefreshStatusPill()
-                    .padding(.top, refreshStatusTopPadding)
+                    .padding(.top, SiloTheme.padding)
                     .transition(.move(edge: .top).combined(with: .opacity))
                     .zIndex(2)
-            } else if ConnectionMonitor.shared.isOffline, !viewModel.regularSections.isEmpty {
+            } else if ConnectionMonitor.shared.isOffline, !viewModel.sections.isEmpty {
                 ServerUnreachablePill()
-                    .padding(.top, refreshStatusTopPadding)
+                    .padding(.top, SiloTheme.padding)
                     .transition(.move(edge: .top).combined(with: .opacity))
                     .zIndex(2)
             }
         }
-        .animation(.easeInOut(duration: 0.18), value: isRefreshing)
+        .animation(.easeInOut(duration: 0.18), value: refreshPill.isVisible)
         .animation(.easeInOut(duration: 0.18), value: ConnectionMonitor.shared.isOffline)
         .siloPageBackground()
         .task(id: libraryId) {
@@ -471,7 +462,7 @@ struct LibraryRecommendedView: View {
     private var content: some View {
         ScrollView(.vertical, showsIndicators: false) {
             LazyVStack(spacing: SiloTheme.largePadding) {
-                ForEach(viewModel.regularSections) { section in
+                ForEach(viewModel.sections) { section in
                     SectionRow(
                         section: section,
                         onItemTap: { destinationContentId, item in
@@ -493,41 +484,9 @@ struct LibraryRecommendedView: View {
         .environment(\.browseLibraryId, libraryId)
     }
 
-    private var refreshStatusTopPadding: CGFloat {
-        SiloTheme.padding
-    }
-
     private func refreshRecommendations() async {
-        await MainActor.run {
-            showRefreshStatus()
-        }
-
-        await viewModel.loadSections(libraryId: libraryId)
-
-        await MainActor.run {
-            scheduleRefreshStatusHide()
-        }
-    }
-
-    private func showRefreshStatus() {
-        refreshHideTask?.cancel()
-        refreshStartedAt = Date()
-        isRefreshing = true
-    }
-
-    private func scheduleRefreshStatusHide() {
-        let elapsed = Date().timeIntervalSince(refreshStartedAt ?? Date())
-        let remaining = RefreshStatusPill.minimumVisibleDuration - elapsed
-        refreshHideTask?.cancel()
-        refreshHideTask = Task { @MainActor in
-            if remaining > 0 {
-                try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
-            }
-            guard !Task.isCancelled else { return }
-
-            isRefreshing = false
-            refreshStartedAt = nil
-            refreshHideTask = nil
+        await refreshPill.run {
+            await viewModel.loadSections(libraryId: libraryId)
         }
     }
 }

@@ -42,11 +42,11 @@ final class OnboardingRuntimeSettingsRefresher: OnboardingRuntimeSettingsRefresh
         case "auto_skip_intro":
             // The server mirrors the tour's boolean onto the mode that
             // superseded it; `never` is not reachable from the tour.
-            if let enabled = Self.boolean(value) {
+            if let enabled = Self.settingBoolean(value) {
                 PlayerSettings.shared.introSkipMode = IntroSkipMode(legacyAutoSkip: enabled)
             }
         case "auto_skip_credits":
-            if let enabled = Self.boolean(value) {
+            if let enabled = Self.settingBoolean(value) {
                 PlayerSettings.shared.autoSkipCredits = enabled
             }
         default:
@@ -54,7 +54,8 @@ final class OnboardingRuntimeSettingsRefresher: OnboardingRuntimeSettingsRefresh
         }
     }
 
-    private static func boolean(_ value: String) -> Bool? {
+    /// Parses a boolean onboarding setting value; nil when it isn't one.
+    nonisolated static func settingBoolean(_ value: String) -> Bool? {
         switch value.lowercased() {
         case "true", "1", "yes", "on": true
         case "false", "0", "no", "off": false

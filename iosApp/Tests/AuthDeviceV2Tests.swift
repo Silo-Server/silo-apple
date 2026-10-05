@@ -630,8 +630,7 @@ final class AuthDeviceV2Tests: XCTestCase {
         stub.release()
         await retry.value
         try await waitForCancel(of: "dev-1")
-        // Give a wrongly restarted loop time to send its start.
-        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertFalse(model.isPolling, "the overtaken retry must not restart the loop")
         XCTAssertNil(model.session)
         XCTAssertEqual(stub.requestedPaths.filter { $0 == Self.startPath }.count, 1, "no new code after stop()")
 
@@ -653,11 +652,10 @@ final class AuthDeviceV2Tests: XCTestCase {
         await model.begin(deviceName: "TV", devicePlatform: "tvos")
         try await waitFor(model) { _ in polls() >= 2 }
         model.setActive(false)
-        // Let a poll already in flight land.
-        try await Task.sleep(for: .milliseconds(100))
+        // A poll already in flight lands, then the loop ends: with no loop,
+        // nothing polls in the background.
+        try await waitFor(model) { !$0.isPolling }
         let paused = polls()
-        try await Task.sleep(for: .milliseconds(200))
-        XCTAssertEqual(polls(), paused, "no polls in the background")
         XCTAssertEqual(model.status, .waiting)
         model.setActive(true)
         try await waitFor(model) { _ in polls() > paused }
@@ -707,7 +705,7 @@ final class AuthDeviceV2Tests: XCTestCase {
         XCTAssertEqual(code?.deviceCode, "dev-1")
         let renewing = model
         let renewed = Task { await renewing.nearbyApprovalOutcome(deviceCode: "dev-1") }
-        try await Task.sleep(for: .milliseconds(20))
+        try await waitFor(renewing) { $0.nearbyWaiterCount == 1 }
         stub.release()
         outcome = await renewed.value
         XCTAssertEqual(outcome, .failed(.expired), "a renewed code is gone")
@@ -718,7 +716,7 @@ final class AuthDeviceV2Tests: XCTestCase {
         XCTAssertEqual(code?.deviceCode, "dev-1")
         let stopping = model
         let waiter = Task { await stopping.nearbyApprovalOutcome(deviceCode: "dev-1") }
-        try await Task.sleep(for: .milliseconds(20))
+        try await waitFor(stopping) { $0.nearbyWaiterCount == 1 }
         model.stop()
         outcome = await waiter.value
         XCTAssertEqual(outcome, .failed(.authFailed), "leaving the screen is not an expired code")
@@ -845,10 +843,7 @@ final class AuthDeviceV2Tests: XCTestCase {
         try await waitFor(model) { $0.status == .waiting }
         let mayUsePassword = await model.suspendForPasswordSignIn()
         XCTAssertTrue(mayUsePassword)
-        let pollsAtSuspend = stub.requestedPaths.filter { $0 == "/api/v2/auth/device/poll" }.count
-        try await Task.sleep(for: .milliseconds(200))
-        XCTAssertEqual(stub.requestedPaths.filter { $0 == "/api/v2/auth/device/poll" }.count, pollsAtSuspend,
-            "no polls while a password sign-in is in flight")
+        XCTAssertFalse(model.isPolling, "no polls while a password sign-in is in flight")
 
         // The password failed: polling resumes, and the phone's approval wins.
         stub.reply(200, Self.poll_device_login_ok)
@@ -883,7 +878,7 @@ final class AuthDeviceV2Tests: XCTestCase {
         await model.retry()
         let nearby = await model.codeForNearbyApproval()
         XCTAssertNil(nearby, "no code for a phone while a password is being checked")
-        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertFalse(model.isPolling, "the retry waits for the password before starting the loop")
         XCTAssertEqual(count(Self.startPath), 1, "no new code while the password is in flight")
         XCTAssertEqual(count(Self.pollPath), polls, "no polls while the password is in flight")
         XCTAssertEqual(model.status, .gettingCode)
@@ -954,34 +949,21 @@ final class AuthDeviceV2Tests: XCTestCase {
     private func waitFor(_ model: QRLoginViewModel, timeout: TimeInterval = 10,
                          file: StaticString = #filePath, line: UInt = #line,
                          _ condition: (QRLoginViewModel) -> Bool) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if condition(model) { return }
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
+        if await eventually(timeout: .seconds(timeout), { condition(model) }) { return }
         XCTFail("QR sign-in did not reach the expected state: \(model.status)", file: file, line: line)
     }
 
     /// Waits for a withdrawal of `deviceCode`.
-    private func waitForCancel(of deviceCode: String, timeout: TimeInterval = 5) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            let withdrawn = stub.requests.filter { $0.path == Self.cancelPath }.compactMap { request in
-                request.body.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: String] }?["device_code"]
+    private func waitForCancel(of deviceCode: String) async throws {
+        try await waitUntil("\(deviceCode) to be withdrawn") {
+            stub.requests.filter { $0.path == Self.cancelPath }.contains { request in
+                request.body.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: String] }?["device_code"] == deviceCode
             }
-            if withdrawn.contains(deviceCode) { return }
-            try await Task.sleep(nanoseconds: 10_000_000)
         }
-        XCTFail("\(deviceCode) was not withdrawn")
     }
 
-    private func waitForRequest(_ path: String, timeout: TimeInterval = 5) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if stub.requestedPaths.contains(path) { return }
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
-        XCTFail("no request to \(path)")
+    private func waitForRequest(_ path: String) async throws {
+        try await waitUntil("a request to \(path)") { stub.requestedPaths.contains(path) }
     }
 
     /// Server fixtures vendored by scripts/sync-apiv2-fixtures.sh.

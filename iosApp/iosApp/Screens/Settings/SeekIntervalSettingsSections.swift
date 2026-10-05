@@ -63,11 +63,7 @@ struct SeekIntervalSettingsSections: View {
         }
         .foregroundStyle(Color.siloOnSurface)
         .disabled(!store.allowsEditing)
-        #if os(macOS)
-        .pickerStyle(.menu)
-        #else
-        .pickerStyle(.navigationLink)
-        #endif
+        .settingsPickerStyle()
     }
 
     /// The usage note, then whatever keeps the pickers from saving, then any

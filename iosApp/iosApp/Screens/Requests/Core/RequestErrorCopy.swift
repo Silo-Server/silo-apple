@@ -14,6 +14,10 @@ enum RequestErrorCopy {
 
     static func message(forToken token: String?) -> String? {
         guard let token, !token.isEmpty else { return nil }
+        return copy(forToken: token)
+    }
+
+    private static func copy(forToken token: String) -> String {
         switch token {
         case "already_requested": return "Already requested"
         case "already_available": return "Already in your library"
@@ -36,9 +40,9 @@ enum RequestErrorCopy {
         if case APIv2Error.problem(let problem) = error, !UpdateRequirement.isClientUpgradeRequired(problem) {
             switch problem.identifier {
             case "validation_failed":
-                return message(forToken: "validation_failed") ?? problem.title
+                return copy(forToken: "validation_failed")
             case "capability_disabled", "capability_not_configured", "capability_unsupported":
-                return message(forToken: "requests_disabled") ?? problem.title
+                return copy(forToken: "requests_disabled")
             default:
                 if !problem.detail.isEmpty { return problem.detail }
             }

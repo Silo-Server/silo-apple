@@ -1,14 +1,8 @@
 #if !os(tvOS)
 import SwiftUI
 
-/// Phone movie detail screen. Cinematic backdrop hero up
-/// top, then a scrollable body of
-/// cast, "About", and the Details key/value list.
-///
-/// Mirrors `TVMovieDetailView` semantically — same hero metadata,
-/// same primary play + circle action row, same single consolidated
-/// version selector — but every element is sized and laid out for
-/// touch on a phone.
+/// Phone movie detail: artwork hero, then cast, trailers, Details and More
+/// Like This. Mirrors TVMovieDetailView's metadata and actions, sized for touch.
 struct MovieDetailContent<BelowOverview: View>: View {
     let detail: ItemDetail
     let isFavorite: Bool
@@ -27,8 +21,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
     let onPersonTap: (String) -> Void
     let onNavigateToItem: (String) -> Void
     /// Play a local extra from the trailers rail. Routed separately from
-    /// `onPlay` because extras are never downloadable and have no resume
-    /// point — see `ItemDetailView` for why they skip the offline/cast gates.
+    /// `onPlay` because extras have no resume point.
     let onPlayExtra: (String) -> Void
     /// Kick off the manual "Find Trailers" fetch (movies only).
     let onFindTrailers: () -> Void
@@ -48,8 +41,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var showResumeDialog = false
-    /// Presents the DownloadActionButton's options sheet; lives here so the
-    /// overflow menu can open it now that a plain tap downloads directly.
+    /// The download options sheet, opened from the More menu.
     @State private var showDownloadOptions = false
 
     var body: some View {
@@ -68,12 +60,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
             .ignoresSafeArea(edges: .top)
             .coordinateSpace(name: PhoneDetailScrollCoordinateSpace.name)
             .detailScrollDismissal()
-            .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                let offset = max(0, geometry.contentOffset.y + geometry.contentInsets.top)
-                return offset <= 150 ? 0 : min(offset, 480)
-            } action: { _, offset in
-                scrollState.update(offset)
-            }
+            .phoneDetailScrollTracking(scrollState)
         }
         .siloResumePlaybackAlert(
             isPresented: $showResumeDialog,
@@ -106,7 +93,6 @@ struct MovieDetailContent<BelowOverview: View>: View {
             factsLine: PhoneHeroMetadata.movieFactsLine(from: detail, version: effectiveVersion),
             ratings: detail.displayRatings,
             creditText: PhoneHeroMetadata.creditText(from: detail),
-            overlayData: OverlayData.from(detail),
             enablesArtworkParallax: SiloMediaType.isMovieLibrary(detail.type),
             actions: { actionStack },
             belowOverview: {
@@ -120,8 +106,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
         )
     }
 
-    /// Play, then the named secondary actions, then the playback
-    /// selectors. See `PhoneDetailActionRow` for why the circles went away.
+    /// Play, the named secondary actions, then the trailer status pill.
     @ViewBuilder
     private var actionStack: some View {
         VStack(spacing: 14) {
@@ -165,8 +150,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
                         detail: detail,
                         versions: availableVersions,
                         selectedVersionFileId: selectedVersionFileId,
-                        showOptions: $showDownloadOptions,
-                        style: .labeled
+                        showOptions: $showDownloadOptions
                     )
                 }
                 if hasOverflowMenu {
@@ -216,12 +200,10 @@ struct MovieDetailContent<BelowOverview: View>: View {
             && detail.type == "movie"
     }
 
-    /// Downloads also earn the overflow menu: a plain tap on Download starts
-    /// it, so the menu is what keeps the options sheet discoverable. Movies
-    /// always earn it, because "Find Trailers" is the only entry point to the
-    /// trailer fetch.
+    /// Movies always get the More menu: it holds "Find Trailers" and, with
+    /// downloads on, the download options sheet.
     private var hasOverflowMenu: Bool {
-        showsDownloadButton || detail.type == "movie"
+        detail.type == "movie"
     }
     /// Menu contents for the action row's named "More" entry.
     @ViewBuilder
@@ -317,11 +299,10 @@ struct MovieDetailContent<BelowOverview: View>: View {
     // MARK: - Resume / play helpers
 
     private var resumePositionSeconds: Double? {
-        guard let pos = detail.userData?.positionSeconds, pos > 30 else { return nil }
-        if let dur = detail.userData?.durationSeconds, dur > 0, pos >= dur - 5 {
-            return nil
-        }
-        return pos
+        PlaybackResumePoint.position(
+            detail.userData?.positionSeconds,
+            duration: detail.userData?.durationSeconds
+        )
     }
 
     private var hasResumeProgress: Bool { resumePositionSeconds != nil }

@@ -16,7 +16,6 @@ enum DiagnosticsCapabilityProbe {
     struct AudioRouteOutput: Equatable {
         let portType: String
         let rawUID: String
-        let portName: String?
         let channels: Int?
     }
 
@@ -50,19 +49,14 @@ enum DiagnosticsCapabilityProbe {
     }
 
     internal static func audioOutputSnapshot() -> AudioOutputSnapshot {
-        #if !os(macOS)
         let outputs = AVAudioSession.sharedInstance().currentRoute.outputs.map {
             AudioRouteOutput(
                 portType: $0.portType.rawValue,
                 rawUID: $0.uid,
-                portName: $0.portName,
                 channels: $0.channels?.count
             )
         }
         return audioOutputSnapshot(outputs: outputs)
-        #else
-        return AudioOutputSnapshot(outputs: [], passthrough: .string("not_collected"), suppressions: .string("not_collected"))
-        #endif
     }
 
     internal static func audioOutputSnapshot(outputs: [AudioRouteOutput]) -> AudioOutputSnapshot {

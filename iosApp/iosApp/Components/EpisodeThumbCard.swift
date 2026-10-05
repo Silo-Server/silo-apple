@@ -40,24 +40,18 @@ struct EpisodeThumbCard: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var continueWatchingMetadata = TVContinueWatchingPlaybackMetadataStore.shared
     #endif
-    /// iOS 26 zoom transition namespace, shared from `MainTabView`. Lets the
-    /// tapped thumbnail act as the `.matchedTransitionSource` for the zoom into
-    /// the episode's item detail, keyed on `item.contentId`. `nil` (tvOS/macOS
-    /// or unset) falls back to a plain push. (iOS branch only.)
-    @Environment(\.zoomNamespace) private var zoomNamespace
     #if !os(tvOS)
     @Environment(AppRouter.self) private var router
     @Environment(\.itemDetailBrowseSource) private var detailBrowseSource
-    /// Unique per-placement zoom source id (see MediaCard) so the same episode
-    /// in two on-screen rows doesn't collide on `contentId`.
-    @State private var zoomInstanceID = UUID()
     #endif
 
-    private var cardWidth: CGFloat {
-        SiloTheme.thumbnailCardWidth * uiCustomization.cardPresentation.posterSize.scale
-    }
-    private var cardHeight: CGFloat {
-        cardWidth * (SiloTheme.thumbnailCardHeight / SiloTheme.thumbnailCardWidth)
+    private var cardWidth: CGFloat { Self.artworkSize.width }
+    private var cardHeight: CGFloat { Self.artworkSize.height }
+
+    /// The size the card draws its still at, at the current card-size setting.
+    static var artworkSize: CGSize {
+        let width = SiloTheme.thumbnailCardWidth * UICustomizationPreferences.shared.cardPresentation.posterSize.scale
+        return CGSize(width: width, height: width * (SiloTheme.thumbnailCardHeight / SiloTheme.thumbnailCardWidth))
     }
 
     #if os(tvOS)
@@ -143,7 +137,6 @@ struct EpisodeThumbCard: View {
             if usesProvidedTapAction {
                 action()
             } else {
-                router.pendingZoomSourceID = zoomInstanceID.uuidString
                 router.presentItemDetail(
                     contentId: item.contentId,
                     libraryId: browseLibraryId,
@@ -167,7 +160,6 @@ struct EpisodeThumbCard: View {
                         .lineLimit(1)
                 }
             }
-            .zoomTransitionSource(id: zoomInstanceID.uuidString, in: zoomNamespace)
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
@@ -268,7 +260,10 @@ struct EpisodeThumbCard: View {
     // MARK: - Derived data
 
     /// Prefer backdrop/still artwork; fall back to poster.
-    private var imageUrl: String {
+    private var imageUrl: String { Self.imageURL(for: item) }
+
+    /// The still a card shows: the backdrop, else the poster.
+    static func imageURL(for item: SectionItem) -> String {
         if let backdrop = item.backdropUrl, !backdrop.isEmpty {
             return backdrop
         }

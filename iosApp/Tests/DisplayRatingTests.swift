@@ -82,7 +82,6 @@ final class DisplayRatingTests: XCTestCase {
             DisplayRating(source: "rt_audience", name: "RT Audience", score: 95, display: "95%"),
             DisplayRating(source: "metacritic", name: "Metacritic", score: 87, display: "87"),
         ]
-        XCTAssertEqual(DisplayRating.phoneLimit, 3)
         XCTAssertEqual(
             DisplayRating.phoneRowCandidates(five).map { $0.map(\.source) },
             [["imdb", "tmdb", "rt_critic"], ["imdb", "tmdb"], ["imdb"]],

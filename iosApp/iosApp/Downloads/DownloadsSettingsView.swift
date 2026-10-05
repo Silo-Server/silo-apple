@@ -101,7 +101,7 @@ struct DownloadsSettingsView: View {
                     Text(DownloadFormatting.bytes(manager.totalBytesUsed))
                         .foregroundColor(.siloSecondaryText)
                 }
-                if !manager.records.isEmpty {
+                if manager.hasRecords {
                     Button(role: .destructive) {
                         showDeleteAllConfirm = true
                     } label: {

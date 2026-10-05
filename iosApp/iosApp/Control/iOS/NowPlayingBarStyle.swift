@@ -10,15 +10,8 @@ enum NowPlayingBarStyle {
     case accessory
 }
 
-private struct NowPlayingAccessoryInlineKey: EnvironmentKey {
-    static let defaultValue = false
-}
-
 extension EnvironmentValues {
-    var nowPlayingAccessoryIsInline: Bool {
-        get { self[NowPlayingAccessoryInlineKey.self] }
-        set { self[NowPlayingAccessoryInlineKey.self] = newValue }
-    }
+    @Entry var nowPlayingAccessoryIsInline = false
 }
 
 #if os(iOS)

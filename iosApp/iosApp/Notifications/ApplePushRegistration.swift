@@ -80,7 +80,8 @@ enum ApplePushRegistrationWire {
     /// would then fail with BadDeviceToken. Read the embedded profile
     /// instead; App Store installs carry no embedded profile and are
     /// production by definition.
-    static var currentAPNsEnvironment: String {
+    /// Read once: the profile can't change while the app runs.
+    static let currentAPNsEnvironment: String = {
         #if targetEnvironment(simulator)
         return "sandbox"
         #else
@@ -91,7 +92,7 @@ enum ApplePushRegistrationWire {
         }
         return "production"
         #endif
-    }
+    }()
 
     /// Extracts `Entitlements.aps-environment` from a raw
     /// `embedded.mobileprovision` (a CMS blob wrapping an XML plist) and

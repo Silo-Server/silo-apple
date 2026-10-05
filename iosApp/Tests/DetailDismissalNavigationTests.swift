@@ -105,8 +105,13 @@ final class DetailDismissalNavigationTests: XCTestCase {
         }
         model.error = nil
         model.isPlaying = true
+        model.autoHideDelay = .milliseconds(20)
         model.toggleControls()
-        try await Task.sleep(for: .milliseconds(5300))
+        XCTAssertTrue(model.showControls)
+        let deadline = ContinuousClock.now + .seconds(5)
+        while model.showControls, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         XCTAssertFalse(model.showControls)
         XCTAssertFalse(model.shouldShowMobilePlayerChrome, "Close auto-hides with transport")
     }

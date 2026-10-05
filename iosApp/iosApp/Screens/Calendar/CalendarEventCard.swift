@@ -79,7 +79,6 @@ struct CalendarEventCard: View {
                 contentMode: .fill
             )
             .frame(width: cardWidth, height: cardHeight)
-            .clipped()
 
             // Badge pills (top-leading) and watched check (top-trailing)
             // share the top edge; the server never sends more than two

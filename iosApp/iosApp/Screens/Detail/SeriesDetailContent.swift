@@ -42,9 +42,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     let onPersonTap: (String) -> Void
     let onNavigateToItem: (String) -> Void
     /// Play a local extra from the trailers rail. Routed separately from
-    /// `onPlayEpisode` because extras are never downloadable and have no
-    /// resume point — see `ItemDetailView` for why they skip the
-    /// offline/cast gates.
+    /// `onPlayEpisode` because extras have no resume point.
     let onPlayExtra: (String) -> Void
     /// Kick off the manual "Find Trailers" fetch.
     let onFindTrailers: () -> Void
@@ -100,12 +98,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             }
             #endif
             .detailScrollDismissal()
-            .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                let offset = max(0, geometry.contentOffset.y + geometry.contentInsets.top)
-                return offset <= 150 ? 0 : min(offset, 480)
-            } action: { _, offset in
-                scrollState.update(offset)
-            }
+            .phoneDetailScrollTracking(scrollState)
         }
         .siloResumePlaybackAlert(
             isPresented: Binding(
@@ -175,7 +168,6 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             factsLine: PhoneHeroMetadata.seriesFactsLine(from: detail),
             ratings: detail.displayRatings,
             creditText: PhoneHeroMetadata.creditText(from: detail),
-            overlayData: OverlayData.from(detail),
             enablesArtworkParallax: true,
             actions: { actionStack },
             // Match MovieDetailContent exactly through the playback controls:
@@ -418,11 +410,10 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     }
 
     private func resumePositionSeconds(for episode: EpisodeListItem?) -> Double? {
-        guard let pos = episode?.userData?.positionSeconds, pos > 30 else { return nil }
-        if let dur = episode?.userData?.durationSeconds, dur > 0, pos >= dur - 5 {
-            return nil
-        }
-        return pos
+        PlaybackResumePoint.position(
+            episode?.userData?.positionSeconds,
+            duration: episode?.userData?.durationSeconds
+        )
     }
 
     /// Version/audio/subtitle state belongs only to the currently selected

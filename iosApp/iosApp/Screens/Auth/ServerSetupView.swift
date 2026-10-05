@@ -104,21 +104,7 @@ struct ServerSetupView: View {
         .animation(.easeInOut(duration: 0.2), value: discovery.servers)
         .sensoryFeedback(.error, trigger: viewModel.error) { _, error in error != nil }
         .sensoryFeedback(.error, trigger: viewModel.discoveryError) { _, error in error != nil }
-        .alert(
-            "Connect without encryption?",
-            isPresented: Binding(
-                get: { viewModel.insecurePrompt != nil },
-                set: { if !$0 { viewModel.dismissInsecurePrompt() } }
-            ),
-            presenting: viewModel.insecurePrompt
-        ) { prompt in
-            Button("Cancel", role: .cancel) { viewModel.cancelInsecure(prompt) }
-            Button("Connect") {
-                Task { await viewModel.confirmInsecure(prompt, router: router) }
-            }
-        } message: { prompt in
-            Text("Your password and what you watch will be sent unencrypted to \(prompt.address). Only do this on a network you trust.")
-        }
+        .serverInsecurePromptAlert(viewModel, router: router)
         .onAppear {
             MarqueeScene.shared.showGeneric()
             discovery.start()

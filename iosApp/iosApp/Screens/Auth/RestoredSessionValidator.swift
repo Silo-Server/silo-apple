@@ -84,7 +84,7 @@ struct RestoredSessionValidator: Sendable {
         client: APIv2Client,
         tokenStore: TokenStore,
         isServerUpdateRequired: @escaping UpdateRequiredReader = {
-            await MainActor.run { ConnectionMonitor.shared.isServerUpdateRequired }
+            await ConnectionMonitor.readServerUpdateRequired()
         },
         contractRecheck: @escaping ContractRecheck = {
             await AuthService.shared.recheckActiveServerContract()

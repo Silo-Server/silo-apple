@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 import Network
 import OSLog
+import Synchronization
 
 /// Finds Silo servers this device can reach without an address
 /// (`docs/architecture/server-discovery.md` in silo-server). Two sources:
@@ -199,34 +200,38 @@ struct OverlayNameResolver: Sendable {
 /// Follows exactly one redirect, and only to HTTPS. A plain-HTTP answer or a
 /// second hop is returned as-is and fails the status check. Also records
 /// whether every connection the probe made ran over the overlay.
-private final class HTTPSRedirectOnly: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
-    private let lock = NSLock()
-    private var followed = false
-    private var overlayOnly: Bool?
-    private var waiter: CheckedContinuation<Bool, Never>?
+private final class HTTPSRedirectOnly: NSObject, URLSessionTaskDelegate, Sendable {
+    private struct State {
+        var followed = false
+        var overlayOnly: Bool?
+        var waiter: CheckedContinuation<Bool, Never>?
+    }
+
+    private let state = Mutex(State())
 
     /// Waits for the task's metrics: URLSession may deliver them after the
     /// task has returned its data. A bounded wait, in case they never come.
     func ranOverOverlay() async -> Bool {
         await withCheckedContinuation { continuation in
-            lock.lock()
-            if let overlayOnly {
-                lock.unlock()
-                continuation.resume(returning: overlayOnly)
+            let known = state.withLock { state -> Bool? in
+                if let overlayOnly = state.overlayOnly { return overlayOnly }
+                state.waiter = continuation
+                return nil
+            }
+            if let known {
+                continuation.resume(returning: known)
                 return
             }
-            waiter = continuation
-            lock.unlock()
             DispatchQueue.global().asyncAfter(deadline: .now() + 2) { [weak self] in self?.finish(false) }
         }
     }
 
     private func finish(_ value: Bool) {
-        lock.lock()
-        if overlayOnly == nil { overlayOnly = value }
-        let pending = waiter
-        waiter = nil
-        lock.unlock()
+        let pending = state.withLock { state -> CheckedContinuation<Bool, Never>? in
+            if state.overlayOnly == nil { state.overlayOnly = value }
+            defer { state.waiter = nil }
+            return state.waiter
+        }
         pending?.resume(returning: value)
     }
 
@@ -247,12 +252,12 @@ private final class HTTPSRedirectOnly: NSObject, URLSessionTaskDelegate, @unchec
         newRequest request: URLRequest,
         completionHandler: @escaping (URLRequest?) -> Void
     ) {
-        guard !followed, request.url?.scheme?.lowercased() == "https" else {
-            completionHandler(nil)
-            return
+        let follows = request.url?.scheme?.lowercased() == "https" && state.withLock { state -> Bool in
+            guard !state.followed else { return false }
+            state.followed = true
+            return true
         }
-        followed = true
-        completionHandler(request)
+        completionHandler(follows ? request : nil)
     }
 }
 
@@ -643,19 +648,18 @@ final class ServerDiscovery {
     }
 }
 
-private final class ResumeOnce: @unchecked Sendable {
-    private let lock = NSLock()
-    private var continuation: CheckedContinuation<(String, UInt16)?, Never>?
+private final class ResumeOnce: Sendable {
+    private let continuation: Mutex<CheckedContinuation<(String, UInt16)?, Never>?>
 
     init(_ continuation: CheckedContinuation<(String, UInt16)?, Never>) {
-        self.continuation = continuation
+        self.continuation = Mutex(continuation)
     }
 
     func resume(_ value: (String, UInt16)?) {
-        lock.lock()
-        let pending = continuation
-        continuation = nil
-        lock.unlock()
+        let pending = continuation.withLock { slot -> CheckedContinuation<(String, UInt16)?, Never>? in
+            defer { slot = nil }
+            return slot
+        }
         pending?.resume(returning: value)
     }
 }

@@ -7,9 +7,6 @@ extension Font {
     // roughly 2.3x from iOS. tvOS has no user text-size preference, so fixed
     // point sizes are used to keep proportions stable across screens.
 
-    /// Hero title overlaid on backdrop — massive on TV (76pt heavy)
-    static let siloHeroTitle = Font.system(size: 76, weight: .heavy).leading(.tight)
-
     /// Large screen titles — "Discover", "TV Shows" (48pt bold)
     static let siloTitle = Font.system(size: 48, weight: .bold)
 
@@ -40,9 +37,6 @@ extension Font {
     static let siloPIN = Font.system(size: 64, weight: .bold, design: .monospaced)
 
     #else
-
-    /// Hero title overlaid on backdrop
-    static let siloHeroTitle = Font.largeTitle.bold().leading(.tight)
 
     /// Large screen titles — "Discover", "TV Shows"
     static let siloTitle = Font.title3.bold()

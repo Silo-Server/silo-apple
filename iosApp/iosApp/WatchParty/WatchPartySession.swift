@@ -9,7 +9,7 @@ final class WatchPartySession {
     private(set) var connection: Connection = .idle
     private(set) var capabilities: WatchPartyCapabilities?
     private(set) var supportsPlayback = false
-    private(set) var supportsFallback = false
+    @ObservationIgnored private var supportsFallback = false
     private(set) var state = WatchPartyRoomState()
     private(set) var votes = WatchPartyVotes()
     private(set) var errorMessage: String?
@@ -164,7 +164,7 @@ final class WatchPartySession {
     }
 
     @discardableResult
-    func join(joinToken: String, serverURL: String) async -> Bool {
+    private func join(joinToken: String, serverURL: String) async -> Bool {
         await enter(invitationServer: serverURL) { try await self.api.joinWatchPartyRoom(joinToken: joinToken, auth: $0) }
     }
 
@@ -343,9 +343,9 @@ final class WatchPartySession {
         return auth
     }
 
-    /// Called before account/profile/server replacement and before any room I/O.
-    @discardableResult
-    func validateIdentity() async -> Bool {
+    /// Leaves the room when the captured identity is no longer current;
+    /// checked before room I/O.
+    private func validateIdentity() async -> Bool {
         guard isEngaged else { return true }
         let owner = engagement
         let valid = await ownsCurrentIdentity()
@@ -394,6 +394,16 @@ final class WatchPartySession {
         applyingCommand = nil
     }
 
+    /// Drops queued and in-flight transport commands and the attach handshake.
+    private func resetCommandState() {
+        commandTask?.cancel()
+        commandTask = nil
+        applyingCommand = nil
+        commands = WatchPartyCommandState()
+        attachmentConfirmed = false
+        issuedAttachSession = nil
+    }
+
     private func startConnection() {
         connectionTask?.cancel()
         let owner = engagement
@@ -406,13 +416,8 @@ final class WatchPartySession {
                 let socketID = self.connectionID
                 let socket = WatchPartySocket()
                 self.socket = socket
-                self.attachmentConfirmed = false
-                self.issuedAttachSession = nil
+                self.resetCommandState()
                 self.stall.reset()
-                self.commandTask?.cancel()
-                self.commandTask = nil
-                self.applyingCommand = nil
-                self.commands = WatchPartyCommandState()
                 // A catch-up nudge does not outlive the connection it came on.
                 self.adapter?.cancelCorrection()
                 var openedAt: Date?
@@ -432,7 +437,6 @@ final class WatchPartySession {
                         case .opened:
                             openedAt = Date()
                             self.connection = .connected
-                            self.trace("socket connected")
                             self.errorMessage = nil
                             self.startReporting(owner: owner, socketID: socketID)
                             self.refreshSuggestions()
@@ -500,7 +504,6 @@ final class WatchPartySession {
         case .snapshot(let room): accept(room)
         case .transport(let command):
             guard let room, commands.receive(command, room: room, sessionId: adapter?.snapshot.sessionId) else { return }
-            trace("command \(command.action.wireValue) state=\(command.playbackState.wireValue) revision=\(command.selectionRevision)")
             commandTask?.cancel()
             adapter?.cancelCorrection()
             commandTask = nil
@@ -523,17 +526,11 @@ final class WatchPartySession {
                 terminate("This profile joined the party on another device. Rejoin here to take over playback.", replaced: true)
             }
             else if code == "bad_request" {
-                // The server refused a message this client sent. While a player
-                // waits for its attachment, the only message it sends is the
-                // attach, so a refusal then is most likely the attach's and
-                // explains why the party is not syncing. (Errors carry no
-                // request id, so a late refusal of an earlier report can land
-                // here too.) Any other refusal, such as a report that raced the
-                // room back to its lobby, gives the viewer nothing to act on
-                // and would stay until the socket next reconnects, so it is only
-                // traced, as the web client only logs it.
+                // Before the attach is confirmed, a `bad_request` most likely
+                // refused the attach and explains why the party isn't syncing,
+                // so show it. Later refusals (for example a report that raced
+                // the room back to the lobby) give the viewer nothing to act on.
                 if adapter != nil && !attachmentConfirmed { errorMessage = message }
-                else { trace("server rejected a message: \(message)") }
             }
             else { errorMessage = message }
         case .unknown: break
@@ -544,7 +541,6 @@ final class WatchPartySession {
         let old = room
         guard state.accept(incoming, requestReceipt: requestReceipt) else { return }
         roomReceivedAt = Date()
-        trace("snapshot phase=\(incoming.phase.wireValue) state=\(incoming.playbackState.wireValue) revision=\(incoming.selectionRevision)")
         if incoming.phase == .ended { terminate("This party has ended.", canRejoin: false); return }
         if let auth {
             recentAuth = auth
@@ -557,11 +553,7 @@ final class WatchPartySession {
         }
         let newEpoch = old?.selectionRevision != incoming.selectionRevision || old?.phase != incoming.phase
         if newEpoch {
-            commandTask?.cancel(); commandTask = nil
-            applyingCommand = nil
-            commands = WatchPartyCommandState()
-            attachmentConfirmed = false
-            issuedAttachSession = nil
+            resetCommandState()
             stall.reset()
             adapter?.stop()
             adapter = nil
@@ -606,12 +598,7 @@ final class WatchPartySession {
         }
         adapter.onResyncRequired = { [weak self, weak adapter] in
             guard let self, self.adapter === adapter else { return }
-            self.commandTask?.cancel()
-            self.commandTask = nil
-            self.applyingCommand = nil
-            self.commands = WatchPartyCommandState()
-            self.attachmentConfirmed = false
-            self.issuedAttachSession = nil
+            self.resetCommandState()
             self.lastAttach = .distantPast
             if let room = self.room {
                 let position = Self.playbackContext(for: room, elapsedSinceSnapshot: Date().timeIntervalSince(self.roomReceivedAt))?
@@ -637,12 +624,10 @@ final class WatchPartySession {
     private func requestTransport(_ action: WatchPartyPlaybackAction, position: Double, paused: Bool) {
         guard connection == .connected, attachmentConfirmed, let room,
               action.isPermitted(canPlayPause: room.selfCanControlTransport, canSeek: room.selfRole == .host) else { return }
-        // A session now attaches while its media is still loading. Play and
-        // pause carry the local position, which the room adopts as its
-        // anchor; before the media has first become playable that is not a
-        // real position. Such a press is dropped, as it was when the session
-        // could not attach before then (#410 tracks queueing it). A seek
-        // carries its own target.
+        // Play and pause carry the local position, which the room adopts as
+        // its anchor. Before the media has first become playable that
+        // position isn't real, so the press is dropped (#410 tracks queueing
+        // it). A seek carries its own target.
         switch action {
         case .seek: break
         case .play, .pause:
@@ -747,7 +732,6 @@ final class WatchPartySession {
                 if now.timeIntervalSince(lastAttach) >= 1.5 {
                     lastAttach = now
                     issuedAttachSession = session
-                    trace("attach ready=\(snapshot.isReady) file=\(snapshot.fileId ?? 0)")
                     try await socket.send(WatchPartyClientMessage(type: "attach_session", sessionId: session))
                 }
                 return
@@ -777,7 +761,6 @@ final class WatchPartySession {
                   adapter.snapshot.sessionId == session else { return }
             if ready, now.timeIntervalSince(lastReport) >= 1.5 {
                 lastReport = now
-                trace("report time=\(String(format: "%.2f", snapshot.sourceTime)) playing=\(snapshot.isPlaying) ready=\(snapshot.isReady) file=\(snapshot.fileId ?? 0)")
                 try await socket.send(WatchPartyClientMessage(type: "state_report", sessionId: session, commandId: completed?.commandId,
                     positionSeconds: snapshot.sourceTime, isPaused: !snapshot.isPlaying, isReady: true))
             }
@@ -823,7 +806,7 @@ final class WatchPartySession {
     }
 
     @discardableResult
-    func stage(_ selection: WatchPartySelection) async -> Bool {
+    private func stage(_ selection: WatchPartySelection) async -> Bool {
         guard capabilities?.stagedSelection == true, room?.phase == .lobby, room?.selectionMode == .hostPick else { return false }
         return await mutate { try await self.api.stageWatchPartySelection(roomId: $0, token: $1, selection: selection, auth: $2) }
     }
@@ -947,7 +930,7 @@ final class WatchPartySession {
         return owner == engagement && isEngaged
     }
 
-    func refreshSuggestions() {
+    private func refreshSuggestions() {
         guard suggestionsTask == nil, !isBusy, isEngaged, let room, let auth else { return }
         let owner = engagement
         let requestID = UUID()
@@ -1100,7 +1083,7 @@ final class WatchPartySession {
         }
     }
 
-    static let unavailableMessage = "This title isn't available to your profile, so it can't play on this device."
+    private static let unavailableMessage = "This title isn't available to your profile, so it can't play on this device."
 
     private func handlePlaybackFailure(reason: String?, message: String, context: WatchPartyPlaybackContext) {
         errorMessage = selectedItemUnavailable ? Self.unavailableMessage : message
@@ -1119,13 +1102,4 @@ final class WatchPartySession {
             } catch { /* Retain the original playback refusal when no fallback exists. */ }
         }
     }
-    private func trace(_ event: @autoclosure () -> String) {
-        #if DEBUG
-        if CommandLine.arguments.contains("-debugWatchPartyTrace") {
-            print("[WatchParty] \(event())")
-            fflush(stdout)
-        }
-        #endif
-    }
-
 }

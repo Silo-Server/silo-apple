@@ -19,7 +19,7 @@ final class AIJobPollerTests: XCTestCase {
         timeout: TimeInterval = 10,
         fetch: @escaping @Sendable (String) async throws -> SubtitleJob
     ) async -> [SubtitleJob] {
-        let poller = AIJobPoller()
+        let poller = AIJobPoller(pollInterval: .milliseconds(1))
         let stream = await poller.poll(jobId: "job", fetch: fetch)
 
         let result = await withTaskGroup(of: [SubtitleJob]?.self) { group -> [SubtitleJob] in
@@ -106,7 +106,7 @@ final class AIJobPollerTests: XCTestCase {
         // `fetch` always returns running; the poller would never stop on its
         // own. Cancelling the draining Task must finish the stream promptly.
         let started = expectation(description: "first snapshot delivered")
-        let poller = AIJobPoller()
+        let poller = AIJobPoller(pollInterval: .milliseconds(1))
         let stream = await poller.poll(jobId: "job") { _ in
             aiTestJob(id: "job", status: "running", 0.1, nil)
         }
@@ -146,7 +146,7 @@ final class AIJobPollerTests: XCTestCase {
         // Same as above but using the poller's own `cancel()` rather than
         // cancelling the consumer.
         let started = expectation(description: "first snapshot delivered")
-        let poller = AIJobPoller()
+        let poller = AIJobPoller(pollInterval: .milliseconds(1))
         let stream = await poller.poll(jobId: "job") { _ in
             aiTestJob(id: "job", status: "running", 0.1, nil)
         }

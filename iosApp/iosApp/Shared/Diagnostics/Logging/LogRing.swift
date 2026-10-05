@@ -15,10 +15,6 @@ final class LogRing {
     private var nextIndex = 0
     private var count = 0
     private var droppedCount = 0
-    /// `OSAllocatedUnfairLock` owns stable allocated storage. A stored
-    /// `os_unfair_lock_s` locked through `&lock` would not: the inout access may
-    /// be satisfied with a temporary copy, so two threads can lock different
-    /// memory and lose mutual exclusion entirely.
     private let lock = OSAllocatedUnfairLock()
 
     init(capacity: Int = LogRing.defaultCapacity) {

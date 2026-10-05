@@ -61,7 +61,7 @@ final class AetherPlaybackController {
         /// Aether changed the player/session/route that owns system media.
         case systemMediaChanged
         /// Truthful external-video capability and active-route state.
-        case externalPlaybackChanged(supported: Bool, active: Bool)
+        case externalPlaybackChanged(supported: Bool)
     }
 
     enum SeekResult: Equatable {
@@ -149,7 +149,9 @@ final class AetherPlaybackController {
     /// AirPlay route before the successor load completes its own handoff.
     private var replacementExternalPlaybackPolicy: Bool?
     private var lastExternalPlaybackSupport = false
-    private var lastExternalPlaybackActive = false
+    /// Whether the picture is on an AirPlay receiver rather than this
+    /// display; read by the macOS display-sleep rule.
+    private var isExternalPlaybackActive = false
     #if os(macOS)
     /// Holds the display and the system awake while video plays on this
     /// Mac. The native route's AVPlayer was observed playing an on-screen
@@ -375,8 +377,6 @@ final class AetherPlaybackController {
         engine.pause()
     }
 
-    func setRate(_ rate: Float) { engine.setRate(rate) }
-
     func setVolume(_ volume: Float) {
         desiredVolume = min(max(volume, 0), 1)
         engine.volume = muted ? 0 : desiredVolume
@@ -392,8 +392,6 @@ final class AetherPlaybackController {
     var isMuted: Bool { muted }
 
     func setSpeed(_ rate: Double) { engine.setRate(Float(rate)) }
-
-    func dispose() { stop() }
 
     /// Pauses the outgoing item while keeping Aether's native host mounted for
     /// the replacement load. The next `engine.load` then owns the teardown and
@@ -441,9 +439,6 @@ final class AetherPlaybackController {
         return engine.videoRoute == .software
         #endif
     }
-
-    private(set) var supportsExternalPlayback = false
-    private(set) var isExternalPlaybackActive = false
 
     func selectAudioTrack(id: Int) { engine.selectAudioTrack(index: id) }
 
@@ -1047,17 +1042,13 @@ final class AetherPlaybackController {
             preservedPolicyIsReceiverSafe: preservedReplacementPolicyIsReceiverSafe
         )
         let supported = player != nil && (allowed || routeIsActive)
-
-        supportsExternalPlayback = supported
         isExternalPlaybackActive = routeIsActive
         #if os(macOS)
         refreshDisplaySleepPrevention()
         #endif
-        guard supported != lastExternalPlaybackSupport
-                || routeIsActive != lastExternalPlaybackActive else { return }
+        guard supported != lastExternalPlaybackSupport else { return }
         lastExternalPlaybackSupport = supported
-        lastExternalPlaybackActive = routeIsActive
-        onControllerEvent?(.externalPlaybackChanged(supported: supported, active: routeIsActive))
+        onControllerEvent?(.externalPlaybackChanged(supported: supported))
     }
 
     private func publishSystemMediaChanged() {

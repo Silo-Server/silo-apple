@@ -8,40 +8,48 @@ import OSLog
 /// Load-scoped ASS presentation. Selection changes fence both font downloads
 /// and rendered frames; no completed work from an outgoing track can reappear.
 @MainActor
-final class ASSSubtitleSession: ObservableObject {
-    @Published private(set) var frame: ASSSubtitleRenderer.Frame?
-    @Published private(set) var isLoadingFonts = false
-    @Published private(set) var failureMessage: String?
+@Observable
+final class ASSSubtitleSession {
+    private(set) var frame: ASSSubtitleRenderer.Frame?
+    private(set) var isLoadingFonts = false
+    private(set) var failureMessage: String?
+    /// Bumped on every selection reset, including engine track switches, so
+    /// views that read `handlesCurrentTrack` re-evaluate even while paused.
+    private var selectionRevision: UInt64 = 0
 
     private let engine: AetherEngine
     /// While it holds, the last frame stays on screen through the reload of
     /// the showing track instead of clearing.
-    var cueHold: SubtitleCueHold?
+    @ObservationIgnored var cueHold: SubtitleCueHold?
     /// Whether the frame on screen stays up while `trackID` reloads.
     private func holdsFrame(for trackID: Int?) -> Bool {
         cueHold?.holds(.primary, trackID: trackID) == true
     }
     private let fontLoader: @Sendable (URLRequest, HTTPRequestAuthorization?) async throws -> [FontAttachment]
-    private var renderer = ASSSubtitleRenderer()
-    private var subscriptions: Set<AnyCancellable> = []
-    private var events: [ASSSubtitleRenderer.Event] = []
-    private var clockSample: (source: Double, item: Double)?
-    private weak var clockPlayer: AVPlayer?
-    private var fontTask: Task<Void, Never>?
+    @ObservationIgnored private var renderer = ASSSubtitleRenderer()
+    @ObservationIgnored private var subscriptions: Set<AnyCancellable> = []
+    /// The engine's latest primary cues, parsed into `events` on the next
+    /// render so tracks libass never draws (SRT, PGS, VTT) skip the parse.
+    @ObservationIgnored private var latestCues: [SubtitleCue] = []
+    @ObservationIgnored private var parsedCueRevision: UInt64?
+    @ObservationIgnored private var events: [ASSSubtitleRenderer.Event] = []
+    @ObservationIgnored private var clockSample: (source: Double, item: Double)?
+    @ObservationIgnored private weak var clockPlayer: AVPlayer?
+    @ObservationIgnored private var fontTask: Task<Void, Never>?
     private struct FontRequest: Equatable {
         let request: URLRequest
         let authorization: HTTPRequestAuthorization?
     }
-    private var fontRequests: [Int: FontRequest] = [:]
-    private var fontCache: [URL: [FontAttachment]] = [:]
-    private var selectedFonts: [FontAttachment] = []
-    private var fontSelection: Int?
-    private var generation: UInt64 = 0
-    private var fontGeneration: UInt64 = 0
-    private var cueRevision: UInt64 = 0
-    private var enabled = false
-    private var didRecordFrame = false
-    private var timelineOffset: Double = 0
+    @ObservationIgnored private var fontRequests: [Int: FontRequest] = [:]
+    @ObservationIgnored private var fontCache: [URL: [FontAttachment]] = [:]
+    @ObservationIgnored private var selectedFonts: [FontAttachment] = []
+    @ObservationIgnored private var fontSelection: Int?
+    @ObservationIgnored private var generation: UInt64 = 0
+    @ObservationIgnored private var fontGeneration: UInt64 = 0
+    @ObservationIgnored private var cueRevision: UInt64 = 0
+    @ObservationIgnored private var enabled = false
+    @ObservationIgnored private var didRecordFrame = false
+    @ObservationIgnored private var timelineOffset: Double = 0
     private static let logger = Logger(subsystem: "org.siloserver.silo", category: "ASSSubtitles")
 
     init(engine: AetherEngine,
@@ -59,7 +67,7 @@ final class ASSSubtitleSession: ObservableObject {
             guard let self else { return }
             cueRevision &+= 1
             generation &+= 1
-            events = ASSSubtitleRenderer.Event.events(from: cues)
+            latestCues = cues
             if cues.isEmpty {
                 renderer = ASSSubtitleRenderer()
                 if !holdsFrame(for: self.engine.activeSubtitleTrackIndex) { frame = nil }
@@ -79,6 +87,7 @@ final class ASSSubtitleSession: ObservableObject {
     deinit { fontTask?.cancel() }
 
     var handlesCurrentTrack: Bool {
+        _ = selectionRevision
         guard let track = engine.subtitleTracks.first(where: { $0.id == engine.activeSubtitleTrackIndex }) else {
             return false
         }
@@ -107,6 +116,7 @@ final class ASSSubtitleSession: ObservableObject {
     }
 
     private func clearSelection(showing trackID: Int?) {
+        selectionRevision &+= 1
         generation &+= 1
         fontGeneration &+= 1
         fontTask?.cancel()
@@ -138,6 +148,10 @@ final class ASSSubtitleSession: ObservableObject {
                               error: URLError(.cannotDecodeContentData))
             }
             return
+        }
+        if parsedCueRevision != cueRevision {
+            events = ASSSubtitleRenderer.Event.events(from: latestCues)
+            parsedCueRevision = cueRevision
         }
         let epoch = generation
         let worker = renderer

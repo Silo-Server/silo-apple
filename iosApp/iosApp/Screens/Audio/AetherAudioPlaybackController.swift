@@ -13,9 +13,7 @@ final class AetherAudioPlaybackController {
 
     enum Event: Equatable {
         case state(PlaybackState)
-        case phase(PlaybackPhase)
         case time(Double)
-        case duration(Double)
         case failure(PlaybackErrorInfo?)
     }
 
@@ -67,16 +65,6 @@ final class AetherAudioPlaybackController {
         engine.$state
             .sink { [weak self] state in
                 self?.publish(.state(state))
-            }
-            .store(in: &subscriptions)
-        engine.$playbackPhase
-            .sink { [weak self] phase in
-                self?.publish(.phase(phase))
-            }
-            .store(in: &subscriptions)
-        engine.$duration
-            .sink { [weak self] duration in
-                self?.publish(.duration(duration))
             }
             .store(in: &subscriptions)
         engine.$errorInfo
@@ -157,11 +145,13 @@ final class AetherAudioPlaybackController {
         activeLoadEpoch = nil
         guard let engine else { return }
         // AVAudioSession is process-global and Silo runs a second AetherEngine for video.
-        // Only let this teardown release the session when no other engine is alive,
-        // otherwise a stopped audiobook would cut the session out from under playing
-        // video. Decided per stop because the video engine comes and goes with the
-        // player screen.
-        engine.deactivatesAudioSessionOnStop = AetherAudioSessionOwnership.isSoleLiveEngine
+        // Only let this teardown release the session when no other engine is holding
+        // audio, otherwise a stopped audiobook would cut the session out from under
+        // playing video. Decided per stop because the video engine comes and goes with
+        // the player screen; an idle one does not block the release.
+        engine.deactivatesAudioSessionOnStop = sessionClaim.map {
+            AetherAudioSessionOwnership.canReleaseSharedSession(excluding: $0)
+        } ?? true
         engine.stop(finalTeardown: true)
     }
 

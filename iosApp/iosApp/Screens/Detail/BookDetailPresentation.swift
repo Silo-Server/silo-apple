@@ -42,17 +42,10 @@ enum BookDetailKind {
 /// view so the rules can be unit tested on every platform.
 struct BookDetailPresentation {
     let detail: ItemDetail
-    let kind: BookDetailKind
     /// The live "Finished" state from the detail view model. It wins over the
     /// payload's `played` flag so toggling Finished updates the Play label
     /// before the next detail reload.
     let isMarkedFinished: Bool
-
-    init(detail: ItemDetail, kind: BookDetailKind = .audiobook, isMarkedFinished: Bool) {
-        self.detail = detail
-        self.kind = kind
-        self.isMarkedFinished = isMarkedFinished
-    }
 
     // MARK: - Identity
 
@@ -123,10 +116,6 @@ struct BookDetailPresentation {
     }
 
     // MARK: - Timeline
-
-    var parts: [FileVersion] {
-        AudiobookPlaybackContext.audioParts(of: detail)
-    }
 
     /// Total book length, preferring the server's authoritative value and
     /// falling back to the stitched part durations.

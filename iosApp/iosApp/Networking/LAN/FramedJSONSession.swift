@@ -36,7 +36,7 @@ enum SiloLANTLS {
 /// SiloControl — both sides of each protocol use it (inbound via
 /// `init(connection:)` from an `NWListener`, outbound via `init(endpoint:)`).
 ///
-/// Hardened behaviors (originally battle-tested in SiloControl, now shared):
+/// Behaviors:
 /// - Ordered outbound FIFO: `enqueue` is fire-and-forget, `send` is awaited,
 ///   and both route through one drain task so frames never reorder.
 /// - `closeGracefully(goodbye:)` sends a final frame ahead of the FIN under a
@@ -65,7 +65,6 @@ actor FramedJSONSession<Message: Codable & Sendable> {
     }
     private let outbound: AsyncStream<OutboundItem>
     private let outboundContinuation: AsyncStream<OutboundItem>.Continuation
-    private var drainTask: Task<Void, Never>?
 
     /// Inbound side: wrap a connection handed up by an `NWListener`.
     init(connection: NWConnection) {
@@ -95,7 +94,7 @@ actor FramedJSONSession<Message: Codable & Sendable> {
             // FIFO, but only a running drain resumes its buffered items.
             // Writes queued before `.ready` simply park in `NWConnection`
             // until the transport comes up or is cancelled.
-            self.drainTask = Task { [weak self] in await self?.startDrainLoop() }
+            Task { [weak self] in await self?.startDrainLoop() }
             self.connection.stateUpdateHandler = { [weak self] state in
                 guard let self else { return }
                 switch state {
@@ -202,7 +201,6 @@ actor FramedJSONSession<Message: Codable & Sendable> {
         // buffered items and resume their `send` continuations with
         // `SessionError.closed` (the `guard isOpen` branch) instead of leaking
         // a hung awaiter. The task self-completes once the buffer empties.
-        drainTask = nil
         outboundContinuation.finish()
         if let error {
             continuation?.finish(throwing: error)

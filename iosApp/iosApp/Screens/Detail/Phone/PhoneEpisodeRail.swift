@@ -17,7 +17,7 @@ struct PhoneEpisodeRail: View {
     var onSetFavorite: ((String, Bool) async -> PersonalStateOutcome)? = nil
     var onSetWatchlist: ((String, Bool) async -> PersonalStateOutcome)? = nil
 
-    @State private var uiCustomization = UICustomizationPreferences.shared
+    private var uiCustomization: UICustomizationPreferences { .shared }
     @State private var visibleEpisodeId: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -255,17 +255,9 @@ private struct PhoneEpisodeCard: View {
             if episode.userData?.played == true {
                 Color.black.opacity(0.32)
                     .frame(width: cardWidth, height: stillHeight)
-            }
-
-            if episode.userData?.played == true {
-                VStack {
-                    HStack {
-                        Spacer()
+                    .overlay(alignment: .topTrailing) {
                         watchedBadge.padding(8)
                     }
-                    Spacer()
-                }
-                .frame(width: cardWidth, height: stillHeight)
             }
 
             if let progress = progressFraction {
@@ -302,17 +294,14 @@ private struct PhoneEpisodeCard: View {
     }
 
     private func progressBar(fraction: Double) -> some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Rectangle()
-                    .fill(Color.black.opacity(0.6))
-                    .frame(height: 3)
-                Rectangle()
-                    .fill(Color.white)
-                    .frame(width: geo.size.width * CGFloat(fraction), height: 3)
-            }
+        ZStack(alignment: .leading) {
+            Rectangle()
+                .fill(Color.black.opacity(0.6))
+            Rectangle()
+                .fill(Color.white)
+                .frame(width: cardWidth * CGFloat(fraction))
         }
-        .frame(height: 3)
+        .frame(width: cardWidth, height: 3)
     }
 
     private var progressFraction: Double? {

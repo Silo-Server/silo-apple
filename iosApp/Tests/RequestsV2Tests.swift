@@ -464,7 +464,7 @@ final class RequestsV2Tests: XCTestCase {
     func testALostApprovalUnlocksWhenItsHoldRunsOutWithoutAnotherRead() async throws {
         let tokens = try await tokens()
         let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
-        let model = RequestApprovalsViewModel(api: api, holdLifetime: .seconds(1))
+        let model = RequestApprovalsViewModel(api: api, holdLifetime: .milliseconds(250))
         addTeardownBlock { @MainActor in RequestDetailCache.shared.clear() }
         stub.reply(path: "/api/v2/admin/requests", 200, #"{"items":[\#(Self.record)],"page":{"has_more":false}}"#)
         // The approve (and every other read) is lost.
@@ -475,8 +475,8 @@ final class RequestsV2Tests: XCTestCase {
         await model.perform(.approve, on: request)
         XCTAssertFalse(model.canAct(on: request), "a read showing the request unchanged keeps the hold")
 
-        for _ in 0..<50 where !model.canAct(on: request) {
-            try await Task.sleep(for: .milliseconds(100))
+        for _ in 0..<500 where !model.canAct(on: request) {
+            try await Task.sleep(for: .milliseconds(10))
         }
         XCTAssertTrue(model.canAct(on: request), "the hold ends on time with no read to settle it")
         XCTAssertNil(model.actionErrorMessage)

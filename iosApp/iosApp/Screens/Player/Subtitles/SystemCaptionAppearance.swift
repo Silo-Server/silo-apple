@@ -167,7 +167,6 @@ enum SystemCaptionAppearance {
 
     /// Fold a system snapshot over a base appearance. Field-by-field:
     /// customized values win, everything else keeps the base.
-    ///
     static func appearance(
         from snapshot: Snapshot,
         base: SubtitleAppearance = .default
@@ -175,8 +174,8 @@ enum SystemCaptionAppearance {
         var result = base
 
         // Apple's glyph background and caption window are independent
-        // layers. Keep both rather than folding the window over the glyph
-        // background (which previously lost one of the user's colors).
+        // layers. Keep both: folding the window over the glyph background
+        // would lose one of the user's colors.
         if let opacity = snapshot.backgroundOpacity, opacity > 0.01 {
             result.backgroundStyle = .box
             result.backgroundOpacity = Int((opacity * 100).rounded())

@@ -7,16 +7,6 @@ struct RefreshAccountIdentity: Hashable, Sendable {
     /// change on login/sign-out/retarget; temporary scopes supply their stable
     /// handoff generation. Guarded refresh rotation preserves the epoch.
     let credentialGenerationID: UUID
-
-    init(
-        serverId: String,
-        serverURL: String,
-        credentialGenerationID: UUID
-    ) {
-        self.serverId = serverId
-        self.serverURL = serverURL
-        self.credentialGenerationID = credentialGenerationID
-    }
 }
 
 struct CapturedRefreshCredential: Equatable, Sendable {
@@ -148,40 +138,19 @@ enum TemporaryAuthScopeEndResult: Equatable, Sendable {
     case differentGeneration(activeGenerationID: UUID)
 }
 
-/// Persistent, thread-safe store for Silo session state.
-///
-/// Mirrors the surface of the shared Kotlin `TokenManager`, but persists
-/// tokens in the Keychain so login survives app kills. `serverUrl` and
-/// `profileId` live in `SharedDefaults` (App Group suite, mirrored to
-/// `.standard`) so the Top Shelf extension can read them without losing
-/// compatibility with existing `.standard` readers (SettingsViewModel,
-/// ProfileAvatarView, AuthService).
-///
-/// Multi-server note: tokens are Keychain-scoped per server. The account
-/// keys (`org.siloserver.silo.<serverId>.{access,refresh,profile}Token`) are
-/// computed from `activeServerId`. `switchActiveServer(serverId:)`
-/// retargets the slot by flushing the cache — the next read re-populates
-/// from the new server's Keychain accounts.
-///
-/// Top Shelf extension note: whenever the active server's access token
-/// or profile token changes, we mirror the current value into two stable
-/// server-independent Keychain accounts
-/// (`SharedStorage.mirroredAccessTokenAccount`, `mirroredProfileTokenAccount`).
-/// The extension reads those slots directly — it doesn't need to know
-/// which server is active.
-///
-/// Auth refresh semantics follow `AuthInterceptorImpl.kt` in the shared
-/// module: a single `TokenStore` is the source of truth, and `HTTPClient`
-/// collapses concurrent 401s into one refresh by comparing the access
-/// token it sent against the token stored after acquiring the refresh
-/// mutex.
+/// Actor that owns session credentials. Per-server tokens live in the
+/// Keychain (`SharedStorage.*Account(for:)`), and the active server URL and
+/// profile id in `SharedDefaults`. The active access and profile tokens are
+/// mirrored to fixed Keychain accounts for the extensions. `HTTPClient`
+/// collapses concurrent 401s into one refresh per `RefreshAccountIdentity`.
 actor TokenStore {
     static let shared = TokenStore()
 
     static let accountCredentialAudience: KeychainAudience = .userIndependent
     static let profileCredentialAudience: KeychainAudience = .currentUser
 
-    private let keychain: SharedKeychain
+    private let accountKeychain: SharedKeychain
+    private let profileKeychain: SharedKeychain
     private let defaults: SharedDefaults
     private let sessions: AccountSessionPersistence
     private var canonicalSession: CanonicalAccountSession?
@@ -192,10 +161,7 @@ actor TokenStore {
 
     // MARK: - Keychain key derivation
     //
-    // One source of truth for the per-server Keychain account keys.
-    // `ServerRegistry.migrateLegacyIfNeeded` and the active-server
-    // computed properties below both derive their keys here so a future
-    // scheme change only touches these three funcs.
+    // Per-server Keychain account names.
     static func accessTokenKey(for serverId: String) -> String {
         SharedStorage.accessTokenAccount(for: serverId)
     }
@@ -237,17 +203,17 @@ actor TokenStore {
     /// invalid and must be re-read on next access.
     private var loadedForServerId: String?
 
-    /// Last values written to the shared-extension keychain slots. Used to
-    /// skip redundant `SecItemUpdate` calls on every launch / refresh —
-    /// `saveTokens` is called after every 401 refresh, so the short-
-    /// circuit meaningfully reduces Keychain churn.
+    /// Last values written to the shared-extension keychain slots. Skips
+    /// redundant Keychain writes; the access value is re-mirrored after every
+    /// refresh.
     private var lastMirroredAccessToken: String?
     private var lastMirroredProfileToken: String?
 
     init(keychain: SharedKeychain = SharedKeychain(),
          defaults: SharedDefaults = .shared,
          sessionPersistence: AccountSessionPersistence? = nil) {
-        self.keychain = keychain
+        self.accountKeychain = keychain.withAudience(Self.accountCredentialAudience)
+        self.profileKeychain = keychain.withAudience(Self.profileCredentialAudience)
         self.defaults = defaults
         self.sessions = sessionPersistence ?? AccountSessionPersistence(keychain: keychain)
     }
@@ -302,15 +268,8 @@ actor TokenStore {
     /// in-memory cache so the next access re-reads from the new slot.
     /// Idempotent: a no-op if `serverId` is already active.
     func switchActiveServer(serverId: String) {
-        if serverId == activeServerId { return }
-        persistentCredentialGenerationID = UUID()
-        activeServerId = serverId
-        clearApplePushDisplayTokenIfIssued(forServerOtherThan: serverId)
-        cachedAccessToken = nil
-        cachedRefreshToken = nil
-        cachedProfileToken = nil
-        loadedForServerId = nil
-        // Re-mirror after the cache is repopulated by the next read.
+        guard serverId != activeServerId else { return }
+        retargetActiveServer(serverId: serverId)
         ensureLoaded()
         mirrorActiveTokensForExtension()
     }
@@ -1004,14 +963,10 @@ actor TokenStore {
         return true
     }
 
-    /// Minimal launch-time check for whether the active server has a stored
-    /// access token. This reads only the access-token slot; the full token
-    /// cache is still loaded lazily by the first authenticated request.
+    /// Launch-time check for whether `serverId` has a stored access token.
+    /// Retargets to it and loads its session record.
     func hasAccessTokenForActiveServer(serverId: String) -> Bool {
         retargetActiveServer(serverId: serverId)
-        if loadedForServerId == activeServerId {
-            return cachedAccessToken != nil
-        }
         ensureLoaded()
         return cachedAccessToken != nil
     }
@@ -1413,15 +1368,6 @@ actor TokenStore {
         return epoch
     }
 
-    func hasStoredProfileToken(for serverID: String) -> Bool {
-        guard !serverID.isEmpty else { return false }
-        if serverID == activeServerId {
-            ensureLoaded()
-            return cachedProfileToken != nil
-        }
-        return profileKeychain.get(Self.profileTokenKey(for: serverID)) != nil
-    }
-
     /// Commits profile ID and verification proof in one actor turn after the
     /// caller has closed HTTP dispatch. Persistent mutations fail closed while
     /// a temporary remote-playback identity owns request authentication.
@@ -1549,12 +1495,6 @@ actor TokenStore {
     private var refreshTokenKey: String { Self.refreshTokenKey(for: activeServerId) }
     private var profileTokenKey: String { Self.profileTokenKey(for: activeServerId) }
     private var accountEpochKey: String { Self.accountEpochKey(for: activeServerId) }
-    private var accountKeychain: SharedKeychain {
-        keychain.withAudience(Self.accountCredentialAudience)
-    }
-    private var profileKeychain: SharedKeychain {
-        keychain.withAudience(Self.profileCredentialAudience)
-    }
 
     private func ensureLoaded() {
         guard loadedForServerId != activeServerId else { return }
@@ -1602,14 +1542,7 @@ actor TokenStore {
     /// doesn't know which server is active, so it looks for these
     /// server-independent accounts instead.
     private func mirrorActiveTokensForExtension() {
-        if cachedAccessToken != lastMirroredAccessToken {
-            if let accessToken = cachedAccessToken {
-                accountKeychain.set(accessToken, for: SharedStorage.mirroredAccessTokenAccount)
-            } else {
-                accountKeychain.delete(SharedStorage.mirroredAccessTokenAccount)
-            }
-            lastMirroredAccessToken = cachedAccessToken
-        }
+        mirrorActiveAccessValueForExtension()
         if cachedProfileToken != lastMirroredProfileToken {
             if let profileToken = cachedProfileToken {
                 profileKeychain.set(profileToken, for: SharedStorage.mirroredProfileTokenAccount)

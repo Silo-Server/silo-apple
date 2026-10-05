@@ -21,7 +21,7 @@ struct PersonalStateHeldChange: Identifiable, Equatable, Sendable {
     let included: Bool
 }
 
-/// How one dispatched personal-state mutation ended (plan §9 failure model).
+/// How one dispatched personal-state mutation ended.
 enum PersonalStateOutcome: Equatable {
     /// The server answered 204 under the captured owner.
     case applied
@@ -180,20 +180,26 @@ enum PersonalStateSync {
         }
     }
 
+    /// Drops the cached lists and grids derived from personal flags (Home,
+    /// Recommendations, Favorites, Watchlist, library and collection pages).
+    static func invalidateDerivedLists() {
+        StartupContentPrefetcher.invalidateHomeSectionsInFlight()
+        for key in [CacheKey.homeSections, CacheKey.recommendations, CacheKey.favorites, CacheKey.watchlist] {
+            ResponseCache.shared.remove(key)
+        }
+        for prefix in ["browse:", "tvlibrary:", "library:", "collection:"] {
+            ResponseCache.shared.removeAll(withPrefix: prefix)
+        }
+    }
+
     /// Drops every cached read that can show an item's personal flags.
     static func invalidateItemState(contentId: String, seriesId: String? = nil) {
         ResponseCache.shared.removeItemMetadata(contentId: contentId)
         if let seriesId {
             ResponseCache.shared.removeItemMetadata(contentId: seriesId)
         }
-        StartupContentPrefetcher.invalidateHomeSectionsInFlight()
-        for key in [CacheKey.homeSections, CacheKey.recommendations, CacheKey.favorites,
-                    CacheKey.watchlist, CacheKey.history] {
-            ResponseCache.shared.remove(key)
-        }
-        for prefix in ["browse:", "tvlibrary:", "library:", "collection:"] {
-            ResponseCache.shared.removeAll(withPrefix: prefix)
-        }
+        ResponseCache.shared.remove(CacheKey.history)
+        invalidateDerivedLists()
         #if os(tvOS)
         ItemDetailCache.shared.markStaleFamily(contentId: contentId)
         #endif

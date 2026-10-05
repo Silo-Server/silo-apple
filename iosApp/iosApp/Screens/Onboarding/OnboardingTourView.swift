@@ -59,10 +59,7 @@ struct OnboardingTourView: View {
                     .disabled(viewModel.isSaving)
             }
 
-            TabView(selection: Binding(
-                get: { viewModel.currentIndex },
-                set: { _ in }
-            )) {
+            TabView(selection: .constant(viewModel.currentIndex)) {
                 ForEach(viewModel.steps.indices, id: \.self) { index in
                     stepContent(viewModel.steps[index])
                         .tag(index)

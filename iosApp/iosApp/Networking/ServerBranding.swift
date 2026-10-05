@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 // MARK: - Wire models
 
@@ -22,9 +23,9 @@ struct ServerBranding: Equatable, Codable {
     var wordmarkURL: URL?
 
     init(document: ServerBrandingDocument, baseURL: String) {
-        serverName = ServerIdentity.usable(document.serverName ?? "")
-        loginSubtitle = document.loginSubtitle.flatMap { ServerIdentity.usable($0) }
-        accentColor = document.accentColor.flatMap { ServerIdentity.usable($0) }
+        serverName = ServerIdentity.usable(document.serverName)
+        loginSubtitle = ServerIdentity.usable(document.loginSubtitle)
+        accentColor = ServerIdentity.usable(document.accentColor)
         markURL = Self.resolve(document.markUrl, base: baseURL)
         wordmarkURL = Self.resolve(document.wordmarkUrl, base: baseURL)
     }
@@ -53,7 +54,7 @@ struct ServerBranding: Equatable, Codable {
     @MainActor
     static func displayName(_ branding: ServerBranding?, serverURL: String) -> String {
         branding?.serverName
-            ?? ServerRegistry.shared.activeServer?.fetchedName.flatMap { ServerIdentity.usable($0) }
+            ?? ServerIdentity.usable(ServerRegistry.shared.activeServer?.fetchedName)
             ?? hostLabel(serverURL)
     }
 
@@ -91,31 +92,50 @@ struct ServerBrandingLoader {
 /// recovery shows that server's accent immediately instead of flashing.
 enum ServerBrandingCache {
     private static let key = "marquee.serverBranding.v1"
+    /// The stored map, decoded on first use. View bodies read it per row, so
+    /// it is not decoded from `UserDefaults` on every read; writes go
+    /// through it.
+    private static let cache = Mutex<[String: ServerBranding]?>(nil)
 
     static func branding(for serverURL: String) -> ServerBranding? {
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let all = try? JSONDecoder().decode([String: ServerBranding].self, from: data) else { return nil }
-        return all[ServerRegistry.normalize(url: serverURL)]
+        let key = ServerRegistry.normalize(url: serverURL)
+        return cache.withLock { cached -> ServerBranding? in
+            let all = cached ?? stored()
+            cached = all
+            return all[key]
+        }
     }
 
     static func store(_ branding: ServerBranding, for serverURL: String) {
-        var all: [String: ServerBranding] = [:]
-        if let data = UserDefaults.standard.data(forKey: key),
-           let decoded = try? JSONDecoder().decode([String: ServerBranding].self, from: data) {
-            all = decoded
-        }
-        all[ServerRegistry.normalize(url: serverURL)] = branding
-        if let data = try? JSONEncoder().encode(all) {
-            UserDefaults.standard.set(data, forKey: key)
+        let key = ServerRegistry.normalize(url: serverURL)
+        cache.withLock { cached in
+            var all = cached ?? stored()
+            all[key] = branding
+            cached = all
+            persist(all)
         }
     }
 
     /// Forgets a removed server's branding, so the device keeps nothing about it.
     static func remove(for serverURL: String) {
+        let key = ServerRegistry.normalize(url: serverURL)
+        cache.withLock { cached in
+            var all = cached ?? stored()
+            let removed = all.removeValue(forKey: key) != nil
+            cached = all
+            if removed { persist(all) }
+        }
+    }
+
+    private static func stored() -> [String: ServerBranding] {
         guard let data = UserDefaults.standard.data(forKey: key),
-              var all = try? JSONDecoder().decode([String: ServerBranding].self, from: data),
-              all.removeValue(forKey: ServerRegistry.normalize(url: serverURL)) != nil,
-              let updated = try? JSONEncoder().encode(all) else { return }
-        UserDefaults.standard.set(updated, forKey: key)
+              let all = try? JSONDecoder().decode([String: ServerBranding].self, from: data) else { return [:] }
+        return all
+    }
+
+    private static func persist(_ all: [String: ServerBranding]) {
+        if let data = try? JSONEncoder().encode(all) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
     }
 }

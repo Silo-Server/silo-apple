@@ -1,5 +1,29 @@
 import Foundation
 
+/// The hub summary row's counts: requests still moving, by stage, and ones
+/// that need the user.
+struct RequestStatusCounts: Equatable {
+    var pending = 0
+    var onTheWay = 0
+    var needsAttention = 0
+
+    var inProgress: Int { pending + onTheWay }
+    var isEmpty: Bool { inProgress + needsAttention == 0 }
+
+    init() {}
+
+    init(_ requests: [MediaRequest]) {
+        for record in requests {
+            switch RequestDisplayState(record: record) {
+            case .pending: pending += 1
+            case .onTheWay: onTheWay += 1
+            case .needsAttention: needsAttention += 1
+            case .inLibrary, .unavailable: break
+            }
+        }
+    }
+}
+
 /// State for the Requests hub: TMDB search (the primary interaction), the
 /// user's own requests strip, and the two discover carousels. Fetches fresh
 /// on every visit — request state changes server-side asynchronously, so
@@ -10,7 +34,11 @@ import Foundation
 final class RequestsHubViewModel {
     // Discover + own-requests strip
     private(set) var carousels: [RequestCarousel] = []
-    private(set) var myRequests: [MediaRequest] = []
+    private(set) var myRequests: [MediaRequest] = [] {
+        didSet { statusCounts = RequestStatusCounts(myRequests) }
+    }
+    /// Kept in step with `myRequests` so the body reads stored counts.
+    private(set) var statusCounts = RequestStatusCounts()
     /// Requests waiting on this admin's decision; zero for everyone else.
     private(set) var pendingApprovals = 0
     var isLoading = false
@@ -85,16 +113,6 @@ final class RequestsHubViewModel {
         Task { await loadPendingApprovals() }
     }
 
-    /// Counts for the summary row: requests still moving, and ones that
-    /// need the user.
-    var inProgressCount: Int {
-        myRequests.filter { MyRequestsBucket(RequestDisplayState(record: $0)) == .inMotion }.count
-    }
-
-    var needsAttentionCount: Int {
-        myRequests.filter { MyRequestsBucket(RequestDisplayState(record: $0)) == .needsAttention }.count
-    }
-
     /// Debounced TMDB search, mirroring `SearchViewModel`'s 300ms feel.
     func onQueryChanged() {
         searchTask?.cancel()
@@ -106,7 +124,7 @@ final class RequestsHubViewModel {
             return
         }
         searchTask = Task {
-            try? await Task.sleep(nanoseconds: 300_000_000)
+            try? await Task.sleep(for: .milliseconds(300))
             guard !Task.isCancelled else { return }
             await performSearch(trimmed)
         }

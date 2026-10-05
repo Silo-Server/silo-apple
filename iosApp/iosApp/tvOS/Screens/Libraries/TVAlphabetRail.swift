@@ -25,7 +25,7 @@ struct TVAlphabetRail: View {
 
     private var isExpanded: Bool { focusedLetter != nil }
 
-    private let letters: [String] = {
+    private static let letters: [String] = {
         var result: [String] = ["All", "#"]
         result.append(contentsOf: (UnicodeScalar("A").value...UnicodeScalar("Z").value)
             .compactMap { UnicodeScalar($0).map { String($0) } })
@@ -42,18 +42,13 @@ struct TVAlphabetRail: View {
         GeometryReader { proxy in
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 4) {
-                    ForEach(letters, id: \.self) { letter in
+                    ForEach(Self.letters, id: \.self) { letter in
                         LetterButton(
                             letter: letter,
                             isSelected: isSelected(letter),
                             isExpanded: isExpanded,
                             action: {
-                                let newValue: String?
-                                switch letter {
-                                case "All": newValue = nil
-                                case "#":   newValue = "#"
-                                default:    newValue = letter
-                                }
+                                let newValue = Self.prefix(for: letter)
                                 selected = newValue
                                 onSelect(newValue)
                             }
@@ -78,11 +73,12 @@ struct TVAlphabetRail: View {
     }
 
     private func isSelected(_ letter: String) -> Bool {
-        switch letter {
-        case "All": return selected == nil
-        case "#":   return selected == "#"
-        default:    return selected == letter
-        }
+        selected == Self.prefix(for: letter)
+    }
+
+    /// "All" clears the prefix; every other entry, "#" included, is one.
+    private static func prefix(for letter: String) -> String? {
+        letter == "All" ? nil : letter
     }
 }
 

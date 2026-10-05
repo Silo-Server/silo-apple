@@ -5,16 +5,6 @@ import XCTest
 
 @MainActor
 final class AetherPlaybackBoundaryTests: XCTestCase {
-    private struct LiveStreamFixture: Decodable {
-        let label: String?
-        let url: URL
-        let headers: [String: String]
-    }
-
-    private struct LiveStreamFixtureEnvelope: Decodable {
-        let streams: [LiveStreamFixture]
-    }
-
     func testTrueHDAtmosRendersOnlyWhenAskedAndTheOutputCanCarryIt() {
         XCTAssertEqual(AetherObjectAudioPolicy.rendering(enabled: true, output: .atmos), .apac(.l714))
         XCTAssertEqual(AetherObjectAudioPolicy.rendering(enabled: true, output: .unknown), .apac(.l714),
@@ -1125,10 +1115,16 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         object["playback_plan"] = planObject
 
         let response = try PlaybackV3FixtureTestSupport.v2Decision(object)
-        guard case .playable(let plan, let sessionID) = response.validatedForApple() else {
-            throw XCTSkip("Expected a playable sidecar-inventory fixture")
+        let validation = response.validatedForApple()
+        guard case .playable(let plan, let sessionID) = validation else {
+            // A fixture or validation regression must fail, not skip.
+            throw UnplayableFixture(description: "Expected a playable sidecar-inventory fixture, got \(validation)")
         }
         return (plan, sessionID)
+    }
+
+    private struct UnplayableFixture: Error, CustomStringConvertible {
+        let description: String
     }
 
     private static func loadSpec(
@@ -1232,32 +1228,6 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
             XCTAssertEqual(controller.aetherSubtitleID(forAppID: secondID), 3)
             XCTAssertEqual(controller.appSubtitleID(forAetherID: 3), secondID)
         }
-    }
-
-    /// Opt-in local fixture: two embedded SRT tracks, with the second stream
-    /// at FFmpeg index 3 and text "Native track 2". No sidecar is registered.
-    func testOriginalHTTPSelectsExactEmbeddedSubtitleWithoutSidecar() async throws {
-        guard let rawURL = ProcessInfo.processInfo.environment["SILO_AETHER_EMBEDDED_FIXTURE_URL"],
-              let url = URL(string: rawURL) else {
-            throw XCTSkip("Set SILO_AETHER_EMBEDDED_FIXTURE_URL to the local two-track MKV fixture")
-        }
-        let controller = try AetherPlaybackController()
-        defer { controller.stop() }
-        let spec = try AetherLoadSpec(directURL: url, headers: [:], startPosition: 0, audioOnly: false)
-        XCTAssertTrue(spec.options.externalSubtitles.isEmpty)
-        let epoch = controller.beginLoad(spec)
-        try await controller.finishLoad(epoch)
-        try controller.validateEmbeddedSubtitleSelection(3)
-        controller.selectSubtitleTrack(id: 3)
-        controller.play()
-        let deadline = Date().addingTimeInterval(15)
-        while !controller.engine.subtitleCues.contains(where: { $0.text == "Native track 2" }),
-              Date() < deadline {
-            try await Task.sleep(nanoseconds: 50_000_000)
-        }
-        XCTAssertEqual(controller.engine.activeSubtitleTrackIndex, 3)
-        XCTAssertTrue(controller.engine.subtitleCues.contains(where: { $0.text == "Native track 2" }))
-        XCTAssertFalse(controller.engine.subtitleCues.contains(where: { $0.text == "Native track 1" }))
     }
 
     /// After a timing change, the showing sidecar is registered again and
@@ -1530,72 +1500,6 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
             preservedReplacementPolicy: nil,
             preservedPolicyIsReceiverSafe: false
         ))
-    }
-
-    /// Opt-in shared-dev proof for the complete server -> StreamRequest ->
-    /// Aether boundary. The fixture stays outside the repository because it
-    /// contains a short-lived bearer credential. Normal test runs skip this;
-    /// validation supplies only its mode-0600 path through the test process
-    /// environment.
-    func testLiveHeaderAuthenticatedStreamLoadsAndAdvancesInAether() async throws {
-        guard let fixturePath = ProcessInfo.processInfo.environment["SILO_AETHER_LIVE_FIXTURE_PATH"],
-              !fixturePath.isEmpty else {
-            throw XCTSkip("Set SILO_AETHER_LIVE_FIXTURE_PATH for shared-dev playback proof")
-        }
-
-        let fixtureURL = URL(fileURLWithPath: fixturePath)
-        let data = try Data(contentsOf: fixtureURL)
-        let decoder = JSONDecoder()
-        let fixtures: [LiveStreamFixture]
-        if let envelope = try? decoder.decode(LiveStreamFixtureEnvelope.self, from: data) {
-            fixtures = envelope.streams
-        } else {
-            fixtures = [try decoder.decode(LiveStreamFixture.self, from: data)]
-        }
-        XCTAssertFalse(fixtures.isEmpty, "Live fixture envelope must contain at least one stream")
-
-        for fixture in fixtures {
-            try await assertLiveFixtureLoadsAndAdvances(fixture)
-        }
-    }
-
-    private func assertLiveFixtureLoadsAndAdvances(_ fixture: LiveStreamFixture) async throws {
-        let label = fixture.label ?? "live stream"
-        guard let scheme = fixture.url.scheme?.lowercased(),
-              ["http", "https"].contains(scheme),
-              fixture.url.host != nil else {
-            return XCTFail("\(label): URL must be an absolute HTTP(S) URL")
-        }
-        XCTAssertNotNil(
-            fixture.headers.first { $0.key.caseInsensitiveCompare("Authorization") == .orderedSame },
-            "\(label): fixture must exercise Aether's authenticated HTTP transport"
-        )
-
-        let controller = try AetherPlaybackController()
-        defer { controller.stop() }
-        let spec = try AetherLoadSpec(
-            directURL: fixture.url,
-            headers: fixture.headers,
-            startPosition: 0,
-            audioOnly: false
-        )
-        let epoch = controller.beginLoad(spec)
-        try await controller.finishLoad(epoch)
-
-        XCTAssertNotEqual(controller.engine.playbackBackend, .none)
-        XCTAssertGreaterThan(controller.engine.duration, 0)
-        XCTAssertFalse(controller.engine.audioTracks.isEmpty)
-
-        controller.play()
-        let deadline = Date().addingTimeInterval(15)
-        while controller.engine.clock.currentTime <= 0.25, Date() < deadline {
-            try await Task.sleep(nanoseconds: 100_000_000)
-        }
-        XCTAssertGreaterThan(
-            controller.engine.clock.currentTime,
-            0.25,
-            "\(label): Aether loaded the authenticated source but its playback clock never advanced"
-        )
     }
 
     // MARK: - Deferred track selection

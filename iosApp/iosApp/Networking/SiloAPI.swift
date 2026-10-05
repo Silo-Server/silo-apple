@@ -3,13 +3,12 @@ import Foundation
 /// Native Swift facade over the Silo REST API.
 ///
 /// All HTTP goes through ``HTTPClient/shared``; session state lives in
-/// ``TokenStore/shared``. Refer to [HTTPClient](x-source-tag://HTTPClient)
-/// for auth header injection and 401 refresh semantics.
+/// ``TokenStore/shared``. See ``HTTPClient`` for auth header injection and
+/// 401 refresh semantics.
 actor SiloAPI {
     static let shared = SiloAPI()
 
-    /// Non-private so endpoint methods declared in extensions (e.g. the
-    /// downloads API) can reuse the same injected transport.
+    /// Non-private so playback can build media requests on the same transport.
     let http: HTTPClient
     private let tokenStore: TokenStore
     /// The one v2 client for this facade, built from the same injected
@@ -45,16 +44,10 @@ actor SiloAPI {
     ///
     /// One place decides this for every image-bearing endpoint; call sites
     /// pass `imageSizeQuery["image_size"]` to the `APIv2Client` method.
-    /// Empty off tvOS, and empty until (or unless) the capability probe in
-    /// ``ImageSizeCapability`` lands — which makes iOS and macOS requests
-    /// byte-identical to before.
+    /// Always empty off tvOS.
     private var imageSizeQuery: [String: String] {
         get async {
-            // Gate only the artwork request, never launch/profile navigation.
-            // Concurrent startup prefetches join one probe, and older or
-            // unreachable servers fall back to an empty query.
-            await ImageSizeCapability.shared.refresh(retryFailed: false)
-            return ImageSizeCapability.shared.requestQuery
+            await ImageSizeCapability.shared.requestQueryForImageRequest()
         }
     }
 
@@ -433,10 +426,8 @@ actor SiloAPI {
     /// commit profile ID and proof together behind HTTPClient's transition
     /// barrier.
     func verifyProfileSelection(profileId: String, pin: String?) async throws -> String? {
-        // Profiles without a PIN: just record the selection locally; there's
-        // nothing to verify and the server's /verify-pin rejects empty PINs
-        // with 422. Mirrors `ProfileSelectionViewModel.onProfileTapped` on
-        // Android, which skips the verify call when `hasPin` is false.
+        // No PIN: nothing to verify, and `/verify-pin` rejects an empty PIN
+        // with 422.
         if let pin, !pin.isEmpty {
             // A wrong PIN is a 200 with `valid: false`, not an error status.
             let response = try await apiV2Client.verifyHouseholdPIN(id: profileId, pin: pin)

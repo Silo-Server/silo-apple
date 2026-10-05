@@ -11,7 +11,7 @@ enum DownloadSessionEvent: Sendable {
     /// Media transfer succeeded (HTTP 2xx). `stagedURL` is a stable file in
     /// the staging directory — the volatile temp file has already been
     /// moved there synchronously inside the delegate callback.
-    case finished(taskId: Int, stagedURL: URL, statusCode: Int)
+    case finished(taskId: Int, stagedURL: URL)
     /// Transfer ended without a usable file: a network error, a
     /// cancellation, or a non-2xx server response (e.g. 409 revoked).
     case failed(taskId: Int, statusCode: Int?, resumeData: Data?, message: String, cause: DownloadFailureCause)
@@ -43,10 +43,7 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
     static let legacySessionIdentifier = "com.continuum.play.downloads"
     private static let legacySessionDrainedKey = "downloads.legacySessionDrained.v1"
 
-    private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
-        category: "Downloads"
-    )
+    private static let logger = Logger.downloads
 
     private let continuation: AsyncStream<DownloadSessionEvent>.Continuation
     /// When each task's progress was last passed on. Touched only on the
@@ -57,10 +54,6 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
     /// and keeps a long queue from flooding the main actor.
     private static let progressInterval: TimeInterval = 0.5
     let events: AsyncStream<DownloadSessionEvent>
-
-    /// Set when iOS relaunches the app to deliver background events; called
-    /// once `allEventsDelivered` is processed.
-    var backgroundCompletionHandler: (() -> Void)?
 
     override init() {
         let (stream, continuation) = AsyncStream<DownloadSessionEvent>.makeStream()
@@ -139,30 +132,16 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
     /// version started that the system reattached on launch. Returns once
     /// the cancels are issued; their final events still arrive later.
     func cancelAllTasks() async {
-        await withCheckedContinuation { cont in
-            session.getAllTasks { tasks in
-                for task in tasks { task.cancel() }
-                cont.resume()
-            }
-        }
+        for task in await session.allTasks { task.cancel() }
     }
 
     /// Suspend a transfer by cancelling it with resume data. Returns `nil`
     /// when the server/transfer doesn't support ranged resume or the task is
     /// no longer live — callers must treat that as "restart from zero".
     func pause(taskId: Int) async -> Data? {
-        await withCheckedContinuation { cont in
-            session.getAllTasks { tasks in
-                guard let task = tasks.first(where: { $0.taskIdentifier == taskId })
-                    as? URLSessionDownloadTask else {
-                    cont.resume(returning: nil)
-                    return
-                }
-                task.cancel(byProducingResumeData: { data in
-                    cont.resume(returning: data)
-                })
-            }
-        }
+        guard let task = await session.allTasks.first(where: { $0.taskIdentifier == taskId })
+            as? URLSessionDownloadTask else { return nil }
+        return await task.cancelByProducingResumeData()
     }
 
     /// Identifiers of tasks still live in the (possibly relaunched) session.
@@ -170,20 +149,16 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
     /// download file route; the caller cancels them and restarts their
     /// downloads.
     func liveTasks() async -> (current: Set<Int>, retired: Set<Int>) {
-        await withCheckedContinuation { cont in
-            session.getAllTasks { tasks in
-                var current: Set<Int> = []
-                var retired: Set<Int> = []
-                for task in tasks {
-                    if Self.isRetired(task) {
-                        retired.insert(task.taskIdentifier)
-                    } else {
-                        current.insert(task.taskIdentifier)
-                    }
-                }
-                cont.resume(returning: (current, retired))
+        var current: Set<Int> = []
+        var retired: Set<Int> = []
+        for task in await session.allTasks {
+            if Self.isRetired(task) {
+                retired.insert(task.taskIdentifier)
+            } else {
+                current.insert(task.taskIdentifier)
             }
         }
+        return (current, retired)
     }
 
     /// Stops every transfer still running in the pre-rename session and
@@ -283,7 +258,7 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
             // The move keeps the temp file's date; the stale-staging sweep
             // must see when it was staged.
             try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: staged.path)
-            continuation.yield(.finished(taskId: taskId, stagedURL: staged, statusCode: statusCode))
+            continuation.yield(.finished(taskId: taskId, stagedURL: staged))
         } catch {
             Self.logger.error("Failed to stage finished download \(taskId): \(String(describing: error), privacy: .public)")
             continuation.yield(.failed(

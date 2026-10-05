@@ -33,7 +33,7 @@ struct TVLibraryGridView: View {
     /// pushed grid routes where the root menu is not visible.
     let onTopMenuFocusRequest: (() -> Void)?
 
-    @State private var viewModel: TVLibraryGridViewModel
+    @State private var modelSlot = LazyModel<TVLibraryGridViewModel>()
     @State private var selectedPrefix: String? = nil
     @State private var openPanel: TVBrowsePanel? = nil
     @State private var controlFocusRequest = 0
@@ -66,12 +66,13 @@ struct TVLibraryGridView: View {
         self.focusRequest = focusRequest
         self.isTopMenuFocused = isTopMenuFocused
         self.onTopMenuFocusRequest = onTopMenuFocusRequest
-        _viewModel = State(initialValue: TVLibraryGridViewModel(
-            libraryId: libraryId,
-            libraryType: libraryType,
-            initialFilter: initialFilter
-        ))
         _selectedPrefix = State(initialValue: initialFilter.namePrefix)
+    }
+
+    private var viewModel: TVLibraryGridViewModel {
+        modelSlot.value {
+            TVLibraryGridViewModel(libraryId: libraryId, libraryType: libraryType, initialFilter: initialFilter)
+        }
     }
 
     var body: some View {
@@ -164,8 +165,21 @@ struct TVLibraryGridView: View {
                 .padding(.horizontal, SiloTheme.safePadding)
 
                 if viewModel.items.isEmpty && viewModel.isLoading {
-                    Color.clear
-                        .frame(maxWidth: .infinity, minHeight: 400)
+                    LazyVGrid(
+                        columns: Array(
+                            repeating: GridItem(.flexible(), spacing: 40),
+                            count: AdaptiveColumns.tvPosterCount(
+                                standardCount: 6,
+                                posterSize: UICustomizationPreferences.shared.cardPresentation.posterSize
+                            )
+                        ),
+                        spacing: 60
+                    ) {
+                        ForEach(0..<12, id: \.self) { _ in
+                            PosterSkeletonCard()
+                        }
+                    }
+                    .padding(.horizontal, SiloTheme.safePadding)
                 } else if let error = viewModel.error, viewModel.items.isEmpty {
                     ErrorView(state: error, onRetry: { Task { await viewModel.loadInitial() } })
                 } else if viewModel.items.isEmpty {

@@ -512,6 +512,7 @@ final class TVSignInTests: XCTestCase {
     /// The phone hint shows once: inside the wrong-password message, or as
     /// its own line, never both. On a server without device sign-in the
     /// screen offers no phone route, so neither mentions the phone.
+    @MainActor
     func testWrongPasswordPointsToThePhoneOnlyOnceAndOnlyWhereTheScreenOffersIt() {
         let keycloak = APIv2AuthProvider(id: "plugin:3:oidc", displayName: "Keycloak", mode: "oauth",
             default: false, iconUrl: nil, installationId: "3")

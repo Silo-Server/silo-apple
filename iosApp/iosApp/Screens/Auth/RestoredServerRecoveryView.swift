@@ -101,7 +101,7 @@ struct RestoredServerRecoveryView: View {
                     .padding(.top, 26)
 
                 if let visibleError {
-                    recoveryError(visibleError)
+                    MarqueeErrorText(visibleError)
                         .padding(.top, 20)
                 }
 
@@ -201,7 +201,7 @@ struct RestoredServerRecoveryView: View {
     private var serverCard: some View {
         MarqueeServerCard(
             name: activeServer?.displayName ?? "Your server",
-            address: activeServer.map { Self.hostLabel($0.url) } ?? "",
+            address: activeServer.map { ServerBranding.hostLabel($0.url) } ?? "",
             markURL: activeServer.flatMap { ServerBrandingCache.branding(for: $0.url)?.markURL },
             badge: .init(text: badgeText, systemImage: "exclamationmark.triangle", tone: .warning)
         )
@@ -215,18 +215,6 @@ struct RestoredServerRecoveryView: View {
         case .serverUpdateRequired, .appUpdateRequired: return "Update needed"
         }
     }
-
-    private static func hostLabel(_ url: String) -> String {
-        guard let components = URLComponents(string: url), let host = components.host else { return url }
-        if let port = components.port { return "\(host):\(port)" }
-        return host
-    }
-
-    #if os(tvOS)
-    private func recoveryError(_ message: String) -> some View {
-        MarqueeErrorText(message)
-    }
-    #endif
 
     private var activeServer: ServerEntry? {
         registry.activeServer
@@ -289,15 +277,13 @@ struct RestoredServerRecoveryView: View {
                 destination = nil
             }
 
-            await MainActor.run {
-                isChecking = false
-                guard !Task.isCancelled,
-                      registry.activeServerId == expectedServerID else { return }
-                if let destination {
-                    router.resetAfterServerResolution(to: destination)
-                } else {
-                    error = retryMessage(for: validation)
-                }
+            isChecking = false
+            guard !Task.isCancelled,
+                  registry.activeServerId == expectedServerID else { return }
+            if let destination {
+                router.resetAfterServerResolution(to: destination)
+            } else {
+                error = retryMessage(for: validation)
             }
         }
     }
@@ -340,7 +326,7 @@ struct RestoredServerRecoveryView: View {
     #if os(tvOS)
     private func cancelForget() {
         showForgetConfirmation = false
-        Task { @MainActor in
+        Task {
             await Task.yield()
             focusedAction = .forget
         }

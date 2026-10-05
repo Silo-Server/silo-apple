@@ -1,17 +1,6 @@
-//
-//  ProfilePrefsEditor.swift
-//  Silo (iOS + tvOS + macOS)
-//
-//  Editor state and save behaviour for the profile-scoped preferences, shared
-//  by the iOS and tvOS settings screens.
-//
-//  The two screens had a verbatim copy of this each — same fields, same
-//  sentinel translation, same coalescing for the metadata language — which is
-//  how they came to disagree in small ways over time. One implementation means
-//  a scope or wire-value fix lands on both platforms at once, which matters
-//  more now that the values are contract-validated: a spelling only one screen
-//  got right would be a permanent `invalid_value` on the other.
-//
+// Editor state and save behaviour for the profile-scoped preferences, shared
+// by the iOS and tvOS settings screens so scope and wire-value rules live in
+// one place.
 
 import Foundation
 
@@ -174,7 +163,7 @@ final class ProfilePrefsEditor {
     private var pendingSubtitleEditorValues: [SubtitleWriteIdentity: String] = [:]
     private var activeSubtitleEditorValues: [SubtitleWriteIdentity: String] = [:]
 
-    /// Subtitle values that ran out of automatic retries (owner decision D4).
+    /// Subtitle values that ran out of automatic retries.
     /// A held value is not sent again until the user retries it, edits that
     /// control, or discards it.
     private var heldSubtitleEditorValues: [SubtitleWriteIdentity: String] = [:]

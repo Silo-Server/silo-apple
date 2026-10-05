@@ -1,11 +1,6 @@
 import Foundation
 
-// Type definitions the v2 wire layer needs for sequenced playback mutations.
-// Only the shapes that cross the wire or name a wire outcome live here. The
-// journals, stores, and coordinators that sequence these commands belong to
-// the write-surface PRs and build on `DurableCommandStore`; their barrier
-// logic (target matching, held states) is deliberately not part of these
-// definitions.
+// Wire types for sequenced playback progress (`sequenced_progress_v1`).
 
 // MARK: Sequenced playback
 
@@ -56,11 +51,10 @@ struct PlaybackProgressSequence: Sendable {
 }
 
 enum PlaybackSequencedError: LocalizedError {
-    case invalidSample, invalidResponse, invalidSession, authorityChanged, pendingStart, controlUnavailable
+    case invalidSample, invalidResponse, invalidSession, authorityChanged, controlUnavailable
     var errorDescription: String? {
         switch self {
         case .controlUnavailable: return "Remote playback control is not available on this server."
-        case .pendingStart: return "A previous playback start is unresolved. Retry it before starting another item."
         case .invalidSample: return "Playback progress could not be recorded."
         case .invalidResponse: return "The server returned an invalid playback response."
         case .invalidSession: return "This playback session is no longer available."

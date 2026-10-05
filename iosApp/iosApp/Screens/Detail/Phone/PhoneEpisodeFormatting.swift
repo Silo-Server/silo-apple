@@ -1,9 +1,7 @@
 #if !os(tvOS)
 import Foundation
 
-/// Shared display formatting for the compact episode rail and expanded iPad
-/// rows. Keeping these labels in one seam prevents the two adaptive layouts
-/// from drifting as metadata rules evolve.
+/// Labels for PhoneEpisodeRail cards.
 enum PhoneEpisodeFormatting {
     static func title(for episode: EpisodeListItem) -> String {
         episode.title ?? "Episode \(episode.episodeNumber)"

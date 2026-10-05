@@ -13,12 +13,6 @@ struct ServerNeedsSetupView: View {
 
     private var serverURL: String { AuthService.shared.serverUrl }
 
-    private var hostLabel: String {
-        guard let url = URL(string: serverURL), let host = url.host else { return serverURL }
-        if let port = url.port { return "\(host):\(port)" }
-        return host
-    }
-
     var body: some View {
         MarqueeStage(scrim: .bottom, frostStart: 0.45, onBack: changeServer) {
             MarqueeTopBar {
@@ -26,7 +20,7 @@ struct ServerNeedsSetupView: View {
             } trailing: { EmptyView() }
         } content: {
             MarqueeServerCard(
-                name: hostLabel,
+                name: ServerBranding.hostLabel(serverURL),
                 address: serverURL,
                 showsInitial: false,
                 badge: .init(text: "Setup needed", systemImage: "clock", tone: .warning),
@@ -79,22 +73,18 @@ struct ServerNeedsSetupView: View {
         retryTask = Task {
             do {
                 let status = try await AuthService.shared.checkServer(url: expectedServerURL)
-                await MainActor.run {
-                    isChecking = false
-                    guard !Task.isCancelled,
-                          AuthService.shared.serverUrl == expectedServerURL else { return }
-                    if status.needsSetup {
-                        error = "This server still needs administrator setup."
-                    } else {
-                        router.goBack()
-                    }
+                isChecking = false
+                guard !Task.isCancelled,
+                      AuthService.shared.serverUrl == expectedServerURL else { return }
+                if status.needsSetup {
+                    error = "This server still needs administrator setup."
+                } else {
+                    router.goBack()
                 }
             } catch {
-                await MainActor.run {
-                    isChecking = false
-                    guard !Task.isCancelled else { return }
-                    self.error = "Couldn't reach the server. Check it's running and try again."
-                }
+                isChecking = false
+                guard !Task.isCancelled else { return }
+                self.error = "Couldn't reach the server. Check it's running and try again."
             }
         }
     }

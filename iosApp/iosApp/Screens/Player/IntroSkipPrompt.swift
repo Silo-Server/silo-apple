@@ -113,7 +113,7 @@ final class LiveIntroSkipPromptClock: IntroSkipPromptClock {
 @Observable
 final class IntroSkipPrompt {
     /// The spec's `INTRO_PROMPT_SECONDS`.
-    static let promptSeconds: TimeInterval = 5
+    nonisolated static let promptSeconds: TimeInterval = 5
     /// The spec's `PLAYBACK_PAUSE_GRACE_MS`: a stall shorter than this is a
     /// rebuffer and does not touch the timer.
     static let pauseGraceSeconds: TimeInterval = 1.5

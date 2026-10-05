@@ -14,8 +14,8 @@ enum MediaRowLayout {
     case square
 }
 
-/// A horizontal scrolling row of media cards with a title header.
-/// Plezy style: section title with optional icon, safe-area leading padding.
+/// A horizontal scrolling row of media cards with a title header (optional
+/// icon) and safe-area leading padding.
 struct MediaRow: View {
     let title: String
     let items: [SectionItem]
@@ -34,7 +34,7 @@ struct MediaRow: View {
     /// default focus target — on initial appearance AND on user-driven
     /// d-pad entry into the row's focus section. Implemented via
     /// `.defaultFocus($focusedItemId, firstId, priority: .userInitiated)`;
-    /// see CLAUDE.md's "tvOS default focus on d-pad entry" pattern.
+    /// see docs/tvos-focus.md (default focus with `.userInitiated`).
     var prefersDefaultFocusOnFirstItem: Bool = false
     /// Priority for the first-item default focus. `.userInitiated` (the
     /// default) also snaps d-pad entry into the row onto the first card;
@@ -99,7 +99,6 @@ struct MediaRow: View {
     @State private var lastFocusedItemId: String?
     @State private var focusRestorationGeneration = 0
     @State private var lastAppliedDetailReturnFocusRequest = 0
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private static let focusLogger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "TVFocus"
@@ -116,10 +115,12 @@ struct MediaRow: View {
         .focusSection()
         .modifier(TVRowMoveHandler(onMoveUp: onMoveUp, onMoveDown: onMoveDown))
         .modifier(TVRowFocusObserver(focusedItemId: $focusedItemId) { newValue in
-            guard let item = items.first(where: { $0.contentId == newValue }) else { return }
+            guard let index = items.firstIndex(where: { $0.contentId == newValue }) else { return }
+            let item = items[index]
             lastFocusedItemId = newValue
             Self.focusLogger.debug("mediaRow.focus changed")
             onItemFocus?(item)
+            warmCards(after: index)
         })
         .onChange(of: items.map(\.contentId)) { oldIds, newIds in
             restoreFocusAfterItemRemoval(from: oldIds, to: newIds)
@@ -352,6 +353,13 @@ struct MediaRow: View {
             LazyHStack(alignment: HorizontalMediaRailLayout.cardAlignment, spacing: cardSpacing) {
                 ForEach(items) { item in
                     mediaCard(for: item)
+                        #if !os(tvOS)
+                        .onAppear {
+                            if let index = items.firstIndex(where: { $0.id == item.id }) {
+                                warmCards(after: index)
+                            }
+                        }
+                        #endif
                 }
             }
             #if !os(tvOS)
@@ -388,6 +396,28 @@ struct MediaRow: View {
             restoreFocusAfterDetailReturn(request, proxy: rowProxy)
         }
         #endif
+    }
+
+    /// Decode the cards past `index` before they scroll into view: on tvOS
+    /// from the focused card, elsewhere from each card that appears.
+    private func warmCards(after index: Int) {
+        ArtworkLookahead.warmCards(after: index, in: items) { item in
+            Self.cardArtwork(for: item, layout: layout, cardWidth: cardWidth)
+        }
+    }
+
+    /// The artwork a card in a row of `layout` draws, and its size.
+    static func cardArtwork(for item: SectionItem, layout: MediaRowLayout, cardWidth: CGFloat?) -> CardArtwork? {
+        switch layout {
+        case .poster, .square:
+            guard let url = item.posterUrl else { return nil }
+            return CardArtwork(
+                url: url,
+                pointSize: MediaCard.artworkSize(cardWidthOverride: cardWidth, aspect: layout == .square ? .square : .poster)
+            )
+        case .thumbnail:
+            return CardArtwork(url: EpisodeThumbCard.imageURL(for: item), pointSize: EpisodeThumbCard.artworkSize)
+        }
     }
 
     @ViewBuilder
@@ -663,8 +693,8 @@ private extension View {
     /// Routes both initial and user-initiated (d-pad) focus into the
     /// row's first card. The `.userInitiated` priority is the bit that
     /// `prefersDefaultFocus(_:in:)` lacks — it makes default focus win
-    /// over geometric proximity on d-pad entry. See CLAUDE.md's "tvOS
-    /// default focus on d-pad entry" pattern.
+    /// over geometric proximity on d-pad entry. See docs/tvos-focus.md
+    /// (default focus with `.userInitiated`).
     @ViewBuilder
     func applyDefaultFirstItemFocus(
         enabled: Bool,

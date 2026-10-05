@@ -44,17 +44,19 @@ struct APIv2SubtitleJob: Decodable {
     let mediaFileId: String
     let kind: String
     let sourceIndex: Int
-    let sourceLanguage: String
-    let targetLanguage: String
-    let engine: String
-    let model: String
+    // Carried into `SubtitleJob` but never read by the app, so a missing
+    // value must not fail the job read.
+    let sourceLanguage: String?
+    let targetLanguage: String?
+    let engine: String?
+    let model: String?
     let status: AIJobStatus
     let progress: Double
     let progressMessage: String
     let resultSubtitleId: String?
     let errorMessage: String?
-    let createdAt: String
-    let updatedAt: String
+    let createdAt: String?
+    let updatedAt: String?
 }
 
 extension SubtitleJob {
@@ -129,8 +131,10 @@ enum SubtitleCreationError: LocalizedError, Equatable {
     }
 
     /// Whether a failed create may have started a job. Such a request is
-    /// held and never resent.
+    /// held and never resent. A post-dispatch owner change already arrives as
+    /// `.outcomeUnknown`, so any other owner change was raised before dispatch.
     static func isUncertain(_ error: Error) -> Bool {
-        (error as? SubtitleCreationError) == .outcomeUnknown || APIv2DispatchFailure.isUncertain(error)
+        (error as? SubtitleCreationError) == .outcomeUnknown
+            || APIv2MutationOutcome(error, dispatched: false).mayHaveApplied
     }
 }

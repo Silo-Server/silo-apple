@@ -11,8 +11,8 @@ struct TVDetailCastRail: View {
     var focusRequest = 0
     var onFocusChange: ((Bool) -> Void)? = nil
 
-    private let photoWidth: CGFloat = 200
-    private let photoHeight: CGFloat = 200
+    /// Also the decode size `PosterImageCache.prefetchVisibleMovieCast` warms.
+    static let photoSize = CGSize(width: 200, height: 200)
     private let cardSpacing: CGFloat = 60
     private let maxEntries = 24
     @FocusState private var focusedCastId: String?
@@ -23,7 +23,7 @@ struct TVDetailCastRail: View {
                 ForEach(cast.prefix(maxEntries)) { member in
                     TVCastCard(
                         member: member,
-                        photoSize: CGSize(width: photoWidth, height: photoHeight),
+                        photoSize: Self.photoSize,
                         onTap: onTap
                     )
                     .focused($focusedCastId, equals: member.id)
@@ -32,7 +32,8 @@ struct TVDetailCastRail: View {
             .padding(.vertical, 12)
         }
         .focusSection()
-        .applyCastRailDefaultFocus(defaultFocusId, binding: $focusedCastId)
+        // Land on the first person rather than the geometrically nearest card.
+        .tvDefaultFocus(defaultFocusId, in: $focusedCastId)
         .scrollClipDisabled()
         .onChange(of: focusedCastId != nil) { _, focused in
             onFocusChange?(focused)
@@ -45,22 +46,6 @@ struct TVDetailCastRail: View {
 
     private var defaultFocusId: String? {
         cast.prefix(maxEntries).first?.id
-    }
-}
-
-private extension View {
-    /// When focus enters the cast/crew rail, land on the first person rather
-    /// than letting tvOS choose a geometrically-nearest card.
-    @ViewBuilder
-    func applyCastRailDefaultFocus(
-        _ firstCastId: String?,
-        binding: FocusState<String?>.Binding
-    ) -> some View {
-        if let firstCastId {
-            self.defaultFocus(binding, firstCastId, priority: .userInitiated)
-        } else {
-            self
-        }
     }
 }
 
@@ -124,10 +109,10 @@ private struct CastCardLabel: View {
         ZStack {
             Color.siloSurfaceElevated
             if let url = member.photoUrl, !url.isEmpty {
-                CachedAsyncImage(
+                AsyncImageView(
                     url: url,
-                    targetSize: photoSize,
                     thumbhash: member.photoThumbhash,
+                    targetSize: photoSize,
                     contentMode: .fill
                 )
             } else {

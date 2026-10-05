@@ -218,15 +218,18 @@ struct CreateProfileView: View {
                     initialsHint
                 }
             } else {
-                section(title: "Avatar", trailing: AnyView(shuffleButton)) {
+                // Built once per grid: each access rebuilds the batch.
+                let batch = presets
+                let activeSeed = activePreset?.seed
+                section(title: "Avatar", trailing: { shuffleButton }) {
                     LazyVGrid(
                         columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 6),
                         spacing: 14
                     ) {
-                        ForEach(presets) { preset in
+                        ForEach(batch) { preset in
                             PresetCell(
                                 preset: preset,
-                                isSelected: preset.seed == activePreset?.seed,
+                                isSelected: preset.seed == activeSeed,
                                 onSelect: { selectedSeed = preset.seed }
                             )
                         }
@@ -275,10 +278,9 @@ struct CreateProfileView: View {
         }
     }
 
-    @ViewBuilder
-    private func section<Content: View>(
+    private func section<Trailing: View, Content: View>(
         title: String,
-        trailing: AnyView? = nil,
+        @ViewBuilder trailing: () -> Trailing = { EmptyView() },
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -288,7 +290,7 @@ struct CreateProfileView: View {
                     .tracking(1.6)
                     .foregroundStyle(.white.opacity(0.5))
                 Spacer()
-                if let trailing { trailing }
+                trailing()
             }
             content()
         }
@@ -417,14 +419,16 @@ struct CreateProfileView: View {
     }
 
     private var presetGrid: some View {
-        LazyVGrid(
+        // Read once per grid: `activePreset` may rebuild the batch.
+        let activeSeed = activePreset?.seed
+        return LazyVGrid(
             columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 6),
             spacing: 10
         ) {
             ForEach(presets) { preset in
                 PresetCell(
                     preset: preset,
-                    isSelected: preset.seed == activePreset?.seed,
+                    isSelected: preset.seed == activeSeed,
                     onSelect: { selectedSeed = preset.seed }
                 )
             }
@@ -772,9 +776,9 @@ private struct StyleChip: View {
 
 // MARK: - Preset cell
 
-/// A square DiceBear preview tile. Loads the avatar PNG from DiceBear —
-/// cheap to cache (same URL for the same seed) and reasonably fast over
-/// Wi-Fi. Selection draws a white ring; focus adds a subtle scale + halo.
+/// A square DiceBear preview tile, loaded through the shared artwork
+/// pipeline (the live preview reuses the same URL and cache). Selection
+/// draws a white ring; focus adds a subtle scale + halo.
 private struct PresetCell: View {
     let preset: ProfileAvatarPresets.Preset
     let isSelected: Bool
@@ -795,7 +799,7 @@ private struct PresetCell: View {
             .fill(Color.white.opacity(0.04))
             .frame(height: cellSize)
             .overlay(
-                DiceBearAvatarImage(url: preset.previewURL)
+                AsyncImageView(url: preset.previewURL, contentMode: .fit, placeholderStyle: .clear)
                     .padding(4)
             )
             .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
@@ -825,6 +829,7 @@ private struct PresetCell: View {
 
 // MARK: - Child profile row
 
+#if os(tvOS)
 /// Replaces SwiftUI's `Toggle` because on tvOS the default toggle inverts
 /// its entire surface to white on focus — which buries the label text on
 /// our dark background and looks nothing like the rest of the form's
@@ -836,19 +841,11 @@ private struct ChildProfileRow: View {
 
     @FocusState private var isFocused: Bool
 
-    #if os(tvOS)
     private let titleSize: CGFloat = 20
     private let subtitleSize: CGFloat = 16
     private let switchWidth: CGFloat = 58
     private let switchHeight: CGFloat = 34
     private let puckSize: CGFloat = 26
-    #else
-    private let titleSize: CGFloat = 16
-    private let subtitleSize: CGFloat = 13
-    private let switchWidth: CGFloat = 44
-    private let switchHeight: CGFloat = 26
-    private let puckSize: CGFloat = 20
-    #endif
 
     var body: some View {
         HStack(alignment: .center, spacing: 16) {
@@ -880,9 +877,7 @@ private struct ChildProfileRow: View {
         .focusable(true)
         .focused($isFocused)
         .onTapGesture { isOn.toggle() }
-        #if os(tvOS)
         .focusEffectDisabled()
-        #endif
         .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
         .animation(.spring(response: 0.28, dampingFraction: 0.75), value: isOn)
         .accessibilityElement(children: .combine)
@@ -903,6 +898,4 @@ private struct ChildProfileRow: View {
         }
     }
 }
-
-// `GhostChipButtonStyle` now lives in `Theme/SiloButtonStyles.swift`
-// (shared with `ProfileSelectionView`).
+#endif

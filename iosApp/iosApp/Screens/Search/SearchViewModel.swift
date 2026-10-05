@@ -32,6 +32,7 @@ enum SearchMediaType: String, CaseIterable, Identifiable {
     }
 }
 
+@MainActor
 @Observable
 class SearchViewModel {
     var query = ""
@@ -104,8 +105,7 @@ class SearchViewModel {
         }
 
         searchTask = Task {
-            // 300ms debounce
-            try? await Task.sleep(nanoseconds: 300_000_000)
+            try? await Task.sleep(for: .milliseconds(300))
             guard !Task.isCancelled else { return }
             await performSearch(reset: true)
         }
@@ -189,7 +189,7 @@ class SearchViewModel {
         peopleTask?.cancel()
         guard includesPeople else { return }
         isSearchingPeople = true
-        peopleTask = Task { @MainActor in
+        peopleTask = Task {
             let found = await matchingPeople(for: query, mediaScope: mediaScope)
             guard !Task.isCancelled, searchGeneration == generation else { return }
             people = found

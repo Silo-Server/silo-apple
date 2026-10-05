@@ -397,6 +397,7 @@ final class APIv2SubtitleTests: XCTestCase {
         stub.fail(.networkConnectionLost)
         let controller = SubtitleAIController(
             api: SiloAI(v2: api),
+            poller: AIJobPoller(pollInterval: .milliseconds(1)),
             mediaFileId: { 42 },
             currentTime: { 3 },
             handoffContext: { nil },
@@ -437,6 +438,7 @@ final class APIv2SubtitleTests: XCTestCase {
         let coordinator = LiveSubtitleCoordinator(controls: LiveControls(), sink: sink, clock: ManualSafetyClock())
         let controller = SubtitleAIController(
             api: SiloAI(v2: api),
+            poller: AIJobPoller(pollInterval: .milliseconds(1)),
             mediaFileId: { 42 },
             currentTime: { 0 },
             liveCoordinator: coordinator,
@@ -484,7 +486,7 @@ final class APIv2SubtitleTests: XCTestCase {
         let live = try await liveJobThePollerGaveUpOn()
         live.controller.realtimeDidBecomeUnavailable()
         XCTAssertEqual(live.controller.phase, .failed)
-        XCTAssertEqual(live.controller.errorMessage?.hasPrefix("Silo lost track of this subtitle job."), true)
+        XCTAssertEqual(live.controller.errorMessage, SubtitleAIController.lostTrackMessage)
         XCTAssertEqual(live.coordinator.phase, .failed)
         XCTAssertEqual(live.sink.closedEarly, ["ai-77"])
         XCTAssertEqual(live.sink.restoreCount, 1)
@@ -510,6 +512,7 @@ final class APIv2SubtitleTests: XCTestCase {
         let coordinator = LiveSubtitleCoordinator(controls: LiveControls(), sink: sink, clock: ManualSafetyClock())
         let controller = SubtitleAIController(
             api: SiloAI(v2: api),
+            poller: AIJobPoller(pollInterval: .milliseconds(1)),
             mediaFileId: { 42 },
             currentTime: { 0 },
             sessionId: { "sess-1" },

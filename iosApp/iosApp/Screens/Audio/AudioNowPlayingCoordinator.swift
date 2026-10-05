@@ -18,7 +18,6 @@ final class AudioNowPlayingCoordinator {
         let play: () -> Void
         let pause: () -> Void
         let isPaused: () -> Bool
-        let currentTime: () -> Double
         let seek: (Double) -> Void
         /// Relative skip by signed seconds. Routed through the player so
         /// repeated presses build on a seek that is still loading.
@@ -40,8 +39,6 @@ final class AudioNowPlayingCoordinator {
     private var artworkFetchTask: Task<Void, Never>?
 
     #if os(iOS) || os(tvOS)
-    private weak var session: MPNowPlayingSession?
-
     /// Binds to Aether's player-scoped centers when available. Turning off
     /// automatic publication is intentional: Aether's player clock is local
     /// to one audiobook file, while Silo publishes a stitched whole-book
@@ -49,7 +46,6 @@ final class AudioNowPlayingCoordinator {
     func attach(session: MPNowPlayingSession?, handlers: Handlers) {
         self.handlers = handlers
         unbindCurrentCenters()
-        self.session = session
 
         if let session {
             session.automaticallyPublishesNowPlayingInfo = false
@@ -87,9 +83,6 @@ final class AudioNowPlayingCoordinator {
     func detach() {
         handlers = nil
         unbindCurrentCenters()
-        #if os(iOS) || os(tvOS)
-        session = nil
-        #endif
         artworkFetchTask?.cancel()
         artworkFetchTask = nil
         artworkURL = nil

@@ -1918,11 +1918,14 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                 XCTAssertFalse(FileManager.default.fileExists(
                     atPath: fixture.reports[0].directoryURL.path
                 ))
-                XCTAssertEqual(selfHostedStub.requestedPaths(), [
+                // Capabilities and the account are read concurrently; the
+                // upload follows both.
+                let paths = selfHostedStub.requestedPaths()
+                XCTAssertEqual(Set(paths.prefix(2)), [
                     "/api/v2/diagnostics/capabilities",
                     "/api/v2/account/me",
-                    "/api/v2/diagnostics/reports",
                 ])
+                XCTAssertEqual(paths.dropFirst(2), ["/api/v2/diagnostics/reports"])
 
                 let deleted = await coordinator.delete(report: fixture.reports[1])
                 XCTAssertTrue(deleted)

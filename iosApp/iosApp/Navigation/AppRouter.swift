@@ -18,40 +18,13 @@ struct ItemDetailBrowseSource: Equatable {
     }
 }
 
-private struct BrowseLibraryIDKey: EnvironmentKey {
-    static let defaultValue: Int? = nil
-}
-
 extension EnvironmentValues {
     /// Set only by library browse surfaces; detail destinations carry a copy in their route.
-    var browseLibraryId: Int? {
-        get { self[BrowseLibraryIDKey.self] }
-        set { self[BrowseLibraryIDKey.self] = newValue }
-    }
-}
-
-private struct AllowsDirectPlaybackKey: EnvironmentKey {
-    static let defaultValue = true
-}
-
-extension EnvironmentValues {
+    @Entry var browseLibraryId: Int? = nil
     /// False where picking a title must not start solo playback (the Watch
     /// Party picker). Cards keep Select but drop their Play/Pause action.
-    var allowsDirectPlayback: Bool {
-        get { self[AllowsDirectPlaybackKey.self] }
-        set { self[AllowsDirectPlaybackKey.self] = newValue }
-    }
-}
-
-private struct ItemDetailBrowseSourceKey: EnvironmentKey {
-    static let defaultValue: ItemDetailBrowseSource? = nil
-}
-
-extension EnvironmentValues {
-    var itemDetailBrowseSource: ItemDetailBrowseSource? {
-        get { self[ItemDetailBrowseSourceKey.self] }
-        set { self[ItemDetailBrowseSourceKey.self] = newValue }
-    }
+    @Entry var allowsDirectPlayback = true
+    @Entry var itemDetailBrowseSource: ItemDetailBrowseSource? = nil
 }
 
 extension Notification.Name {
@@ -79,12 +52,9 @@ extension Notification.Name {
     )
 }
 
-/// Central navigation controller for the Silo iOS app.
-///
-/// Manages the authentication state machine and the navigation stack.
-/// Observed by ContentView to decide which screen tree to present.
+/// Auth state machine and navigation state for every Apple platform.
 @Observable
-class AppRouter {
+final class AppRouter {
 
     // MARK: - Auth State Machine
 
@@ -166,18 +136,11 @@ class AppRouter {
 
     // MARK: - Navigation Stack
 
-    /// Navigation path for push/pop within the current flow.
-    private(set) var isSigningOut = false
+    @ObservationIgnored private var isSigningOut = false
     var accountActionError: String?
 
+    /// Navigation path for push/pop within the current flow.
     var path = NavigationPath()
-
-    /// Zoom-transition source id of the most recently tapped card, handed to
-    /// the item-detail destination so the iOS 26 poster→detail zoom animates
-    /// from the exact card tapped. A bare `contentId` collides when the same
-    /// item is visible in two rows; each card uses a unique per-instance id and
-    /// records it here on tap. Transient hand-off, not observable UI state.
-    @ObservationIgnored var pendingZoomSourceID: String?
 
     // MARK: - Item Detail Presentation
 
@@ -225,9 +188,7 @@ class AppRouter {
 
     // MARK: - Player Presentation
 
-    /// Identifiable payload for presenting the player as a full-screen cover.
-    /// Used on iOS/iPadOS where pushing into the detail pane would box video
-    /// into split-view navigation chrome.
+    /// Payload for the full-screen player cover (iOS, iPadOS, tvOS).
     struct PlayerPresentation: Identifiable, Equatable {
         var libraryId: Int? = nil
         let id = UUID()
@@ -259,6 +220,16 @@ class AppRouter {
     }
 
     var presentedPlayer: PlayerPresentation?
+
+    /// The iOS detail sheet that owns a newly presented player; nil elsewhere.
+    private var currentDetailPresentationID: UUID? {
+        #if os(iOS)
+        presentedItemDetail?.id
+        #else
+        nil
+        #endif
+    }
+
     @ObservationIgnored private var watchPartySheetPresented = false
     @ObservationIgnored private var pendingWatchPartyPresentation: WatchPartyPlaybackContext?
 
@@ -286,18 +257,15 @@ class AppRouter {
         if watchPartySheetPresented, presentedPlayer?.watchPartyContext == nil { return }
         pendingWatchPartyPresentation = nil
         guard presentedPlayer?.watchPartyContext != context else { return }
-        var presentation = PlayerPresentation(libraryId: context.libraryId,
+        // Reuse the active presenter's cover, including a detail-owned player.
+        // Replacing its content avoids racing a dismissal with a new cover.
+        presentedPlayer = PlayerPresentation(libraryId: context.libraryId,
             contentId: context.contentId, fileId: context.fileId,
             audioTrackIndex: nil, subtitleTrackIndex: nil,
             startFromBeginning: false, resumePosition: context.startPosition,
             prefersLastUsedVersion: false, returnToContentId: nil,
+            detailPresentationID: presentedPlayer?.detailPresentationID ?? currentDetailPresentationID,
             watchPartyContext: context, posterURL: nil, backdropURL: nil)
-        #if os(iOS)
-        // Reuse the active presenter's cover, including a detail-owned player.
-        // Replacing its content avoids racing a dismissal with a new cover.
-        presentation.detailPresentationID = presentedPlayer?.detailPresentationID ?? presentedItemDetail?.id
-        #endif
-        presentedPlayer = presentation
     }
 
     #if os(iOS)
@@ -313,7 +281,7 @@ class AppRouter {
 
     /// True while the interceptor is deciding; a second Play in that window
     /// must not slip past it and open the local player.
-    private var isRoutingRemotePlayback = false
+    private(set) var isRoutingRemotePlayback = false
 
     /// An offline play requested while a TV is engaged. A download can only
     /// play on the phone, so instead of silently starting a second player the
@@ -372,10 +340,6 @@ class AppRouter {
     /// e.g. the Downloads empty state's "Browse Libraries" — can jump tabs
     /// without threading a selection binding through the tree.
     var requestedTab: AppTab?
-
-    /// Optional copy for an alternate three-step profile journey. Cleared at
-    /// every auth-state reset so a later normal login uses the default labels.
-    var profileJourneyLabels: [String]?
 
     /// Set by a completed sign-in, including setup from a nearby phone: a
     /// household with exactly one profile and no PIN goes straight to Home
@@ -451,7 +415,7 @@ class AppRouter {
             ))
         }
         #else
-        var presentation = PlayerPresentation(
+        let presentation = PlayerPresentation(
             libraryId: libraryId,
             contentId: contentId,
             fileId: fileId,
@@ -461,11 +425,11 @@ class AppRouter {
             resumePosition: resumePosition,
             prefersLastUsedVersion: prefersLastUsedVersion,
             returnToContentId: returnToContentId,
+            detailPresentationID: currentDetailPresentationID,
             posterURL: posterURL,
             backdropURL: backdropURL
         )
         #if os(iOS)
-        presentation.detailPresentationID = presentedItemDetail?.id
         if let remotePlaybackInterceptor {
             // Decide the destination before touching `presentedPlayer`, so
             // an engaged TV never sees the local cover flash. The request
@@ -527,7 +491,7 @@ class AppRouter {
             resumePosition: resumePosition
         ))
         #else
-        var presentation = PlayerPresentation(
+        let presentation = PlayerPresentation(
             contentId: contentId,
             fileId: nil,
             audioTrackIndex: nil,
@@ -537,12 +501,10 @@ class AppRouter {
             prefersLastUsedVersion: false,
             returnToContentId: nil,
             offlineDownloadId: downloadId,
+            detailPresentationID: currentDetailPresentationID,
             posterURL: nil,
             backdropURL: nil
         )
-        #if os(iOS)
-        presentation.detailPresentationID = presentedItemDetail?.id
-        #endif
         #if os(iOS)
         if isRemotePlaybackEngaged?() == true {
             pendingOfflinePlayChoice = OfflinePlayChoice(
@@ -632,10 +594,8 @@ class AppRouter {
         path.append(route)
     }
 
-    /// Open an item from an ordered card source. Existing callers can keep
-    /// using `navigate(to: .itemDetail(...))`; rows and grids that provide a
-    /// browse source opt into sideways paging without changing deep links or
-    /// nested recommendations reached from inside an already-open detail.
+    /// Opens item detail. On iOS a browse source that contains `contentId`
+    /// enables sideways paging.
     func presentItemDetail(
         contentId: String,
         libraryId: Int? = nil,
@@ -745,32 +705,28 @@ class AppRouter {
         loginNotice = nil
         recordScreenBreadcrumb(target: "login", action: "reset")
         path = NavigationPath()
-        profileJourneyLabels = nil
         setAuthState(.needsLogin, reason: "resetToLogin")
     }
 
     /// Transition to profile selection after successful login.
-    func showProfileSelection(journeyLabels: [String]? = nil) {
+    func showProfileSelection() {
         loginNotice = nil
         recordScreenBreadcrumb(target: "profileSelection", action: "reset")
         path = NavigationPath()
-        profileJourneyLabels = journeyLabels
         setAuthState(.needsProfile, reason: "showProfileSelection")
     }
 
     /// User-initiated profile switching has one persistence and cache
     /// boundary regardless of which menu or settings surface initiated it.
     func switchProfile() {
-        Task {
+        Task { @MainActor in
             guard await completeRequestedProfileSwitch() else {
                 // A refusal here leaves the user on the current screen with no
                 // visible change, which reads as "the app ignored me".
                 Self.recordAuthActionBreadcrumb(reason: "switchProfile", outcome: "refused")
                 return
             }
-            await MainActor.run {
-                self.showProfileSelection()
-            }
+            showProfileSelection()
         }
     }
 
@@ -778,7 +734,6 @@ class AppRouter {
     func resetToHome() {
         recordScreenBreadcrumb(target: "home", action: "reset")
         path = NavigationPath()
-        profileJourneyLabels = nil
         setAuthState(.authenticated, reason: "resetToHome")
     }
 
@@ -787,7 +742,6 @@ class AppRouter {
         loginNotice = nil
         recordScreenBreadcrumb(target: "serverSetup", action: "reset")
         path = NavigationPath()
-        profileJourneyLabels = nil
         skipsSingleProfilePicker = false
         setAuthState(.needsServerSetup, reason: "resetToServerSetup")
     }
@@ -801,7 +755,6 @@ class AppRouter {
         presentedPlayer = nil
         dismissItemDetail()
         path = NavigationPath()
-        profileJourneyLabels = nil
         setAuthState(state, reason: "serverResolution")
     }
 
@@ -983,22 +936,10 @@ class AppRouter {
         #endif
     }
 
-    /// The auth-state timeline. Essential tier: without these lines a session
-    /// report can show that the user ended up at the login screen but never
-    /// why. Only the two state tokens and the router action that caused the
-    /// move are recorded — no account, profile, server, or credential detail
-    /// is available at this layer, and none is looked up.
-    ///
-    /// `state` carries the state the app is in *now*, and nothing else. The
-    /// origin state goes in the free-text message rather than `phase`: the
-    /// registry defines `phase` as a startup/lifecycle phase identifier
-    /// (`launch`, `prefetch`, …), so filing a previous auth state under it
-    /// would make `phase` mean two different things depending on which
-    /// subsystem emitted the line, and a query grouping lifecycle lines by
-    /// phase would silently mix them. There is no registered key for "previous
-    /// state" and inventing one rejects the whole bundle, so the transition is
-    /// spelled out in `msg`, where both tokens stay legible and neither is
-    /// account, profile, or server identity.
+    /// The auth-state timeline (essential tier): the new state and the router
+    /// action that caused it, with no account, profile, or server identity.
+    /// The previous state goes in the message: `phase` is registered for
+    /// startup phases, and an unregistered key would reject the bundle.
     private func recordAuthStateBreadcrumb(from: AuthState, to: AuthState, reason: String) {
         #if os(iOS) || os(tvOS)
         DiagTrace.breadcrumb(
@@ -1014,20 +955,14 @@ class AppRouter {
         #endif
     }
 
-    /// Stage the cause of the `authState` assignment on the next line. Kept as
-    /// a helper (rather than an inline assignment) so the pairing with the
-    /// `didSet` observer stays greppable and every router action reads the
-    /// same way.
+    /// Records why the next `authState` assignment happens.
     private func setAuthState(_ state: AuthState, reason: String) {
         pendingAuthStateReason = reason
         authState = state
     }
 
-    /// Report the outcome of an async router action that can refuse before it
-    /// ever reaches an `authState` assignment — a refused sign-out or profile
-    /// switch is exactly the "it won't let me in" case with no other trace.
-    /// Static because its call sites are inside detached `Task`s, where an
-    /// instance method would mean capturing the router just to log.
+    /// Records an async router action that refused before reaching an
+    /// `authState` change (a refused sign-out or profile switch).
     private static func recordAuthActionBreadcrumb(reason: String, outcome: String) {
         #if os(iOS) || os(tvOS)
         DiagTrace.breadcrumb(

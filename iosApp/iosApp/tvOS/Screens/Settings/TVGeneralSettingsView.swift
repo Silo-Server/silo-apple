@@ -591,13 +591,6 @@ private struct TVHomeSectionsCustomizationSheet: View {
             loadFailed = sections.isEmpty
         }
     }
-
-    private func sectionHeader(_ title: String) -> some View {
-        Text(title)
-            .font(.system(size: 15, weight: .semibold, design: .monospaced))
-            .tracking(2)
-            .foregroundStyle(Color.siloSecondaryText)
-    }
 }
 
 /// Compact in-card control chrome for the Home Sections editor. The resting
@@ -684,17 +677,7 @@ private struct TVMenuCustomizationSheet: View {
                         sectionHeader("HIDDEN DESTINATIONS")
                         VStack(spacing: 10) {
                             ForEach(hiddenBuiltins) { item in
-                                Button {
-                                    persistVisibleItems(visibleItems + [item])
-                                } label: {
-                                    HStack(spacing: 18) {
-                                        Image(systemName: "plus.circle.fill")
-                                        Text("Show \(item.title)")
-                                        Spacer()
-                                    }
-                                    .font(.system(size: 26, weight: .medium))
-                                }
-                                .buttonStyle(TVSettingsPaneRowStyle())
+                                showButton(item)
                             }
                         }
                         .focusSection()
@@ -705,17 +688,7 @@ private struct TVMenuCustomizationSheet: View {
                         sectionHeader("AVAILABLE LIBRARY SHORTCUTS")
                         VStack(spacing: 10) {
                             ForEach(availableLibraryShortcuts) { item in
-                                Button {
-                                    persistVisibleItems(visibleItems + [item])
-                                } label: {
-                                    HStack(spacing: 18) {
-                                        Image(systemName: "plus.circle.fill")
-                                        Text("Show \(item.title)")
-                                        Spacer()
-                                    }
-                                    .font(.system(size: 26, weight: .medium))
-                                }
-                                .buttonStyle(TVSettingsPaneRowStyle())
+                                showButton(item)
                             }
                         }
                         .focusSection()
@@ -769,15 +742,12 @@ private struct TVMenuCustomizationSheet: View {
         libraries: [Library]
     ) -> [PrimaryMenuItem] {
         let availableIds = Set(libraries.map(\.id))
-        func hasLibrary(_ type: TVLibraryTabType) -> Bool {
-            libraries.contains(where: { type.matches($0) })
-        }
         return items.filter { item in
             switch item {
-            case .builtin(.movies): return hasLibrary(.movies)
-            case .builtin(.series): return hasLibrary(.series)
-            case .builtin(.music): return hasLibrary(.music)
-            case .builtin(.audiobooks): return hasLibrary(.audiobooks)
+            case .builtin(.movies): return hasLibrary(.movies, in: libraries)
+            case .builtin(.series): return hasLibrary(.series, in: libraries)
+            case .builtin(.music): return hasLibrary(.music, in: libraries)
+            case .builtin(.audiobooks): return hasLibrary(.audiobooks, in: libraries)
             case .library(let id, _): return availableIds.contains(id)
             case .section, .collection: return false
             case .builtin(.home), .builtin(.forYou), .builtin(.calendar): return true
@@ -820,7 +790,7 @@ private struct TVMenuCustomizationSheet: View {
 
     private var builtinCandidates: [PrimaryMenuItem] {
         var items: [PrimaryMenuItem] = [.builtin(.home)]
-        for type in TVLibraryTabType.allCases where hasLibrary(type) {
+        for type in TVLibraryTabType.allCases where Self.hasLibrary(type, in: libraries) {
             let builtin: PrimaryMenuBuiltin
             switch type {
             case .movies: builtin = .movies
@@ -923,19 +893,34 @@ private struct TVMenuCustomizationSheet: View {
         preferences.setPrimaryMenuItems(result)
     }
 
-    private func hasLibrary(_ type: TVLibraryTabType) -> Bool {
+    private static func hasLibrary(_ type: TVLibraryTabType, in libraries: [Library]) -> Bool {
         libraries.contains(where: { type.matches($0) })
+    }
+
+    private func showButton(_ item: PrimaryMenuItem) -> some View {
+        Button {
+            persistVisibleItems(visibleItems + [item])
+        } label: {
+            HStack(spacing: 18) {
+                Image(systemName: "plus.circle.fill")
+                Text("Show \(item.title)")
+                Spacer()
+            }
+            .font(.system(size: 26, weight: .medium))
+        }
+        .buttonStyle(TVSettingsPaneRowStyle())
     }
 
     private func librarySort(_ lhs: Library, _ rhs: Library) -> Bool {
         (lhs.sortOrder ?? Int.max, lhs.id) < (rhs.sortOrder ?? Int.max, rhs.id)
     }
+}
 
-    private func sectionHeader(_ title: String) -> some View {
-        Text(title)
-            .font(.system(size: 15, weight: .semibold, design: .monospaced))
-            .tracking(2)
-            .foregroundStyle(Color.siloSecondaryText)
-    }
+/// Mono caps header shared by the Home Sections and Top Menu editors.
+private func sectionHeader(_ title: String) -> some View {
+    Text(title)
+        .font(.system(size: 15, weight: .semibold, design: .monospaced))
+        .tracking(2)
+        .foregroundStyle(Color.siloSecondaryText)
 }
 #endif

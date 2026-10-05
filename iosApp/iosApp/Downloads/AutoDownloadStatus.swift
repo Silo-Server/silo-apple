@@ -234,15 +234,14 @@ enum AutoDownloadRules {
         let days = calendar.dateComponents([.day], from: today, to: day).day ?? 0
         if days <= 0 { return "today" }
         if days == 1 { return "tomorrow" }
-        let formatter = DateFormatter()
-        formatter.calendar = calendar
-        formatter.timeZone = calendar.timeZone
-        formatter.locale = calendar.locale ?? .current
-        formatter.setLocalizedDateFormatFromTemplate(days < 7 ? "EEEE" : "MMMd")
-        let text = formatter.string(from: date)
+        // A format style, unlike a new DateFormatter per call, caches its
+        // formatter; this runs in Downloads bodies.
+        let style = Date.FormatStyle(locale: calendar.locale ?? .current, calendar: calendar, timeZone: calendar.timeZone)
+        let text = days < 7
+            ? date.formatted(style.weekday(.wide))
+            : date.formatted(style.month(.abbreviated).day())
         return preposition ? "on \(text)" : text
     }
-
 
     /// "10 GB" for the limit picker's whole GiB values; other limits another
     /// client set read as "1.5 GB" or "500 MB".

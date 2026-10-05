@@ -354,6 +354,13 @@ class QRLoginViewModel: NearbySignInCodeSource {
 
     // MARK: - Loop
 
+    /// Whether the start/poll loop is running. Read by tests: with no loop,
+    /// nothing can poll.
+    var isPolling: Bool { loopTask != nil }
+
+    /// How many nearby phones are waiting on an outcome. Read by tests.
+    var nearbyWaiterCount: Int { nearbyWaiters.count }
+
     private func startLoop() {
         guard loopTask == nil else { return }
         loopGeneration += 1
@@ -415,14 +422,16 @@ class QRLoginViewModel: NearbySignInCodeSource {
         var sentAt = now()
         func recordFailure(rateLimited: Bool, threshold: TimeInterval) -> TimeInterval {
             let at = now()
-            if streakStart == nil { streakStart = sentAt }
+            let streak = streakStart ?? sentAt
+            streakStart = streak
             // A waiting `retry()` keeps "Getting a sign-in code…" up.
             if rateLimited {
-                if rateLimitedStart == nil { rateLimitedStart = sentAt }
-                if at.timeIntervalSince(rateLimitedStart!) >= timing.rateLimitedAfter, !restartHold { status = .rateLimited }
+                let limitedSince = rateLimitedStart ?? sentAt
+                rateLimitedStart = limitedSince
+                if at.timeIntervalSince(limitedSince) >= timing.rateLimitedAfter, !restartHold { status = .rateLimited }
             } else {
                 rateLimitedStart = nil
-                if at.timeIntervalSince(streakStart!) >= threshold, !restartHold { status = .unreachable }
+                if at.timeIntervalSince(streak) >= threshold, !restartHold { status = .unreachable }
             }
             let base = max(timing.minimumPoll, TimeInterval(session?.interval ?? 1))
             backoff = backoff == 0 ? base : min(timing.maxBackoff, backoff * 2)
@@ -713,7 +722,7 @@ class QRLoginViewModel: NearbySignInCodeSource {
     private func withdraw(_ deviceCode: String) {
         guard let serverURL = expectedAccount?.serverURL else { return }
         let devices = self.devices, capability = self.capability
-        Task.detached { await devices.withdraw(serverURL: serverURL, deviceCode: deviceCode, capability: capability) }
+        Task { await devices.withdraw(serverURL: serverURL, deviceCode: deviceCode, capability: capability) }
     }
 
     // MARK: - Messages

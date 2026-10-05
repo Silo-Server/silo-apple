@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// Only verified account epochs can recover a room after an app restart.
 /// Join codes stay in Keychain; access tokens and room proofs are never copied.
@@ -28,44 +29,44 @@ final class WatchPartyRecentStore: @unchecked Sendable {
 
     static let key = "watchParty.recent.v1"
     static let lifetime: TimeInterval = 24 * 60 * 60
-    let keychain: SharedKeychain
-    private let lock = NSLock()
-    private var generation = UUID()
+    private let keychain: SharedKeychain
+    /// Write generation; also serializes every keychain read and write.
+    private let generation = Mutex(UUID())
 
-    var writeGeneration: UUID { lock.withLock { generation } }
+    var writeGeneration: UUID { generation.withLock { $0 } }
 
     init(keychain: SharedKeychain = SharedKeychain(audience: TokenStore.profileCredentialAudience)) {
         self.keychain = keychain
     }
 
     func load(owner: WatchPartyRecentOwner, now: Date = Date()) -> WatchPartyRecentRoom? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let value = try? keychain.getChecked(Self.key), let data = value.data(using: .utf8) else { return nil }
-        guard let entry = try? JSONDecoder().decode(Entry.self, from: data), !entry.room.roomId.isEmpty,
-              !entry.room.code.isEmpty, now.timeIntervalSince(entry.updatedAt) < Self.lifetime,
-              entry.updatedAt.timeIntervalSince(now) < 60 else {
-            generation = UUID()
-            keychain.delete(Self.key)
-            return nil
+        generation.withLock { generation in
+            guard let value = try? keychain.getChecked(Self.key), let data = value.data(using: .utf8) else { return nil }
+            guard let entry = try? JSONDecoder().decode(Entry.self, from: data), !entry.room.roomId.isEmpty,
+                  !entry.room.code.isEmpty, now.timeIntervalSince(entry.updatedAt) < Self.lifetime,
+                  entry.updatedAt.timeIntervalSince(now) < 60 else {
+                generation = UUID()
+                keychain.delete(Self.key)
+                return nil
+            }
+            guard entry.owner == owner else { return nil }
+            return entry.room
         }
-        guard entry.owner == owner else { return nil }
-        return entry.room
     }
 
     @discardableResult
     func save(_ room: WatchPartyRecentRoom, owner: WatchPartyRecentOwner, now: Date = Date(), expectedGeneration: UUID? = nil) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        if let expectedGeneration, expectedGeneration != generation { return false }
-        guard !room.roomId.isEmpty, !room.code.isEmpty,
-              let data = try? JSONEncoder().encode(Entry(owner: owner, room: room, updatedAt: now)),
-              let value = String(data: data, encoding: .utf8) else { return false }
-        return keychain.set(value, for: Self.key)
+        generation.withLock { generation in
+            if let expectedGeneration, expectedGeneration != generation { return false }
+            guard !room.roomId.isEmpty, !room.code.isEmpty,
+                  let data = try? JSONEncoder().encode(Entry(owner: owner, room: room, updatedAt: now)),
+                  let value = String(data: data, encoding: .utf8) else { return false }
+            return keychain.set(value, for: Self.key)
+        }
     }
 
     func clear() {
-        lock.withLock {
+        generation.withLock { generation in
             generation = UUID()
             keychain.delete(Self.key)
         }

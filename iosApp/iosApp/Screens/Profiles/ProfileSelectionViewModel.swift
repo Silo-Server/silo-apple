@@ -59,32 +59,19 @@ class ProfileSelectionViewModel {
     /// Select a profile that has no PIN and navigate to home.
     func selectProfile(_ profile: UserProfile, router: AppRouter) async {
         do {
-            guard await clearTemporaryManagementContextIfNeeded() else {
-                throw ProfileManagementError.temporaryContextCleanupFailed
-            }
-            try await auth.selectProfile(
-                profileId: profile.id,
-                requiresPIN: profile.hasPin
-            )
-            #if os(iOS)
-            // Identity is committed at this point, so reveal Home immediately.
-            // Optional settings and content warm-up must never hold the profile
-            // card on screen behind a slow server request.
-            router.resetToHome()
-            StartupContentPrefetcher.prefetchAuthenticatedContent()
-            Task { await PlayerSettings.shared.refreshFromServer() }
-            #else
-            StartupContentPrefetcher.prefetchAuthenticatedContent()
-            await PlayerSettings.shared.refreshFromServer()
-            router.resetToHome()
-            #endif
+            try await select(profile, pin: nil, router: router)
         } catch {
             self.error = ErrorState(error)
         }
     }
 
-    /// Select a profile with a PIN.
+    /// Select a profile with a PIN. Throws so the PIN prompt can handle a
+    /// wrong PIN itself.
     func selectProfileWithPIN(_ profile: UserProfile, pin: String, router: AppRouter) async throws {
+        try await select(profile, pin: pin, router: router)
+    }
+
+    private func select(_ profile: UserProfile, pin: String?, router: AppRouter) async throws {
         guard await clearTemporaryManagementContextIfNeeded() else {
             throw ProfileManagementError.temporaryContextCleanupFailed
         }
@@ -94,6 +81,9 @@ class ProfileSelectionViewModel {
             requiresPIN: profile.hasPin
         )
         #if os(iOS)
+        // Identity is committed at this point, so reveal Home immediately.
+        // Optional settings and content warm-up must never hold the profile
+        // card on screen behind a slow server request.
         router.resetToHome()
         StartupContentPrefetcher.prefetchAuthenticatedContent()
         Task { await PlayerSettings.shared.refreshFromServer() }
@@ -107,20 +97,7 @@ class ProfileSelectionViewModel {
     /// The picker itself has no active profile, but the server requires the
     /// primary household profile (or admin role) for profile management.
     /// Borrow that context just long enough to create a profile, then clear it.
-    func prepareForProfileManagement() async throws {
-        guard let primaryProfile else {
-            throw ProfileManagementError.primaryProfileUnavailable
-        }
-        try await auth.selectProfile(
-            profileId: primaryProfile.id,
-            requiresPIN: primaryProfile.hasPin,
-            rememberSelection: false
-        )
-        temporaryManagementProfileID = primaryProfile.id
-        isUsingTemporaryManagementContext = true
-    }
-
-    func prepareForProfileManagement(pin: String) async throws {
+    func prepareForProfileManagement(pin: String? = nil) async throws {
         guard let primaryProfile else {
             throw ProfileManagementError.primaryProfileUnavailable
         }
@@ -141,7 +118,7 @@ class ProfileSelectionViewModel {
         }
         guard isUsingTemporaryManagementContext,
               let temporaryManagementProfileID else { return true }
-        let cleanupTask = Task { @MainActor in
+        let cleanupTask = Task {
             await auth.deactivateProfile(
                 preserveRememberedProfile: true,
                 expectedProfileID: temporaryManagementProfileID

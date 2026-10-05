@@ -1,39 +1,14 @@
 #if !os(tvOS)
 import SwiftUI
 
-/// Series-scope inputs an episode card needs to start a download for one of
-/// its episodes; built once per episode rail by the owning detail screen.
-struct EpisodeDownloadContext {
-    let seriesId: String
-    let posterThumbhash: String?
-}
-
-/// Per-item download control. Reads the live record straight from
-/// `DownloadManager.shared` (an `@Observable` singleton), so it reflects
-/// download progress without the detail view model having to thread any
-/// state through.
+/// Download control for the movie / episode detail action row. Reads the
+/// live record straight from `DownloadManager.shared` (an `@Observable`
+/// singleton), so it reflects download progress without the detail view
+/// model having to thread any state through.
 ///
-/// Two placements share the state machine: the `.regular` style matches the
-/// 44pt circle styling of the neighboring favorite / watchlist buttons on
-/// the movie / episode detail screen, and the `.compact` style is the small
-/// circle drawn over episode-card stills, where a full detail navigation per
-/// episode would be the only alternative.
+/// Draws a bare glyph over a state-derived caption, sized like the
+/// neighboring Favorite / Watchlist / Mark Seen actions.
 struct DownloadActionButton: View {
-    enum Style {
-        case regular
-        case compact
-        /// Bare glyph over a state-derived caption, matching the refined
-        /// detail page's named action row. Carries no circular chrome, so it
-        /// sits beside Favorite / Watchlist / Mark Seen without looking like
-        /// a different species of control.
-        case labeled
-    }
-
-    /// Card layouts position the compact control over the still's corner,
-    /// so they need its footprint at layout time.
-    static let compactDiameter: CGFloat = 30
-
-    private let style: Style
     private let contentId: String
     private let isEpisode: Bool
     private let seriesId: String?
@@ -41,17 +16,12 @@ struct DownloadActionButton: View {
     private let displaySubtitle: String?
     private let year: Int?
     private let posterThumbhash: String?
-    /// Full version metadata for the options sheet; empty in compact style,
-    /// which never presents the sheet.
+    /// Full version metadata for the options sheet and the large-file guard.
     private let versions: [FileVersion]
-    /// Candidate file sizes feeding the pre-download large-file guard.
-    private let candidateFileSizes: [Int64]
     private let selectedVersionFileId: Int?
     private let lastVersionFileId: Int?
     /// Owned by the detail screen so its overflow menu can open the same
-    /// options sheet — one-tap made the sheet a secondary path, and it must
-    /// stay discoverable somewhere visible. Compact placements have no
-    /// options sheet, so they bind a constant that never presents.
+    /// options sheet.
     @Binding private var showOptions: Bool
 
     private var manager: DownloadManager { DownloadManager.shared }
@@ -70,10 +40,8 @@ struct DownloadActionButton: View {
         detail: ItemDetail,
         versions: [FileVersion],
         selectedVersionFileId: Int?,
-        showOptions: Binding<Bool>,
-        style: Style = .regular
+        showOptions: Binding<Bool>
     ) {
-        self.style = style
         contentId = detail.contentId
         isEpisode = detail.type == "episode"
         seriesId = detail.seriesId
@@ -86,38 +54,16 @@ struct DownloadActionButton: View {
         year = detail.year
         posterThumbhash = detail.posterThumbhash
         self.versions = versions
-        candidateFileSizes = versions.compactMap(\.fileSize)
         self.selectedVersionFileId = selectedVersionFileId
         lastVersionFileId = detail.userData?.lastFileId
         _showOptions = showOptions
     }
 
-    /// Compact episode-card control. Episode list items only carry
-    /// `EpisodeFile` metadata, so version options stay on the episode detail
-    /// page and the failed state re-runs the same registration instead of
-    /// offering the sheet.
-    init(episode: EpisodeListItem, context: EpisodeDownloadContext) {
-        style = .compact
-        contentId = episode.contentId
-        isEpisode = true
-        seriesId = context.seriesId
-        displayTitle = episode.title ?? "Episode \(episode.episodeNumber)"
-        displaySubtitle = Self.episodeSubtitle(
-            seasonNumber: episode.seasonNumber,
-            episodeNumber: episode.episodeNumber,
-            fallback: nil
-        )
-        year = nil
-        posterThumbhash = context.posterThumbhash
-        versions = []
-        candidateFileSizes = (episode.files ?? []).compactMap(\.fileSize)
-        selectedVersionFileId = nil
-        lastVersionFileId = nil
-        _showOptions = .constant(false)
-    }
-
     var body: some View {
-        content
+        // One registry lookup per evaluation; the body re-runs on every
+        // progress publish.
+        let record = self.record
+        content(record: record)
             .overlay(alignment: .top) { noticeCaption }
             .sensoryFeedback(.success, trigger: startFeedbackCount)
             .sensoryFeedback(.error, trigger: failFeedbackCount)
@@ -131,11 +77,11 @@ struct DownloadActionButton: View {
                 )
             }
             .confirmationDialog(
-                cancelPrompt,
+                cancelPrompt(for: record),
                 isPresented: $confirmingCancel,
                 titleVisibility: .visible
             ) {
-                Button("Discard Download", role: .destructive, action: cancel)
+                Button("Discard Download", role: .destructive, action: delete)
                 Button("Keep Download", role: .cancel) {}
             }
             // Keep the large-file gate separate from the cancel menu. Two
@@ -149,9 +95,7 @@ struct DownloadActionButton: View {
                 )
             ) {
                 Button("Download Anyway", action: startWithDefaults)
-                if style != .compact {
-                    Button("Choose Options…") { showOptions = true }
-                }
+                Button("Choose Options…") { showOptions = true }
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("\(largeDownloadWarning ?? "This download is large.") Download anyway?")
@@ -159,27 +103,23 @@ struct DownloadActionButton: View {
     }
 
     @ViewBuilder
-    private var content: some View {
+    private func content(record: DownloadRecord?) -> some View {
         if isRegistrationPending, record == nil {
-            circleLabel(icon: "arrow.down.circle", active: true, showSpinner: true)
+            circleLabel(icon: "arrow.down.circle", record: record, active: true, showSpinner: true)
                 .accessibilityLabel("Registering download")
                 .allowsHitTesting(false)
         } else {
             switch record?.localStatus {
             case .none:
-                let button = Button(action: handleDownloadTap) {
-                    circleLabel(icon: "arrow.down.to.line", active: false)
+                Button(action: handleDownloadTap) {
+                    circleLabel(icon: "arrow.down.to.line", record: record, active: false)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Download")
-                if style != .compact {
-                    button.contextMenu {
-                        Button { showOptions = true } label: {
-                            Label("Download Options…", systemImage: "slider.horizontal.3")
-                        }
+                .contextMenu {
+                    Button { showOptions = true } label: {
+                        Label("Download Options…", systemImage: "slider.horizontal.3")
                     }
-                } else {
-                    button
                 }
 
             case .downloading:
@@ -191,10 +131,10 @@ struct DownloadActionButton: View {
                         Label("Cancel Download", systemImage: "xmark.circle")
                     }
                 } label: {
-                    progressLabel(fraction: record?.progressFraction ?? 0, paused: false)
+                    progressLabel(record: record, paused: false)
                 }
                 .accessibilityLabel("Downloading")
-                .accessibilityValue(progressAccessibilityValue)
+                .accessibilityValue(progressAccessibilityValue(record))
 
             case .paused:
                 Menu {
@@ -205,10 +145,10 @@ struct DownloadActionButton: View {
                         Label("Cancel Download", systemImage: "xmark.circle")
                     }
                 } label: {
-                    progressLabel(fraction: record?.progressFraction ?? 0, paused: true)
+                    progressLabel(record: record, paused: true)
                 }
                 .accessibilityLabel("Download paused")
-                .accessibilityValue(progressAccessibilityValue)
+                .accessibilityValue(progressAccessibilityValue(record))
 
             case .registering, .preparing, .queued, .fetchingAssets:
                 Menu {
@@ -216,7 +156,7 @@ struct DownloadActionButton: View {
                         Label("Cancel Download", systemImage: "xmark.circle")
                     }
                 } label: {
-                    circleLabel(icon: "arrow.down.circle", active: true, showSpinner: true)
+                    circleLabel(icon: "arrow.down.circle", record: record, active: true, showSpinner: true)
                 }
                 .accessibilityLabel("Preparing download")
 
@@ -226,7 +166,7 @@ struct DownloadActionButton: View {
                         Label("Delete Download", systemImage: "trash")
                     }
                 } label: {
-                    circleLabel(icon: "checkmark.circle.fill", active: true, tint: .green)
+                    circleLabel(icon: "checkmark.circle.fill", record: record, active: true, tint: .green)
                 }
                 .accessibilityLabel("Downloaded")
 
@@ -236,26 +176,20 @@ struct DownloadActionButton: View {
                         Label("Delete Download", systemImage: "trash")
                     }
                 } label: {
-                    circleLabel(icon: "checkmark.circle", active: true, tint: .yellow)
+                    circleLabel(icon: "checkmark.circle", record: record, active: true, tint: .yellow)
                 }
                 .accessibilityLabel("Downloaded (re-download no longer allowed)")
 
             case .failed:
                 Menu {
-                    if style != .compact {
-                        Button { showOptions = true } label: {
-                            Label("Retry With Options", systemImage: "arrow.clockwise")
-                        }
-                    } else {
-                        Button(action: retry) {
-                            Label("Try Again", systemImage: "arrow.clockwise")
-                        }
+                    Button { showOptions = true } label: {
+                        Label("Retry With Options", systemImage: "arrow.clockwise")
                     }
                     Button(role: .destructive, action: delete) {
                         Label("Remove", systemImage: "trash")
                     }
                 } label: {
-                    circleLabel(icon: "exclamationmark.triangle", active: true, tint: .orange)
+                    circleLabel(icon: "exclamationmark.triangle", record: record, active: true, tint: .orange)
                 }
                 .accessibilityLabel("Download failed")
             }
@@ -269,11 +203,9 @@ struct DownloadActionButton: View {
     /// candidates when that size is unknown) warrants confirming first.
     private func handleDownloadTap() {
         guard !isRegistrationPending, record == nil else { return }
-        let estimate = versions.isEmpty
-            ? DownloadSizeEstimate.estimate(fileSizes: candidateFileSizes)
-            : (DownloadSizeEstimate.estimate(versions: versions, fileId: displayedVersionFileId)
-                ?? DownloadSizeEstimate.estimate(fileSizes: candidateFileSizes))
-        let available = DownloadFilePaths.deviceStorage().available
+        let estimate = DownloadSizeEstimate.estimate(versions: versions, fileId: displayedVersionFileId)
+            ?? DownloadSizeEstimate.estimate(fileSizes: versions.compactMap(\.fileSize))
+        let available = DownloadFilePaths.availableCapacity()
         if let warning = estimate?.warningMessage(availableBytes: available) {
             largeDownloadWarning = warning
             return
@@ -294,10 +226,7 @@ struct DownloadActionButton: View {
     }
 
     /// One-tap gives no sheet dismissal to mark the moment, so pair a
-    /// success haptic with a short-lived caption above the button. The
-    /// compact style keeps only the haptic — its state flip to the spinner
-    /// is visible feedback, and a caption would clip against neighboring
-    /// cards in the rail.
+    /// success haptic with a short-lived caption above the button.
     private func announceStart() {
         startFeedbackCount += 1
         showNotice("Download started")
@@ -312,7 +241,6 @@ struct DownloadActionButton: View {
     }
 
     private func showNotice(_ text: String) {
-        guard style != .compact else { return }
         withAnimation(.easeOut(duration: 0.2)) { startNotice = text }
         Task {
             try? await Task.sleep(for: .seconds(2))
@@ -356,8 +284,8 @@ struct DownloadActionButton: View {
         }
     }
 
-    /// Nil only in compact style, which has no version metadata; the
-    /// server then picks the file.
+    /// Nil when the item has no version metadata; the server then picks
+    /// the file.
     private var displayedVersionFileId: Int? {
         DownloadRequestOptions.fileId(
             versions: versions,
@@ -375,21 +303,13 @@ struct DownloadActionButton: View {
         if let id = record?.id { manager.resumeDownload(id: id) }
     }
 
-    private func retry() {
-        if let id = record?.id { manager.retryDownload(id: id) }
-    }
-
-    private func cancel() {
-        if let id = record?.id { manager.deleteDownload(id: id) }
-    }
-
     private func delete() {
         if let id = record?.id { manager.deleteDownload(id: id) }
     }
 
     /// States what a destructive cancel throws away; bytes are omitted when
     /// nothing has transferred yet.
-    private var cancelPrompt: String {
+    private func cancelPrompt(for record: DownloadRecord?) -> String {
         if let bytes = record?.bytesDownloaded, bytes > 0 {
             return "Discard \(DownloadFormatting.bytes(bytes)) of downloaded data?"
         }
@@ -428,7 +348,7 @@ struct DownloadActionButton: View {
     /// Filled, borderless circle over a caption, sized to match
     /// `PhoneLabeledAction` exactly so the row sits on one baseline.
     private func labeledGlyph<Glyph: View>(
-        tint: Color,
+        record: DownloadRecord?,
         active: Bool,
         @ViewBuilder glyph: () -> Glyph
     ) -> some View {
@@ -438,9 +358,9 @@ struct DownloadActionButton: View {
                 .background(
                     Circle().fill(Color.white.opacity(active ? 0.18 : 0.10))
                 )
-            Text(captionText)
+            Text(captionText(for: record))
                 .font(.system(size: 10, weight: .medium))
-                .foregroundColor(captionTint)
+                .foregroundColor(captionTint(for: record?.localStatus))
                 .lineLimit(1)
                 .minimumScaleFactor(0.85)
         }
@@ -450,7 +370,7 @@ struct DownloadActionButton: View {
 
     /// A static "Download" caption under a green tick would misreport the
     /// state, so the caption tracks the record like the glyph does.
-    private var captionText: String {
+    private func captionText(for record: DownloadRecord?) -> String {
         if isRegistrationPending, record == nil { return "Preparing" }
         switch record?.localStatus {
         case .none: return "Download"
@@ -459,12 +379,11 @@ struct DownloadActionButton: View {
         case .registering, .preparing, .queued, .fetchingAssets: return "Preparing"
         case .completed, .revoked: return "Downloaded"
         case .failed: return "Failed"
-        default: return "Download"
         }
     }
 
-    private var captionTint: Color {
-        switch record?.localStatus {
+    private func captionTint(for status: LocalDownloadStatus?) -> Color {
+        switch status {
         case .completed, .revoked: return .green.opacity(0.9)
         case .failed: return .orange.opacity(0.9)
         case .none: return Color.white.opacity(0.6)
@@ -472,130 +391,59 @@ struct DownloadActionButton: View {
         }
     }
 
-    private var diameter: CGFloat {
-        style == .regular ? 44 : Self.compactDiameter
-    }
-
-    private var iconPointSize: CGFloat {
-        style == .regular ? 16 : 12
-    }
-
-    /// The regular style sits on the detail hero's dark scrim, so a white
-    /// wash reads; the compact style sits directly on episode stills and
-    /// needs a darker fill for contrast on bright frames.
-    private func circleFill(active: Bool) -> Color {
-        switch style {
-        case .regular: return Color.white.opacity(active ? 0.18 : 0.10)
-        case .compact: return Color.black.opacity(active ? 0.65 : 0.55)
-        case .labeled: return .clear
-        }
-    }
-
-    @ViewBuilder
     private func circleLabel(
         icon: String,
+        record: DownloadRecord?,
         active: Bool,
         tint: Color = .white,
         showSpinner: Bool = false
     ) -> some View {
-        if style == .labeled {
-            labeledGlyph(tint: tint, active: active) {
-                if showSpinner {
-                    ProgressView().controlSize(.small).tint(.white)
-                } else {
-                    Image(systemName: icon)
-                        .font(.system(size: 19, weight: .regular))
-                        .foregroundColor(tint)
-                        .contentTransition(.symbolEffect(.replace.magic(fallback: .replace)))
-                }
-            }
-        } else {
-            circleChrome(icon: icon, active: active, tint: tint, showSpinner: showSpinner)
-        }
-    }
-
-    private func circleChrome(
-        icon: String,
-        active: Bool,
-        tint: Color,
-        showSpinner: Bool
-    ) -> some View {
-        ZStack {
-            Circle()
-                .fill(circleFill(active: active))
-                .overlay(
-                    Circle().stroke(Color.white.opacity(active ? 0.55 : 0.25), lineWidth: 1)
-                )
+        labeledGlyph(record: record, active: active) {
             if showSpinner {
-                ProgressView()
-                    .controlSize(.small)
-                    .tint(.white)
+                ProgressView().controlSize(.small).tint(.white)
             } else {
                 Image(systemName: icon)
-                    .font(.system(size: iconPointSize, weight: .semibold))
+                    .font(.system(size: 19, weight: .regular))
                     .foregroundColor(tint)
                     .contentTransition(.symbolEffect(.replace.magic(fallback: .replace)))
             }
         }
-        .frame(width: diameter, height: diameter)
     }
 
-    @ViewBuilder
-    private func progressLabel(fraction: Double, paused: Bool) -> some View {
-        if style == .labeled {
-            labeledGlyph(tint: .white, active: true) {
-                ZStack {
-                    Circle()
-                        .stroke(Color.white.opacity(0.22), lineWidth: 2)
-                    Circle()
-                        .trim(from: 0, to: max(0.02, fraction))
-                        .stroke(
-                            Color.white.opacity(paused ? 0.55 : 1),
-                            style: StrokeStyle(lineWidth: 2, lineCap: .round)
-                        )
-                        .rotationEffect(.degrees(-90))
-                    progressCenter(fraction: fraction, paused: paused)
-                }
-                .frame(width: 21, height: 21)
+    private func progressLabel(record: DownloadRecord?, paused: Bool) -> some View {
+        let fraction = record?.progressFraction ?? 0
+        return labeledGlyph(record: record, active: true) {
+            ZStack {
+                Circle()
+                    .stroke(Color.white.opacity(0.22), lineWidth: 2)
+                Circle()
+                    .trim(from: 0, to: max(0.02, fraction))
+                    .stroke(
+                        Color.white.opacity(paused ? 0.55 : 1),
+                        style: StrokeStyle(lineWidth: 2, lineCap: .round)
+                    )
+                    .rotationEffect(.degrees(-90))
+                progressCenter(fraction: fraction, paused: paused)
             }
-        } else {
-            progressChrome(fraction: fraction, paused: paused)
+            .frame(width: 21, height: 21)
         }
-    }
-
-    private func progressChrome(fraction: Double, paused: Bool) -> some View {
-        ZStack {
-            Circle()
-                .fill(circleFill(active: false))
-                .overlay(Circle().stroke(Color.white.opacity(0.25), lineWidth: 1))
-            Circle()
-                .trim(from: 0, to: max(0.02, fraction))
-                .stroke(
-                    Color.white.opacity(paused ? 0.55 : 1),
-                    style: StrokeStyle(lineWidth: style == .regular ? 2.5 : 2, lineCap: .round)
-                )
-                .rotationEffect(.degrees(-90))
-                .padding(style == .regular ? 4 : 3)
-            progressCenter(fraction: fraction, paused: paused)
-        }
-        .frame(width: diameter, height: diameter)
     }
 
     @ViewBuilder
     private func progressCenter(fraction: Double, paused: Bool) -> some View {
         if paused {
             Image(systemName: "play.fill")
-                .font(.system(size: style == .regular ? 10 : 8, weight: .bold))
+                .font(.system(size: 8, weight: .bold))
                 .foregroundColor(.white)
         } else {
             Text("\(progressPercent(fraction))")
-                .font(.system(size: style == .compact ? 7 : 8, weight: .bold, design: .rounded))
+                .font(.system(size: 8, weight: .bold, design: .rounded))
                 .monospacedDigit()
                 .foregroundColor(.white)
         }
     }
 
-    private var progressAccessibilityValue: String {
+    private func progressAccessibilityValue(_ record: DownloadRecord?) -> String {
         "\(progressPercent(record?.progressFraction ?? 0)) percent"
     }
 

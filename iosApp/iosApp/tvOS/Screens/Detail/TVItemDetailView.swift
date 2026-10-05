@@ -28,8 +28,8 @@ struct TVItemDetailView: View {
     /// The next-up episode's catalog item. The hero reads its ratings when
     /// the playback details for that episode could not be loaded.
     @State private var nextUpCatalogDetail: ItemDetail?
-    /// Series owns one in-place episode selection. `nil` means the Show tab
-    /// and its suggested next episode are active.
+    /// Series owns one in-place episode selection. `nil` means the series
+    /// overview and its suggested next episode are active.
     @State private var activeSeriesEpisodeContentId: String?
     /// Bumped to move the episode row to `activeSeriesEpisodeContentId`
     /// after the player closes, including when the row holds focus.
@@ -37,13 +37,8 @@ struct TVItemDetailView: View {
     @State private var isPageVisible = false
     /// Set when this page starts playback, so it only acts on its own return.
     @State private var awaitsPlaybackReturn = false
-    @State private var isLoadingNextUpPlaybackDetail = false
-    @State private var didLoadNextUpPlaybackDetail = false
     @State private var carouselLoadFailed = false
     @State private var carouselRetryGeneration = 0
-    /// Serializes rapid season-tab intent before it reaches the async view
-    /// model. A superseded task must never begin after its replacement and
-    /// make an older season the selected one.
     /// Whether remote YouTube trailers should be presented, probed once per
     /// page appearance. Real Apple TVs require the YouTube app because tvOS
     /// has no browser fallback. The simulator deliberately presents the
@@ -70,9 +65,9 @@ struct TVItemDetailView: View {
 
     var body: some View {
         Group {
-            // Skip the spinner on cache hits — `detail != nil` means we
-            // already have something to paint and the `.task` below is
-            // refreshing it in the background.
+            // A resolved series entry shows the loading view until its task
+            // seeds the season. Otherwise cached detail paints at once while
+            // `.task` refreshes it.
             if !hasStartedDetailLoad, navigationContext?.seriesContentId == contentId {
                 TVItemDetailLoadingView(seed: seed)
             } else if let detail = viewModel.detail {
@@ -86,10 +81,7 @@ struct TVItemDetailView: View {
         .siloBackground()
         .siloNavigationTitleDisplayMode(.inline)
         .siloNavigationBarBackgroundHidden()
-        .personalStateNoticeAlert(Binding(
-            get: { viewModel.personalStateNotice },
-            set: { viewModel.personalStateNotice = $0 }
-        ))
+        .personalStateNoticeAlert($viewModel.personalStateNotice)
         .onAppear {
             isPageVisible = true
             Self.focusLogger.debug("itemDetail.appear contentId=\(contentId, privacy: .public) pathDepth=\(router.path.count, privacy: .public)")
@@ -144,8 +136,6 @@ struct TVItemDetailView: View {
             if !isReturning {
                 activeSeriesEpisodeContentId = entryContext?.episodeContentId
             }
-            isLoadingNextUpPlaybackDetail = false
-            didLoadNextUpPlaybackDetail = false
             if let seasonNumber = entryContext?.seasonNumber {
                 viewModel.prepareInitialSeriesSeason(
                     seasonNumber, seriesId: contentId
@@ -286,9 +276,9 @@ struct TVItemDetailView: View {
                 episodes: viewModel.episodes,
                 episodeWindow: viewModel.seriesEpisodeWindow,
                 carouselLoadFailed: carouselLoadFailed,
-                onLoadMoreEpisodes: { _ in
-                    // Neighbors already load as focus approaches. Repeated
-                    // edge presses must not cancel and restart that request.
+                onLoadMoreEpisodes: {
+                    // Retry only after a failure; focus reaching the boundary
+                    // card already requests neighbours.
                     if carouselLoadFailed { carouselRetryGeneration &+= 1 }
                 },
                 activeEpisodeContentId: activeSeriesEpisodeContentId,
@@ -576,10 +566,9 @@ struct TVItemDetailView: View {
     /// immediate quick Play safely falls back to server/device defaults.
     private func nextUpPlaybackFileId(
         resolvedFileId: Int?,
-        contentId: String? = nil
+        contentId: String
     ) -> Int? {
-        if let contentId,
-           nextUpPlaybackDetail?.contentId != contentId {
+        if nextUpPlaybackDetail?.contentId != contentId {
             return nil
         }
         if let resolvedFileId {
@@ -764,8 +753,6 @@ struct TVItemDetailView: View {
         guard let nextUp = seriesNextUpEpisode(for: detail) else {
             nextUpPlaybackDetail = nil
             nextUpCatalogDetail = nil
-            isLoadingNextUpPlaybackDetail = false
-            didLoadNextUpPlaybackDetail = false
             preferredNextUpFileId = nil
             preferredNextUpAudioTrackIndex = nil
             preferredNextUpSubtitleTrackIndex = nil
@@ -779,8 +766,6 @@ struct TVItemDetailView: View {
         let usableCached = cached?.versions?.isEmpty == false ? cached : nil
         nextUpPlaybackDetail = usableCached
         nextUpCatalogDetail = nil
-        isLoadingNextUpPlaybackDetail = true
-        didLoadNextUpPlaybackDetail = usableCached != nil
         preferredNextUpFileId = nil
         preferredNextUpAudioTrackIndex = nil
         preferredNextUpSubtitleTrackIndex = nil
@@ -800,10 +785,16 @@ struct TVItemDetailView: View {
             if activeSeriesEpisodeContentId != nil {
                 try await Task.sleep(for: .milliseconds(120))
             }
+            // The watch request doesn't depend on the catalog item; run both at once.
+            async let watchDetail = try? MetadataRequestPool.shared.watchDetail(
+                contentId: nextUp.contentId,
+                libraryId: libraryId
+            )
             let item = try await MetadataRequestPool.shared.itemDetail(contentId: nextUp.contentId, libraryId: libraryId)
             guard !Task.isCancelled else { return }
             nextUpCatalogDetail = item
-            let enriched = await enrichPlaybackMetadata(for: item, contentId: nextUp.contentId)
+            let watch = await watchDetail
+            let enriched = applyingPlaybackMetadata(watch, to: item, contentId: nextUp.contentId)
             guard !Task.isCancelled else { return }
             let resolved: ItemDetail?
             if let enriched, enriched.versions?.isEmpty == false {
@@ -823,15 +814,12 @@ struct TVItemDetailView: View {
                     usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
                 )
             }
-            didLoadNextUpPlaybackDetail = true
         } catch {
             guard !Task.isCancelled else { return }
             if usableCached == nil {
                 nextUpPlaybackDetail = nil
             }
-            didLoadNextUpPlaybackDetail = true
         }
-        isLoadingNextUpPlaybackDetail = false
 
         // Neighbor playback data is speculative. Keep it out of the selected
         // episode's critical path so its detail and artwork get first use of
@@ -946,7 +934,7 @@ struct TVItemDetailView: View {
                     seasons: viewModel.seasons, selected: selected, pages: viewModel.episodesBySeason
                 )
                 let edgeEpisodes = direction < 0 ? Array(sorted.suffix(3)) : Array(sorted.prefix(3))
-                PosterImageCache.prefetchCardArtwork(edgeEpisodes.compactMap {
+                PosterImageCache.prefetchArtworkData(edgeEpisodes.compactMap {
                     $0.stillUrl.flatMap(URL.init(string:))
                 })
                 if !sorted.isEmpty { break }
@@ -961,75 +949,82 @@ struct TVItemDetailView: View {
 
     private func enrichPlaybackMetadata(for item: ItemDetail, contentId: String) async -> ItemDetail? {
         guard item.type != "series" else { return item }
+        let watchDetail = try? await MetadataRequestPool.shared.watchDetail(contentId: contentId, libraryId: libraryId)
+        return applyingPlaybackMetadata(watchDetail, to: item, contentId: contentId)
+    }
 
-        do {
-            let watchDetail = try await MetadataRequestPool.shared.watchDetail(contentId: contentId, libraryId: libraryId)
-            ResponseCache.shared.set(watchDetail, for: CacheKey.itemWatchDetail(contentId, libraryId: libraryId))
-            return ItemDetail(
-                contentId: item.contentId,
-                type: item.type,
-                status: item.status,
-                title: item.title,
-                sortTitle: item.sortTitle,
-                originalTitle: item.originalTitle,
-                originalLanguage: item.originalLanguage,
-                showStatus: item.showStatus,
-                year: item.year,
-                overview: item.overview,
-                tagline: item.tagline,
-                runtime: item.runtime,
-                contentRating: item.contentRating,
-                genres: item.genres,
-                ratingImdb: item.ratingImdb,
-                ratingTmdb: item.ratingTmdb,
-                ratingRtCritic: item.ratingRtCritic,
-                ratingRtAudience: item.ratingRtAudience,
-                ratings: item.ratings,
-                imdbId: item.imdbId,
-                tmdbId: item.tmdbId,
-                tvdbId: item.tvdbId,
-                cast: item.cast,
-                crew: item.crew,
-                studios: item.studios,
-                networks: item.networks,
-                countries: item.countries,
-                releaseDate: item.releaseDate,
-                firstAirDate: item.firstAirDate,
-                lastAirDate: item.lastAirDate,
-                posterUrl: item.posterUrl,
-                posterThumbhash: item.posterThumbhash,
-                backdropUrl: item.backdropUrl,
-                backdropThumbhash: item.backdropThumbhash,
-                logoUrl: item.logoUrl,
-                seasonCount: item.seasonCount,
-                seriesId: item.seriesId,
-                seriesTitle: item.seriesTitle,
-                seasonNumber: item.seasonNumber,
-                episodeNumber: item.episodeNumber,
-                episodeCount: item.episodeCount,
-                airDate: item.airDate,
-                isSpecials: item.isSpecials,
-                userData: item.userData,
-                versions: watchDetail.versions,
-                playbackVariants: item.playbackVariants,
-                subtitles: watchDetail.subtitles,
-                intro: watchDetail.intro,
-                credits: watchDetail.credits,
-                effectiveSubtitleMode: watchDetail.effectiveSubtitleMode,
-                effectiveShowForcedSubtitles: watchDetail.effectiveShowForcedSubtitles,
-                effectiveSubtitleTrackSignature: watchDetail.effectiveSubtitleTrackSignature,
-                overlaySummary: item.overlaySummary,
-                audiobook: item.audiobook,
-                pendingTranslationLanguage: item.pendingTranslationLanguage,
-                // Catalog-only fields: the watch detail knows nothing about
-                // them, so they must be carried across or the trailers rail
-                // would disappear the moment enrichment succeeds.
-                videos: item.videos,
-                extras: item.extras
-            )
-        } catch {
-            return nil
-        }
+    /// The catalog item with the watch detail's playback fields; nil when the
+    /// watch request failed. Series items need no playback fields.
+    private func applyingPlaybackMetadata(
+        _ watchDetail: WatchDetail?,
+        to item: ItemDetail,
+        contentId: String
+    ) -> ItemDetail? {
+        guard item.type != "series" else { return item }
+        guard let watchDetail else { return nil }
+        ResponseCache.shared.set(watchDetail, for: CacheKey.itemWatchDetail(contentId, libraryId: libraryId))
+        return ItemDetail(
+            contentId: item.contentId,
+            type: item.type,
+            status: item.status,
+            title: item.title,
+            sortTitle: item.sortTitle,
+            originalTitle: item.originalTitle,
+            originalLanguage: item.originalLanguage,
+            showStatus: item.showStatus,
+            year: item.year,
+            overview: item.overview,
+            tagline: item.tagline,
+            runtime: item.runtime,
+            contentRating: item.contentRating,
+            genres: item.genres,
+            ratingImdb: item.ratingImdb,
+            ratingTmdb: item.ratingTmdb,
+            ratingRtCritic: item.ratingRtCritic,
+            ratingRtAudience: item.ratingRtAudience,
+            ratings: item.ratings,
+            imdbId: item.imdbId,
+            tmdbId: item.tmdbId,
+            tvdbId: item.tvdbId,
+            cast: item.cast,
+            crew: item.crew,
+            studios: item.studios,
+            networks: item.networks,
+            countries: item.countries,
+            releaseDate: item.releaseDate,
+            firstAirDate: item.firstAirDate,
+            lastAirDate: item.lastAirDate,
+            posterUrl: item.posterUrl,
+            posterThumbhash: item.posterThumbhash,
+            backdropUrl: item.backdropUrl,
+            backdropThumbhash: item.backdropThumbhash,
+            logoUrl: item.logoUrl,
+            seasonCount: item.seasonCount,
+            seriesId: item.seriesId,
+            seriesTitle: item.seriesTitle,
+            seasonNumber: item.seasonNumber,
+            episodeNumber: item.episodeNumber,
+            episodeCount: item.episodeCount,
+            airDate: item.airDate,
+            isSpecials: item.isSpecials,
+            userData: item.userData,
+            versions: watchDetail.versions,
+            playbackVariants: item.playbackVariants,
+            subtitles: watchDetail.subtitles,
+            intro: watchDetail.intro,
+            credits: watchDetail.credits,
+            effectiveSubtitleMode: watchDetail.effectiveSubtitleMode,
+            effectiveShowForcedSubtitles: watchDetail.effectiveShowForcedSubtitles,
+            effectiveSubtitleTrackSignature: watchDetail.effectiveSubtitleTrackSignature,
+            overlaySummary: item.overlaySummary,
+            audiobook: item.audiobook,
+            pendingTranslationLanguage: item.pendingTranslationLanguage,
+            // Catalog-only fields: the watch detail knows nothing about
+            // them, so they must be carried across or the trailers rail
+            // would disappear the moment enrichment succeeds.
+            videos: item.videos,
+            extras: item.extras
+        )
     }
 }
 

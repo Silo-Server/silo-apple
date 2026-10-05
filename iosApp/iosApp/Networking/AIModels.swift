@@ -1,7 +1,3 @@
-//
-//  AIModels.swift
-//  Silo (iOS + tvOS)
-//
 //  Types for silo-server's two AI features: metadata translation
 //  (overviews/taglines localized into the viewer's preferred language,
 //  plus an on-demand "translate this description" path) and subtitle
@@ -22,7 +18,7 @@ import Foundation
 /// Lifecycle of an AI subtitle job. Unknown wire values decode to
 /// `.pending` so a server that introduces a new transient state never
 /// trips the poller into a false terminal stop.
-enum AIJobStatus: String, Decodable {
+enum AIJobStatus: String, Decodable, FallbackDecodable {
     case pending
     case running
     case completed
@@ -35,10 +31,7 @@ enum AIJobStatus: String, Decodable {
         self != .pending && self != .running
     }
 
-    init(from decoder: Decoder) throws {
-        let raw = try decoder.singleValueContainer().decode(String.self)
-        self = AIJobStatus(rawValue: raw) ?? .pending
-    }
+    static var fallback: Self { .pending }
 }
 
 // MARK: - Metadata AI
@@ -53,15 +46,12 @@ struct MetadataAIStatus {
     /// How the item-detail "translate this description" affordance behaves.
     /// Unknown wire values decode to `.off` (feature hidden) so an older or
     /// future server degrades silently.
-    enum OnViewMode: String, Decodable {
+    enum OnViewMode: String, Decodable, FallbackDecodable {
         case off
         case button
         case auto
 
-        init(from decoder: Decoder) throws {
-            let raw = try decoder.singleValueContainer().decode(String.self)
-            self = OnViewMode(rawValue: raw) ?? .off
-        }
+        static var fallback: Self { .off }
     }
 }
 

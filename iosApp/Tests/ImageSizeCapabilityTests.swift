@@ -73,18 +73,16 @@ final class ImageSizeCapabilityTests: XCTestCase {
     // MARK: - Query injection
 
     func testQueryEntriesAddLargeWhenSupportedOnTV() throws {
-        let entries = ImageSizeCapability.queryEntries(
-            capability: try decodedCapability(),
-            platformPrefersLargeImages: true
+        let entries = ImageSizeSelection.queryEntries(capability: try decodedCapability(),
+            prefersLargeImages: true
         )
         XCTAssertEqual(entries, ["image_size": "large"])
     }
 
     /// iOS and macOS must keep sending byte-identical requests.
     func testQueryEntriesEmptyOffTV() throws {
-        let entries = ImageSizeCapability.queryEntries(
-            capability: try decodedCapability(),
-            platformPrefersLargeImages: false
+        let entries = ImageSizeSelection.queryEntries(capability: try decodedCapability(),
+            prefersLargeImages: false
         )
         XCTAssertTrue(entries.isEmpty)
     }
@@ -92,9 +90,8 @@ final class ImageSizeCapabilityTests: XCTestCase {
     /// Older server: the probe 404s, the capability stays nil, and the
     /// client sends nothing rather than risking a 400.
     func testQueryEntriesEmptyWithoutCapability() {
-        let entries = ImageSizeCapability.queryEntries(
-            capability: nil,
-            platformPrefersLargeImages: true
+        let entries = ImageSizeSelection.queryEntries(capability: nil,
+            prefersLargeImages: true
         )
         XCTAssertTrue(entries.isEmpty)
     }
@@ -104,9 +101,8 @@ final class ImageSizeCapabilityTests: XCTestCase {
     func testQueryEntriesEmptyUnlessCapabilityIsAvailable() {
         for state in ["disabled", "not_configured", "unsupported", "future_state"] {
             XCTAssertTrue(
-                ImageSizeCapability.queryEntries(
-                    capability: capability(state: state),
-                    platformPrefersLargeImages: true
+                ImageSizeSelection.queryEntries(capability: capability(state: state),
+                    prefersLargeImages: true
                 ).isEmpty,
                 state
             )
@@ -117,9 +113,8 @@ final class ImageSizeCapabilityTests: XCTestCase {
     /// because an unadvertised value is a 400.
     func testQueryEntriesEmptyWhenLargeNotAdvertised() {
         XCTAssertTrue(
-            ImageSizeCapability.queryEntries(
-                capability: capability(sizes: ["small", "medium"]),
-                platformPrefersLargeImages: true
+            ImageSizeSelection.queryEntries(capability: capability(sizes: ["small", "medium"]),
+                prefersLargeImages: true
             ).isEmpty
         )
     }
@@ -127,9 +122,8 @@ final class ImageSizeCapabilityTests: XCTestCase {
     /// The parameter name comes from the payload, not a hardcoded string.
     func testQueryEntriesUseServerSuppliedParamName() {
         XCTAssertEqual(
-            ImageSizeCapability.queryEntries(
-                capability: capability(param: "img_size", sizes: ["large"]),
-                platformPrefersLargeImages: true
+            ImageSizeSelection.queryEntries(capability: capability(param: "img_size", sizes: ["large"]),
+                prefersLargeImages: true
             ),
             ["img_size": "large"]
         )
@@ -145,7 +139,53 @@ final class ImageSizeCapabilityTests: XCTestCase {
         capability.reset()
         XCTAssertNil(capability.capability)
         XCTAssertTrue(capability.requestQuery.isEmpty)
-        XCTAssertFalse(capability.isAvailable)
+    }
+
+    func testImageRequestsOffTVNeverWaitForTheProbe() async throws {
+        let stub = ImageSizeCapabilityFetchStub(response: try decodedCapability())
+        let capability = ImageSizeCapability(platformPrefersLargeImages: false) { try await stub.fetch() }
+
+        let query = await capability.requestQueryForImageRequest()
+
+        XCTAssertTrue(query.isEmpty)
+        let callCount = await stub.callCount
+        XCTAssertEqual(callCount, 0)
+    }
+
+    func testRememberedCapabilityServesImageRequestsWithoutProbing() async throws {
+        let stored = try decodedCapability()
+        let memory = ImageSizeCapability.Memory(
+            activeServerID: { "server-a" },
+            load: { $0 == "server-a" ? stored : nil },
+            save: { _, _ in }
+        )
+        let stub = ImageSizeCapabilityFetchStub(response: stored)
+        let capability = ImageSizeCapability(platformPrefersLargeImages: true, memory: memory) {
+            try await stub.fetch()
+        }
+
+        let query = await capability.requestQueryForImageRequest()
+
+        XCTAssertEqual(query, ["image_size": "large"])
+        let callCount = await stub.callCount
+        XCTAssertEqual(callCount, 0)
+    }
+
+    func testSuccessfulProbeIsRememberedForItsServer() async throws {
+        let response = try decodedCapability()
+        let saved = SavedCapabilities()
+        let memory = ImageSizeCapability.Memory(
+            activeServerID: { "server-b" },
+            load: { _ in nil },
+            save: { serverID, value in saved.record(serverID, value) }
+        )
+        let capability = ImageSizeCapability(platformPrefersLargeImages: true, memory: memory) {
+            response
+        }
+
+        await capability.refresh()
+
+        XCTAssertEqual(saved.values["server-b"], response)
     }
 
     func testSuccessfulRefreshIsCachedForSession() async throws {
@@ -240,5 +280,16 @@ private actor ImageSizeCapabilityFetchStub {
             throw URLError(.cannotConnectToHost)
         }
         return response
+    }
+}
+
+private final class SavedCapabilities: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [String: ImageSizeCapabilityResponse] = [:]
+
+    var values: [String: ImageSizeCapabilityResponse] { lock.withLock { storage } }
+
+    func record(_ serverID: String, _ value: ImageSizeCapabilityResponse) {
+        lock.withLock { storage[serverID] = value }
     }
 }

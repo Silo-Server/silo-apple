@@ -1,8 +1,6 @@
 import Foundation
 
-// Wire-only response and read-provenance types that `APIv2Client` returns and
-// that have no v1 counterpart on this branch. Each is a plain value; the
-// consumers that project them into screens arrive with the gate 3 surfaces.
+// Wire-only response and read-provenance types that `APIv2Client` returns.
 
 // MARK: Onboarding
 
@@ -45,6 +43,5 @@ struct APIv2NotificationSyncItem: Decodable, Equatable, Identifiable {
     let type: String?
     let profileId: String
     let createdAt: Date?
-    let readAt: Date?
 }
 #endif

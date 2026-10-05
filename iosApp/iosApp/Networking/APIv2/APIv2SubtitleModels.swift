@@ -5,9 +5,7 @@ import Foundation
 /// `GET /api/v2/subtitles/providers/status`. Search is usable only when the
 /// viewer is `allowed`, the state is `available`, and a provider is enabled.
 struct APIv2SubtitleProviderStatus: Decodable {
-    let schemaVersion: Int
     let enabled: Bool
-    let providers: [String]
     let revision: String
     let state: String
     let allowed: Bool

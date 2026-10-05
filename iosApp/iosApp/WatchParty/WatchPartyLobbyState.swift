@@ -148,6 +148,13 @@ enum WatchPartyLobbyPolicy {
         return "\(scheme)://\(host):\(port)/\(path)"
     }
 
+    /// A server's path prefix in `/a/b` form (empty at the root), ready for
+    /// an API or web path to be appended.
+    static func basePath(_ percentEncodedPath: String) -> String {
+        percentEncodedPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            .split(separator: "/").reduce("") { $0 + "/" + $1 }
+    }
+
     static func inviteURL(path: String, serverURL: String) -> URL? {
         guard var invitation = URLComponents(string: path) else { return nil }
         if invitation.scheme == nil && invitation.host == nil {
@@ -155,8 +162,7 @@ enum WatchPartyLobbyPolicy {
             invitation.scheme = server.scheme
             invitation.host = server.host
             invitation.port = server.port
-            invitation.percentEncodedPath = server.percentEncodedPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-                .split(separator: "/").reduce("") { $0 + "/" + $1 } + "/rooms/join"
+            invitation.percentEncodedPath = basePath(server.percentEncodedPath) + "/rooms/join"
         }
         guard let url = invitation.url, let parsed = WatchPartyInvitation(url: url),
               sameServer(parsed.serverURL, serverURL) else { return nil }

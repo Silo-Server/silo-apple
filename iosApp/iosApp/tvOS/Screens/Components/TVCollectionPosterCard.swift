@@ -50,7 +50,7 @@ struct TVCollectionPosterCard: View {
             .buttonStyle(.card)
             .focused($isFocused)
             .applyDefaultFocusIfNeeded(prefersDefaultFocus, namespace: defaultFocusNamespace)
-            .applyCollectionFocusBinding(focusBinding, contentId: focusContentId)
+            .tvFocused(focusBinding, equals: focusContentId)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(accessibilityLabel)
             .accessibilityAddTraits(.isButton)
@@ -62,10 +62,10 @@ struct TVCollectionPosterCard: View {
     private var poster: some View {
         Group {
             if let url = collection.posterUrl, !url.isEmpty {
-                CachedAsyncImage(
+                AsyncImageView(
                     url: url,
-                    targetSize: CGSize(width: resolvedCardWidth, height: cardHeight),
                     thumbhash: collection.posterThumbhash,
+                    targetSize: CGSize(width: resolvedCardWidth, height: cardHeight),
                     contentMode: .fill
                 )
             } else {
@@ -77,8 +77,7 @@ struct TVCollectionPosterCard: View {
     }
 
     /// Art-less fallback: a deterministic gradient + stack glyph so the tile
-    /// still reads as a collection. Same derivation the card used before the
-    /// poster redesign, so missing-art collections look consistent.
+    /// still reads as a collection.
     private var placeholder: some View {
         ZStack {
             LinearGradient(
@@ -155,26 +154,11 @@ struct TVCollectionPosterCard: View {
     }
 
     /// Stable hue for the art-less placeholder, derived from the id so a
-    /// collection's fallback tile looks the same each time it appears.
+    /// collection's fallback tile looks the same on every launch. FNV-1a,
+    /// because `Hasher` is randomly seeded per process.
     private var hue: Double {
-        var hasher = Hasher()
-        hasher.combine(collection.id)
-        let raw = UInt(bitPattern: hasher.finalize())
-        return Double(raw % 360) / 360.0
-    }
-}
-
-private extension View {
-    /// Binds the inner button to the grid's `@FocusState` so the grid can route
-    /// d-pad-entry default focus onto this specific card. No-op when no binding
-    /// is supplied. Mirrors `TVMediaCard.applyRailFocus`.
-    @ViewBuilder
-    func applyCollectionFocusBinding(_ binding: FocusState<String?>.Binding?, contentId: String?) -> some View {
-        if let binding, let contentId {
-            self.focused(binding, equals: contentId)
-        } else {
-            self
-        }
+        let hash = collection.id.utf8.reduce(UInt32(2_166_136_261)) { ($0 ^ UInt32($1)) &* 16_777_619 }
+        return Double(hash % 360) / 360.0
     }
 }
 #endif

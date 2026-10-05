@@ -1,6 +1,6 @@
 import Foundation
 
-/// Encodes/decodes `CardOverlayPrefs` to/from the JSON document the server
+/// Decodes `CardOverlayPrefs` from the JSON document the server
 /// stores under the `ui.card_overlays` contract setting. The shape must
 /// stay compatible with the web's `parseOverlayPrefs` in
 /// `web/src/lib/overlays/schema.ts` and the contract schema
@@ -8,9 +8,7 @@ import Foundation
 /// share the setting.
 enum OverlaySchema {
 
-    /// Build the default prefs document from the registry. Used the
-    /// first time a user opens overlay settings, when the server
-    /// returns no value, and when JSON parsing fails.
+    /// Registry defaults, used when the server has no value or parsing fails.
     static func buildDefaults() -> CardOverlayPrefs {
         var items: [OverlayId: OverlayItemConfig] = [:]
         for def in OverlayRegistry.all {
@@ -42,32 +40,16 @@ enum OverlaySchema {
               let dict = any as? [String: Any] else {
             return buildDefaults()
         }
-        if looksLikeV2(dict) {
+        if isV2(dict) {
             return parseV2(dict)
         }
         return migrateFromV1(dict)
     }
 
-    static func serialize(_ prefs: CardOverlayPrefs) -> String {
-        let dict = toDict(prefs)
-        // Sorted keys keep the wire format stable so the user setting
-        // doesn't churn the server-side change log on every save.
-        let options: JSONSerialization.WritingOptions = [.sortedKeys, .withoutEscapingSlashes]
-        guard let data = try? JSONSerialization.data(withJSONObject: dict, options: options),
-              let str = String(data: data, encoding: .utf8) else {
-            return "{}"
-        }
-        return str
-    }
-
     // MARK: - V2
 
-    /// Strict version check: a V2 document MUST carry `version: 2`. Earlier
-    /// drafts relied on a heuristic ("looks v2 if it has `preset` and
-    /// `items`"), but that would misclassify a future V3 schema that
-    /// happens to keep those field names. V1 documents have no `version`
-    /// key at all, so they fall through to `migrateFromV1`.
-    private static func looksLikeV2(_ dict: [String: Any]) -> Bool {
+    /// V2 documents carry `version: 2`; anything else goes through `migrateFromV1`.
+    private static func isV2(_ dict: [String: Any]) -> Bool {
         (dict["version"] as? Int) == 2
     }
 
@@ -135,26 +117,5 @@ enum OverlaySchema {
 
     private static func isHexColor(_ value: String) -> Bool {
         value.range(of: #"^#[0-9a-fA-F]{6}$"#, options: .regularExpression) != nil
-    }
-
-    // MARK: - Encoding
-
-    private static func toDict(_ prefs: CardOverlayPrefs) -> [String: Any] {
-        var items: [String: Any] = [:]
-        for (id, cfg) in prefs.items {
-            var entry: [String: Any] = [
-                "enabled": cfg.enabled,
-                "position": cfg.position.rawValue,
-            ]
-            if let accent = cfg.accentColor { entry["accentColor"] = accent }
-            if let showIcon = cfg.showIcon { entry["showIcon"] = showIcon }
-            items[id.rawValue] = entry
-        }
-        return [
-            "version": prefs.version,
-            "preset": prefs.preset.rawValue,
-            "order": prefs.order.map { $0.rawValue },
-            "items": items,
-        ]
     }
 }

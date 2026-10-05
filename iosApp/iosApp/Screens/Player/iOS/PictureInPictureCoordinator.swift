@@ -41,7 +41,9 @@ final class PictureInPictureCoordinator {
 
     /// True while PiP owns, or is about to own, playback.
     var isEngaged: Bool { isActive || isTransitioning }
-    var isSupported: Bool { AVPictureInPictureController.isPictureInPictureSupported() }
+    var isSupported: Bool { Self.deviceSupportsPictureInPicture }
+    /// A device capability, so it is read once rather than on every view update.
+    private static let deviceSupportsPictureInPicture = AVPictureInPictureController.isPictureInPictureSupported()
 
     /// Why a Picture in Picture start did not happen, for a host that wants to
     /// tell the user instead of leaving a tapped button looking inert.
@@ -591,8 +593,7 @@ final class PictureInPictureCoordinator {
     fileprivate func handleRestoreRequested(completion: @escaping (Bool) -> Void) {
         isRestoringUserInterface = false
         guard let onRestoreUserInterface else {
-            // Nobody owns the player presentation. Answering `true` here is what
-            // left playback running with no UI and no session teardown.
+            // Without an owner nothing can come back, so report failure.
             Self.logger.error("PiP restore requested with no presentation owner")
             completion(false)
             return

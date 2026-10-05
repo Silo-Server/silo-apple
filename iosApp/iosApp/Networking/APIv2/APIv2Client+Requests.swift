@@ -54,37 +54,9 @@ extension APIv2Client {
 
     // MARK: listMyRequests
 
-    /// Follows `page.next_cursor` under one captured owner. A failed page, a
-    /// missing or repeated cursor, or the 100-page bound fails the whole load
-    /// instead of returning a partial list.
+    /// The acting profile's own requests, up to 100 pages (see `requestList`).
     func myRequests() async throws -> [MediaRequest] {
-        guard let auth = await tokenStore.captureOrdinaryRequestAuth(),
-              let profile = auth.profileId else { throw HTTPError.requestIdentityChanged }
-        let identity = Self.requestIdentity(auth, profile: profile)
-        var records: [MediaRequest] = []
-        var cursor: String?
-        var seen: Set<String> = []
-        for _ in 0..<100 {
-            try await gate()
-            var query = ["limit": "50"]
-            if let cursor { query["cursor"] = cursor }
-            let requestQuery = query
-            let raw = try await tokenStore.withOwnerFence(auth) {
-                try await mapErrors {
-                    try await http.requestData(method: "GET", path: "/api/v2/requests/mine",
-                        query: requestQuery, requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
-                }
-            }
-            guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
-            let response = try HTTPClient.makeJSONDecoder().decode(APIv2RequestsPage.self, from: raw.data)
-            records.append(contentsOf: response.items)
-            guard let page = response.page, page.hasMore else { return records }
-            guard let next = page.nextCursor, !next.isEmpty, seen.insert(next).inserted else {
-                throw APIv2Error.incompleteRequestList
-            }
-            cursor = next
-        }
-        throw APIv2Error.incompleteRequestList
+        try await requestList(path: "/api/v2/requests/mine", filters: [:], maxPages: 100)
     }
 
     // MARK: cancelRequest (non_retryable)
@@ -103,11 +75,8 @@ extension APIv2Client {
         try await requestsCall("GET", path: "/api/v2/admin/requests/capabilities", status: 200)
     }
 
-    /// Every request matching the filter, across all users, newest first.
-    /// Like `myRequests()`: every page runs under the one owner captured at
-    /// the start, and a failed page, a missing or repeated cursor, or the
-    /// page bound fails the whole load instead of returning a partial list.
-    /// `tmdbId` narrows the list to one title through `q`, which also
+    /// Every request matching the filter, across all users, newest first, up
+    /// to 40 pages (see `requestList`). `tmdbId` narrows the list to one title through `q`, which also
     /// matches titles containing the number, so callers still match the id.
     func adminRequests(
         status: RequestStatus?,
@@ -115,24 +84,33 @@ extension APIv2Client {
         mediaType: RequestMediaType? = nil,
         tmdbId: Int? = nil
     ) async throws -> [MediaRequest] {
+        var filters: [String: String] = [:]
+        if let status { filters["status"] = status.rawValue }
+        if let outcome { filters["outcome"] = outcome.rawValue }
+        if let mediaType, mediaType == .movie || mediaType == .series { filters["media_type"] = mediaType.rawValue }
+        if let tmdbId { filters["q"] = String(tmdbId) }
+        return try await requestList(path: "/api/v2/admin/requests", filters: filters, maxPages: 40)
+    }
+
+    /// Follows `page.next_cursor` under one owner captured at the start. A
+    /// failed page, a missing or repeated cursor, or the page bound fails the
+    /// whole load instead of returning a partial list.
+    private func requestList(path: String, filters: [String: String], maxPages: Int) async throws -> [MediaRequest] {
         guard let auth = await tokenStore.captureOrdinaryRequestAuth(),
               let profile = auth.profileId else { throw HTTPError.requestIdentityChanged }
         let identity = Self.requestIdentity(auth, profile: profile)
         var records: [MediaRequest] = []
         var cursor: String?
         var seen: Set<String> = []
-        for _ in 0..<40 {
+        for _ in 0..<maxPages {
             try await gate()
-            var query = ["limit": "50"]
-            if let status { query["status"] = status.rawValue }
-            if let outcome { query["outcome"] = outcome.rawValue }
-            if let mediaType, mediaType == .movie || mediaType == .series { query["media_type"] = mediaType.rawValue }
-            if let tmdbId { query["q"] = String(tmdbId) }
+            var query = filters
+            query["limit"] = "50"
             if let cursor { query["cursor"] = cursor }
             let requestQuery = query
             let raw = try await tokenStore.withOwnerFence(auth) {
                 try await mapErrors {
-                    try await http.requestData(method: "GET", path: "/api/v2/admin/requests",
+                    try await http.requestData(method: "GET", path: path,
                         query: requestQuery, requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
                 }
             }

@@ -79,7 +79,7 @@ final class MediaAuthorizationPlaybackTests: XCTestCase {
             loadCompleted = true
         }
         defer { load.cancel() }
-        guard await waitUntil(timeout: 20, { loadCompleted }) else {
+        guard await eventually(timeout: .seconds(20), { loadCompleted }) else {
             return XCTFail("Aether load did not complete within 20 seconds. \(origin.snapshot().description)")
         }
         if let loadError { throw loadError }
@@ -92,11 +92,11 @@ final class MediaAuthorizationPlaybackTests: XCTestCase {
         // The native HLS load returns before AVFoundation has decoded its
         // initial buffer. Starting at rate 1 with waiting disabled before
         // readiness can immediately exhaust an empty buffer on a cold boot.
-        guard await waitUntil(timeout: 10, { item.status == .readyToPlay }) else {
+        guard await eventually(timeout: .seconds(10), { item.status == .readyToPlay }) else {
             return XCTFail("Synthetic HLS item never became ready. \(diagnostics(player, origin: origin))")
         }
         engine.selectSubtitleTrack(index: subtitleID)
-        let initialCues = await waitUntil(timeout: 5) { !engine.isLoadingSubtitles && !engine.subtitleCues.isEmpty }
+        let initialCues = await eventually(timeout: .seconds(5)) { !engine.isLoadingSubtitles && !engine.subtitleCues.isEmpty }
         XCTAssertTrue(initialCues, "The initial ASS selection must succeed before rotation")
         engine.clearSubtitle()
         // This is a media-authorization test, independent of audio rendering.
@@ -108,7 +108,7 @@ final class MediaAuthorizationPlaybackTests: XCTestCase {
         player.automaticallyWaitsToMinimizeStalling = false
         engine.play()
 
-        guard await waitUntil(timeout: 15, {
+        guard await eventually(timeout: .seconds(15), {
             player.currentTime().seconds > 0.25 && origin.snapshot().pendingSegments > 0
         }) else {
             return XCTFail("Synthetic HLS must play while a later request waits at the origin. \(diagnostics(player, origin: origin))")
@@ -144,10 +144,13 @@ final class MediaAuthorizationPlaybackTests: XCTestCase {
             acceptingPreviouslyIssuedRequests: rotation == .progressRequest
         )
         var retainedPlayerAndItem = true
-        let advanced = await waitUntil(timeout: 18) {
+        // Past the gate by more than two segments: playback is running on
+        // media fetched after the release.
+        let advancedPast = Double(RotatingMediaOrigin.firstGatedSegment) + 2.5
+        let advanced = await eventually(timeout: .seconds(18)) {
             retainedPlayerAndItem = retainedPlayerAndItem
                 && engine.currentAVPlayer === player && player.currentItem === item
-            return player.currentTime().seconds > 8.5 && player.rate > 0
+            return player.currentTime().seconds > advancedPast && player.rate > 0
                 && origin.snapshot().acceptedLaterSegments > 0
         }
         let after = origin.snapshot()
@@ -161,7 +164,7 @@ final class MediaAuthorizationPlaybackTests: XCTestCase {
         add(attachment)
 
         XCTAssertTrue(retainedPlayerAndItem, "Auth changes must preserve AVPlayer and AVPlayerItem identity")
-        XCTAssertTrue(advanced, "Playback must advance past the six-second pre-rotation buffer on the same item. \(evidence)")
+        XCTAssertTrue(advanced, "Playback must advance past the pre-rotation buffer on the same item. \(evidence)")
         XCTAssertEqual(auth.stub.requests.filter { $0.path == Self.refreshPath }.count, rotation == .none ? 0 : 1,
             "An expired bearer must use exactly one shared HTTPClient refresh")
         if rotation != .none {
@@ -189,10 +192,10 @@ final class MediaAuthorizationPlaybackTests: XCTestCase {
         }
 
         engine.selectSubtitleTrack(index: subtitleID)
-        let hasCues = await waitUntil(timeout: 5) { !engine.isLoadingSubtitles && !engine.subtitleCues.isEmpty }
+        let hasCues = await eventually(timeout: .seconds(5)) { !engine.isLoadingSubtitles && !engine.subtitleCues.isEmpty }
         XCTAssertTrue(hasCues, "A registered ASS track must download with the current bearer after rotation. \(origin.snapshot().description)")
         await subtitles.render(size: CGSize(width: 320, height: 180), scale: 1, delaySeconds: 0)
-        let fontsFinished = await waitUntil(timeout: 5) { !subtitles.isLoadingFonts }
+        let fontsFinished = await eventually(timeout: .seconds(5)) { !subtitles.isLoadingFonts }
         XCTAssertTrue(fontsFinished)
         XCTAssertNil(subtitles.failureMessage)
         XCTAssertTrue(origin.snapshot().requests.contains { $0.path == RotatingMediaOrigin.fontPath && $0.status == 200 })
@@ -206,7 +209,7 @@ final class MediaAuthorizationPlaybackTests: XCTestCase {
             httpRequestAuthorization: spec.subtitleRequestAuthorization(for: lateURL), formatHint: "ass"
         ), appTrackID: lateAppID, fontRequest: fontRequest)
         controller.selectSecondarySubtitleTrack(id: lateAppID)
-        let secondaryCues = await waitUntil(timeout: 5) { !engine.secondarySubtitleCues.isEmpty }
+        let secondaryCues = await eventually(timeout: .seconds(5)) { !engine.secondarySubtitleCues.isEmpty }
         XCTAssertTrue(secondaryCues, "A subtitle registered after rotation must use the current bearer")
         XCTAssertEqual(Array(engine.subtitleTracks.map(\.id).prefix(originalTrackIDs.count)), originalTrackIDs)
         XCTAssertTrue(engine.currentAVPlayer === player && player.currentItem === item)
@@ -286,15 +289,6 @@ final class MediaAuthorizationPlaybackTests: XCTestCase {
         stub.reply(path: Self.progressPath, 204, "")
         return AuthorizationHarness(store: store, http: HTTPClient(session: stub.makeSession(), tokenStore: store),
                                     stub: stub, owner: try XCTUnwrap(captured), serverURL: serverURL)
-    }
-
-    private func waitUntil(timeout: TimeInterval, _ predicate: () -> Bool) async -> Bool {
-        let deadline = ContinuousClock.now + .milliseconds(Int(timeout * 1_000))
-        while !predicate(), ContinuousClock.now < deadline {
-            do { try await Task.sleep(for: .milliseconds(50)) }
-            catch { return false }
-        }
-        return predicate()
     }
 
     private func diagnostics(_ player: AVPlayer, origin: RotatingMediaOrigin) -> String {

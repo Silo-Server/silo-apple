@@ -82,9 +82,7 @@ enum OfflinePlaybackBuilder {
                 duration: manifest.durationSeconds
             )
         )
-        let posterFileURL = record.posterFilename.flatMap {
-            manager.absoluteFileURL(for: record, filename: $0)
-        }
+        let posterFileURL = manager.posterImageURL(for: record)
         return OfflinePreparedPlayback(
             prepared: prepared,
             downloadId: record.id,

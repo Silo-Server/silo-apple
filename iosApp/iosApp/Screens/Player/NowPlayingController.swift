@@ -1,6 +1,7 @@
 #if os(iOS)
 import Foundation
 import MediaPlayer
+import Nuke
 import OSLog
 import UIKit
 
@@ -12,6 +13,7 @@ import UIKit
 ///
 /// Single ownership: the SiloControl client owns one instance and attaches it
 /// only for the lifetime of a remote-media session.
+@MainActor
 final class NowPlayingController {
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
@@ -98,10 +100,6 @@ final class NowPlayingController {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
 
-    func setPreferredSkipInterval(_ seconds: TimeInterval) {
-        setPreferredSkipIntervals(backward: seconds, forward: seconds)
-    }
-
     func setPreferredSkipIntervals(backward: TimeInterval, forward: TimeInterval) {
         preferredSkipIntervals = SkipIntervals(
             backward: max(1, backward),
@@ -151,9 +149,10 @@ final class NowPlayingController {
 
     /// Fetch and publish poster artwork for the active item. Idempotent for
     /// the same URL — repeated calls with an unchanged URL no-op rather than
-    /// re-fetching. Pass `nil` to clear the artwork field. Fetch happens on
-    /// a background `URLSession.shared` data task; failures are logged and
-    /// leave the existing artwork (if any) unchanged.
+    /// re-fetching. Pass `nil` to clear the artwork field. The fetch goes
+    /// through the shared Nuke pipeline, so a poster already in its disk
+    /// cache is not downloaded again; failures are logged and leave the
+    /// existing artwork (if any) unchanged.
     func setArtworkURL(_ url: URL?) {
         guard isActive else { return }
         if currentArtworkURL == url {
@@ -173,24 +172,17 @@ final class NowPlayingController {
 
     private func fetchAndApplyArtwork(url: URL) async {
         do {
-            let (data, response) = try await URLSession.shared.data(from: url)
+            // No memory-cache write: playback keeps decoded-image memory low,
+            // and the published artwork already holds this image.
+            let image = try await ImagePipeline.shared.image(
+                for: ImageRequest(url: url, options: [.disableMemoryCacheWrites])
+            )
             try Task.checkCancellation()
-            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                Self.logger.warning(
-                    "Artwork fetch HTTP \(http.statusCode)"
-                )
-                return
-            }
-            guard let image = UIImage(data: data) else {
-                Self.logger.warning("Artwork decode failed")
-                return
-            }
-            await MainActor.run { [weak self] in
-                guard let self, self.isActive else { return }
-                guard self.currentArtworkURL == url else { return }
-                self.applyArtwork(image)
-            }
+            guard isActive, currentArtworkURL == url else { return }
+            applyArtwork(image)
         } catch is CancellationError {
+            return
+        } catch ImagePipeline.Error.cancelled {
             return
         } catch {
             Self.logger.warning(

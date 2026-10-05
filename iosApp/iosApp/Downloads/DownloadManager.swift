@@ -39,21 +39,16 @@ enum DownloadError: LocalizedError {
 /// registry, the background transfer pipeline, series-monitoring sync, and
 /// offline progress reconciliation.
 ///
-/// Concurrency model (the chosen hybrid): this is a single `@MainActor`
-/// `@Observable` coordinator the UI reads directly, with all disk I/O
-/// delegated to the `DownloadStore` actor and all media transfers to the
-/// `DownloadSessionDelegate`'s background `URLSession`. The in-memory
-/// `file` blob is the source of truth; every mutation persists through the
-/// store actor.
+/// Concurrency: one `@MainActor` `@Observable` coordinator the UI reads
+/// directly. Disk I/O goes through the `DownloadStore` actor and transfers
+/// through `DownloadSessionDelegate`'s background `URLSession`. `file` is the
+/// source of truth; `persist()` saves snapshots of it in order.
 @Observable
 @MainActor
 final class DownloadManager {
     static let shared = DownloadManager()
 
-    private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
-        category: "Downloads"
-    )
+    private static let logger = Logger.downloads
 
     /// Records fetching their manifest at once. Running transfers are capped
     /// separately, by the Simultaneous Downloads setting.
@@ -62,8 +57,8 @@ final class DownloadManager {
     /// Bounds one flush at 10,000 queued items (100 per batch).
     private static let maxProgressBatchesPerFlush = 100
 
-    /// In-memory persisted blob. `private(set)` so the `@Observable` macro
-    /// tracks reads of its derived accessors below.
+    /// In-memory store for the active scope. Read by the AutoDownload
+    /// extension; written only here.
     private(set) var file: DownloadStoreFile = .empty {
         didSet {
             rebuildDownloadedIndex()
@@ -91,8 +86,13 @@ final class DownloadManager {
     private var scopeLoadProfileId = ""
 
     private let sessionDelegate = DownloadSessionDelegate()
+    /// Set when iOS relaunches the app to deliver background events; called
+    /// once `allEventsDelivered` is processed.
+    @ObservationIgnored private var backgroundCompletionHandler: (() -> Void)?
     private var intentionalCancels: Set<Int> = []
     private var pollTask: Task<Void, Never>?
+    /// Identifies the loop `pollTask` holds.
+    @ObservationIgnored private var pollToken: UUID?
     private var lastProgressPersist = Date.distantPast
     /// Session events that arrive before the first scope activation loads the
     /// persisted registry (a background relaunch replays buffered delegate
@@ -140,7 +140,7 @@ final class DownloadManager {
     /// request per 200 entries of the profile's whole history (about 70 for a
     /// long one). Runs closer together than this reuse the last read unless a
     /// new download or queued upload needs an item it did not cover.
-    private static let watchStateReadInterval: TimeInterval = 10 * 60
+    nonisolated private static let watchStateReadInterval: TimeInterval = 10 * 60
     /// Claimed offline progress whose batch provably never reached the
     /// server, keyed by the scope that claimed it, when the flush lost its
     /// scope before it could resolve them. The store file is updated too;
@@ -148,8 +148,8 @@ final class DownloadManager {
     /// and cleared when the scope's store is next installed.
     private var releasedProgressClaims: [String: Set<UUID>] = [:]
     /// Cached scope storage usage; refreshed off the MainActor (a filesystem
-    /// walk) so SwiftUI bodies reading `totalBytesUsed` don't block.
-    private(set) var storageBytesUsed: Int64 = 0
+    /// walk) so SwiftUI bodies reading it don't block.
+    private(set) var totalBytesUsed: Int64 = 0
     /// Smoothed transfer rate (bytes/sec) per downloading record, derived
     /// from progress deltas so the UI never needs its own timer competing
     /// with the `@Observable` update path.
@@ -217,8 +217,7 @@ final class DownloadManager {
 
     private init() {
         // Drain background-session events for the lifetime of the app.
-        Task { @MainActor [weak self] in
-            guard let self else { return }
+        Task {
             for await event in self.sessionDelegate.events {
                 self.handleSessionEvent(event)
             }
@@ -233,7 +232,7 @@ final class DownloadManager {
         let online = withObservationTracking {
             ConnectionMonitor.shared.isDeviceOnline
         } onChange: {
-            Task { @MainActor [weak self] in self?.observeConnectivity() }
+            Task { @MainActor in self.observeConnectivity() }
         }
         if online { processQueue() }
     }
@@ -248,11 +247,10 @@ final class DownloadManager {
     private(set) var downloadsEnabled: Bool = false
     /// Leaf ids currently waiting for POST /downloads to return. This belongs
     /// to the manager (rather than one button) so a detail rebuild cannot make
-    /// the preparing indicator disappear during registration.
-    private(set) var pendingRegistrationContentIds: Set<String> = []
-    /// Each pending id owns a unique token. An older request may finish after
-    /// sign-out and reactivation, but its defer must never clear a newer
-    /// request for the same content id.
+    /// the preparing indicator disappear during registration. Each pending id
+    /// owns a unique token: an older request may finish after sign-out and
+    /// reactivation, but its defer must never clear a newer request for the
+    /// same content id.
     private var pendingRegistrationTokens: [String: UUID] = [:]
     /// Incremented whenever the active server/profile identity is invalidated
     /// or replaced. Network responses captured under an older generation are
@@ -270,15 +268,42 @@ final class DownloadManager {
     }
 
     /// All records, newest first.
-    var records: [DownloadRecord] {
-        file.records.values.sorted { $0.registeredAt > $1.registeredAt }
-    }
+    var records: [DownloadRecord] { Self.newestFirst(file.records.values) }
 
-    var activeRecords: [DownloadRecord] { records.filter { $0.localStatus.isActive } }
+    /// Cheaper than `records.isEmpty`, which sorts every record first.
+    var hasRecords: Bool { !file.records.isEmpty }
+
+    /// Active records, newest first.
+    var activeRecords: [DownloadRecord] {
+        Self.newestFirst(file.records.values.filter { $0.localStatus.isActive })
+    }
 
     /// Active records as the In Progress list shows them: what is moving
     /// first, then what is about to, then the queue, then paused downloads.
-    var inProgressRecords: [DownloadRecord] { Self.sortedByActivity(activeRecords) }
+    var inProgressRecords: [DownloadRecord] {
+        Self.sortedByActivity(file.records.values.filter { $0.localStatus.isActive })
+    }
+
+    /// Ids of `activeRecords`, without sorting.
+    var activeRecordIds: Set<String> {
+        Set(file.records.values.lazy.filter { $0.localStatus.isActive }.map(\.id))
+    }
+
+    /// Failed records, newest first.
+    var failedRecords: [DownloadRecord] {
+        Self.newestFirst(file.records.values.filter { $0.localStatus == .failed })
+    }
+
+    func hasRecord(where predicate: (DownloadRecord) -> Bool) -> Bool {
+        file.records.values.contains(where: predicate)
+    }
+
+    /// Accessors filter before sorting: Downloads bodies read them several
+    /// times per progress publish.
+    private static func newestFirst<S: Sequence>(_ records: S) -> [DownloadRecord]
+    where S.Element == DownloadRecord {
+        records.sorted { $0.registeredAt > $1.registeredAt }
+    }
 
     /// Orders active records by how close they are to moving bytes, and in
     /// queue order within each group, so a long queue never buries the
@@ -305,8 +330,6 @@ final class DownloadManager {
     }
 
     var subscriptions: [DownloadSubscription] { file.subscriptions }
-
-    var totalBytesUsed: Int64 { storageBytesUsed }
 
     // MARK: - Lookups
 
@@ -335,11 +358,7 @@ final class DownloadManager {
     private func rebuildDownloadedIndex() {
         // Revoked downloads keep their on-device file (playable offline),
         // so they badge the same as completed ones.
-        let ids = Set(
-            file.records.values
-                .filter { $0.localStatus == .completed || $0.localStatus == .revoked }
-                .map { $0.episodeId ?? $0.contentId }
-        )
+        let ids = Set(file.records.values.filter(\.isOnDevice).map(\.leafMediaItemId))
         if ids != downloadedContentIds {
             downloadedContentIds = ids
         }
@@ -360,7 +379,7 @@ final class DownloadManager {
     }
 
     func isRegistering(contentId: String) -> Bool {
-        pendingRegistrationContentIds.contains(contentId)
+        pendingRegistrationTokens[contentId] != nil
     }
 
     func record(id: String) -> DownloadRecord? { file.records[id] }
@@ -370,22 +389,44 @@ final class DownloadManager {
     }
 
     func absoluteMediaURL(for record: DownloadRecord) -> URL? {
-        guard let filename = record.mediaFilename, !scopeServerId.isEmpty else { return nil }
+        record.mediaFilename.flatMap { fileURL(recordId: record.id, filename: $0) }
+    }
+
+    func absoluteFileURL(for record: DownloadRecord, filename: String) -> URL? {
+        fileURL(recordId: record.id, filename: filename)
+    }
+
+    /// A record's file, by path alone (no file-system calls), in the store
+    /// the record was loaded from. Per-record paths go by `fileServerId`, not
+    /// the active scope: while a scope switch waits on its load, `file` still
+    /// holds the previous scope's records.
+    private func fileURL(recordId: String, filename: String) -> URL? {
+        guard !fileServerId.isEmpty else { return nil }
         return DownloadFilePaths.fileURL(
-            serverId: scopeServerId,
-            profileId: scopeProfileId,
-            downloadId: record.id,
+            serverId: fileServerId,
+            profileId: fileProfileId,
+            downloadId: recordId,
             filename: filename
         )
     }
 
-    func absoluteFileURL(for record: DownloadRecord, filename: String) -> URL? {
-        guard !scopeServerId.isEmpty else { return nil }
-        return DownloadFilePaths.fileURL(
-            serverId: scopeServerId,
-            profileId: scopeProfileId,
-            downloadId: record.id,
+    /// `fileURL(recordId:filename:)`, after creating the record's directory.
+    private func absoluteFileURLForNewAsset(recordId: String, filename: String) -> URL? {
+        guard !fileServerId.isEmpty else { return nil }
+        return DownloadFilePaths.fileURLForWriting(
+            serverId: fileServerId,
+            profileId: fileProfileId,
+            downloadId: recordId,
             filename: filename
+        )
+    }
+
+    private func removeDownloadDirectory(recordId: String) {
+        guard !fileServerId.isEmpty else { return }
+        DownloadFilePaths.removeDownloadDirectory(
+            serverId: fileServerId,
+            profileId: fileProfileId,
+            downloadId: recordId
         )
     }
 
@@ -460,7 +501,7 @@ final class DownloadManager {
         return await DownloadStore.shared.loadManifest(at: url)
     }
 
-    // MARK: - Grouped surface (Downloads redesign)
+    // MARK: - Grouped surface
 
     /// Whether this download's leaf item has been watched to completion —
     /// drives the reclaim suggestion and the "watched" episode dimming.
@@ -471,7 +512,7 @@ final class DownloadManager {
     /// Completed/revoked records that physically occupy storage and can be
     /// browsed offline. Excludes failed and in-flight records.
     var onDeviceRecords: [DownloadRecord] {
-        records.filter { $0.localStatus == .completed || $0.localStatus == .revoked }
+        Self.newestFirst(file.records.values.filter(\.isOnDevice))
     }
 
     /// Standalone downloaded movies (no parent series).
@@ -479,14 +520,29 @@ final class DownloadManager {
         onDeviceRecords.filter { $0.seriesId == nil }
     }
 
-    /// Downloaded episodes grouped by series, then season — the spine of the
-    /// redesigned Downloads list and the offline series-browse screen.
+    /// Downloaded episodes grouped by series, then season.
     var seriesGroups: [DownloadSeriesGroup] {
         DownloadGroupBuilder.seriesGroups(
             from: onDeviceRecords,
             isWatched: { isWatched($0) },
             seriesTitle: { subscription(forSeriesId: $0)?.seriesTitle },
             isMonitored: { subscription(forSeriesId: $0) != nil }
+        )
+    }
+
+    /// One entry of `seriesGroups`, built without grouping every series.
+    func seriesGroup(forSeriesId seriesId: String) -> DownloadSeriesGroup? {
+        let episodes = Self.newestFirst(
+            file.records.values.filter { $0.isOnDevice && $0.seriesId == seriesId }
+        )
+        guard !episodes.isEmpty else { return nil }
+        let monitor = subscription(forSeriesId: seriesId)
+        return DownloadGroupBuilder.makeSeriesGroup(
+            seriesId: seriesId,
+            records: episodes,
+            isWatched: { isWatched($0) },
+            seriesTitle: monitor?.seriesTitle,
+            isMonitored: monitor != nil
         )
     }
 
@@ -497,7 +553,9 @@ final class DownloadManager {
     }
 
     var reclaimableBytes: Int64 {
-        reclaimableRecords.reduce(0) { $0 + $1.fileSize }
+        file.records.values.reduce(0) {
+            $1.localStatus == .completed && isWatched($1) ? $0 + $1.fileSize : $0
+        }
     }
 
     /// Storage split for the hero bar: series vs movies (summed from record
@@ -508,14 +566,16 @@ final class DownloadManager {
     var storageBreakdown: DownloadStorageBreakdown {
         var series: Int64 = 0
         var movies: Int64 = 0
-        for record in onDeviceRecords {
-            if record.seriesId == nil { movies += record.fileSize }
-            else { series += record.fileSize }
+        var inProgress: Int64 = 0
+        for record in file.records.values {
+            if record.isOnDevice {
+                if record.seriesId == nil { movies += record.fileSize }
+                else { series += record.fileSize }
+            } else if record.localStatus.isActive {
+                inProgress += record.bytesDownloaded
+            }
         }
-        let inProgress = records.reduce(Int64(0)) {
-            $0 + ($1.localStatus.isActive ? $1.bytesDownloaded : 0)
-        }
-        let other = max(0, storageBytesUsed - series - movies)
+        let other = max(0, totalBytesUsed - series - movies)
         return DownloadStorageBreakdown(
             series: series,
             movies: movies,
@@ -535,25 +595,22 @@ final class DownloadManager {
     /// Delete several downloads in one pass: one store write, one storage
     /// recompute, and the server DELETEs fanned out in a single task.
     func deleteDownloads(ids: [String]) {
+        // One write to `file`: each one rebuilds the indexes and the Live
+        // Activity.
+        var records = file.records
         var removedIds: [String] = []
         for id in ids {
-            guard var record = file.records[id] else { continue }
+            guard var record = records.removeValue(forKey: id) else { continue }
             stopActiveWork(on: &record)
-            file.records.removeValue(forKey: id)
             removedIds.append(id)
         }
         guard !removedIds.isEmpty else { return }
-        // Enqueue the updated snapshot before removing assets, as for single
-        // deletion. Persistence remains asynchronous through the save chain.
+        file.records = records
+        // Persist before removing files, so a crash in between never leaves a
+        // record pointing at deleted media.
         persist()
-        if !scopeServerId.isEmpty {
-            for id in removedIds {
-                DownloadFilePaths.removeDownloadDirectory(
-                    serverId: scopeServerId,
-                    profileId: scopeProfileId,
-                    downloadId: id
-                )
-            }
+        for id in removedIds {
+            removeDownloadDirectory(recordId: id)
         }
         queueServerDeletes(removedIds)
         processQueue()
@@ -665,7 +722,7 @@ final class DownloadManager {
     private func removeStaleStagingFilesOnce() {
         guard !staleStagingSwept else { return }
         staleStagingSwept = true
-        Task { @MainActor in
+        Task {
             let freed = await Task.detached(priority: .utility) {
                 DownloadFilePaths.removeStaleStagingFiles(olderThan: 60 * 60)
             }.value
@@ -819,6 +876,7 @@ final class DownloadManager {
         fileProfileId = ""
         rateSamples.removeAll()
         transferRates.removeAll()
+        totalBytesUsed = 0
     }
 
     private func cancelActiveTasks() {
@@ -835,7 +893,7 @@ final class DownloadManager {
     /// Store the system completion handler delivered when iOS relaunches
     /// the app to finish background events.
     func setBackgroundCompletionHandler(_ handler: @escaping () -> Void) {
-        sessionDelegate.backgroundCompletionHandler = handler
+        backgroundCompletionHandler = handler
     }
 
     // MARK: - Capability
@@ -929,7 +987,6 @@ final class DownloadManager {
         let registrationToken = UUID()
         let capturedScopeGeneration = registrationScopeGeneration
         pendingRegistrationTokens[registrationContentId] = registrationToken
-        pendingRegistrationContentIds.insert(registrationContentId)
         beginContinuedProcessing(title: displayTitle)
         defer {
             finishPendingRegistration(
@@ -1032,9 +1089,12 @@ final class DownloadManager {
             pending.subtract(entries.map(\.id))
             file.pendingServerDeletes = pending.isEmpty ? nil : pending
         }
+        // One write to `file`: a series page can carry many entries.
+        var records = file.records
         for entry in entries {
             upsertRow(
                 entry,
+                into: &records,
                 displayTitle: entries.count == 1 ? displayTitle : nil,
                 displaySubtitle: entries.count == 1 ? displaySubtitle : nil,
                 type: type,
@@ -1042,6 +1102,7 @@ final class DownloadManager {
                 posterThumbhash: entries.count == 1 ? posterThumbhash : nil
             )
         }
+        file.records = records
         persist()
         processQueue()
         ensurePolling()
@@ -1079,13 +1140,11 @@ final class DownloadManager {
     private func invalidatePendingRegistrations() {
         registrationScopeGeneration &+= 1
         pendingRegistrationTokens.removeAll()
-        pendingRegistrationContentIds.removeAll()
     }
 
     private func finishPendingRegistration(contentId: String, token: UUID) {
         guard pendingRegistrationTokens[contentId] == token else { return }
         pendingRegistrationTokens.removeValue(forKey: contentId)
-        pendingRegistrationContentIds.remove(contentId)
     }
 
     private func resolvedDownloadQuality(_ requestedQuality: String?) -> String {
@@ -1117,12 +1176,6 @@ final class DownloadManager {
         deleteDownloads(ids: [id])
     }
 
-    func deleteDownload(forContentId contentId: String) {
-        if let record = record(forContentId: contentId) {
-            deleteDownload(id: record.id)
-        }
-    }
-
     /// Suspend an in-flight media transfer. The status flips to `.paused`
     /// synchronously (so the UI responds on the tap) and the resume data is
     /// captured asynchronously — the task identifier stays on the record
@@ -1148,8 +1201,7 @@ final class DownloadManager {
         file.records[id] = record
         clearTransferRate(recordId: id)
         persist()
-        Task { @MainActor [weak self] in
-            guard let self else { return }
+        Task {
             let data = await self.sessionDelegate.pause(taskId: taskId)
             self.finishPause(recordId: id, resumeData: data)
         }
@@ -1230,8 +1282,6 @@ final class DownloadManager {
             .sorted { $0.registeredAt < $1.registeredAt }
 
         for record in queued where slots.pipelines > 0 && slots.transfers > 0 {
-            // Reserve the slots synchronously so a second pass doesn't pick
-            // the same record before its async pipeline flips the status.
             guard !exceedsStorageCap(for: record) else { continue }
             if startQueuedRecord(record) { slots.pipelines -= 1 }
             slots.transfers -= 1
@@ -1485,6 +1535,9 @@ final class DownloadManager {
             ("logo", manifest.artworkUrls?.logo, "logo.png"),
             ("series_poster", manifest.artworkUrls?.seriesPoster, "series_poster.jpg"),
         ]
+        // Saved kinds go into the record in one write after the loop: each
+        // write to `file` rebuilds the indexes and the Live Activity.
+        var saved: [String] = []
         for entry in kinds {
             // Only fetch artwork the manifest actually advertises. The server
             // omits artwork_urls.* (omitempty) when a title has no poster/
@@ -1511,13 +1564,19 @@ final class DownloadManager {
                 Self.logger.warning("download artwork write failed")
                 continue
             }
-            guard var record = file.records[recordId] else { continue }
-            switch entry.kind {
-            case "poster": record.posterFilename = entry.filename
-            case "backdrop": record.backdropFilename = entry.filename
-            case "logo": record.logoFilename = entry.filename
-            case "series_poster": record.seriesPosterFilename = entry.filename
-            default: break
+            saved.append(entry.kind)
+        }
+        // A failed fetch above can end the loop after an await.
+        guard assetsAreCurrent(recordId, assets, owner) else { return }
+        if !saved.isEmpty, var record = file.records[recordId] {
+            for entry in kinds where saved.contains(entry.kind) {
+                switch entry.kind {
+                case "poster": record.posterFilename = entry.filename
+                case "backdrop": record.backdropFilename = entry.filename
+                case "logo": record.logoFilename = entry.filename
+                case "series_poster": record.seriesPosterFilename = entry.filename
+                default: break
+                }
             }
             file.records[recordId] = record
         }
@@ -1691,9 +1750,7 @@ final class DownloadManager {
                 record.localStatus = .failed
                 record.lastError = "forbidden"
             case 429, 500...599:
-                // Cap and back off pipeline retries (manifest/asset fetch),
-                // mirroring the media-transfer retry path; otherwise a
-                // persistent 429 would retry every 5s forever.
+                // Bounded back-off, like a failed transfer.
                 if record.retryCount < Self.maxRetries {
                     record.retryCount += 1
                     file.records[recordId] = record
@@ -1775,8 +1832,9 @@ final class DownloadManager {
     /// into `file`'s `didSet` so every mutation flows through — including
     /// scope deactivation (empty blob ends the activity). The controller
     /// dedupes identical content states, so burst mutations (reconcile
-    /// loops, pipeline steps) cost a snapshot build and nothing more.
-    private func syncLiveActivity() {
+    /// loops, pipeline steps) cost a snapshot build and nothing more. Also
+    /// called when continued processing hands the live progress back.
+    func syncLiveActivity() {
         #if os(iOS)
         let completedIds = Set(
             file.records.values
@@ -1792,17 +1850,12 @@ final class DownloadManager {
             activeRecords: active,
             completedRecordIds: completedIds,
             totalBytesPerSecond: active.compactMap { rates[$0.id] }.reduce(0, +),
-            awaitingRegistration: !pendingRegistrationContentIds.isEmpty,
+            awaitingRegistration: !pendingRegistrationTokens.isEmpty,
             // Downloads of unknown size move too.
             transferredBytes: active.reduce(Int64(0)) { $0 + $1.bytesDownloaded },
             rates: rates
         )
         #endif
-    }
-
-    /// Re-evaluates the live progress display after it changed hands.
-    func refreshLiveProgress() {
-        syncLiveActivity()
     }
 
     /// What the active downloads wait for right now, if anything, in the
@@ -1934,7 +1987,7 @@ final class DownloadManager {
             file.records[record.id] = record
             persistProgressThrottled()
 
-        case let .finished(taskId, stagedURL, _):
+        case let .finished(taskId, stagedURL):
             handleMediaFinished(taskId: taskId, stagedURL: stagedURL)
 
         case let .failed(taskId, statusCode, resumeData, message, cause):
@@ -1948,9 +2001,9 @@ final class DownloadManager {
             // session, or they stop mid-pipeline until the app is next
             // opened. Then flush the store writes still on the async save
             // chain.
-            guard let handler = sessionDelegate.backgroundCompletionHandler else { return }
-            sessionDelegate.backgroundCompletionHandler = nil
-            Task { @MainActor in
+            guard let handler = backgroundCompletionHandler else { return }
+            backgroundCompletionHandler = nil
+            Task {
                 await self.waitForTransferHandoff(timeout: Self.backgroundHandoffTimeout)
                 await self.saveChain?.value
                 handler()
@@ -2146,13 +2199,13 @@ final class DownloadManager {
         // The caller's retry count survives the process ending in the back-off.
         persist()
         let attempt = file.records[recordId]?.retryCount ?? 1
-        let delaySeconds = min(120, Int(pow(2.0, Double(attempt))) * 5)
+        let delaySeconds = min(120, (1 << min(attempt, 6)) * 5)
         retryTasks[recordId]?.cancel()
         restartOwners.retryScheduled(recordId, firesAt: Date().addingTimeInterval(TimeInterval(delaySeconds)))
         updateHandoffBackgroundTask()
-        retryTasks[recordId] = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(delaySeconds) * 1_000_000_000)
-            guard !Task.isCancelled, let self, !self.scopeServerId.isEmpty else { return }
+        retryTasks[recordId] = Task {
+            try? await Task.sleep(for: .seconds(delaySeconds))
+            guard !Task.isCancelled, !self.scopeServerId.isEmpty else { return }
             self.retryTasks[recordId] = nil
             self.restartOwners.retryEnded(recordId)
             // Fire only while the record still looks like the failure this
@@ -2177,7 +2230,7 @@ final class DownloadManager {
                 }
             }
             // Restart from the manifest step (a pipeline failure may have
-            // been in the manifest/asset fetch, not the media transfer),
+            // been in the manifest fetch, not the media transfer),
             // through the queue so restarts share the pipeline cap. Resume
             // data saved for the record is used from there.
             self.releasePipeline(recordId: recordId, token: token)
@@ -2261,7 +2314,7 @@ final class DownloadManager {
     private func waitForTransferHandoff(timeout: TimeInterval) async {
         let deadline = Date().addingTimeInterval(timeout)
         while restartOwners.handoffPending(by: deadline), Date() < deadline, hasBackgroundTimeLeft() {
-            try? await Task.sleep(nanoseconds: 250_000_000)
+            try? await Task.sleep(for: .milliseconds(250))
         }
     }
 
@@ -2304,11 +2357,15 @@ final class DownloadManager {
     private func ensurePolling() {
         guard pollTask == nil else { return }
         guard file.records.values.contains(where: { $0.localStatus == .preparing }) else { return }
-        pollTask = Task { @MainActor in
-            defer { self.pollTask = nil }
+        let token = UUID()
+        pollToken = token
+        pollTask = Task {
+            // `deactivate()` may have started a newer loop meanwhile; only
+            // this loop's own handle is cleared.
+            defer { if self.pollToken == token { self.pollTask = nil } }
             while !Task.isCancelled {
                 guard self.file.records.values.contains(where: { $0.localStatus == .preparing }) else { break }
-                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                try? await Task.sleep(for: .seconds(15))
                 if Task.isCancelled { break }
                 await self.reconcileWithServer(triggerPipeline: true)
             }
@@ -2384,8 +2441,12 @@ final class DownloadManager {
                 rows.filter { file.records[$0.id] == nil },
                 legacyRowsPending: file.legacyRowsPending == true
             )
-            for row in unknownRows.imported {
-                file.records[row.id] = makeRecord(from: row, type: row.episodeId != nil ? "episode" : nil)
+            if !unknownRows.imported.isEmpty {
+                var records = file.records
+                for row in unknownRows.imported {
+                    records[row.id] = makeRecord(from: row, type: row.episodeId != nil ? "episode" : nil)
+                }
+                file.records = records
             }
             if !unknownRows.legacy.isEmpty {
                 Self.logger.notice("Deleting \(unknownRows.legacy.count, privacy: .public) server downloads registered by an earlier version")
@@ -2435,9 +2496,8 @@ final class DownloadManager {
             .sorted { ($0.registeredAt, $0.id) < ($1.registeredAt, $1.id) }
             .map(\.id)
         guard !ids.isEmpty else { return }
-        displayFillTask = Task { [weak self] in
-            let interrupted = await self?.fillDisplay(ids) ?? false
-            guard let self else { return }
+        displayFillTask = Task {
+            let interrupted = await self.fillDisplay(ids)
             self.displayFillTask = nil
             if interrupted {
                 self.scheduleDisplayFillRetry()
@@ -2455,12 +2515,12 @@ final class DownloadManager {
         let delay = displayFillRetryDelay
         displayFillRetryDelay = min(delay * 2, .seconds(300))
         let scope = loadedScope
-        displayFillRetryTask = Task { [weak self] in
+        displayFillRetryTask = Task {
             try? await Task.sleep(for: delay)
             // Whoever cancelled a retry also cleared it. Any other clears
             // itself even when its scope is gone, so a finished task can't
             // hold back the retries of a scope that comes back.
-            guard let self, !Task.isCancelled else { return }
+            guard !Task.isCancelled else { return }
             self.displayFillRetryTask = nil
             guard self.loadedScope == scope else { return }
             self.fillMissingDisplay()
@@ -2610,8 +2670,7 @@ final class DownloadManager {
     private func sendPendingServerDeletes() {
         guard serverDeleteTask == nil, file.pendingServerDeletes?.isEmpty == false,
               let scope = loadedScope else { return }
-        serverDeleteTask = Task { @MainActor [weak self] in
-            guard let self else { return }
+        serverDeleteTask = Task {
             await self.runServerDeletePass(scope: scope)
             self.serverDeleteTask = nil
         }
@@ -2682,8 +2741,7 @@ final class DownloadManager {
             .map(\.id)
         guard !ids.isEmpty, let scope = loadedScope else { return }
         statusReportsInFlight.formUnion(ids)
-        Task { @MainActor [weak self] in
-            guard let self else { return }
+        Task {
             let superseded = await self.sendStatusEvents(ids: ids, scope: scope)
             self.statusReportsInFlight.subtract(ids)
             // A newer event recorded while its predecessor was in flight.
@@ -2743,6 +2801,10 @@ final class DownloadManager {
             intentionalCancels.insert(taskId)
             sessionDelegate.cancel(taskId: taskId)
         }
+        // One write to `file` for the whole pass.
+        var records = file.records
+        var changed = false
+        var requeued = false
         for (id, record) in file.records {
             let plan = Self.reconnectPlan(
                 status: record.localStatus,
@@ -2753,14 +2815,17 @@ final class DownloadManager {
                 restartOwned: restartOwners.ownsRestart(id)
             )
             if plan.dropTask {
-                var record = record
-                record.taskIdentifier = nil
-                file.records[id] = record
+                records[id]?.taskIdentifier = nil
+                changed = true
             }
             if plan.requeue {
-                setLocalStatus(.queued, id: id)
+                records[id]?.localStatus = .queued
+                changed = true
+                requeued = true
             }
         }
+        if changed { file.records = records }
+        if requeued { persist() }
     }
 
     /// What reconnect does with one record.
@@ -2988,8 +3053,7 @@ final class DownloadManager {
             return
         }
         guard file.pendingSubscriptionDeletes?.isEmpty == false, let scope = loadedScope else { return }
-        let task = Task { @MainActor [weak self] in
-            guard let self else { return }
+        let task = Task {
             await self.runSubscriptionDeletePass(scope: scope)
             self.subscriptionDeleteTask = nil
         }
@@ -3151,7 +3215,6 @@ final class DownloadManager {
 
     /// Syncs one stored monitor and applies what the sync learned about it.
     /// `removed` means the server no longer has the monitor.
-    @discardableResult
     private func syncSubscription(id: String, owner: ScopeOwner) async -> (registered: Int, stopRun: Bool, removed: Bool) {
         guard let monitor = file.subscriptions.first(where: { $0.id == id }), monitor.active else { return (0, false, false) }
         // Rows a sync registers are unknown to the store. Until the scope's
@@ -3196,9 +3259,7 @@ final class DownloadManager {
             ownerStillCurrent: watchStateOwner.map(isCurrent) == true,
             in: file
         )
-        for id in watched {
-            deleteDownload(id: id)
-        }
+        deleteDownloads(ids: watched)
     }
 
     /// One notification per sync batch when monitoring registered new
@@ -3298,21 +3359,16 @@ final class DownloadManager {
     /// active download scope. Each batch is claimed durably before it is
     /// sent, so a batch whose answer never arrives, even across a crash, is
     /// held instead of sent again (see `OfflineProgressQueue`).
-    func flushProgressQueue() async {
-        let serverId = scopeServerId
-        let profileId = scopeProfileId
-        let generation = registrationScopeGeneration
-        guard !serverId.isEmpty, !profileId.isEmpty,
-              let auth = await TokenStore.shared.captureOrdinaryRequestAuth(),
-              auth.account.serverId == serverId, auth.profileId == profileId else { return }
-        // The scope generation advances on every scope change, including a
-        // switch away and back, so a stale flush cannot touch a newer file.
-        func scopeUnchanged() -> Bool {
-            generation == registrationScopeGeneration && serverId == scopeServerId && profileId == scopeProfileId
-        }
+    private func flushProgressQueue() async {
+        // The owner also requires `file` to hold the scope's store, so a
+        // flush during a profile switch's load window can't claim the old
+        // profile's queue under the new profile's auth. Its generation
+        // advances on every scope change, including a switch away and back,
+        // so a stale flush cannot touch a newer file.
+        guard let owner = await captureScopeOwner() else { return }
 
         for _ in 0..<Self.maxProgressBatchesPerFlush {
-            guard scopeUnchanged() else { return }
+            guard isCurrent(owner) else { return }
             var queue = file.progressQueue
             OfflineProgressQueue.dropUnsendable(&queue)
             let batch = OfflineProgressQueue.nextBatch(queue)
@@ -3330,15 +3386,15 @@ final class DownloadManager {
             persist()
             await saveChain?.value
 
-            let outcome = await SiloAPI.shared.apiV2Client.syncProgress(batch.compactMap(\.syncItem), auth: auth)
+            let outcome = await SiloAPI.shared.apiV2Client.syncProgress(batch.compactMap(\.syncItem), auth: owner.auth)
             progressUploadsInFlight.subtract(ids)
-            guard scopeUnchanged() else {
+            guard isCurrent(owner) else {
                 // A batch that was sent stays dispatched in the old scope's
                 // file, which is the held state it belongs in. One that never
                 // reached the server (refused before dispatch, or deferred)
                 // goes back to pending there.
                 if OfflineProgressQueue.releasesClaims(outcome) {
-                    releaseProgressClaims(ids, serverId: serverId, profileId: profileId)
+                    releaseProgressClaims(ids, serverId: owner.scope.serverId, profileId: owner.scope.profileId)
                 }
                 return
             }
@@ -3500,20 +3556,21 @@ final class DownloadManager {
 
     private func upsertRow(
         _ row: APIv2DownloadEntry,
+        into records: inout [String: DownloadRecord],
         displayTitle: String?,
         displaySubtitle: String?,
         type: String?,
         seriesId: String?,
         posterThumbhash: String?
     ) {
-        if let existing = file.records[row.id] {
+        if let existing = records[row.id] {
             var merged = mergeExistingRecord(existing, with: row)
             if existing.localStatus == .failed || existing.localStatus == .revoked {
                 merged.localStatus = Self.mapInitialStatus(row.status)
                 merged.lastError = nil
                 merged.retryCount = 0
             }
-            file.records[row.id] = merged
+            records[row.id] = merged
             return
         }
         var record = makeRecord(from: row, type: type)
@@ -3521,13 +3578,19 @@ final class DownloadManager {
         record.subtitle = displaySubtitle
         record.seriesId = seriesId ?? record.seriesId
         record.posterThumbhash = posterThumbhash
-        file.records[row.id] = record
+        records[row.id] = record
     }
 
     private func mergeExistingRecord(_ existing: DownloadRecord, with row: APIv2DownloadEntry) -> DownloadRecord {
         var record = existing
         if shouldReplaceLocalAssets(record, with: row) {
-            discardLocalAssets(for: record)
+            // A running transfer or pipeline would deliver the replaced
+            // revision's bytes, and an asset fetch would save its files.
+            // `stopActiveWork` cancels only this record's own task: before
+            // reconnect drops stale ids, the stored one can name another
+            // record's transfer.
+            stopActiveWork(on: &record)
+            removeDownloadDirectory(recordId: record.id)
             resetLocalAssets(on: &record, status: row.status)
         }
         applyServerRow(row, to: &record)
@@ -3539,24 +3602,6 @@ final class DownloadManager {
             return row.revision > currentRevision
         }
         return record.mediaFileId != row.mediaFileId || record.format != row.quality
-    }
-
-    private func discardLocalAssets(for record: DownloadRecord) {
-        if let taskId = record.taskIdentifier {
-            intentionalCancels.insert(taskId)
-            sessionDelegate.cancel(taskId: taskId)
-        }
-        // A running pipeline would start the replaced revision's transfer,
-        // and an asset fetch would save the replaced revision's files.
-        abandonPipeline(recordId: record.id)
-        restartOwners.abandonAssets(record.id)
-        progressHighWater[record.id] = nil
-        guard !scopeServerId.isEmpty else { return }
-        DownloadFilePaths.removeDownloadDirectory(
-            serverId: scopeServerId,
-            profileId: scopeProfileId,
-            downloadId: record.id
-        )
     }
 
     private func resetLocalAssets(on record: inout DownloadRecord, status: String) {
@@ -3700,7 +3745,7 @@ final class DownloadManager {
     /// download that would push its series over the cap. The server only
     /// soft-gates; the client is authoritative.
     private func exceedsStorageCap(for record: DownloadRecord) -> Bool {
-        guard let seriesId = capSeriesId(for: record),
+        guard let seriesId = Self.seriesKey(for: record),
               let subscription = subscription(forSeriesId: seriesId),
               subscription.maxStorageBytes > 0 else {
             return false
@@ -3711,7 +3756,7 @@ final class DownloadManager {
         // the same free capacity and overshoot the cap together.
         let used = file.records.values
             .filter { other in
-                guard other.id != record.id, capSeriesId(for: other) == seriesId else { return false }
+                guard other.id != record.id, Self.seriesKey(for: other) == seriesId else { return false }
                 switch other.localStatus {
                 case .completed, .downloading, .fetchingAssets, .paused: return true
                 default: return false
@@ -3721,29 +3766,12 @@ final class DownloadManager {
         return used + max(record.fileSize, 0) > subscription.maxStorageBytes
     }
 
-    /// Series identity for cap accounting. Episode rows registered by
-    /// subscription sync carry the series id in `contentId` until the
-    /// manifest hydrates `seriesId` — without the fallback, freshly synced
-    /// episodes would bypass the cap entirely.
-    private func capSeriesId(for record: DownloadRecord) -> String? {
-        Self.seriesKey(for: record)
-    }
-
     /// The series a download belongs to. Episode rows registered by
     /// subscription sync carry the series id in `contentId` until the
-    /// manifest hydrates `seriesId`.
+    /// manifest hydrates `seriesId` — without the fallback, freshly synced
+    /// episodes would bypass the storage cap entirely.
     nonisolated static func seriesKey(for record: DownloadRecord) -> String? {
         record.seriesId ?? (record.episodeId != nil ? record.contentId : nil)
-    }
-
-    private func absoluteFileURLForNewAsset(recordId: String, filename: String) -> URL? {
-        guard !scopeServerId.isEmpty else { return nil }
-        return DownloadFilePaths.fileURL(
-            serverId: scopeServerId,
-            profileId: scopeProfileId,
-            downloadId: recordId,
-            filename: filename
-        )
     }
 
     private func fileSizeOnDisk(_ url: URL) -> Int64 {
@@ -3772,12 +3800,17 @@ final class DownloadManager {
         let serverId = scopeServerId
         let profileId = scopeProfileId
         guard !serverId.isEmpty, !profileId.isEmpty else {
-            storageBytesUsed = 0
+            totalBytesUsed = 0
             return
         }
-        Task.detached(priority: .utility) {
-            let bytes = DownloadFilePaths.bytesUsed(serverId: serverId, profileId: profileId)
-            await MainActor.run { [weak self] in self?.storageBytesUsed = bytes }
+        Task {
+            let bytes = await Task.detached(priority: .utility) {
+                DownloadFilePaths.bytesUsed(serverId: serverId, profileId: profileId)
+            }.value
+            // A slower walk of a scope switched away from must not overwrite
+            // the new scope's number.
+            guard serverId == scopeServerId, profileId == scopeProfileId else { return }
+            totalBytesUsed = bytes
         }
     }
 

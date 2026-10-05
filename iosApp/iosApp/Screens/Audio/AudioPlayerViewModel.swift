@@ -5,7 +5,7 @@ import OSLog
 @Observable
 @MainActor
 final class AudioPlayerViewModel {
-    @ObservationIgnored private let api: SiloAPI
+    private let api: SiloAPI
     private struct StartedAudioSession {
         let session: PlaybackSessionResponse
         let authority: PlaybackV2SessionAuthority
@@ -50,7 +50,7 @@ final class AudioPlayerViewModel {
     private var seekSequence = 0
     /// Profile-wide audiobook skip intervals, read at each press so a change
     /// applies without restarting the book.
-    @ObservationIgnored let seekIntervalPreferences = SeekIntervalPreferences.shared
+    let seekIntervalPreferences = SeekIntervalPreferences.shared
     @ObservationIgnored private var isObservingSeekIntervals = false
     private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
@@ -66,11 +66,10 @@ final class AudioPlayerViewModel {
     /// play/pause affordances derive from this value instead of optimistic
     /// booleans written by button handlers.
     private(set) var engineState: PlaybackState = .idle
-    private(set) var playbackPhase: PlaybackPhase = .idle
-    private(set) var playbackFailure: PlaybackErrorInfo?
-    /// Duration of the currently loaded file. `duration` above deliberately
-    /// remains the stitched whole-book duration presented by Silo.
-    private(set) var engineDuration: Double = 0
+    /// The chapter the playhead is currently inside, if any. Written only when
+    /// the playhead crosses into another chapter, so readers do not re-render
+    /// on every engine time tick.
+    private(set) var currentChapter: AudioPlaybackChapter?
     /// Cover-derived colors for the player backdrop and control tint.
     /// Stays on `.fallback` until sampling resolves so the UI never
     /// blocks on image work.
@@ -96,15 +95,8 @@ final class AudioPlayerViewModel {
     var title: String { context?.title ?? loadingPreview?.title ?? "" }
     var subtitle: String? { context?.subtitle ?? loadingPreview?.subtitle }
     var posterUrl: String? { context?.posterUrl ?? loadingPreview?.posterUrl }
+    /// Sorted by start time; `AudiobookPlaybackContext` sorts them once.
     var chapters: [AudioPlaybackChapter] { context?.chapters ?? [] }
-    var tracks: [AudioPlaybackTrack] { context?.tracks ?? [] }
-
-    /// The chapter the playhead is currently inside, if any.
-    var currentChapter: AudioPlaybackChapter? {
-        chapters
-            .filter { $0.startSeconds <= currentTime }
-            .max { $0.startSeconds < $1.startSeconds }
-    }
 
     /// The intervals the audiobook controls use right now.
     var skipIntervals: SeekIntervalPair {
@@ -158,7 +150,7 @@ final class AudioPlayerViewModel {
             }
             self.context = context
             duration = context.totalDurationSeconds
-            currentTime = clampGlobal(startPosition ?? (restart ? 0 : context.resumePositionSeconds))
+            setPlayhead(clampGlobal(startPosition ?? (restart ? 0 : context.resumePositionSeconds)))
             loadPalette(posterUrl: context.posterUrl)
             let artwork = await resolvedURL(context.posterUrl)
             guard generation == startGeneration else { return }
@@ -173,7 +165,7 @@ final class AudioPlayerViewModel {
         } catch {
             if generation == startGeneration {
                 handlePlaybackError(error)
-                resetFailedStart()
+                resetSessionState()
             }
         }
         if generation == startGeneration {
@@ -253,10 +245,7 @@ final class AudioPlayerViewModel {
     }
 
     func previousChapter() {
-        let candidates = chapters
-            .filter { $0.startSeconds < currentTime - 5 }
-            .sorted { $0.startSeconds < $1.startSeconds }
-        if let chapter = candidates.last {
+        if let chapter = chapters.last(where: { $0.startSeconds < currentTime - 5 }) {
             jumpToChapter(chapter)
         } else {
             seek(to: 0)
@@ -264,8 +253,7 @@ final class AudioPlayerViewModel {
     }
 
     func nextChapter() {
-        if let chapter = chapters.sorted(by: { $0.startSeconds < $1.startSeconds })
-            .first(where: { $0.startSeconds > currentTime + 1 }) {
+        if let chapter = chapters.first(where: { $0.startSeconds > currentTime + 1 }) {
             jumpToChapter(chapter)
         }
     }
@@ -284,32 +272,12 @@ final class AudioPlayerViewModel {
     }
 
     private func closePlayback() async {
-        syncTask?.cancel()
-        syncTask = nil
-        loadGeneration += 1
         let closedContext = context
         let closedSession = activeSession
         let closedAuthority = activeAuthority
         let position = currentTime
         let total = duration
-        pendingSeekTarget = nil
-        loadingEngineEpoch = nil
-        activeEngineEpoch = nil
-        engine.stop()
-        nowPlaying.detach()
-        sleepTimer.cancel()
-        context = nil
-        activeSession = nil
-        activeAuthority = nil
-        activeTrackIndex = nil
-        activeTimeline = nil
-        engineDuration = 0
-        engineState = .idle
-        playbackPhase = .idle
-        playbackFailure = nil
-        currentTime = 0
-        duration = 0
-        palette = .fallback
+        resetSessionState()
         if let closedContext {
             await uploadBookPosition(
                 contentId: closedContext.contentId,
@@ -323,7 +291,10 @@ final class AudioPlayerViewModel {
         }
     }
 
-    private func resetFailedStart() {
+    /// Stops the engine and returns every piece of session state to idle.
+    /// Uploads no progress and stops no server session; `closePlayback`
+    /// does both with the values it captured beforehand.
+    private func resetSessionState() {
         syncTask?.cancel()
         syncTask = nil
         loadGeneration += 1
@@ -338,11 +309,9 @@ final class AudioPlayerViewModel {
         activeAuthority = nil
         activeTrackIndex = nil
         activeTimeline = nil
-        engineDuration = 0
         engineState = .idle
-        playbackPhase = .idle
-        playbackFailure = nil
         currentTime = 0
+        currentChapter = nil
         duration = 0
         palette = .fallback
     }
@@ -381,12 +350,7 @@ final class AudioPlayerViewModel {
             // retired speculatively.
             let priorSession = activeSession
             let priorAuthority = activeAuthority
-            let started: StartedAudioSession
-            do {
-                started = try await startSession(for: track, localTime: localTime)
-            } catch {
-                throw error
-            }
+            let started = try await startSession(for: track, localTime: localTime)
             var candidateEngineEpoch: AetherAudioPlaybackController.LoadEpoch?
             do {
                 try requireCurrentLoad(generation)
@@ -478,7 +442,7 @@ final class AudioPlayerViewModel {
         }
 
         try requireCurrentLoad(generation)
-        currentTime = clampGlobal(resolvedGlobalTime)
+        setPlayhead(clampGlobal(resolvedGlobalTime))
         if didLoadNewTrack {
             attachNowPlaying()
         }
@@ -497,7 +461,6 @@ final class AudioPlayerViewModel {
         activeAuthority = nil
         activeTrackIndex = nil
         activeTimeline = nil
-        engineDuration = 0
         nowPlaying.detach()
     }
 
@@ -568,7 +531,7 @@ final class AudioPlayerViewModel {
             )
         case .incompatible(let allocatedSessionId):
             if let allocatedSessionId {
-                try? await authority.stop(allocatedSessionId, finalSample: nil)
+                _ = try? await authority.stop(allocatedSessionId, finalSample: nil)
             }
             throw PlaybackV3TerminalFailure(
                 reason: "invalid_playback_plan",
@@ -579,7 +542,7 @@ final class AudioPlayerViewModel {
             guard response.serverFeatures.contains(
                 PlaybackProtocolV3.headerAuthenticatedMediaFeature
             ) else {
-                try? await authority.stop(sessionId, finalSample: nil)
+                _ = try? await authority.stop(sessionId, finalSample: nil)
                 throw PlaybackV3TerminalFailure(
                     reason: "server_upgrade_required",
                     message: "This server did not honor authenticated media transport for the playback plan.",
@@ -591,13 +554,13 @@ final class AudioPlayerViewModel {
                 try ApplePlaybackV3PlanAdapter.validate(plan)
                 timeline = try PlaybackTimelineMapper(validating: plan.timeline)
             } catch {
-                try? await authority.stop(sessionId, finalSample: nil)
+                _ = try? await authority.stop(sessionId, finalSample: nil)
                 throw error
             }
             guard let effectiveTrack = context?.tracks.first(where: {
                 $0.fileId == plan.effectiveMediaFileId
             }) else {
-                try? await authority.stop(sessionId, finalSample: nil)
+                _ = try? await authority.stop(sessionId, finalSample: nil)
                 throw PlaybackV3TerminalFailure(
                     reason: "effective_file_unavailable",
                     message: "The server selected an unavailable audiobook part.",
@@ -675,16 +638,11 @@ final class AudioPlayerViewModel {
                 }
             }
             pushNowPlaying()
-        case .phase(let phase):
-            playbackPhase = phase
         case .time(let localTime):
             if isActiveEpoch {
                 handleEngineTime(localTime)
             }
-        case .duration(let duration):
-            engineDuration = duration.isFinite ? max(0, duration) : 0
         case .failure(let failure):
-            playbackFailure = failure
             if isActiveEpoch, let failure {
                 handlePlaybackFailure(failure)
             }
@@ -711,13 +669,23 @@ final class AudioPlayerViewModel {
               let activeTrackIndex,
               let activeTimeline,
               let track = context.tracks.first(where: { $0.index == activeTrackIndex }) else { return }
-        currentTime = clampGlobal(
+        setPlayhead(clampGlobal(
             AudioPlaybackTimeline.globalTime(
                 for: activeTimeline.sourcePosition(forPlayerTime: localTime),
                 in: track
             )
-        )
+        ))
         pushNowPlaying()
+    }
+
+    /// Moves the playhead, replacing `currentChapter` only when the playhead
+    /// lands in a different chapter.
+    private func setPlayhead(_ globalTime: Double) {
+        currentTime = globalTime
+        let chapter = chapters.last(where: { $0.startSeconds <= globalTime })
+        if chapter != currentChapter {
+            currentChapter = chapter
+        }
     }
 
     private func advanceAfterTrackEnd(expectedGeneration: Int) async {
@@ -739,7 +707,7 @@ final class AudioPlayerViewModel {
                 handlePlaybackError(error)
             }
         } else {
-            currentTime = duration
+            setPlayhead(duration)
             pushNowPlaying()
             await syncNow()
         }
@@ -817,7 +785,6 @@ final class AudioPlayerViewModel {
             play: { [weak self] in self?.play() },
             pause: { [weak self] in self?.pause() },
             isPaused: { [weak self] in !(self?.isPlaying ?? false) },
-            currentTime: { [weak self] in self?.currentTime ?? 0 },
             seek: { [weak self] target in self?.seek(to: target) },
             skip: { [weak self] delta in self?.skip(by: delta) }
         )

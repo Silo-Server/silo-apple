@@ -4,7 +4,7 @@ import SwiftUI
 /// Settings → Sign-in: the provider identity linked to this account, and
 /// connect / disconnect.
 struct AccountSignInView: View {
-    @Bindable var model: AccountSignInModel
+    let model: AccountSignInModel
     @State private var connecting: AccountSignInModel.Connectable?
     @State private var disconnecting: APIv2AccountIdentity?
 
@@ -147,7 +147,7 @@ struct AccountSignInView: View {
 /// (network identity, such as Tailscale).
 private struct ConnectProviderSheet: View {
     let item: AccountSignInModel.Connectable
-    @Bindable var model: AccountSignInModel
+    let model: AccountSignInModel
     let dismiss: () -> Void
     @State private var password = ""
     @State private var directoryUsername = ""

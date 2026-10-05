@@ -7,7 +7,6 @@ enum PlaybackProtocolV3 {
     /// `playback_plan_v3`, this guarantees opaque server-minted attempt keys
     /// and distinct intent replan operations.
     static let neutralContractFeature = "neutral_playback_v3_contract_v1"
-    static let layoutPassthroughFeature = "layout_aware_passthrough"
     static let clientTransformFeature = "client_video_transformations_v1"
     static let routeDiagnosticsFeature = "playback_route_diagnostics"
     static let deviceQuirksFeature = "device_quirks_v1"
@@ -96,7 +95,6 @@ enum PlaybackProtocolV3 {
     enum ReplanOperation {
         static let failureRecovery = "failure_recovery"
         static let seekReanchor = "seek_reanchor"
-        static let seekFailureRecovery = "seek_failure_recovery"
         static let trackChange = "track_change"
         static let qualityChange = "quality_change"
         /// The active display/output capabilities changed. Nothing failed, so
@@ -478,7 +476,6 @@ struct PlaybackV3SubtitleInventoryItem: Codable, Equatable {
 
 struct PlaybackV3EmbeddedSubtitle: Codable, Equatable {
     let streamIndex: Int
-    var containerTrackId: String? = nil
 }
 
 struct PlaybackV3SubtitleDecision: Codable, Equatable {

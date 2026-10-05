@@ -2,9 +2,7 @@ import SwiftUI
 
 // MARK: - First-run palette
 //
-// Authentication uses the same OLED-black, monochrome language as the signed-
-// in product. The existing Aurora names are retained to avoid a broad source
-// migration, but the tokens deliberately map onto Silo's core palette.
+// First-run aliases of the core palette.
 
 extension Color {
     static let auroraInk = Color.siloOnSurface
@@ -13,14 +11,12 @@ extension Color {
     static let auroraGlassTint = Color.siloSurfaceVariant
 
     static var auroraInkSecondary: Color { auroraInk.opacity(0.62) }
-    static var auroraInkTertiary: Color { auroraInk.opacity(0.40) }
 }
 
 // MARK: - Liquid glass panel
 
 struct AuroraGlassPanel: ViewModifier {
     var cornerRadius: CGFloat = 28
-    var emphasized: Bool = false
 
     func body(content: Content) -> some View {
         content
@@ -28,31 +24,19 @@ struct AuroraGlassPanel: ViewModifier {
                        tint: Color.auroraGlassTint.opacity(0.72))
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius)
-                    .strokeBorder(borderGradient, lineWidth: 1)
-            }
-            .background {
-                if emphasized {
-                    RoundedRectangle(cornerRadius: cornerRadius)
-                        .fill(Color.auroraAccent.opacity(0.10))
-                        .blur(radius: 34)
-                        .padding(-4)
-                }
+                    .strokeBorder(Self.borderGradient, lineWidth: 1)
             }
             .shadow(color: .black.opacity(0.55), radius: 36, x: 0, y: 22)
     }
 
-    private var borderGradient: LinearGradient {
-        LinearGradient(
-            colors: emphasized
-                ? [Color.auroraAccent.opacity(0.42), .white.opacity(0.12), .white.opacity(0.04)]
-                : [.white.opacity(0.22), .white.opacity(0.08), .white.opacity(0.03)],
-            startPoint: .top, endPoint: .bottom)
-    }
+    private static let borderGradient = LinearGradient(
+        colors: [.white.opacity(0.22), .white.opacity(0.08), .white.opacity(0.03)],
+        startPoint: .top, endPoint: .bottom)
 }
 
 extension View {
-    func auroraGlass(cornerRadius: CGFloat = 28, emphasized: Bool = false) -> some View {
-        modifier(AuroraGlassPanel(cornerRadius: cornerRadius, emphasized: emphasized))
+    func auroraGlass(cornerRadius: CGFloat = 28) -> some View {
+        modifier(AuroraGlassPanel(cornerRadius: cornerRadius))
     }
 }
 
@@ -180,7 +164,4 @@ enum AuroraControl {
     #else
     static let corner: CGFloat = 10
     #endif
-    static let activeFill = Color.siloOnSurface
-    static let activeInk = Color.siloBackground
-    static let activePlaceholder = Color(hex: "#5E6269")
 }

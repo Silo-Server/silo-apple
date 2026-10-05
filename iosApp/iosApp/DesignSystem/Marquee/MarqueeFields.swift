@@ -3,6 +3,28 @@ import SwiftUI
 /// Field semantics without UIKit types, so macOS can share the component.
 enum MarqueeFieldContent { case username, password, newPassword, url, number }
 
+#if canImport(UIKit)
+extension MarqueeFieldContent {
+    var textContentType: UITextContentType? {
+        switch self {
+        case .username: .username
+        case .password: .password
+        case .newPassword: .newPassword
+        case .url: .URL
+        case .number: nil
+        }
+    }
+
+    var keyboardType: UIKeyboardType {
+        switch self {
+        case .url: .URL
+        case .number: .numberPad
+        default: .default
+        }
+    }
+}
+#endif
+
 #if !os(tvOS)
 
 // MARK: - iOS / macOS field
@@ -46,14 +68,14 @@ struct MarqueeTextField<F: Hashable>: View {
                 field
                     .focused(focus, equals: equals)
                     .foregroundStyle(Color.siloOnSurface)
-                    .tint(Color(hex: "#0A84FF"))
+                    .tint(Color.siloFieldTint)
                     .submitLabel(submitLabel)
                     .onSubmit(onSubmit)
                     .accessibilityLabel(Text(placeholder))
                     .disabled(isDisabled)
                     #if os(iOS)
-                    .textContentType(uiContentType)
-                    .keyboardType(uiKeyboard)
+                    .textContentType(content?.textContentType)
+                    .keyboardType(content?.keyboardType ?? .default)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     #else
@@ -94,7 +116,7 @@ struct MarqueeTextField<F: Hashable>: View {
                             .strokeBorder(stroke, lineWidth: 1)
                     )
             } else if isError {
-                Color(hex: "#FF6961").opacity(0.08)
+                Color.siloErrorInk.opacity(0.08)
             }
         }
         .opacity(isDisabled ? 0.5 : 1)
@@ -114,45 +136,18 @@ struct MarqueeTextField<F: Hashable>: View {
     }
 
     private var fill: Color {
-        if isError { return Color(hex: "#FF6961").opacity(0.08) }
+        if isError { return Color.siloErrorInk.opacity(0.08) }
         return Color.white.opacity(isFocused ? 0.10 : 0.07)
     }
 
     private var stroke: Color {
-        if isError { return Color(hex: "#FF6961").opacity(0.65) }
+        if isError { return Color.siloErrorInk.opacity(0.65) }
         return Color.white.opacity(isFocused ? 0.45 : 0.12)
     }
-
-    #if os(iOS)
-    private var uiContentType: UITextContentType? {
-        switch content {
-        case .username: .username
-        case .password: .password
-        case .newPassword: .newPassword
-        case .url: .URL
-        case .number, .none: nil
-        }
-    }
-
-    private var uiKeyboard: UIKeyboardType {
-        switch content {
-        case .url: .URL
-        case .number: .numberPad
-        default: .default
-        }
-    }
-    #endif
-}
-
-private struct MarqueeFieldGroupedKey: EnvironmentKey {
-    static let defaultValue = false
 }
 
 extension EnvironmentValues {
-    var marqueeFieldGrouped: Bool {
-        get { self[MarqueeFieldGroupedKey.self] }
-        set { self[MarqueeFieldGroupedKey.self] = newValue }
-    }
+    @Entry var marqueeFieldGrouped = false
 }
 
 /// Username + password as one block, like iOS grouped fields.
@@ -179,7 +174,7 @@ struct MarqueeFieldGroup<Content: View>: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: MarqueeMetrics.fieldCorner, style: .continuous)
-                .strokeBorder(isError ? Color(hex: "#FF6961").opacity(0.65) : Color.white.opacity(0.12), lineWidth: 1)
+                .strokeBorder(isError ? Color.siloErrorInk.opacity(0.65) : Color.white.opacity(0.12), lineWidth: 1)
         )
     }
 }
@@ -219,8 +214,8 @@ struct MarqueeTVField<F: Hashable>: View {
             field
                 .textFieldStyle(.plain)
                 .focused(focus, equals: equals)
-                .textContentType(uiContentType)
-                .keyboardType(content == .url ? .URL : content == .number ? .numberPad : .default)
+                .textContentType(content?.textContentType)
+                .keyboardType(content?.keyboardType ?? .default)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
                 .tint(.clear)
@@ -238,7 +233,7 @@ struct MarqueeTVField<F: Hashable>: View {
         .overlay(
             RoundedRectangle(cornerRadius: MarqueeMetrics.fieldCorner, style: .continuous)
                 .strokeBorder(
-                    isError ? Color(hex: "#FF6961").opacity(0.75) : (isFocused ? .clear : Color.white.opacity(0.12)),
+                    isError ? Color.siloErrorInk.opacity(0.75) : (isFocused ? .clear : Color.white.opacity(0.12)),
                     lineWidth: isError ? 3 : 1
                 )
         )
@@ -264,16 +259,6 @@ struct MarqueeTVField<F: Hashable>: View {
     private var displayColor: Color {
         if text.isEmpty { return isFocused ? Color.black.opacity(0.4) : Color.siloOnSurface.opacity(0.4) }
         return isFocused ? .black : Color.siloOnSurface
-    }
-
-    private var uiContentType: UITextContentType? {
-        switch content {
-        case .username: .username
-        case .password: .password
-        case .newPassword: .newPassword
-        case .url: .URL
-        case .number, .none: nil
-        }
     }
 }
 

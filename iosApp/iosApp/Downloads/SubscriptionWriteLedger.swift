@@ -5,7 +5,7 @@ import Foundation
 /// started, so a DELETE or create answered during the read is missing from
 /// it. And a create can answer with a monitor whose DELETE is already on the
 /// wire; when that DELETE lands, the monitor the create returned is gone.
-struct SubscriptionWriteLedger: Equatable {
+struct SubscriptionWriteLedger {
     /// Bumped by every DELETE that landed and every create that answered.
     private(set) var generation = 0
     /// Monitor id → generation at which its DELETE landed.

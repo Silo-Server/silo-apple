@@ -3,20 +3,19 @@ import Network
 
 /// The pairing channel is the shared framed-JSON LAN transport specialized to
 /// `PairingMessage`. TLS provides opportunistic confidentiality only (the PSK
-/// is compiled into the app — see the design spec §6); integrity rests on the
-/// server-issued match code.
+/// is compiled into the app; see §6 of
+/// docs/superpowers/specs/2026-06-14-companion-pairing-design.md); integrity
+/// rests on the server-issued match code.
 typealias PairingSession = FramedJSONSession<PairingMessage>
-
-enum PairingTransport {
-    static func tlsParameters() -> NWParameters {
-        SiloLANTLS.parameters(psk: "silo-companion-pairing-v1", identity: "silo-pairing")
-    }
-}
 
 extension FramedJSONSession where Message == PairingMessage {
     /// Outbound side (Companion): connect to a discovered TV endpoint.
     init(endpoint: NWEndpoint) {
-        self.init(endpoint: endpoint, parameters: PairingTransport.tlsParameters())
+        self.init(endpoint: endpoint, parameters: Self.tlsParameters())
+    }
+
+    static func tlsParameters() -> NWParameters {
+        SiloLANTLS.parameters(psk: "silo-companion-pairing-v1", identity: "silo-pairing")
     }
 }
 

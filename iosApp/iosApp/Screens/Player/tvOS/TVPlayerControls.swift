@@ -11,17 +11,17 @@ enum TVPlayerTimeDisplayMode: Equatable {
     }
 }
 
-/// tvOS player overlay. Post-redesign the idle state is VidHub-minimal:
-/// no hero strip, thin scrubber, icon-only transport row along the bottom.
+/// tvOS player overlay. The idle state is minimal: no hero strip, a thin
+/// scrubber, and an icon-only transport row along the bottom.
 /// When the user opens the options panel, the idle overlay steps aside and
 /// `TVPlayerInfoHUD` takes over as a floating top-center HUD (Infuse idiom).
 /// Controls auto-hide after 5 s of no focus movement while playing; Menu
 /// either hides the HUD, dismisses the overlay, or exits the player
 /// depending on what's on screen.
 struct TVPlayerControls: View {
-    private static let transportHorizontalInset: CGFloat = 80
-    private static let scrubPreviewCardWidth: CGFloat = 340
-    private static let scrubPreviewBottomInset: CGFloat = 300
+    fileprivate static let transportHorizontalInset: CGFloat = 80
+    fileprivate static let scrubPreviewCardWidth: CGFloat = 340
+    fileprivate static let scrubPreviewBottomInset: CGFloat = 300
 
     let viewModel: PlayerViewModel
     let showsTimelinePreview: Bool
@@ -259,49 +259,13 @@ struct TVPlayerControls: View {
         ZStack(alignment: .bottom) {
             bottomGradient.ignoresSafeArea()
             VStack(spacing: 10) {
-                passiveTimelineBar
-                timeRow
+                TVPassiveTimelineBar(viewModel: viewModel)
+                TVPlayerTimeRow(viewModel: viewModel, mode: timeDisplayMode)
             }
             .padding(.horizontal, Self.transportHorizontalInset)
             .padding(.bottom, 48)
         }
         .allowsHitTesting(false)
-    }
-
-    private var passiveTimelineBar: some View {
-        GeometryReader { geo in
-            let width = geo.size.width
-            ZStack(alignment: .leading) {
-                Capsule(style: .continuous)
-                    .fill(Color.white.opacity(0.24))
-                    .frame(height: 7)
-
-                let bufferedAhead = max(0, bufferedFraction - progressFraction)
-                if bufferedAhead > 0 {
-                    Capsule(style: .continuous)
-                        .fill(Color.white.opacity(0.28))
-                        .frame(width: width * bufferedAhead, height: 7)
-                        .offset(x: width * progressFraction)
-                }
-
-                Capsule(style: .continuous)
-                    .fill(Color.white)
-                    .frame(width: width * progressFraction, height: 7)
-            }
-            .frame(height: 20, alignment: .center)
-        }
-        .frame(height: 20)
-    }
-
-    private var progressFraction: Double {
-        guard viewModel.duration > 0 else { return 0 }
-        return min(max(scrubberDisplayTime / viewModel.duration, 0), 1)
-    }
-
-    private var bufferedFraction: Double {
-        guard viewModel.duration > 0 else { return 0 }
-        let end = viewModel.currentTime + viewModel.bufferedAheadSeconds
-        return min(max(end / viewModel.duration, 0), 1)
     }
 
     @ViewBuilder
@@ -312,22 +276,7 @@ struct TVPlayerControls: View {
                 .padding(.top, viewModel.isBuffering ? 120 : 64)
                 .padding(.horizontal, 80)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-            if viewModel.isScrubbing, let image = viewModel.scrubPreviewImage {
-                GeometryReader { proxy in
-                    scrubPreviewCard(image)
-                        .frame(width: Self.scrubPreviewCardWidth)
-                        .padding(.leading, scrubPreviewLeadingInset(in: proxy.size.width))
-                        .padding(.bottom, Self.scrubPreviewBottomInset)
-                        .frame(
-                            maxWidth: .infinity,
-                            maxHeight: .infinity,
-                            alignment: .bottomLeading
-                        )
-                }
-                .transition(.opacity)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
-            }
+            TVScrubPreviewLayer(viewModel: viewModel)
             transportStack
                 .padding(.horizontal, Self.transportHorizontalInset)
                 .padding(.bottom, 48)
@@ -354,8 +303,8 @@ struct TVPlayerControls: View {
     }
 
     /// Subtle bottom gradient so the transport has contrast against bright
-    /// frames. Shallower than pre-redesign (340pt → 240pt) since the scrubber
-    /// and icon buttons now carry their own outlines and need less backdrop.
+    /// frames. Kept shallow because the scrubber and icon buttons carry their
+    /// own outlines.
     private var bottomGradient: some View {
         VStack(spacing: 0) {
             Spacer()
@@ -368,48 +317,12 @@ struct TVPlayerControls: View {
         }
     }
 
-    private func scrubPreviewCard(_ image: CGImage) -> some View {
-        VStack(spacing: 8) {
-            Image(decorative: image, scale: 1)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-                .frame(width: 320, height: 180)
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            Text(PlayerTimeFormatter.formatHMS(viewModel.scrubPreviewTime))
-                .font(.system(size: 24, weight: .semibold, design: .rounded))
-                .foregroundStyle(.white)
-                .monospacedDigit()
-        }
-        .padding(10)
-        .siloPlayerGlass(
-            in: RoundedRectangle(cornerRadius: 20, style: .continuous),
-            tint: Color.black.opacity(0.28)
-        )
-        .shadow(color: .black.opacity(0.5), radius: 18, y: 7)
-    }
-
-    /// Aligns the preview with the scrubber puck while keeping the complete
-    /// card inside the same horizontal bounds as the transport timeline.
-    private func scrubPreviewLeadingInset(in containerWidth: CGFloat) -> CGFloat {
-        let trackWidth = max(containerWidth - (Self.transportHorizontalInset * 2), 0)
-        let playheadCenter = Self.transportHorizontalInset
-            + (trackWidth * CGFloat(progressFraction))
-        let minimumLeading = Self.transportHorizontalInset
-        let maximumLeading = containerWidth
-            - Self.transportHorizontalInset
-            - Self.scrubPreviewCardWidth
-        return min(
-            max(playheadCenter - (Self.scrubPreviewCardWidth / 2), minimumLeading),
-            maximumLeading
-        )
-    }
-
     /// The sleep-timer chip floats in the top-right when active. Buffering is
     /// owned by the player shell so it remains visible outside this overlay.
     private var statusColumn: some View {
         VStack(alignment: .trailing, spacing: 10) {
             if viewModel.sleepTimer.isActive {
-                Label(formatCountdown(viewModel.sleepTimer.remainingSeconds),
+                Label(PlayerTimeFormatter.formatCountdown(viewModel.sleepTimer.remainingSeconds),
                       systemImage: "moon.zzz.fill")
                     .font(.siloSmall.weight(.medium))
                     .foregroundStyle(.white.opacity(0.85))
@@ -519,7 +432,7 @@ struct TVPlayerControls: View {
                 resumePlaybackAfterTimelineSelection: $resumePlaybackAfterTimelineSelection,
                 cancelOnBlur: cancelPendingScrub
             )
-            timeRow
+            TVPlayerTimeRow(viewModel: viewModel, mode: timeDisplayMode)
             TVPlayerTransportCluster(
                 viewModel: viewModel,
                 onOpenHUD: { openHUD() },
@@ -576,53 +489,6 @@ struct TVPlayerControls: View {
             : viewModel.metadata.primaryTitle
     }
 
-    @ViewBuilder
-    private var timeRow: some View {
-        if timeDisplayMode == .currentAndFinish {
-            TimelineView(.periodic(from: .now, by: 1)) { context in
-                HStack {
-                    clockText(formatClockTime(context.date))
-                    Spacer()
-                    if viewModel.duration > 0 {
-                        clockText(formatClockTime(estimatedFinishDate(from: context.date)))
-                    }
-                }
-            }
-        } else {
-            HStack {
-                clockText(formatTime(scrubberDisplayTime))
-                Spacer()
-                if viewModel.duration > 0 {
-                    clockText("−\(formatTime(remainingTime))")
-                }
-            }
-        }
-    }
-
-    private func clockText(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 28, weight: .semibold, design: .rounded))
-            .foregroundStyle(.white)
-            .monospacedDigit()
-    }
-
-    private var scrubberDisplayTime: Double {
-        viewModel.isScrubbing ? viewModel.scrubPreviewTime : viewModel.currentTime
-    }
-
-    private var remainingTime: Double {
-        max(0, viewModel.duration - scrubberDisplayTime)
-    }
-
-    private func estimatedFinishDate(from now: Date) -> Date {
-        let speed = max(viewModel.effectivePlaybackSpeed, 0.1)
-        return now.addingTimeInterval(remainingTime / speed)
-    }
-
-    private func formatClockTime(_ date: Date) -> String {
-        date.formatted(date: .omitted, time: .shortened)
-    }
-
     // MARK: - HUD open/close
 
     private func enterTimelineSelection() {
@@ -663,16 +529,6 @@ struct TVPlayerControls: View {
         viewModel.openHUD()
     }
 
-    private func openSettingsHUD() {
-        applyHUDEntryPoint(.settings)
-        viewModel.openSettingsHUD()
-    }
-
-    private func openPlaybackHUD() {
-        applyHUDEntryPoint(.playback)
-        viewModel.openPlaybackHUD()
-    }
-
     private func applyHUDEntryPoint(_ entryPoint: PlayerViewModel.TVHUDEntryPoint) {
         cancelPendingScrub = true
         isScrubberFocused = false
@@ -680,30 +536,166 @@ struct TVPlayerControls: View {
         switch entryPoint {
         case .settings:
             activeHUDTab = .video
-        case .playback:
-            activeHUDTab = preferredPlaybackHUDTab
         }
         focusedHUDTab = activeHUDTab
-    }
-
-    private var preferredPlaybackHUDTab: TVPlayerInfoHUD.Tab {
-        if !viewModel.audioTracks.isEmpty { return .audio }
-        if !viewModel.subtitleTracks.isEmpty { return .subtitles }
-        return .video
     }
 
     private func closeHUD() {
         viewModel.closeHUD()
     }
+}
 
-    // MARK: - Helpers
-
-    private func formatTime(_ seconds: Double) -> String {
-        PlayerTimeFormatter.formatHMS(seconds)
+private extension PlayerViewModel {
+    /// The scrub preview while scrubbing, otherwise the playhead.
+    var timelineDisplayTime: Double {
+        isScrubbing ? scrubPreviewTime : currentTime
     }
 
-    private func formatCountdown(_ seconds: Int) -> String {
-        PlayerTimeFormatter.formatCountdown(seconds)
+    var timelineProgressFraction: Double {
+        guard duration > 0 else { return 0 }
+        return min(max(timelineDisplayTime / duration, 0), 1)
+    }
+}
+
+/// Elapsed/remaining or clock/finish-time row. It reads the playback clock,
+/// so clock ticks re-render this view rather than the whole overlay.
+private struct TVPlayerTimeRow: View {
+    let viewModel: PlayerViewModel
+    let mode: TVPlayerTimeDisplayMode
+
+    var body: some View {
+        if mode == .currentAndFinish {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                HStack {
+                    clockText(formatClockTime(context.date))
+                    Spacer()
+                    if viewModel.duration > 0 {
+                        clockText(formatClockTime(estimatedFinishDate(from: context.date)))
+                    }
+                }
+            }
+        } else {
+            HStack {
+                clockText(PlayerTimeFormatter.formatHMS(viewModel.timelineDisplayTime))
+                Spacer()
+                if viewModel.duration > 0 {
+                    clockText("−\(PlayerTimeFormatter.formatHMS(remainingTime))")
+                }
+            }
+        }
+    }
+
+    private func clockText(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 28, weight: .semibold, design: .rounded))
+            .foregroundStyle(.white)
+            .monospacedDigit()
+    }
+
+    private var remainingTime: Double {
+        max(0, viewModel.duration - viewModel.timelineDisplayTime)
+    }
+
+    private func estimatedFinishDate(from now: Date) -> Date {
+        let speed = max(viewModel.effectivePlaybackSpeed, 0.1)
+        return now.addingTimeInterval(remainingTime / speed)
+    }
+
+    private func formatClockTime(_ date: Date) -> String {
+        date.formatted(date: .omitted, time: .shortened)
+    }
+}
+
+/// Non-interactive progress bar shown while the controls are hidden.
+private struct TVPassiveTimelineBar: View {
+    let viewModel: PlayerViewModel
+
+    var body: some View {
+        GeometryReader { geo in
+            let width = geo.size.width
+            let progress = viewModel.timelineProgressFraction
+            ZStack(alignment: .leading) {
+                Capsule(style: .continuous)
+                    .fill(Color.white.opacity(0.24))
+                    .frame(height: 7)
+
+                let bufferedAhead = max(0, viewModel.bufferedEndFraction - progress)
+                if bufferedAhead > 0 {
+                    Capsule(style: .continuous)
+                        .fill(Color.white.opacity(0.28))
+                        .frame(width: width * bufferedAhead, height: 7)
+                        .offset(x: width * progress)
+                }
+
+                Capsule(style: .continuous)
+                    .fill(Color.white)
+                    .frame(width: width * progress, height: 7)
+            }
+            .frame(height: 20, alignment: .center)
+        }
+        .frame(height: 20)
+    }
+}
+
+/// Still preview card that follows the scrubber puck while scrubbing.
+private struct TVScrubPreviewLayer: View {
+    private typealias Layout = TVPlayerControls
+
+    let viewModel: PlayerViewModel
+
+    var body: some View {
+        if viewModel.isScrubbing, let image = viewModel.scrubPreviewImage {
+            GeometryReader { proxy in
+                scrubPreviewCard(image)
+                    .frame(width: Layout.scrubPreviewCardWidth)
+                    .padding(.leading, scrubPreviewLeadingInset(in: proxy.size.width))
+                    .padding(.bottom, Layout.scrubPreviewBottomInset)
+                    .frame(
+                        maxWidth: .infinity,
+                        maxHeight: .infinity,
+                        alignment: .bottomLeading
+                    )
+            }
+            .transition(.opacity)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
+    }
+
+    private func scrubPreviewCard(_ image: CGImage) -> some View {
+        VStack(spacing: 8) {
+            Image(decorative: image, scale: 1)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: 320, height: 180)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            Text(PlayerTimeFormatter.formatHMS(viewModel.scrubPreviewTime))
+                .font(.system(size: 24, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white)
+                .monospacedDigit()
+        }
+        .padding(10)
+        .siloPlayerGlass(
+            in: RoundedRectangle(cornerRadius: 20, style: .continuous),
+            tint: Color.black.opacity(0.28)
+        )
+        .shadow(color: .black.opacity(0.5), radius: 18, y: 7)
+    }
+
+    /// Aligns the preview with the scrubber puck while keeping the complete
+    /// card inside the same horizontal bounds as the transport timeline.
+    private func scrubPreviewLeadingInset(in containerWidth: CGFloat) -> CGFloat {
+        let trackWidth = max(containerWidth - (Layout.transportHorizontalInset * 2), 0)
+        let playheadCenter = Layout.transportHorizontalInset
+            + (trackWidth * CGFloat(viewModel.timelineProgressFraction))
+        let minimumLeading = Layout.transportHorizontalInset
+        let maximumLeading = containerWidth
+            - Layout.transportHorizontalInset
+            - Layout.scrubPreviewCardWidth
+        return min(
+            max(playheadCenter - (Layout.scrubPreviewCardWidth / 2), minimumLeading),
+            maximumLeading
+        )
     }
 }
 #endif

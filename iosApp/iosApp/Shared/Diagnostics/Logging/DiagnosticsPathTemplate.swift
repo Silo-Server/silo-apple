@@ -3,18 +3,17 @@ import Foundation
 
 /// Replaces private-looking URL path segments with `{id}`.
 ///
-/// This started life as two private helpers inside `DiagnosticsBundleBuilder`,
-/// applied to hosted bundles at *build* time. Network instrumentation needs the
-/// same transform at *emission* time, for both destinations: the hosted
-/// collector's privacy scanner rejects an entire report when any `network.path`
-/// attribute carries a numeric, UUID, hex, or opaque segment, and self-hosted
-/// evidence full of raw ids cannot be correlated by route either.
+/// Used at emission time by network instrumentation and at build time for
+/// hosted bundles. The hosted collector's privacy scanner rejects an entire
+/// report when any `network.path` attribute carries a numeric, UUID, hex, or
+/// opaque segment, and self-hosted evidence full of raw ids cannot be
+/// correlated by route either.
 ///
 /// Two entry points, deliberately not the same:
 ///
 /// * ``template(_:)`` / ``isPrivateSegment(_:)`` are the *hosted bundle* rules,
-///   byte-for-byte the four regexes `DiagnosticsBundleBuilder` has always used.
-///   Its output is already-accepted evidence; do not change these.
+///   the four regexes hosted bundles are built with. Their output is
+///   already-accepted evidence; do not change these.
 /// * ``templatedPath(for:)`` / ``templatedPath(forRawPath:)`` are the
 ///   *emission* rules. They are strictly more aggressive, because a path this
 ///   app writes into `network.path` has to pass
@@ -33,10 +32,10 @@ enum DiagnosticsPathTemplate {
     /// `TEMPLATE_SEGMENT` (`^\{[a-z][a-z0-9_]*\}$`), which is always accepted.
     static let placeholder = "{id}"
 
-    // MARK: - Hosted bundle rules (unchanged behavior)
+    // MARK: - Hosted bundle rules
 
     /// Templates every private segment of an already-clean path, using the
-    /// hosted bundle builder's historical segment rules.
+    /// hosted-bundle segment rules.
     ///
     /// The input must not contain a query or fragment —
     /// `DiagnosticsBundleBuilder` feeds it a `percentEncodedPath`. Emission-time
@@ -51,7 +50,7 @@ enum DiagnosticsPathTemplate {
     }
 
     /// Whether a single path segment looks like a private identifier under the
-    /// hosted bundle builder's historical rules.
+    /// hosted-bundle rules.
     static func isPrivateSegment(_ value: String) -> Bool {
         let range = NSRange(location: 0, length: (value as NSString).length)
         return anchoredUUIDSegmentRegex.firstMatch(in: value, range: range) != nil
@@ -150,7 +149,7 @@ enum DiagnosticsPathTemplate {
 
     // MARK: - Segment patterns
 
-    /// The bundle builder's historical UUID rule: anchored, RFC-version-shaped.
+    /// The hosted-bundle UUID rule: anchored, RFC-version-shaped.
     private static let anchoredUUIDSegmentRegex = try! NSRegularExpression(
         pattern: #"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"#
     )

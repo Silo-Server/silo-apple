@@ -118,22 +118,6 @@ private final class FakePairingAPI: PairingDeviceAuthorizing, @unchecked Sendabl
 
 // MARK: - Helpers
 
-@MainActor
-private func expectEventually(
-    _ label: String,
-    timeout: TimeInterval = 5,
-    file: StaticString = #filePath,
-    line: UInt = #line,
-    _ condition: () -> Bool
-) async {
-    let deadline = Date().addingTimeInterval(timeout)
-    while Date() < deadline {
-        if condition() { return }
-        try? await Task.sleep(for: .milliseconds(10))
-    }
-    XCTFail("timed out waiting for: \(label)", file: file, line: line)
-}
-
 private func entry(_ id: String, name: String) -> ServerEntry {
     ServerEntry(id: id, url: "https://\(id).example", fetchedName: name, profileId: nil, lastUsedAt: Date())
 }
@@ -1247,14 +1231,7 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
 }
 
 private func waitForIdentityTransitionWaiter(_ http: HTTPClient) async -> Bool {
-    let deadline = ContinuousClock.now + .seconds(2)
-    while ContinuousClock.now < deadline {
-        if await http.pendingIdentityTransitionCount() > 0 {
-            return true
-        }
-        try? await Task.sleep(for: .milliseconds(10))
-    }
-    return false
+    await eventually(timeout: .seconds(2)) { await http.pendingIdentityTransitionCount() > 0 }
 }
 
 // MARK: - TV sign-in (st=login) and setup failures

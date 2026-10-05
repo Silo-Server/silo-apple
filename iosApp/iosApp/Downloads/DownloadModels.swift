@@ -111,9 +111,7 @@ struct DownloadPreparation: Codable, Hashable, Sendable {
         case "queued":
             guard let position = queuePosition, position > 0 else { return "Waiting to prepare" }
             if position == 1 { return "Waiting to prepare · next in line" }
-            let formatter = NumberFormatter()
-            formatter.numberStyle = .ordinal
-            let ordinal = formatter.string(from: NSNumber(value: position)) ?? "#\(position)"
+            let ordinal = Self.ordinalFormatter.string(from: NSNumber(value: position)) ?? "#\(position)"
             return "Waiting to prepare · \(ordinal) in line"
         case "retrying":
             return "Preparing · trying again soon"
@@ -126,6 +124,12 @@ struct DownloadPreparation: Codable, Hashable, Sendable {
             return parts.joined(separator: " · ")
         }
     }
+
+    private static let ordinalFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .ordinal
+        return formatter
+    }()
 
     /// "under a minute left", "6 min left", "1 hr 5 min left".
     static func timeLeft(_ seconds: Int) -> String {
@@ -283,10 +287,6 @@ struct OfflineManifest: Codable, Hashable, Sendable {
 
     let manifestVersion: Int?
     let generatedAt: Date?
-
-    /// Compatibility alias for code paths and saved manifests that used
-    /// the former public `format` name.
-    var format: String { quality }
 
     /// Whether the downloaded file is the server's remux/transcode output
     /// rather than the original source file.
@@ -635,7 +635,7 @@ enum LocalDownloadStatus: String, Codable, Sendable {
 /// `DownloadFilePaths`.
 struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     let id: String                       // server download id
-    var contentId: String                // mutable: may be re-resolved via stableIdentity
+    var contentId: String
     let episodeId: String?
     let batchId: String?
     var mediaFileId: String
@@ -655,8 +655,7 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     var posterFilename: String?
     var backdropFilename: String?
     var logoFilename: String?
-    /// The parent series poster of an episode download. Default `nil` keeps
-    /// Codable backward-compatible with stores written before it existed.
+    /// The parent series poster of an episode download.
     var seriesPosterFilename: String? = nil
     /// Manifest `fetch_url` → relative on-disk filename.
     var subtitleFilenames: [String: String]
@@ -683,8 +682,7 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
         subtitleRevisions = revisions
     }
     /// Persisted `cancel(byProducingResumeData:)` blob for a paused
-    /// transfer. Default `nil` keeps Codable backward-compatible with
-    /// stores written before pause existed.
+    /// transfer.
     var resumeDataFilename: String? = nil
 
     // Display fields cached so the Downloads list renders before the
@@ -697,8 +695,7 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     /// so the grouped Downloads UI can label a series card offline.
     var seriesTitle: String? = nil
     /// Structured season/episode numbers, populated from the offline
-    /// manifest. Default `nil` keeps the synthesized memberwise init and
-    /// Codable backward-compatible with stores written before they existed.
+    /// manifest.
     var seasonNumber: Int? = nil
     var episodeNumber: Int? = nil
     var posterThumbhash: String?
@@ -728,9 +725,10 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     /// poster, since its own poster is the episode still.
     var tileThumbhash: String? { seriesPosterThumbhash ?? posterThumbhash }
 
-    var isPlayableOffline: Bool {
-        (localStatus == .completed || localStatus == .revoked) && mediaFilename != nil
-    }
+    /// Completed or revoked: the media occupies storage and stays playable.
+    var isOnDevice: Bool { localStatus == .completed || localStatus == .revoked }
+
+    var isPlayableOffline: Bool { isOnDevice && mediaFilename != nil }
 
     /// The leaf media item id watch-progress is keyed by: the episode id for
     /// an episode download, otherwise the (movie) content id.

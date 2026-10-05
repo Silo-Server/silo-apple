@@ -1,7 +1,7 @@
 import SwiftUI
 
 extension Color {
-    // MARK: - Core Palette (Plezy OLED Dark)
+    // MARK: - Core Palette (OLED dark)
 
     /// Pure black background (#000000)
     static let siloBackground = Color(hex: "#000000")
@@ -99,4 +99,21 @@ extension Color {
 
     /// Disabled control tint
     static let siloDisabled = Color(hex: "#4B5563")
+
+    // MARK: - First-run status
+
+    /// Error text and outlines on first-run surfaces.
+    static let siloErrorInk = Color(hex: "#FF6961")
+
+    /// Attention status (unreachable server, setup needs a look).
+    static let siloStatusWarning = Color(hex: "#F4C869")
+
+    /// Live/OK status; the same green as `siloSwitchOn`.
+    static let siloStatusLive = siloSwitchOn
+
+    /// Text-field caret tint.
+    static let siloFieldTint = Color(hex: "#0A84FF")
+
+    /// Signed-in iOS page canvas behind `SiloPageBackdrop`'s washes.
+    static let siloPageCanvas = Color(hex: "#111111")
 }

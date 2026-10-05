@@ -34,13 +34,14 @@ final class TVPairingBrowser {
     private var browser: NWBrowser?
     private var generation = 0
     /// True between `start()` and `stop()` — gates self-heal restarts so a
-    /// deliberate stop stays stopped.
-    private var wantsBrowsing = false
+    /// deliberate stop stays stopped. While false, `found` is empty, which
+    /// says nothing about any TV.
+    private(set) var isBrowsing = false
     private nonisolated static let logger = Logger(subsystem: "org.siloserver.silo", category: "pairing.browser")
 
     func start() {
         guard browser == nil else { return }
-        wantsBrowsing = true
+        isBrowsing = true
         startBrowser()
     }
 
@@ -50,14 +51,15 @@ final class TVPairingBrowser {
         let params = NWParameters()
         params.includePeerToPeer = true
         let browser = NWBrowser(for: .bonjourWithTXTRecord(type: PairingProtocol.serviceType, domain: nil), using: params)
+        // Both handlers run on `.main` (see `start(queue:)` below).
         browser.browseResultsChangedHandler = { [weak self] results, _ in
-            Task { @MainActor in
+            MainActor.assumeIsolated {
                 guard let self, self.generation == gen else { return }
                 self.found = results.compactMap(Self.makeTV)
             }
         }
         browser.stateUpdateHandler = { [weak self] state in
-            Task { @MainActor in
+            MainActor.assumeIsolated {
                 guard let self, self.generation == gen else { return }
                 if case .failed(let error) = state {
                     Self.logger.error("browser failed: \(String(describing: error), privacy: .public)")
@@ -75,13 +77,13 @@ final class TVPairingBrowser {
         found = []
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(2))
-            guard let self, self.wantsBrowsing, self.browser == nil else { return }
+            guard let self, self.isBrowsing, self.browser == nil else { return }
             self.startBrowser()
         }
     }
 
     func stop() {
-        wantsBrowsing = false
+        isBrowsing = false
         generation += 1
         browser?.cancel()
         browser = nil

@@ -20,11 +20,9 @@ enum SubtitleFontSizePreset: String, Codable, CaseIterable, Identifiable {
         }
     }
 
-    /// Point sizes are interpreted inside the overlay's 1080-line reference
-    /// and scale with the displayed video rect, so they read the same in any
-    /// orientation. The ladder is rebased ~1.4x from the original values
-    /// (large = old xxlarge) after the overlay switched from full-screen to
-    /// video-rect sizing, which shrank the effective render size.
+    /// Point sizes at the overlay's 1080-line reference, scaled with the
+    /// displayed video rect. Each platform's ladder is tuned for its viewing
+    /// distance.
     var pointSize: Double {
         #if os(iOS)
         switch self {
@@ -35,12 +33,6 @@ enum SubtitleFontSizePreset: String, Codable, CaseIterable, Identifiable {
         case .xxlarge: return 77
         }
         #elseif os(tvOS)
-        // Ladder shifted down one notch from the prior tvOS values (large =
-        // old medium) after the defaults read one size too big in the living
-        // room. Each preset now takes the prior rung's value; small is a new
-        // ~1.2x step below medium. Large (the default) was then eased from 63
-        // to 58 — 63 read a touch too big and medium's 51 a touch too small,
-        // so the default now lands between the two.
         switch self {
         case .small: return 43
         case .medium: return 51
@@ -58,14 +50,8 @@ enum SubtitleFontSizePreset: String, Codable, CaseIterable, Identifiable {
         }
         #endif
     }
-
-    static func nearest(to points: Double) -> SubtitleFontSizePreset {
-        allCases.min(by: { abs($0.pointSize - points) < abs($1.pointSize - points) }) ?? .large
-    }
 }
 
-// Future: add a "system" appearance source that maps Apple's Media
-// Accessibility caption preferences into this model before overlay styling.
 struct SubtitleFontFamilyPreset: RawRepresentable, Codable, CaseIterable, Hashable, Identifiable {
     let rawValue: String
 
@@ -91,8 +77,13 @@ struct SubtitleFontFamilyPreset: RawRepresentable, Codable, CaseIterable, Hashab
     static let serif = SubtitleFontFamilyPreset(rawValue: "serif")!
     static let monospace = SubtitleFontFamilyPreset(rawValue: "monospace")!
 
-    static var allCases: [SubtitleFontFamilyPreset] {
-        let legacy = [sansSerif, serif, monospace]
+    /// Computed once: the installed font families don't change while the app runs.
+    static let allCases: [SubtitleFontFamilyPreset] = {
+        let legacy = [
+            SubtitleFontFamilyPreset.sansSerif,
+            SubtitleFontFamilyPreset.serif,
+            SubtitleFontFamilyPreset.monospace,
+        ]
         let legacyValues = Set(legacy.map(\.rawValue))
         let systemFamilies = CTFontManagerCopyAvailableFontFamilyNames() as? [String] ?? []
         let systemPresets = systemFamilies
@@ -101,7 +92,7 @@ struct SubtitleFontFamilyPreset: RawRepresentable, Codable, CaseIterable, Hashab
             .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
             .compactMap(SubtitleFontFamilyPreset.init(rawValue:))
         return legacy + systemPresets
-    }
+    }()
 
     var id: String { rawValue }
 
@@ -164,14 +155,6 @@ enum SubtitlePositionPreset: String, Codable, CaseIterable, Identifiable {
         case .bottom: return "Bottom"
         case .lowerThird: return "Lower Third"
         case .top: return "Top"
-        }
-    }
-
-    var legacyPosition: Int {
-        switch self {
-        case .top: return 0
-        case .lowerThird: return 70
-        case .bottom: return 100
         }
     }
 }
