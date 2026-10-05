@@ -1018,7 +1018,7 @@ class PlayerViewModel {
     }
 
     private static let autoplayStartSessionTimeout: TimeInterval = 15
-    private var lastLoadRequest: LoadRequest?
+    private(set) var lastLoadRequest: LoadRequest?
     private static let nextUpCountdownDefaultSeconds = 10
     private static let nextUpHUDCountdownThresholdSeconds: Double = 100
     private var nextUpAutoplayCancelled = false
@@ -8363,10 +8363,19 @@ extension PlayerViewModel {
     @discardableResult
     private func remountCurrentPlayback(at position: Double, origin: LoadOrigin = .recovery) -> Bool {
         guard !isDisposed,
-              var request = lastLoadRequest,
+              let lastLoadRequest,
               position.isFinite, position >= 0 else { return false }
-        // A Start Over request would rewind the reopen to zero.
-        request.startFromBeginning = false
+        // A local track switch leaves the opening request behind; without
+        // this, a download remounts on its manifest's audio track. The copy
+        // also drops Start Over, which would rewind the reopen to zero.
+        let request = lastLoadRequest.copyForRecovery(
+            preferredFileId: lastLoadRequest.preferredFileId,
+            preferredAudioTrackIndex: resolvedAudioTrackIndexForResume(),
+            preferredSubtitleTrackIndex: resolvedSubtitleTrackIndexForResume(),
+            preferredSidecarSubtitleTrackId: resolvedSidecarSubtitleTrackIdForResume(),
+            offlineDownloadId: lastLoadRequest.offlineDownloadId,
+            serverSubtitlesDisabled: hasDisabledServerSubtitlesForResume
+        )
         beginFreshLoad(
             request: request,
             progressPosition: nil,
