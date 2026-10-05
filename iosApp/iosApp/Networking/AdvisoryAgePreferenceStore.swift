@@ -62,6 +62,8 @@ final class AdvisoryAgePreferenceStore: ObservableObject {
     /// Bumped by ``markStale()`` so a read already in flight can still show
     /// its answer without counting as the fresh read that was asked for.
     private var staleMarks: UInt = 0
+    /// The ``staleMarks`` value the in-flight read started under.
+    private var hydrationStaleMark: UInt = 0
     /// The last value the server confirmed; a failed write rolls back to it.
     private var confirmedValue = false
 
@@ -87,9 +89,12 @@ final class AdvisoryAgePreferenceStore: ObservableObject {
     }
 
     func refresh() async {
-        if let hydrationTask {
+        // Join a read in flight, unless it started before the value was
+        // marked stale; then read again once it finishes.
+        while let hydrationTask {
+            let isCurrent = hydrationStaleMark == staleMarks
             await hydrationTask.value
-            return
+            if isCurrent { return }
         }
         guard let identity = requestIdentity() else { return }
 
@@ -142,6 +147,7 @@ final class AdvisoryAgePreferenceStore: ObservableObject {
             }
         }
         hydrationTask = task
+        hydrationStaleMark = staleMark
         await task.value
     }
 

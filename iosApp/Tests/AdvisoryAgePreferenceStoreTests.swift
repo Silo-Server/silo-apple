@@ -192,6 +192,23 @@ final class AdvisoryAgePreferenceStoreTests: XCTestCase {
         XCTAssertTrue(store.showsAdvisoryAge)
     }
 
+    func testHydrateJoiningAStaleReadStartsAFreshOne() async {
+        let store = makeStore()
+        await store.hydrateIfNeeded()
+        transport.readGate = AsyncTestGate()
+        let refresh = Task { await store.refresh() }
+        await waitUntil { self.transport.readIdentities.count == 2 }
+
+        store.markStale()
+        let hydrate = Task { await store.hydrateIfNeeded() }
+        for _ in 0..<10 { await Task.yield() }
+        transport.readGate?.open()
+        await refresh.value
+        await hydrate.value
+
+        XCTAssertEqual(transport.readIdentities.count, 3)
+    }
+
     func testFailedWriteIsReconciledByTheNextRead() async {
         let store = makeStore()
         await store.hydrateIfNeeded()
