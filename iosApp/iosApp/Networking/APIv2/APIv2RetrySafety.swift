@@ -54,8 +54,8 @@ struct APIv2MutationOperation: Sendable, Equatable {
 
 /// Every mutation the client sends, and whether `HTTPClient` may replay it
 /// after a 401 refresh. This is an allowlist: a mutation missing from it is
-/// sent once. `APIv2RetrySafetyTests` checks each entry against the vendored
-/// contract excerpt (`Tests/Fixtures/APIv2RetrySafety`).
+/// sent once. Keep entries in step with the contract's `x-silo-retry-safety`
+/// annotations; nothing checks them automatically.
 enum APIv2MutationCatalog {
     static let operations: [APIv2MutationOperation] = replayAllowed + nonRetryable + clientSingleDispatch
 

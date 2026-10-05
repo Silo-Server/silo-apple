@@ -67,8 +67,8 @@ unresolved operation onto a new owner.
 
 Only mutations on the replay allowlist refresh and re-send after a 401:
 `APIv2MutationCatalog` in `iosApp/iosApp/Networking/APIv2/APIv2RetrySafety.swift`,
-which `APIv2RetrySafetyTests` checks against the contract's
-`x-silo-retry-safety` annotations. Any other mutation is sent once.
+kept by hand in step with the contract's `x-silo-retry-safety` annotations.
+Any other mutation is sent once.
 
 See [bound audiobook playback](bound-audiobook-playback.md) for timeline identity,
 sequenced receipts and part-transition rules.

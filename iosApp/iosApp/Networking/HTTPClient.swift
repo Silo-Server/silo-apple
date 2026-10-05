@@ -1802,8 +1802,7 @@ actor HTTPClient {
     /// Whether a 401 may refresh the session and re-send the request. Reads
     /// (GET, HEAD) always may. A mutation may only when it is on the replay
     /// allowlist taken from the contract's `x-silo-retry-safety` annotations:
-    /// `APIv2MutationCatalog` in `APIv2RetrySafety.swift`, checked against a
-    /// vendored contract excerpt by `APIv2RetrySafetyTests`. Everything else,
+    /// `APIv2MutationCatalog` in `APIv2RetrySafety.swift`. Everything else,
     /// including a mutation the catalog does not know, is sent once, and its
     /// 401 surfaces as the failure it is, because the server may already have
     /// consumed the first attempt. A bearer known to be expired is renewed
