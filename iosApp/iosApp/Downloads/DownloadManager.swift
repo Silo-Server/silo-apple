@@ -89,7 +89,15 @@ final class DownloadManager {
     /// Set when iOS relaunches the app to deliver background events; called
     /// once `allEventsDelivered` is processed.
     @ObservationIgnored private var backgroundCompletionHandler: (() -> Void)?
-    private var intentionalCancels: Set<Int> = []
+    /// Tasks this manager cancelled on purpose, whose failure events are
+    /// ignored. Keyed by owner as well as identifier: identifiers repeat
+    /// across session instances, so an identifier alone could swallow
+    /// another download's real failure.
+    private var intentionalCancels: Set<IntentionalCancel> = []
+    private struct IntentionalCancel: Hashable {
+        let taskId: Int
+        let owner: DownloadTaskTag
+    }
     private var pollTask: Task<Void, Never>?
     /// Identifies the loop `pollTask` holds.
     @ObservationIgnored private var pollToken: UUID?
@@ -961,9 +969,9 @@ final class DownloadManager {
 
     private func cancelActiveTasks() {
         for record in file.records.values where record.localStatus == .downloading {
-            if let taskId = record.taskIdentifier {
-                intentionalCancels.insert(taskId)
-                sessionDelegate.cancel(taskId: taskId, expecting: ownedTag(recordId: record.id))
+            if let taskId = record.taskIdentifier, let owner = ownedTag(recordId: record.id) {
+                intentionalCancels.insert(IntentionalCancel(taskId: taskId, owner: owner))
+                sessionDelegate.cancel(taskId: taskId, expecting: owner)
             }
         }
     }
@@ -1262,7 +1270,8 @@ final class DownloadManager {
     /// until then. A transfer that finishes during the race still completes
     /// normally: a finish completes a `.paused` record that has no media.
     func pauseDownload(id: String) {
-        guard var record = file.records[id], record.localStatus == .downloading else { return }
+        guard var record = file.records[id], record.localStatus == .downloading,
+              let owner = ownedTag(recordId: id) else { return }
         guard let taskId = record.taskIdentifier else {
             // No live task: the record is waiting out a retry back-off.
             // Abort the timer and park the record so the pause control isn't
@@ -1275,16 +1284,16 @@ final class DownloadManager {
             processQueue()
             return
         }
-        intentionalCancels.insert(taskId)
+        let claim = IntentionalCancel(taskId: taskId, owner: owner)
+        intentionalCancels.insert(claim)
         pendingPauseIds.insert(id)
         record.localStatus = .paused
         file.records[id] = record
         clearTransferRate(recordId: id)
         persist()
-        let owner = ownedTag(recordId: id)
         Task {
             let data = await self.sessionDelegate.pause(taskId: taskId, expecting: owner)
-            self.finishPause(recordId: id, resumeData: data)
+            self.finishPause(recordId: id, resumeData: data, claim: claim)
         }
         processQueue()
     }
@@ -1315,10 +1324,16 @@ final class DownloadManager {
     /// the cancel round-trip — clobbering the newer state would orphan it.
     /// A resume requested mid-round-trip re-queues here, once the captured
     /// data is on disk, rather than restarting from byte zero.
-    private func finishPause(recordId: String, resumeData: Data?) {
+    ///
+    /// Once the record stops naming the task, its failure event matches no
+    /// record, so the pause's `claim` is dropped here too: a pause that found
+    /// no task to cancel gets no failure event, and its claim must not
+    /// outlive it.
+    private func finishPause(recordId: String, resumeData: Data?, claim: IntentionalCancel) {
         pendingPauseIds.remove(recordId)
         let resumeRequested = pendingResumeIds.remove(recordId) != nil
         guard var record = file.records[recordId], record.localStatus == .paused else { return }
+        intentionalCancels.remove(claim)
         record.taskIdentifier = nil
         if let resumeData,
            let url = absoluteFileURLForNewAsset(recordId: recordId, filename: "resume.bin") {
@@ -2049,7 +2064,10 @@ final class DownloadManager {
         }
         switch event {
         case let .progress(ref, written, total, at):
-            guard var record = loadedRecord(for: resolveTag(ref)), record.localStatus == .downloading else { return }
+            // Only the task the record tracks: a cancelled predecessor's
+            // buffered progress would overwrite the replacement's counters.
+            guard var record = loadedRecord(for: resolveTag(ref)), record.localStatus == .downloading,
+                  record.taskIdentifier == ref.taskId else { return }
             updateTransferRate(recordId: record.id, bytes: written, at: at)
             // Publish to the observable blob at a readable cadence — the raw
             // callbacks fire many times per second and each reassignment
@@ -2113,8 +2131,8 @@ final class DownloadManager {
     /// Routes a finished file to its owner. `fileURL` is the owner's parked
     /// path for a tagged task, or a staging file for an untagged one.
     private func handleMediaFinished(_ ref: DownloadTaskRef, fileURL: URL) {
-        intentionalCancels.remove(ref.taskId)
         let tag = resolveTag(ref)
+        if let tag { intentionalCancels.remove(IntentionalCancel(taskId: ref.taskId, owner: tag)) }
         // Decided against `loadedScope`, never `scopeServerId`: while a switch
         // waits on its load, `scopeServerId` already names the new scope but
         // `file` still holds the old one.
@@ -2273,8 +2291,9 @@ final class DownloadManager {
     private func handleMediaFailure(
         _ ref: DownloadTaskRef, statusCode: Int?, resumeData: Data?, message: String, cause: DownloadFailureCause
     ) {
-        if intentionalCancels.remove(ref.taskId) != nil { return }
-        guard var record = loadedRecord(for: resolveTag(ref)), record.taskIdentifier == ref.taskId else { return }
+        let tag = resolveTag(ref)
+        if let tag, intentionalCancels.remove(IntentionalCancel(taskId: ref.taskId, owner: tag)) != nil { return }
+        guard var record = loadedRecord(for: tag), record.taskIdentifier == ref.taskId else { return }
         record.taskIdentifier = nil
         clearTransferRate(recordId: record.id)
 
@@ -2976,9 +2995,13 @@ final class DownloadManager {
         // missing from it; only identifiers held before the read are judged.
         let taskIdsBeforeRead = file.records.compactMapValues(\.taskIdentifier)
         let (current, retired) = await sessionDelegate.liveTasks()
+        // Not claimed as intentional cancels. The pass below stops this
+        // scope's records naming a retired task before its cancellation's
+        // failure event can arrive, so that event matches no record; one of
+        // another scope restarts through the ordinary failure path. A claim
+        // would outlive a task that ended during the read.
         for ref in retired {
-            intentionalCancels.insert(ref.taskId)
-            sessionDelegate.cancel(taskId: ref.taskId, expecting: nil)
+            sessionDelegate.cancelRetired(taskId: ref.taskId)
         }
         guard loadedScope == scope else { return }
         // Task identifiers repeat across session instances and every scope
