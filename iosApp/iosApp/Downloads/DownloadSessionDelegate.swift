@@ -146,10 +146,14 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
     /// to own it. Identifiers repeat across session instances, so the
     /// identifier alone proves nothing: a task whose tag names another owner
     /// is never touched. An untagged task (from an earlier build) carries no
-    /// tag, so it must request `expected`'s download file.
+    /// tag, so it must request `expected`'s download file for `expected`'s
+    /// profile. Its server isn't compared: server URLs live in the registry,
+    /// off this queue, and a download id is unique within its server.
     private static func isOwned(_ task: URLSessionTask, by expected: DownloadTaskTag) -> Bool {
-        if let tag = DownloadTaskTag(taskDescription: task.taskDescription) { return tag == expected }
-        return APIv2Client.downloadFileID(task.originalRequest?.url ?? task.currentRequest?.url) == expected.downloadId
+        let ref = DownloadTaskRef(task)
+        if let tag = ref.tag { return tag == expected }
+        return APIv2Client.downloadFileID(ref.requestURL) == expected.downloadId
+            && ref.requestProfileId == expected.profileId
     }
 
     func cancel(taskId: Int, expecting expected: DownloadTaskTag) {

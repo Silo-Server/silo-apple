@@ -1325,14 +1325,24 @@ final class DownloadManager {
     /// A resume requested mid-round-trip re-queues here, once the captured
     /// data is on disk, rather than restarting from byte zero.
     ///
-    /// Once the record stops naming the task, its failure event matches no
+    /// Only the record `claim` was made for is changed, and only while it
+    /// still names the paused task: `file` may hold another scope by now.
+    ///
+    /// Once that record stops naming the task, its failure event matches no
     /// record, so the pause's `claim` is dropped here too: a pause that found
     /// no task to cancel gets no failure event, and its claim must not
-    /// outlive it.
+    /// outlive it. The claim stays while the record may still name the task
+    /// (it isn't paused, or its store isn't loaded): the cancelled task's
+    /// failure event can arrive after this, and must not read as a failure.
     private func finishPause(recordId: String, resumeData: Data?, claim: IntentionalCancel) {
         pendingPauseIds.remove(recordId)
         let resumeRequested = pendingResumeIds.remove(recordId) != nil
-        guard var record = file.records[recordId], record.localStatus == .paused else { return }
+        guard ownedTag(recordId: recordId) == claim.owner else { return }
+        guard var record = file.records[recordId], record.taskIdentifier == claim.taskId else {
+            intentionalCancels.remove(claim)
+            return
+        }
+        guard record.localStatus == .paused else { return }
         intentionalCancels.remove(claim)
         record.taskIdentifier = nil
         if let resumeData,
