@@ -145,14 +145,14 @@ struct EpisodeThumbCard: View {
                 thumbnail
                 if uiCustomization.cardPresentation.caption.showsTitle {
                     Text(displayTitle)
-                        .font(.siloSubheadline)
+                        .font(.siloCardTitle)
                         .foregroundStyle(Color.siloOnSurface)
                         .lineLimit(1)
                 }
                 if uiCustomization.cardPresentation.caption.showsMetadata,
                    let subtitle = subtitleLine {
                     Text(subtitle)
-                        .font(.siloCaption)
+                        .font(.siloCardMetadata)
                         .foregroundColor(.siloSecondaryText)
                         .lineLimit(1)
                 }

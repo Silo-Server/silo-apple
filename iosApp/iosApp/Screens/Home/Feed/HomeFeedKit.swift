@@ -16,13 +16,21 @@ enum HomeFeedMetrics {
 
     /// Wider than today's 120pt. At 120 the cards read as thumbnails against
     /// 24pt row gaps; the screen ends up feeling sparse rather than spacious.
+    #if os(macOS)
+    static let posterWidth: CGFloat = SiloTheme.posterCardWidth
+    #else
     static let posterWidth: CGFloat = 132
+    #endif
     /// 16:9 still used by resume rows. Continue Watching is the row people
     /// act on most, so it reads as "one card plus a peek" rather than matching
     /// the poster rows' density — at 184 the stills felt like thumbnails and
     /// the progress rail was hard to read. Android's backdrop card is 280dp.
     /// Scaled by the Poster Size setting at the call site.
+    #if os(macOS)
+    static let stillWidth: CGFloat = 312
+    #else
     static let stillWidth: CGFloat = 240
+    #endif
     /// Runway under the last row so captions clear the floating tab bar.
     static let bottomRunway: CGFloat = 96
 
@@ -38,6 +46,24 @@ enum HomeFeedMetrics {
     static let sectionSpacing: CGFloat = 30
     /// Header baseline to the top of the artwork.
     static let headerGap: CGFloat = 12
+
+    /// Card caption fonts. The Mac uses the shared card tokens, which are a
+    /// step larger to suit its bigger cards.
+    static var captionTitleFont: Font {
+        #if os(macOS)
+        .siloCardTitle
+        #else
+        .footnote.weight(.semibold)
+        #endif
+    }
+
+    static var captionMetadataFont: Font {
+        #if os(macOS)
+        .siloCardMetadata
+        #else
+        .caption2
+        #endif
+    }
 }
 
 // MARK: - Feed helpers
@@ -371,7 +397,7 @@ struct HomePosterCard: View {
     private var caption: some View {
         VStack(alignment: .leading, spacing: 1) {
             Text(HomeFeedMeta.cardTitle(for: item))
-                .font(.footnote.weight(.semibold))
+                .font(HomeFeedMetrics.captionTitleFont)
                 .foregroundStyle(Color.siloOnSurface)
                 // One line, always. Reserving two lines (as the shipping card
                 // does) makes every row 17pt taller than it needs to be; letting
@@ -382,7 +408,7 @@ struct HomePosterCard: View {
 
             if showsMetadata, let secondLine = secondLineOverride ?? HomeFeedMeta.cardSecondLine(for: item) {
                 Text(secondLine)
-                    .font(.caption2)
+                    .font(HomeFeedMetrics.captionMetadataFont)
                     .foregroundStyle(Color.siloOnSurface.opacity(0.5))
                     .monospacedDigit()
                     .lineLimit(1)
@@ -585,7 +611,7 @@ struct HomeStillCard: View {
     private var caption: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(HomeFeedMeta.cardTitle(for: item))
-                .font(.footnote.weight(.semibold))
+                .font(HomeFeedMetrics.captionTitleFont)
                 .foregroundStyle(Color.siloOnSurface)
                 .lineLimit(1)
 
@@ -594,7 +620,7 @@ struct HomeStillCard: View {
                 // reserved even when empty so a row mixing episodes and
                 // movies keeps one caption height.
                 Text(HomeFeedMeta.cardSecondLine(for: item) ?? "")
-                    .font(.caption2)
+                    .font(HomeFeedMetrics.captionMetadataFont)
                     .foregroundStyle(Color.siloOnSurface.opacity(0.7))
                     .monospacedDigit()
                     .lineLimit(1, reservesSpace: true)
@@ -607,7 +633,7 @@ struct HomeStillCard: View {
                 // Keep phone resume cards the same height when only some items have
                 // a remaining-time caption, including as lazy cards enter/leave.
                 Text(HomeFeedMeta.resumeCaption(for: item) ?? "0m left")
-                    .font(.caption2)
+                    .font(HomeFeedMetrics.captionMetadataFont)
                     .foregroundStyle(Color.siloOnSurface.opacity(0.55))
                     .lineLimit(1)
                     .opacity(HomeFeedMeta.resumeCaption(for: item) == nil ? 0 : 1)

@@ -50,7 +50,7 @@ extension Font {
     static let siloHeadline = Font.title3.weight(.semibold)
 
     /// Title of Home's featured hero.
-    static let siloHeroTitle = Font.system(size: 44, weight: .heavy)
+    static let siloHeroTitle = Font.system(size: 34, weight: .bold)
     #else
     /// Large screen titles — "Discover", "TV Shows"
     static let siloTitle = Font.title3.bold()
@@ -75,4 +75,25 @@ extension Font {
     static let siloPIN = Font.largeTitle.monospaced().bold()
 
     #endif
+
+    // MARK: - Card captions
+
+    /// Title under a poster or still card. The Mac's cards are larger than
+    /// the phone's, and its text styles smaller, so it steps the caption up.
+    static var siloCardTitle: Font {
+        #if os(macOS)
+        .body.weight(.semibold)
+        #else
+        siloSubheadline
+        #endif
+    }
+
+    /// Year, episode, or time-left line under a card title.
+    static var siloCardMetadata: Font {
+        #if os(macOS)
+        .callout
+        #else
+        siloCaption
+        #endif
+    }
 }
