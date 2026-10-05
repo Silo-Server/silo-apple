@@ -356,10 +356,18 @@ struct MediaCard: View {
         Text(title)
             .font(.siloSubheadline)
             .foregroundColor(.siloOnSurface)
+            #if os(macOS)
+            // One truncated line, like Home's feed cards. Reserving a second
+            // line left a gap between most titles and their year, and made
+            // these rows taller than Home's.
+            .lineLimit(1)
+            .truncationMode(.tail)
+            #else
             // Reserve 2 lines of space so single- and multi-line titles
             // produce the same overall card height — keeps posters in a
             // row top-aligned when titles wrap.
             .lineLimit(2, reservesSpace: true)
+            #endif
     }
 
     @ViewBuilder

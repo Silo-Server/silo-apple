@@ -38,11 +38,23 @@ extension Font {
 
     #else
 
+    #if os(macOS)
+    // macOS text styles run about two points smaller than iOS, which left
+    // page and row headings undersized in a desktop window. The Mac steps
+    // both up one style.
+
+    /// Large screen titles — "Discover", "TV Shows"
+    static let siloTitle = Font.title2.bold()
+
+    /// Section headlines — "Continue Watching"
+    static let siloHeadline = Font.title3.weight(.semibold)
+    #else
     /// Large screen titles — "Discover", "TV Shows"
     static let siloTitle = Font.title3.bold()
 
     /// Section headlines — "Continue Watching"
     static let siloHeadline = Font.headline
+    #endif
 
     /// Card titles and subheadlines
     static let siloSubheadline = Font.subheadline.bold()

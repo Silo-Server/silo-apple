@@ -14,7 +14,15 @@ enum HorizontalMediaRailLayout {
         #endif
     }
 
-    static var cardAlignment: VerticalAlignment { isPhone ? .top : .center }
+    static var cardAlignment: VerticalAlignment {
+        #if os(macOS)
+        // Centre alignment shifts a card whose caption has fewer lines than
+        // its neighbours, so artwork in one row sat at different heights.
+        .top
+        #else
+        isPhone ? .top : .center
+        #endif
+    }
     static var scrollAnchor: UnitPoint { isPhone ? .leading : .center }
     /// A swipe keeps its momentum and can travel several cards, then the
     /// rail settles the nearest card into place. `.always` capped every

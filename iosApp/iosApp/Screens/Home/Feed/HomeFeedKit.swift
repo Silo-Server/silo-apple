@@ -651,7 +651,7 @@ struct HomeSectionHeader: View {
             }
 
             Text(title)
-                .font(.headline)
+                .font(.siloHeadline)
                 .tracking(-0.3)
                 .foregroundStyle(Color.siloOnSurface)
                 .lineLimit(1)
