@@ -1144,6 +1144,8 @@ class PlayerViewModel {
     private var lastSeriesPlayback: (seriesId: String, seasonNumber: Int?)?
     /// `SeriesPlaybackReturnInbox` generation when this player was created.
     private let seriesReturnGeneration: Int
+    /// `PlayerCleanupBarrier` generation when this player was created.
+    private let cleanupBarrierGeneration: Int
     #if os(iOS) || os(macOS)
     @ObservationIgnored
     private var refreshHomeAfterPlaybackWrite: (@MainActor () -> Void)?
@@ -1183,6 +1185,7 @@ class PlayerViewModel {
     init(libraryId: Int? = nil) {
         self.initialLibraryId = libraryId
         self.seriesReturnGeneration = SeriesPlaybackReturnInbox.generation
+        self.cleanupBarrierGeneration = PlayerCleanupBarrier.generation
         let controller: AetherPlaybackController
         do {
             controller = try AetherPlaybackController()
@@ -7775,7 +7778,7 @@ class PlayerViewModel {
         realtimeConnectivityObserverToken = nil
         let unavailabilityToken = realtimeUnavailabilityObserverToken
         realtimeUnavailabilityObserverToken = nil
-        cleanupCompletionTask = Task {
+        let cleanupCompletion = Task {
             await scrubPreviewShutdown?.value
             // Remove our availability observer before tearing down the realtime
             // client; normal fresh-load unbinds preserve this observer.
@@ -7794,6 +7797,8 @@ class PlayerViewModel {
             refreshHomeAfterPlaybackWrite?()
             #endif
         }
+        cleanupCompletionTask = cleanupCompletion
+        PlayerCleanupBarrier.record(cleanupCompletion, generation: cleanupBarrierGeneration)
     }
 
     func waitForCleanupCompletion() async {
