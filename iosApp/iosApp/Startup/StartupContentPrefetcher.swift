@@ -22,11 +22,6 @@ enum StartupContentPrefetcher {
     #endif
     private static let maxProfileArtworkURLs = 8
     private static let browsePageSize = 60
-    private static let episodeSectionTypes: Set<String> = [
-        "continue_watching",
-        "in_progress",
-        "next_up",
-    ]
 
     private static let profiles = SharedFetch<[UserProfile]>()
     private static let homeSections = SharedFetch<APIv2HomeSectionsRead>()
@@ -642,7 +637,10 @@ enum StartupContentPrefetcher {
     /// so scrolling and focus moves paint from local data.
     private static func prefetchHomeArtwork(for response: SectionsResponse) {
         let sections = response.sections.filter { !$0.items.isEmpty }
-        PosterImageCache.prefetchArtworkData(cardArtworkURLs(in: sections, limit: maxHomeArtworkURLs))
+        let cards = sections.lazy.flatMap { section in
+            section.items.lazy.map { rowCardArtwork(for: $0, in: section, onHome: true)?.url }
+        }
+        PosterImageCache.prefetchArtworkData(uniqueURLs(cards, limit: maxHomeArtworkURLs))
         #if os(tvOS)
         if let logo = normalizedURL(from: sections.first?.items.first?.logoUrl) {
             PosterImageCache.prefetchOriginalArtwork([logo])
@@ -654,28 +652,35 @@ enum StartupContentPrefetcher {
     /// posters at the size the row cards draw them, and warm episode stills
     /// as bytes.
     private static func prefetchSectionArtwork(for response: SectionsResponse, maxCount: Int) {
-        let sections = response.sections.filter { !$0.isFeatured && !$0.items.isEmpty }
-        let posterSections = sections.filter { !episodeSectionTypes.contains($0.sectionType) }
-        let episodeSections = sections.filter { episodeSectionTypes.contains($0.sectionType) }
-        PosterImageCache.prefetchArtwork(
-            cardArtworkURLs(in: posterSections, limit: maxCount),
-            pointSize: PosterImageCache.rowPosterArtworkSize
-        )
-        PosterImageCache.prefetchArtworkData(cardArtworkURLs(in: episodeSections, limit: maxCount))
+        var posters: [CardArtwork] = []
+        var stills: [String?] = []
+        for section in response.sections where !section.isFeatured && !section.items.isEmpty {
+            let showsStills = SectionRow.layout(for: section) == .thumbnail
+            for item in section.items {
+                guard let card = rowCardArtwork(for: item, in: section, onHome: false) else { continue }
+                if showsStills {
+                    stills.append(card.url)
+                } else {
+                    posters.append(card)
+                }
+            }
+        }
+        var seen = Set<String>()
+        PosterImageCache.prefetchArtwork(Array(posters.filter { !$0.url.isEmpty && seen.insert($0.url).inserted }.prefix(maxCount)))
+        PosterImageCache.prefetchArtworkData(uniqueURLs(stills, limit: maxCount))
     }
 
-    /// Card art in row order: episode rows show their still, others a poster.
-    private static func cardArtworkURLs(in sections: [ResolvedSection], limit: Int) -> [URL] {
-        uniqueURLs(
-            sections.lazy.flatMap { section in
-                section.items.lazy.map { item in
-                    episodeSectionTypes.contains(section.sectionType)
-                        ? item.backdropUrl ?? item.posterUrl
-                        : item.posterUrl
-                }
-            },
-            limit: limit
-        )
+    /// The artwork a card in `section`'s row draws, by the rules that row
+    /// uses: Skyline rows on tvOS, Home's rows or `SectionRow` elsewhere.
+    private static func rowCardArtwork(for item: SectionItem, in section: ResolvedSection, onHome: Bool) -> CardArtwork? {
+        #if os(tvOS)
+        return MediaRow.cardArtwork(for: item, layout: SectionRow.layout(for: section), cardWidth: SiloTheme.Skyline.densePosterCardWidth)
+        #else
+        if onHome {
+            return HomeFeedRow.cardArtwork(for: item, in: section)
+        }
+        return MediaRow.cardArtwork(for: item, layout: SectionRow.layout(for: section), cardWidth: nil)
+        #endif
     }
 
     #if os(tvOS)
@@ -690,11 +695,17 @@ enum StartupContentPrefetcher {
     }
     #endif
 
+    /// `CatalogGrid` draws audiobook covers square.
     private static func prefetchBrowseArtwork(for response: CatalogResponse) {
-        PosterImageCache.prefetchArtwork(
-            uniqueURLs(response.items.map(\.posterUrl), limit: maxBrowseArtworkURLs),
-            pointSize: PosterImageCache.rowPosterArtworkSize
-        )
+        var seen = Set<String>()
+        let cards = response.items.compactMap { item -> CardArtwork? in
+            guard let url = item.posterUrl, !url.isEmpty, seen.insert(url).inserted else { return nil }
+            return CardArtwork(
+                url: url,
+                pointSize: MediaCard.artworkSize(cardWidthOverride: nil, aspect: item.isAudiobook ? .square : .poster)
+            )
+        }
+        PosterImageCache.prefetchArtwork(Array(cards.prefix(maxBrowseArtworkURLs)))
     }
 
     private static func prefetchProfileArtwork(for profiles: [UserProfile]) {

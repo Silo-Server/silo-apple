@@ -880,9 +880,14 @@ final class AuthService: @unchecked Sendable {
     /// A remote-playback handoff changes server/account/profile without
     /// touching the persistent registry. Treat both entry and restoration as
     /// full auth boundaries so cached user data cannot cross identities.
+    /// The owner's on-disk snapshots are kept, and while `temporaryIdentityActive`
+    /// none are written or read: the persisted profile still names the owner.
     @MainActor
-    func clearCachesForTemporaryIdentityChange() {
-        clearAllCaches()
+    func clearCachesForTemporaryIdentityChange(temporaryIdentityActive: Bool) {
+        StartupContentPrefetcher.resetAllPrefetches()
+        ResponseCache.shared.clearMemory()
+        ResponseCache.shared.snapshotsSuspended = temporaryIdentityActive
+        resetIdentityScopedStores(forgetWatchPartyRecent: true, preservingTrailerReturn: false)
     }
 
     /// A server switch is the same hard identity boundary as sign-out for

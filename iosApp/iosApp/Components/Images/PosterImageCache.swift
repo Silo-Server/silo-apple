@@ -49,28 +49,6 @@ enum PosterImageCache {
     /// Longest edge, in pixels, for palette sampling decodes.
     static let paletteSampleMaxPixelSize: Float = 64
 
-    /// Artwork size of a poster in a row (iOS `MediaCard`, tvOS dense Skyline
-    /// `TVMediaCard`) at the current card-size setting. Warm-ups for rows use
-    /// it so their decode is the one the card asks for.
-    @MainActor static var rowPosterArtworkSize: CGSize {
-        let scale = UICustomizationPreferences.shared.cardPresentation.posterSize.scale
-        #if os(tvOS)
-        let width = SiloTheme.Skyline.densePosterCardWidth * scale
-        return CGSize(width: width, height: width * 1.5)
-        #else
-        let width = SiloTheme.posterCardWidth * scale
-        return CGSize(width: width, height: width * SiloTheme.posterCardHeight / SiloTheme.posterCardWidth)
-        #endif
-    }
-
-    #if os(tvOS)
-    /// Artwork size of a library grid poster (`TVCatalogGrid`).
-    @MainActor static var gridPosterArtworkSize: CGSize {
-        let width = SiloTheme.posterCardWidth * UICustomizationPreferences.shared.cardPresentation.posterSize.scale
-        return CGSize(width: width, height: width * 1.5)
-    }
-    #endif
-
     // MARK: - Requests
 
     /// Aspect-fill ImageIO thumbnail decode for artwork drawn at `pointSize`.
@@ -148,10 +126,33 @@ enum PosterImageCache {
         prefetcher.stopPrefetching(with: requests)
     }
 
+    /// Warm each card's artwork at the size that card draws it.
+    @MainActor
+    static func prefetchArtwork(_ artwork: [CardArtwork]) {
+        let requests = warmRequests(artwork)
+        guard !requests.isEmpty else { return }
+        prefetcher.startPrefetching(with: requests)
+    }
+
+    @MainActor
+    static func stopPrefetchingArtwork(_ artwork: [CardArtwork]) {
+        let requests = warmRequests(artwork)
+        guard !requests.isEmpty else { return }
+        prefetcher.stopPrefetching(with: requests)
+    }
+
     @MainActor
     private static func warmRequests(_ urls: [URL], pointSize: CGSize) -> [ImageRequest] {
         let scale = displayScale
         return urls.compactMap { displayRequest(url: $0, pointSize: pointSize, scale: scale) }
+    }
+
+    @MainActor
+    private static func warmRequests(_ artwork: [CardArtwork]) -> [ImageRequest] {
+        let scale = displayScale
+        return artwork.compactMap { card in
+            URL(string: card.url).flatMap { displayRequest(url: $0, pointSize: card.pointSize, scale: scale) }
+        }
     }
 
     /// Warm full-size artwork under its bare-URL key. Only for art whose
@@ -207,6 +208,8 @@ enum PosterImageCache {
     /// only surface where poster reuse is invisible but memory headroom is
     /// tight, especially on 3 GB Apple TV hardware.
     static func trimDecodedMemory() {
+        // Queued warm-ups would refill the cache straight away.
+        prefetcher.stopPrefetching()
         ImagePipeline.shared.cache.removeAll(caches: .memory)
     }
 

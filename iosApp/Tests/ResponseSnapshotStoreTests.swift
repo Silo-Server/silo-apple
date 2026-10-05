@@ -41,6 +41,20 @@ final class ResponseSnapshotStoreTests: XCTestCase {
         XCTAssertNil(ResponseSnapshotStore.snapshotType(forKey: CacheKey.profiles))
     }
 
+    /// Invalidating a key family also drops its snapshots, so a later seed
+    /// cannot restore what was invalidated.
+    func testRemovingMatchingKeysLeavesTheRestAndOtherProfiles() {
+        let browseKey = CacheKey.browse(libraryId: 4, filterKey: "sort=title/asc")
+        ResponseSnapshotStore.store(CatalogResponse(items: [], total: 0, totalExact: true, hasMore: false), forKey: browseKey, scope: adult, in: root)
+        ResponseSnapshotStore.store(SectionsResponse(sections: []), forKey: CacheKey.homeSections, scope: adult, in: root)
+        ResponseSnapshotStore.store(SectionsResponse(sections: []), forKey: CacheKey.homeSections, scope: child, in: root)
+
+        ResponseSnapshotStore.remove(scope: adult, in: root) { $0.hasPrefix("browse:") || $0 == CacheKey.homeSections }
+
+        XCTAssertTrue(ResponseSnapshotStore.load(scope: adult, in: root).isEmpty)
+        XCTAssertEqual(ResponseSnapshotStore.load(scope: child, in: root).map(\.key), [CacheKey.homeSections])
+    }
+
     func testRemoveAllDropsEveryScope() {
         ResponseSnapshotStore.store(SectionsResponse(sections: []), forKey: CacheKey.homeSections, scope: adult, in: root)
         ResponseSnapshotStore.store(SectionsResponse(sections: []), forKey: CacheKey.homeSections, scope: child, in: root)

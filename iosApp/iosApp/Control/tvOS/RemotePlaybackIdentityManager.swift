@@ -357,11 +357,11 @@ final class RemotePlaybackIdentityManager {
             return await releaseIdentityTransition(transitionLease, returning: false)
         }
         activeIdentity = nil
-        AuthService.shared.clearCachesForTemporaryIdentityChange()
+        AuthService.shared.clearCachesForTemporaryIdentityChange(temporaryIdentityActive: false)
         let ended = await releaseIdentityTransition(transitionLease, returning: true)
         // The persistent scope owns the credential slot again and the gate is
         // open, so this probes the restored identity. See the helper for why
-        // it can't be folded into `clearCachesForTemporaryIdentityChange()`.
+        // it can't be folded into `clearCachesForTemporaryIdentityChange(temporaryIdentityActive:)`.
         refreshSubtitleProvidersAfterIdentityChange()
         return ended
     }
@@ -396,7 +396,7 @@ final class RemotePlaybackIdentityManager {
             }
             return await releaseIdentityTransition(transitionLease, returning: false)
         }
-        AuthService.shared.clearCachesForTemporaryIdentityChange()
+        AuthService.shared.clearCachesForTemporaryIdentityChange(temporaryIdentityActive: true)
         let previousScope = await TokenStore.shared.beginTemporaryScope(scope)
         let previousOwnersAligned = previousIdentity?.generationID
             == previousScope.scope?.credentialGenerationID
@@ -418,7 +418,9 @@ final class RemotePlaybackIdentityManager {
             if activationGenerationPending == generationID {
                 activationGenerationPending = nil
             }
-            AuthService.shared.clearCachesForTemporaryIdentityChange()
+            // A rollback may leave the previous handoff's identity in place;
+            // snapshots resume only when a handoff ends.
+            AuthService.shared.clearCachesForTemporaryIdentityChange(temporaryIdentityActive: true)
             let rolledBack = await releaseIdentityTransition(transitionLease, returning: false)
             // Rollback restored (or cleared) the previous scope above, so the
             // identity that is live now is whatever `activeIdentity` reflects.
@@ -441,7 +443,7 @@ final class RemotePlaybackIdentityManager {
         let activated = await releaseIdentityTransition(transitionLease, returning: true)
         // Only now — identity published, pending marker cleared, gate open —
         // does a request carry the temporary scope's credentials. Probing any
-        // earlier (e.g. at the `clearCachesForTemporaryIdentityChange()` call
+        // earlier (e.g. at the `clearCachesForTemporaryIdentityChange(temporaryIdentityActive:)` call
         // above, which runs *before* `beginTemporaryScope`) would answer for
         // the outgoing identity and cache that answer against the new one.
         refreshSubtitleProvidersAfterIdentityChange()
@@ -449,7 +451,7 @@ final class RemotePlaybackIdentityManager {
     }
 
     /// Re-probes subtitle-provider availability after a temporary-identity
-    /// transition settles. `clearCachesForTemporaryIdentityChange()` resets
+    /// transition settles. `clearCachesForTemporaryIdentityChange(temporaryIdentityActive:)` resets
     /// `SubtitleProvidersStore` to its fail-open `true`, and an identity swap
     /// fires no other probe (same reason as `refreshFeaturesAfterServerSwitch()`).
     /// Call only once the scope is installed or restored and the transition

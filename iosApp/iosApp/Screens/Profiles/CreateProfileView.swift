@@ -776,9 +776,9 @@ private struct StyleChip: View {
 
 // MARK: - Preset cell
 
-/// A square DiceBear preview tile, loaded through the shared artwork
-/// pipeline (the live preview reuses the same URL and cache). Selection
-/// draws a white ring; focus adds a subtle scale + halo.
+/// A square DiceBear preview tile. Loads the avatar PNG from DiceBear —
+/// cheap to cache (same URL for the same seed) and reasonably fast over
+/// Wi-Fi. Selection draws a white ring; focus adds a subtle scale + halo.
 private struct PresetCell: View {
     let preset: ProfileAvatarPresets.Preset
     let isSelected: Bool
@@ -799,7 +799,7 @@ private struct PresetCell: View {
             .fill(Color.white.opacity(0.04))
             .frame(height: cellSize)
             .overlay(
-                AsyncImageView(url: preset.previewURL, contentMode: .fit, placeholderStyle: .clear)
+                DiceBearAvatarImage(url: preset.previewURL)
                     .padding(4)
             )
             .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))

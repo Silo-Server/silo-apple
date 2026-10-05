@@ -25,7 +25,7 @@ enum ArtworkLookahead {
     static func warmCards<Item>(after index: Int, in items: [Item], artwork: (Item) -> CardArtwork?) {
         guard index + 1 < items.count else { return }
         let end = min(items.count, index + 1 + cardsAhead)
-        warm(items[(index + 1)..<end].compactMap(artwork))
+        PosterImageCache.prefetchArtwork(items[(index + 1)..<end].compactMap(artwork))
     }
 
     /// Warms the leading cards of each row.
@@ -34,22 +34,6 @@ enum ArtworkLookahead {
         items: (Row) -> [Item],
         artwork: (Row, Item) -> CardArtwork?
     ) {
-        warm(rows.flatMap { row in items(row).prefix(cardsAhead).compactMap { artwork(row, $0) } })
-    }
-
-    private static func warm(_ artwork: [CardArtwork]) {
-        // A row has one or two card sizes, so a linear grouping is enough.
-        var groups: [(size: CGSize, urls: [URL])] = []
-        for card in artwork {
-            guard !card.url.isEmpty, let url = URL(string: card.url) else { continue }
-            if let index = groups.firstIndex(where: { $0.size == card.pointSize }) {
-                groups[index].urls.append(url)
-            } else {
-                groups.append((card.pointSize, [url]))
-            }
-        }
-        for group in groups {
-            PosterImageCache.prefetchArtwork(group.urls, pointSize: group.size)
-        }
+        PosterImageCache.prefetchArtwork(rows.flatMap { row in items(row).prefix(cardsAhead).compactMap { artwork(row, $0) } })
     }
 }

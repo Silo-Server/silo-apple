@@ -412,10 +412,19 @@ extension View {
             ),
             presenting: model.insecurePrompt
         ) { prompt in
+            // tvOS lists alert buttons in declaration order and focuses the
+            // first; it has always offered Connect there.
+            #if os(tvOS)
+            Button("Connect") {
+                Task { await model.confirmInsecure(prompt, router: router) }
+            }
+            Button("Cancel", role: .cancel) { model.cancelInsecure(prompt) }
+            #else
             Button("Cancel", role: .cancel) { model.cancelInsecure(prompt) }
             Button("Connect") {
                 Task { await model.confirmInsecure(prompt, router: router) }
             }
+            #endif
         } message: { prompt in
             Text("Your password and what you watch will be sent unencrypted to \(prompt.address). Only do this on a network you trust.")
         }

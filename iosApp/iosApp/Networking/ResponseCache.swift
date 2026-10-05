@@ -49,6 +49,9 @@ final class ResponseCache {
 
     func remove(_ key: String) {
         entries.removeValue(forKey: key)
+        if ResponseSnapshotStore.snapshotType(forKey: key) != nil, let scope = snapshotScope {
+            ResponseSnapshotStore.remove(scope: scope) { $0 == key }
+        }
     }
 
     /// Personal mutations affect every library presentation of the same item.
@@ -74,6 +77,11 @@ final class ResponseCache {
         for key in entries.keys where key.hasPrefix(prefix) {
             entries.removeValue(forKey: key)
         }
+        // Snapshots of the family too, including keys this process never
+        // loaded, so a later seed cannot bring the invalidated data back.
+        if let scope = snapshotScope {
+            ResponseSnapshotStore.remove(scope: scope) { $0.hasPrefix(prefix) }
+        }
     }
 
     /// Drop every cached response whose contents carry a translatable
@@ -84,23 +92,40 @@ final class ResponseCache {
     /// adding a language dimension to every cache key we flush the whole
     /// `item:` family (detail / seasons / episodes / watch detail) plus
     /// the home-sections and recommendations rows that embed item
-    /// summaries. Call this ONLY when the metadata language actually
+    /// summaries. Every snapshot carries summaries too, so the profile's
+    /// snapshots all go. Call this ONLY when the metadata language actually
     /// changed. tvOS additionally holds an `ItemDetailCache` — clear that
     /// at the same call site.
     func invalidateAllItemMetadata() {
         removeAll(withPrefix: "item:")
         remove(CacheKey.homeSections)
         remove(CacheKey.recommendations)
-        if let scope = Self.snapshotScope {
-            ResponseSnapshotStore.remove(keys: [CacheKey.homeSections, CacheKey.recommendations], scope: scope)
+        if let scope = snapshotScope {
+            ResponseSnapshotStore.remove(scope: scope) { _ in true }
         }
     }
 
     /// Sign-out boundary: memory and the on-disk snapshots of every scope.
     func clearAll() {
-        entries.removeAll()
+        clearMemory()
         ResponseSnapshotStore.removeAll()
     }
+
+    /// Identity boundary that keeps the saved snapshots: a remote-playback
+    /// handoff and its end. The owner's snapshots stay for their next launch.
+    func clearMemory() {
+        entries.removeAll()
+        seededScope = nil
+    }
+
+    /// True while a remote-playback handoff runs under another account or
+    /// profile. The persisted server and profile still name the owner then,
+    /// so snapshots are neither written nor read.
+    var snapshotsSuspended = false
+    /// The scope already seeded in this process. Seeding again (a new
+    /// iPad window, a profile reselect) would bring back responses that
+    /// were since replaced or invalidated in memory.
+    private var seededScope: ResponseSnapshotStore.Scope?
 
     // MARK: - Snapshots
 
@@ -108,7 +133,8 @@ final class ResponseCache {
     /// last-known responses, so the first screens can paint before the
     /// network answers.
     func seedFromSnapshots() {
-        guard let scope = Self.snapshotScope else { return }
+        guard let scope = snapshotScope, scope != seededScope else { return }
+        seededScope = scope
         for (key, value) in ResponseSnapshotStore.load(scope: scope) where entries[key] == nil {
             entries[key] = value
         }
@@ -117,13 +143,14 @@ final class ResponseCache {
     private func storeSnapshot<T>(_ value: T, for key: String) {
         guard ResponseSnapshotStore.snapshotType(forKey: key) != nil,
               let encodable = value as? any Encodable,
-              let scope = Self.snapshotScope else { return }
+              let scope = snapshotScope else { return }
         ResponseSnapshotStore.store(encodable, forKey: key, scope: scope)
     }
 
     /// The server and profile that own responses cached right now.
-    private static var snapshotScope: ResponseSnapshotStore.Scope? {
-        guard let serverId = ServerRegistry.activeServerIDSnapshot,
+    private var snapshotScope: ResponseSnapshotStore.Scope? {
+        guard !snapshotsSuspended,
+              let serverId = ServerRegistry.activeServerIDSnapshot,
               let profileId = AuthService.shared.profileId else { return nil }
         return ResponseSnapshotStore.Scope(serverId: serverId, profileId: profileId)
     }

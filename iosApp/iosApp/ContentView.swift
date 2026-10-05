@@ -489,52 +489,19 @@ struct ContentView: View {
                 Task { await AuthService.shared.refreshActiveServerName() }
             }
 
-            // The first activation of a cold launch happens under the splash,
-            // where the launch path already does this work.
-            guard !isShowingStartupSplash else { return }
-
             if newPhase == .background {
                 isReturningFromBackground = true
                 markProfileAwayStartIfNeeded()
                 return
             }
+            // The first activation of a cold launch happens under the splash,
+            // where the launch path already does this work. A return while
+            // the splash is still up is handled when it lifts.
+            guard !isShowingStartupSplash else { return }
             // Control Center, banners, and the app switcher pass through
             // `.inactive` without backgrounding; only a real return refreshes.
-            guard newPhase == .active, isReturningFromBackground else { return }
-            isReturningFromBackground = false
-            guard router.authState == .authenticated else { return }
-            if keepsProfileActiveInBackground {
-                launchPreferences.clearBackgroundedAt()
-            } else if launchPreferences.requiresSelectionAfterBackground() {
-                Task { await applyProfileReturnPolicy() }
-                return
-            } else {
-                launchPreferences.clearBackgroundedAt()
-            }
-
-            // Capabilities and settings may have changed while the app was
-            // away. Most of these refreshes go to the network every time.
-            #if os(tvOS)
-            Task {
-                await ExitSentinel.shared.captureLeftoverIfNeeded()
-                await diagnosticsModel.handleForeground()
-            }
-            #elseif os(iOS)
-            Task { await diagnosticsModel.handleForeground() }
-            #endif
-            Task { await refreshSessionStores(overlayPhase: "foreground_refresh") }
-            #if os(iOS)
-            Task {
-                await ApplePushRegistrationCoordinator.shared.prepareForAuthenticatedProfile()
-                await ApplePushRegistrationCoordinator.shared.registerCurrentDeviceTokenIfPossible()
-            }
-            #endif
-            #if os(tvOS)
-            NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil)
-            #endif
-            #if !os(tvOS)
-            Task { await DownloadManager.shared.onAppActive() }
-            #endif
+            guard newPhase == .active else { return }
+            handleReturnFromBackgroundIfNeeded()
         }
         .onChange(of: audioStore.player.isPlaying) { _, _ in
             updateProfileAwayStartForBackgroundPlayback()
@@ -1075,10 +1042,53 @@ struct ContentView: View {
 
     /// The splash has lifted over a committed route. Launch intents that
     /// present UI (deep links, sheets, the player) were held until now.
+    /// A return to the foreground after a real background: the profile
+    /// return policy, then the refreshes for what may have changed away.
+    private func handleReturnFromBackgroundIfNeeded() {
+        guard isReturningFromBackground else { return }
+        isReturningFromBackground = false
+        guard router.authState == .authenticated else { return }
+        if keepsProfileActiveInBackground {
+            launchPreferences.clearBackgroundedAt()
+        } else if launchPreferences.requiresSelectionAfterBackground() {
+            Task { await applyProfileReturnPolicy() }
+            return
+        } else {
+            launchPreferences.clearBackgroundedAt()
+        }
+
+        // Capabilities and settings may have changed while the app was
+        // away. Most of these refreshes go to the network every time.
+        #if os(tvOS)
+        Task {
+            await ExitSentinel.shared.captureLeftoverIfNeeded()
+            await diagnosticsModel.handleForeground()
+        }
+        #elseif os(iOS)
+        Task { await diagnosticsModel.handleForeground() }
+        #endif
+        Task { await refreshSessionStores(overlayPhase: "foreground_refresh") }
+        #if os(iOS)
+        Task {
+            await ApplePushRegistrationCoordinator.shared.prepareForAuthenticatedProfile()
+            await ApplePushRegistrationCoordinator.shared.registerCurrentDeviceTokenIfPossible()
+        }
+        #endif
+        #if os(tvOS)
+        NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil)
+        #endif
+        #if !os(tvOS)
+        Task { await DownloadManager.shared.onAppActive() }
+        #endif
+    }
+
     private func startupContentRevealed() {
         #if os(iOS) || os(tvOS)
         LaunchTimeline.recordFirstContent(state: router.authState.diagnosticsState)
         #endif
+        if scenePhase == .active {
+            handleReturnFromBackgroundIfNeeded()
+        }
         guard let url = pendingDeepLink else { return }
         switch router.authState {
         case .authenticated:

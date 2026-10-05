@@ -56,16 +56,17 @@ struct TVMediaCard: View {
     @State private var uiCustomization = UICustomizationPreferences.shared
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
 
-    private var resolvedCardWidth: CGFloat {
-        cardWidth * uiCustomization.cardPresentation.posterSize.scale
-    }
+    private var resolvedCardWidth: CGFloat { artworkSize.width }
+    private var cardHeight: CGFloat { artworkSize.height }
+    private var artworkSize: CGSize { Self.artworkSize(cardWidth: cardWidth, aspect: aspect) }
 
-    private var cardHeight: CGFloat {
+    /// The size a card of `cardWidth` draws its artwork at, at the current
+    /// card-size setting.
+    static func artworkSize(cardWidth: CGFloat, aspect: MediaCardAspect) -> CGSize {
+        let width = cardWidth * UICustomizationPreferences.shared.cardPresentation.posterSize.scale
         switch aspect {
-        case .poster:
-            resolvedCardWidth * 1.5
-        case .square:
-            resolvedCardWidth
+        case .poster: return CGSize(width: width, height: width * 1.5)
+        case .square: return CGSize(width: width, height: width)
         }
     }
 

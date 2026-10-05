@@ -1688,7 +1688,7 @@ final class DownloadManager {
                 guard var current = file.records[record.id],
                       let filename = current.subtitleFilenames[subtitle.fetchUrl] else { continue }
                 if case .changed(let data, let entityTag) = result {
-                    guard !data.isEmpty, let url = absoluteFileURL(for: current, filename: filename),
+                    guard !data.isEmpty, let url = absoluteFileURLForNewAsset(recordId: current.id, filename: filename),
                           (try? data.write(to: url, options: .atomic)) != nil else {
                         Self.logger.warning("saved subtitle rewrite failed")
                         failed = true

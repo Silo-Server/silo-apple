@@ -43,7 +43,9 @@ final class TVLibraryGridViewModel {
     /// Where the next page starts; `nil` before the live page 1 arrives and
     /// after the last page. A cached page 1 has no continuation.
     private var continuation: APIv2CatalogContinuation?
-    @ObservationIgnored private var prefetchedPosterURLs: Set<URL> = []
+    /// Warm-ups in flight by poster URL, kept with the size they were
+    /// started at so stopping one targets the same request.
+    @ObservationIgnored private var prefetchedPosters: [String: CardArtwork] = [:]
     @ObservationIgnored private var visiblePosterRows: [Int: Range<Int>] = [:]
     private var generation: Int = 0
 
@@ -181,16 +183,18 @@ final class TVLibraryGridViewModel {
         // Keep one bounded window around the visible rows. Visible cells still
         // request their own resized image through the same coalescing
         // pipeline; the warmed decode only lets that first frame paint.
-        let urls = items[safe: range].prefix(48)
-            .compactMap { $0.posterUrl }
-            .compactMap { URL(string: $0) }
-        let desiredURLs = Set(urls)
-        let staleURLs = prefetchedPosterURLs.subtracting(desiredURLs)
-        let newURLs = urls.filter { !prefetchedPosterURLs.contains($0) }
-        prefetchedPosterURLs = desiredURLs
-        let cardSize = PosterImageCache.gridPosterArtworkSize
-        PosterImageCache.stopPrefetchingArtwork(Array(staleURLs), pointSize: cardSize)
-        PosterImageCache.prefetchArtwork(newURLs, pointSize: cardSize)
+        let desired = items[safe: range].prefix(48).compactMap { item -> CardArtwork? in
+            guard let url = item.posterUrl, !url.isEmpty else { return nil }
+            // `TVCatalogGrid` draws audiobook covers square.
+            let aspect: MediaCardAspect = item.isAudiobook ? .square : .poster
+            return CardArtwork(url: url, pointSize: TVMediaCard.artworkSize(cardWidth: SiloTheme.posterCardWidth, aspect: aspect))
+        }
+        let desiredByURL = Dictionary(desired.map { ($0.url, $0) }, uniquingKeysWith: { first, _ in first })
+        let stale = prefetchedPosters.values.filter { desiredByURL[$0.url]?.pointSize != $0.pointSize }
+        let fresh = desired.filter { prefetchedPosters[$0.url]?.pointSize != $0.pointSize }
+        prefetchedPosters = desiredByURL
+        PosterImageCache.stopPrefetchingArtwork(Array(stale))
+        PosterImageCache.prefetchArtwork(fresh)
     }
 
     func cancelPosterPrefetch() {
@@ -199,8 +203,8 @@ final class TVLibraryGridViewModel {
     }
 
     private func stopPosterPrefetchRequests() {
-        PosterImageCache.stopPrefetchingArtwork(Array(prefetchedPosterURLs), pointSize: PosterImageCache.gridPosterArtworkSize)
-        prefetchedPosterURLs.removeAll()
+        PosterImageCache.stopPrefetchingArtwork(Array(prefetchedPosters.values))
+        prefetchedPosters.removeAll()
     }
 
     // MARK: - Fetch logic
@@ -229,8 +233,12 @@ final class TVLibraryGridViewModel {
             isLoading = true
         }
         defer {
-            isLoading = false
-            isRefreshing = false
+            // A superseded fetch leaves the flags to the one that replaced
+            // it; clearing them would show "No titles match" mid-load.
+            if myGeneration == generation {
+                isLoading = false
+                isRefreshing = false
+            }
         }
 
         do {

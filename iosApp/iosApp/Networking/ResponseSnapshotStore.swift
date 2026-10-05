@@ -35,11 +35,16 @@ enum ResponseSnapshotStore {
         }
     }
 
-    static func remove(keys: [String], scope: Scope, in root: URL = defaultRoot) {
+    /// Removes `scope`'s snapshots whose key matches.
+    static func remove(scope: Scope, in root: URL = defaultRoot, where matches: @escaping @Sendable (String) -> Bool) {
         queue.async {
             let directory = directory(for: scope, in: root)
-            for key in keys {
-                try? FileManager.default.removeItem(at: directory.appendingPathComponent(fileName(forKey: key)))
+            guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else {
+                return
+            }
+            for file in files {
+                guard let key = key(fromFileName: file.lastPathComponent), matches(key) else { continue }
+                try? FileManager.default.removeItem(at: file)
             }
         }
     }
