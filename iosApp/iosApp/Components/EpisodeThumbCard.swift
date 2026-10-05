@@ -28,6 +28,9 @@ struct EpisodeThumbCard: View {
     var onOpenContextDetail: (() -> Void)? = nil
     var onRemoveFromContinueWatching: (() -> Void)? = nil
     var onSetWatched: ((Bool) async -> Bool)? = nil
+    /// Unscaled card width; nil keeps `SiloTheme.thumbnailCardWidth`. The
+    /// Poster Size setting scales either one.
+    var baseCardWidth: CGFloat? = nil
 
     @Environment(\.browseLibraryId) private var browseLibraryId
     @State private var personalState = MediaCardPersonalState()
@@ -42,12 +45,13 @@ struct EpisodeThumbCard: View {
     @Environment(\.itemDetailBrowseSource) private var detailBrowseSource
     #endif
 
-    private var cardWidth: CGFloat { Self.artworkSize.width }
-    private var cardHeight: CGFloat { Self.artworkSize.height }
+    private var cardWidth: CGFloat { Self.artworkSize(baseWidth: baseCardWidth).width }
+    private var cardHeight: CGFloat { Self.artworkSize(baseWidth: baseCardWidth).height }
 
     /// The size the card draws its still at, at the current card-size setting.
-    static var artworkSize: CGSize {
-        let width = SiloTheme.thumbnailCardWidth * UICustomizationPreferences.shared.cardPresentation.posterSize.scale
+    static func artworkSize(baseWidth: CGFloat? = nil) -> CGSize {
+        let base = baseWidth ?? SiloTheme.thumbnailCardWidth
+        let width = base * UICustomizationPreferences.shared.cardPresentation.posterSize.scale
         return CGSize(width: width, height: width * (SiloTheme.thumbnailCardHeight / SiloTheme.thumbnailCardWidth))
     }
 

@@ -696,7 +696,12 @@ enum StartupContentPrefetcher {
         if onHome {
             return HomeFeedRow.cardArtwork(for: item, in: section)
         }
-        return MediaRow.cardArtwork(for: item, layout: SectionRow.layout(for: section), cardWidth: nil)
+        return MediaRow.cardArtwork(
+            for: item,
+            layout: SectionRow.layout(for: section),
+            cardWidth: nil,
+            thumbnailCardWidth: SectionRow.thumbnailCardWidth
+        )
         #endif
     }
 
