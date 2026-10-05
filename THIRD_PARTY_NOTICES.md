@@ -4,11 +4,11 @@ This file describes third-party code shipped by the installable Silo Apple
 applications. Build and release tools that do not ship in an application
 bundle are outside its scope. Complete license texts are committed under
 `iosApp/Resources/OpenSourceLicenses/`. The shared resource source configures
-them for the iOS, tvOS, and macOS applications, with a local reader at
-Settings > About > Open Source Licenses. That reader opens with Silo's own
-AGPL notice, `LICENSE`, and `APPSTORE-EXCEPTION.md`, and links the build's
-source archive when a release lane stamped one (`SiloSourceURL`). Generated-project and built-bundle verification is still
-required.
+them for the iOS, tvOS, and macOS applications, with a local reader under
+Settings > About > Acknowledgements. That reader opens with Silo's own AGPL
+notice, `LICENSE`, and `APPSTORE-EXCEPTION.md`, and links the build's source
+archive when a release lane stamped one (`SiloSourceURL`). Generated-project
+and built-bundle verification is still required.
 
 The authoritative dependency lock is
 `iosApp/Silo.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`.
@@ -196,18 +196,19 @@ The Noto Project Authors.
 
 ## Runtime attributions
 
-These are not shipped in the app bundle, but the app displays them and credits
-them in Settings > About.
+These services are not shipped in the app bundle, but the app shows their
+data or artwork. Settings > About > Acknowledgements lists each one from
+`ThirdPartyCredits.swift`; add an entry there when the app starts showing
+another service.
 
 - TMDB: rating badges and Requests artwork come from TMDB. Its API terms
   require the TMDB logo and the notice "This application uses TMDB and the
   TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB."
-  Both appear in Settings > About; the logo's provenance is in
+  in an About or Credits section. The logo's provenance is in
   `iosApp/iosApp/ThirdPartyLogos.xcassets/README.md`.
 - DiceBear: profile avatar presets load from the DiceBear HTTP API. The
   default Fun Emoji style is a remix of Davis Uche's Fun Emoji Set under
-  CC BY 4.0, which requires credit. `DiceBear-Avatar-Styles.txt` credits every
-  style Silo offers.
+  CC BY 4.0, which requires credit.
 
 ## Release checklist
 

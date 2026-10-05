@@ -599,7 +599,7 @@ struct TVSettingsView: View {
                 HStack(spacing: 16) {
                     Image(systemName: "curlybraces")
                         .font(.system(size: 22, weight: .medium))
-                    Text("Open Source Licenses")
+                    Text("Acknowledgements")
                         .font(.system(size: 26))
                     Spacer(minLength: 0)
                     Image(systemName: "doc.text.magnifyingglass")
@@ -609,14 +609,6 @@ struct TVSettingsView: View {
             }
             .buttonStyle(TVSettingsPaneRowStyle())
             .focused($detailFocus, equals: .serverOpenSourceLicenses)
-
-            // Passive text: the focus graph stays the two rows above. The
-            // licenses overlay carries the source link for this build.
-            TMDBAttributionNotice(logoHeight: 18)
-                .font(.system(size: 20))
-                .foregroundStyle(Color.siloSecondaryText)
-                .padding(.horizontal, 24)
-                .padding(.vertical, 8)
 
             TVSettingsSectionHeader("EXPERIMENTAL")
 

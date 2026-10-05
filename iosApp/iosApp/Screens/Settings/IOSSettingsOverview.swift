@@ -241,7 +241,7 @@ struct IOSSettingsOverview: View {
     }
 
     private var aboutSection: some View {
-        Section {
+        Section("About") {
             SettingsOverviewRow(
                 title: "Version",
                 subtitle: "Installed Silo app version",
@@ -259,11 +259,11 @@ struct IOSSettingsOverview: View {
             }
 
             NavigationLink {
-                OpenSourceAcknowledgementsView()
+                AcknowledgementsView()
             } label: {
                 SettingsOverviewRow(
-                    title: "Open Source Licenses",
-                    subtitle: "Acknowledgements, licenses, and exact source revisions",
+                    title: "Acknowledgements",
+                    subtitle: "Services Silo uses, and open source licenses",
                     systemImage: "curlybraces"
                 )
             }
@@ -276,10 +276,6 @@ struct IOSSettingsOverview: View {
                     showsChevron: true
                 )
             }
-        } header: {
-            Text("About")
-        } footer: {
-            TMDBAttributionNotice()
         }
     }
 
@@ -375,6 +371,8 @@ struct IOSSettingsOverview: View {
             "acknowledgements",
             "source code",
             "AGPL",
+            "credits",
+            "attribution",
             "TMDB"
         )
     }

@@ -3,7 +3,7 @@ Silo Open-Source Acknowledgements
 
 This Silo build includes the components listed below. Their complete license
 texts are bundled beside this file and are available from Settings > About >
-Open Source Licenses.
+Acknowledgements.
 
 AetherEngine
   Revision: b1e4879e6a41477ebef3b68e8d9f65239d1ba80b (upstream release

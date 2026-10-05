@@ -233,7 +233,7 @@ struct SettingsView: View {
     // MARK: - About
 
     private var aboutSection: some View {
-        Section {
+        Section("About") {
             LabeledContent {
                 Text(SettingsViewModel.versionString)
                     .foregroundStyle(Color.siloSecondaryText)
@@ -245,20 +245,16 @@ struct SettingsView: View {
             Link("Privacy Policy", destination: SiloLegalLinks.privacyPolicy)
 
             NavigationLink {
-                OpenSourceAcknowledgementsView()
+                AcknowledgementsView()
             } label: {
                 SettingsRowLabel(
-                    title: "Open Source Licenses",
+                    title: "Acknowledgements",
                     systemImage: "curlybraces",
                     color: .indigo
                 )
             }
 
             Link("Source Code", destination: SiloLegalLinks.sourceCode)
-        } header: {
-            Text("About")
-        } footer: {
-            TMDBAttributionNotice()
         }
     }
 

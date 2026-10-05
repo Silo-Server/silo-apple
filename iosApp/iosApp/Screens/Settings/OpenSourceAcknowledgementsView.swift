@@ -29,8 +29,6 @@ enum OpenSourceAcknowledgements {
 
     The Silo name, logo, and wordmark are trademarks of Silo Media L.L.C. and \
     are not licensed under the AGPL.
-
-    \(TMDBAttributionNotice.text)
     """
 
     /// The first two resources are the repository's own LICENSE and
@@ -65,7 +63,6 @@ enum OpenSourceAcknowledgements {
         Resource(title: "libpng", name: "libpng"),
         Resource(title: "ThumbHash decoder — MIT", name: "ThumbHash-MIT"),
         Resource(title: "Go Noto Current font — SIL Open Font License 1.1", name: "GoNoto-OFL-1.1"),
-        Resource(title: "DiceBear avatar styles — artwork credits", name: "DiceBear-Avatar-Styles"),
     ]
 
     /// One titled license text per resource.
@@ -145,12 +142,12 @@ struct TVOpenSourceAcknowledgementsOverlay: View {
             VStack(alignment: .leading, spacing: 24) {
                 HStack(spacing: 24) {
                     VStack(alignment: .leading, spacing: 7) {
-                        Text("OPEN SOURCE")
+                        Text("CREDITS")
                             .font(.system(size: 15, weight: .semibold, design: .monospaced))
                             .tracking(2)
                             .foregroundStyle(Color.siloSecondaryText)
 
-                        Text("Licenses & Acknowledgements")
+                        Text("Acknowledgements")
                             .font(.system(size: 38, weight: .semibold))
                             .foregroundStyle(Color.siloOnSurface)
                     }
@@ -165,16 +162,33 @@ struct TVOpenSourceAcknowledgementsOverlay: View {
                 }
 
                 ScrollView(.vertical) {
-                    Text(OpenSourceAcknowledgements.text)
-                        .font(.system(size: 20, design: .monospaced))
-                        .foregroundStyle(Color.siloOnSurface)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
+                    // Passive content: the scroll view stays the one focus
+                    // target, so the services read first without new stops.
+                    VStack(alignment: .leading, spacing: 28) {
+                        ForEach(ThirdPartyCredits.credits) { credit in
+                            ThirdPartyCreditRow(
+                                credit: credit,
+                                nameFont: .system(size: 24, weight: .semibold),
+                                detailFont: .system(size: 20),
+                                logoHeight: 20
+                            )
+                        }
+                        Text(ThirdPartyCredits.trademarkNotice)
+                            .font(.system(size: 20))
+                            .foregroundStyle(Color.siloSecondaryText)
+
+                        Text(OpenSourceAcknowledgements.text)
+                            .font(.system(size: 20, design: .monospaced))
+                            .foregroundStyle(Color.siloOnSurface)
+                            .padding(.top, 12)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
                 }
                 .focusable()
                 .focused($focusedElement, equals: .document)
-                .accessibilityLabel("Open-source licenses and acknowledgements")
+                .accessibilityLabel("Acknowledgements and open-source licenses")
             }
             .padding(40)
             .frame(maxWidth: 1500, maxHeight: 900, alignment: .topLeading)
