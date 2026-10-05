@@ -48,6 +48,11 @@ func macSidebarSections(
                 selectedIcon: icon.selectedIcon
             )
         }
+    // With no libraries known (none cached and the fetch failed, or a
+    // profile with none), keep one Libraries row: its page loads the list
+    // itself and reports back, which is the only way the sidebar recovers
+    // without a relaunch.
+    let libraryRows = libraryItems.isEmpty ? [MainTabDestination.app(.libraries)] : libraryItems
     let discoverItems = [.app(.search)] + destinations.filter {
         $0.id == .app(.recommendations) || $0.id == .app(.calendar)
     }
@@ -55,7 +60,7 @@ func macSidebarSections(
 
     return [
         MacSidebarSection(id: .home, items: [.app(.home)]),
-        MacSidebarSection(id: .libraries, items: libraryItems),
+        MacSidebarSection(id: .libraries, items: libraryRows),
         MacSidebarSection(id: .discover, items: discoverItems),
         MacSidebarSection(id: .yourStuff, items: yourStuffItems),
     ].filter { !$0.items.isEmpty }
