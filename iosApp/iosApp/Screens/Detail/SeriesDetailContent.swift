@@ -219,13 +219,13 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                 PhoneLabeledAction(
                     icon: "checkmark.circle",
                     iconActive: "checkmark.circle.fill",
-                    isActive: isWatched,
+                    isActive: isNextUpEpisodeWatched,
                     label: "Watched",
-                    accessibilityLabelOverride: isWatched
-                        ? "Mark Series Unwatched" : "Mark Series Watched",
-                    action: onToggleWatched
+                    accessibilityLabelOverride: isNextUpEpisodeWatched
+                        ? "Mark Episode Unwatched" : "Mark Episode Watched",
+                    action: toggleNextUpEpisodeWatched
                 )
-                .disabled(isUpdatingWatched)
+                .disabled(isUpdatingWatched || nextUpEpisode == nil)
                 if DownloadManager.shared.downloadsEnabled {
                     SeriesDownloadButton(
                         detail: detail,
@@ -313,8 +313,15 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                 )
             }
             .disabled(isUpdatingWatched || selectedSeason.episodeCount == 0)
-            Divider()
         }
+        Button(action: onToggleWatched) {
+            Label(
+                isWatched ? "Mark Series Unwatched" : "Mark Series Watched",
+                systemImage: isWatched ? "circle" : "checkmark.circle"
+            )
+        }
+        .disabled(isUpdatingWatched)
+        Divider()
         Button(action: onFindTrailers) {
             Label("Find Trailers", systemImage: "film")
         }
@@ -352,6 +359,21 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             defer { isUpdatingWatched = false }
             reportWatchedOutcome(await onSetSeasonWatched(season, played))
         }
+    }
+
+    private var isNextUpEpisodeWatched: Bool {
+        nextUpEpisode?.userData?.played ?? false
+    }
+
+    /// The action row's Watched button targets the episode the page is on.
+    /// Pin it as the selection first: otherwise marking the fallback next-up
+    /// episode watched would move the page to the following unwatched one.
+    private func toggleNextUpEpisodeWatched() {
+        guard let episode = nextUpEpisode else { return }
+        if selectedEpisodeContentId != episode.contentId {
+            handleEpisodeSelection(episode.contentId)
+        }
+        setEpisodeWatched(episode, !isNextUpEpisodeWatched)
     }
 
     private func setEpisodeWatched(_ episode: EpisodeListItem, _ played: Bool) {
