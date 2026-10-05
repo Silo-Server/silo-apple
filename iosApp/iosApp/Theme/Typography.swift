@@ -48,6 +48,9 @@ extension Font {
 
     /// Section headlines — "Continue Watching"
     static let siloHeadline = Font.title3.weight(.semibold)
+
+    /// Title of Home's featured hero.
+    static let siloHeroTitle = Font.system(size: 44, weight: .heavy)
     #else
     /// Large screen titles — "Discover", "TV Shows"
     static let siloTitle = Font.title3.bold()

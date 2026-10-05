@@ -250,17 +250,43 @@ struct HomeView: View {
                     .frame(height: topRunwaySpacing(topSafeAreaInset: topSafeAreaInset))
 
                 ForEach(displayedSections) { section in
-                    HomeFeedRow(
-                        section: section,
-                        onRemoveFromContinueWatching: dismissContinueWatching,
-                        onSetWatched: setWatched
-                    )
-                    .onAppear { warmRows(after: section) }
+                    feedSection(section)
+                        .onAppear { warmRows(after: section) }
                 }
             }
             .padding(.bottom, HomeFeedMetrics.bottomRunway)
         }
         .reportsPageChromeScroll(to: chromeScrollState)
+    }
+
+    @ViewBuilder
+    private func feedSection(_ section: ResolvedSection) -> some View {
+        #if os(macOS)
+        if section.isFeatured {
+            MacFeaturedHero(section: section)
+                // A hero that leads the page sits flush with the top of the
+                // window, so it takes back the stack's leading gap and the
+                // page's top margin.
+                .padding(
+                    .top,
+                    section.id == displayedSections.first?.id
+                        ? -(HomeFeedMetrics.sectionSpacing + SiloTheme.padding)
+                        : 0
+                )
+        } else {
+            feedRow(section)
+        }
+        #else
+        feedRow(section)
+        #endif
+    }
+
+    private func feedRow(_ section: ResolvedSection) -> some View {
+        HomeFeedRow(
+            section: section,
+            onRemoveFromContinueWatching: dismissContinueWatching,
+            onSetWatched: setWatched
+        )
     }
 
     /// Decode the leading cards of the rows below one that appeared, so

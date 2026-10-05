@@ -44,6 +44,26 @@ enum SiloTheme {
     static let macSidebarHeadingTracking: CGFloat = 1.5
     /// Diameter of the profile avatar in the sidebar's bottom row.
     static let macSidebarAvatarSize: CGFloat = 32
+    // MARK: - Featured hero (macOS)
+
+    /// Shortest Home's featured hero may get in a small window. Normally
+    /// it fills the window less `macHeroNextRowPeek`.
+    static let macHeroMinHeight: CGFloat = 480
+    /// How much of the window the hero leaves for the next row's heading.
+    static let macHeroNextRowPeek: CGFloat = 52
+    /// Largest a title's logo artwork is drawn in the hero.
+    static let macHeroLogoWidth: CGFloat = 420
+    static let macHeroLogoHeight: CGFloat = 130
+    /// Width of a poster in the hero's title list.
+    static let macHeroThumbnailWidth: CGFloat = 88
+    /// Outline around the title currently on show in the hero's list.
+    static let macHeroSelectionRingWidth: CGFloat = 2
+    /// Dimming of the titles in the hero's list that are not on show.
+    static let macHeroUnselectedOpacity: Double = 0.6
+    /// Widest the hero's title, metadata and synopsis column may grow.
+    static let macHeroTextWidth: CGFloat = 560
+    /// Seconds a featured title stays up before the hero advances.
+    static let macHeroAdvanceSeconds: Double = 8
 
     /// Height of the soft fade below the scrolling header strip.
     static let macPageChromeFadeLength: CGFloat = 32
