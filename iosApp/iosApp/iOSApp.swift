@@ -7,8 +7,10 @@ struct SiloApp: App {
     #endif
 
     init() {
-        #if os(tvOS)
+        #if os(iOS) || os(tvOS)
         ExitSentinel.shared.appDidLaunch()
+        #endif
+        #if os(tvOS)
         // No-op unless launched with `-perfHitchLog`.
         TVFrameHitchMonitor.installIfRequested()
         #endif

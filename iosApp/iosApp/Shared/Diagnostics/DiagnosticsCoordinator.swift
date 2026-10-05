@@ -786,9 +786,7 @@ actor DiagnosticsCoordinator {
         // erasure would undo the erasure.
         Self.purgeBreadcrumbJournal()
         DiagLog.ring.clear()
-        #if os(tvOS)
         ExitSentinel.shared.purge()
-        #endif
         guard erased else { return false }
         guard binding.destinationChoice == .hosted else { return true }
         return await drainHostedDeletionIntents(maximumAttempts: 4)
@@ -947,6 +945,13 @@ actor DiagnosticsCoordinator {
             manifest: manifest,
             logSnapshot: DiagLog.ring.snapshot()
         )
+        let logs = context.destinationChoice == .selfHosted
+            ? Self.appendingLatestPlaybackSummary(
+                to: frozenEvidence.artifact,
+                binding: context.binding,
+                profileID: context.profileID
+            )
+            : frozenEvidence.artifact
         let fingerprint = DiagnosticsSHA256.hex(
             data: Data("manual|\(DiagLog.captureSessionID)|\(DiagnosticsTimestamp.string(from: capturedAt))".utf8)
         )
@@ -959,7 +964,7 @@ actor DiagnosticsCoordinator {
             capturedAt: capturedAt,
             manifest: frozenEvidence.manifest,
             deviceSnapshot: device,
-            artifacts: [frozenEvidence.artifact]
+            artifacts: [logs]
         ))
     }
 
@@ -1593,6 +1598,7 @@ actor DiagnosticsCoordinator {
             maxBundleBytes: snapshot.status.maxBundleBytes,
             maxManifestBytes: snapshot.status.maxManifestBytes,
             availabilityStatus: snapshot.status.status,
+            acceptedCrashSources: snapshot.status.acceptedCrashSources,
             hostedCredentialIdentity: hostedCredentialIdentity
         )
     }
@@ -1704,14 +1710,12 @@ actor DiagnosticsCoordinator {
             : await activeProfileIsChild(binding: snapshot.binding)
         let eligible = isChild == false
         _ = Self.publishActiveProfileBreadcrumbEligibility(eligible, generation: generation)
-        #if os(tvOS)
         if eligible {
             ExitSentinel.shared.profileEligibilityDidResolve(
                 binding: snapshot.binding,
                 profileID: AuthService.shared.profileId
             )
         }
-        #endif
         return eligible
     }
 
@@ -1764,9 +1768,7 @@ actor DiagnosticsCoordinator {
             statusRefreshEpoch.invalidate()
             if let binding = Self.currentBreadcrumbBinding() { bindings.insert(binding) }
             DiagLog.ring.clear()
-            #if os(tvOS)
             ExitSentinel.shared.purge()
-            #endif
         }
         for binding in bindings {
             RecentSessionTracker.shared.purge(binding: binding)
@@ -1812,7 +1814,6 @@ actor DiagnosticsCoordinator {
         return true
     }
 
-    #if os(tvOS)
     func captureAbnormalExit(marker: ExitSentinelMarker) async -> Bool {
         guard let context = await captureContext() else {
             return false
@@ -1850,9 +1851,7 @@ actor DiagnosticsCoordinator {
                 break
             }
         }
-        let boundContext = marker.binding != nil
-            ? context.overridingProfileID(marker.profileID)
-            : context
+        let boundContext = Self.abnormalExitContext(context, marker: marker)
         let fingerprint = DiagnosticsSHA256.hex(
             data: Data("exit_sentinel|\(marker.runID)|\(marker.startedAt)".utf8)
         )
@@ -1874,7 +1873,7 @@ actor DiagnosticsCoordinator {
         let occurredAt = lastKnownAliveAt.map(DiagnosticsTimestamp.string(from:))
             ?? DiagnosticsTimestamp.string(from: capturedAt)
         let crash = DiagnosticsCrashInfo(
-            summary: "Silo did not shut down cleanly last time",
+            summary: Self.abnormalExitSummary(for: marker),
             stackExcerpt: nil,
             thread: nil,
             foreground: true,
@@ -1915,17 +1914,160 @@ actor DiagnosticsCoordinator {
                 deviceSnapshot: device,
                 artifacts: artifacts,
                 // An abnormal exit carries no stack, so every one from the
-                // same build is the same issue.
-                issueFingerprint: DiagnosticsSHA256.hex(
-                    data: Data("exit_sentinel|\(boundContext.appBuild)".utf8)
-                )
+                // same build is the same issue; one that ended during a hang
+                // is a different issue from one that did not.
+                issueFingerprint: DiagnosticsSHA256.hex(data: Data(
+                    "exit_sentinel|\(marker.hangStartedAt == nil ? "exit" : "hang")|\(boundContext.appBuild)".utf8
+                ))
             ))
+            return true
+        } catch DiagnosticsStoreError.evictedOnArrival {
             return true
         } catch {
             return false
         }
     }
-    #endif
+
+    /// The capture context for `marker`'s run: its profile when the marker is
+    /// bound, and the build that ran. A leftover can wait for capture across
+    /// an app update, so the current build is not necessarily the one that
+    /// exited.
+    nonisolated static func abnormalExitContext(
+        _ context: DiagnosticsCaptureContext,
+        marker: ExitSentinelMarker
+    ) -> DiagnosticsCaptureContext {
+        var bound = marker.binding != nil ? context.overridingProfileID(marker.profileID) : context
+        if let appVersion = marker.appVersion, let appBuild = marker.appBuild {
+            bound.appVersion = appVersion
+            bound.appBuild = appBuild
+        }
+        return bound
+    }
+
+    /// File a `hang` report for a main-thread hang the watchdog saw end. Only
+    /// a self-hosted server that lists the `watchdog` crash source gets one:
+    /// the hosted collector's contract does not have it yet, and an older
+    /// server would reject the report outright. The lifecycle breadcrumb the
+    /// watchdog writes reaches every destination.
+    @discardableResult
+    func captureWatchdogHang(startedAt: Date, endedAt: Date, residentMB: Int?) async -> Bool {
+        guard let context = await captureContext(),
+              Self.canFileWatchdogHang(to: context) else {
+            return false
+        }
+        let runID = DiagLog.captureSessionID
+        let started = DiagnosticsTimestamp.string(from: startedAt)
+        let fingerprint = DiagnosticsSHA256.hex(data: Data("watchdog|\(runID)|\(started)".utf8))
+        if pendingStore.hasSeenFingerprint(fingerprint, now: endedAt) {
+            return true
+        }
+        let device = deviceSnapshotBuilder.build(provenance: .preFailure)
+        let crash = DiagnosticsCrashInfo(
+            summary: Self.watchdogHangSummary(duration: endedAt.timeIntervalSince(startedAt), residentMB: residentMB),
+            stackExcerpt: nil,
+            thread: "main",
+            foreground: true,
+            source: .watchdog,
+            provenance: .preFailure,
+            occurredAt: started,
+            occurredAtStart: started,
+            occurredAtEnd: DiagnosticsTimestamp.string(from: endedAt)
+        )
+        let manifest = context.makeManifestDraft(
+            type: .hang,
+            capturedAt: endedAt,
+            crash: crash,
+            deviceSummary: deviceSnapshotBuilder.deviceSummary(from: device),
+            playbackSessionIDs: RecentSessionTracker.shared.recentSessionIDs(for: context.binding),
+            captureSessionID: runID
+        )
+        var artifacts: [PendingReportArtifact] = []
+        let breadcrumbs = Self.renderBreadcrumbs(Self.breadcrumbLines(
+            Self.breadcrumbJournal.readAll(),
+            forRunID: runID,
+            since: .distantPast
+        ))
+        if !breadcrumbs.isEmpty {
+            artifacts.append(PendingReportArtifact(relativePath: "breadcrumbs.jsonl", data: breadcrumbs))
+        }
+        artifacts.append(Self.appendingLatestPlaybackSummary(
+            to: logSnapshotArtifact(since: .distantPast, runID: runID),
+            binding: context.binding,
+            profileID: context.profileID
+        ))
+        do {
+            _ = try pendingStore.save(PendingReportCapture(
+                binding: context.binding,
+                profileID: context.profileID,
+                type: .hang,
+                fingerprint: fingerprint,
+                capturedAt: endedAt,
+                manifest: manifest,
+                deviceSnapshot: device,
+                artifacts: artifacts,
+                // No stack to tell hangs apart, so every watchdog hang in one
+                // build is one issue.
+                issueFingerprint: DiagnosticsSHA256.hex(data: Data("watchdog|\(context.appBuild)".utf8))
+            ))
+        } catch DiagnosticsStoreError.evictedOnArrival {
+            return true
+        } catch {
+            return false
+        }
+        NotificationCenter.default.post(name: .diagnosticsPendingReportCreated, object: nil)
+        return true
+    }
+
+    nonisolated static func canFileWatchdogHang(to context: DiagnosticsCaptureContext) -> Bool {
+        context.destinationChoice == .selfHosted
+            && DiagnosticsStatusResponse.acceptsCrashSource(.watchdog, listed: context.acceptedCrashSources)
+    }
+
+    nonisolated static func watchdogHangSummary(duration: TimeInterval, residentMB: Int?) -> String {
+        var summary = String(format: "Silo did not respond for %.1f s", duration)
+        if let residentMB {
+            summary += ", using \(residentMB) MB of memory"
+        }
+        return summary
+    }
+
+    /// Add this process's latest playback session summary to a report's
+    /// `logs.jsonl`, so the report says how playback was going. Only a
+    /// session played under the report's own binding and profile is added.
+    nonisolated static func appendingLatestPlaybackSummary(
+        to artifact: PendingReportArtifact,
+        binding: DiagnosticsBinding,
+        profileID: String?
+    ) -> PendingReportArtifact {
+        let owner = PlaybackSessionSummaryRecorder.diagnosticsOwner(binding: binding, profileID: profileID)
+        guard artifact.relativePath == "logs.jsonl",
+              let latest = PlaybackSessionSummaryRecorder.latestSummary(owner: owner),
+              let line = latest.summary.renderedDiagnosticsLine(at: latest.now) else {
+            return artifact
+        }
+        return PendingReportArtifact(
+            relativePath: artifact.relativePath,
+            data: artifact.data + Data((line + "\n").utf8)
+        )
+    }
+
+    /// The report summary for an unclean exit. A run that ended while the
+    /// watchdog saw the main thread blocked was most likely killed by the
+    /// system for not responding, so say so, with how long and how much
+    /// memory the app was using.
+    nonisolated static func abnormalExitSummary(for marker: ExitSentinelMarker) -> String {
+        guard marker.hangStartedAt != nil else {
+            return "Silo did not shut down cleanly last time"
+        }
+        var summary = "Silo stopped while not responding"
+        if let hangDurationMs = marker.hangDurationMs {
+            summary += String(format: " for %.1f s", Double(hangDurationMs) / 1000)
+        }
+        if let residentMB = marker.residentMB {
+            summary += ", using \(residentMB) MB of memory"
+        }
+        return summary
+    }
 
     /// Returns whether the breadcrumb reached the journal. A `false` result
     /// before the launch's consent context resolves means the line was staged
@@ -2489,22 +2631,21 @@ actor DiagnosticsCoordinator {
             noticeVersion: noticeVersion,
             statusAvailable: statusAvailable
         )
-        #if os(tvOS)
         ExitSentinel.shared.setCaptureEnabled {
             DiagnosticsCoordinator.breadcrumbCaptureEnabled()
         }
-        // The tvOS sentinel arms in SiloApp.init, before the first status
-        // refresh. With no last-known snapshot the current run's marker was
-        // written with binding == nil and would otherwise only be back-filled
-        // on a later foreground event. Bind it now — the moment the diagnostics
-        // binding first resolves — so a crash later in this same foreground is
-        // attributed to this account instead of being treated as a legacy
-        // marker (and bound to whoever is active) on relaunch.
+        // The sentinel arms at launch (tvOS) or first activation (iOS),
+        // before the first status refresh. With no last-known snapshot the
+        // current run's marker was written with binding == nil and would
+        // otherwise only be back-filled on a later foreground event. Bind it
+        // now — the moment the diagnostics binding first resolves — so a crash
+        // later in this same foreground is attributed to this account instead
+        // of being treated as a legacy marker (and bound to whoever is active)
+        // on relaunch.
         ExitSentinel.shared.bindCurrentMarker(
             binding: binding,
             profileID: AuthService.shared.profileId
         )
-        #endif
     }
 
     nonisolated private static func currentBreadcrumbBinding() -> DiagnosticsBinding? {
@@ -2606,9 +2747,7 @@ actor DiagnosticsCoordinator {
         // real change in an authenticated session.
         purgeBreadcrumbJournal()
         DiagLog.ring.clear()
-        #if os(tvOS)
         ExitSentinel.shared.disarmCurrentRun()
-        #endif
     }
 
     #if DEBUG
@@ -2835,12 +2974,10 @@ actor DiagnosticsCoordinator {
         ) else {
             return
         }
-        #if os(tvOS)
         ExitSentinel.shared.profileEligibilityDidResolve(
             binding: binding,
             profileID: AuthService.shared.profileId
         )
-        #endif
     }
 
     /// Start an async resolution and return its ownership token. Explicit
@@ -2862,14 +2999,12 @@ actor DiagnosticsCoordinator {
         // epoch here is what makes the publish below able to detect that a
         // newer boundary raced it.
         invalidateCaptureGateCache()
-        #if os(tvOS)
         if invalidateCurrent {
             // The marker may belong to the prior adult profile. Remove this
             // process's current-run slot immediately; a previous-run crash
             // marker is preserved by the run-id check.
             ExitSentinel.shared.disarmCurrentRun()
         }
-        #endif
         return generation
     }
 

@@ -20,6 +20,13 @@ struct ExitSentinelMarker: Codable, Equatable {
     var appVersion: String?
     var appBuild: String?
     var debuggerAttached: Bool?
+    /// A main-thread hang still in progress when the marker was last written
+    /// (see `HangWatchdog`). If the run ends without clearing it, the system
+    /// most likely killed the app for not responding.
+    var hangStartedAt: String?
+    var hangDurationMs: Int?
+    /// The app's physical memory footprint when the hang was last recorded.
+    var residentMB: Int?
 
     enum CodingKeys: String, CodingKey {
         case runID = "run_id"
@@ -31,6 +38,9 @@ struct ExitSentinelMarker: Codable, Equatable {
         case appVersion = "app_version"
         case appBuild = "app_build"
         case debuggerAttached = "debugger_attached"
+        case hangStartedAt = "hang_started_at"
+        case hangDurationMs = "hang_duration_ms"
+        case residentMB = "resident_mb"
     }
 
     init(
@@ -168,9 +178,9 @@ enum ExitSentinelLeftoverPolicy {
 
 /// On-disk storage for the exit sentinel's two marker slots: the *current run's*
 /// marker and a *preserved leftover* from an unclean previous run. Splitting the
-/// slot bookkeeping out of `ExitSentinel` (which is tvOS-only) keeps the load-
-/// bearing property — a crash leftover survives arming and later clearing the
-/// current run — unit-testable on any platform.
+/// slot bookkeeping out of `ExitSentinel` keeps the load-bearing property — a
+/// crash leftover survives arming and later clearing the current run —
+/// unit-testable without the app lifecycle.
 ///
 /// The two slots are distinct files so arming the current run can never
 /// overwrite an un-captured leftover. Decode is unchanged from the single-slot
@@ -256,13 +266,16 @@ struct ExitSentinelMarkerStore {
         return current
     }
 
-    /// Record that a debugger attached to this run after it was armed.
-    func markCurrentRunDebuggerAttached(runID: String) {
-        guard var marker = readCurrent(), marker.runID == runID, marker.debuggerAttached != true else {
-            return
+    /// Change this run's armed marker in place. Does nothing when the current
+    /// slot is empty or holds another run, and skips the write when nothing
+    /// changed.
+    func updateCurrentRun(runID: String, _ change: (inout ExitSentinelMarker) -> Void) {
+        guard let marker = readCurrent(), marker.runID == runID else { return }
+        var updated = marker
+        change(&updated)
+        if updated != marker {
+            writeCurrent(updated)
         }
-        marker.debuggerAttached = true
-        writeCurrent(marker)
     }
 
     /// Clear only the current-run slot (normal background/terminate). The
@@ -331,9 +344,6 @@ struct ExitSentinelMarkerStore {
         return url
     }
 }
-#endif
-
-#if os(tvOS)
 final class ExitSentinel {
     static let shared = ExitSentinel()
 
@@ -351,6 +361,11 @@ final class ExitSentinel {
     private let lock = NSLock()
     private var leftoverMarker: ExitSentinelMarker?
     private var isForeground = false
+    /// This process's marker as it was when a lifecycle edge last disarmed
+    /// it. iOS disarms on every `.inactive` blip (Control Center, Face ID),
+    /// so re-arming from it keeps the run's evidence window instead of
+    /// restarting it at each return to `.active`.
+    private var disarmedRunMarker: ExitSentinelMarker?
 
     /// Serializes replacing the consent gate with the lock that guards its
     /// read, so the coordinator can update it off the main actor safely.
@@ -384,24 +399,29 @@ final class ExitSentinel {
         defer { lock.unlock() }
 
         isForeground = true
-
-        // Preserve an unclean previous run's marker into the leftover slot
-        // before arming (overwriting) the current slot below, so a crash marker
-        // is not destroyed before captureLeftoverIfNeeded() consumes it. Also
-        // surfaces any leftover a prior relaunch failed to capture so it retries.
         let environment = environment()
+        preserveLeftoverLocked(environment: environment)
+
+        guard captureEnabledGate() else {
+            disarmedRunMarker = nil
+            store.clearCurrent(runID: DiagLog.captureSessionID)
+            return
+        }
+        armCurrentRun(binding: binding, profileID: profileID, now: now, environment: environment)
+    }
+
+    /// Preserve an unclean previous run's marker into the leftover slot
+    /// before arming (overwriting) the current slot, so a crash marker is not
+    /// destroyed before captureLeftoverIfNeeded() consumes it. Also surfaces
+    /// any leftover a prior relaunch failed to capture so it retries. Caller
+    /// holds `lock`.
+    private func preserveLeftoverLocked(environment: ExitSentinelEnvironment) {
         let preserved = store.preserveLeftoverFromCurrentSlot(currentRunID: DiagLog.captureSessionID) { marker in
             ExitSentinelLeftoverPolicy.decide(marker, current: environment) == .report
         }
         if leftoverMarker == nil {
             leftoverMarker = preserved
         }
-
-        guard captureEnabledGate() else {
-            store.clearCurrent(runID: DiagLog.captureSessionID)
-            return
-        }
-        armCurrentRun(binding: binding, profileID: profileID, now: now, environment: environment)
     }
 
     /// Reconcile the marker after the latest async profile check. This is not a
@@ -417,6 +437,7 @@ final class ExitSentinel {
         defer { lock.unlock() }
 
         guard captureEnabledGate() else {
+            disarmedRunMarker = nil
             store.clearCurrent(runID: DiagLog.captureSessionID)
             return
         }
@@ -434,7 +455,7 @@ final class ExitSentinel {
         let existing = store.readCurrent()
         if let existing, existing.runID == DiagLog.captureSessionID {
             if environment.debuggerAttached {
-                store.markCurrentRunDebuggerAttached(runID: existing.runID)
+                store.updateCurrentRun(runID: existing.runID) { $0.debuggerAttached = true }
             }
             // Fill an initially unknown binding, or rebind an existing marker
             // after a server/account switch in this same foreground run.
@@ -445,6 +466,20 @@ final class ExitSentinel {
                     profileID: profileID,
                     now: now
                 )
+            }
+            return
+        }
+        if var resumed = disarmedRunMarker {
+            // Same process, so the same run: keep its start and identity, and
+            // let `bindCurrentRun` start a new window only if the account or
+            // profile changed while it was disarmed.
+            resumed.hangStartedAt = nil
+            resumed.hangDurationMs = nil
+            resumed.residentMB = nil
+            resumed.debuggerAttached = resumed.debuggerAttached == true || environment.debuggerAttached
+            store.writeCurrent(resumed)
+            if let binding {
+                store.bindCurrentRun(runID: resumed.runID, binding: binding, profileID: profileID, now: now)
             }
             return
         }
@@ -486,6 +521,7 @@ final class ExitSentinel {
     func disarmCurrentRun() {
         lock.lock()
         defer { lock.unlock() }
+        disarmedRunMarker = nil
         store.clearCurrent(runID: DiagLog.captureSessionID)
     }
 
@@ -494,11 +530,46 @@ final class ExitSentinel {
         defer { lock.unlock() }
 
         leftoverMarker = nil
+        disarmedRunMarker = nil
         store.clearAll()
     }
 
+    /// Record a main-thread hang that is still in progress on this run's
+    /// marker, so a kill during it can be labelled on the next launch. Called
+    /// from the watchdog queue.
+    func recordOngoingHang(startedAt: Date, duration: TimeInterval, residentMB: Int?) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard isForeground else { return }
+        store.updateCurrentRun(runID: DiagLog.captureSessionID) { marker in
+            marker.hangStartedAt = DiagnosticsTimestamp.string(from: startedAt)
+            marker.hangDurationMs = Int((duration * 1000).rounded())
+            marker.residentMB = residentMB
+        }
+    }
+
+    /// The main thread answered again; the run is no longer hung.
+    func clearOngoingHang() {
+        lock.lock()
+        defer { lock.unlock() }
+        store.updateCurrentRun(runID: DiagLog.captureSessionID) { marker in
+            marker.hangStartedAt = nil
+            marker.hangDurationMs = nil
+            marker.residentMB = nil
+        }
+    }
+
     func appDidLaunch(now: Date = Date()) {
+        #if os(tvOS)
         appDidEnterForeground(now: now)
+        #else
+        // iOS can launch the app in the background (a refresh or a push),
+        // where a later suspension or kill is not a crash. Only promote the
+        // previous run's marker here; the first `.active` scene phase arms.
+        lock.lock()
+        defer { lock.unlock() }
+        preserveLeftoverLocked(environment: environment())
+        #endif
     }
 
     func appDidEnterBackground() {
@@ -539,6 +610,9 @@ final class ExitSentinel {
         defer { lock.unlock() }
 
         isForeground = false
+        if let current = store.readCurrent(), current.runID == DiagLog.captureSessionID {
+            disarmedRunMarker = current
+        }
         store.clearCurrent()
     }
 }

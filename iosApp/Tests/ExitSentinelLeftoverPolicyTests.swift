@@ -163,10 +163,10 @@ final class ExitSentinelLeftoverPolicyTests: XCTestCase {
         let store = makeStore()
         store.writeCurrent(marker(environment: environment))
 
-        store.markCurrentRunDebuggerAttached(runID: "another-run")
+        store.updateCurrentRun(runID: "another-run") { $0.debuggerAttached = true }
         XCTAssertEqual(store.readCurrent()?.debuggerAttached, false)
 
-        store.markCurrentRunDebuggerAttached(runID: "previous-run")
+        store.updateCurrentRun(runID: "previous-run") { $0.debuggerAttached = true }
         XCTAssertEqual(store.readCurrent()?.debuggerAttached, true)
     }
 
@@ -174,5 +174,94 @@ final class ExitSentinelLeftoverPolicyTests: XCTestCase {
         let bootTime = try XCTUnwrap(ExitSentinelEnvironment.systemBootTime())
         XCTAssertLessThan(bootTime, Date().timeIntervalSince1970)
         XCTAssertGreaterThan(bootTime, 1_000_000_000)
+    }
+
+    // MARK: - Hang in progress
+
+    func testOngoingHangIsKeptOnTheMarkerAndLabelsTheExit() throws {
+        let store = makeStore()
+        store.writeCurrent(marker(environment: environment))
+        store.updateCurrentRun(runID: "previous-run") { marker in
+            marker.hangStartedAt = "2026-10-04T10:05:00.000Z"
+            marker.hangDurationMs = 8_400
+            marker.residentMB = 512
+        }
+
+        let reloaded = try XCTUnwrap(ExitSentinelMarkerStore(currentURL: store.currentURL).readCurrent())
+        XCTAssertEqual(reloaded.hangDurationMs, 8_400)
+        XCTAssertEqual(
+            DiagnosticsCoordinator.abnormalExitSummary(for: reloaded),
+            "Silo stopped while not responding for 8.4 s, using 512 MB of memory"
+        )
+        // A hang does not change whether the exit is worth reporting.
+        XCTAssertEqual(ExitSentinelLeftoverPolicy.decide(reloaded, current: environment), .report)
+
+        XCTAssertEqual(
+            DiagnosticsCoordinator.abnormalExitSummary(for: marker(environment: environment)),
+            "Silo did not shut down cleanly last time"
+        )
+    }
+
+    // MARK: - Re-arming in the same process
+
+    private func makeSentinel() -> (ExitSentinel, ExitSentinelMarkerStore) {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ExitSentinelRearmTests-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("exit-sentinel.json")
+        let sentinel = ExitSentinel(markerURL: url, environment: { [environment] in environment })
+        sentinel.setCaptureEnabled { true }
+        return (sentinel, ExitSentinelMarkerStore(currentURL: url))
+    }
+
+    /// iOS disarms on every `.inactive` blip (Control Center, Face ID). The
+    /// next `.active` re-arms the same run, so its evidence window must still
+    /// start at the run's start, not at the blip.
+    func testReArmingAfterAnInactiveBlipKeepsTheRunStart() throws {
+        let (sentinel, store) = makeSentinel()
+        let launch = Date(timeIntervalSince1970: 1_790_000_000)
+        sentinel.appDidEnterForeground(now: launch)
+        let armed = try XCTUnwrap(store.readCurrent())
+        XCTAssertEqual(armed.startedAtDate, launch)
+
+        sentinel.appDidEnterBackground()
+        XCTAssertNil(store.readCurrent())
+        sentinel.appDidEnterForeground(now: launch.addingTimeInterval(90))
+        XCTAssertEqual(store.readCurrent(), armed)
+    }
+
+    /// A disarm that is not a lifecycle edge (a child profile, consent off)
+    /// ends the run's window; arming again starts a new one.
+    func testReArmingAfterAnEligibilityDisarmStartsANewWindow() throws {
+        let (sentinel, store) = makeSentinel()
+        let launch = Date(timeIntervalSince1970: 1_790_000_000)
+        sentinel.appDidEnterForeground(now: launch)
+        sentinel.disarmCurrentRun()
+        sentinel.appDidEnterBackground()
+
+        sentinel.appDidEnterForeground(now: launch.addingTimeInterval(90))
+        XCTAssertEqual(try XCTUnwrap(store.readCurrent()).startedAtDate, launch.addingTimeInterval(90))
+    }
+
+    /// A leftover can wait for capture across an app update; its report names
+    /// the build that exited, not the one that captured it.
+    func testAbnormalExitReportCarriesTheMarkersBuild() {
+        let current = DiagnosticsCaptureContext(
+            binding: DiagnosticsBinding(serverInstanceID: "srv", accountUserID: "acct"),
+            profileID: "current-profile",
+            consentMode: .prompt,
+            noticeVersion: 1,
+            appVersion: "1.5.0",
+            appBuild: "813",
+            platform: .ios,
+            osVersion: "27.0"
+        )
+        let bound = DiagnosticsCoordinator.abnormalExitContext(current, marker: marker(environment: environment))
+        XCTAssertEqual(bound.appVersion, "1.4.0")
+        XCTAssertEqual(bound.appBuild, "812")
+        XCTAssertEqual(bound.profileID, "prof")
+
+        let legacy = DiagnosticsCoordinator.abnormalExitContext(current, marker: marker(environment: nil))
+        XCTAssertEqual(legacy.appBuild, "813")
     }
 }

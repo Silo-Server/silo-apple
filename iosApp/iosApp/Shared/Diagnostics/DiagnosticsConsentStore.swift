@@ -87,7 +87,6 @@ final class DiagnosticsConsentStore {
             RecentSessionTracker.shared.purge(binding: binding)
             DiagnosticsCoordinator.purgeBreadcrumbJournal()
             DiagLog.ring.clear()
-            #if os(tvOS)
             // Turning Crash Reports to Never must also disarm the exit sentinel.
             // The armed marker is otherwise only cleared on a normal
             // background/terminate, so a crash in this same foreground would
@@ -96,7 +95,6 @@ final class DiagnosticsConsentStore {
             // Ask/Always — reporting a run that happened after collection was
             // turned off.
             ExitSentinel.shared.purge()
-            #endif
         }
     ) {
         self.defaults = defaults

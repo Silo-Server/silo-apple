@@ -92,6 +92,9 @@ final class AetherPlaybackController {
     var onSystemCaptionRequest: ((LoadEpoch, SystemCaptionRequest) -> Void)?
 
     private(set) var activeSpec: AetherLoadSpec?
+    /// Per-session playback summary for diagnostics; fed from the load,
+    /// engine-event, seek and stop paths below.
+    private let sessionSummary = PlaybackSessionSummaryRecorder()
     private(set) var activeLoadEpoch: LoadEpoch?
 
     /// Whether a transport call can reach anything. `play()`, `pause()` and
@@ -228,6 +231,7 @@ final class AetherPlaybackController {
         }
         didPublishFirstFrame = false
         didPublishEnd = false
+        sessionSummary.loadBegan(sessionID: spec.sessionID, planID: spec.planID, playMethod: spec.delivery)
         return epoch
     }
 
@@ -609,7 +613,9 @@ final class AetherPlaybackController {
         switch timeline.seekDisposition(forSourceTime: sourceSeconds) {
         case .local(let playerSeconds):
             let seekGeneration = generation
+            sessionSummary.seekRequested()
             await engine.seek(to: playerSeconds)
+            sessionSummary.seekRequested()
             guard seekGeneration == generation else {
                 return .requiresReplan(sourceSeconds: max(0, sourceSeconds))
             }
@@ -622,6 +628,7 @@ final class AetherPlaybackController {
     }
 
     func stop() {
+        sessionSummary.stopped()
         invalidateActiveLoad()
         shouldPlayWhenReady = false
         // Leaving video is the app's last use of the shared `AVAudioSession` unless an
@@ -786,6 +793,7 @@ final class AetherPlaybackController {
                 publish(.state(state))
                 if state == .ended, !didPublishEnd {
                     didPublishEnd = true
+                    sessionSummary.ended()
                     publish(.ended)
                 }
             }
@@ -804,7 +812,10 @@ final class AetherPlaybackController {
             .store(in: &subscriptions)
 
         engine.$isBuffering
-            .sink { [weak self] buffering in self?.publish(.buffering(buffering)) }
+            .sink { [weak self] buffering in
+                self?.sessionSummary.bufferingChanged(buffering)
+                self?.publish(.buffering(buffering))
+            }
             .store(in: &subscriptions)
 
         engine.$isLoadingSubtitles
@@ -824,13 +835,17 @@ final class AetherPlaybackController {
             .sink { [weak self] ready in
                 guard let self, ready, !didPublishFirstFrame else { return }
                 didPublishFirstFrame = true
+                sessionSummary.firstFrame(bitrateBps: engine.sourceVideoBitrate)
                 publish(.firstFrame)
             }
             .store(in: &subscriptions)
 
         engine.$errorInfo
             .compactMap { $0 }
-            .sink { [weak self] error in self?.publish(.failure(error)) }
+            .sink { [weak self] error in
+                self?.sessionSummary.failed(code: error.kind.rawValue)
+                self?.publish(.failure(error))
+            }
             .store(in: &subscriptions)
 
         Publishers.Merge3(
