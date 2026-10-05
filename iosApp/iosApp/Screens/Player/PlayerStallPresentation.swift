@@ -22,17 +22,24 @@ enum PlayerStallPresentation {
     /// exactly zero; the margin absorbs the two values updating separately.
     static let minimumBufferedAheadSeconds: Double = 0.1
 
+    /// `preparingReplacement` is true while the player prepares a new plan
+    /// or session for this load (a replan, a credential reload, a fresh
+    /// start). It set the loading state itself and owns it until the
+    /// replacement load reports its own phase, so buffered playback from the
+    /// outgoing load does not clear it.
     static func isLoading(
         phase: PlaybackPhase,
         isPlaying: Bool,
         playheadMovedAt: ContinuousClock.Instant?,
         bufferEmptySince: ContinuousClock.Instant? = nil,
+        preparingReplacement: Bool = false,
         now: ContinuousClock.Instant
     ) -> Bool {
         switch phase {
         case .loading, .rebuffering:
             return true
         case .stalled:
+            if preparingReplacement { return true }
             guard isPlaying else { return false }
             guard let playheadMovedAt else { return true }
             if playheadMovedAt.duration(to: now) >= frozenPlayheadThreshold { return true }

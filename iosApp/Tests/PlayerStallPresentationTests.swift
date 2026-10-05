@@ -8,12 +8,14 @@ final class PlayerStallPresentationTests: XCTestCase {
     private let now = ContinuousClock.now
 
     private func isLoading(_ phase: PlaybackPhase, isPlaying: Bool = true,
-                           movedSecondsAgo: Double?, bufferEmptySecondsAgo: Double? = nil) -> Bool {
+                           movedSecondsAgo: Double?, bufferEmptySecondsAgo: Double? = nil,
+                           preparingReplacement: Bool = false) -> Bool {
         PlayerStallPresentation.isLoading(
             phase: phase,
             isPlaying: isPlaying,
             playheadMovedAt: movedSecondsAgo.map { now - .milliseconds(Int($0 * 1_000)) },
             bufferEmptySince: bufferEmptySecondsAgo.map { now - .milliseconds(Int($0 * 1_000)) },
+            preparingReplacement: preparingReplacement,
             now: now
         )
     }
@@ -51,6 +53,15 @@ final class PlayerStallPresentationTests: XCTestCase {
     func testPausedPlayerWithAnEmptyBufferIsNotLoading() {
         XCTAssertFalse(isLoading(.stalled(reconnecting: true), isPlaying: false,
                                  movedSecondsAgo: 30, bufferEmptySecondsAgo: 30))
+    }
+
+    /// A replan or new start sets the loading state before it awaits the
+    /// server. The outgoing load still plays from its buffer, but that must
+    /// not clear the loading state while the replacement is prepared.
+    func testStalledSourceStaysLoadingWhileAReplacementIsPrepared() {
+        XCTAssertTrue(isLoading(.stalled(reconnecting: true), movedSecondsAgo: 0.1, preparingReplacement: true))
+        XCTAssertTrue(isLoading(.stalled(reconnecting: false), isPlaying: false,
+                                movedSecondsAgo: 30, preparingReplacement: true))
     }
 
     func testMediaAheadOfTheClock() {

@@ -1212,6 +1212,9 @@ class PlayerViewModel {
             isPlaying: isPlaying,
             playheadMovedAt: playheadSample?.movedAt,
             bufferEmptySince: stalledBufferEmptySince,
+            // Both set `isLoading` before awaiting the server, while the
+            // outgoing load still reports its phase.
+            preparingReplacement: protocolV3ReplanTask != nil || freshLoadTask != nil,
             now: .now
         )
     }
