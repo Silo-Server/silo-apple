@@ -49,8 +49,19 @@ struct AsyncImageView: View {
 
     /// `frame` is the measured container when there is one; otherwise the
     /// artwork fills whatever frame the caller gives this view.
-    @ViewBuilder
     private func artwork(drawnAt pointSize: CGSize, frame: CGSize?) -> some View {
+        // Outside both branches: a URL change can also move the view between
+        // them, and the old URL's backoff and pending retry must not carry
+        // over to the new one.
+        loadedArtwork(drawnAt: pointSize, frame: frame)
+            .onChange(of: url) {
+                cancelPendingRetry()
+                failedAttempts = 0
+            }
+    }
+
+    @ViewBuilder
+    private func loadedArtwork(drawnAt pointSize: CGSize, frame: CGSize?) -> some View {
         let resolved = resolveArtwork(drawnAt: pointSize)
         if let cached = resolved.cached, cached.isSufficient {
             artworkImage(cached.image, frame: frame)
@@ -97,10 +108,6 @@ struct AsyncImageView: View {
             .onDisappear(.cancel)
             .onCompletion { handleCompletion($0) }
             .id(LoadIdentity(url: url, attempt: loadAttempt))
-            .onChange(of: url) {
-                cancelPendingRetry()
-                failedAttempts = 0
-            }
             .onDisappear(perform: cancelPendingRetry)
         }
     }
