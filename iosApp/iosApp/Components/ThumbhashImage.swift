@@ -170,13 +170,13 @@ enum ThumbHashDecoder {
         // column and row instead of per pixel.
         let cxStop = max(header.lx, header.hasAlpha ? 5 : 3)
         let cyStop = max(header.ly, header.hasAlpha ? 5 : 3)
-        let fxTable = (0..<width).flatMap { x in
-            (0..<cxStop).map { cx in
+        let fxTable: [Float32] = (0..<width).flatMap { (x: Int) -> [Float32] in
+            (0..<cxStop).map { (cx: Int) -> Float32 in
                 cos(Float32.pi / Float32(width) * (Float32(x) + 0.5) * Float32(cx))
             }
         }
-        let fyTable = (0..<height).flatMap { y in
-            (0..<cyStop).map { cy in
+        let fyTable: [Float32] = (0..<height).flatMap { (y: Int) -> [Float32] in
+            (0..<cyStop).map { (cy: Int) -> Float32 in
                 cos(Float32.pi / Float32(height) * (Float32(y) + 0.5) * Float32(cy))
             }
         }
