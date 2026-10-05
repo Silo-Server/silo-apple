@@ -32,7 +32,15 @@ struct TopShelfHTTPClient {
     /// Read once by `authenticated()` so each request skips the keychain.
     private var credentials: Credentials?
 
+    /// The account and profile a set of credentials was read for.
+    private struct Scope: Equatable {
+        let serverID: String
+        let profileID: String?
+        let accountEpoch: String?
+    }
+
     private struct Credentials {
+        let scope: Scope
         let serverURL: String
         let tokens: AccessTokenSlot
         let profileID: String?
@@ -94,22 +102,41 @@ struct TopShelfHTTPClient {
         )
     }
 
+    /// True while personalized content is allowed and the active account and
+    /// profile are still the ones this copy's credentials were read for, so
+    /// a profile switch mid-request cannot publish the previous profile's shelf.
+    var isCurrentScope: Bool {
+        guard let credentials, isPersonalizedContentAllowed else { return false }
+        return currentScope() == credentials.scope
+    }
+
+    private func currentScope() -> Scope? {
+        guard let serverID = defaults.string(forKey: SharedStorage.activeServerIdKey) else { return nil }
+        return Scope(
+            serverID: serverID,
+            profileID: defaults.string(forKey: SharedStorage.profileIdKey),
+            accountEpoch: accountKeychain.get(SharedStorage.accountEpochAccount(for: serverID))
+        )
+    }
+
     /// A copy carrying the active server's credentials, or nil without an
     /// access token. Check `isPersonalizedContentAllowed` first.
     func authenticated() -> TopShelfHTTPClient? {
-        guard let serverID = defaults.string(forKey: SharedStorage.activeServerIdKey),
+        guard let scope = currentScope(),
               let serverURL = defaults.string(forKey: SharedStorage.serverUrlKey),
               !serverURL.isEmpty,
-              let accessToken = accountKeychain.get(SharedStorage.accessTokenAccount(for: serverID))
+              let accessToken = accountKeychain.get(SharedStorage.accessTokenAccount(for: scope.serverID))
         else { return nil }
+        let serverID = scope.serverID
         var client = self
         client.credentials = Credentials(
+            scope: scope,
             serverURL: serverURL,
             tokens: AccessTokenSlot(
                 accessToken: accessToken,
                 refreshToken: accountKeychain.get(SharedStorage.refreshTokenAccount(for: serverID))
             ),
-            profileID: defaults.string(forKey: SharedStorage.profileIdKey),
+            profileID: scope.profileID,
             profileToken: profileKeychain.get(SharedStorage.profileTokenAccount(for: serverID))
         )
         return client
@@ -161,9 +188,9 @@ struct TopShelfHTTPClient {
         query: [String: String] = [:]
     ) async throws -> T {
         // Rechecked per request and after every await: a timed profile policy
-        // can expire, or the profile change, while a request or the token
-        // refresh is in flight.
-        guard isPersonalizedContentAllowed, let credentials else { throw Error.notAuthenticated }
+        // can expire, or the account or profile change, while a request or
+        // the token refresh is in flight.
+        guard isCurrentScope, let credentials else { throw Error.notAuthenticated }
         guard let url = Self.url(credentials.serverURL, path: path, query: query) else {
             throw Error.invalidURL
         }
@@ -175,13 +202,13 @@ struct TopShelfHTTPClient {
            let fresh = await credentials.tokens.replacement(for: token, refreshing: { [session] refreshToken in
                await Self.refreshedAccessToken(serverURL: serverURL, refreshToken: refreshToken, session: session)
            }) {
-            guard isPersonalizedContentAllowed else { throw Error.notAuthenticated }
+            guard isCurrentScope else { throw Error.notAuthenticated }
             (data, http) = try await send(url, credentials: credentials, bearer: fresh)
         }
         guard (200..<300).contains(http.statusCode) else {
             throw Error.unexpectedStatus(http.statusCode)
         }
-        guard isPersonalizedContentAllowed else { throw Error.notAuthenticated }
+        guard isCurrentScope else { throw Error.notAuthenticated }
 
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
