@@ -693,7 +693,7 @@ enum StartupContentPrefetcher {
         #if os(tvOS)
         return MediaRow.cardArtwork(for: item, layout: SectionRow.layout(for: section), cardWidth: SiloTheme.Skyline.densePosterCardWidth)
         #else
-        if onHome {
+        if onHome || section.isContinueWatchingSection {
             return HomeFeedRow.cardArtwork(for: item, in: section)
         }
         return MediaRow.cardArtwork(
