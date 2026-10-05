@@ -161,6 +161,9 @@ class ItemDetailViewModel {
     /// mutation. Without this, a slow entry load can overwrite an optimistic
     /// button tap and put the stale pair back into `ResponseCache`.
     private var userStateMutationGeneration = 0
+    /// Bumped by every watched change to this page's item, so an older
+    /// toggle's response cannot reassert or roll back over a newer one.
+    private var watchedToggleGeneration = 0
     /// Owner captured when the detail load began. Membership reads and
     /// favorite/watchlist/watched writes from this page run under it, so a
     /// tap after a profile or server switch is refused instead of landing on
@@ -1529,6 +1532,8 @@ class ItemDetailViewModel {
     ) async {
         guard let contentId = detail?.contentId else { return }
         userStateMutationGeneration += 1
+        watchedToggleGeneration += 1
+        let toggleGeneration = watchedToggleGeneration
         let requested = !isWatched
         isWatched = requested
         let outcome: PersonalStateOutcome
@@ -1538,7 +1543,7 @@ class ItemDetailViewModel {
             outcome = await dispatchPersonalState(.watched, contentId: contentId, to: requested)
         }
         if outcome == .applied {
-            if detail?.contentId == contentId {
+            if detail?.contentId == contentId, toggleGeneration == watchedToggleGeneration {
                 userStateMutationGeneration += 1
                 isWatched = requested
             }
@@ -1555,7 +1560,9 @@ class ItemDetailViewModel {
                 await refreshWatchedSeries(seriesId: contentId)
             }
         } else {
-            if isWatched == requested { isWatched = !requested }
+            if toggleGeneration == watchedToggleGeneration, isWatched == requested {
+                isWatched = !requested
+            }
             personalStateNotice = PersonalStateNotice(outcome)
         }
     }
@@ -1601,6 +1608,7 @@ class ItemDetailViewModel {
         guard outcome == .applied else { return outcome }
         if contentId == detail?.contentId {
             userStateMutationGeneration += 1
+            watchedToggleGeneration += 1
             isWatched = played
         }
         invalidateRelatedCaches(contentId: contentId, seriesId: seriesId)

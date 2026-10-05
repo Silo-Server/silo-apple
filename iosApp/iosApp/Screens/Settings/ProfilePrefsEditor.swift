@@ -107,7 +107,22 @@ final class ProfilePrefsEditor {
         var subtitleMode: String?
         var showForcedSubtitles: String?
         var metadataLanguage: String?
+
+        func value(for key: SettingKey) -> String? {
+            if key == ProfileSettingKeys.subtitleLanguage { return subtitleLanguage }
+            if key == ProfileSettingKeys.subtitleMode { return subtitleMode }
+            if key == ProfileSettingKeys.showForcedSubtitles { return showForcedSubtitles }
+            if key == ProfileSettingKeys.metadataLanguage { return metadataLanguage }
+            return nil
+        }
     }
+
+    /// Bumped for a key whenever the user edits it or one of this editor's
+    /// writes lands for it. `load()` captures these before its read suspends
+    /// and leaves alone any key whose counter moved: the response may predate
+    /// that edit, and the edit's write can settle before the read returns, so
+    /// "no write unsettled" alone cannot tell a stale read from a fresh one.
+    private var editGenerations: [SettingKey: Int] = [:]
 
     private struct SubtitleWrite {
         let key: SettingKey
@@ -204,10 +219,11 @@ final class ProfilePrefsEditor {
     /// Read the profile preferences from the batched effective endpoint.
     @MainActor
     func load() async {
+        let generations = editGenerations
         do {
             let (preferences, byKey) = try await writer.load()
             serverUpgradeRequired = false
-            apply(preferences)
+            apply(preferences, editedSince: generations)
             showHeldValues()
             resolvedSources = byKey.compactMapValues { $0.source }
             adoptLanguageSuggestions(from: byKey)
@@ -220,26 +236,37 @@ final class ProfilePrefsEditor {
     }
 
     @MainActor
-    private func apply(_ preferences: ProfilePreferences) {
+    private func apply(_ preferences: ProfilePreferences, editedSince generations: [SettingKey: Int]) {
         paintServerValues(ServerValues(
             subtitleLanguage: preferences.subtitleLanguage ?? PlaybackPrefSentinel.none,
             subtitleMode: preferences.subtitleMode,
             showForcedSubtitles: preferences.showForcedSubtitles ? "on" : "off",
             metadataLanguage: preferences.metadataLanguage ?? PlaybackPrefSentinel.none
-        ))
+        ), editedSince: generations)
     }
 
     /// Record what the server holds, and show it in every control whose
     /// user edit has settled. A control with an edit still queued or in
     /// flight keeps showing the edit: the read may predate it, and replacing
     /// it would make a retry of that write look superseded.
+    ///
+    /// With `editedSince`, a key edited or written after those generations
+    /// were captured keeps both its control and its recorded server value:
+    /// the read may predate the edit even if the edit's write has settled.
     @MainActor
-    private func paintServerValues(_ values: ServerValues) {
-        serverValues = values
+    private func paintServerValues(_ values: ServerValues, editedSince generations: [SettingKey: Int]? = nil) {
         for key in Self.subtitleKeys + [ProfileSettingKeys.metadataLanguage] {
-            guard !hasUnsettledEdit(for: key), let value = serverValue(for: key) else { continue }
+            if let generations, editGenerations[key] != generations[key] { continue }
+            let value = values.value(for: key)
+            recordServerValue(for: key, value: value)
+            guard let value, !hasUnsettledEdit(for: key) else { continue }
             setEditorValue(value, for: key)
         }
+    }
+
+    @MainActor
+    private func noteEdit(for key: SettingKey) {
+        editGenerations[key, default: 0] += 1
     }
 
     /// Whether the control for `key` shows a user edit, or an owed value, that
@@ -347,7 +374,7 @@ final class ProfilePrefsEditor {
 
     /// Record the exact captured value that landed as the server's for one key.
     @MainActor
-    private func recordServerValue(for key: SettingKey, value: String) {
+    private func recordServerValue(for key: SettingKey, value: String?) {
         if key == ProfileSettingKeys.subtitleLanguage {
             serverValues.subtitleLanguage = value
         } else if key == ProfileSettingKeys.subtitleMode {
@@ -409,6 +436,7 @@ final class ProfilePrefsEditor {
     func setPreferredMetadataLanguage(_ value: String) async {
         guard value != preferredMetadataLanguage else { return }
         preferredMetadataLanguage = value
+        noteEdit(for: ProfileSettingKeys.metadataLanguage)
         guard !serverUpgradeRequired else {
             saveState = .serverUpgradeRequired
             return
@@ -430,6 +458,7 @@ final class ProfilePrefsEditor {
     private func editSubtitle(_ key: SettingKey, to value: String) async {
         guard currentEditorValue(for: key) != value else { return }
         setEditorValue(value, for: key)
+        noteEdit(for: key)
         guard !serverUpgradeRequired else {
             saveState = .serverUpgradeRequired
             return
@@ -498,6 +527,8 @@ final class ProfilePrefsEditor {
                         let stillEditingWrittenProfile = boundProfileId == write.profileId
                         if stillEditingWrittenProfile {
                             recordServerValue(for: write.key, value: write.editorValue)
+                            // A read already in flight may predate this row.
+                            noteEdit(for: write.key)
                         }
 
                         if stillEditingWrittenProfile,
@@ -656,11 +687,7 @@ final class ProfilePrefsEditor {
 
     @MainActor
     private func serverValue(for key: SettingKey) -> String? {
-        if key == ProfileSettingKeys.subtitleLanguage { return serverValues.subtitleLanguage }
-        if key == ProfileSettingKeys.subtitleMode { return serverValues.subtitleMode }
-        if key == ProfileSettingKeys.showForcedSubtitles { return serverValues.showForcedSubtitles }
-        if key == ProfileSettingKeys.metadataLanguage { return serverValues.metadataLanguage }
-        return nil
+        serverValues.value(for: key)
     }
 
     @MainActor
@@ -771,6 +798,8 @@ final class ProfilePrefsEditor {
                 for: ProfileSettingKeys.metadataLanguage,
                 value: preferredMetadataLanguage
             )
+            // A read already in flight may predate this row.
+            noteEdit(for: ProfileSettingKeys.metadataLanguage)
             saveState = .saved
         } catch is ProfileSettingsWriter.Superseded {
             // The newer value queued in `pendingMetadataWrite` reports.
