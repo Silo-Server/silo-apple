@@ -57,8 +57,12 @@ final class MacSidebarSectionsTests: XCTestCase {
         }
     }
 
-    func testLibrariesGroupIsOmittedWithoutLibrariesAndRespectsAudiobookOptOut() {
-        XCTAssertNil(ids(.libraries, in: sections(menu: nil, libraries: [])))
+    func testLibrariesFallBackToOneRowWithoutLibrariesAndRespectAudiobookOptOut() {
+        // No library list yet: one Libraries row keeps a way in, whatever
+        // the synced menu holds.
+        XCTAssertEqual(ids(.libraries, in: sections(menu: nil, libraries: [])), [.app(.libraries)])
+        let custom = PrimaryMenuPreference(items: [.builtin(.home), .builtin(.movies)])
+        XCTAssertEqual(ids(.libraries, in: sections(menu: custom, libraries: [])), [.app(.libraries)])
         XCTAssertEqual(
             ids(.libraries, in: sections(menu: nil, libraries: allLibraries, showAudiobooks: false)),
             [.library(1), .library(2), .library(3)]
