@@ -113,7 +113,7 @@ final class MetricKitCaptureTests: XCTestCase {
         XCTAssertNotEqual(issue(crash), issue(try crashPayload(abortFrames + [("Silo", 5000)] + outer)))
         XCTAssertNotEqual(
             issue(crash),
-            issue(try crashPayload([("libsystem_kernel.dylib", 999)] + abortFrames.dropFirst() + [("Silo", 4096)] + outer))
+            issue(try crashPayload([("libsystem_kernel.dylib", 999)] + Array(abortFrames.dropFirst()) + [("Silo", 4096)] + outer))
         )
         XCTAssertEqual(
             issue(crash),
