@@ -525,6 +525,9 @@ class PlayerViewModel {
     /// UI in a terminal paused state without letting tail-drain callbacks
     /// overwrite it or surface a false decode error.
     var hasReachedEndOfFile = false
+    /// Same-route reopens left for an end of file that stopped short of the
+    /// duration. Belongs to the content, like the intro decisions.
+    private var prematureEndReopenBudget = PlayerPrematureEndReopenBudget()
     let settings = PlayerSettings.shared
     /// Profile-wide skip intervals. Read at each skip, so a change made while
     /// the player is open applies to the next press.
@@ -824,6 +827,30 @@ class PlayerViewModel {
         guard let creditsRange else { return true }
         return currentTime >= creditsRange.start
     }
+    /// What the viewer already decided about the playing item. A reopen after
+    /// a premature end loads the same content again, so it keeps these.
+    struct ViewerChoices: Equatable {
+        let didSkipCreditsToEnd: Bool
+        let autoSkippedCreditsKey: String?
+        let nextUpPromptDismissed: Bool
+        let nextUpAutoplayCancelled: Bool
+    }
+    var viewerChoices: ViewerChoices {
+        get {
+            ViewerChoices(
+                didSkipCreditsToEnd: didSkipCreditsToEnd,
+                autoSkippedCreditsKey: autoSkippedCreditsKey,
+                nextUpPromptDismissed: nextUpPromptDismissed,
+                nextUpAutoplayCancelled: nextUpAutoplayCancelled
+            )
+        }
+        set {
+            didSkipCreditsToEnd = newValue.didSkipCreditsToEnd
+            autoSkippedCreditsKey = newValue.autoSkippedCreditsKey
+            nextUpPromptDismissed = newValue.nextUpPromptDismissed
+            nextUpAutoplayCancelled = newValue.nextUpAutoplayCancelled
+        }
+    }
     private var staleSessionRecoverySessionId: String?
     struct LoadRequest {
         var libraryId: Int? = nil
@@ -832,7 +859,7 @@ class PlayerViewModel {
         let preferredAudioTrackIndex: Int?
         let preferredSubtitleTrackIndex: Int?
         let preferredSidecarSubtitleTrackId: Int64?
-        let startFromBeginning: Bool
+        var startFromBeginning: Bool
         /// Authoritative protocol-v3 combined ordinal. Unlike
         /// `preferredSubtitleTrackIndex`, this also represents external,
         /// downloaded, and server-extracted subtitle rows.
@@ -967,6 +994,9 @@ class PlayerViewModel {
         /// Automatic playback recovery. Failures stay on the player surface
         /// instead of using the Next Up postroll.
         case recovery
+        /// Same-content reopen after a premature end of file. Keeps the
+        /// viewer's choices about the item.
+        case prematureEndReopen
     }
 
     private enum BeginFreshLoadError: Error {
@@ -977,7 +1007,6 @@ class PlayerViewModel {
     private var lastLoadRequest: LoadRequest?
     private static let nextUpCountdownDefaultSeconds = 10
     private static let nextUpHUDCountdownThresholdSeconds: Double = 100
-    private static let nearEndPlaybackErrorThresholdSeconds: Double = 8
     private var nextUpAutoplayCancelled = false
     /// Set when the user taps Keep Watching; suppresses re-presenting the
     /// pre-end Next Up prompt while the playhead stays inside the prompt
@@ -1251,6 +1280,7 @@ class PlayerViewModel {
                 seekFilterTimeoutTask?.cancel()
                 seekFilterTimeoutTask = nil
             }
+            prematureEndReopenBudget.notePlayhead(from: currentTime, to: movieTime)
             currentTime = movieTime
             updateNextUpPresentation(for: movieTime)
             syncIntroSkipPrompt()
@@ -1539,7 +1569,7 @@ class PlayerViewModel {
             Self.logger.info("Ignoring playback error after EOF: \(logMessage, privacy: .public)")
             return
         }
-        if shouldTreatPlaybackErrorAsNaturalEnd() {
+        if PlayerEndOfFilePolicy.treatsPlaybackErrorAsEnd(position: currentTime, duration: duration) {
             Self.logger.info("Treating near-end playback error as EOF: \(logMessage, privacy: .public)")
             handleEndOfFile()
             return
@@ -2307,15 +2337,6 @@ class PlayerViewModel {
         return (true, protocolV3FailureClassification(message), message)
     }
 
-    private func shouldTreatPlaybackErrorAsNaturalEnd() -> Bool {
-        guard duration.isFinite, duration > 0, currentTime.isFinite, currentTime > 0 else {
-            return false
-        }
-        let remaining = duration - currentTime
-        let progress = currentTime / duration
-        return remaining <= Self.nearEndPlaybackErrorThresholdSeconds || progress >= 0.985
-    }
-
     private func loadNextUpCandidate(for detail: WatchDetail) {
         guard !isWatchPartyPlayback else { return }
         nextUpLookupTask?.cancel()
@@ -2759,9 +2780,10 @@ class PlayerViewModel {
            hasActiveAetherSession {
             // Returning from the terminal postroll needs a real playable
             // position; resuming at exact EOF would immediately present the
-            // postroll again. Replay a short tail of the current episode.
+            // postroll again. Replay a short tail of the current episode, or
+            // resume where a lost source stopped.
             hasReachedEndOfFile = false
-            let target = max(0, duration - 10)
+            let target = max(0, min(currentTime, duration - 10))
             let reloadsPlaybackPipeline = commitSeek(to: target, source: "nextUpBack")
             if !reloadsPlaybackPipeline {
                 aetherPlaybackController.play()
@@ -3667,7 +3689,7 @@ class PlayerViewModel {
     /// Called when the active backend reports natural EOF. Move the shell into
     /// a paused end-state immediately so the player does not look frozen if
     /// auto-play-next is unavailable.
-    private func handleEndOfFile() {
+    func handleEndOfFile() {
         // Once per load. Two callers can land here for the same end — the
         // `.ended` event and a near-end playback error reclassified as a
         // natural finish — and running twice would raise the Next Up postroll
@@ -3680,40 +3702,48 @@ class PlayerViewModel {
 
         // Detect a premature EOF before the autoplay hand-off. FFmpeg's
         // demuxer reports end-of-stream when the upstream HTTP connection is
-        // reset, even if the file's real duration is still seconds away. The
+        // reset, even if the file's real duration is still minutes away. The
         // player then drains its buffered packets cleanly and lands here, but
-        // treating that as a natural end would trigger autoplay against the
-        // same dead network that just dropped us.
+        // treating that as a natural end would mark the item watched and
+        // trigger autoplay against the same dead network that just dropped us.
         let observedPosition = currentTime
         let safeDuration = duration
-        let isPremature: Bool = {
-            guard safeDuration.isFinite, safeDuration > 0,
-                  observedPosition.isFinite, observedPosition > 0 else {
-                return false
-            }
-            let remaining = safeDuration - observedPosition
-            let progress = observedPosition / safeDuration
-            return remaining > Self.nearEndPlaybackErrorThresholdSeconds
-                && progress < 0.985
-        }()
-
-        // A Watch Party has no postroll to fall back on, and a member parked
-        // on a dead stream is one the room can no longer move. Remount at the
-        // position the connection dropped; the load mounts paused, and the
-        // room's attach and commands bring the member back in step.
-        if isPremature, isWatchPartyPlayback {
+        let outcome = prematureEndReopenBudget.resolveEnd(
+            position: observedPosition,
+            duration: safeDuration,
+            skippedCredits: skippedCreditsToEnd
+        )
+        let isPremature = outcome != .finish
+        if outcome == .finish,
+           !PlayerEndOfFilePolicy.isFinish(position: observedPosition, duration: safeDuration) {
             Self.logger.warning(
-                "[CMP] handleEndOfFile reloading Watch Party playback: premature EOF at \(observedPosition, privacy: .public)/\(safeDuration, privacy: .public)"
+                "[CMP] handleEndOfFile finishing short of the duration at \(observedPosition, privacy: .public)/\(safeDuration, privacy: .public)"
+            )
+        }
+
+        // Reopen the same route where the source stopped. A Watch Party
+        // member mounts paused, and the room's attach and commands bring it
+        // back in step. The budget lets a truncated file fail fast below.
+        if outcome == .reopen {
+            Self.logger.warning(
+                "[CMP] handleEndOfFile reopening playback: premature EOF at \(observedPosition, privacy: .public)/\(safeDuration, privacy: .public)"
             )
             // Not a finish: the reload must not record the item as completed.
             hasReachedEndOfFile = false
-            if remountWatchPartyPlayback(at: observedPosition) { return }
+            if remountCurrentPlayback(at: observedPosition, origin: .prematureEndReopen) { return }
             hasReachedEndOfFile = true
         }
 
+        presentEndOfPlayback(at: observedPosition, isPremature: isPremature)
+    }
+
+    /// The terminal half of an end of file, once no reopen is under way: a
+    /// finish, or the "Connection lost" postroll for a source that stopped
+    /// early. Expects `hasReachedEndOfFile` already set.
+    private func presentEndOfPlayback(at observedPosition: Double, isPremature: Bool) {
         if isPremature {
             Self.logger.warning(
-                "[CMP] handleEndOfFile suppressing autoplay: premature EOF at \(observedPosition, privacy: .public)/\(safeDuration, privacy: .public)"
+                "[CMP] handleEndOfFile suppressing autoplay: premature EOF at \(observedPosition, privacy: .public)/\(self.duration, privacy: .public)"
             )
             // Cancel autoplay before we enter the postroll so the hand-off
             // to the next episode short-circuits — `beginNextUpPostroll`
@@ -3723,9 +3753,14 @@ class PlayerViewModel {
             // or hit Back.
             nextUpAutoplayCancelled = true
             cancelNextUpCountdown()
+            // A download has no connection to lose: its early end is a file
+            // that stops short.
+            let isDownload = lastLoadRequest?.offlineDownloadId != nil
             showNotice(
-                title: "Connection lost",
-                message: "Lost connection to the server before the episode finished.",
+                title: isDownload ? "Download incomplete" : "Connection lost",
+                message: isDownload
+                    ? "The downloaded video file ends early. Delete and re-download it."
+                    : "Lost connection to the server before the episode finished.",
                 tone: .warning,
                 duration: 6
             )
@@ -3755,7 +3790,9 @@ class PlayerViewModel {
         hideControlsTask?.cancel()
         hideControlsTask = nil
         aetherPlaybackController.pause()
-        if duration.isFinite, duration > 0 {
+        // A premature end keeps the playhead where the source stopped, so
+        // leaving reports that resume point rather than the duration.
+        if !isPremature, duration.isFinite, duration > 0 {
             currentTime = duration
         }
         isLoading = false
@@ -4158,6 +4195,9 @@ class PlayerViewModel {
         PosterImageCache.trimDecodedMemory()
         #endif
         isNextUpTransitioning = origin == .autoplay && showNextUpScreen
+        let carriedViewerChoices = origin == .prematureEndReopen ? viewerChoices : nil
+        let carriedNextUp = origin == .prematureEndReopen
+            ? (episode: nextUpEpisode, onDeck: nextUpOnDeckItems) : nil
         recordCurrentPlaybackMutation()
         let pendingNaturalEndProgressTask = naturalEndProgressTask
         naturalEndProgressTask = nil
@@ -4168,6 +4208,7 @@ class PlayerViewModel {
         // its end.
         if lastLoadRequest?.contentId != request.contentId {
             introSkipPrompt.reset()
+            prematureEndReopenBudget = PlayerPrematureEndReopenBudget()
         }
         lastLoadRequest = request
         offlinePlaybackContext = nil
@@ -4195,6 +4236,12 @@ class PlayerViewModel {
             preferredSidecarSubtitleTrackId: request.preferredSidecarSubtitleTrackId,
             preferredProtocolV3SubtitleIndex: request.preferredProtocolV3SubtitleIndex
         )
+        if let carriedViewerChoices { viewerChoices = carriedViewerChoices }
+        if let carriedNextUp {
+            // A failed reopen falls back to the postroll, which offers these.
+            nextUpEpisode = carriedNextUp.episode
+            nextUpOnDeckItems = carriedNextUp.onDeck
+        }
         // No engine event arrives while the replacement session is prepared,
         // so hand the pill the stall now. A same-content reload keeps the
         // `always` undo, and its timer must hold through the spinner.
@@ -4362,6 +4409,8 @@ class PlayerViewModel {
                         self.loadNextUpOnDeckItems(for: prepared.watchDetail)
                     }
                 }
+                // The session and Next Up setup above reset these for a new item.
+                if let carriedViewerChoices { self.viewerChoices = carriedViewerChoices }
                 self.qualityOptions = ApplePlaybackQuality.playbackOptions(
                     serverQualities: prepared.protocolV3?.plan.availableQualities ?? []
                 )
@@ -4589,7 +4638,20 @@ class PlayerViewModel {
                 tone: .warning,
                 duration: 6
             )
-        case .recovery:
+        case .prematureEndReopen where !isWatchPartyPlayback:
+            Self.logger.warning(
+                "[CMP] beginFreshLoad premature-end reopen failed: \(MediaLogRedactor.sanitize(message), privacy: .public)"
+            )
+            // The source is still gone: end where it stopped, as when no
+            // reopen is left, without marking the item watched.
+            disposeAetherPlayback()
+            introSkipPrompt.withdraw()
+            recapSkipPrompt.withdraw()
+            hasReachedEndOfFile = true
+            presentEndOfPlayback(at: currentTime, isPremature: true)
+        case .recovery, .prematureEndReopen:
+            // A Watch Party member's failed reopen lands here too: the room,
+            // told through `onFailure` above, owns what happens next.
             let logMessage = MediaLogRedactor.sanitize(message)
             Self.logger.warning(
                 "[CMP] beginFreshLoad recovered from playback recovery failure: \(logMessage, privacy: .public)"
@@ -5537,12 +5599,14 @@ class PlayerViewModel {
         return "\(contentId):\(fileId):\(range.start):\(range.end)"
     }
 
+    /// Names the marker, not the session: a reopen keeps the latch under a
+    /// new session, and every other load clears it.
     private func currentCreditsSkipKey(for range: TimeRange) -> String? {
-        guard let sessionId = activePlaybackSessionId,
+        guard activePlaybackSessionId != nil,
               let fileId = currentSelectedVersion?.fileId else {
             return nil
         }
-        return "\(sessionId):\(fileId):credits:\(range.start):\(range.end)"
+        return "\(fileId):credits:\(range.start):\(range.end)"
     }
 
     func beginScrub(fraction: Double) {
@@ -8235,19 +8299,22 @@ extension PlayerViewModel {
     }
 
     /// Aether keeps an ended session terminal: it ignores seeks, and play does
-    /// not revive it. Moving a member off the end therefore takes a fresh
-    /// load at the target, mounted paused like any other party load.
+    /// not revive it. Moving off the end therefore takes a fresh load of the
+    /// same request at the target. A Watch Party load mounts paused like any
+    /// other party load.
     @discardableResult
-    private func remountWatchPartyPlayback(at position: Double) -> Bool {
-        guard isWatchPartyPlayback, !isDisposed,
-              let request = lastLoadRequest,
+    private func remountCurrentPlayback(at position: Double, origin: LoadOrigin = .recovery) -> Bool {
+        guard !isDisposed,
+              var request = lastLoadRequest,
               position.isFinite, position >= 0 else { return false }
+        // A Start Over request would rewind the reopen to zero.
+        request.startFromBeginning = false
         beginFreshLoad(
             request: request,
             progressPosition: nil,
             resumePositionOverride: position,
             allowNearEndResume: true,
-            origin: .recovery
+            origin: origin
         )
         publishWatchPartySnapshot()
         return true
@@ -8429,7 +8496,7 @@ extension PlayerViewModel {
             }
             guard position.isFinite, position >= 0 else { throw WatchPartyPlaybackError.notReady }
             if hasReachedEndOfFile {
-                guard remountWatchPartyPlayback(at: position) else { throw WatchPartyPlaybackError.notReady }
+                guard remountCurrentPlayback(at: position) else { throw WatchPartyPlaybackError.notReady }
             } else {
                 commitSeek(to: position, source: "watchParty", roomCommand: true)
             }

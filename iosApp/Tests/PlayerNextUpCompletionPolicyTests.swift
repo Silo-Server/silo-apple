@@ -71,16 +71,173 @@ final class PlayerNextUpCompletionPolicyTests: XCTestCase {
         XCTAssertEqual(position, 3_600)
     }
 
-    func testEndOfFileFinalizesEvenOutsidePromptWindow() {
+    func testNaturalEndOfFileFinalizesWithThePromptDisabled() {
         let position = PlayerNextUpCompletionPolicy.progressPosition(
-            isNextUpPresented: true,
+            isNextUpPresented: false,
             hasReachedEndOfFile: true,
-            currentTime: 300,
+            currentTime: 3_594,
             duration: 3_600,
-            promptSeconds: 30
+            promptSeconds: 0
         )
 
         XCTAssertEqual(position, 3_600)
+    }
+
+    /// A dropped connection ends the stream early. Leaving from the
+    /// connection-lost postroll must keep the resume point, not mark watched.
+    func testPrematureEndOfFileKeepsTheResumePoint() {
+        XCTAssertFalse(
+            PlayerNextUpCompletionPolicy.shouldFinalizeAsCompleted(
+                isNextUpPresented: true,
+                hasReachedEndOfFile: true,
+                currentTime: 1_200,
+                duration: 3_600,
+                promptSeconds: 30
+            )
+        )
+        let position = PlayerNextUpCompletionPolicy.progressPosition(
+            isNextUpPresented: true,
+            hasReachedEndOfFile: true,
+            currentTime: 1_200,
+            duration: 3_600,
+            promptSeconds: 30
+        )
+        XCTAssertEqual(position, 1_200)
+    }
+
+    func testEndOfFileStillFinalizesAfterSkippingCreditsToTheEnd() {
+        XCTAssertTrue(
+            PlayerNextUpCompletionPolicy.shouldFinalizeAsCompleted(
+                isNextUpPresented: false,
+                hasReachedEndOfFile: true,
+                currentTime: 3_300,
+                duration: 3_600,
+                promptSeconds: 30,
+                skippedCredits: true
+            )
+        )
+    }
+
+    /// Offline playback can end before the duration resolves; nothing then
+    /// shows the end was early.
+    func testEndOfFileWithUnknownDurationFinalizes() {
+        XCTAssertTrue(
+            PlayerNextUpCompletionPolicy.shouldFinalizeAsCompleted(
+                isNextUpPresented: false,
+                hasReachedEndOfFile: true,
+                currentTime: 1_200,
+                duration: 0,
+                promptSeconds: 30
+            )
+        )
+    }
+
+    func testOnlyAnEndNearTheDurationIsAFinish() {
+        XCTAssertTrue(PlayerEndOfFilePolicy.isFinish(position: 3_600, duration: 3_600))
+        XCTAssertTrue(PlayerEndOfFilePolicy.isFinish(position: 3_593, duration: 3_600))
+        // 98.6% through a long film is still minutes of credits short.
+        XCTAssertFalse(PlayerEndOfFilePolicy.isFinish(position: 3_550, duration: 3_600))
+        XCTAssertFalse(PlayerEndOfFilePolicy.isFinish(position: 1_200, duration: 3_600))
+    }
+
+    /// A playback error in the last seconds is the stream running out, and
+    /// leaving afterwards finishes the item.
+    func testNearEndPlaybackErrorStillCountsAsFinished() {
+        XCTAssertTrue(PlayerEndOfFilePolicy.treatsPlaybackErrorAsEnd(position: 3_595, duration: 3_600))
+        XCTAssertTrue(PlayerEndOfFilePolicy.isFinish(position: 3_595, duration: 3_600))
+        XCTAssertTrue(
+            PlayerNextUpCompletionPolicy.shouldFinalizeAsCompleted(
+                isNextUpPresented: true,
+                hasReachedEndOfFile: true,
+                currentTime: 3_600,
+                duration: 3_600,
+                promptSeconds: 30
+            )
+        )
+    }
+
+    /// An error in the last 1.5% but well before the end takes the
+    /// end-of-file path, where it is a premature end that gets reopened.
+    func testLateButNotFinalPlaybackErrorIsAPrematureEnd() {
+        XCTAssertTrue(PlayerEndOfFilePolicy.treatsPlaybackErrorAsEnd(position: 3_550, duration: 3_600))
+        XCTAssertFalse(PlayerEndOfFilePolicy.isFinish(position: 3_550, duration: 3_600))
+        XCTAssertFalse(PlayerEndOfFilePolicy.treatsPlaybackErrorAsEnd(position: 1_200, duration: 3_600))
+        // An unknown duration cannot place an error near the end.
+        XCTAssertFalse(PlayerEndOfFilePolicy.treatsPlaybackErrorAsEnd(position: 1_200, duration: 0))
+    }
+
+    func testFirstPrematureEndReopensOnce() {
+        var budget = PlayerPrematureEndReopenBudget()
+        XCTAssertTrue(budget.claimReopen())
+        // The reopened stream ended again straight away: a truncated file.
+        budget.notePlayhead(from: 1_200, to: 1_201)
+        XCTAssertFalse(budget.claimReopen())
+    }
+
+    func testAnotherReopenNeedsThirtySecondsOfPlayback() {
+        var budget = PlayerPrematureEndReopenBudget()
+        XCTAssertTrue(budget.claimReopen())
+        var position = 1_200.0
+        for _ in 0..<58 {
+            budget.notePlayhead(from: position, to: position + 0.5)
+            position += 0.5
+        }
+        XCTAssertFalse(budget.claimReopen())
+        budget.notePlayhead(from: position, to: position + 1)
+        XCTAssertTrue(budget.claimReopen())
+        XCTAssertFalse(budget.claimReopen())
+    }
+
+    func testSeeksAndPlaybackBeforeTheFirstReopenDoNotCount() {
+        var budget = PlayerPrematureEndReopenBudget()
+        budget.notePlayhead(from: 0, to: 4)
+        XCTAssertTrue(budget.claimReopen())
+        budget.notePlayhead(from: 1_200, to: 2_400)
+        budget.notePlayhead(from: 2_400, to: 600)
+        XCTAssertFalse(budget.claimReopen())
+    }
+
+    func testEndInsideTheFinishWindowFinishesWithoutUsingTheReopen() {
+        var budget = PlayerPrematureEndReopenBudget()
+        XCTAssertEqual(budget.resolveEnd(position: 3_595, duration: 3_600, skippedCredits: false), .finish)
+        XCTAssertEqual(budget.resolveEnd(position: 1_200, duration: 3_600, skippedCredits: false), .reopen)
+    }
+
+    /// The stored duration runs 20 s past the last packet. The first end looks
+    /// premature; the reopen ends again at once, so that is the real end.
+    func testReopenThatEndsAgainAtOnceLateInTheFileFinishes() {
+        var budget = PlayerPrematureEndReopenBudget()
+        XCTAssertEqual(budget.resolveEnd(position: 3_580, duration: 3_600, skippedCredits: false), .reopen)
+        budget.notePlayhead(from: 3_576, to: 3_580)
+        XCTAssertEqual(budget.resolveEnd(position: 3_580, duration: 3_600, skippedCredits: false), .finish)
+    }
+
+    /// The viewer skipped credits that run to the end, so a source that drops
+    /// in them has nothing left to reopen for.
+    func testEndAfterSkippingCreditsToTheEndFinishes() {
+        var budget = PlayerPrematureEndReopenBudget()
+        XCTAssertEqual(budget.resolveEnd(position: 3_300, duration: 3_600, skippedCredits: true), .finish)
+        XCTAssertEqual(budget.resolveEnd(position: 3_300, duration: 3_600, skippedCredits: false), .reopen)
+    }
+
+    /// A drop 90 s before the end of a long film must not finish it.
+    func testReopenThatEndsAgainAtOnceEarlierInTheFileLosesTheSource() {
+        var budget = PlayerPrematureEndReopenBudget()
+        XCTAssertEqual(budget.resolveEnd(position: 3_510, duration: 3_600, skippedCredits: false), .reopen)
+        XCTAssertEqual(budget.resolveEnd(position: 3_510, duration: 3_600, skippedCredits: false), .lostSource)
+    }
+
+    /// A reopen that played on before dropping again found a live but flaky
+    /// connection, not the end of the file.
+    func testReopenThatPlayedBeforeEndingAgainLosesTheSource() {
+        var budget = PlayerPrematureEndReopenBudget()
+        XCTAssertEqual(budget.resolveEnd(position: 3_550, duration: 3_600, skippedCredits: false), .reopen)
+        var position = 3_550.0
+        for _ in 0..<12 {
+            budget.notePlayhead(from: position, to: position + 1)
+            position += 1
+        }
+        XCTAssertEqual(budget.resolveEnd(position: position, duration: 3_600, skippedCredits: false), .lostSource)
     }
 
     func testSkippedCreditsFinalizeAtDurationWhileCreditsStillPlay() {
