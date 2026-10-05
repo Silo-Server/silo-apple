@@ -27,8 +27,17 @@ import Synchronization
 /// leaving whatever Silo interrupted (another app's audio) paused or ducked until
 /// Silo is killed. A claim therefore carries an *activity probe*, and the release
 /// test asks whether any **other** claim is actually holding audio right now.
+///
+/// That test runs at `stop()`, but the engine's release runs later, off the main
+/// actor (`setActive(false)` alone takes about half a second on an Atmos route),
+/// and only a load on the same engine cancels it. A player opened in that window
+/// gets a new controller and engine, so every load first calls ``takeSession()``,
+/// and every opted-in stop hands its engine a ``releaseGate()`` that drops the
+/// late release once another load has taken the session.
 enum AetherAudioSessionOwnership {
     private static let registrations = Mutex<[ObjectIdentifier: Registration]>([:])
+    /// Bumped by every ``takeSession()``.
+    private static let sessionGeneration = Mutex<UInt64>(0)
 
     /// A claim's answer to "is your engine holding audio right now?".
     ///
@@ -74,6 +83,21 @@ enum AetherAudioSessionOwnership {
         // Probes run outside the lock: they are main-actor reads into engines, and a
         // probe must never be able to re-enter this registry while it is locked.
         return !others.contains { $0.probe?() ?? true }
+    }
+
+    /// Records that an engine is about to load and take the shared session. Call
+    /// right before `AetherEngine.load`.
+    static func takeSession() {
+        sessionGeneration.withLock { $0 &+= 1 }
+    }
+
+    /// For `AetherEngine.audioSessionReleaseGate`, built at `stop()`: answers true
+    /// only while no load has called ``takeSession()`` since. A load that began
+    /// before the stop is the activity probe's job in ``canReleaseSharedSession(excluding:)``.
+    /// The returned closure is safe to call off the main actor.
+    static func releaseGate() -> @Sendable () -> Bool {
+        let atStop = sessionGeneration.withLock { $0 }
+        return { sessionGeneration.withLock { $0 == atStop } }
     }
 
     private static func register(

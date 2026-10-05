@@ -247,6 +247,7 @@ final class AetherPlaybackController {
         let usesSubtitleOverlay = requiresExplicitTransportResume && spec.options.nativeRemoteHLS
         var options = spec.options
         if usesSubtitleOverlay { options.externalSubtitles = [] }
+        AetherAudioSessionOwnership.takeSession()
         do {
             try await engine.load(
                 url: spec.sourceURL,
@@ -639,9 +640,11 @@ final class AetherPlaybackController {
         // it with `.notifyOthersOnDeactivation` so that audio resumes, and also closes
         // the E-AC-3/Atmos passthrough render ring the flag exists for. Gated on no
         // *other* Aether engine actually holding audio, not on engine existence: the
-        // audiobook engine can outlive its playback.
+        // audiobook engine can outlive its playback. The release itself runs after this
+        // returns, so the gate drops it if another player has loaded in the meantime.
         engine.deactivatesAudioSessionOnStop = AetherAudioSessionOwnership
             .canReleaseSharedSession(excluding: aetherSessionClaim)
+        engine.audioSessionReleaseGate = AetherAudioSessionOwnership.releaseGate()
         engine.stop(finalTeardown: true)
         refreshExternalPlaybackState()
         publishSystemMediaChanged()

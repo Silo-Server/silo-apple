@@ -97,6 +97,7 @@ final class AetherAudioPlaybackController {
             if epoch == activeLoadEpoch { activeLoadEpoch = nil }
             throw error
         }
+        AetherAudioSessionOwnership.takeSession()
         do {
             try await engine.load(
                 url: url,
@@ -152,6 +153,9 @@ final class AetherAudioPlaybackController {
         engine.deactivatesAudioSessionOnStop = sessionClaim.map {
             AetherAudioSessionOwnership.canReleaseSharedSession(excluding: $0)
         } ?? true
+        // The release runs after `stop()` returns; drop it if another load has
+        // taken the session in the meantime.
+        engine.audioSessionReleaseGate = AetherAudioSessionOwnership.releaseGate()
         engine.stop(finalTeardown: true)
     }
 
