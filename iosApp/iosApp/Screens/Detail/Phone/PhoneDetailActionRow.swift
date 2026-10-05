@@ -83,6 +83,14 @@ struct PhoneLabeledMenu<MenuContent: View>: View {
             .frame(maxWidth: .infinity, minHeight: 58)
             .contentShape(Rectangle())
         }
+        #if os(macOS)
+        // A Mac menu flattens its label into a bordered text button with a
+        // chevron; the plain button style keeps the circle-over-caption
+        // label so More matches the actions beside it.
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        #endif
         .accessibilityLabel(label)
     }
 }

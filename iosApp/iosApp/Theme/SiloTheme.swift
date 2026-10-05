@@ -65,6 +65,21 @@ enum SiloTheme {
     /// Seconds a featured title stays up before the hero advances.
     static let macHeroAdvanceSeconds: Double = 8
 
+    // MARK: - Detail page (macOS)
+
+    /// Width of the poster beside a detail page's title and facts.
+    static let macDetailPosterWidth: CGFloat = 230
+    /// Height of the backdrop behind a detail page's header.
+    static let macDetailBackdropHeight: CGFloat = 520
+    /// Widest the detail page's title, facts and synopsis column may grow.
+    static let macDetailTextWidth: CGFloat = 620
+    /// Space above the detail header, clearing the window's title bar.
+    static let macDetailTopInset: CGFloat = 72
+    /// Width of a season's poster card on a series detail page.
+    static let macSeasonCardWidth: CGFloat = 130
+    /// Dimming of the seasons that are not selected.
+    static let macSeasonUnselectedOpacity: Double = 0.75
+
     /// Height of the soft fade below the scrolling header strip.
     static let macPageChromeFadeLength: CGFloat = 32
     #endif

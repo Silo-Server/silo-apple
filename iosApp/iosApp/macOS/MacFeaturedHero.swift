@@ -1,5 +1,4 @@
 #if os(macOS)
-import NukeUI
 import SwiftUI
 
 /// Hero for a Home section the server marks as featured.
@@ -15,7 +14,6 @@ struct MacFeaturedHero: View {
 
     @Environment(AppRouter.self) private var router
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.displayScale) private var displayScale
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
     @State private var index = 0
     @State private var isHovering = false
@@ -177,23 +175,9 @@ struct MacFeaturedHero: View {
             let isLoaded = loadedLogoURL == logoURL
             ZStack(alignment: .bottomLeading) {
                 name.opacity(isLoaded ? 0 : 1)
-                // Loaded directly so the artwork can be pinned to the leading
-                // edge: the shared image view centres a fitted image, which
-                // would float a narrow logo away from the text below it.
-                LazyImage(request: logoRequest(logoURL)) { state in
-                    if let image = state.image {
-                        image
-                            .resizable()
-                            .scaledToFit()
-                            .frame(
-                                maxWidth: .infinity,
-                                maxHeight: .infinity,
-                                alignment: .bottomLeading
-                            )
-                            .onAppear { loadedLogoURL = logoURL }
-                    }
+                MacTitleLogo(url: logoURL, size: Self.logoSize) {
+                    loadedLogoURL = logoURL
                 }
-                .frame(maxWidth: Self.logoSize.width, maxHeight: Self.logoSize.height)
                 .opacity(isLoaded ? 1 : 0)
                 .id(logoURL)
             }
@@ -203,15 +187,6 @@ struct MacFeaturedHero: View {
         } else {
             name.accessibilityAddTraits(.isHeader)
         }
-    }
-
-    private func logoRequest(_ logoURL: String) -> ImageRequest? {
-        guard let url = URL(string: logoURL) else { return nil }
-        return PosterImageCache.displayRequest(
-            url: url,
-            pointSize: Self.logoSize,
-            scale: displayScale
-        )
     }
 
     private static var logoSize: CGSize {

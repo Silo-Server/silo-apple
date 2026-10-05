@@ -325,11 +325,15 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
 
     var body: some View {
         Group {
+            #if os(macOS)
+            macHeader
+            #else
             if usesExpandedLayout {
                 expandedHeader
             } else {
                 compactHeader
             }
+            #endif
         }
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.size.width
@@ -492,6 +496,118 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     private var expandedHorizontalPadding: CGFloat {
         availableWidth >= 1_000 ? 56 : 40
     }
+
+    #if os(macOS)
+    // MARK: - Mac layout
+
+    /// Desktop composition: the backdrop runs the full width behind the
+    /// header, with the poster on the leading side and the title, facts,
+    /// synopsis, and actions in a column beside it.
+    private var macHeader: some View {
+        ZStack(alignment: .topLeading) {
+            macBackdrop
+
+            HStack(alignment: .top, spacing: SiloTheme.largePadding) {
+                macPoster
+
+                VStack(alignment: .leading, spacing: 15) {
+                    if let eyebrow, !eyebrow.isEmpty {
+                        Text(eyebrow.uppercased())
+                            .font(.siloCaption.weight(.bold))
+                            .tracking(SiloTheme.macSidebarHeadingTracking)
+                            .foregroundStyle(Color.siloOnSurface.opacity(0.7))
+                    }
+
+                    macTitle
+                    metadataBlock(alignment: .leading, textAlignment: .leading, isCompact: false)
+                    overviewBlock
+                    creditBlock(alignment: .leading)
+                    belowOverview()
+
+                    actions()
+                        .padding(.top, 2)
+                }
+                .frame(maxWidth: SiloTheme.macDetailTextWidth, alignment: .leading)
+            }
+            // Same gutter as the rows below, so the poster lines up with them.
+            .padding(.horizontal, SiloTheme.padding)
+            .padding(.top, SiloTheme.macDetailTopInset)
+            .padding(.bottom, SiloTheme.largePadding)
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    /// The backdrop behind the header, faded out at the bottom and dimmed on
+    /// the leading side where the text sits. Cover-style titles (audiobooks)
+    /// have no backdrop and show the page surface.
+    @ViewBuilder
+    private var macBackdrop: some View {
+        if case .backdrop = artworkStyle, let url = nonEmpty(backdropUrl) {
+            AsyncImageView(url: url, thumbhash: backdropThumbhash, contentMode: .fill)
+                .frame(maxWidth: .infinity)
+                .frame(height: SiloTheme.macDetailBackdropHeight)
+                .clipped()
+                .overlay {
+                    LinearGradient(
+                        colors: [Color.black.opacity(0.72), Color.black.opacity(0.2)],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                }
+                .mask {
+                    LinearGradient(
+                        stops: [
+                            .init(color: .black, location: 0),
+                            .init(color: .black, location: 0.55),
+                            .init(color: .clear, location: 1),
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                }
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+    }
+
+    @ViewBuilder
+    private var macPoster: some View {
+        if let url = nonEmpty(posterUrl) {
+            let size = macPosterSize
+            AsyncImageView(
+                url: url,
+                thumbhash: posterThumbhash,
+                targetSize: size,
+                contentMode: .fill
+            )
+            .frame(width: size.width, height: size.height)
+            .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cardCornerRadius, style: .continuous))
+            .shadow(color: .black.opacity(0.45), radius: 18, y: 8)
+            .accessibilityHidden(true)
+        }
+    }
+
+    private var macPosterSize: CGSize {
+        let width = SiloTheme.macDetailPosterWidth
+        if case .cover(let aspectRatio, _) = artworkStyle, aspectRatio > 0 {
+            return CGSize(width: width, height: width / aspectRatio)
+        }
+        return CGSize(width: width, height: width * 1.5)
+    }
+
+    @ViewBuilder
+    private var macTitle: some View {
+        if let logoUrl = nonEmpty(logoUrl) {
+            MacTitleLogo(
+                url: logoUrl,
+                size: CGSize(width: SiloTheme.macHeroLogoWidth, height: SiloTheme.macHeroLogoHeight)
+            )
+            .accessibilityLabel(title)
+        } else {
+            PhoneHeroTitle(title: title, textAlignment: .leading)
+        }
+    }
+    #endif
 
     // MARK: - Artwork and title
 
