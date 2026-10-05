@@ -146,20 +146,30 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
     /// to own it. Identifiers repeat across session instances, so the
     /// identifier alone proves nothing: a task whose tag names another owner
     /// is never touched. An untagged task (from an earlier build) carries no
-    /// tag, so it must request `expected`'s download file for `expected`'s
-    /// profile. Its server isn't compared: server URLs live in the registry,
-    /// off this queue, and a download id is unique within its server.
-    private static func isOwned(_ task: URLSessionTask, by expected: DownloadTaskTag) -> Bool {
+    /// tag, so it must be attributed to `expected` exactly as its events are
+    /// (`DownloadTaskTag.attributing`): its request names `expected`'s
+    /// download file and profile, on the first of `servers` whose file URL
+    /// shares its origin and path. Download ids are unique only within a
+    /// server, so the server is compared too. `servers` is a registry
+    /// snapshot the caller takes on the main actor, since this runs on the
+    /// session's queue. A task no server in it claims is left alone, as its
+    /// events reach no record either.
+    private static func isOwned(
+        _ task: URLSessionTask, by expected: DownloadTaskTag, servers: [(id: String, url: String)]
+    ) -> Bool {
         let ref = DownloadTaskRef(task)
         if let tag = ref.tag { return tag == expected }
-        return APIv2Client.downloadFileID(ref.requestURL) == expected.downloadId
-            && ref.requestProfileId == expected.profileId
+        return DownloadTaskTag.attributing(
+            requestURL: ref.requestURL, profileId: ref.requestProfileId, servers: servers
+        ) == expected
     }
 
-    func cancel(taskId: Int, expecting expected: DownloadTaskTag) {
+    /// `servers` attributes an untagged task; see `isOwned`.
+    func cancel(taskId: Int, expecting expected: DownloadTaskTag, servers: [(id: String, url: String)]) {
         session.getAllTasks { tasks in
-            guard let task = tasks.first(where: { $0.taskIdentifier == taskId && Self.isOwned($0, by: expected) })
-            else { return }
+            guard let task = tasks.first(where: {
+                $0.taskIdentifier == taskId && Self.isOwned($0, by: expected, servers: servers)
+            }) else { return }
             task.cancel()
         }
     }
@@ -196,10 +206,13 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
     /// Suspend a transfer by cancelling it with resume data. Returns `nil`
     /// when the server/transfer doesn't support ranged resume or the task is
     /// no longer live — callers must treat that as "restart from zero". A
-    /// task owned by someone other than `expected` is left running.
-    func pause(taskId: Int, expecting expected: DownloadTaskTag) async -> Data? {
+    /// task owned by someone other than `expected` is left running;
+    /// `servers` attributes an untagged task (see `isOwned`).
+    func pause(
+        taskId: Int, expecting expected: DownloadTaskTag, servers: [(id: String, url: String)]
+    ) async -> Data? {
         guard let task = await session.allTasks.first(where: {
-            $0.taskIdentifier == taskId && Self.isOwned($0, by: expected)
+            $0.taskIdentifier == taskId && Self.isOwned($0, by: expected, servers: servers)
         }) as? URLSessionDownloadTask else { return nil }
         return await task.cancelByProducingResumeData()
     }

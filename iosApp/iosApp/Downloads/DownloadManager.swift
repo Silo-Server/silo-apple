@@ -968,10 +968,11 @@ final class DownloadManager {
     }
 
     private func cancelActiveTasks() {
+        let servers = attributionServers
         for record in file.records.values where record.localStatus == .downloading {
             if let taskId = record.taskIdentifier, let owner = ownedTag(recordId: record.id) {
                 intentionalCancels.insert(IntentionalCancel(taskId: taskId, owner: owner))
-                sessionDelegate.cancel(taskId: taskId, expecting: owner)
+                sessionDelegate.cancel(taskId: taskId, expecting: owner, servers: servers)
             }
         }
     }
@@ -1291,8 +1292,9 @@ final class DownloadManager {
         file.records[id] = record
         clearTransferRate(recordId: id)
         persist()
+        let servers = attributionServers
         Task {
-            let data = await self.sessionDelegate.pause(taskId: taskId, expecting: owner)
+            let data = await self.sessionDelegate.pause(taskId: taskId, expecting: owner, servers: servers)
             self.finishPause(recordId: id, resumeData: data, claim: claim)
         }
         processQueue()
@@ -4023,8 +4025,16 @@ final class DownloadManager {
         ref.tag ?? DownloadTaskTag.attributing(
             requestURL: ref.requestURL,
             profileId: ref.requestProfileId,
-            servers: ServerRegistry.shared.entries.map { ($0.id, $0.url) }
+            servers: attributionServers
         )
+    }
+
+    /// The servers an untagged task is attributed among. Pause and cancel
+    /// pass this snapshot to the session delegate, which checks ownership
+    /// off the main actor, so they claim an untagged task only when its
+    /// events would reach the same owner.
+    private var attributionServers: [(id: String, url: String)] {
+        ServerRegistry.shared.entries.map { ($0.id, $0.url) }
     }
 
     /// The loaded scope's record `tag` names, or nil when there is no tag,
