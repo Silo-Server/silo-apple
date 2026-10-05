@@ -1290,7 +1290,7 @@ private struct TVMarqueeBlock: View {
         // reads as a flash on cold entry. Synchronous memory-cache lookup.
         if let logoUrl = content.logoUrl, !logoUrl.isEmpty,
            let url = URL(string: logoUrl),
-           let cached = ImagePipeline.shared.cache[ImageRequest(url: url)] {
+           let cached = ImagePipeline.shared.cache[ImageRequest(artwork: url)] {
             _logoImage = State(initialValue: cached.image)
         }
     }
@@ -1523,7 +1523,7 @@ private struct TVMarqueeBlock: View {
               let url = URL(string: logoUrl) else {
             return
         }
-        let request = ImageRequest(url: url, priority: .normal)
+        let request = ImageRequest(artwork: url, priority: .normal)
         if let image = try? await ImagePipeline.shared.image(for: request) {
             logoImage = image
         }

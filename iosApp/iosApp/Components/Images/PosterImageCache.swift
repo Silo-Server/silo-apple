@@ -8,6 +8,8 @@ import UIKit
 ///
 /// - Decoded images live in a memory cache sized per platform; raw bytes live
 ///   in a 1 GB disk cache keyed by URL, which serves every decode size.
+///   Revisioned artwork is keyed without its signature (`ArtworkCacheKey`),
+///   so a re-signed URL reuses both caches.
 /// - Artwork is decoded by ImageIO straight to a size on a fixed ladder just
 ///   above the size it is drawn at, so a w780 poster is never decoded at full
 ///   resolution for a 176 pt card, and cards a few points apart share a decode.
@@ -70,7 +72,7 @@ enum PosterImageCache {
         pixelSize: CGSize,
         priority: ImageRequest.Priority = .normal
     ) -> ImageRequest {
-        var request = ImageRequest(url: url, priority: priority)
+        var request = ImageRequest(artwork: url, priority: priority)
         request.thumbnail = ImageRequest.ThumbnailOptions(
             size: pixelSize,
             unit: .pixels,
@@ -81,7 +83,7 @@ enum PosterImageCache {
 
     /// Cheap request for average-color / palette sampling.
     static func paletteSampleRequest(for url: URL) -> ImageRequest {
-        var request = ImageRequest(url: url, priority: .low)
+        var request = ImageRequest(artwork: url, priority: .low)
         request.thumbnail = ImageRequest.ThumbnailOptions(maxPixelSize: paletteSampleMaxPixelSize)
         return request
     }
@@ -160,14 +162,19 @@ enum PosterImageCache {
     /// consumers read the unprocessed decode synchronously (marquee logos).
     static func prefetchOriginalArtwork(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
-        prefetcher.startPrefetching(with: urls)
+        prefetcher.startPrefetching(with: artworkRequests(urls))
     }
 
     /// Warm artwork bytes into the disk cache only, for art further from the
     /// screen; whatever size it is later drawn at decodes locally.
     static func prefetchArtworkData(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
-        dataPrefetcher.startPrefetching(with: urls)
+        dataPrefetcher.startPrefetching(with: artworkRequests(urls))
+    }
+
+    /// Full-size requests under each URL's artwork cache identity.
+    private static func artworkRequests(_ urls: some Sequence<URL>) -> [ImageRequest] {
+        urls.map { ImageRequest(artwork: $0) }
     }
 
     private static let prefetcher: ImagePrefetcher = {
@@ -318,14 +325,14 @@ enum PosterImageCache {
         let stale = warmedNeighborBackdropURLs.subtracting(urls)
         let fresh = urls.filter { !warmedNeighborBackdropURLs.contains($0) }
         warmedNeighborBackdropURLs = seen
-        if !stale.isEmpty { neighborBackdropPrefetcher.stopPrefetching(with: Array(stale)) }
-        if !fresh.isEmpty { neighborBackdropPrefetcher.startPrefetching(with: fresh) }
+        if !stale.isEmpty { neighborBackdropPrefetcher.stopPrefetching(with: artworkRequests(stale)) }
+        if !fresh.isEmpty { neighborBackdropPrefetcher.startPrefetching(with: artworkRequests(fresh)) }
     }
 
     @MainActor
     static func cancelNeighborBackdropWarmup() {
         guard !warmedNeighborBackdropURLs.isEmpty else { return }
-        neighborBackdropPrefetcher.stopPrefetching(with: Array(warmedNeighborBackdropURLs))
+        neighborBackdropPrefetcher.stopPrefetching(with: artworkRequests(warmedNeighborBackdropURLs))
         warmedNeighborBackdropURLs.removeAll()
     }
 
@@ -380,8 +387,9 @@ enum PosterImageCache {
     #endif
 }
 
-/// Which decode sizes have been requested for each artwork URL, so a view can
-/// find a decode already in memory without knowing who requested it. Bounded;
+/// Which decode sizes have been requested for each artwork, so a view can
+/// find a decode already in memory without knowing who requested it. Keyed by
+/// cache identity, so a re-signed URL finds its earlier decodes. Bounded;
 /// presence is always confirmed against the memory cache itself.
 final class ArtworkVariants: @unchecked Sendable {
     static let shared = ArtworkVariants()
@@ -391,28 +399,29 @@ final class ArtworkVariants: @unchecked Sendable {
     }
 
     private let lock = NSLock()
-    private let sizesByURL: NSCache<NSURL, Sizes> = {
-        let cache = NSCache<NSURL, Sizes>()
+    private let sizesByImageID: NSCache<NSString, Sizes> = {
+        let cache = NSCache<NSString, Sizes>()
         cache.countLimit = 4_000
         return cache
     }()
 
     func record(_ url: URL, pixelSize: CGSize) {
+        let key = ArtworkCacheKey.imageID(for: url) as NSString
         lock.withLock {
-            let key = url as NSURL
-            if let sizes = sizesByURL.object(forKey: key) {
+            if let sizes = sizesByImageID.object(forKey: key) {
                 if !sizes.values.contains(pixelSize) {
                     sizes.values.append(pixelSize)
                 }
             } else {
                 let sizes = Sizes()
                 sizes.values = [pixelSize]
-                sizesByURL.setObject(sizes, forKey: key)
+                sizesByImageID.setObject(sizes, forKey: key)
             }
         }
     }
 
     func sizes(for url: URL) -> [CGSize] {
-        lock.withLock { sizesByURL.object(forKey: url as NSURL)?.values ?? [] }
+        let key = ArtworkCacheKey.imageID(for: url) as NSString
+        return lock.withLock { sizesByImageID.object(forKey: key)?.values ?? [] }
     }
 }

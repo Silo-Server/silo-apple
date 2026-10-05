@@ -533,7 +533,7 @@ struct TVDecodedLogoTitle<Fallback: View>: View {
     var body: some View {
         Group {
             if let normalizedLogoURL {
-                let request = ImageRequest(url: normalizedLogoURL)
+                let request = ImageRequest(artwork: normalizedLogoURL)
                 let cachedImage = ImagePipeline.shared.cache[request]?.image
                 LazyImage(
                     request: request,
@@ -552,6 +552,9 @@ struct TVDecodedLogoTitle<Fallback: View>: View {
                         fallback()
                     }
                 }
+                // LazyImage compares requests by cache identity, which a
+                // re-signed URL keeps; reload on the URL itself.
+                .id(normalizedLogoURL)
             } else {
                 fallback()
             }

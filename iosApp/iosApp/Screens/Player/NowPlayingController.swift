@@ -175,7 +175,7 @@ final class NowPlayingController {
             // No memory-cache write: playback keeps decoded-image memory low,
             // and the published artwork already holds this image.
             let image = try await ImagePipeline.shared.image(
-                for: ImageRequest(url: url, options: [.disableMemoryCacheWrites])
+                for: ImageRequest(artwork: url, options: [.disableMemoryCacheWrites])
             )
             try Task.checkCancellation()
             guard isActive, currentArtworkURL == url else { return }
