@@ -125,8 +125,10 @@ jobs:
           if [ "$OPTIMIZED" = true ]; then
             # Release-style Swift optimisation on the Debug configuration, which
             # keeps testability and the test host. Some faults only appear in
-            # optimised (TestFlight) builds.
-            optimization=(SWIFT_OPTIMIZATION_LEVEL=-O SWIFT_COMPILATION_MODE=wholemodule)
+            # optimised (TestFlight) builds. -Osize rather than -O: with Debug
+            # plus -O, swift-frontend in Xcode 26.3 and 27 crashes emitting IR
+            # for the IssueReporting dependency (swift-issue-reporting).
+            optimization=(SWIFT_OPTIMIZATION_LEVEL=-Osize SWIFT_COMPILATION_MODE=wholemodule)
           fi
           if [ "$ACTION" = test ]; then
             # Simulator-only ad-hoc signing supplies the application identifier
