@@ -40,7 +40,7 @@ enum ThirdPartyCredits {
             use: "Generated profile avatars, loaded from DiceBear when shown.",
             notice: """
             Fun Emoji is a remix of "Fun Emoji Set" by Davis Uche, licensed under \
-            CC BY 4.0. Bottts is a remix of "Bottts" by Pablo Stanley. Pixel Art, \
+            CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Bottts is a remix of "Bottts" by Pablo Stanley. Pixel Art, \
             Identicon, and Initials are by DiceBear, licensed under CC0 1.0.
             """
         ),
