@@ -175,6 +175,36 @@ final class AdvisoryAgePreferenceStoreTests: XCTestCase {
         XCTAssertTrue(store.showsAdvisoryAge)
     }
 
+    func testReadInFlightWhenMarkedStaleDoesNotCountAsFresh() async {
+        let store = makeStore()
+        await store.hydrateIfNeeded()
+        transport.readGate = AsyncTestGate()
+        let refresh = Task { await store.refresh() }
+        await waitUntil { self.transport.readIdentities.count == 2 }
+
+        store.markStale()
+        transport.readGate?.open()
+        await refresh.value
+        transport.effectiveValue = true
+        await store.hydrateIfNeeded()
+
+        XCTAssertEqual(transport.readIdentities.count, 3)
+        XCTAssertTrue(store.showsAdvisoryAge)
+    }
+
+    func testFailedWriteIsReconciledByTheNextRead() async {
+        let store = makeStore()
+        await store.hydrateIfNeeded()
+        transport.writeError = SettingsAPIError.transport(description: "timed out")
+        await store.setShowsAdvisoryAge(true)
+        XCTAssertFalse(store.showsAdvisoryAge)
+
+        // The PUT landed even though the client saw it fail.
+        transport.effectiveValue = true
+        await store.hydrateIfNeeded()
+        XCTAssertTrue(store.showsAdvisoryAge)
+    }
+
     func testWriteCompletionAfterClearCannotRestorePreviousProfileState() async {
         transport.writeGate = AsyncTestGate()
         let store = makeStore()

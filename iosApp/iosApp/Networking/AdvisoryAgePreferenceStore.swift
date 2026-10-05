@@ -59,6 +59,9 @@ final class AdvisoryAgePreferenceStore: ObservableObject {
     private var hydrationTask: Task<Void, Never>?
     private var generation: UInt = 0
     private var localMutationRevision: UInt = 0
+    /// Bumped by ``markStale()`` so a read already in flight can still show
+    /// its answer without counting as the fresh read that was asked for.
+    private var staleMarks: UInt = 0
     /// The last value the server confirmed; a failed write rolls back to it.
     private var confirmedValue = false
 
@@ -79,6 +82,7 @@ final class AdvisoryAgePreferenceStore: ObservableObject {
     /// Lets the next ``hydrateIfNeeded()`` read again while keeping the last
     /// answer on screen. Called when the app returns to the foreground.
     func markStale() {
+        staleMarks &+= 1
         hasHydrated = false
     }
 
@@ -91,6 +95,7 @@ final class AdvisoryAgePreferenceStore: ObservableObject {
 
         let currentGeneration = generation
         let mutationRevision = localMutationRevision
+        let staleMark = staleMarks
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
             defer {
@@ -110,7 +115,7 @@ final class AdvisoryAgePreferenceStore: ObservableObject {
                 self.isSupported = false
                 self.showsAdvisoryAge = false
                 self.confirmedValue = false
-                self.hasHydrated = true
+                self.hasHydrated = self.staleMarks == staleMark
                 return
             case .unavailable, .failed:
                 // Not a verdict about the server's version: keep the last
@@ -126,7 +131,7 @@ final class AdvisoryAgePreferenceStore: ObservableObject {
                 let value = response.value(for: .catalogShowAdvisoryAge)?.value.boolValue == true
                 self.confirmedValue = value
                 self.isSupported = true
-                self.hasHydrated = true
+                self.hasHydrated = self.staleMarks == staleMark
                 // A save still in flight keeps showing the choice; if it fails,
                 // it rolls back to this answer.
                 if !self.isSaving {
@@ -163,6 +168,9 @@ final class AdvisoryAgePreferenceStore: ObservableObject {
             guard canApply(generation: currentGeneration, identity: identity) else { return }
             showsAdvisoryAge = confirmedValue
             writeError = Self.writeFailureMessage(for: error)
+            // A save that timed out may still have landed; the next read
+            // reconciles it.
+            markStale()
         }
     }
 
