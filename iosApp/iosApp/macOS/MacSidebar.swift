@@ -71,13 +71,6 @@ struct MacSidebar: View {
             }
             .task { await profileStore.refresh() }
         }
-        .background {
-            // Invisible carrier for the search shortcut.
-            Button("Search") { onSelect(.app(.search)) }
-                .keyboardShortcut("k", modifiers: .command)
-                .opacity(0)
-                .accessibilityHidden(true)
-        }
     }
 
     private func rows(for section: MacSidebarSection) -> some View {

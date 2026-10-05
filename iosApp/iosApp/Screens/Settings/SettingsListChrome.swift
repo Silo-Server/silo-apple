@@ -19,6 +19,11 @@ private struct MacSettingsToggleStyle: ToggleStyle {
         } label: {
             configuration.label
         }
+        // One named switch for assistive technology, as the system toggle
+        // is: the drawn capsule has no name of its own.
+        .accessibilityRepresentation {
+            Toggle(isOn: configuration.$isOn) { configuration.label }
+        }
     }
 }
 
