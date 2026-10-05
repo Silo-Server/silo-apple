@@ -22,10 +22,18 @@ final class TopShelfHTTPClientTests: XCTestCase {
         addTeardownBlock {
             _ = account.delete(SharedStorage.accessTokenAccount(for: "server"))
             _ = account.delete(SharedStorage.refreshTokenAccount(for: "server"))
+            _ = account.delete(SharedStorage.accountEpochAccount(for: "server"))
             UserDefaults().removePersistentDomain(forName: name)
         }
         suite.set("server", forKey: SharedStorage.activeServerIdKey)
         suite.set("https://media.example", forKey: SharedStorage.serverUrlKey)
+        // A remembered PIN-less profile, so the profile policy allows requests.
+        suite.set("profile", forKey: SharedStorage.profileIdKey)
+        XCTAssertTrue(account.set("epoch", for: SharedStorage.accountEpochAccount(for: "server")))
+        let launchState = ProfileLaunchState(rememberedByServerID: [
+            "server": RememberedProfile(profileID: "profile", requiredPINAtSelection: false, accountEpoch: "epoch"),
+        ])
+        suite.set(try JSONEncoder().encode(launchState), forKey: SharedStorage.profileLaunchStateKey)
         XCTAssertTrue(account.set("stale-access", for: SharedStorage.accessTokenAccount(for: "server")))
         XCTAssertTrue(account.set("stored-refresh", for: SharedStorage.refreshTokenAccount(for: "server")))
         let stub = APIv2TestStub()
