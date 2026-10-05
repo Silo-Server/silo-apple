@@ -389,13 +389,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
            }) {
             return selected
         }
-        if let inProgress = episodes.first(where: { $0.userData?.isInProgress == true }) {
-            return inProgress
-        }
-        if let unwatched = episodes.first(where: { !($0.userData?.played ?? false) }) {
-            return unwatched
-        }
-        return episodes.first
+        return episodes.preferredResumeEpisode()
     }
 
     /// Show "Play S2·E5" — the user can decide resume vs. restart in

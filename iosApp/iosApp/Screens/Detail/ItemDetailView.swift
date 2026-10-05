@@ -991,13 +991,7 @@ private struct ItemDetailPhoneContent: View {
 
     private func nextUpEpisode(for detail: ItemDetail) -> EpisodeListItem? {
         guard detail.type == "series" else { return nil }
-        if let inProgress = viewModel.episodes.first(where: { $0.userData?.isInProgress == true }) {
-            return inProgress
-        }
-        if let unwatched = viewModel.episodes.first(where: { !($0.userData?.played ?? false) }) {
-            return unwatched
-        }
-        return viewModel.episodes.first
+        return viewModel.episodes.preferredResumeEpisode()
     }
 
     private func takePlaybackReturn() -> SeriesPlaybackReturn? {

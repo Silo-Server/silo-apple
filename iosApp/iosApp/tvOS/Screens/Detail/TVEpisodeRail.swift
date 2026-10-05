@@ -155,22 +155,34 @@ struct TVEpisodeRail: View {
     }
 
     private var legacyRail: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(alignment: .top, spacing: cardSpacing) {
-                ForEach(episodes) { episode in
-                    episodeCard(episode)
-                        .focused($focusedCardId, equals: episode.contentId)
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(alignment: .top, spacing: cardSpacing) {
+                    ForEach(episodes) { episode in
+                        episodeCard(episode)
+                            .id(episode.contentId)
+                            .focused($focusedCardId, equals: episode.contentId)
+                    }
+                }
+                .padding(.vertical, 12)
+            }
+            .focusSection()
+            // Entering the row lands on the current episode.
+            .defaultFocus($focusedCardId, currentContentId, priority: .userInitiated)
+            .scrollClipDisabled()
+            .onChange(of: focusedCardId) { _, contentId in
+                onFocusedEpisodeChange?(contentId)
+            }
+            .onDisappear {
+                onFocusedEpisodeChange?(nil)
+            }
+            .onAppear {
+                guard let id = currentContentId else { return }
+                // Next tick, so the LazyHStack has made the card first.
+                DispatchQueue.main.async {
+                    proxy.scrollTo(id, anchor: .center)
                 }
             }
-            .padding(.vertical, 12)
-        }
-        .focusSection()
-        .scrollClipDisabled()
-        .onChange(of: focusedCardId) { _, contentId in
-            onFocusedEpisodeChange?(contentId)
-        }
-        .onDisappear {
-            onFocusedEpisodeChange?(nil)
         }
     }
 

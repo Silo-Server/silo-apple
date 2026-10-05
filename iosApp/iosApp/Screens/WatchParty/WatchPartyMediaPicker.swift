@@ -775,9 +775,15 @@ private struct WatchPartyEpisodePicker: View {
         #endif
     }
 
+    /// The viewer's own next episode in this season, as on the series page.
+    private var resumeEpisode: EpisodeListItem? {
+        episodes.preferredResumeEpisode()
+    }
+
     #if os(tvOS)
+    /// The hero describes the resume episode until focus reaches the rail.
     private var focusedEpisode: EpisodeListItem? {
-        episodes.first { $0.contentId == focusedEpisodeId }
+        episodes.first { $0.contentId == focusedEpisodeId } ?? resumeEpisode
     }
 
     private var tvBody: some View {
@@ -827,6 +833,7 @@ private struct WatchPartyEpisodePicker: View {
                     .scrollClipDisabled()
                     .padding(.horizontal, -8)
                     .focusSection()
+                    .defaultFocus($focusedSeasonNumber, seasonNumber, priority: .userInitiated)
                     .padding(.bottom, 24)
                 }
                 Group {
@@ -853,6 +860,7 @@ private struct WatchPartyEpisodePicker: View {
                                 chosen = WatchPartyMediaChoice(series: series, episode: episode)
                             },
                             onFocusedEpisodeChange: { id in if let id { focusedEpisodeId = id } },
+                            currentContentId: resumeEpisode?.contentId,
                             baseCardWidth: 400,
                             cardSpacing: 36
                         )
@@ -879,6 +887,19 @@ private struct WatchPartyEpisodePicker: View {
 
     #if os(iOS)
     private var phoneBody: some View {
+        ScrollViewReader { proxy in
+            phoneList
+                .onChange(of: resumeEpisode?.contentId) { _, id in
+                    guard let id else { return }
+                    // Next tick, so the rows that just loaded are laid out.
+                    DispatchQueue.main.async {
+                        proxy.scrollTo(id, anchor: .center)
+                    }
+                }
+        }
+    }
+
+    private var phoneList: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 if !seasons.isEmpty {
@@ -909,6 +930,7 @@ private struct WatchPartyEpisodePicker: View {
                                     episodeRow(episode)
                                 }
                                 .buttonStyle(.plain)
+                                .id(episode.contentId)
                             }
                         }
                     }
@@ -972,10 +994,11 @@ private struct WatchPartyEpisodePicker: View {
             guard !Task.isCancelled, roomId == session.room?.roomId else { return }
             seasons = try values.map { try Season(catalog: $0) }.sortedForDisplay()
             // A retry keeps the season being viewed; the first load opens on
-            // the initial season.
+            // the initial season, else where the viewer left off, as the
+            // series page does.
             let target = seasons.first(where: { $0.seasonNumber == seasonNumber })
                 ?? seasons.first(where: { $0.seasonNumber == initialSeasonNumber })
-                ?? seasons.first(where: { $0.seasonNumber > 0 }) ?? seasons.first
+                ?? seasons.preferredResumeSeason()
             if seasonNumber == target?.seasonNumber { await loadEpisodes() }
             else { seasonNumber = target?.seasonNumber }
             if seasons.isEmpty { isLoading = false }

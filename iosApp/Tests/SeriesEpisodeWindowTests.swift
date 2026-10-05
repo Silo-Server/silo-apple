@@ -93,6 +93,15 @@ final class SeriesEpisodeWindowTests: XCTestCase {
         XCTAssertEqual(model.preferredInitialSeason(seasons: try [2, 3].map(season))?.seasonNumber, 2)
     }
 
+    func testResumeEpisodePrefersInProgressThenFirstUnwatched() throws {
+        let watched = try episode(1, 1, userData: #"{"played":true}"#)
+        let skipped = try episode(1, 2)
+        let inProgress = try episode(1, 3, userData: #"{"played":false,"isInProgress":true}"#)
+        XCTAssertEqual([watched, skipped, inProgress].preferredResumeEpisode()?.contentId, "s1e3")
+        XCTAssertEqual([watched, skipped].preferredResumeEpisode()?.contentId, "s1e2")
+        XCTAssertEqual([watched].preferredResumeEpisode()?.contentId, "s1e1")
+    }
+
     func testParentSeriesRouteRetainsExactEpisodeAcrossCopies() throws {
         let item = try JSONDecoder().decode(SectionItem.self, from: Data(
             #"{"contentId":"episode-38-1","type":"episode","title":"Episode","seriesId":"series","seriesTitle":"Series","seasonNumber":38,"episodeNumber":1}"#.utf8
@@ -126,9 +135,10 @@ final class SeriesEpisodeWindowTests: XCTestCase {
         ))
     }
 
-    private func episode(_ season: Int, _ number: Int) throws -> EpisodeListItem {
-        try JSONDecoder().decode(EpisodeListItem.self, from: Data(
-            "{\"contentId\":\"s\(season)e\(number)\",\"seasonNumber\":\(season),\"episodeNumber\":\(number)}".utf8
+    private func episode(_ season: Int, _ number: Int, userData: String? = nil) throws -> EpisodeListItem {
+        let userDataField = userData.map { ",\"userData\":\($0)" } ?? ""
+        return try JSONDecoder().decode(EpisodeListItem.self, from: Data(
+            "{\"contentId\":\"s\(season)e\(number)\",\"seasonNumber\":\(season),\"episodeNumber\":\(number)\(userDataField)}".utf8
         ))
     }
 }

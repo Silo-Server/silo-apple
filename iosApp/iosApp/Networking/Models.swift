@@ -701,6 +701,43 @@ extension Array where Element == Season {
             return lhs.contentId < rhs.contentId
         }
     }
+
+    /// The season a viewer resumes in: one with an episode in progress, then
+    /// the first partially watched season, then the first unplayed numbered
+    /// season (Specials only once every numbered season is played), then the
+    /// first season.
+    func preferredResumeSeason() -> Season? {
+        if let inProgress = first(where: { ($0.userData?.inProgressCount ?? 0) > 0 }) {
+            return inProgress
+        }
+        if let partial = first(where: {
+            guard let ud = $0.userData else { return false }
+            let watched = ud.watchedCount ?? 0
+            return watched > 0 && watched < $0.episodeCount
+        }) {
+            return partial
+        }
+        // Specials sort first for display, but a fresh series should open on
+        // its first numbered season rather than the specials bucket. Once
+        // every numbered season is played, an unplayed Specials still wins
+        // over a fully watched one.
+        let regular = filter { !($0.isSpecials == true || $0.seasonNumber == 0) }
+        let isUnplayed: (Season) -> Bool = { !($0.userData?.played ?? false) }
+        if let firstUnplayed = regular.first(where: isUnplayed) ?? first(where: isUnplayed) {
+            return firstUnplayed
+        }
+        return regular.first ?? first
+    }
+}
+
+extension Array where Element == EpisodeListItem {
+    /// The episode a viewer resumes with: the one in progress, then the first
+    /// unwatched, then the first.
+    func preferredResumeEpisode() -> EpisodeListItem? {
+        first { $0.userData?.isInProgress == true }
+            ?? first { !($0.userData?.played ?? false) }
+            ?? first
+    }
 }
 
 struct SeasonUserData: Codable, Hashable {

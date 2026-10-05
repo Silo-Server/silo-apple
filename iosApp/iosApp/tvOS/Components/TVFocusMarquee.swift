@@ -1052,7 +1052,7 @@ final class TVFocusMarqueeModel {
         let seasons = seasonsResponse.seasons.sortedForDisplay()
         let targetSeason = seasonNumber.flatMap { number in
             seasons.first(where: { $0.seasonNumber == number })
-        } ?? preferredInitialSeason(in: seasons)
+        } ?? seasons.preferredResumeSeason()
         guard let targetSeason else { return }
 
         let episodesKey = CacheKey.itemEpisodes(
@@ -1070,30 +1070,6 @@ final class TVFocusMarqueeModel {
             libraryId: libraryId
         ), !Task.isCancelled else { return }
         ResponseCache.shared.set(fetched, for: episodesKey)
-    }
-
-    private static func preferredInitialSeason(in seasons: [Season]) -> Season? {
-        if let inProgress = seasons.first(where: {
-            ($0.userData?.inProgressCount ?? 0) > 0
-        }) {
-            return inProgress
-        }
-        if let partial = seasons.first(where: {
-            guard let userData = $0.userData else { return false }
-            let watched = userData.watchedCount ?? 0
-            return watched > 0 && watched < $0.episodeCount
-        }) {
-            return partial
-        }
-        // Mirrors ItemDetailViewModel.preferredInitialSeason: specials lead
-        // the display order, but a fresh series opens on its first numbered
-        // season, and an unplayed Specials beats a fully watched numbered one.
-        let regular = seasons.filter { !($0.isSpecials == true || $0.seasonNumber == 0) }
-        let isUnplayed: (Season) -> Bool = { !($0.userData?.played ?? false) }
-        if let firstUnplayed = regular.first(where: isUnplayed) ?? seasons.first(where: isUnplayed) {
-            return firstUnplayed
-        }
-        return regular.first ?? seasons.first
     }
 
     private func sampleTintIfNeeded(for urlString: String?) {
