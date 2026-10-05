@@ -2619,10 +2619,13 @@ struct MainTabView: View {
                     iPadColumnVisibility == .detailOnly ? SidebarToggleAction(perform: toggleSidebar) : nil
                 )
                 .environment(\.reservesSidebarToggleSpace, true)
-            #else
+            #elseif os(macOS)
             // The title bar's system toggle is the Mac's only sidebar
             // toggle, so pages are handed none of their own.
             macSidebarLayout
+            #else
+            // tvOS has its own shell and never takes the sidebar layout.
+            EmptyView()
             #endif
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -2700,7 +2703,7 @@ struct MainTabView: View {
         .padding(.bottom, 12)
     }
 
-    #else
+    #elseif os(macOS)
     private var macSidebarLayout: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             MacSidebar(
