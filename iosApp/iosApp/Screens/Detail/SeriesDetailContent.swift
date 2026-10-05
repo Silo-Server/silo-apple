@@ -368,11 +368,11 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     /// The action row's Watched button targets the episode the page is on.
     /// Pin it as the selection first: otherwise marking the fallback next-up
     /// episode watched would move the page to the following unwatched one.
+    /// Pin unconditionally, because `selectedEpisodeContentId` already
+    /// reports the fallback episode when nothing is explicitly selected.
     private func toggleNextUpEpisodeWatched() {
         guard let episode = nextUpEpisode else { return }
-        if selectedEpisodeContentId != episode.contentId {
-            handleEpisodeSelection(episode.contentId)
-        }
+        handleEpisodeSelection(episode.contentId)
         setEpisodeWatched(episode, !isNextUpEpisodeWatched)
     }
 

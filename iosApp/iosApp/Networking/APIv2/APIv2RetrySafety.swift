@@ -120,6 +120,9 @@ enum APIv2MutationCatalog {
         .init("POST", "/api/v2/subtitles/stored/{id}/sync", .coalescing),
         // Guarded by If-Match, so a replay after a newer change gets 412.
         .init("PUT", "/api/v2/subtitles/stored/{id}/timing", .naturalIdempotent),
+        .init("POST", "/api/v2/subtitles/{media_file_id}/sync/{key}", .coalescing),
+        // Guarded by If-Match, so a replay after a newer change gets 412.
+        .init("PUT", "/api/v2/subtitles/{media_file_id}/sync/{key}/timing", .naturalIdempotent),
         // Watch together
         .init("POST", "/api/v2/watch-together/rooms", .uniqueConstraint),
         .init("POST", "/api/v2/watch-together/join", .naturalIdempotent),
