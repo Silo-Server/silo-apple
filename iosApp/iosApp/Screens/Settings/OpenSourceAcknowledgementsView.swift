@@ -5,9 +5,39 @@ enum OpenSourceAcknowledgements {
     struct Resource: Sendable {
         let title: String
         let name: String
+        var fileExtension: String? = "txt"
     }
 
+    /// The AGPL's "Appropriate Legal Notices" for Silo itself: copyright, no
+    /// warranty, the license and its additional permission, and where the
+    /// source is published (this build's archive when a release lane stamped it).
+    static let siloNotice = """
+    Copyright (C) 2026 Silo Media L.L.C. and contributors.
+
+    Silo is free software: you can redistribute it and/or modify it under the \
+    terms of the GNU Affero General Public License as published by the Free \
+    Software Foundation, either version 3 of the License, or (at your option) \
+    any later version, with the additional permission for app store \
+    distribution reproduced below.
+
+    Silo is distributed in the hope that it will be useful, but WITHOUT ANY \
+    WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS \
+    FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License below \
+    for more details.
+
+    Source code: \(SiloLegalLinks.sourceCode.absoluteString)
+
+    The Silo name, logo, and wordmark are trademarks of Silo Media L.L.C. and \
+    are not licensed under the AGPL.
+
+    \(TMDBAttributionNotice.text)
+    """
+
+    /// The first two resources are the repository's own LICENSE and
+    /// APPSTORE-EXCEPTION.md, copied into the bundle by project.yml.
     static let resources: [Resource] = [
+        Resource(title: "GNU Affero General Public License version 3", name: "LICENSE", fileExtension: nil),
+        Resource(title: "Silo Apple App Store / DRM Exception", name: "APPSTORE-EXCEPTION", fileExtension: "md"),
         Resource(title: "Overview and provenance", name: "README"),
         Resource(
             title: "AetherEngine — LGPL 3 and Apple Store / DRM Exception",
@@ -34,6 +64,8 @@ enum OpenSourceAcknowledgements {
         Resource(title: "HarfBuzz", name: "HarfBuzz"),
         Resource(title: "libpng", name: "libpng"),
         Resource(title: "ThumbHash decoder — MIT", name: "ThumbHash-MIT"),
+        Resource(title: "Go Noto Current font — SIL Open Font License 1.1", name: "GoNoto-OFL-1.1"),
+        Resource(title: "DiceBear avatar styles — artwork credits", name: "DiceBear-Avatar-Styles"),
     ]
 
     /// One titled license text per resource.
@@ -42,13 +74,17 @@ enum OpenSourceAcknowledgements {
         let text: String
     }
 
-    static let entries: [Entry] = resources.map { resource in
+    /// Silo's own notice first, then the resources in order.
+    static let entries: [Entry] = [Entry(id: "Silo", text: "Silo\n====\n\n\(siloNotice)")] + resourceEntries
+
+    private static let resourceEntries: [Entry] = resources.map { resource in
         let body: String
-        if let url = resourceURL(named: resource.name),
+        if let url = resourceURL(for: resource),
            let contents = try? String(contentsOf: url, encoding: .utf8) {
             body = contents.trimmingCharacters(in: .whitespacesAndNewlines)
         } else {
-            body = "The bundled license resource \(resource.name).txt is unavailable."
+            let file = [resource.name, resource.fileExtension].compactMap { $0 }.joined(separator: ".")
+            body = "The bundled license resource \(file) is unavailable."
         }
 
         return Entry(
@@ -61,12 +97,12 @@ enum OpenSourceAcknowledgements {
     static let text: String = entries.map(\.text).joined(separator: "\n\n\n")
     #endif
 
-    private static func resourceURL(named name: String) -> URL? {
+    static func resourceURL(for resource: Resource) -> URL? {
         Bundle.main.url(
-            forResource: name,
-            withExtension: "txt",
+            forResource: resource.name,
+            withExtension: resource.fileExtension,
             subdirectory: "OpenSourceLicenses"
-        ) ?? Bundle.main.url(forResource: name, withExtension: "txt")
+        ) ?? Bundle.main.url(forResource: resource.name, withExtension: resource.fileExtension)
     }
 }
 

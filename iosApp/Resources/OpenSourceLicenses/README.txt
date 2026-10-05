@@ -81,6 +81,12 @@ ThumbHash decoder
   Silo includes an adapted copy of the reference Swift decode path with input
   validation, cross-platform image creation, and a bounded asynchronous cache.
 
+Go Noto Current font
+  Release: Go Noto Universal v7.0, GoNotoCurrent-Regular.ttf, bundled
+  unmodified as go-noto-current-regular.ttf
+  License: SIL Open Font License 1.1 (GoNoto-OFL-1.1.txt)
+  Source: https://github.com/satbyy/go-noto-universal/releases/tag/v7.0
+
 SMBClient 0.3.1 is present in SwiftPM's resolution graph only because
 AetherEngine publishes a separate optional AetherEngineSMB product. Silo links
 the AetherEngine product, not AetherEngineSMB, so SMBClient is not included in
@@ -122,6 +128,9 @@ SwiftAssRenderer, SwiftLibass, and local ASS rendering
   https://github.com/Silo-Server/silo-apple/releases
   Tagged builds place the archive on their release; manually dispatched
   TestFlight builds use a source-<app-commit> release. The TestFlight build's
-  What to Test notes include the exact archive URL. No original release
-  signing keys are needed to rebuild for a simulator; physical-device builds
-  use the recipient's signing identity.
+  What to Test notes include the exact archive URL. Builds from the release
+  and sideload workflows also show it at the top of these acknowledgements
+  and behind Settings > About > Source Code on iPhone and iPad; other builds
+  link the repository. No original release signing keys are needed to
+  rebuild for a simulator; physical-device builds use the recipient's
+  signing identity.

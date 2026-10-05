@@ -87,6 +87,25 @@ def build_number_xcarg
   "CURRENT_PROJECT_VERSION=#{value} "
 end
 
+# Returns an xcarg fragment that stamps this build's published source archive
+# (SILO_RELEASE_SOURCE_URL, set by release-source.yml) into SILO_SOURCE_URL. The
+# app links it from Settings > About > Source Code; without it the app links
+# the repository. Same threat model as marketing_version_xcarg: the value joins
+# xcodebuild's xcargs as a shell string, so only the exact release-asset shape
+# release-source.yml uploads is accepted. The tag segment allows `+` and its
+# `%2B` encoding for single-platform tags such as v1.4.0+ios.
+SOURCE_ARCHIVE_URL = %r{\Ahttps://github\.com/Silo-Server/silo-apple/releases/download/[A-Za-z0-9._%+-]+/Silo-source-[0-9a-f]{40}\.tar\.gz\z}
+
+def source_url_xcarg
+  value = ENV["SILO_RELEASE_SOURCE_URL"].to_s.strip
+  return "" if value.empty?
+
+  unless value.match?(SOURCE_ARCHIVE_URL)
+    UI.user_error!("Invalid SILO_RELEASE_SOURCE_URL #{value.inspect}; expected a Silo-source-<commit>.tar.gz release asset of Silo-Server/silo-apple")
+  end
+  "SILO_SOURCE_URL=#{value} "
+end
+
 # Overrides the SILO_BUILD_CHANNEL build setting (project.yml default: release)
 # for the unsigned sideload lanes. It reaches the app as the SiloBuildChannel
 # Info.plist key and is reported to the server as X-Silo-Client-Channel, so an
@@ -404,7 +423,7 @@ platform :ios do
       # PROVISIONING_PROFILE_SPECIFIER is intentionally absent from xcargs —
       # a global value would override every target with the same profile.
       # Per-target settings were written above via update_code_signing_settings.
-      xcargs: "#{marketing_version_xcarg}" \
+      xcargs: "#{marketing_version_xcarg}#{source_url_xcarg}" \
               "CODE_SIGN_STYLE=Manual " \
               "CODE_SIGN_IDENTITY='Apple Distribution' " \
               "CURRENT_PROJECT_VERSION=#{build_number} " \
@@ -528,7 +547,7 @@ platform :ios do
       # PROVISIONING_PROFILE_SPECIFIER is intentionally absent from xcargs —
       # a global value would override both targets with the same profile.
       # Per-target settings were written above via update_code_signing_settings.
-      xcargs: "#{marketing_version_xcarg}" \
+      xcargs: "#{marketing_version_xcarg}#{source_url_xcarg}" \
               "CODE_SIGN_STYLE=Manual " \
               "CODE_SIGN_IDENTITY='Apple Distribution' " \
               "CURRENT_PROJECT_VERSION=#{build_number} " \
@@ -611,7 +630,7 @@ platform :ios do
       scheme:       "Silo",
       destination:  "generic/platform=iOS",
       archive_path: archive_path,
-      xcargs:       "#{marketing_version_xcarg}#{build_number_xcarg}" \
+      xcargs:       "#{marketing_version_xcarg}#{build_number_xcarg}#{source_url_xcarg}" \
                     "#{SIDELOAD_CHANNEL_XCARG}" \
                     "CODE_SIGNING_ALLOWED=NO " \
                     "CODE_SIGNING_REQUIRED=NO " \
@@ -642,7 +661,7 @@ platform :ios do
       scheme:       "SiloTV",
       destination:  "generic/platform=tvOS",
       archive_path: archive_path,
-      xcargs:       "#{marketing_version_xcarg}#{build_number_xcarg}" \
+      xcargs:       "#{marketing_version_xcarg}#{build_number_xcarg}#{source_url_xcarg}" \
                     "#{SIDELOAD_CHANNEL_XCARG}" \
                     "CODE_SIGNING_ALLOWED=NO " \
                     "CODE_SIGNING_REQUIRED=NO " \

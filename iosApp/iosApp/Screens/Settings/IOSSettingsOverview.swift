@@ -241,7 +241,7 @@ struct IOSSettingsOverview: View {
     }
 
     private var aboutSection: some View {
-        Section("About") {
+        Section {
             SettingsOverviewRow(
                 title: "Version",
                 subtitle: "Installed Silo app version",
@@ -267,6 +267,19 @@ struct IOSSettingsOverview: View {
                     systemImage: "curlybraces"
                 )
             }
+
+            Link(destination: SiloLegalLinks.sourceCode) {
+                SettingsOverviewRow(
+                    title: "Source Code",
+                    subtitle: "Get Silo's source code under the AGPL",
+                    systemImage: "chevron.left.forwardslash.chevron.right",
+                    showsChevron: true
+                )
+            }
+        } header: {
+            Text("About")
+        } footer: {
+            TMDBAttributionNotice()
         }
     }
 
@@ -359,7 +372,10 @@ struct IOSSettingsOverview: View {
             "information",
             "open source",
             "licenses",
-            "acknowledgements"
+            "acknowledgements",
+            "source code",
+            "AGPL",
+            "TMDB"
         )
     }
 

@@ -71,6 +71,8 @@
 	</array>
 	<key>SiloBuildChannel</key>
 	<string>$(SILO_BUILD_CHANNEL)</string>
+	<key>SiloSourceURL</key>
+	<string>$(SILO_SOURCE_URL)</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UIBackgroundModes</key>

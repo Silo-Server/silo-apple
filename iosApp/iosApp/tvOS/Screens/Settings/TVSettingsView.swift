@@ -610,6 +610,14 @@ struct TVSettingsView: View {
             .buttonStyle(TVSettingsPaneRowStyle())
             .focused($detailFocus, equals: .serverOpenSourceLicenses)
 
+            // Passive text: the focus graph stays the two rows above. The
+            // licenses overlay carries the source link for this build.
+            TMDBAttributionNotice(logoHeight: 18)
+                .font(.system(size: 20))
+                .foregroundStyle(Color.siloSecondaryText)
+                .padding(.horizontal, 24)
+                .padding(.vertical, 8)
+
             TVSettingsSectionHeader("EXPERIMENTAL")
 
             ForEach(ExperimentalFeature.allCases) { feature in

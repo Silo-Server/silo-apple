@@ -62,6 +62,8 @@
 	<string>Silo uses your local network to find Silo servers, and to set up and control Silo on your Apple TV.</string>
 	<key>SiloBuildChannel</key>
 	<string>$(SILO_BUILD_CHANNEL)</string>
+	<key>SiloSourceURL</key>
+	<string>$(SILO_SOURCE_URL)</string>
 	<key>TVTopShelfImage</key>
 	<dict>
 		<key>TVTopShelfPrimaryImage</key>

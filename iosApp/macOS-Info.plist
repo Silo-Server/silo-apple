@@ -48,5 +48,7 @@
 	<true/>
 	<key>SiloBuildChannel</key>
 	<string>$(SILO_BUILD_CHANNEL)</string>
+	<key>SiloSourceURL</key>
+	<string>$(SILO_SOURCE_URL)</string>
 </dict>
 </plist>

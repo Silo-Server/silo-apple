@@ -52,6 +52,11 @@ targetTemplates:
         # `dev` regardless. Every target using this template must declare the
         # key in its Info.plist or it reports `release` no matter what.
         SILO_BUILD_CHANNEL: release
+        # The published source archive for this build, surfaced as the
+        # `SiloSourceURL` Info.plist key behind Settings > About > Source
+        # Code. Release lanes set it from SILO_RELEASE_SOURCE_URL; empty
+        # builds link the repository instead.
+        SILO_SOURCE_URL: ""
 
 packages:
   # The only media engine in the replacement player. Keep this at an exact
@@ -82,6 +87,13 @@ targets:
           - "macOS/**"
           - "tvOS-Info.plist"
       - path: Resources
+        buildPhase: resources
+      # Silo's own license and App Store permission, shown under Settings >
+      # About > Open Source Licenses. Bundled from the repository root so the
+      # app cannot drift from the published terms.
+      - path: ../LICENSE
+        buildPhase: resources
+      - path: ../APPSTORE-EXCEPTION.md
         buildPhase: resources
     # PRODUCT_BUNDLE_IDENTIFIER and CODE_SIGN_ENTITLEMENTS live in
     # Signing/Silo.xcconfig so local contributors can override
@@ -140,6 +152,13 @@ targets:
           - "macOS/**"
       - path: Resources
         buildPhase: resources
+      # Silo's own license and App Store permission, shown under Settings >
+      # About > Open Source Licenses. Bundled from the repository root so the
+      # app cannot drift from the published terms.
+      - path: ../LICENSE
+        buildPhase: resources
+      - path: ../APPSTORE-EXCEPTION.md
+        buildPhase: resources
     # PRODUCT_BUNDLE_IDENTIFIER and CODE_SIGN_ENTITLEMENTS live in
     # Signing/SiloTV.xcconfig so local contributors can override
     # them via Signing/Local.xcconfig without dirtying this file.
@@ -190,6 +209,13 @@ targets:
           - "Screens/Player/PlayerView.swift"
           - "Screens/WatchParty/**"
       - path: Resources
+        buildPhase: resources
+      # Silo's own license and App Store permission, shown under Settings >
+      # About > Open Source Licenses. Bundled from the repository root so the
+      # app cannot drift from the published terms.
+      - path: ../LICENSE
+        buildPhase: resources
+      - path: ../APPSTORE-EXCEPTION.md
         buildPhase: resources
     configFiles:
       Debug: Signing/SiloMac.xcconfig

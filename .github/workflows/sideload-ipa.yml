@@ -190,6 +190,8 @@ jobs:
           # Always set (dispatch and tag push alike) so no sideload IPA ever
           # ships the project.yml CURRENT_PROJECT_VERSION placeholder.
           BUILD_NUMBER: ${{ needs.release.outputs.build_number }}
+          # Linked from Settings > About > Source Code in the built app.
+          SILO_RELEASE_SOURCE_URL: ${{ needs.source.outputs.source_url }}
 
       - name: Upload ${{ matrix.platform }} IPA artifact
         uses: actions/upload-artifact@v4

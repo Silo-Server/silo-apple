@@ -5,8 +5,10 @@ applications. Build and release tools that do not ship in an application
 bundle are outside its scope. Complete license texts are committed under
 `iosApp/Resources/OpenSourceLicenses/`. The shared resource source configures
 them for the iOS, tvOS, and macOS applications, with a local reader at
-Settings > About > Open Source Licenses. Generated-project and built-bundle
-verification is still required.
+Settings > About > Open Source Licenses. That reader opens with Silo's own
+AGPL notice, `LICENSE`, and `APPSTORE-EXCEPTION.md`, and links the build's
+source archive when a release lane stamped one (`SiloSourceURL`). Generated-project and built-bundle verification is still
+required.
 
 The authoritative dependency lock is
 `iosApp/Silo.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`.
@@ -179,6 +181,33 @@ and a bounded asynchronous cache around the reference algorithm.
 - Exact source:
   <https://github.com/evanw/thumbhash/tree/a652ce6ed691242f459f468f0a8756cda3b90a82>
 - Bundled text: `ThumbHash-MIT.txt`
+
+## Go Noto Current font
+
+`iosApp/Resources/Fonts/go-noto-current-regular.ttf` is byte-for-byte
+`GoNotoCurrent-Regular.ttf` from Go Noto Universal v7.0 (SHA-256
+`882afbab965608c2d2bc627fd8016b962aa5a6be2d358f9de24a7b5967c5632e`).
+Go Noto Universal's scripts are under the Unlicense; the fonts it builds from
+Noto sources are licensed under the SIL Open Font License 1.1, Copyright 2022
+The Noto Project Authors.
+
+- Exact source: <https://github.com/satbyy/go-noto-universal/releases/tag/v7.0>
+- Bundled text: `GoNoto-OFL-1.1.txt`
+
+## Runtime attributions
+
+These are not shipped in the app bundle, but the app displays them and credits
+them in Settings > About.
+
+- TMDB: rating badges and Requests artwork come from TMDB. Its API terms
+  require the TMDB logo and the notice "This application uses TMDB and the
+  TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB."
+  Both appear in Settings > About; the logo's provenance is in
+  `iosApp/iosApp/ThirdPartyLogos.xcassets/README.md`.
+- DiceBear: profile avatar presets load from the DiceBear HTTP API. The
+  default Fun Emoji style is a remix of Davis Uche's Fun Emoji Set under
+  CC BY 4.0, which requires credit. `DiceBear-Avatar-Styles.txt` credits every
+  style Silo offers.
 
 ## Release checklist
 
