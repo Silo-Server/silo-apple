@@ -246,7 +246,23 @@ struct SettingsView: View {
                     .foregroundStyle(Color.siloOnSurface)
             }
 
-            Link("Privacy Policy", destination: SiloLegalLinks.privacyPolicy)
+            Link(destination: SiloLegalLinks.privacyPolicy) {
+                #if os(macOS)
+                // Monochrome like the rest of the Mac's chrome; the arrow
+                // marks it as opening in the browser.
+                HStack {
+                    Text("Privacy Policy")
+                        .foregroundStyle(Color.siloOnSurface)
+                    Spacer(minLength: 8)
+                    Image(systemName: "arrow.up.right")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(Color.siloSecondaryText.opacity(0.6))
+                }
+                .contentShape(Rectangle())
+                #else
+                Text("Privacy Policy")
+                #endif
+            }
 
             NavigationLink {
                 AcknowledgementsView()
@@ -269,9 +285,25 @@ struct SettingsView: View {
             Button(role: .destructive) {
                 showSignOutConfirm = true
             } label: {
+                #if os(macOS)
+                Text("Sign Out")
+                    .font(.siloBody.weight(.semibold))
+                    .foregroundStyle(Color.siloErrorInk)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, SiloTheme.smallPadding)
+                    .background(
+                        RoundedRectangle(cornerRadius: SiloTheme.cornerRadius, style: .continuous)
+                            .fill(Color.siloErrorInk.opacity(0.12))
+                    )
+                    .contentShape(Rectangle())
+                #else
                 Text("Sign Out")
                     .frame(maxWidth: .infinity)
+                #endif
             }
+            #if os(macOS)
+            .buttonStyle(.plain)
+            #endif
         }
     }
     #endif
