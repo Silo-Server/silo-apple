@@ -3,8 +3,17 @@ import Foundation
 
 /// Labels for PhoneEpisodeRail cards.
 enum PhoneEpisodeFormatting {
+    /// "S01E02 · Pilot", the same caption the tvOS Series carousel and Home
+    /// episode cards use, so a special (S00) and each episode's place in the
+    /// season read at a glance. Just the code when the episode has no title.
     static func title(for episode: EpisodeListItem) -> String {
-        episode.title ?? "Episode \(episode.episodeNumber)"
+        let code = EpisodeCardCaption.code(
+            season: episode.seasonNumber,
+            episode: episode.episodeNumber
+        )
+        guard let title = episode.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !title.isEmpty else { return code }
+        return "\(code) · \(title)"
     }
 
     static func metadataLine(for episode: EpisodeListItem) -> String? {

@@ -511,9 +511,9 @@ struct TVLoginView: View {
 
     @ViewBuilder
     private var sessionExpiredChip: some View {
-        if router.loginNotice == .sessionExpired {
+        if let notice = router.loginNotice {
             MarqueeTVStatusChip(
-                text: String(format: TVSignInPresentation.sessionExpiredBanner, server.serverName),
+                text: notice.message(serverName: server.serverName),
                 systemImage: "exclamationmark.circle"
             )
             .padding(.bottom, 30)

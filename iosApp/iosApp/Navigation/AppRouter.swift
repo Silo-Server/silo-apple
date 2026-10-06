@@ -114,6 +114,9 @@ final class AppRouter {
             // leave a stale reason to be misattributed to the next transition.
             let reason = pendingAuthStateReason ?? "external"
             pendingAuthStateReason = nil
+            // Re-read even when the state is unchanged: a server switch can
+            // commit `.authenticated` over `.authenticated` under a new owner.
+            authenticatedOwner = authState == .authenticated ? sessionOwner() : nil
             guard oldValue != authState else { return }
             recordAuthStateBreadcrumb(from: oldValue, to: authState, reason: reason)
             // Leaving the authenticated state is an identity boundary: a video
@@ -135,6 +138,18 @@ final class AppRouter {
     /// made from outside this type leave it nil and are recorded as
     /// `external`; the destination state still tells the story.
     @ObservationIgnored private var pendingAuthStateReason: String?
+
+    // MARK: - Return After Re-Authentication
+
+    /// Who the app is signed in as while it shows the main screens. Read once
+    /// on entering `.authenticated`, because by the time a session expires
+    /// its account and profile have already been cleared.
+    @ObservationIgnored private var authenticatedOwner: SessionOwner?
+    /// Where the person was when their session expired. Consumed by the next
+    /// `resetToHome()`.
+    @ObservationIgnored private var sessionReturnPoint: SessionReturnPoint?
+    /// The signed-in server, account and profile. Tests replace it.
+    @ObservationIgnored var sessionOwner: () -> SessionOwner? = { SessionOwner.current() }
 
     // MARK: - Navigation Stack
 
@@ -735,10 +750,17 @@ final class AppRouter {
     }
 
     /// Why the sign-in screen is showing, when it isn't the user's own
-    /// choice. The TV sign-in screen explains an expired session instead of
+    /// choice. The sign-in screen explains an expired session instead of
     /// just appearing. Cleared once the user signs in or leaves sign-in.
     enum LoginNotice: Equatable {
         case sessionExpired
+
+        /// The line the sign-in screen shows for this notice.
+        func message(serverName: String) -> String {
+            switch self {
+            case .sessionExpired: "You were signed out of \(serverName). Sign in again."
+            }
+        }
     }
 
     private(set) var loginNotice: LoginNotice?
@@ -757,6 +779,7 @@ final class AppRouter {
     /// Return to the login screen (e.g., on sign-out).
     func resetToLogin() {
         loginNotice = nil
+        sessionReturnPoint = nil
         recordScreenBreadcrumb(target: "login", action: "reset")
         path = NavigationPath()
         setAuthState(.needsLogin, reason: "resetToLogin")
@@ -784,16 +807,27 @@ final class AppRouter {
         }
     }
 
-    /// Transition to the authenticated home screen.
+    /// Transition to the authenticated home screen. After a session expiry,
+    /// the same profile of the same account returns to the screens it was on.
     func resetToHome() {
         recordScreenBreadcrumb(target: "home", action: "reset")
+        let returnPoint = sessionReturnPoint
+        sessionReturnPoint = nil
         path = NavigationPath()
         setAuthState(.authenticated, reason: "resetToHome")
+        guard let returnPoint, returnPoint.restores(for: authenticatedOwner) else { return }
+        recordScreenBreadcrumb(target: "previous", action: "restoreAfterSessionExpired")
+        path = returnPoint.path
+        #if os(iOS)
+        itemDetailPath = returnPoint.itemDetailPath
+        presentedItemDetail = returnPoint.itemDetail
+        #endif
     }
 
     /// Return to server setup (e.g., to change servers).
     func resetToServerSetup() {
         loginNotice = nil
+        sessionReturnPoint = nil
         recordScreenBreadcrumb(target: "serverSetup", action: "reset")
         path = NavigationPath()
         skipsSingleProfilePicker = false
@@ -804,6 +838,7 @@ final class AppRouter {
     /// Every previous screen belongs to the old server/session boundary.
     func resetAfterServerResolution(to state: AuthState) {
         loginNotice = nil
+        sessionReturnPoint = nil
         recordScreenBreadcrumb(target: state.diagnosticsState, action: "reset")
         PlayerIdentityBoundary.endEngagedVideoPictureInPicture()
         presentedPlayer = nil
@@ -965,6 +1000,7 @@ final class AppRouter {
     /// login screen so the user can re-enter credentials. If no server
     /// is active at all (e.g. all removed), fall back to server setup.
     func expiredSession() {
+        sessionReturnPoint = currentReturnPoint()
         path = NavigationPath()
         if ServerRegistry.shared.hasActiveServer {
             recordScreenBreadcrumb(target: "login", action: "sessionExpired")
@@ -974,6 +1010,20 @@ final class AppRouter {
             recordScreenBreadcrumb(target: "serverSetup", action: "sessionExpired")
             setAuthState(.needsServerSetup, reason: "sessionExpiredNoServer")
         }
+    }
+
+    /// The open screens, if there is anything beyond Home to return to.
+    /// Captured before the auth-state change closes the detail card.
+    private func currentReturnPoint() -> SessionReturnPoint? {
+        guard authState == .authenticated, let authenticatedOwner else { return nil }
+        #if os(iOS)
+        guard !path.isEmpty || presentedItemDetail != nil else { return nil }
+        return SessionReturnPoint(owner: authenticatedOwner, path: path,
+                                  itemDetail: presentedItemDetail, itemDetailPath: itemDetailPath)
+        #else
+        guard !path.isEmpty else { return nil }
+        return SessionReturnPoint(owner: authenticatedOwner, path: path)
+        #endif
     }
 
     private func recordScreenBreadcrumb(target: String, action: String) {
@@ -1030,6 +1080,42 @@ final class AppRouter {
             ]
         )
         #endif
+    }
+}
+
+/// The server, verified account and profile the app is signed in as.
+/// Profile ids are unique only within an account, so all three must match.
+struct SessionOwner: Equatable {
+    let serverID: String
+    let accountID: String
+    let profileID: String
+
+    /// Nil for a legacy session that never recorded its account, so it never
+    /// restores another session's screens.
+    static func current() -> SessionOwner? {
+        guard let serverID = ServerRegistry.shared.activeServerId,
+              let accountID = AuthService.shared.accountID,
+              let profileID = AuthService.shared.profileId,
+              !serverID.isEmpty, !profileID.isEmpty else { return nil }
+        return SessionOwner(serverID: serverID, accountID: accountID, profileID: profileID)
+    }
+}
+
+/// The screens open when a session expired, kept in memory until the next
+/// sign-in reaches Home.
+struct SessionReturnPoint {
+    let owner: SessionOwner
+    let path: NavigationPath
+    #if os(iOS)
+    let itemDetail: AppRouter.ItemDetailPresentation?
+    let itemDetailPath: NavigationPath
+    #endif
+
+    /// Only the same profile of the same account on the same server goes
+    /// back. Anyone else starts at Home, so one profile's pages never open
+    /// for another.
+    func restores(for owner: SessionOwner?) -> Bool {
+        owner == self.owner
     }
 }
 

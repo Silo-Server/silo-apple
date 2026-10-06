@@ -2009,6 +2009,7 @@ class PlayerViewModel {
                     streamRequest: streamRequest,
                     expectedStreamLoadGeneration: recoveryGeneration,
                     resumeSourcePosition: reloadPosition,
+                    reselectsPlanSubtitle: true,
                     shouldPlayWhenReady: shouldPlayWhenReady
                 )
                 try self.requireCurrentStreamLoad(recoveryGeneration)
@@ -3423,6 +3424,7 @@ class PlayerViewModel {
         streamRequest: StreamRequest,
         expectedStreamLoadGeneration: UInt64,
         resumeSourcePosition: Double? = nil,
+        reselectsPlanSubtitle: Bool = false,
         shouldPlayWhenReady: Bool
     ) async throws {
         try requireCurrentStreamLoad(expectedStreamLoadGeneration)
@@ -3607,6 +3609,18 @@ class PlayerViewModel {
         }
 
         try requireCurrentStreamLoad(expectedStreamLoadGeneration)
+        // Armed after the probe's await: an inventory pass from the outgoing
+        // source, which still renders the same stream, would otherwise spend
+        // the pick on the old engine before the new one opens.
+        if reselectsPlanSubtitle,
+           let v3 = prepared.protocolV3,
+           let request = lastLoadRequest?.adoptingProtocolV3Intent(
+               plan: v3.plan,
+               selectedVersion: prepared.selectedVersion,
+               activeQualityId: prepared.activeQualityId
+           ) {
+            armProtocolV3SubtitleIntentForSamePlanReload(plan: v3.plan, request: request)
+        }
         isLoading = true
         isBuffering = false
         isLoadingSubtitles = false
@@ -4675,6 +4689,55 @@ class PlayerViewModel {
         pendingSubtitleFfIndex = intent.embeddedSubtitleIndex
         pendingSidecarSubtitleTrackId = intent.sidecarSubtitleTrackId
         pendingServerRenderedSubtitleTrackId = intent.serverRenderedSubtitleTrackId
+    }
+
+    /// Re-arms the plan's subtitle for a reload that keeps the same plan.
+    ///
+    /// `AetherEngine.load` clears the engine's subtitle selection with the old
+    /// source, and the plan's pending intent was consumed by the plan's first
+    /// load. Without this, a credential reload (one per access-token rotation
+    /// on a header-authenticated original file) comes back with the picker
+    /// still showing the plan's subtitle and no subtitle selected in the
+    /// engine, so cues stop mid-playback without an error.
+    ///
+    /// Audio needs no re-arm: the load spec carries the plan's audio stream.
+    /// Returns the intent it armed, or nil when the selection is not the
+    /// plan's to restore.
+    @discardableResult
+    func armProtocolV3SubtitleIntentForSamePlanReload(
+        plan: PlaybackV3Plan,
+        request: LoadRequest
+    ) -> ProtocolV3PendingTrackIntent? {
+        guard Self.protocolV3SubtitleSelectionIsPlanOwned(
+            plan: plan,
+            selectedSubtitleID: selectedSubtitleId,
+            hasLocalSelection: localProtocolV3SubtitleSelection != nil
+        ) else { return nil }
+        let intent = Self.protocolV3PendingTrackIntent(plan: plan, request: request)
+        pendingSubtitleFfIndex = intent.embeddedSubtitleIndex
+        pendingSidecarSubtitleTrackId = intent.sidecarSubtitleTrackId
+        pendingServerRenderedSubtitleTrackId = intent.serverRenderedSubtitleTrackId
+        return intent
+    }
+
+    /// Whether the subtitle on screen is the one the plan selected, so a
+    /// reload of that plan may select it again. Other selections have their
+    /// own restore paths and the plan must not replace them: a local pick
+    /// (`restoreLocalProtocolV3SubtitleSelection`), a sidecar this session
+    /// created (`reregisterLocallyCreatedSidecarsWithAether`), and a live AI
+    /// track, which Silo's overlay renders outside the engine.
+    static func protocolV3SubtitleSelectionIsPlanOwned(
+        plan: PlaybackV3Plan,
+        selectedSubtitleID: Int64?,
+        hasLocalSelection: Bool
+    ) -> Bool {
+        guard !hasLocalSelection else { return false }
+        let planSelectedID = plan.subtitle.mode == PlaybackProtocolV3.SubtitleMode.off
+            ? nil
+            : plan.selectedSubtitleCombinedIndex.map {
+                SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: $0)
+            }
+        return selectedSubtitleID == planSelectedID
     }
 
     private func beginFreshLoad(

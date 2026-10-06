@@ -679,12 +679,15 @@ enum TVHeroMetadata {
         return tokens
     }
 
-    static func seriesFactsLine(from detail: ItemDetail) -> [TVHeroFactToken] {
+    /// `seasons` is the season list the page loaded from the library; the
+    /// count stays off the line until it arrives.
+    static func seriesFactsLine(from detail: ItemDetail, seasons: [Season]) -> [TVHeroFactToken] {
         var tokens: [TVHeroFactToken] = []
         if let year = detail.year, year > 0 {
             tokens.append(.text(String(year)))
         }
-        if let count = detail.seasonCount, count > 0 {
+        let count = seasons.librarySeasonCount
+        if count > 0 {
             tokens.append(.text("\(count) Season\(count == 1 ? "" : "s")"))
         }
         return tokens

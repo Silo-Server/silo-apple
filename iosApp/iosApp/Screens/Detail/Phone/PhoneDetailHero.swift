@@ -285,6 +285,27 @@ private struct PhoneDetailParallaxArtwork: View {
     }
 }
 
+/// Chooses between `PhoneDetailHero`'s compact and expanded compositions.
+/// Shared with the floating top chrome, which times its backing strip to the
+/// hero it sits over.
+enum PhoneDetailHeroLayout {
+    static let expandedBreakpoint: CGFloat = 700
+
+    static func usesExpandedLayout(
+        availableWidth: CGFloat,
+        horizontalSizeClass: UserInterfaceSizeClass?,
+        verticalSizeClass: UserInterfaceSizeClass?
+    ) -> Bool {
+        if horizontalSizeClass == .compact, verticalSizeClass == .regular {
+            return false
+        }
+        if availableWidth > 0 {
+            return availableWidth >= expandedBreakpoint
+        }
+        return horizontalSizeClass == .regular
+    }
+}
+
 /// Artwork-led mobile detail header used inside the bottom-presented detail
 /// card. Compact widths use the approved portrait composition: sharp artwork,
 /// title art at its lower edge, then metadata and actions. Wide iPad panes use
@@ -317,11 +338,15 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    /// Rating scores follow Dynamic Type from their 15pt default.
+    @ScaledMetric(relativeTo: .subheadline) private var ratingSize: CGFloat = 15
+    /// How much larger than default the overview text is drawn; the "MORE"
+    /// estimate fits fewer characters into three lines as text grows.
+    @ScaledMetric(relativeTo: .subheadline) private var overviewTextScale: CGFloat = 1
     @State private var availableWidth: CGFloat = 0
     @State private var showFullOverview = false
     @ObservedObject private var advisoryAgePreference = AdvisoryAgePreferenceStore.shared
-
-    private let expandedLayoutBreakpoint: CGFloat = 700
 
     var body: some View {
         Group {
@@ -348,13 +373,11 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     }
 
     private var usesExpandedLayout: Bool {
-        if horizontalSizeClass == .compact, verticalSizeClass == .regular {
-            return false
-        }
-        if availableWidth > 0 {
-            return availableWidth >= expandedLayoutBreakpoint
-        }
-        return horizontalSizeClass == .regular
+        PhoneDetailHeroLayout.usesExpandedLayout(
+            availableWidth: availableWidth,
+            horizontalSizeClass: horizontalSizeClass,
+            verticalSizeClass: verticalSizeClass
+        )
     }
 
     // MARK: - Compact iPhone layout
@@ -423,7 +446,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
             VStack(alignment: .leading, spacing: 15) {
                 if let eyebrow, !eyebrow.isEmpty {
                     Text(eyebrow.uppercased())
-                        .font(.system(size: 11, weight: .bold))
+                        .siloScaledFont(size: 11, weight: .bold, relativeTo: .caption2)
                         .tracking(1.2)
                         .foregroundStyle(Color.siloOnSurface.opacity(0.7))
                 }
@@ -700,9 +723,9 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
                 if !ratings.isEmpty {
                     Group {
                         if isCompact {
-                            PhoneRatingsRow(ratings: ratings, size: 15)
+                            PhoneRatingsRow(ratings: ratings, size: ratingSize)
                         } else {
-                            RatingsRow(ratings: ratings, size: 15, alignment: stackAlignment)
+                            RatingsRow(ratings: ratings, size: ratingSize, alignment: stackAlignment)
                         }
                     }
                     .foregroundStyle(Color.siloOnSurface)
@@ -714,10 +737,10 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
 
     private func metadataText(textAlignment: TextAlignment) -> some View {
         Text(metadataTokens.joined(separator: "  ·  "))
-            .font(.system(size: 14, weight: .medium))
+            .siloScaledFont(size: 14, weight: .medium, relativeTo: .subheadline)
             .foregroundStyle(Color.siloOnSurface.opacity(0.84))
             .multilineTextAlignment(textAlignment)
-            .lineLimit(2)
+            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
             .fixedSize(horizontal: false, vertical: true)
     }
 
@@ -729,7 +752,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
             HStack(spacing: 6) {
                 ForEach(Array(ratingChips.enumerated()), id: \.offset) { _, chip in
                     Text(chip)
-                        .font(.system(size: 11, weight: .heavy))
+                        .siloScaledFont(size: 11, weight: .heavy, relativeTo: .caption2)
                         .tracking(0.7)
                         .foregroundStyle(Color.siloOnSurface)
                         .padding(.horizontal, 7)
@@ -769,7 +792,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     private var overviewBlock: some View {
         if let overview, !overview.isEmpty {
             Text(overview)
-                .font(.system(size: 15, weight: .regular))
+                .siloScaledFont(size: 15, relativeTo: .subheadline)
                 .foregroundStyle(Color.siloOnSurface.opacity(0.80))
                 .lineSpacing(3)
                 .lineLimit(showFullOverview ? nil : 3)
@@ -793,9 +816,9 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     private func creditBlock(alignment: Alignment) -> some View {
         if let creditText, !creditText.isEmpty {
             Text(creditText)
-                .font(.system(size: 13, weight: .medium))
+                .siloScaledFont(size: 13, weight: .medium, relativeTo: .footnote)
                 .foregroundStyle(Color.siloOnSurface.opacity(0.58))
-                .lineLimit(2)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
                 .frame(maxWidth: .infinity, alignment: alignment)
         }
     }
@@ -807,7 +830,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
             }
         } label: {
             Text("MORE")
-                .font(.system(size: 10, weight: .heavy))
+                .siloScaledFont(size: 10, weight: .heavy, relativeTo: .caption2)
                 .tracking(0.6)
                 .foregroundStyle(Color.siloOnSurface)
                 .padding(.horizontal, 8)
@@ -817,8 +840,9 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
         .buttonStyle(.plain)
     }
 
+    /// About 140 characters fill three lines at the default text size.
     private var isOverviewClipped: Bool {
-        (overview?.count ?? 0) > 140
+        CGFloat(overview?.count ?? 0) > 140 / max(overviewTextScale, 1)
     }
 }
 
@@ -905,14 +929,14 @@ private struct PhoneHeroTitle: View {
         let parts = PhoneHeroMetadata.splitTitle(title)
         VStack(spacing: 4) {
             Text(parts.primary)
-                .font(.system(size: 32, weight: .heavy))
+                .siloScaledFont(size: 32, weight: .heavy, relativeTo: .largeTitle)
                 .foregroundStyle(Color.siloOnSurface)
                 .lineLimit(2)
                 .multilineTextAlignment(textAlignment)
                 .fixedSize(horizontal: false, vertical: true)
             if let subtitle = parts.subtitle {
                 Text(subtitle.uppercased())
-                    .font(.system(size: 13, weight: .heavy))
+                    .siloScaledFont(size: 13, weight: .heavy, relativeTo: .footnote)
                     .tracking(1.2)
                     .foregroundStyle(Color.siloOnSurface.opacity(0.80))
                     .lineLimit(2)
@@ -920,6 +944,9 @@ private struct PhoneHeroTitle: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: textAlignment == .leading ? .leading : .center)
+        // The title sits over fixed-height artwork with a two-line limit;
+        // past AX1 a long title would truncate rather than read better.
+        .dynamicTypeSize(...DynamicTypeSize.accessibility1)
     }
 }
 
