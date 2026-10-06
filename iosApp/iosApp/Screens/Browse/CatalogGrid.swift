@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// A poster grid — 3 columns on iPhone, as many as fit the measured width on
-/// iPad (see `AdaptiveColumns.widthFittedPosters`), 6 columns on tvOS. Cards
+/// iPad and on wide phone windows such as the iPhone Duo's inner display (see
+/// `AdaptiveColumns.widthFittedPosters`), 6 columns on tvOS. Cards
 /// handle their own focus lift on tvOS.
 struct CatalogGrid: View {
     let items: [BrowseItem]
@@ -42,16 +43,13 @@ struct CatalogGrid: View {
                 count: hSize == .regular ? 3 : 2
             )
         }
+        if let fit = widthFittedPosterFit {
+            return fit.columns
+        }
         if usesThreeColumnPhoneLayout {
             return Array(
                 repeating: GridItem(.flexible(), spacing: 8),
                 count: 3
-            )
-        }
-        if let fit = tabletPosterFit {
-            return Array(
-                repeating: GridItem(.flexible(), spacing: AdaptiveColumns.tabletPosterSpacing, alignment: .top),
-                count: fit.columnCount
             )
         }
         return AdaptiveColumns.posters(
@@ -155,15 +153,18 @@ struct CatalogGrid: View {
         #endif
     }
 
-    /// iPad cards fill their column instead of sitting at the fixed phone
-    /// width inside it. Nil on iPhone and until the grid has been measured.
-    private var tabletPosterFit: AdaptiveColumns.PosterGridFit? {
+    /// Cards fill their column instead of sitting at the fixed phone width
+    /// inside it: always on iPad, and on a phone once the grid is too wide for
+    /// three-up posters. Nil otherwise and until the grid has been measured.
+    private var widthFittedPosterFit: AdaptiveColumns.PosterGridFit? {
         #if os(iOS)
-        guard UIDevice.current.userInterfaceIdiom == .pad else { return nil }
+        let posterSize = uiCustomization.cardPresentation.posterSize
+        guard UIDevice.current.userInterfaceIdiom == .pad else {
+            return AdaptiveColumns.widePhonePosterFit(containerWidth: gridWidth, posterSize: posterSize)
+        }
         return AdaptiveColumns.widthFittedPosters(
             containerWidth: gridWidth,
-            minimumCardWidth: AdaptiveColumns.tabletMinimumPosterWidth
-                * uiCustomization.cardPresentation.posterSize.scale,
+            minimumCardWidth: AdaptiveColumns.tabletMinimumPosterWidth * posterSize.scale,
             spacing: AdaptiveColumns.tabletPosterSpacing
         )
         #else
@@ -184,7 +185,7 @@ struct CatalogGrid: View {
             )
             return fittedWidth / uiCustomization.cardPresentation.posterSize.scale
         }
-        if let fit = tabletPosterFit {
+        if let fit = widthFittedPosterFit {
             return fit.cardWidth / uiCustomization.cardPresentation.posterSize.scale
         }
         #endif

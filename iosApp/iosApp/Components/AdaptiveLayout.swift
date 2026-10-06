@@ -69,6 +69,14 @@ enum AdaptiveColumns {
     struct PosterGridFit: Equatable {
         let columnCount: Int
         let cardWidth: CGFloat
+
+        /// Flexible, top-aligned columns at the fitted count.
+        var columns: [GridItem] {
+            Array(
+                repeating: GridItem(.flexible(), spacing: AdaptiveColumns.tabletPosterSpacing, alignment: .top),
+                count: columnCount
+            )
+        }
     }
 
     /// A poster grid that fills `containerWidth`: as many columns as fit at
@@ -87,6 +95,33 @@ enum AdaptiveColumns {
         let count = max(minimumColumns, fitting)
         let cardWidth = (containerWidth - CGFloat(count - 1) * spacing) / CGFloat(count)
         return PosterGridFit(columnCount: count, cardWidth: max(1, cardWidth))
+    }
+
+    /// Phone grids keep their fixed three-up layout below this container
+    /// width. Every iPhone is narrower in portrait, the only orientation phone
+    /// browsing allows; the iPhone Duo's inner display is wider, whether the
+    /// app fills it or runs in its compatibility window.
+    static let widePhoneGridMinimumWidth: CGFloat = 560
+
+    /// Narrowest poster in a wide phone grid. A phone's points are physically
+    /// smaller than an iPad's, so the iPhone Duo's inner display keeps the
+    /// three-up grid's ~115pt posters and gains columns instead: six across
+    /// open in landscape, five in portrait.
+    static let widePhoneMinimumPosterWidth: CGFloat = 112
+
+    /// A width-fitted grid for a phone container too wide for three-up
+    /// posters, such as the iPhone Duo's inner display. Nil for narrower
+    /// containers.
+    static func widePhonePosterFit(
+        containerWidth: CGFloat,
+        posterSize: CardPosterSize
+    ) -> PosterGridFit? {
+        guard containerWidth >= widePhoneGridMinimumWidth else { return nil }
+        return widthFittedPosters(
+            containerWidth: containerWidth,
+            minimumCardWidth: widePhoneMinimumPosterWidth * posterSize.scale,
+            spacing: tabletPosterSpacing
+        )
     }
 
     /// Fits a fixed-density grid card inside its actual container while

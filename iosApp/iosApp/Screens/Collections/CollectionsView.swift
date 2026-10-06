@@ -519,6 +519,9 @@ struct LibraryCollectionsView: View {
     @Environment(\.horizontalSizeClass) private var hSize
 
     private var columns: [GridItem] {
+        if let fit = widePhonePosterFit {
+            return fit.columns
+        }
         if usesThreeColumnPhoneLayout {
             return Array(
                 repeating: GridItem(.flexible(), spacing: 12),
@@ -613,7 +616,19 @@ struct LibraryCollectionsView: View {
         #endif
     }
 
+    /// A phone window too wide for three-up cards (the iPhone Duo's inner
+    /// display) fills the row with more columns. `gridWidth` measures the
+    /// scroll view, so the page padding comes off first.
+    private var widePhonePosterFit: AdaptiveColumns.PosterGridFit? {
+        guard usesThreeColumnPhoneLayout else { return nil }
+        return AdaptiveColumns.widePhonePosterFit(
+            containerWidth: gridWidth - 2 * SiloTheme.padding,
+            posterSize: uiCustomization.cardPresentation.posterSize
+        )
+    }
+
     private var libraryCollectionCardWidthOverride: CGFloat? {
+        if let fit = widePhonePosterFit { return fit.cardWidth }
         guard usesThreeColumnPhoneLayout else { return nil }
         return AdaptiveColumns.fittedPosterWidth(
             containerWidth: gridWidth,

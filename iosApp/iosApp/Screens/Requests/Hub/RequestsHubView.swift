@@ -123,17 +123,35 @@ private struct PhoneRequestsHubView: View {
     private static let gridRowSpacing: CGFloat = 12
 
     private var searchColumns: [GridItem] {
-        AdaptiveColumns.posters(
+        if let fit = widePhonePosterFit {
+            return fit.columns
+        }
+        return AdaptiveColumns.posters(
             for: horizontalSizeClass,
             posterSize: uiCustomization.cardPresentation.posterSize,
             spacing: Self.gridSpacing
         )
     }
 
+    /// A phone window too wide for the standard counts (the iPhone Duo's
+    /// inner display) adds columns rather than stretching posters.
+    private var widePhonePosterFit: AdaptiveColumns.PosterGridFit? {
+        #if os(iOS)
+        guard UIDevice.current.userInterfaceIdiom == .phone else { return nil }
+        return AdaptiveColumns.widePhonePosterFit(
+            containerWidth: gridWidth,
+            posterSize: uiCustomization.cardPresentation.posterSize
+        )
+        #else
+        return nil
+        #endif
+    }
+
     private var searchCardWidth: CGFloat {
         // Before the first measurement, a standard poster: the uncapped fit
         // below would return its infinite maximum.
         guard gridWidth > 0 else { return SiloTheme.posterCardWidth }
+        if let fit = widePhonePosterFit { return fit.cardWidth }
         return AdaptiveColumns.fittedPosterWidth(
             containerWidth: gridWidth,
             columnCount: searchColumns.count,

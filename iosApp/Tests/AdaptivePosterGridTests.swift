@@ -46,6 +46,37 @@ final class AdaptivePosterGridTests: XCTestCase {
         XCTAssertNil(fit(0))
     }
 
+    /// Every iPhone keeps its three-up grid in portrait, the only orientation
+    /// phone browsing allows: SE, 17 Pro Max, and the iPhone Duo's outer
+    /// display, each less 16pt side padding.
+    func testPhoneWidthsKeepThreeUpGrid() {
+        for screenWidth: CGFloat in [375, 440, 466] {
+            XCTAssertNil(
+                AdaptiveColumns.widePhonePosterFit(containerWidth: screenWidth - 32, posterSize: .standard),
+                "width \(screenWidth)"
+            )
+        }
+    }
+
+    /// The iPhone Duo's inner display is a phone idiom but iPad-sized. It
+    /// fills the row with phone-size posters instead of three small posters
+    /// and wide gaps. Widths are the measured grid: open portrait (669pt) and
+    /// landscape beside the vertical tab bar, each less side padding.
+    func testDuoInnerDisplayFillsRowWithPhoneSizePosters() throws {
+        let portrait = try XCTUnwrap(
+            AdaptiveColumns.widePhonePosterFit(containerWidth: 637, posterSize: .standard)
+        )
+        XCTAssertEqual(portrait.columnCount, 5)
+        let landscape = try XCTUnwrap(
+            AdaptiveColumns.widePhonePosterFit(containerWidth: 835, posterSize: .standard)
+        )
+        XCTAssertEqual(landscape.columnCount, 6)
+        for fit in [portrait, landscape] {
+            XCTAssertGreaterThanOrEqual(fit.cardWidth, AdaptiveColumns.widePhoneMinimumPosterWidth)
+            XCTAssertLessThan(fit.cardWidth, SiloTheme.posterCardWidth + 10)
+        }
+    }
+
     /// Split View and Stage Manager can size the window to any width. Cards
     /// always fill the row exactly and stay between the minimum and twice it.
     func testEveryWidthFillsTheRowWithoutGaps() throws {

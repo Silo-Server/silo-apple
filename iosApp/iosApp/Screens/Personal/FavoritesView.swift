@@ -38,8 +38,10 @@ struct IOSPersonalMediaSectionPicker: View {
     }
 }
 
-/// Saved titles use a fixed three-column poster grid on iPhone. iPad retains
-/// the wider Home-like rails that make better use of its additional width.
+/// Saved titles use a three-column poster grid on iPhone, with more columns in
+/// phone windows too wide for three-up (the iPhone Duo's inner display). iPad
+/// retains the wider Home-like rails that make better use of its additional
+/// width.
 struct IOSPersonalMediaPosterLayout: View {
     let items: [BrowseItem]
     let onUserStateChanged: (BrowseItem, MediaItemUserState) -> Void
@@ -60,13 +62,7 @@ struct IOSPersonalMediaPosterLayout: View {
     }
 
     private var phoneGrid: some View {
-        LazyVGrid(
-            columns: Array(
-                repeating: GridItem(.flexible(), spacing: 8, alignment: .top),
-                count: 3
-            ),
-            spacing: 12
-        ) {
+        LazyVGrid(columns: phoneColumns, spacing: 12) {
             ForEach(items) { item in
                 MediaCard(
                     title: item.title,
@@ -158,10 +154,32 @@ struct IOSPersonalMediaPosterLayout: View {
         }
     }
 
+    /// Three-up, or more columns once the phone window is too wide for that
+    /// (the iPhone Duo's inner display).
+    private var phoneColumns: [GridItem] {
+        if let fit = widePhonePosterFit {
+            return fit.columns
+        }
+        return Array(
+            repeating: GridItem(.flexible(), spacing: 8, alignment: .top),
+            count: 3
+        )
+    }
+
+    private var widePhonePosterFit: AdaptiveColumns.PosterGridFit? {
+        AdaptiveColumns.widePhonePosterFit(
+            containerWidth: gridWidth,
+            posterSize: uiCustomization.cardPresentation.posterSize
+        )
+    }
+
     /// MediaCard scales overrides by the selected global preference. Cancel
     /// that scale, then cap the standard width to the measured grid cell.
     private var phoneCardWidthOverride: CGFloat {
-        AdaptiveColumns.fittedPosterWidth(
+        if let fit = widePhonePosterFit {
+            return fit.cardWidth / uiCustomization.cardPresentation.posterSize.scale
+        }
+        return AdaptiveColumns.fittedPosterWidth(
             containerWidth: gridWidth,
             columnCount: 3,
             spacing: 8
