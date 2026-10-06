@@ -55,6 +55,8 @@ struct GeneralSettingsView: View {
                     }
                 )
             )
+            .foregroundStyle(Color.siloOnSurface)
+            .tint(.siloSwitchOn)
             .disabled(advisoryAgePreference.isSaving)
         } header: {
             Text("Ratings")
