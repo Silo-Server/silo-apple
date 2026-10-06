@@ -8,19 +8,40 @@ struct PhoneSectionHeader: View {
     var trailingText: String? = nil
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(title)
-                .font(.system(size: 22, weight: .semibold))
-                .foregroundColor(.siloOnSurface)
+        if let trailingText, !trailingText.isEmpty {
+            // Side by side while both fit on one line; otherwise the count
+            // moves under the title so neither breaks inside a word.
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline) {
+                    titleText
+                    Spacer(minLength: 8)
+                    trailing(trailingText)
+                }
 
-            Spacer(minLength: 8)
-
-            if let trailingText, !trailingText.isEmpty {
-                Text(trailingText)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(.siloSecondaryText)
+                VStack(alignment: .leading, spacing: 4) {
+                    titleText
+                    trailing(trailingText)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        } else {
+            HStack(alignment: .firstTextBaseline) {
+                titleText
+                Spacer(minLength: 8)
             }
         }
+    }
+
+    private var titleText: some View {
+        Text(title)
+            .siloScaledFont(size: 22, weight: .semibold, relativeTo: .title2)
+            .foregroundColor(.siloOnSurface)
+    }
+
+    private func trailing(_ text: String) -> some View {
+        Text(text)
+            .siloScaledFont(size: 13, weight: .medium, relativeTo: .footnote)
+            .foregroundColor(.siloSecondaryText)
     }
 }
 #endif

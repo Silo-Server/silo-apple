@@ -92,6 +92,8 @@ final class PictureInPictureCoordinator {
     @ObservationIgnored private var pendingRebind = false
     /// A backend-class transition cannot reuse the active controller safely.
     @ObservationIgnored private var shouldStopForSourceChange = false
+    /// The app came back to its on-screen player while PiP was still starting.
+    @ObservationIgnored private var shouldStopForForegroundReturn = false
 
     private init() {}
 
@@ -283,6 +285,56 @@ final class PictureInPictureCoordinator {
             }
             isStartingFromControl = true
             controller.startPictureInPicture()
+        }
+    }
+
+    /// What to do with PiP when the app returns to the foreground while the
+    /// full-screen player that owns it is still presented.
+    enum ForegroundReturnAction: Equatable {
+        case none
+        case stop
+        /// AVKit cannot stop a window that has not finished starting; stop it
+        /// from the did-start callback instead.
+        case stopOnceStarted
+    }
+
+    /// Automatic PiP from inline playback leaves the player cover in place, so
+    /// returning to the app puts the source layer back on screen. AVKit does
+    /// not end PiP for a custom player layer or sample-buffer source on its
+    /// own: the window stays up, empty, over the inline video until the
+    /// player closes. Stop it so AVKit restores into the player that is
+    /// already showing. A session that moved to PiP from the player's own
+    /// control has no presented player, so it never reaches this and keeps
+    /// playing in the window while the user browses.
+    static func foregroundReturnAction(
+        ownsSession: Bool,
+        isActive: Bool,
+        isTransitioning: Bool
+    ) -> ForegroundReturnAction {
+        guard ownsSession else { return .none }
+        if isActive { return .stop }
+        if isTransitioning { return .stopOnceStarted }
+        return .none
+    }
+
+    /// The app became active again with `owner`'s full-screen player presented.
+    func stopForReturnToPresentedPlayer(owner: AnyObject) {
+        let action = Self.foregroundReturnAction(
+            ownsSession: lifecycleOwner === owner && controller != nil,
+            isActive: isActive || controller?.isPictureInPictureActive == true,
+            // A start from the player's own control closes this cover once it
+            // lands; it is the user's request, not a leftover automatic start.
+            isTransitioning: isTransitioning && !isStartingFromControl
+        )
+        switch action {
+        case .none:
+            return
+        case .stop:
+            Self.logger.info("App returned to the presented player; stopping PiP")
+            controller?.stopPictureInPicture()
+        case .stopOnceStarted:
+            Self.logger.info("App returned to the presented player while PiP was starting")
+            shouldStopForForegroundReturn = true
         }
     }
 
@@ -479,6 +531,7 @@ final class PictureInPictureCoordinator {
         isActive = false
         isTransitioning = false
         isRestoringUserInterface = false
+        shouldStopForForegroundReturn = false
     }
 
     /// Release the bound graph.
@@ -579,7 +632,9 @@ final class PictureInPictureCoordinator {
         Self.logger.info("PiP started")
         let startedFromControl = isStartingFromControl
         isStartingFromControl = false
-        if shouldStopForSourceChange {
+        let stopsForForegroundReturn = shouldStopForForegroundReturn
+        shouldStopForForegroundReturn = false
+        if shouldStopForSourceChange || stopsForForegroundReturn {
             controller?.stopPictureInPicture()
         } else if startedFromControl {
             controlStartToken &+= 1
@@ -643,6 +698,7 @@ final class PictureInPictureCoordinator {
 
     fileprivate func handleFailedToStart(_ error: Error) {
         isStartingFromControl = false
+        shouldStopForForegroundReturn = false
         engine?.pictureInPictureActive = false
         isTransitioning = false
         isActive = false

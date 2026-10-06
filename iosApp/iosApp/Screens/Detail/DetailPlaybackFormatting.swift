@@ -110,8 +110,10 @@ enum DetailPlaybackFormatting {
         !(version?.subtitleTracks ?? []).isEmpty
     }
 
+    /// Unlike audio, one subtitle track is still a choice: Auto may resolve
+    /// to Off, so the viewer needs the selector to turn that track on.
     static func shouldEnableSubtitleSelector(version: FileVersion?) -> Bool {
-        (version?.subtitleTracks ?? []).count > 1
+        !(version?.subtitleTracks ?? []).isEmpty
     }
 
     static func audioOptions(
@@ -496,10 +498,8 @@ enum DetailPlaybackFormatting {
                 }
                 return "Auto: Off"
             }
-            let tracks = version?.subtitleTracks ?? []
-            if tracks.count == 1, let track = tracks.first {
-                return subtitlePillSummary(track, ordinal: 0)
-            }
+            // Without a preview, never name a track: the only track on a file
+            // does not play unless the preferences or the file pick it.
             return "Auto"
         }
         if selectedSubtitleTrackIndex == -1 { return "Off" }

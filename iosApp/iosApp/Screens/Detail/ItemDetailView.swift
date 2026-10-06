@@ -54,11 +54,44 @@ private struct ControlRequestBox: Identifiable {
     init(_ request: SiloControlPlaybackRequest) { self.request = request }
 }
 
+/// Scroll offsets (as folded by `phoneDetailScrollTracking`) over which the
+/// floating chrome's backing strip fades in, the per-button glass fades out
+/// onto that strip, and the compact title fades in. The strip keeps scrolled
+/// content, such as the season chips, from sliding under the floating
+/// buttons while still being tappable.
+struct PhoneDetailScrollGlassTiming: Equatable {
+    var strip: ClosedRange<CGFloat>
+    var controlGlass: ClosedRange<CGFloat>
+    var title: ClosedRange<CGFloat>
+
+    /// Compact (phone-width) hero: tall artwork with the title on its lower
+    /// edge, so the chrome waits until the artwork has mostly scrolled away.
+    static let compact = PhoneDetailScrollGlassTiming(
+        strip: 200...360,
+        controlGlass: 150...260,
+        title: 400...480
+    )
+
+    /// Expanded (regular-width iPad) hero: the title block starts near the
+    /// top of a shorter editorial header and leaves sooner. 150 is the
+    /// earliest offset the folded tracking reports.
+    static let expanded = PhoneDetailScrollGlassTiming(
+        strip: 150...250,
+        controlGlass: 150...250,
+        title: 250...330
+    )
+
+    static func forHero(isExpanded: Bool) -> Self {
+        isExpanded ? .expanded : .compact
+    }
+}
+
 /// Static top-control layout. Scroll progress is read only by the tiny opacity
 /// leaves below, so changing chrome never rebuilds buttons or their actions.
 /// Shared with the request detail card, which has no trailing control.
 struct PhoneDetailTopChrome: View {
     let title: String
+    /// False keeps the buttons on their own glass with no backing strip.
     let isScrollGlassEnabled: Bool
     let scrollState: PhoneDetailScrollState
     let leadingSystemName: String?
@@ -67,16 +100,32 @@ struct PhoneDetailTopChrome: View {
     let trailingSystemName: String?
     let onTrailingTap: (() -> Void)?
 
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+    /// The chrome spans the detail page, so its width is the hero's width.
+    @State private var pageWidth: CGFloat = 0
+
+    /// Follows the hero's own compact/expanded choice, so the strip and the
+    /// title arrive as that hero's title scrolls away.
+    private var scrollGlass: PhoneDetailScrollGlassTiming? {
+        guard isScrollGlassEnabled else { return nil }
+        return .forHero(isExpanded: PhoneDetailHeroLayout.usesExpandedLayout(
+            availableWidth: pageWidth,
+            horizontalSizeClass: horizontalSizeClass,
+            verticalSizeClass: verticalSizeClass
+        ))
+    }
+
     var body: some View {
         ZStack(alignment: .top) {
             PhoneDetailTopGlass(
-                isEnabled: isScrollGlassEnabled,
+                timing: scrollGlass,
                 scrollState: scrollState
             )
 
             PhoneDetailScrollTitle(
                 title: title,
-                isEnabled: isScrollGlassEnabled,
+                timing: scrollGlass,
                 scrollState: scrollState
             )
 
@@ -105,13 +154,19 @@ struct PhoneDetailTopChrome: View {
             .padding(.horizontal, 18)
             .padding(.top, 9)
         }
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.width
+        } action: { width in
+            guard abs(width - pageWidth) > 1 else { return }
+            pageWidth = width
+        }
         .zIndex(20)
     }
 
     private func controlIcon(systemName: String, size: CGFloat) -> some View {
         ZStack {
             PhoneDetailControlGlass(
-                isScrollGlassEnabled: isScrollGlassEnabled,
+                timing: scrollGlass,
                 scrollState: scrollState
             )
 
@@ -130,17 +185,17 @@ struct PhoneDetailTopChrome: View {
 /// Dynamic opacity around a stable glass subtree. The expensive native glass
 /// node is equatable and retained while only its compositor alpha changes.
 private struct PhoneDetailTopGlass: View {
-    let isEnabled: Bool
+    let timing: PhoneDetailScrollGlassTiming?
     let scrollState: PhoneDetailScrollState
 
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     @ViewBuilder
     var body: some View {
-        if isEnabled {
+        if let timing {
             PhoneDetailStaticGlassStrip(reduceTransparency: reduceTransparency)
                 .equatable()
-                .opacity(phoneDetailSmoothProgress(scrollState.offset, from: 200, to: 360))
+                .opacity(phoneDetailSmoothProgress(scrollState.offset, over: timing.strip))
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
         }
@@ -167,13 +222,13 @@ private struct PhoneDetailStaticGlassStrip: View, Equatable {
 
 private struct PhoneDetailScrollTitle: View {
     let title: String
-    let isEnabled: Bool
+    let timing: PhoneDetailScrollGlassTiming?
     let scrollState: PhoneDetailScrollState
 
     @ViewBuilder
     var body: some View {
-        if isEnabled {
-            let progress = phoneDetailSmoothProgress(scrollState.offset, from: 400, to: 480)
+        if let timing {
+            let progress = phoneDetailSmoothProgress(scrollState.offset, over: timing.title)
             Text(title)
                 .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(.white)
@@ -194,16 +249,15 @@ private struct PhoneDetailScrollTitle: View {
 }
 
 private struct PhoneDetailControlGlass: View {
-    let isScrollGlassEnabled: Bool
+    let timing: PhoneDetailScrollGlassTiming?
     let scrollState: PhoneDetailScrollState
 
     var body: some View {
         PhoneDetailStaticControlGlass()
             .equatable()
             .opacity(
-                isScrollGlassEnabled
-                    ? 1 - phoneDetailSmoothProgress(scrollState.offset, from: 150, to: 260)
-                    : 1
+                timing.map { 1 - phoneDetailSmoothProgress(scrollState.offset, over: $0.controlGlass) }
+                    ?? 1
             )
     }
 }
@@ -221,10 +275,9 @@ private struct PhoneDetailStaticControlGlass: View, Equatable {
 
 private func phoneDetailSmoothProgress(
     _ value: CGFloat,
-    from lowerBound: CGFloat,
-    to upperBound: CGFloat
+    over range: ClosedRange<CGFloat>
 ) -> CGFloat {
-    let progress = min(max((value - lowerBound) / (upperBound - lowerBound), 0), 1)
+    let progress = min(max((value - range.lowerBound) / (range.upperBound - range.lowerBound), 0), 1)
     return progress * progress * (3 - (2 * progress))
 }
 #endif
@@ -312,7 +365,6 @@ private struct ItemDetailPhoneContent: View {
     @State private var detailScrollState = PhoneDetailScrollState()
     #if os(iOS)
     @Environment(SiloControlClient.self) private var siloControl
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var controlRequestBox: ControlRequestBox?
     /// The cast button's in-flight watch-state read. A second tap replaces it.
     @State private var controlResumeLookupTask: Task<Void, Never>?
@@ -521,12 +573,10 @@ private struct ItemDetailPhoneContent: View {
         return AudiobookDetailFormatting.cleanTitle(detail.title, seriesName: detail.audiobook?.series?.name)
     }
 
+    /// Phone and iPad alike: without the strip, the season chips and other
+    /// controls scroll under the floating Close button on an iPad sheet.
     private var supportsScrollGlassChrome: Bool {
-        guard UIDevice.current.userInterfaceIdiom == .phone,
-              horizontalSizeClass != .regular,
-              let detail = viewModel.detail else {
-            return false
-        }
+        guard let detail = viewModel.detail else { return false }
         return SiloMediaType.isMovieLibrary(detail.type)
             || SiloMediaType.isSeries(detail.type)
             || detail.isAudiobook

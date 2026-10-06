@@ -64,10 +64,13 @@ enum PhoneHeroMetadata {
         return tokens
     }
 
-    static func seriesFactsLine(from detail: ItemDetail) -> [PhoneHeroFactToken] {
+    /// `seasons` is the season list the page loaded from the library; the
+    /// count stays off the line until it arrives.
+    static func seriesFactsLine(from detail: ItemDetail, seasons: [Season]) -> [PhoneHeroFactToken] {
         var tokens: [PhoneHeroFactToken] = []
         if let year = detail.year, year > 0 { tokens.append(.text(String(year))) }
-        if let count = detail.seasonCount, count > 0 {
+        let count = seasons.librarySeasonCount
+        if count > 0 {
             tokens.append(.text("\(count) Season\(count == 1 ? "" : "s")"))
         }
         tokens.append(contentsOf: qualityTokens(from: detail))
