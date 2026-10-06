@@ -45,7 +45,7 @@ struct MacFeaturedHero: View {
             }
             .clipped()
             .onHover { isHovering = $0 }
-            .task(id: AdvanceTrigger(index: index, isPaused: isPaused, count: section.items.count)) {
+            .task(id: AdvanceTrigger(index: index, isPaused: isPaused, ids: section.items.map(\.contentId))) {
                 await advanceAfterDelay()
             }
             .onChange(of: section.items.map(\.contentId)) { _, ids in
@@ -269,9 +269,10 @@ struct MacFeaturedHero: View {
     private struct AdvanceTrigger: Equatable {
         let index: Int
         let isPaused: Bool
-        /// A reload that adds titles must restart the timer: with one
-        /// title there is nothing to advance to, so the task has ended.
-        let count: Int
+        /// Any change to the section's titles restarts the timer, so a
+        /// pending advance never acts on titles that have been replaced,
+        /// and a section that grows from one title starts advancing.
+        let ids: [String]
     }
 
     /// The title must not change under someone reading or operating the
@@ -310,6 +311,9 @@ struct MacFeaturedHero: View {
         router.presentPlayer(
             contentId: item.contentId,
             resumePosition: item.positionSeconds,
+            // Resume sections reopen the version last watched, as their
+            // cards do when the section is drawn as a row.
+            prefersLastUsedVersion: HomeFeed.isResume(section),
             posterURL: item.posterUrl,
             backdropURL: item.backdropUrl
         )
