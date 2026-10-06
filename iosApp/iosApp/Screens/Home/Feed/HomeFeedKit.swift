@@ -27,7 +27,7 @@ enum HomeFeedMetrics {
     /// the progress rail was hard to read. Android's backdrop card is 280dp.
     /// Scaled by the Poster Size setting at the call site.
     #if os(macOS)
-    static let stillWidth: CGFloat = 312
+    static let stillWidth: CGFloat = 340
     #else
     static let stillWidth: CGFloat = 240
     #endif

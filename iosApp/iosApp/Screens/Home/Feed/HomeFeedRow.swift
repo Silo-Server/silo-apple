@@ -37,7 +37,8 @@ struct HomeFeedRow: View {
         HomeFeedMetrics.stillWidth * UICustomizationPreferences.shared.cardPresentation.posterSize.scale
     }
 
-    private static var posterWidth: CGFloat {
+    /// Width of a poster card in a row, after the Poster Size setting.
+    static var posterWidth: CGFloat {
         HomeFeedMetrics.posterWidth * UICustomizationPreferences.shared.cardPresentation.posterSize.scale
     }
 
