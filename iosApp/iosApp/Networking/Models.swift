@@ -701,6 +701,13 @@ struct Season: Codable, Identifiable, Hashable {
 }
 
 extension Array where Element == Season {
+    /// Seasons the library holds, not counting Specials. The series' own
+    /// `seasonCount` is the metadata provider's total, which can name
+    /// seasons the library does not have.
+    var librarySeasonCount: Int {
+        filter { $0.isSpecials != true && $0.seasonNumber != 0 }.count
+    }
+
     /// Specials lead, then numbered seasons ascending.
     func sortedForDisplay() -> [Season] {
         sorted { lhs, rhs in

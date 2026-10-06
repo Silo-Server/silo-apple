@@ -19,6 +19,7 @@ struct PhoneEpisodeRail: View {
 
     private var uiCustomization: UICustomizationPreferences { .shared }
     @State private var visibleEpisodeId: String?
+    @State private var railWidth: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var cardWidth: CGFloat {
@@ -58,7 +59,14 @@ struct PhoneEpisodeRail: View {
             .padding(.vertical, 4)
             .phoneMediaRailBounds()
         }
-        .contentMargins(.horizontal, HorizontalMediaRailLayout.isPhone ? SiloTheme.safePadding : 0, for: .scrollContent)
+        .contentMargins(.leading, leadingContentMargin, for: .scrollContent)
+        .contentMargins(.trailing, trailingContentMargin, for: .scrollContent)
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.width
+        } action: { width in
+            guard abs(width - railWidth) >= 0.5 else { return }
+            railWidth = width
+        }
         .mediaRailScrolling()
         .scrollPosition(id: $visibleEpisodeId, anchor: HorizontalMediaRailLayout.scrollAnchor)
         .onAppear {
@@ -95,6 +103,43 @@ struct PhoneEpisodeRail: View {
             // its layout and is the source of the apparent vertical judder.
             onSelect(visibleEpisodeId)
         }
+    }
+}
+
+extension PhoneEpisodeRail {
+    private var leadingContentMargin: CGFloat {
+        HorizontalMediaRailLayout.isPhone ? SiloTheme.safePadding : 0
+    }
+
+    private var trailingContentMargin: CGFloat {
+        guard HorizontalMediaRailLayout.isPhone else { return 0 }
+        guard selectsCenteredEpisode else { return leadingContentMargin }
+        return PhoneEpisodeRailLayout.selectingTrailingMargin(
+            railWidth: railWidth,
+            leadingMargin: leadingContentMargin,
+            cardWidth: cardWidth
+        )
+    }
+}
+
+/// Scroll geometry for the phone episode rail.
+enum PhoneEpisodeRailLayout {
+    /// Trailing margin that lets the last card snap to the leading edge.
+    ///
+    /// The phone rail snaps cards to its leading edge, and a rail that
+    /// selects the snapped episode selects the card there. With only the
+    /// leading margin at the end, the content runs out before the last card
+    /// reaches that edge: the rail stops with the previous card still in the
+    /// leading slot, so swiping can never select the last episode. Extending
+    /// the trailing margin to the rest of the rail's width fixes that. It
+    /// never drops below the leading margin, and stays there until the rail
+    /// has been measured.
+    static func selectingTrailingMargin(
+        railWidth: CGFloat,
+        leadingMargin: CGFloat,
+        cardWidth: CGFloat
+    ) -> CGFloat {
+        max(leadingMargin, railWidth - leadingMargin - cardWidth)
     }
 }
 
@@ -247,7 +292,8 @@ private struct PhoneEpisodeCard: View {
                 url: episode.stillUrl ?? "",
                 thumbhash: episode.stillThumbhash,
                 targetSize: CGSize(width: cardWidth, height: stillHeight),
-                contentMode: .fill
+                contentMode: .fill,
+                placeholderSymbol: ArtworkPlaceholderSymbol.forMediaType("episode")
             )
             .frame(width: cardWidth, height: stillHeight)
             .clipped()

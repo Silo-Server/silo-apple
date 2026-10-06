@@ -34,7 +34,9 @@ struct LoginView: View {
         } content: {
             MarqueeHeadline(
                 title: "Sign in",
-                lead: server.branding?.loginSubtitle ?? "Use your \(server.serverName) account."
+                // An expired session says why sign-in is back on screen.
+                lead: router.loginNotice?.message(serverName: server.serverName)
+                    ?? server.branding?.loginSubtitle ?? "Use your \(server.serverName) account."
             )
             options
                 .padding(.top, 24)

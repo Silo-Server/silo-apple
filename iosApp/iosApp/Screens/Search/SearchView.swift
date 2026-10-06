@@ -74,6 +74,12 @@ struct SearchView: View {
             guard seededQuery == nil else { return }
             await focusSearchField()
         }
+        .onChange(of: router.presentedItemDetail != nil) { _, isPresented in
+            // On iPad the detail sheet leaves Search on screen, so the field
+            // stays first responder under it and its keyboard returns over
+            // the sheet (on menus, and again when the sheet closes).
+            if isPresented { isSearchFieldFocused = false }
+        }
         #endif
         .onChange(of: viewModel.query) { _, _ in
             viewModel.onQueryChanged()

@@ -1728,6 +1728,8 @@ class ItemDetailViewModel {
     /// the card watched toggle uses. The next visit fetches fresh; painted content
     /// keeps showing in the meantime via the existing `detail` binding. An
     /// episode page's series is the fallback parent.
+    /// The shared call also makes a mounted Home re-read its Continue
+    /// Watching and Next Up rows.
     private func invalidateRelatedCaches(contentId: String, seriesId: String? = nil) {
         PersonalStateSync.invalidateItemState(contentId: contentId, seriesId: seriesId ?? detail?.seriesId)
     }

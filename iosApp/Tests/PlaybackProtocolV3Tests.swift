@@ -1807,6 +1807,100 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         await model.waitForCleanupCompletion()
     }
 
+    /// silo-apple#337 C10: every access-token rotation on a header-authenticated
+    /// original file reloads the same plan. Aether's load clears its subtitle
+    /// selection and the plan's pending pick was spent on the first load, so
+    /// the picker kept Spanish checked while cues stopped mid-playback.
+    func testSamePlanReloadSelectsThePlanSubtitleAgain() async {
+        let model = PlayerViewModel()
+        let plan = makePlan(container: "mkv", selectedSubtitleIndex: 1, subtitleMode: "render",
+            subtitleInventory: [makeInventoryItem(combinedIndex: 0, source: "embedded"),
+                                makeInventoryItem(combinedIndex: 1, source: "embedded")],
+            embeddedSubtitle: PlaybackV3EmbeddedSubtitle(streamIndex: 4))
+        let rows = ApplePlaybackV3PlanAdapter.subtitlePickerTracks(plan: plan)
+        let planRow = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 1)
+        let engineRow = makePlayerSubtitle(trackId: planRow, isExternal: false, ffIndex: 4, srcId: nil)
+        let request = PlayerViewModel.LoadRequest(
+            contentId: "episode", preferredFileId: 42, preferredAudioTrackIndex: nil,
+            preferredSubtitleTrackIndex: nil, preferredSidecarSubtitleTrackId: nil,
+            startFromBeginning: false
+        )
+        // The first load spends the plan's pick.
+        model.armAdoptedProtocolV3TrackIntent(plan: plan, request: request)
+        model.subtitleTracks = rows
+        model.selectedSubtitleId = planRow
+        model.applyPendingSubtitleSelections(
+            aetherSubtitleTracks: [engineRow], publishedSubtitleTracks: rows, loadIsEstablished: true
+        )
+
+        let rearmed = model.armProtocolV3SubtitleIntentForSamePlanReload(plan: plan, request: request)
+        XCTAssertEqual(rearmed?.embeddedSubtitleIndex, 4, "The reload must select the plan's stream again")
+        model.applyPendingSubtitleSelections(
+            aetherSubtitleTracks: [engineRow], publishedSubtitleTracks: rows, loadIsEstablished: true
+        )
+        XCTAssertEqual(model.selectedSubtitleId, planRow)
+
+        // A plan that mounts a sidecar artifact re-arms that artifact instead.
+        let sidecarPlan = makePlan(container: "mkv", selectedSubtitleIndex: 3, subtitleMode: "render",
+            subtitleInventory: [makeInventoryItem(combinedIndex: 3, source: "external")])
+        let version = makeVersion(container: "mkv", videoCodec: "h264", audioCodec: "aac")
+        model.selectedSubtitleId = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 3)
+        let sidecar = model.armProtocolV3SubtitleIntentForSamePlanReload(
+            plan: sidecarPlan,
+            request: request.adoptingProtocolV3Intent(
+                plan: sidecarPlan, selectedVersion: version, activeQualityId: "original"
+            )
+        )
+        XCTAssertEqual(sidecar?.sidecarSubtitleTrackId, SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 3))
+        XCTAssertNil(sidecar?.embeddedSubtitleIndex)
+        model.cleanup()
+        await model.waitForCleanupCompletion()
+    }
+
+    /// The same reload must not swap a subtitle the plan does not own for the
+    /// plan's: those selections are restored by their own paths.
+    func testSamePlanReloadLeavesSubtitlesThePlanDoesNotOwn() async {
+        let plan = makePlan(container: "mkv", selectedSubtitleIndex: 1, subtitleMode: "render",
+            subtitleInventory: [makeInventoryItem(combinedIndex: 1, source: "embedded")],
+            embeddedSubtitle: PlaybackV3EmbeddedSubtitle(streamIndex: 4))
+        let planRow = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 1)
+        let live = SubtitleTrackIdSpace.makeAILiveTrackId(0)
+        let owned = { (selected: Int64?, local: Bool) in
+            PlayerViewModel.protocolV3SubtitleSelectionIsPlanOwned(
+                plan: plan, selectedSubtitleID: selected, hasLocalSelection: local
+            )
+        }
+        XCTAssertTrue(owned(planRow, false))
+        XCTAssertFalse(owned(planRow, true), "A local pick is restored by its own path")
+        XCTAssertFalse(owned(live, false), "A live AI track is rendered outside the engine")
+        XCTAssertFalse(owned(SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 9), false),
+                       "A sidecar this session created is not in the plan")
+        let off = makePlan(subtitleMode: "off")
+        XCTAssertTrue(PlayerViewModel.protocolV3SubtitleSelectionIsPlanOwned(
+            plan: off, selectedSubtitleID: nil, hasLocalSelection: false))
+        XCTAssertFalse(PlayerViewModel.protocolV3SubtitleSelectionIsPlanOwned(
+            plan: off, selectedSubtitleID: live, hasLocalSelection: false))
+
+        // A credential reload while a live AI track is showing keeps it.
+        let model = PlayerViewModel()
+        let rows = ApplePlaybackV3PlanAdapter.subtitlePickerTracks(plan: plan)
+        let request = PlayerViewModel.LoadRequest(
+            contentId: "episode", preferredFileId: 42, preferredAudioTrackIndex: nil,
+            preferredSubtitleTrackIndex: nil, preferredSidecarSubtitleTrackId: nil,
+            startFromBeginning: false
+        )
+        model.subtitleTracks = rows
+        model.selectedSubtitleId = live
+        XCTAssertNil(model.armProtocolV3SubtitleIntentForSamePlanReload(plan: plan, request: request))
+        model.applyPendingSubtitleSelections(
+            aetherSubtitleTracks: [makePlayerSubtitle(trackId: planRow, isExternal: false, ffIndex: 4, srcId: nil)],
+            publishedSubtitleTracks: rows, loadIsEstablished: true
+        )
+        XCTAssertEqual(model.selectedSubtitleId, live)
+        model.cleanup()
+        await model.waitForCleanupCompletion()
+    }
+
     func testV3ReplanRestoresServerRenderedSubtitleAsDisplayOnlySelection() {
         let sidecarId = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 3)
 

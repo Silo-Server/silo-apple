@@ -20,6 +20,8 @@ struct PhoneTrailerStatusPill: View {
     /// owner acknowledges it on the coordinator.
     let onAutoDismiss: () -> Void
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
     /// Terminal copy is a full sentence rather than a one-word status, so it
     /// gets twice `RefreshStatusPill`'s floor to be read comfortably.
     private static let terminalVisibleDuration: TimeInterval = 3
@@ -32,7 +34,7 @@ struct PhoneTrailerStatusPill: View {
                     .tint(.siloOnSurface)
             } else {
                 Image(systemName: "info.circle")
-                    .font(.system(size: 13, weight: .semibold))
+                    .siloScaledFont(size: 13, weight: .semibold, relativeTo: .footnote)
                     .foregroundColor(.siloOnSurface)
             }
 
@@ -40,7 +42,7 @@ struct PhoneTrailerStatusPill: View {
                 .font(.siloCaption)
                 .fontWeight(.semibold)
                 .foregroundColor(.siloOnSurface)
-                .lineLimit(1)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                 .minimumScaleFactor(0.85)
         }
         .padding(.horizontal, 14)
