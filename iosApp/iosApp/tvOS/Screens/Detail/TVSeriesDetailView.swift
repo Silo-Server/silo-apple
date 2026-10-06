@@ -256,6 +256,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     @State private var episodeScrollRequest = 0
     @State private var pageScrollCoordinator = PageScrollCoordinator()
     @State private var uiCustomization = UICustomizationPreferences.shared
+    @State private var shuffleLauncher = ShuffleLauncher()
     @ObservedObject private var profilePrefsStore = ProfilePrefsStore.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -339,6 +340,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             Text("Please check your connection and try again.")
         }
         .personalStateNoticeAlert($seasonWatchedNotice)
+        .shuffleFailureAlert(shuffleLauncher)
     }
 
     // MARK: - Fixed series hero
@@ -877,7 +879,22 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     }
 
     private enum MoreAction: String {
-        case watchParty, overview, favorite, seriesWatched, watched, trailers
+        case shuffleSeason, shuffleSeries, watchParty, overview, favorite, seriesWatched, watched, trailers
+    }
+
+    private var canShuffleSeries: Bool {
+        ShuffleFeatureStore.shared.supports(.series)
+            && ShuffleAvailability.hasEnoughToShuffle(playableCount: seasons.reduce(0) { $0 + $1.episodeCount })
+    }
+
+    /// The season on screen, when it has at least two episodes with files.
+    private var shuffleSeason: Season? {
+        guard !isShowingSeriesOverview, let selectedSeason,
+              ShuffleFeatureStore.shared.supports(.season), !isLoadingEpisodes else { return nil }
+        let playable = episodes.filter {
+            $0.seasonNumber == selectedSeason.seasonNumber && !($0.files ?? []).isEmpty
+        }
+        return ShuffleAvailability.hasEnoughToShuffle(playableCount: playable.count) ? selectedSeason : nil
     }
 
     @Environment(AppRouter.self) private var partyRouter
@@ -890,6 +907,23 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             stabilizesFocusMotion: true,
             items: {
                 var items: [TVActionPopoverItem] = []
+                // Shuffle leads: the season's on a season, the series' otherwise.
+                if let season = shuffleSeason {
+                    items.append(TVActionPopoverItem(
+                        id: MoreAction.shuffleSeason.rawValue,
+                        title: "Shuffle \(season.downloadDisplayName)",
+                        systemImage: "shuffle",
+                        isEnabled: !shuffleLauncher.isStarting
+                    ))
+                }
+                if canShuffleSeries {
+                    items.append(TVActionPopoverItem(
+                        id: MoreAction.shuffleSeries.rawValue,
+                        title: "Shuffle Series",
+                        systemImage: "shuffle",
+                        isEnabled: !shuffleLauncher.isStarting
+                    ))
+                }
                 if !isShowingSeriesOverview {
                     items.append(TVActionPopoverItem(
                         id: MoreAction.overview.rawValue,
@@ -929,6 +963,15 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             },
             onSelect: { item in
                 switch MoreAction(rawValue: item.id) {
+                case .shuffleSeason:
+                    if let season = shuffleSeason {
+                        shuffleLauncher.start(ShuffleScopeRequest(kind: .season, id: season.contentId), router: partyRouter)
+                    }
+                case .shuffleSeries:
+                    shuffleLauncher.start(
+                        ShuffleScopeRequest(kind: .series, id: detail.seriesId ?? detail.contentId),
+                        router: partyRouter
+                    )
                 case .watchParty:
                     if let episode = displayedEpisode {
                         WatchPartyEntry.open(contentId: episode.contentId, title: episode.title ?? "Episode", type: "episode",

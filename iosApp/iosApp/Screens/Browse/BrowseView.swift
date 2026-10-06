@@ -9,6 +9,7 @@ struct BrowseView: View {
 
     @State private var viewModel = BrowseViewModel()
     @State private var showFilters = false
+    @State private var shuffleLauncher = ShuffleLauncher()
     @Environment(AppRouter.self) private var router
 
     @ViewBuilder
@@ -73,18 +74,46 @@ struct BrowseView: View {
                     activeFilterChips
                 }
 
-                EmptyStateView(
-                    icon: "film",
-                    title: "No items found",
-                    subtitle: "Try adjusting your filters"
-                )
-                .frame(minHeight: 320)
-                .padding(.horizontal, SiloTheme.padding)
+                emptyState
+                    .frame(minHeight: 320)
+                    .padding(.horizontal, SiloTheme.padding)
             }
             .frame(maxWidth: .infinity)
         }
         .reportsPageChromeScroll()
         .environment(\.browseLibraryId, libraryId)
+    }
+
+    @ViewBuilder
+    private var emptyState: some View {
+        switch viewModel.emptyReason {
+        case .libraryEmpty:
+            EmptyStateView(
+                icon: emptyLibraryIcon,
+                title: "This library is empty",
+                subtitle: "There is nothing in this library yet."
+            )
+        case .noFilterMatches:
+            VStack(spacing: SiloTheme.padding) {
+                EmptyStateView(
+                    icon: "line.3.horizontal.decrease.circle",
+                    title: "No items match your current filters"
+                )
+                Button("Clear filters") {
+                    Task { await viewModel.clearFilters() }
+                }
+                .siloPrimaryButton()
+                .frame(width: 200)
+            }
+        }
+    }
+
+    private var emptyLibraryIcon: String {
+        switch viewModel.mediaType {
+        case .series: return "tv"
+        case .audiobook: return "book.closed"
+        case .movie, .mixed: return "film"
+        }
     }
 
     private var scrollContent: some View {
@@ -146,22 +175,59 @@ struct BrowseView: View {
         .padding(.horizontal, SiloTheme.padding)
     }
 
-    // MARK: - Control bar (Sort + Filter)
+    // MARK: - Control bar (Sort + Filter + Shuffle)
 
     private var controlBar: some View {
-        HStack(spacing: 9) {
-            sortMenu
-            Button { showFilters = true } label: {
-                controlChip(
-                    icon: "line.3.horizontal.decrease",
-                    text: "Filter",
-                    badge: viewModel.filterState.activeFacetCount
-                )
+        // At accessibility text sizes the chips no longer fit side by
+        // side and SwiftUI broke their labels mid-word; stack them instead.
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 9) {
+                sortMenu
+                filterButton
+                shuffleButton
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.plain)
-            Spacer(minLength: 0)
+            VStack(alignment: .leading, spacing: 9) {
+                sortMenu
+                filterButton
+                shuffleButton
+            }
         }
         .padding(.horizontal, SiloTheme.padding)
+        .shuffleFailureAlert(shuffleLauncher)
+    }
+
+    /// The library a Shuffle chip plays from; nil where Shuffle isn't offered.
+    private var shuffleLibraryId: Int? {
+        guard let libraryId,
+              ShuffleAvailability.isShuffleLibraryType(libraryType),
+              ShuffleFeatureStore.shared.supports(.library) else { return nil }
+        return libraryId
+    }
+
+    private var filterButton: some View {
+        Button { showFilters = true } label: {
+            controlChip(
+                icon: "line.3.horizontal.decrease",
+                text: "Filter",
+                badge: viewModel.filterState.activeFacetCount
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private var shuffleButton: some View {
+        if let shuffleLibraryId {
+            Button {
+                shuffleLauncher.start(ShuffleScopeRequest(kind: .library, id: String(shuffleLibraryId)), router: router)
+            } label: {
+                controlChip(icon: "shuffle", text: "Shuffle")
+            }
+            .buttonStyle(.plain)
+            .disabled(shuffleLauncher.isStarting)
+            .accessibilityIdentifier("library-shuffle")
+        }
     }
 
     private var sortMenu: some View {

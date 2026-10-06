@@ -11,7 +11,12 @@ struct MovieDetailContent<BelowOverview: View>: View {
     let selectedVersionFileId: Int?
     let selectedAudioTrackIndex: Int?
     let selectedSubtitleTrackIndex: Int?
-    let onPlay: (_ startFromBeginning: Bool) -> Void
+    /// `resumePosition` is the point the user was offered (nil for a
+    /// restart or a title without progress).
+    let onPlay: (_ startFromBeginning: Bool, _ resumePosition: Double?) -> Void
+    /// Reads the title's current watch state from the server, so the resume
+    /// prompt never offers a position another device has moved past.
+    let refreshResumeState: () async -> DetailResumeState
     let onSelectVersion: (Int?) -> Void
     let onSelectAudioTrack: (Int?) -> Void
     let onSelectSubtitleTrack: (Int?) -> Void
@@ -40,7 +45,10 @@ struct MovieDetailContent<BelowOverview: View>: View {
     @ViewBuilder let belowOverview: () -> BelowOverview
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    @State private var showResumeDialog = false
+    /// The position the resume prompt offers; non-nil while it is shown.
+    @State private var pendingResumePosition: Double?
+    /// The Play tap's in-flight watch-state read. A second tap replaces it.
+    @State private var resumeLookupTask: Task<Void, Never>?
     /// The download options sheet, opened from the More menu.
     @State private var showDownloadOptions = false
 
@@ -63,12 +71,20 @@ struct MovieDetailContent<BelowOverview: View>: View {
             .phoneDetailScrollTracking(scrollState)
         }
         .siloResumePlaybackAlert(
-            isPresented: $showResumeDialog,
+            isPresented: Binding(
+                get: { pendingResumePosition != nil },
+                set: { if !$0 { pendingResumePosition = nil } }
+            ),
             stoppedAt: resumeTimestamp
         ) {
-            onPlay(false)
+            guard let pendingResumePosition else { return }
+            onPlay(false, pendingResumePosition)
         } onRestart: {
-            onPlay(true)
+            onPlay(true, nil)
+        }
+        .onDisappear {
+            resumeLookupTask?.cancel()
+            resumeLookupTask = nil
         }
     }
 
@@ -112,7 +128,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
         VStack(spacing: 14) {
             PhonePrimaryPillButton(
                 icon: "play.fill",
-                title: "Play",
+                title: DetailPlayLabel.item(detail.userData),
                 action: handlePlayTap,
                 fullWidth: true
             )
@@ -187,10 +203,16 @@ struct MovieDetailContent<BelowOverview: View>: View {
     }
 
     private func handlePlayTap() {
-        if hasResumeProgress {
-            showResumeDialog = true
-        } else {
-            onPlay(false)
+        resumeLookupTask?.cancel()
+        resumeLookupTask = Task {
+            let state = await refreshResumeState()
+            guard !Task.isCancelled else { return }
+            resumeLookupTask = nil
+            if let position = state.resumePosition(cached: detail.userData) {
+                pendingResumePosition = position
+            } else {
+                onPlay(false, nil)
+            }
         }
     }
     /// Download is offered for movies once the
@@ -298,17 +320,8 @@ struct MovieDetailContent<BelowOverview: View>: View {
 
     // MARK: - Resume / play helpers
 
-    private var resumePositionSeconds: Double? {
-        PlaybackResumePoint.position(
-            detail.userData?.positionSeconds,
-            duration: detail.userData?.durationSeconds
-        )
-    }
-
-    private var hasResumeProgress: Bool { resumePositionSeconds != nil }
-
     private var resumeTimestamp: String {
-        guard let pos = resumePositionSeconds else { return "0:00" }
+        guard let pos = pendingResumePosition else { return "0:00" }
         return PlayerTimeFormatter.formatHMS(pos)
     }
 
