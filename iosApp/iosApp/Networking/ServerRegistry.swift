@@ -466,6 +466,7 @@ final class ServerRegistry {
             ImageSizeCapability.shared.reset()
             WatchPartySession.shared.leave(forgetRecent: true)
             RequestsFeatureStore.shared.reset()
+            ShuffleFeatureStore.shared.reset()
             CurrentProfileStore.shared.reset()
             SubtitleProvidersStore.shared.reset()
             RequestsEventBus.shared.reset()
@@ -475,6 +476,7 @@ final class ServerRegistry {
             // until the next foreground. Fire-and-forget — the probe
             // degrades to disabled on any failure.
             Task { await RequestsFeatureStore.shared.refresh() }
+            Task { await ShuffleFeatureStore.shared.refresh() }
             Task { await CurrentProfileStore.shared.refresh() }
             // Same shape: without a re-probe the destination server's
             // image-size support would stay unknown, and TV requests would

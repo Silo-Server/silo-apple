@@ -26,6 +26,9 @@ final class TVLibraryGridViewModel {
     var isRefreshing: Bool = false
     var error: ErrorState? = nil
     var hasMore: Bool = true
+    /// Why the grid is empty. Read only when a finished load left `items`
+    /// empty; set before that load finishes so the wrong message never shows.
+    private(set) var emptyReason: BrowseEmptyReason = .libraryEmpty
     private(set) var filter: CatalogFilterState
     /// Live facet vocabulary for the filter panel (loaded lazily).
     private(set) var facets: CatalogFacets?
@@ -125,6 +128,14 @@ final class TVLibraryGridViewModel {
         filter = newFilter
         BrowsePrefsStore.shared.saveState(newFilter, libraryId: libraryId)
         await reload()
+    }
+
+    /// Clears every filter facet and the letter-rail prefix, keeping the sort.
+    func clearFilters() async {
+        var next = filter
+        next.resetFilters()
+        next.namePrefix = nil
+        await applyFilter(next)
     }
 
     /// Sort menu behavior: tapping the active key flips direction; tapping a
@@ -262,6 +273,14 @@ final class TVLibraryGridViewModel {
             if startsOver || page.startsOver {
                 items = page.response.items
                 ResponseCache.shared.set(page.response, for: currentCacheKey, fetchedAt: writeToken)
+                if items.isEmpty {
+                    let probe = CatalogQueryBuilder.libraryProbe(libraryId: libraryId)
+                    let reason = await BrowseEmptyReason.classify(filter: filter) {
+                        try await !SiloAPI.shared.catalogPage(probe).response.items.isEmpty
+                    }
+                    guard myGeneration == generation else { return }
+                    emptyReason = reason
+                }
             } else {
                 items.append(contentsOf: page.response.items)
             }

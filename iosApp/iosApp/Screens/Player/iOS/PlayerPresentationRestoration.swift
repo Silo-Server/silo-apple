@@ -89,7 +89,7 @@ extension AppRouter.PlayerPresentation {
     /// initializer mints a new `UUID` and `fullScreenCover(item:)` treats the
     /// result as a new presentation.
     func reopened() -> Self {
-        AppRouter.PlayerPresentation(
+        var copy = AppRouter.PlayerPresentation(
             libraryId: libraryId,
             contentId: contentId,
             fileId: fileId,
@@ -105,6 +105,8 @@ extension AppRouter.PlayerPresentation {
             posterURL: posterURL,
             backdropURL: backdropURL
         )
+        copy.shuffle = shuffle
+        return copy
     }
 }
 #endif
