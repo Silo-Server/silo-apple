@@ -29,6 +29,7 @@ struct PlayerPresentationModifier: ViewModifier {
                 posterURLHint: presentation.posterURL,
                 backdropURLHint: presentation.backdropURL,
                 watchPartyContext: presentation.watchPartyContext,
+                shuffle: presentation.shuffle,
                 onDismissRequested: { router.dismissPlayerPresentation(id: presentation.id) }
             )
             .id(presentation.id)

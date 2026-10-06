@@ -83,9 +83,12 @@ enum PhoneHeroMetadata {
                 return seriesTitle
             }
         }
-        if let status = detail.status?
-            .trimmingCharacters(in: .whitespaces), !status.isEmpty,
-           detail.type == "series" {
+        // A series' airing state is `show_status`; `status` is the catalog
+        // item's own state and is usually empty for series.
+        if detail.type == "series",
+           let status = [detail.showStatus, detail.status]
+            .compactMap({ $0?.trimmingCharacters(in: .whitespaces) })
+            .first(where: { !$0.isEmpty }) {
             switch status.lowercased() {
             case "continuing", "returning series", "returning":
                 return "Continuing Series"
