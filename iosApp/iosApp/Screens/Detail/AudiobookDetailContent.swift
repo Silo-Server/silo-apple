@@ -83,6 +83,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
             overview: detail.overview,
             factsLine: presentation.factsTokens.map(PhoneHeroFactToken.text),
             creditText: presentation.creditText,
+            overlayData: nil,
             enablesArtworkParallax: true,
             artworkStyle: hasBackdrop
                 ? .backdrop
