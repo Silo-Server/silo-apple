@@ -30,6 +30,9 @@ struct MobilePlayerControls: View {
     /// it is purely presentation, and kept outside the `showControls` gate
     /// below so the auto-hide takes the transport away without it.
     @State private var showsStats = false
+    @Environment(\.playerTabletopLayout) private var tabletopLayout
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     var body: some View {
         // NOTE: the .sheet modifier MUST live outside the `showControls` gate.
@@ -47,22 +50,28 @@ struct MobilePlayerControls: View {
                 // Clamping the stack to `proxy.size` keeps every overlay inside
                 // the visible frame regardless of how wide a bar wants to be.
                 GeometryReader { proxy in
+                    // In the tabletop posture the controls take the pane
+                    // below the fold, clear of the video above it.
+                    let paneTop = tabletopControlsTop(in: proxy)
+                    let pane = CGSize(width: proxy.size.width, height: proxy.size.height - paneTop)
                     ZStack {
                         Color.black.opacity(viewModel.isScrubbing ? 0.55 : 0.4)
                             .ignoresSafeArea()
                             .onTapGesture { viewModel.toggleControls() }
 
-                        // Centred on the whole screen, where the video is,
-                        // rather than between the top strip and the taller
-                        // bottom stack, which would pull it off-centre. Kept
-                        // beneath the bars so the scrub preview draws over it.
+                        // Centred on the whole pane (the screen, where the
+                        // video is, unless the tabletop posture moved the
+                        // controls below the fold) rather than between the top
+                        // strip and the taller bottom stack, which would pull
+                        // it off-centre. Kept beneath the bars so the scrub
+                        // preview draws over it.
                         centerCluster
                             .opacity(recedingOpacity)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .ignoresSafeArea()
 
                         VStack(spacing: 0) {
-                            topStrip(compact: proxy.size.width < proxy.size.height)
+                            topStrip(compact: pane.width < pane.height)
                                 .opacity(recedingOpacity)
                             Spacer()
                             bottomStack
@@ -73,8 +82,9 @@ struct MobilePlayerControls: View {
                         // the action row clear of the home indicator, so only
                         // a hairline of extra breathing room is needed.
                         .padding(.bottom, 2)
-                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .frame(width: pane.width, height: pane.height)
                     }
+                    .padding(.top, paneTop)
                     .animation(.easeOut(duration: 0.18), value: viewModel.isScrubbing)
                 }
                 .transition(.opacity)
@@ -144,7 +154,7 @@ struct MobilePlayerControls: View {
                 if !compact { titleBlock }
                 Spacer(minLength: 0)
                 if !compact { externalPlaybackControls }
-                rotationControls
+                if showsRotationControls { rotationControls }
             }
             if compact {
                 HStack(spacing: 12) {
@@ -200,6 +210,22 @@ struct MobilePlayerControls: View {
             .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
             .siloPlayerGlass(in: Circle(), interactive: true)
         }
+    }
+
+    /// The iPhone Duo's open display turns with the device and ignores the
+    /// app's rotation requests, so it gets no rotate or lock buttons. It is
+    /// the only phone window that is regular in both dimensions.
+    private var showsRotationControls: Bool {
+        !(UIDevice.current.userInterfaceIdiom == .phone
+            && horizontalSizeClass == .regular && verticalSizeClass == .regular)
+    }
+
+    /// Where the controls start: the top of the player, or just below the
+    /// fold in the iPhone Duo's tabletop posture.
+    private func tabletopControlsTop(in proxy: GeometryProxy) -> CGFloat {
+        guard let tabletopLayout else { return 0 }
+        let top = tabletopLayout.controlsMinY - proxy.frame(in: .global).minY
+        return min(max(top, 0), proxy.size.height)
     }
 
     private var rotationControls: some View {

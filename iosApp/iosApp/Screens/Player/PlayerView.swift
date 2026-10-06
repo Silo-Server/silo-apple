@@ -43,6 +43,8 @@ struct PlayerView: View {
     #if os(iOS)
     @State private var orientationCoordinator = PlayerOrientationCoordinator.shared
     @State private var pictureInPicture = PictureInPictureCoordinator.shared
+    /// Set while an iPhone Duo is half-folded with its fold across the screen.
+    @State private var tabletopLayout: PlayerTabletopLayout?
     @Environment(\.scenePhase) private var scenePhase
     #endif
     #if os(tvOS)
@@ -318,6 +320,13 @@ struct PlayerView: View {
         .onGeometryChange(for: CGSize.self) { $0.size } action: { _ in
             orientationCoordinator.refreshInterfaceOrientation()
         }
+        // Tabletop posture: video above the fold, controls below. Next Up
+        // keeps its own layout.
+        .onPlayerTabletopLayoutChange { layout in
+            tabletopLayout = layout
+        }
+        .environment(\.playerTabletopLayout, viewModel.showNextUpScreen ? nil : tabletopLayout)
+        .animation(.easeInOut(duration: 0.25), value: tabletopLayout)
         // Hardware keyboards (iPad, or the iOS app running on a Mac) get no
         // key events from the touch gesture layer. Space toggles playback,
         // matching the macOS player.

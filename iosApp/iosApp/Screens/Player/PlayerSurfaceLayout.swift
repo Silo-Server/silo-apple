@@ -26,14 +26,17 @@ struct PlayerSurfaceLayout<Surface: View, Content: View>: View {
     @ViewBuilder let surface: () -> Surface
     @ViewBuilder let content: () -> Content
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    #if os(iOS)
+    @Environment(\.playerTabletopLayout) private var tabletopLayout
+    #endif
 
     var body: some View {
         content()
             .overlayPreferenceValue(PlayerPreviewBoundsKey.self) { geometry in
                 GeometryReader { proxy in
-                    let fullFrame = CGRect(origin: .zero, size: proxy.size)
-                    let frame = isPreview ? geometry.bounds.map { proxy[$0] } ?? fullFrame : fullFrame
-                    let viewport = isPreview ? geometry.viewport.map { proxy[$0] } ?? fullFrame : fullFrame
+                    let playing = playingFrame(in: proxy)
+                    let frame = isPreview ? geometry.bounds.map { proxy[$0] } ?? playing : playing
+                    let viewport = isPreview ? geometry.viewport.map { proxy[$0] } ?? playing : playing
                     // One structural identity in both modes. Only geometry changes;
                     // expansion must not load, seek, bind a second host, or resume.
                     surface()
@@ -58,6 +61,19 @@ struct PlayerSurfaceLayout<Surface: View, Content: View>: View {
                 .allowsHitTesting(false)
                 .accessibilityHidden(isPreview)
             }
+    }
+
+    /// The whole screen, or everything above the fold in the iPhone Duo's
+    /// tabletop posture.
+    private func playingFrame(in proxy: GeometryProxy) -> CGRect {
+        let screen = CGRect(origin: .zero, size: proxy.size)
+        #if os(iOS)
+        if let tabletopLayout {
+            let videoMaxY = tabletopLayout.videoMaxY - proxy.frame(in: .global).minY
+            return CGRect(x: 0, y: 0, width: screen.width, height: min(max(videoMaxY, 0), screen.height))
+        }
+        #endif
+        return screen
     }
 }
 
