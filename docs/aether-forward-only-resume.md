@@ -98,6 +98,21 @@ The engine should not need this: a forward-only source with a duration shorter t
 own clock is not at end of media, and `play()` must not seek a source that cannot seek.
 Add both to the engine change below.
 
+## A third way: the connection drops mid-film
+
+The reader cannot reconnect a progressive remux at a byte offset, so a dropped connection
+ends the stream. A ten-minute pause was enough: 11 seconds after play resumed the engine
+logged `Stream error: The network connection was lost`, drained what it had buffered, and
+reported end of media at 59:45 of a 1:42:55 film. The app's premature-end handling then
+parked the player at the end of the film, and closing it recorded the film as watched.
+
+`PlayerViewModel.handleEndOfFile` now starts a new session at the position the stream
+dropped, through the existing stale-session renewal, when a progressive remux ends early
+outside a watch party. Not yet exercised against a real drop.
+
+The engine could avoid the reload by re-requesting the stream itself, which needs the
+host to supply a URL for the new position, since only the server can seek this delivery.
+
 ## Engine fix plan
 
 Repository: `Silo-Server/AetherEngine` (the fork pinned in `iosApp/project.yml`).

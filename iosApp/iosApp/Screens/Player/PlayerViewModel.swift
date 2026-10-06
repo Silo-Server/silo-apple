@@ -4259,6 +4259,21 @@ class PlayerViewModel {
             hasReachedEndOfFile = true
         }
 
+        // A progressive remux is one response the engine cannot reconnect: a
+        // connection dropped mid-film (a long pause is enough) ends the
+        // stream for good. Start a new session where it dropped instead of
+        // parking the viewer at the end of a film they have not finished.
+        if isPremature, !isWatchPartyPlayback, offlinePlaybackContext == nil,
+           aetherPlaybackController.activeSpec?.delivery == PlaybackProtocolV3.PlanDelivery.remuxProgressive {
+            Self.logger.warning(
+                "[CMP] handleEndOfFile reloading progressive remux: premature EOF at \(observedPosition, privacy: .public)/\(safeDuration, privacy: .public)"
+            )
+            // Not a finish: the reload must not record the item as completed.
+            hasReachedEndOfFile = false
+            if attemptStaleSessionRenewal(reason: "premature_source_end", observedPosition: observedPosition) { return }
+            hasReachedEndOfFile = true
+        }
+
         if isPremature {
             Self.logger.warning(
                 "[CMP] handleEndOfFile suppressing autoplay: premature EOF at \(observedPosition, privacy: .public)/\(safeDuration, privacy: .public)"
