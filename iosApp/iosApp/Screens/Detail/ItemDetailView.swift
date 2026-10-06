@@ -363,6 +363,8 @@ private struct ItemDetailPhoneContent: View {
     @State private var offlinePlayChoice: OfflinePlayChoice?
     @State private var unreachablePlayRequest: UnreachablePlayRequest?
     @State private var detailScrollState = PhoneDetailScrollState()
+    /// Whether a movie or series page lays out as a split; see `supportsScrollGlassChrome`.
+    @State private var isSplitPage = false
     #if os(iOS)
     @Environment(SiloControlClient.self) private var siloControl
     @State private var controlRequestBox: ControlRequestBox?
@@ -527,6 +529,11 @@ private struct ItemDetailPhoneContent: View {
         .overlay(alignment: .top) {
             detailTopControls
         }
+        .onGeometryChange(for: Bool.self) { proxy in
+            PhoneDetailHeroLayout.usesSplitLayout(pageSize: proxy.size)
+        } action: { isSplit in
+            isSplitPage = isSplit
+        }
         .sheet(item: $controlRequestBox) { box in
             SiloControlTargetPickerView(request: box.request, controller: siloControl)
         }
@@ -574,12 +581,15 @@ private struct ItemDetailPhoneContent: View {
     }
 
     /// Phone and iPad alike: without the strip, the season chips and other
-    /// controls scroll under the floating Close button on an iPad sheet.
+    /// controls scroll under the floating Close button on an iPad sheet. A
+    /// split movie or series page needs none: its content pane starts below
+    /// the buttons, and the hero pane beside it never scrolls away.
     private var supportsScrollGlassChrome: Bool {
         guard let detail = viewModel.detail else { return false }
-        return SiloMediaType.isMovieLibrary(detail.type)
-            || SiloMediaType.isSeries(detail.type)
-            || detail.isAudiobook
+        if SiloMediaType.isMovieLibrary(detail.type) || SiloMediaType.isSeries(detail.type) {
+            return !isSplitPage
+        }
+        return detail.isAudiobook
     }
 
     /// Movie and episode leaves cast the visible item. Containers (series,

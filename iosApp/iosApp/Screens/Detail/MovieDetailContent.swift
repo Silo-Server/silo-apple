@@ -56,19 +56,25 @@ struct MovieDetailContent<BelowOverview: View>: View {
         PhoneDetailPageSurface(
             backdropURL: detail.backdropUrl,
             backdropThumbhash: detail.backdropThumbhash,
-            enablesArtworkGlass: SiloMediaType.isMovieLibrary(detail.type)
+            enablesArtworkGlass: SiloMediaType.isMovieLibrary(detail.type),
+            keepsSideSafeArea: true
         ) {
-            ScrollView(.vertical, showsIndicators: false) {
+            PhoneDetailPageLayout(scrollState: scrollState) {
                 VStack(alignment: .leading, spacing: heroToContentSpacing) {
-                    hero
+                    hero()
+                    belowFold
+                }
+                .padding(.bottom, 40)
+            } paneHero: { height in
+                hero(paneHeight: height)
+            } paneContent: {
+                VStack(alignment: .leading, spacing: 32) {
+                    heroExtras
+                        .padding(.horizontal, SiloTheme.safePadding)
                     belowFold
                 }
                 .padding(.bottom, 40)
             }
-            .ignoresSafeArea(edges: .top)
-            .coordinateSpace(name: PhoneDetailScrollCoordinateSpace.name)
-            .detailScrollDismissal()
-            .phoneDetailScrollTracking(scrollState)
         }
         .siloResumePlaybackAlert(
             isPresented: Binding(
@@ -94,7 +100,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
 
     // MARK: - Hero
 
-    private var hero: some View {
+    private func hero(paneHeight: CGFloat? = nil) -> some View {
         PhoneDetailHero(
             title: detail.title,
             logoUrl: detail.logoUrl,
@@ -111,16 +117,20 @@ struct MovieDetailContent<BelowOverview: View>: View {
             creditText: PhoneHeroMetadata.creditText(from: detail),
             overlayData: OverlayData.from(detail),
             enablesArtworkParallax: SiloMediaType.isMovieLibrary(detail.type),
+            paneHeight: paneHeight,
             actions: { actionStack },
-            belowOverview: {
-                VStack(spacing: 14) {
-                    belowOverview()
-                    if let effectiveVersion {
-                        playbackSelectors(for: effectiveVersion)
-                    }
-                }
-            }
+            belowOverview: { heroExtras }
         )
+    }
+
+    /// Under the overview in one column; atop the content pane in a split.
+    private var heroExtras: some View {
+        VStack(spacing: 14) {
+            belowOverview()
+            if let effectiveVersion {
+                playbackSelectors(for: effectiveVersion)
+            }
+        }
     }
 
     /// Play, the named secondary actions, then the trailer status pill.

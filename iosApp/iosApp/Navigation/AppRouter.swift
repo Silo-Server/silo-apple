@@ -192,6 +192,11 @@ final class AppRouter {
         /// Set when the card opens on a request detail (a TMDB title) rather
         /// than a catalog item; `contentId` is then only a page identity.
         let request: RequestRoot?
+        /// Presented as a full-window cover instead of a sheet. Fixed when
+        /// the detail opens (see `presentsItemDetailFullWindow`), so folding
+        /// or rotating never swaps the presentation, and the player above it,
+        /// out from under the user.
+        var fillsWindow = false
 
         struct RequestRoot: Equatable {
             let mediaType: RequestMediaType
@@ -219,6 +224,17 @@ final class AppRouter {
     #if os(iOS)
     var presentedItemDetail: ItemDetailPresentation?
     var itemDetailPath = NavigationPath()
+    /// Kept current by the tab view: true while its phone window is wide and
+    /// short, as on the iPhone Duo's open display held in landscape. A sheet
+    /// there is capped at a centered card about two-thirds of the width, so
+    /// details opened then cover the window and can split into two panes.
+    var presentsItemDetailFullWindow = false
+
+    private func openItemDetail(_ presentation: ItemDetailPresentation) {
+        var presentation = presentation
+        presentation.fillsWindow = presentsItemDetailFullWindow
+        presentedItemDetail = presentation
+    }
     #endif
 
     // MARK: - Player Presentation
@@ -630,9 +646,9 @@ final class AppRouter {
             recordScreenBreadcrumb(target: route.diagnosticsTarget, action: "present")
             if presentedItemDetail == nil {
                 itemDetailPath = NavigationPath()
-                presentedItemDetail = ItemDetailPresentation(
+                openItemDetail(ItemDetailPresentation(
                     request: .init(mediaType: mediaType, tmdbId: tmdbId)
-                )
+                ))
             } else {
                 itemDetailPath.append(route)
             }
@@ -675,12 +691,12 @@ final class AppRouter {
                 source.contentIDs.contains(contentId) ? source : nil
             }
             itemDetailPath = NavigationPath()
-            presentedItemDetail = ItemDetailPresentation(
+            openItemDetail(ItemDetailPresentation(
                 contentId: contentId,
                 libraryId: libraryId,
                 browseSource: source,
                 resumeContext: resumeContext
-            )
+            ))
         } else {
             itemDetailPath.append(Route.itemDetail(contentId: contentId, libraryId: libraryId, seriesContext: resumeContext))
         }

@@ -50,6 +50,10 @@ struct PhoneDetailPageSurface<Content: View>: View {
     let backdropURL: String?
     let backdropThumbhash: String?
     let enablesArtworkGlass: Bool
+    /// Leaves the side safe-area insets to the content, which
+    /// `PhoneDetailPageLayout` needs to keep a split page clear of the iPhone
+    /// Duo's status-bar column. The backdrop always fills the window.
+    var keepsSideSafeArea = false
     @ViewBuilder let content: () -> Content
 
     @State private var sampledTint = Color(red: 0.04, green: 0.12, blue: 0.14)
@@ -69,9 +73,10 @@ struct PhoneDetailPageSurface<Content: View>: View {
         #else
         ZStack {
             backdrop
+                .ignoresSafeArea()
             content()
+                .ignoresSafeArea(.all, edges: keepsSideSafeArea ? .vertical : .all)
         }
-        .ignoresSafeArea()
         .task(id: backdropURL) { await sampleTint() }
         #endif
     }
@@ -304,6 +309,18 @@ enum PhoneDetailHeroLayout {
         }
         return horizontalSizeClass == .regular
     }
+
+    /// Narrowest page that splits into a hero pane and a content pane.
+    static let splitMinimumWidth: CGFloat = 760
+
+    /// A wide, short page — the iPhone Duo's open inner display held in
+    /// landscape — leaves a single hero-first column showing little more
+    /// than artwork. It splits instead: the hero holds the leading half and
+    /// the rest of the page scrolls in the trailing half, so the halves meet
+    /// at the fold. Taller pages (portrait, iPad page sheets) keep one column.
+    static func usesSplitLayout(pageSize: CGSize) -> Bool {
+        pageSize.width >= splitMinimumWidth && pageSize.width >= pageSize.height * 1.2
+    }
 }
 
 /// Artwork-led mobile detail header used inside the bottom-presented detail
@@ -333,6 +350,10 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     let overlayData: OverlayData?
     var enablesArtworkParallax = false
     var artworkStyle: PhoneDetailArtworkStyle = .backdrop
+    /// Set when the hero fills the leading pane of a split page (see
+    /// `PhoneDetailHeroLayout.usesSplitLayout`); `belowOverview` then moves to
+    /// the content pane and is not drawn here.
+    var paneHeight: CGFloat? = nil
     @ViewBuilder let actions: () -> Actions
     @ViewBuilder let belowOverview: () -> BelowOverview
 
@@ -353,7 +374,9 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
             #if os(macOS)
             macHeader
             #else
-            if usesExpandedLayout {
+            if let paneHeight {
+                paneHeader(height: paneHeight)
+            } else if usesExpandedLayout {
                 expandedHeader
             } else {
                 compactHeader
@@ -435,6 +458,69 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
 
     private var compactLogoHeight: CGFloat {
         min(max(compactArtworkHeight * 0.24, 104), 138)
+    }
+
+    // MARK: - Split page hero pane
+
+    /// The leading pane of a split page, composed like the compact hero:
+    /// artwork fills the pane and the title, facts, actions, and overview sit
+    /// over its lower part. The pane scrolls only when that block outgrows it
+    /// (large Dynamic Type); otherwise it holds still beside the content pane.
+    private func paneHeader(height: CGFloat) -> some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: 16) {
+                // Smaller than the compact logo: the pane is a landscape
+                // display's full height, about 670pt, and shares it with
+                // the facts, actions, and overview.
+                titleBlock(textAlignment: .center, logoHeight: 100)
+                metadataBlock(alignment: .center, textAlignment: .center, isCompact: true)
+                actions()
+                    .padding(.top, 2)
+                overviewBlock
+                creditBlock(alignment: .leading)
+            }
+            .padding(.horizontal, 28)
+            // Keeps the top of the artwork clear when the text block is tall
+            // enough to scroll.
+            .padding(.top, height * 0.22)
+            .padding(.bottom, 24)
+            .frame(maxWidth: .infinity, minHeight: height, alignment: .bottom)
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .background { paneArtwork }
+    }
+
+    /// Darkened under the text, and faded at the trailing edge into the page
+    /// surface that continues behind the content pane.
+    private var paneArtwork: some View {
+        ZStack {
+            artwork
+            LinearGradient(
+                stops: [
+                    .init(color: .black.opacity(0.34), location: 0),
+                    .init(color: .clear, location: 0.2),
+                    .init(color: .clear, location: 0.36),
+                    .init(color: .black.opacity(0.7), location: 0.64),
+                    .init(color: .black.opacity(0.88), location: 1),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
+        .clipped()
+        .mask {
+            LinearGradient(
+                stops: [
+                    .init(color: .black, location: 0),
+                    .init(color: .black, location: 0.8),
+                    .init(color: .clear, location: 1),
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 
     // MARK: - Expanded iPad layout

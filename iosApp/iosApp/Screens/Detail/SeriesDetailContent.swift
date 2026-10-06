@@ -96,24 +96,30 @@ struct SeriesDetailContent<BelowOverview: View>: View {
         PhoneDetailPageSurface(
             backdropURL: detail.backdropUrl,
             backdropThumbhash: detail.backdropThumbhash,
-            enablesArtworkGlass: true
+            enablesArtworkGlass: true,
+            keepsSideSafeArea: true
         ) {
-            ScrollView(.vertical, showsIndicators: false) {
+            PhoneDetailPageLayout(scrollState: scrollState) {
                 VStack(alignment: .leading, spacing: heroToContentSpacing) {
-                    hero
+                    hero()
+                    belowFold
+                }
+                .padding(.bottom, 40)
+            } paneHero: { height in
+                hero(paneHeight: height)
+            } paneContent: {
+                VStack(alignment: .leading, spacing: 32) {
+                    heroExtras
+                        .padding(.horizontal, SiloTheme.safePadding)
                     belowFold
                 }
                 .padding(.bottom, 40)
             }
-            .ignoresSafeArea(edges: .top)
-            .coordinateSpace(name: PhoneDetailScrollCoordinateSpace.name)
             #if os(iOS)
             .environment(\.watchPartyEpisodePreview) { [detail, seasons] episode in
                 WatchPartySelectedItem(previewing: episode, series: detail, seasons: seasons)
             }
             #endif
-            .detailScrollDismissal()
-            .phoneDetailScrollTracking(scrollState)
         }
         .siloResumePlaybackAlert(
             isPresented: Binding(
@@ -172,7 +178,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
 
     // MARK: - Hero
 
-    private var hero: some View {
+    private func hero(paneHeight: CGFloat? = nil) -> some View {
         PhoneDetailHero(
             title: detail.title,
             logoUrl: detail.logoUrl,
@@ -189,20 +195,24 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             creditText: PhoneHeroMetadata.creditText(from: detail),
             overlayData: OverlayData.from(detail),
             enablesArtworkParallax: true,
+            paneHeight: paneHeight,
             actions: { actionStack },
             // Match MovieDetailContent exactly through the playback controls:
             // Play/actions, show overview and credits, translation affordance,
             // then selectors. Seasons and episodes are the only series-only
             // extension and begin immediately after this shared hero.
-            belowOverview: {
-                VStack(spacing: 14) {
-                    belowOverview()
-                    playbackSelectorSlot
-                        .opacity(isLoadingEpisodes || nextUpEpisode != nil ? 1 : 0)
-                        .accessibilityHidden(!isLoadingEpisodes && nextUpEpisode == nil)
-                }
-            }
+            belowOverview: { heroExtras }
         )
+    }
+
+    /// Under the overview in one column; atop the content pane in a split.
+    private var heroExtras: some View {
+        VStack(spacing: 14) {
+            belowOverview()
+            playbackSelectorSlot
+                .opacity(isLoadingEpisodes || nextUpEpisode != nil ? 1 : 0)
+                .accessibilityHidden(!isLoadingEpisodes && nextUpEpisode == nil)
+        }
     }
 
     @ViewBuilder

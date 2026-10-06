@@ -106,5 +106,26 @@ final class AdaptivePosterGridTests: XCTestCase {
             availableWidth: 0, horizontalSizeClass: .regular, verticalSizeClass: .regular
         ))
     }
+
+    /// A detail page splits into hero and content panes only where a single
+    /// hero-first column would show little more than artwork: the iPhone
+    /// Duo's open display in landscape, full-panel or in its compatibility
+    /// window. Portrait pages, iPhones, and iPad page sheets keep one column.
+    func testDetailPageSplitsOnlyWhenWideAndShort() {
+        let split: [CGSize] = [CGSize(width: 951, height: 669), CGSize(width: 830, height: 669)]
+        let column: [CGSize] = [
+            CGSize(width: 669, height: 951),
+            CGSize(width: 440, height: 956),
+            CGSize(width: 834, height: 1_150),
+            CGSize(width: 1_024, height: 980),
+            .zero,
+        ]
+        for size in split {
+            XCTAssertTrue(PhoneDetailHeroLayout.usesSplitLayout(pageSize: size), "\(size)")
+        }
+        for size in column {
+            XCTAssertFalse(PhoneDetailHeroLayout.usesSplitLayout(pageSize: size), "\(size)")
+        }
+    }
     #endif
 }
