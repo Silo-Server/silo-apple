@@ -4771,6 +4771,11 @@ class PlayerViewModel {
         origin: LoadOrigin = .userInitiated
     ) {
         guard !isDisposed else { return }
+        // A renewal still waiting on its progress sync belongs to the load
+        // this one replaces. Left pending, it would reload its own captured
+        // request over the item that is starting now.
+        staleSessionRecoveryTask?.cancel()
+        staleSessionRecoveryTask = nil
         #if os(iOS) || os(macOS)
         if refreshHomeAfterPlaybackWrite == nil {
             refreshHomeAfterPlaybackWrite = StartupContentPrefetcher.homeRefreshAfterPlaybackWrite()
@@ -5376,6 +5381,8 @@ class PlayerViewModel {
             guard !Task.isCancelled, !self.isDisposed else { return }
 
             self.progressTask?.cancel()
+            // This task is the renewal; the load it starts must not cancel it.
+            self.staleSessionRecoveryTask = nil
             self.beginFreshLoad(
                 request: renewalRequest,
                 progressPosition: nil,
