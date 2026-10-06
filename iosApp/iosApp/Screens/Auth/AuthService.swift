@@ -105,6 +105,16 @@ final class AuthService: @unchecked Sendable {
 
     var hasServer: Bool { serverRegistry.hasActiveServer }
 
+    /// The verified account signed in to the active server, read from the
+    /// same canonical record as `isLoggedIn`. Nil when signed out or for a
+    /// legacy session that never recorded its account.
+    var accountID: String? {
+        guard let server = serverRegistry.activeServer,
+              case .session(let session)? = try? sessionPersistence.load(server.id),
+              session.origin == ServerRegistry.normalize(url: server.url) else { return nil }
+        return session.accountID
+    }
+
     /// Use the same canonical record as TokenStore. Legacy mirrors cannot
     /// revive a session after its sign-out tombstone has been written.
     var isLoggedIn: Bool {

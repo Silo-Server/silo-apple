@@ -46,6 +46,37 @@ enum AdaptiveColumns {
         }
     }
 
+    /// Narrowest standard-size poster in an iPad grid, between the design
+    /// language's 140pt compact and 185pt normal tablet densities. The
+    /// card-size preference scales it like every other card.
+    static let tabletMinimumPosterWidth: CGFloat = 140
+
+    /// Gap between iPad grid columns; matches the grid's row spacing.
+    static let tabletPosterSpacing: CGFloat = 12
+
+    struct PosterGridFit: Equatable {
+        let columnCount: Int
+        let cardWidth: CGFloat
+    }
+
+    /// A poster grid that fills `containerWidth`: as many columns as fit at
+    /// `minimumCardWidth`, then every card widened to its column so the only
+    /// gaps are `spacing`. Cards therefore stay under twice the minimum at
+    /// any width, from a Slide Over or Split View pane to a full-screen or
+    /// Stage Manager window. Nil until the container has been measured.
+    static func widthFittedPosters(
+        containerWidth: CGFloat,
+        minimumCardWidth: CGFloat,
+        spacing: CGFloat,
+        minimumColumns: Int = 2
+    ) -> PosterGridFit? {
+        guard containerWidth > 0, minimumCardWidth > 0 else { return nil }
+        let fitting = Int(((containerWidth + spacing) / (minimumCardWidth + spacing)).rounded(.down))
+        let count = max(minimumColumns, fitting)
+        let cardWidth = (containerWidth - CGFloat(count - 1) * spacing) / CGFloat(count)
+        return PosterGridFit(columnCount: count, cardWidth: max(1, cardWidth))
+    }
+
     /// Fits a fixed-density grid card inside its actual container while
     /// preserving the standard poster width whenever enough room is available.
     static func fittedPosterWidth(

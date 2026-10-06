@@ -359,10 +359,9 @@ struct DownloadActionButton: View {
                     Circle().fill(Color.white.opacity(active ? 0.18 : 0.10))
                 )
             Text(captionText(for: record))
-                .font(.system(size: 10, weight: .medium))
+                .siloScaledFont(size: 10, weight: .medium, relativeTo: .caption2)
                 .foregroundColor(captionTint(for: record?.localStatus))
-                .lineLimit(1)
-                .minimumScaleFactor(0.85)
+                .phoneActionCaption()
         }
         .frame(maxWidth: .infinity, minHeight: 58)
         .contentShape(Rectangle())

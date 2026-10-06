@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// A poster grid — 3 columns on iPhone / iPad compact width, 5 on iPad
-/// regular width, 6 columns on tvOS. Cards handle their own focus lift on
-/// tvOS.
+/// A poster grid — 3 columns on iPhone, as many as fit the measured width on
+/// iPad (see `AdaptiveColumns.widthFittedPosters`), 6 columns on tvOS. Cards
+/// handle their own focus lift on tvOS.
 struct CatalogGrid: View {
     let items: [BrowseItem]
     let isLoading: Bool
@@ -48,6 +48,12 @@ struct CatalogGrid: View {
                 count: 3
             )
         }
+        if let fit = tabletPosterFit {
+            return Array(
+                repeating: GridItem(.flexible(), spacing: AdaptiveColumns.tabletPosterSpacing, alignment: .top),
+                count: fit.columnCount
+            )
+        }
         return AdaptiveColumns.posters(
             for: hSize,
             posterSize: uiCustomization.cardPresentation.posterSize,
@@ -58,7 +64,7 @@ struct CatalogGrid: View {
     #endif
 
     var body: some View {
-        let widthOverride = phoneCardWidthOverride
+        let widthOverride = cardWidthOverride
         LazyVGrid(columns: columns, spacing: rowSpacing) {
             if items.isEmpty && isLoading {
                 // First page still loading: the grid's own shape, unfilled.
@@ -71,6 +77,7 @@ struct CatalogGrid: View {
                     title: item.title,
                     posterUrl: item.posterUrl ?? "",
                     thumbhash: item.posterThumbhash,
+                    mediaType: item.type,
                     year: item.year,
                     userState: item.userState,
                     overlayData: OverlayData.from(item),
@@ -143,9 +150,25 @@ struct CatalogGrid: View {
         #endif
     }
 
+    /// iPad cards fill their column instead of sitting at the fixed phone
+    /// width inside it. Nil on iPhone and until the grid has been measured.
+    private var tabletPosterFit: AdaptiveColumns.PosterGridFit? {
+        #if os(iOS)
+        guard UIDevice.current.userInterfaceIdiom == .pad else { return nil }
+        return AdaptiveColumns.widthFittedPosters(
+            containerWidth: gridWidth,
+            minimumCardWidth: AdaptiveColumns.tabletMinimumPosterWidth
+                * uiCustomization.cardPresentation.posterSize.scale,
+            spacing: AdaptiveColumns.tabletPosterSpacing
+        )
+        #else
+        return nil
+        #endif
+    }
+
     /// MediaCard applies the global poster-size scale after its override. Undo
     /// that scale here, then cap the standard width to the measured grid cell.
-    private var phoneCardWidthOverride: CGFloat? {
+    private var cardWidthOverride: CGFloat? {
         #if os(iOS)
         if dynamicTypeSize.isAccessibilitySize {
             let fittedWidth = AdaptiveColumns.fittedPosterWidth(
@@ -155,6 +178,9 @@ struct CatalogGrid: View {
                 maximumWidth: 240
             )
             return fittedWidth / uiCustomization.cardPresentation.posterSize.scale
+        }
+        if let fit = tabletPosterFit {
+            return fit.cardWidth / uiCustomization.cardPresentation.posterSize.scale
         }
         #endif
         guard usesThreeColumnPhoneLayout else { return nil }
