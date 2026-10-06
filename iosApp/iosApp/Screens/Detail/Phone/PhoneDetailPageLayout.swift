@@ -65,6 +65,10 @@ struct PhoneDetailPageLayout<Column: View, PaneHero: View, PaneContent: View>: V
             }
             .detailScrollDismissal()
             .padding(.top, Self.contentPaneTopInset)
+            // iPhone Duo reserves about 20pt either side of the fold. With
+            // the sections' own 16pt inset this keeps every control clear of
+            // it, matching the hero pane's 28pt margin on the other side.
+            .padding(.leading, 12)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             // Rails scroll within the pane rather than across the hero.
             .clipped()
