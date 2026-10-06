@@ -79,6 +79,25 @@ for an audiobook resume, the original failure remains.
 
 Remove the guard when the engine fix below is pinned.
 
+## A second way the same stream dies: pause, then play
+
+A progressive remux is fragmented, so the container reports only its first fragment as
+the duration (the engine logged `duration=3.6s` for a film with over an hour left). Once
+the clock passes that, `AetherEngine.play()` sees `isAtEndOfMedia` and rewinds with
+`seek(to: 0)` before resuming (`shouldRewindBeforePlay`, AetherEngine#164). That is the
+same seek and flush on a stream that cannot rewind, so the first pause followed by play
+ends playback with the same `partial file` error. It does not need a resume: a title
+played from the beginning fails the same way.
+
+`AetherLoadSpec` now sets `LoadOptions.declaredDurationSeconds` for this delivery to
+`source.duration_seconds - timeline_offset_seconds`, the runtime that remains on the
+engine's axis. The engine prefers a declared duration over the container's. When the plan
+carries no source duration the option stays unset and the failure remains.
+
+The engine should not need this: a forward-only source with a duration shorter than its
+own clock is not at end of media, and `play()` must not seek a source that cannot seek.
+Add both to the engine change below.
+
 ## Engine fix plan
 
 Repository: `Silo-Server/AetherEngine` (the fork pinned in `iosApp/project.yml`).

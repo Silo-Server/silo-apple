@@ -662,6 +662,9 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
             XCTAssertEqual(spec.aetherStartPosition, 0)
             // Progress still reports the source position the stream begins at.
             XCTAssertEqual(spec.timeline.sourcePosition(forPlayerTime: 0), 1002.0)
+            // The fragmented container reports seconds; the engine needs the
+            // runtime that remains or its next play() rewinds to zero.
+            XCTAssertEqual(spec.options.declaredDurationSeconds, 7200 - 1002.0)
         }
     }
 
