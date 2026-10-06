@@ -436,7 +436,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
 
     private var heroFactsLine: [TVHeroFactToken] {
         guard !isShowingSeriesOverview, let episode = displayedEpisode else {
-            return TVHeroMetadata.seriesFactsLine(from: detail)
+            return TVHeroMetadata.seriesFactsLine(from: detail, seasons: seasons)
         }
         return TVHeroMetadata.seriesEpisodeFactsLine(
             episode: episode,

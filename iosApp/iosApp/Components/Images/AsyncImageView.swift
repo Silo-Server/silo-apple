@@ -17,6 +17,10 @@ struct AsyncImageView: View {
     var targetSize: CGSize? = nil
     var contentMode: ContentMode = .fill
     var placeholderStyle: ImagePlaceholderStyle = .surface
+    /// Glyph drawn when the artwork cannot load. Pass the item's type
+    /// through `ArtworkPlaceholderSymbol` so a series without artwork does
+    /// not show a film reel.
+    var placeholderSymbol: String = ArtworkPlaceholderSymbol.fallback
     var onImageLoaded: (() -> Void)? = nil
 
     @Environment(\.displayScale) private var displayScale
@@ -69,8 +73,7 @@ struct AsyncImageView: View {
                     placeholder(frame: frame)
                         .overlay {
                             if placeholderStyle.showsErrorIcon {
-                                Image(systemName: "film")
-                                    .foregroundColor(.siloOnSurface.opacity(0.3))
+                                ArtworkPlaceholderGlyph(symbol: placeholderSymbol)
                             }
                         }
                 } else {
@@ -146,6 +149,45 @@ extension EnvironmentValues {
     @Entry var tvArtworkLoadingEnabled = true
 }
 #endif
+
+/// The glyph a missing poster shows, chosen by the item's catalog type.
+enum ArtworkPlaceholderSymbol {
+    /// Used when the type is unknown, and for movies.
+    static let fallback = "film"
+
+    static func forMediaType(_ type: String?) -> String {
+        guard let type else { return fallback }
+        if SiloMediaType.isAudiobook(type) { return "headphones" }
+        if SiloMediaType.isSeries(type) { return "tv" }
+        switch type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "season", "episode":
+            return "tv"
+        default:
+            return fallback
+        }
+    }
+}
+
+/// The faint glyph drawn over missing artwork.
+///
+/// It is decoration: the enclosing card's label already names the item, and
+/// the symbol's own label ("Movie", "Tv") would misstate it. An `Image` with
+/// `accessibilityHidden` is gone for VoiceOver but still listed in the
+/// UI-automation tree that XCUITest and Maestro read, so the symbol is drawn
+/// into a canvas, which exposes no element for it.
+struct ArtworkPlaceholderGlyph: View {
+    let symbol: String
+
+    var body: some View {
+        Canvas { context, size in
+            var glyph = context.resolve(Image(systemName: symbol))
+            glyph.shading = .color(Color.siloOnSurface.opacity(0.3))
+            context.draw(glyph, at: CGPoint(x: size.width / 2, y: size.height / 2))
+        }
+        .accessibilityHidden(true)
+        .allowsHitTesting(false)
+    }
+}
 
 enum ImagePlaceholderStyle {
     case surface

@@ -184,7 +184,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             sourceTokens: PhoneHeroMetadata.seriesSourceTokens(from: detail),
             ratingChip: PhoneHeroMetadata.contentRatingChip(from: detail),
             overview: detail.overview,
-            factsLine: PhoneHeroMetadata.seriesFactsLine(from: detail),
+            factsLine: PhoneHeroMetadata.seriesFactsLine(from: detail, seasons: seasons),
             ratings: detail.displayRatings,
             creditText: PhoneHeroMetadata.creditText(from: detail),
             enablesArtworkParallax: true,
