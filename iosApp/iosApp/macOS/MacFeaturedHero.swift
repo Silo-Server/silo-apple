@@ -38,10 +38,12 @@ struct MacFeaturedHero: View {
                 .padding(.bottom, SiloTheme.padding)
             }
             .frame(maxWidth: .infinity)
-            // Fill the window down to the next row's heading, so the hero
-            // owns the first screen and the row below peeks in under it.
+            // A share of the window, so the rows below stay in view.
             .containerRelativeFrame(.vertical) { length, _ in
-                max(SiloTheme.macHeroMinHeight, length - SiloTheme.macHeroNextRowPeek)
+                min(
+                    SiloTheme.macHeroMaxHeight,
+                    max(SiloTheme.macHeroMinHeight, length * SiloTheme.macHeroWindowFraction)
+                )
             }
             .clipped()
             .onHover { isHovering = $0 }
@@ -224,11 +226,11 @@ struct MacFeaturedHero: View {
         .frame(height: Self.thumbnailSize.height + SiloTheme.smallPadding * 2)
     }
 
+    /// The list's posters match the poster rows below the hero, including
+    /// the Poster Size setting.
     private static var thumbnailSize: CGSize {
-        CGSize(
-            width: SiloTheme.macHeroThumbnailWidth,
-            height: SiloTheme.macHeroThumbnailWidth * HomeFeedMetrics.posterAspect
-        )
+        let width = HomeFeedRow.posterWidth
+        return CGSize(width: width, height: width * HomeFeedMetrics.posterAspect)
     }
 
     private func thumbnail(for entry: SectionItem, isCurrent: Bool) -> some View {
@@ -255,12 +257,14 @@ struct MacFeaturedHero: View {
         .frame(width: Self.thumbnailSize.width, height: Self.thumbnailSize.height)
         .clipShape(shape)
         .overlay {
+            shape.fill(Color.black.opacity(isCurrent ? 0 : SiloTheme.macHeroUnselectedShade))
+        }
+        .overlay {
             shape.strokeBorder(
                 isCurrent ? Color.siloPrimary : Color.clear,
                 lineWidth: SiloTheme.macHeroSelectionRingWidth
             )
         }
-        .opacity(isCurrent ? 1 : SiloTheme.macHeroUnselectedOpacity)
         .contentShape(shape)
     }
 

@@ -46,20 +46,24 @@ enum SiloTheme {
     static let macSidebarAvatarSize: CGFloat = 32
     // MARK: - Featured hero (macOS)
 
-    /// Shortest Home's featured hero may get in a small window. Normally
-    /// it fills the window less `macHeroNextRowPeek`.
-    static let macHeroMinHeight: CGFloat = 480
-    /// How much of the window the hero leaves for the next row's heading.
-    static let macHeroNextRowPeek: CGFloat = 52
+    /// Share of the window's height Home's featured hero takes, so the next
+    /// row stays in view. Larger than web's 66% because the title list sits
+    /// inside the hero.
+    static let macHeroWindowFraction: CGFloat = 0.8
+    /// Shortest the hero may get in a small window: enough for its details
+    /// above a list of full-size posters.
+    static let macHeroMinHeight: CGFloat = 660
+    /// Tallest the hero may get in a tall window.
+    static let macHeroMaxHeight: CGFloat = 1200
     /// Largest a title's logo artwork is drawn in the hero.
     static let macHeroLogoWidth: CGFloat = 320
     static let macHeroLogoHeight: CGFloat = 110
-    /// Width of a poster in the hero's title list.
-    static let macHeroThumbnailWidth: CGFloat = 88
     /// Outline around the title currently on show in the hero's list.
     static let macHeroSelectionRingWidth: CGFloat = 2
-    /// Dimming of the titles in the hero's list that are not on show.
-    static let macHeroUnselectedOpacity: Double = 0.6
+    /// Darkening laid over the titles in the hero's list that are not on
+    /// show. A shade rather than transparency, so the backdrop does not
+    /// show through the posters.
+    static let macHeroUnselectedShade: Double = 0.45
     /// Widest the hero's title, metadata and synopsis column may grow.
     static let macHeroTextWidth: CGFloat = 560
     /// Seconds a featured title stays up before the hero advances.
@@ -125,10 +129,10 @@ enum SiloTheme {
     // Desktop cards sit between the phone and TV sizes: a phone-sized card
     // reads as a thumbnail in a Mac window. The poster is a true 2:3, so the
     // artwork is not cropped at the sides.
-    static let posterCardWidth: CGFloat = 170
-    static let posterCardHeight: CGFloat = 255
-    static let thumbnailCardWidth: CGFloat = 240
-    static let thumbnailCardHeight: CGFloat = 135
+    static let posterCardWidth: CGFloat = 185
+    static let posterCardHeight: CGFloat = 278
+    static let thumbnailCardWidth: CGFloat = 260
+    static let thumbnailCardHeight: CGFloat = 146
     #else
     static let posterCardWidth: CGFloat = 120
     static let posterCardHeight: CGFloat = 198
