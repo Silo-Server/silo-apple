@@ -429,7 +429,17 @@ struct AetherLoadSpec {
         self.delivery = plan.delivery
         self.sourceURL = sourceURL
         self.timeline = timeline
-        if let resumeSourcePosition, resumeSourcePosition.isFinite {
+        if plan.delivery == PlaybackProtocolV3.PlanDelivery.remuxProgressive {
+            // A progressive remux is one chunked response the reader cannot
+            // rewind. Aether answers a non-zero start by seeking and flushing
+            // what it probed, then fails re-reading the first sample, so the
+            // stream never plays. Starting at byte zero replays the copied
+            // pre-roll (the keyframe before the requested position) instead;
+            // the timeline offset still maps the clock to the source position.
+            // Remove once Aether skips that seek on a forward-only source
+            // (docs/aether-forward-only-resume.md).
+            aetherStartPosition = 0
+        } else if let resumeSourcePosition, resumeSourcePosition.isFinite {
             aetherStartPosition = timeline.playerPosition(
                 forSourceTime: max(0, resumeSourcePosition)
             )

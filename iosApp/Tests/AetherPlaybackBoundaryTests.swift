@@ -630,6 +630,41 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         XCTAssertEqual(spec.aetherStartPosition, 62.0)
     }
 
+    func testProgressiveRemuxStartsAetherAtTheStreamOrigin() throws {
+        var object = try PlaybackV3FixtureTestSupport.v2DecisionObject(bundleClass: Self.self)
+        var planObject = try XCTUnwrap(object["playback_plan"] as? [String: Any])
+        planObject["delivery"] = PlaybackProtocolV3.PlanDelivery.remuxProgressive
+        var timeline = try XCTUnwrap(planObject["timeline"] as? [String: Any])
+        timeline["source_start_seconds"] = 1004.8
+        timeline["stream_origin_seconds"] = 1002.0
+        timeline["player_start_seconds"] = 2.8
+        timeline["timeline_offset_seconds"] = 1002.0
+        planObject["timeline"] = timeline
+        object["playback_plan"] = planObject
+
+        let response = try PlaybackV3FixtureTestSupport.v2Decision(object)
+        guard case .playable(let plan, let sessionID) = response.validatedForApple() else {
+            return XCTFail("Expected a playable fixture")
+        }
+        let source = URL(string: "https://dev.example.test/api/v2/stream/session?seek=1004.8")
+        for resumeSourcePosition in [nil, 1100.0] {
+            let spec = try AetherLoadSpec(
+                validating: plan,
+                sessionID: sessionID,
+                matchContentEnabled: false,
+                sourceURLOverride: source,
+                requestHeaders: ["Authorization": "Bearer test"],
+                resumeSourcePosition: resumeSourcePosition,
+                panelIsInHDRMode: false
+            )
+
+            // The forward-only stream cannot serve Aether's start seek.
+            XCTAssertEqual(spec.aetherStartPosition, 0)
+            // Progress still reports the source position the stream begins at.
+            XCTAssertEqual(spec.timeline.sourcePosition(forPlayerTime: 0), 1002.0)
+        }
+    }
+
     func testServerSubtitleArtifactsReachLoadSpecThroughProductionResolver() throws {
         let object = try PlaybackV3FixtureTestSupport.v2DecisionObject(bundleClass: Self.self)
         let originalPlan = try XCTUnwrap(object["playback_plan"] as? [String: Any])
