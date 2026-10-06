@@ -203,12 +203,21 @@ enum SiloMediaType {
         }
     }
 
+    static func isEpisode(_ type: String) -> Bool {
+        switch normalized(type) {
+        case "episode", "episodes":
+            return true
+        default:
+            return false
+        }
+    }
+
     /// Leaf media that can be handed directly to the player. Container
     /// types such as series and seasons still open their detail screen.
     static func isDirectlyPlayable(_ type: String) -> Bool {
         isMovieLibrary(type)
             || isAudiobook(type)
-            || normalized(type) == "episode"
+            || isEpisode(type)
     }
 
     static func isAudiobookLibrary(_ type: String) -> Bool {

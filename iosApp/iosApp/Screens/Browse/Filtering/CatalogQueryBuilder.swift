@@ -58,6 +58,19 @@ enum CatalogQueryBuilder {
 
         return q
     }
+
+    /// One unfiltered item of a library, used to tell an empty library from
+    /// filters that match nothing. Carries no filters, name prefix, or `type`
+    /// scope, and skips the total count. The catalog applies the active
+    /// profile's rating limits, so a library whose titles are all hidden from
+    /// the profile reads as empty.
+    static func libraryProbe(libraryId: Int?) -> APIv2CatalogQuery {
+        var q = APIv2CatalogQuery()
+        q.libraryId = libraryId.map(String.init)
+        q.limit = 1
+        q.skipTotal = true
+        return q
+    }
 }
 
 /// Accumulates facet groups and types each rule value for the wire.

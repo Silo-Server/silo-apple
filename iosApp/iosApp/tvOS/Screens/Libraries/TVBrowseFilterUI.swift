@@ -20,6 +20,9 @@ struct TVBrowseControlRow: View {
     var onMoveDown: (() -> Void)? = nil
     let onSort: () -> Void
     let onFilter: () -> Void
+    /// Shuffles the whole library; nil where Shuffle isn't offered.
+    var onShuffle: (() -> Void)? = nil
+    var isShuffleStarting = false
 
     @FocusState private var focusedControl: TVBrowseControlFocus?
     @State private var lastAppliedFocusRequest = 0
@@ -55,6 +58,21 @@ struct TVBrowseControlRow: View {
             .focused($focusedControl, equals: .filter)
             .onMoveCommand(perform: handleMove)
 
+            if let onShuffle {
+                // Stays enabled while starting: a disabled button loses
+                // focus, and the launcher ignores repeat presses.
+                Button(action: onShuffle) {
+                    HStack(spacing: 10) {
+                        Image(systemName: "shuffle")
+                        Text("Shuffle")
+                    }
+                    .opacity(isShuffleStarting ? 0.6 : 1)
+                }
+                .buttonStyle(TVBrowseControlPillStyle())
+                .focused($focusedControl, equals: .shuffle)
+                .onMoveCommand(perform: handleMove)
+            }
+
             Spacer(minLength: 0)
         }
         .font(.system(size: 24, weight: .medium))
@@ -84,6 +102,7 @@ struct TVBrowseControlRow: View {
 private enum TVBrowseControlFocus: Hashable {
     case sort
     case filter
+    case shuffle
 }
 
 // MARK: - Sort panel
