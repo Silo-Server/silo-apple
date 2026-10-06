@@ -334,6 +334,30 @@ final class NetworkSignInTests: XCTestCase {
         }
     }
 
+    /// Whether a network link keeps the password is the server's answer:
+    /// servers without `network_link_keeps_password` turn it off, and the
+    /// Connect sheet says so.
+    func testNetworkLinkKeepsThePasswordOnlyWhenTheServerSaysSo() throws {
+        let older = try decode(APIv2ExternalSignInCapabilities.self, "get_external_sign_in_capabilities_ok")
+        XCTAssertNil(older.networkLinkKeepsPassword)
+        XCTAssertFalse(older.keepsPasswordOnNetworkLink, "absent from servers that predate it")
+        let keeps = try Support.decoder.decode(APIv2ExternalSignInCapabilities.self, from: Support.mutatedBody(
+            named: "get_external_sign_in_capabilities_ok", bundleClass: Self.self) { $0["network_link_keeps_password"] = true })
+        XCTAssertTrue(keeps.keepsPasswordOnNetworkLink)
+        let unserved = try Support.decoder.decode(APIv2ExternalSignInCapabilities.self, from: Support.mutatedBody(
+            named: "get_external_sign_in_capabilities_ok", bundleClass: Self.self) {
+                $0["network_link_keeps_password"] = true
+                $0["network_sign_in"] = false
+            })
+        XCTAssertFalse(unserved.keepsPasswordOnNetworkLink, "no network link to keep it on")
+
+        let item = AccountSignInModel.Connectable(provider: Self.network(), method: .network)
+        XCTAssertEqual(AccountSignInModel.connectFooter(for: item, networkLinkKeepsPassword: true),
+            "Enter your Silo password to confirm. This connects Alice Example, the Tailscale account this device belongs to. You can then sign in with Tailscale or your password. Tailscale sign-in works only when you open this server at its Tailscale address.")
+        XCTAssertEqual(AccountSignInModel.connectFooter(for: item, networkLinkKeepsPassword: false),
+            "Enter your Silo password to confirm. This connects Alice Example, the Tailscale account this device belongs to. After connecting, you sign in with Tailscale instead of your password, and only when you open this server at its Tailscale address.")
+    }
+
     /// Like directory linking, the local password goes once, under the
     /// account's own bearer; this device's owner is what the server links.
     func testLinkSendsOnlyTheSiloPasswordOnceUnderTheAccount() async throws {

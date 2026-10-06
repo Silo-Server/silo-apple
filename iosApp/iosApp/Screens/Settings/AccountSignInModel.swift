@@ -36,6 +36,9 @@ final class AccountSignInModel {
     /// it does not say (an older server); its guard still applies.
     private(set) var canUnlink: Bool?
     private(set) var connectable: [Connectable] = []
+    /// Whether connecting a network provider keeps the Silo password. False
+    /// on servers that predate `network_link_keeps_password`.
+    private(set) var networkLinkKeepsPassword = false
     /// Whether the server serves the account's identities at all.
     private(set) var isSupported = false
     private(set) var isLoading = false
@@ -88,6 +91,7 @@ final class AccountSignInModel {
             identities = []
             canUnlink = nil
             connectable = []
+            networkLinkKeepsPassword = false
             return
         }
         do {
@@ -101,6 +105,7 @@ final class AccountSignInModel {
         connectable = Self.connectable(providers: providers?.items ?? [], oauth: oauth,
             credentialsLinking: capabilities.supportsCredentialsLinking,
             networkLinking: capabilities.supportsNetworkSignIn, linked: identities)
+        networkLinkKeepsPassword = capabilities.keepsPasswordOnNetworkLink
         // Last, so the entry never shows before the state it leads to.
         isSupported = true
     }
@@ -132,6 +137,25 @@ final class AccountSignInModel {
                 return Connectable(provider: provider, method: .network)
             }
             return nil
+        }
+    }
+
+    /// The Connect sheet's note under the Silo password: what connecting
+    /// `item` changes about signing in. OIDC and LDAP links replace the
+    /// password; a network link keeps it when the server says so.
+    nonisolated static func connectFooter(for item: Connectable, networkLinkKeepsPassword: Bool) -> String {
+        switch item.method {
+        case .directory:
+            return "Enter your Silo password to confirm. After connecting, you sign in with your \(item.name) username and password instead."
+        case .network:
+            let who = item.provider.networkIdentity?.name.map { "\($0), " } ?? ""
+            let confirm = "Enter your Silo password to confirm. This connects \(who)the \(item.name) account this device belongs to."
+            if networkLinkKeepsPassword {
+                return "\(confirm) You can then sign in with \(item.name) or your password. \(item.name) sign-in works only when you open this server at its \(item.name) address."
+            }
+            return "\(confirm) After connecting, you sign in with \(item.name) instead of your password, and only when you open this server at its \(item.name) address."
+        case .browser:
+            return "Confirm your Silo password, then sign in with \(item.name). After connecting, you sign in with \(item.name) instead of your password."
         }
     }
 

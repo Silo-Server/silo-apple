@@ -73,8 +73,8 @@ struct APIv2OAuthCapabilities: Decodable, Equatable, Sendable {
 }
 
 /// `GET /api/v2/auth/external-sign-in/capabilities`, the members the account
-/// screen reads. `credentials_linking` and `network_sign_in` are absent from
-/// servers that predate them.
+/// screen reads. `credentials_linking`, `network_sign_in` and
+/// `network_link_keeps_password` are absent from servers that predate them.
 struct APIv2ExternalSignInCapabilities: Decodable, Equatable, Sendable {
     let state: String
     var identities: Bool? = nil
@@ -85,10 +85,15 @@ struct APIv2ExternalSignInCapabilities: Decodable, Equatable, Sendable {
     /// are served. Whether this device may use them is discovery's answer: it
     /// lists a network provider only over that provider's network.
     var networkSignIn: Bool? = nil
+    /// Whether `linkAccountIdentityWithNetwork` keeps the account's local
+    /// password sign-in. Servers without it turn the password off on such a
+    /// link.
+    var networkLinkKeepsPassword: Bool? = nil
 
     var supportsIdentities: Bool { state == "available" && identities == true }
     var supportsCredentialsLinking: Bool { state == "available" && credentialsLinking == true }
     var supportsNetworkSignIn: Bool { state == "available" && networkSignIn == true }
+    var keepsPasswordOnNetworkLink: Bool { supportsNetworkSignIn && networkLinkKeepsPassword == true }
 }
 
 /// One entry of `GET /api/v2/account/identities`.
