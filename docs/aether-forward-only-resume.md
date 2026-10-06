@@ -1,6 +1,6 @@
 # Resuming a progressive remux never starts playback
 
-Status: app-side guard shipped on `fix/progressive-remux-resume`. Engine fix planned, not started.
+Status: app-side guard on `fix/progressive-remux-resume`. Engine fix planned, not started. Tracked in [Silo-Server/silo-apple#656](https://github.com/Silo-Server/silo-apple/issues/656).
 
 ## What happens
 
