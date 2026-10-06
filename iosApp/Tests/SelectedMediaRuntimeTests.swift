@@ -86,9 +86,18 @@ final class SelectedMediaRuntimeTests: XCTestCase {
         XCTAssertEqual(
             DetailPlaybackFormatting.subtitleValueLabel(
                 version: versions[1],
-                selectedSubtitleTrackIndex: nil
+                selectedSubtitleTrackIndex: 0
             ),
             "English · SRT"
+        )
+        // Nothing chosen yet: the row says Auto rather than naming the only
+        // track as if it were selected.
+        XCTAssertEqual(
+            DetailPlaybackFormatting.subtitleValueLabel(
+                version: versions[1],
+                selectedSubtitleTrackIndex: nil
+            ),
+            "Auto"
         )
     }
 #else

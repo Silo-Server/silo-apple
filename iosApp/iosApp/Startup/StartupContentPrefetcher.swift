@@ -125,9 +125,9 @@ enum StartupContentPrefetcher {
         let generation = profileScopedGeneration
         return {
             guard generation == profileScopedGeneration else { return }
-            invalidateHomeSectionsInFlight()
-            ResponseCache.shared.remove(CacheKey.homeSections)
-            NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil)
+            // Progress and watched state show on every derived list, not
+            // only Home: drop them all and refresh a mounted Home.
+            PersonalStateSync.invalidateDerivedLists()
         }
     }
 

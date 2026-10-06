@@ -43,7 +43,10 @@ struct PosterRowsSkeleton: View {
             }
         }
         .padding(.horizontal, SiloTheme.padding)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // Zero minimums let the frame shrink below the rows' natural size;
+        // without them six phone posters widen the whole page and it centers
+        // the skeleton off the leading edge, as `RequestRailSkeleton` did.
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .topLeading)
         .clipped()
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Loading")

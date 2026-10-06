@@ -308,6 +308,70 @@ final class HomeSectionsMutationTests: XCTestCase {
         }
     }
 
+    /// Marking a series unwatched on its detail page leaves Home mounted under
+    /// the pushed page. The change must reach that Home without a manual
+    /// refresh, and library grids must not repaint their old badges.
+    @MainActor
+    func testWatchedChangeRefreshesMountedHomeAndDropsLibraryGrids() async throws {
+        let stale = SectionsResponse(sections: [makeSection(
+            id: "continue", type: "continue_watching", totalCount: 1,
+            items: [try makeItem(contentId: "episode-s2e1", seriesId: "series-one")]
+        )])
+        let fresh = SectionsResponse(sections: [makeSection(
+            id: "continue", type: "continue_watching", totalCount: 1,
+            items: [try makeItem(contentId: "other-episode")]
+        )])
+        let browseKey = CacheKey.browse(libraryId: 9_001, filterKey: "home-refresh-test")
+        let gridKey = CacheKey.tvLibrary(libraryId: 9_001, filterKey: "home-refresh-test")
+        ResponseCache.shared.set(stale, for: CacheKey.homeSections)
+        ResponseCache.shared.set("stale-browse", for: browseKey)
+        ResponseCache.shared.set("stale-grid", for: gridKey)
+        let model = HomeViewModel(fetchHomeSections: { fresh })
+        XCTAssertEqual(model.sections.first?.items.first?.contentId, "episode-s2e1")
+
+        let refreshed = expectation(description: "mounted Home re-reads its rows")
+        let observer = NotificationCenter.default.addObserver(
+            forName: .homeSectionsShouldRefresh, object: nil, queue: .main
+        ) { _ in
+            MainActor.assumeIsolated {
+                XCTAssertNil(ResponseCache.shared.get(CacheKey.homeSections, as: SectionsResponse.self),
+                             "Drop the stale rows before asking Home to re-read them")
+                Task { @MainActor in
+                    await model.loadSections()
+                    refreshed.fulfill()
+                }
+            }
+        }
+        defer {
+            NotificationCenter.default.removeObserver(observer)
+            ResponseCache.shared.remove(CacheKey.homeSections)
+            ResponseCache.shared.remove(browseKey)
+            ResponseCache.shared.remove(gridKey)
+        }
+
+        PersonalStateSync.invalidateItemState(contentId: "series-one")
+
+        await fulfillment(of: [refreshed], timeout: 2)
+        XCTAssertEqual(model.sections.first?.items.map(\.contentId), ["other-episode"])
+        XCTAssertNil(ResponseCache.shared.get(browseKey, as: String.self))
+        XCTAssertNil(ResponseCache.shared.get(gridKey, as: String.self))
+    }
+
+    /// A finished or stopped playback changes progress and possibly watched
+    /// state on library cards too, not only on Home.
+    @MainActor
+    func testPlaybackWriteRefreshAlsoDropsLibraryGrids() {
+        let browseKey = CacheKey.browse(libraryId: 9_002, filterKey: "playback-refresh-test")
+        ResponseCache.shared.set("stale-browse", for: browseKey)
+        defer { ResponseCache.shared.remove(browseKey) }
+        let refreshed = expectation(forNotification: .homeSectionsShouldRefresh, object: nil)
+
+        StartupContentPrefetcher.homeRefreshAfterPlaybackWrite()()
+
+        wait(for: [refreshed], timeout: 1)
+        XCTAssertNil(ResponseCache.shared.get(browseKey, as: String.self))
+    }
+
     @MainActor
     func testLatePlaybackWriteCannotInvalidateAnotherProfileHome() throws {
         let refresh = StartupContentPrefetcher.homeRefreshAfterPlaybackWrite()

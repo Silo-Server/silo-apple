@@ -109,6 +109,5 @@ enum TVSignInPresentation {
         return "If you sign in with \(name), use your phone instead."
     }
 
-    static let sessionExpiredBanner = "You were signed out of %@. Sign in again."
     static let nearbyHint = "Have Silo on your phone? Open it on the same Wi‑Fi to sign in this TV."
 }

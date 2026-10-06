@@ -70,6 +70,7 @@ struct TVCatalogGrid: View {
                             title: item.title,
                             posterUrl: item.posterUrl ?? "",
                             posterThumbhash: item.posterThumbhash,
+                            mediaType: item.type,
                             year: item.year,
                             userState: item.userState,
                             overlayData: OverlayData.from(item),

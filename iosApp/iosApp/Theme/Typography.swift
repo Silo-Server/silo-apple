@@ -97,3 +97,36 @@ extension Font {
         #endif
     }
 }
+
+extension View {
+    /// A system font with an exact point size that still follows Dynamic Type.
+    /// `size` is the point size at the default (Large) text size; other sizes
+    /// scale it the way `textStyle` scales, and an enclosing
+    /// `.dynamicTypeSize(_:)` limit applies. Pick the text style whose default
+    /// size is closest to `size`. Use this where a design needs a point size
+    /// between the semantic styles; prefer a semantic font otherwise.
+    func siloScaledFont(
+        size: CGFloat,
+        weight: Font.Weight = .regular,
+        design: Font.Design? = nil,
+        relativeTo textStyle: Font.TextStyle
+    ) -> some View {
+        modifier(SiloScaledSystemFont(size: size, weight: weight, design: design, textStyle: textStyle))
+    }
+}
+
+private struct SiloScaledSystemFont: ViewModifier {
+    @ScaledMetric private var size: CGFloat
+    private let weight: Font.Weight
+    private let design: Font.Design?
+
+    init(size: CGFloat, weight: Font.Weight, design: Font.Design?, textStyle: Font.TextStyle) {
+        _size = ScaledMetric(wrappedValue: size, relativeTo: textStyle)
+        self.weight = weight
+        self.design = design
+    }
+
+    func body(content: Content) -> some View {
+        content.font(.system(size: size, weight: weight, design: design))
+    }
+}
