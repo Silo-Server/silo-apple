@@ -224,6 +224,7 @@ struct TVMainTabView: View {
                 posterURLHint: payload.posterURL,
                 backdropURLHint: payload.backdropURL,
                 watchPartyContext: payload.watchPartyContext,
+                shuffle: payload.shuffle,
                 onPlaybackStarted: {
                     guard let returnToContentId = payload.returnToContentId,
                           router.presentedPlayer?.id == payload.id else { return }

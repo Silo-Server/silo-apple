@@ -231,6 +231,8 @@ final class AppRouter {
         /// attaching competing covers to the root and the sheet.
         var detailPresentationID: UUID? = nil
         var watchPartyContext: WatchPartyPlaybackContext? = nil
+        /// The shuffle this playback starts; its `current` is `contentId`.
+        var shuffle: APIv2Shuffle? = nil
         /// Hints supplied by the originating screen (e.g. the detail page,
         /// which has just loaded the catalog item) so the player's now-
         /// playing widget can publish artwork without re-fetching the
@@ -480,6 +482,35 @@ final class AppRouter {
             return
         }
         #endif
+        presentedPlayer = presentation
+        #endif
+    }
+
+    /// Play a new shuffle's first pick from its beginning. The up-next screen
+    /// then offers the shuffle's picks until the viewer stops. A shuffle
+    /// always plays here: an engaged TV would play the first pick alone.
+    func presentShuffle(_ shuffle: APIv2Shuffle) {
+        #if os(iOS) || os(tvOS)
+        DiagnosticsCoordinator.recordBreadcrumb(
+            category: .focus,
+            tag: "Navigation",
+            message: "player presented",
+            attrs: ["target": .string("player"), "action": .string("shuffle")]
+        )
+        var presentation = PlayerPresentation(
+            contentId: shuffle.current.contentId,
+            fileId: nil,
+            audioTrackIndex: nil,
+            subtitleTrackIndex: nil,
+            startFromBeginning: true,
+            resumePosition: nil,
+            prefersLastUsedVersion: false,
+            returnToContentId: nil,
+            detailPresentationID: currentDetailPresentationID,
+            posterURL: shuffle.current.posterUrl,
+            backdropURL: shuffle.current.backdropUrl
+        )
+        presentation.shuffle = shuffle
         presentedPlayer = presentation
         #endif
     }

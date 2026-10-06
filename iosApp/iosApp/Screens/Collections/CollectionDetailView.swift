@@ -7,6 +7,7 @@ struct CollectionDetailView: View {
     @State private var items: [BrowseItem] = []
     @State private var isLoading = false
     @State private var error: ErrorState?
+    @State private var shuffleLauncher = ShuffleLauncher()
     @Environment(AppRouter.self) private var router
 
     var body: some View {
@@ -34,10 +35,25 @@ struct CollectionDetailView: View {
         .refreshable {
             await loadItems()
         }
+        .shuffleFailureAlert(shuffleLauncher)
     }
 
     private var gridContent: some View {
         ScrollView {
+            if ShuffleFeatureStore.shared.supports(.userCollection) {
+                HStack {
+                    ShuffleButton(isStarting: shuffleLauncher.isStarting) {
+                        shuffleLauncher.start(ShuffleScopeRequest(kind: .userCollection, id: collectionId), router: router)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, SiloTheme.padding)
+                .padding(.top, SiloTheme.smallPadding)
+                #if os(tvOS)
+                // Up from any grid column reaches the Shuffle button.
+                .focusSection()
+                #endif
+            }
             VStack(alignment: .leading, spacing: 0) {
                 CatalogGrid(
                     items: items,
