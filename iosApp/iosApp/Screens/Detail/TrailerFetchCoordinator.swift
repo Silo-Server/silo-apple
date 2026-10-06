@@ -85,6 +85,10 @@ final class TrailerFetchCoordinator {
         phase == .requesting || phase == .polling
     }
 
+    /// Whether a run's task is still alive. Read by tests: once it ends,
+    /// nothing fetches again.
+    var hasActiveRun: Bool { task != nil }
+
     // MARK: - Policy
 
     /// Gap between detail re-fetches once the refresh is queued.

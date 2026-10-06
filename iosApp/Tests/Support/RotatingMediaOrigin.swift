@@ -13,7 +13,9 @@ final class RotatingMediaOrigin: @unchecked Sendable {
     static let mediaPath = "/api/v2/playback/transcode/\(sessionID)"
     static let subtitlePath = "/api/v2/stream/\(sessionID)/subtitles/1.ass"
     static let fontPath = "/api/v2/stream/\(sessionID)/subtitles/1/fonts"
-    static let firstGatedSegment = 6
+    /// Segments before this one (one second each) are served at once: enough
+    /// for AVPlayer to start, short enough that the test plays little media.
+    static let firstGatedSegment = 3
 
     struct Request: Sendable {
         let path: String

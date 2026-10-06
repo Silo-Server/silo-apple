@@ -1,7 +1,3 @@
-//
-//  SettingKeyRevisions.swift
-//  Silo (iOS + tvOS + macOS)
-//
 //  The manifest revision that introduced each generated key.
 //
 //  The Swift bindings carry only the newest revision they were generated from,

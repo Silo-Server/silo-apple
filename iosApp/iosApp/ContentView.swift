@@ -23,7 +23,6 @@ struct ContentView: View {
     #endif
     @State private var didStartInitialStateCheck = false
     @State private var didFinishStartupSplash = false
-    @State private var pendingInitialAuthState: AppRouter.AuthState?
     @State private var serverRecoveryCoordinator = RestoredServerRecoveryCoordinator()
     #if os(iOS) || os(tvOS)
     @State private var diagnosticsModel = DiagnosticsViewModel()
@@ -45,30 +44,62 @@ struct ContentView: View {
     /// capability refresh finishes. Keep Downloads links queued during that
     /// window instead of treating the initial false value as authoritative.
     @State private var isDownloadCapabilityHydrated = false
-    /// Shared with every screen that renders cards. Hydrates lazily on
-    /// the first .authenticated transition so cards stay visible during
-    /// the brief window between sign-in and the overlay-config fetch.
-    @StateObject private var overlayPrefs = OverlayPrefsStore.shared
+    /// Shared with every screen that renders cards. Injected, not observed:
+    /// nothing here draws from it, and observing it re-ran this whole body on
+    /// every publish.
+    private let overlayPrefs = OverlayPrefsStore.shared
     /// Server-synced navigation and card presentation for this client family.
     /// The store paints its offline cache first, then reconciles whenever the
     /// authenticated server/profile boundary changes.
     @State private var uiCustomization = UICustomizationPreferences.shared
-    /// Used to retry overlay hydration on foreground transitions: if the
-    /// initial fetch failed transiently, `hydrateIfNeeded()` will retry
-    /// because the store left `hasHydrated == false`. Idempotent when
-    /// the previous hydration succeeded.
     @Environment(\.scenePhase) private var scenePhase
+    /// Set when the scene enters the background, so `.active` refreshes only
+    /// on a real return to the app.
+    @State private var isReturningFromBackground = false
 
     // The root modifier chain runs presentedContent -> appEventContent ->
     // sessionTaskContent -> body. Swift 6.2 cannot type-check it as one
     // expression, so it is split into stages; SwiftUI modifier order still
     // follows that reading order.
+    /// The identity `authContent` is keyed on. Server setup holds no server
+    /// data, and connecting makes the new server active before the app moves
+    /// to sign-in; re-keying there would flash a fresh, empty setup screen
+    /// between the two.
+    private var authContentIdentity: String? {
+        router.authState == .needsServerSetup ? "serverSetup" : serverRegistry.activeServerId
+    }
+
     private var presentedContent: some View {
         authContent
         // A server change is a hard data boundary even when both servers map
         // to the same auth state. Re-key the routed subtree so profile, home,
         // library, focus, and modal state cannot survive from the old server.
-        .id(serverRegistry.activeServerId)
+        .id(authContentIdentity)
+        // Moving between first-run screens (setup, sign-in, profiles)
+        // crossfades instead of cutting, while the brand light stays put
+        // behind them. Entering the app itself is not animated here.
+        .animation(router.authState.showsMarqueeBackdrop ? .easeInOut(duration: 0.4) : nil, value: router.authState)
+        // The first-run backdrop lives outside the re-keyed subtree so it
+        // keeps drifting while screens and servers change in front of it.
+        .background {
+            if router.authState.showsMarqueeBackdrop {
+                MarqueeBackdrop()
+                    .transition(.opacity)
+            }
+        }
+        // The app builds and loads underneath the splash so the first screen
+        // is complete when it lifts. Nothing below may take input or focus
+        // until then; on tvOS an enabled hidden page would follow the remote.
+        .accessibilityHidden(isShowingStartupSplash)
+        #if os(tvOS)
+        .disabled(isShowingStartupSplash)
+        #endif
+        .environment(\.isStartupSplashVisible, isShowingStartupSplash)
+        .overlay {
+            if isShowingStartupSplash {
+                startupSplash
+            }
+        }
         #if os(iOS) || os(tvOS)
         .modifier(WatchPartyPresentationModifier(router: router))
         .task(id: router.authState) {
@@ -95,8 +126,7 @@ struct ContentView: View {
         #if !os(tvOS)
         .alert(LegacyDownloadStorage.noticeMessage, isPresented: Binding(
             get: {
-                didFinishStartupSplash && router.authState != .loading
-                    && DownloadManager.shared.legacyDownloadsNoticePending
+                !isShowingStartupSplash && DownloadManager.shared.legacyDownloadsNoticePending
             },
             set: { if !$0 { DownloadManager.shared.acknowledgeLegacyDownloadsNotice() } }
         )) {
@@ -107,10 +137,8 @@ struct ContentView: View {
         .modifier(TVFocusDebugActivationModifier())
         #endif
         #if os(iOS)
-        // Hold the pairing offer until the startup splash logo finishes so a
-        // quickly-discovered TV doesn't pop the card over the animation.
         .companionPairingCard(
-            enabled: didFinishStartupSplash && router.authState != .loading,
+            enabled: !isShowingStartupSplash,
             authState: router.authState
         )
         .sheet(item: $deviceApprovalLink) { link in
@@ -141,13 +169,16 @@ struct ContentView: View {
         #if os(iOS) || os(tvOS)
         .modifier(DiagnosticsPromptPresentationModifier(
             model: diagnosticsModel,
-            isEnabled: router.authState == .authenticated
+            isEnabled: router.authState == .authenticated && !isShowingStartupSplash
         ))
         #endif
     }
 
     private var appEventContent: some View {
         presentedContent
+        .onChange(of: isShowingStartupSplash) { _, isShowing in
+            if !isShowing { startupContentRevealed() }
+        }
         .onChange(of: deepLinkCoordinator.pendingURL) { _, _ in
             drainIncomingDeepLink()
         }
@@ -190,11 +221,22 @@ struct ContentView: View {
                 router.expiredSession()
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .siloProfileVerificationRequired)) { notification in
+            guard let event = notification.object as? ProfileVerificationRequiredEvent else { return }
+            Task { await AuthService.shared.recoverFromProfileVerificationRequired(event) }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .siloProfileSelectionRequired)) { _ in
             guard shouldPresentProfileSelectionAfterRecovery(
                 isLoggedIn: AuthService.shared.isLoggedIn,
                 activeProfileID: AuthService.shared.profileId
             ) else { return }
+            // The profile that owned any open player is gone. Close video and
+            // audio as the background-return policy does, so neither keeps
+            // reporting progress without a profile nor reopens after the
+            // user verifies again. The account, downloads and server stay.
+            router.presentedPlayer = nil
+            audioStore.dismissFullPlayer()
+            Task { await audioStore.player.close() }
             router.showProfileSelection()
         }
         .onChange(of: serverRegistry.activeServerId) { previousServerID, activeServerID in
@@ -208,6 +250,7 @@ struct ContentView: View {
             // active-server change intentionally re-keys `authContent`, which
             // otherwise replaces the receiver's success screen with a fresh
             // setup view before its delayed navigation can run.
+            router.skipsSingleProfilePicker = true
             router.showProfileSelection()
         }
         #if os(iOS) || os(tvOS)
@@ -320,41 +363,32 @@ struct ContentView: View {
                 restoreTrailerReturnIfNeeded(hasPriorityLaunchIntent: hasPendingDeepLink)
                 await ExitSentinel.shared.captureLeftoverIfNeeded()
                 #endif
-                #if os(iOS) || os(tvOS)
-                await diagnosticsModel.handleForeground()
-                #endif
-                await hydrateOverlayPrefs(phase: "session_hydrate")
-                // Hydrate AI capabilities on a cold relaunch into a restored
-                // session — `selectProfile` only refreshes on a fresh sign-in,
-                // so without this the metadata-language / on-view-translate
-                // features stay hidden until a profile switch. Idempotent and
-                // failure-tolerant, so double-calling with `selectProfile` is safe.
-                await AICapabilities.shared.refresh()
-                // Same cold-relaunch reasoning: without this, a restored
-                // session on tvOS would request default-size images until
-                // the next profile switch.
-                await ImageSizeCapability.shared.refresh()
-                await RequestsFeatureStore.shared.refresh()
-                await SubtitleProvidersStore.shared.refresh()
-                await CurrentProfileStore.shared.refresh()
-                await uiCustomization.refresh()
-                await SeekIntervalPreferences.shared.refresh()
-                #if os(iOS)
-                await ApplePushRegistrationCoordinator.shared.prepareForAuthenticatedProfile()
-                #endif
-                #if !os(tvOS)
-                // Drain a queued Downloads link as soon as the capability is
-                // known. The reconciliation and sync that follow inside
-                // onAppActive() can take several network round-trips on a slow
-                // server and must not hold a notification tap hostage.
-                await DownloadManager.shared.onAppActive {
-                    guard !Task.isCancelled,
-                          router.authState == .authenticated else { return }
-                    isDownloadCapabilityHydrated = true
-                    drainPendingDeepLinkIfReady()
-                }
-                #endif
+                await refreshSessionStores()
             }
+        }
+        // Work that can prompt the user, or that competes with the first
+        // screen for bandwidth, waits until the splash has lifted.
+        .task(id: isAuthenticatedAppVisible) {
+            guard isAuthenticatedAppVisible else { return }
+            #if os(iOS) || os(tvOS)
+            await diagnosticsModel.handleForeground()
+            #endif
+            #if os(iOS)
+            // Doesn't wait for the permission alert, so it can't delay onAppActive.
+            await ApplePushRegistrationCoordinator.shared.prepareForAuthenticatedProfile()
+            #endif
+            #if !os(tvOS)
+            // Drain a queued Downloads link as soon as the capability is
+            // known. The reconciliation and sync that follow inside
+            // onAppActive() can take several network round-trips on a slow
+            // server and must not hold a notification tap hostage.
+            await DownloadManager.shared.onAppActive {
+                guard !Task.isCancelled,
+                      router.authState == .authenticated else { return }
+                isDownloadCapabilityHydrated = true
+                drainPendingDeepLinkIfReady()
+            }
+            #endif
         }
         #if DEBUG
         #if os(iOS) || os(tvOS)
@@ -457,61 +491,18 @@ struct ContentView: View {
             }
 
             if newPhase == .background {
+                isReturningFromBackground = true
                 markProfileAwayStartIfNeeded()
-            } else if newPhase == .active,
-                      router.authState == .authenticated {
-                if keepsProfileActiveInBackground {
-                    launchPreferences.clearBackgroundedAt()
-                } else if launchPreferences.requiresSelectionAfterBackground() {
-                    Task { await applyProfileReturnPolicy() }
-                    return
-                } else {
-                    launchPreferences.clearBackgroundedAt()
-                }
+                return
             }
-
-            // Cover the transient-failure case Codex flagged on #41:
-            // initial overlay hydration runs once in the auth-state
-            // task above. If that fetch transiently failed and the
-            // user never opens overlay settings, the admin kill
-            // switch and baseline stay stale until app restart.
-            // Foreground transitions are a natural opportunity to
-            // retry — `hydrateIfNeeded()` is a no-op when the
-            // previous hydration succeeded, so this costs nothing in
-            // the happy path.
-            guard newPhase == .active,
-                  router.authState == .authenticated else { return }
-            #if os(tvOS)
-            Task {
-                await ExitSentinel.shared.captureLeftoverIfNeeded()
-                await diagnosticsModel.handleForeground()
-            }
-            #elseif os(iOS)
-            Task { await diagnosticsModel.handleForeground() }
-            #endif
-            Task { await hydrateOverlayPrefs(phase: "foreground_refresh") }
-            // Same rationale as overlay hydration above: a transiently-failed
-            // capability probe (or one skipped on a cold restore) gets a
-            // natural retry on foreground. `refresh()` is idempotent, so the
-            // happy path costs nothing.
-            Task { await AICapabilities.shared.refresh() }
-            Task { await ImageSizeCapability.shared.refresh() }
-            Task { await RequestsFeatureStore.shared.refresh() }
-            Task { await SubtitleProvidersStore.shared.refresh() }
-            Task { await uiCustomization.refresh() }
-            Task { await SeekIntervalPreferences.shared.refresh() }
-            #if os(iOS)
-            Task {
-                await ApplePushRegistrationCoordinator.shared.prepareForAuthenticatedProfile()
-                await ApplePushRegistrationCoordinator.shared.registerCurrentDeviceTokenIfPossible()
-            }
-            #endif
-            #if os(tvOS)
-            NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil)
-            #endif
-            #if !os(tvOS)
-            Task { await DownloadManager.shared.onAppActive() }
-            #endif
+            // The first activation of a cold launch happens under the splash,
+            // where the launch path already does this work. A return while
+            // the splash is still up is handled when it lifts.
+            guard !isShowingStartupSplash else { return }
+            // Control Center, banners, and the app switcher pass through
+            // `.inactive` without backgrounding; only a real return refreshes.
+            guard newPhase == .active else { return }
+            handleReturnFromBackgroundIfNeeded()
         }
         .onChange(of: audioStore.player.isPlaying) { _, _ in
             updateProfileAwayStartForBackgroundPlayback()
@@ -546,6 +537,25 @@ struct ContentView: View {
     /// reporting here would stamp a near-zero-duration success on a request
     /// that may still fail. A missing line costs a reader nothing; a false
     /// success actively misdirects the person debugging that cold start.
+    private var isAuthenticatedAppVisible: Bool {
+        router.authState == .authenticated && !isShowingStartupSplash
+    }
+
+    /// Session-scoped stores read after every sign-in or cold start. They are
+    /// independent, so they load together rather than one round trip at a time.
+    private func refreshSessionStores(overlayPhase: String = "session_hydrate") async {
+        async let overlay: Void = hydrateOverlayPrefs(phase: overlayPhase)
+        async let ai: Void = AICapabilities.shared.refresh()
+        async let imageSize: Void = ImageSizeCapability.shared.refresh()
+        async let requests: Void = RequestsFeatureStore.shared.refresh()
+        async let shuffle: Void = ShuffleFeatureStore.shared.refresh()
+        async let subtitles: Void = SubtitleProvidersStore.shared.refresh()
+        async let profile: Void = CurrentProfileStore.shared.refresh()
+        async let customization: Void = uiCustomization.refresh()
+        async let seek: Void = SeekIntervalPreferences.shared.refresh()
+        _ = await (overlay, ai, imageSize, requests, shuffle, subtitles, profile, customization, seek)
+    }
+
     @MainActor
     private func hydrateOverlayPrefs(phase: String) async {
         #if os(iOS) || os(tvOS)
@@ -672,21 +682,8 @@ struct ContentView: View {
     private var authContent: some View {
         switch router.authState {
         case .loading:
-            StartupSplashView {
-                #if os(iOS) || os(tvOS)
-                LaunchTimeline.recordSplashFinished()
-                #endif
-                didFinishStartupSplash = true
-                finishInitialStartupIfReady()
-            }
-            .task {
-                guard !didStartInitialStateCheck else { return }
-                didStartInitialStateCheck = true
-                #if os(iOS) || os(tvOS)
-                LaunchTimeline.recordInitialStateCheckStarted()
-                #endif
-                await checkInitialState()
-            }
+            // Covered by the startup splash until the stored route resolves.
+            Color.siloBackground.ignoresSafeArea()
 
         case .needsServerSetup:
             #if os(tvOS)
@@ -718,10 +715,7 @@ struct ContentView: View {
 
         case .needsProfile:
             NavigationStack(path: $router.path) {
-                ProfileSelectionView(
-                    router: router,
-                    journeyLabels: router.profileJourneyLabels ?? ["Server", "Account", "Profile"]
-                )
+                ProfileSelectionView(router: router)
                     .navigationDestination(for: Route.self) { route in
                         profileFlowDestination(for: route)
                     }
@@ -736,6 +730,29 @@ struct ContentView: View {
             MainTabView(router: router)
                 .onboardingTourGate(router: router)
             #endif
+        }
+    }
+
+    /// The splash always plays to the end. It also stays up while the stored
+    /// route is still unresolved, which only a very slow Keychain can cause.
+    private var isShowingStartupSplash: Bool {
+        !didFinishStartupSplash || router.authState == .loading
+    }
+
+    private var startupSplash: some View {
+        StartupSplashView {
+            #if os(iOS) || os(tvOS)
+            LaunchTimeline.recordSplashFinished()
+            #endif
+            didFinishStartupSplash = true
+        }
+        .task {
+            guard !didStartInitialStateCheck else { return }
+            didStartInitialStateCheck = true
+            #if os(iOS) || os(tvOS)
+            LaunchTimeline.recordInitialStateCheckStarted()
+            #endif
+            await checkInitialState()
         }
     }
 
@@ -801,6 +818,12 @@ struct ContentView: View {
     }
 
     private func handleDeepLink(_ url: URL, revision: UInt) {
+        // Nothing opens over the startup splash; `startupContentRevealed`
+        // replays the link once it lifts.
+        guard !isShowingStartupSplash else {
+            pendingDeepLink = url
+            return
+        }
         #if os(iOS)
         // A TV sign-in code from the web approval page. Approval is
         // account-level: it waits for a signed-in session, not a profile.
@@ -982,54 +1005,107 @@ struct ContentView: View {
         #endif
     }
 
-    /// Resolve local credentials first, then opportunistically validate a
-    /// restored account while the brand splash is already visible. Publishing
-    /// the local state before the network probe is intentional: when the
-    /// splash finishes it commits that fallback and removes this task, which
-    /// cancels an unfinished probe instead of extending offline launch time.
+    /// Commit the stored session's route as soon as it is read, so the app
+    /// builds and loads underneath the splash, then validate the session with
+    /// the server. The splash owns this task: when it lifts, an unfinished
+    /// validation is cancelled and the local route stands, which keeps an
+    /// offline launch from waiting on the network.
     private func checkInitialState() async {
         let local = await RestoredSessionAuthResolver.resolveLocal()
         guard !Task.isCancelled, router.authState == .loading else { return }
-        pendingInitialAuthState = local.state
-        finishInitialStartupIfReady()
+        commitInitialState(local.state)
 
-        guard !Task.isCancelled,
-              router.authState == .loading,
-              let expectedAccount = local.restoredAccount else { return }
-
+        guard let expectedAccount = local.restoredAccount else { return }
         let validation = await AuthService.shared.validateRestoredSession(
             expected: expectedAccount
         )
-        guard !Task.isCancelled, router.authState == .loading else { return }
-        let targetState = await RestoredSessionAuthResolver.state(
+        guard !Task.isCancelled, router.authState == local.state else { return }
+        let validatedState = await RestoredSessionAuthResolver.state(
             after: validation,
             fallingBackTo: local.state
         )
-        guard !Task.isCancelled, router.authState == .loading else { return }
-
-        pendingInitialAuthState = targetState
-        finishInitialStartupIfReady()
+        guard !Task.isCancelled,
+              router.authState == local.state,
+              validatedState != local.state else { return }
+        commitInitialState(validatedState)
 
         #if DEBUG
         Task.detached(priority: .background) { await Self.logTopShelfDiagnostics() }
         #endif
     }
 
-    private func finishInitialStartupIfReady() {
-        guard didFinishStartupSplash, let targetState = pendingInitialAuthState else { return }
-        pendingInitialAuthState = nil
+    private func commitInitialState(_ state: AppRouter.AuthState) {
         #if os(iOS) || os(tvOS)
-        // The committed state may be an authoritative validation result or the
-        // offline-safe local fallback when the splash deadline won the race.
-        LaunchTimeline.recordInitialStateResolved(state: targetState.diagnosticsState)
-        // Closes the cold-launch chain. Both gates (splash animation and state
-        // resolution) have cleared, so this is the moment the user first sees
-        // real content. `AppRouter` logs the auth transition itself; this line
-        // records that launch reached a terminal, usable state at all.
-        LaunchTimeline.recordFirstContent(state: targetState.diagnosticsState)
+        LaunchTimeline.recordInitialStateResolved(state: state.diagnosticsState)
         #endif
-        StartupContentPrefetcher.prefetchForInitialRoute(targetState)
-        router.authState = targetState
+        StartupContentPrefetcher.prefetchForInitialRoute(state)
+        router.authState = state
+    }
+
+    /// The splash has lifted over a committed route. Launch intents that
+    /// present UI (deep links, sheets, the player) were held until now.
+    /// A return to the foreground after a real background: the profile
+    /// return policy, then the refreshes for what may have changed away.
+    private func handleReturnFromBackgroundIfNeeded() {
+        guard isReturningFromBackground else { return }
+        isReturningFromBackground = false
+        guard router.authState == .authenticated else { return }
+        if keepsProfileActiveInBackground {
+            launchPreferences.clearBackgroundedAt()
+        } else if launchPreferences.requiresSelectionAfterBackground() {
+            Task { await applyProfileReturnPolicy() }
+            return
+        } else {
+            launchPreferences.clearBackgroundedAt()
+        }
+
+        // Capabilities and settings may have changed while the app was
+        // away. Most of these refreshes go to the network every time.
+        #if os(tvOS)
+        Task {
+            await ExitSentinel.shared.captureLeftoverIfNeeded()
+            await diagnosticsModel.handleForeground()
+        }
+        #elseif os(iOS)
+        Task { await diagnosticsModel.handleForeground() }
+        #endif
+        // Detail pages read this lazily, so the next one re-reads it
+        // instead of every foreground paying for a request.
+        AdvisoryAgePreferenceStore.shared.markStale()
+        Task { await refreshSessionStores(overlayPhase: "foreground_refresh") }
+        #if os(iOS)
+        Task {
+            await ApplePushRegistrationCoordinator.shared.prepareForAuthenticatedProfile()
+            await ApplePushRegistrationCoordinator.shared.registerCurrentDeviceTokenIfPossible()
+        }
+        #endif
+        #if os(tvOS)
+        NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil)
+        #endif
+        #if !os(tvOS)
+        Task { await DownloadManager.shared.onAppActive() }
+        #endif
+    }
+
+    private func startupContentRevealed() {
+        #if os(iOS) || os(tvOS)
+        LaunchTimeline.recordFirstContent(state: router.authState.diagnosticsState)
+        #endif
+        if scenePhase == .active {
+            handleReturnFromBackgroundIfNeeded()
+        }
+        guard let url = pendingDeepLink else { return }
+        switch router.authState {
+        case .authenticated:
+            drainPendingDeepLinkIfReady()
+        #if os(iOS)
+        case .needsProfile where DeviceApprovalLink(url: url) != nil:
+            pendingDeepLink = nil
+            handleDeepLink(url, revision: deepLinkRevision)
+        #endif
+        default:
+            break
+        }
     }
 
     #if DEBUG
@@ -1215,15 +1291,6 @@ struct ContentView: View {
             #else
             ServerNeedsSetupView(router: router)
             #endif
-        case .onboardingTour:
-            #if os(tvOS)
-            EmptyStateView(icon: "sparkles", title: "Take the tour on your phone or the web", subtitle: nil)
-                .siloPageBackground()
-            #else
-            OnboardingTourView(router: router)
-            #endif
-        case .login:
-            loginRoot
         case .serverSetup:
             #if os(tvOS)
             TVServerSetupView(router: router)
@@ -1231,13 +1298,12 @@ struct ContentView: View {
             ServerSetupView(router: router)
             #endif
         default:
-            // Routes handled inside the authenticated tab view
-            EmptyStateView(
-                icon: "hammer.fill",
-                title: "Coming Soon",
-                subtitle: "This screen is under construction."
-            )
-            .siloPageBackground()
+            // Signed-out screens push only the routes above, and every
+            // auth-state change clears `router.path` first, so reaching this
+            // is a bug.
+            let _ = assertionFailure("No signed-out destination for \(route)")
+            EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
+                .siloPageBackground()
         }
     }
 
@@ -1257,12 +1323,6 @@ struct ContentView: View {
             TVServerSetupView(router: router)
             #else
             ServerSetupView(router: router)
-            #endif
-        case .login:
-            #if os(tvOS)
-            TVLoginView(router: router)
-            #else
-            LoginView(router: router)
             #endif
         case .serverNeedsSetup:
             #if os(tvOS)
@@ -1950,26 +2010,25 @@ private enum DebugAutoPlayError: LocalizedError {
 }
 #endif
 
-// MARK: - Zoom transition namespace
+// MARK: - Main Tab View
 
-/// Carries the `@Namespace.ID` used by the iOS 26 poster → detail zoom
-/// transition. Published by `MainTabView` so card components (the
-/// `.matchedTransitionSource` sources) and the central
-/// `navigationDestination` (the `.navigationTransition(.zoom)` destination)
-/// can share one namespace without routing it through `Route`/`router.path`.
-/// `nil` when unset (e.g. tvOS / macOS) so callers fall back to a plain push.
-struct ZoomNamespaceEnvironmentKey: EnvironmentKey {
-    static let defaultValue: Namespace.ID? = nil
-}
+#if os(macOS)
+/// Root pages have no window title, so the transparent toolbar strip above
+/// them is dead space. Let the page rise into it, keeping a page margin.
+private struct MacRootPageTopInset: ViewModifier {
+    let reclaimsToolbarStrip: Bool
 
-extension EnvironmentValues {
-    var zoomNamespace: Namespace.ID? {
-        get { self[ZoomNamespaceEnvironmentKey.self] }
-        set { self[ZoomNamespaceEnvironmentKey.self] = newValue }
+    func body(content: Content) -> some View {
+        if reclaimsToolbarStrip {
+            content
+                .padding(.top, SiloTheme.padding)
+                .ignoresSafeArea(.container, edges: .top)
+        } else {
+            content
+        }
     }
 }
-
-// MARK: - Main Tab View
+#endif
 
 enum MainTabDestinationID: Hashable {
     case app(AppTab)
@@ -2195,6 +2254,8 @@ struct MainTabLibrarySnapshot: Equatable {
     }
 }
 
+// iOS and macOS only: tvOS builds its shell in `TVMainTabView`.
+#if !os(tvOS)
 struct MainTabView: View {
     @Bindable var router: AppRouter
     @State private var selectedDestinationID: MainTabDestinationID = .app(.home)
@@ -2207,12 +2268,13 @@ struct MainTabView: View {
     /// profile transition fails direct roots closed immediately, even before
     /// its cache invalidation and network refresh finish.
     @State private var librarySnapshot = MainTabLibrarySnapshot.cachedForCurrentAuthority()
+    @State private var librariesStaleSinceBackground = false
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    #if os(macOS)
+    /// The sidebar's state before the player hid it, restored afterwards.
+    @State private var columnVisibilityBeforePlayback: NavigationSplitViewVisibility?
+    #endif
     @State private var iPadColumnVisibility: NavigationSplitViewVisibility = .detailOnly
-    /// Shared namespace for the poster → detail zoom transition. Injected into
-    /// the environment (`\.zoomNamespace`) so both the cards and the central
-    /// detail destination resolve the same identity.
-    @Namespace private var zoomNamespace
     @Environment(AudioPlaybackStore.self) private var audioStore
     @Environment(\.scenePhase) private var scenePhase
     #if os(iOS)
@@ -2220,7 +2282,12 @@ struct MainTabView: View {
     /// For You is normally constructed lazily by TabView. Own its model at the
     /// shell level so the existing startup single-flight can fill it before
     /// the user taps the tab, making the destination paint immediately.
-    @State private var recommendationsViewModel = RecommendationsViewModel()
+    /// Built on first use: a `@State` initial value runs on every init of
+    /// this view, and this model reads and sorts the cached rows.
+    @State private var recommendationsSlot = LazyModel<RecommendationsViewModel>()
+    private var recommendationsViewModel: RecommendationsViewModel {
+        recommendationsSlot.value { RecommendationsViewModel() }
+    }
     /// The Siri request Search fills its field from; Search clears it.
     @State private var siriSearchRequest: AppRouter.SearchRequest?
     #endif
@@ -2273,24 +2340,27 @@ struct MainTabView: View {
             await loadVisibleLibraries(for: currentLibraryAuthority)
         }
         .onChange(of: scenePhase) { _, phase in
-            guard phase == .active else { return }
+            // Only a real return from background, not an `.inactive` blip.
+            if phase == .background { librariesStaleSinceBackground = true }
+            guard phase == .active, librariesStaleSinceBackground else { return }
+            librariesStaleSinceBackground = false
             let authority = currentLibraryAuthority
             Task { await loadVisibleLibraries(for: authority) }
         }
         #if !os(tvOS)
-        // Mirror Android's offline start-destination: launching with no
+        // Load the saved downloads scope while the splash is up: its cached
+        // capability decides whether Downloads is a tab, so the tab bar is
+        // final at reveal. This is disk-only and idempotent; onAppActive()
+        // runs after reveal behind network work and skips the reload.
+        //
+        // Then mirror Android's offline start-destination: launching with no
         // network but playable local downloads lands on Downloads instead of
         // a Home screen that can't load anything.
         .task {
-            await ConnectionMonitor.shared.waitForInitialPath()
-            guard !ConnectionMonitor.shared.isDeviceOnline else { return }
-            // The auth-state task hydrates DownloadManager via onAppActive()
-            // only after several awaited network refreshes, which is too late
-            // for this check on an offline cold launch. Loading the scope
-            // here is disk-only and idempotent — onAppActive() will skip the
-            // reload when it eventually runs.
             _ = await DownloadManager.shared.activateScopeIfNeeded()
-            guard DownloadManager.shared.downloadsEnabled,
+            await ConnectionMonitor.shared.waitForInitialPath()
+            guard !ConnectionMonitor.shared.isDeviceOnline,
+                  DownloadManager.shared.downloadsEnabled,
                   DownloadManager.shared.records.contains(where: { $0.isPlayableOffline }),
                   // Don't clobber a tab the user (or a deep link) already
                   // selected while this task was waiting.
@@ -2336,6 +2406,17 @@ struct MainTabView: View {
             )
         }
         .onChange(of: librarySnapshot) { _, _ in
+            #if os(macOS)
+            // The fallback Libraries row gives way to the real library rows
+            // once the list loads; stay in libraries instead of going Home.
+            if selectedDestinationID == .app(.libraries) {
+                selectedDestinationID = resolvedRequestedMainTabDestination(
+                    .libraries,
+                    visibleDestinations: visibleDestinations
+                )
+                return
+            }
+            #endif
             selectedDestinationID = resolvedVisibleMainTabDestination(
                 selectedDestinationID,
                 visibleDestinations: visibleDestinations
@@ -2348,36 +2429,9 @@ struct MainTabView: View {
             else { return }
             librarySnapshot = .init(authority: authority, libraries: response.libraries)
         }
-        #if os(tvOS)
-        .fullScreenCover(isPresented: Binding(
-            get: { audioStore.isShowingFullPlayer },
-            set: { if !$0 { audioStore.dismissFullPlayer() } }
-        )) {
-            AudioFullPlayerView()
-        }
-        #endif
-        #if !os(macOS)
         #if os(iOS)
         .modifier(AudioPlayerPresentationModifier(router: router))
         .modifier(PlayerPresentationModifier(router: router))
-        #else
-        .fullScreenCover(item: $router.presentedPlayer) { payload in
-            PlayerView(
-                contentId: payload.contentId,
-                libraryId: payload.libraryId,
-                preferredFileId: payload.fileId,
-                preferredAudioTrackIndex: payload.audioTrackIndex,
-                preferredSubtitleTrackIndex: payload.subtitleTrackIndex,
-                startFromBeginning: payload.startFromBeginning,
-                resumePositionOverride: payload.resumePosition,
-                prefersLastUsedVersion: payload.prefersLastUsedVersion,
-                offlineDownloadId: payload.offlineDownloadId,
-                posterURLHint: payload.posterURL,
-                backdropURLHint: payload.backdropURL
-            )
-        }
-        #endif
-        #if os(iOS)
         .sheet(
             item: $router.presentedItemDetail,
             onDismiss: { router.itemDetailPresentationDidDismiss() }
@@ -2391,7 +2445,6 @@ struct MainTabView: View {
             SiloControlRemoteView(controller: siloControl)
                 .presentationDetents([.large])
         }
-        #endif
         #endif
         // Outside the presentation modifiers so presented covers (audio
         // player, video player) inherit the router — ErrorView requires
@@ -2470,6 +2523,26 @@ struct MainTabView: View {
     /// `DownloadManager.shared.downloadsEnabled` here registers the tab bar
     /// as an observer, so the tab appears as soon as capability loads.
     private var visibleDestinations: [MainTabDestination] {
+        #if os(macOS)
+        macSidebarSectionList.flatMap(\.items)
+        #else
+        projectedDestinations
+        #endif
+    }
+
+    #if os(macOS)
+    /// The Mac sidebar's groups. Every library the profile can open gets its
+    /// own row; the synced menu only orders the other destinations.
+    private var macSidebarSectionList: [MacSidebarSection] {
+        macSidebarSections(
+            destinations: projectedDestinations,
+            libraries: librarySnapshot.availableLibraries(for: currentLibraryAuthority),
+            showAudiobooks: navPrefs.showAudiobooks
+        )
+    }
+    #endif
+
+    private var projectedDestinations: [MainTabDestination] {
         var destinations = projectedMainTabDestinations(
             primaryMenu: uiCustomization.primaryMenu,
             availableLibraries: librarySnapshot.availableLibraries(
@@ -2477,12 +2550,10 @@ struct MainTabView: View {
             ),
             showAudiobooks: navPrefs.showAudiobooks
         )
-        #if !os(tvOS)
         if DownloadManager.shared.downloadsEnabled,
            !destinations.contains(where: { $0.id == .app(.downloads) }) {
             destinations.append(.app(.downloads))
         }
-        #endif
         return destinations
     }
 
@@ -2523,15 +2594,6 @@ struct MainTabView: View {
         NavigationStack(path: $router.path) {
             TabView(selection: $selectedDestinationID) {
                 ForEach(visibleDestinations) { destination in
-                    #if os(tvOS)
-                    // Text-only tabs on tvOS keep the top bar compact — adding an
-                    // icon blows up each tab's focus pill. The value-based `Tab`
-                    // initializer requires an image on tvOS, so this arm stays on
-                    // the `.tabItem { Text }` form to preserve the text-only look.
-                    destinationContent(for: destination)
-                        .tabItem { Text(destination.title) }
-                        .tag(destination.id)
-                    #else
                     Tab(
                         destination.title,
                         systemImage: selectedDestinationID == destination.id
@@ -2541,7 +2603,6 @@ struct MainTabView: View {
                     ) {
                         destinationContent(for: destination)
                     }
-                    #endif
                 }
             }
             .navigationDestination(for: Route.self) { route in
@@ -2552,7 +2613,6 @@ struct MainTabView: View {
             .modifier(NowPlayingShelfAttachment())
             #endif
         }
-        .environment(\.zoomNamespace, zoomNamespace)
     }
 
     /// iPad regular width: the native sidebar overlays the detail pane without
@@ -2572,15 +2632,18 @@ struct MainTabView: View {
             iPadSidebarLayout
                 .environment(
                     \.sidebarToggle,
-                    iPadColumnVisibility == .detailOnly ? toggleSidebar : nil
+                    iPadColumnVisibility == .detailOnly ? SidebarToggleAction(perform: toggleSidebar) : nil
                 )
                 .environment(\.reservesSidebarToggleSpace, true)
-            #else
+            #elseif os(macOS)
+            // The title bar's system toggle is the Mac's only sidebar
+            // toggle, so pages are handed none of their own.
             macSidebarLayout
-                .environment(\.sidebarToggle, toggleSidebar)
+            #else
+            // tvOS has its own shell and never takes the sidebar layout.
+            EmptyView()
             #endif
         }
-        .environment(\.zoomNamespace, zoomNamespace)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             NowPlayingShelf(style: .card)
         }
@@ -2656,17 +2719,60 @@ struct MainTabView: View {
         .padding(.bottom, 12)
     }
 
-    #else
+    #elseif os(macOS)
     private var macSidebarLayout: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            sidebarList(
-                dismissAfterSelection: false,
-                nestsPinnedLibraries: false
+            MacSidebar(
+                sections: macSidebarSectionList,
+                highlight: macSidebarHighlight(
+                    selected: selectedDestinationID,
+                    pushedRoutes: router.visiblePushedRoutes
+                ),
+                onSelect: selectSidebarDestination
             )
                 .navigationTitle(sidebarTitle)
-                .navigationSplitViewColumnWidth(min: 240, ideal: 260, max: 280)
+                .navigationSplitViewColumnWidth(
+                    min: SiloTheme.macSidebarMinWidth,
+                    ideal: SiloTheme.macSidebarIdealWidth,
+                    max: SiloTheme.macSidebarMaxWidth
+                )
         } detail: {
             sidebarDetailContent
+        }
+        // One canvas for the window, title bar and page, so no separate
+        // strip sits beside the sidebar.
+        .containerBackground(Color.siloPageCanvas, for: .window)
+        .toolbarBackground(.hidden, for: .windowToolbar)
+        .onReceive(NotificationCenter.default.publisher(for: .siloOpenSettings)) { _ in
+            // Never push over the player: leaving it tears playback down.
+            // Settings already on the stack stays where it is.
+            guard !isPlayerOnScreen,
+                  !router.visiblePushedRoutes.contains(.settings) else { return }
+            router.navigate(to: .settings)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .siloOpenSearch)) { _ in
+            guard !isPlayerOnScreen else { return }
+            selectSidebarDestination(.app(.search))
+        }
+        .onChange(of: isPlayerOnScreen) { _, isPlaying in
+            // The player gets the whole window; the sidebar comes back as it
+            // was when playback ends.
+            withAnimation(.easeInOut(duration: SiloTheme.normalDuration)) {
+                if isPlaying {
+                    columnVisibilityBeforePlayback = columnVisibility
+                    columnVisibility = .detailOnly
+                } else if let previous = columnVisibilityBeforePlayback {
+                    columnVisibility = previous
+                    columnVisibilityBeforePlayback = nil
+                }
+            }
+        }
+    }
+
+    private var isPlayerOnScreen: Bool {
+        switch router.visiblePushedRoutes.last {
+        case .player, .playerWithFile, .offlinePlayer: return true
+        default: return false
         }
     }
     #endif
@@ -2675,6 +2781,15 @@ struct MainTabView: View {
         NavigationStack(path: $router.path) {
             destinationContent(for: selectedDestination)
                 .id(selectedDestination.id)
+                #if os(macOS)
+                // The sidebar shows the logo and the selected row; a window
+                // title on root pages would repeat them.
+                .toolbar(removing: .title)
+                .modifier(MacRootPageTopInset(
+                    // Search keeps the toolbar strip: its field lives there.
+                    reclaimsToolbarStrip: selectedDestination.id != .app(.search)
+                ))
+                #endif
                 #if os(iOS)
                 .toolbar {
                     if destinationNeedsSidebarToggle(selectedDestination.id) {
@@ -2688,10 +2803,8 @@ struct MainTabView: View {
                     routeContent(for: route)
                         #if os(iOS)
                         .toolbar {
-                            if routeNeedsSidebarToggle(route) {
-                                ToolbarItem(placement: .topBarLeading) {
-                                    SidebarToggleButton()
-                                }
+                            ToolbarItem(placement: .topBarLeading) {
+                                SidebarToggleButton()
                             }
                         }
                         #endif
@@ -2870,11 +2983,7 @@ struct MainTabView: View {
             CalendarView()
 
         case .downloads:
-            #if os(tvOS)
-            EmptyView()
-            #else
             DownloadsView()
-            #endif
 
         case .settings:
             SettingsView()
@@ -2888,8 +2997,6 @@ struct MainTabView: View {
     @ViewBuilder
     private func routeContent(for route: Route) -> some View {
         switch route {
-        case .library(let libraryId, let title):
-            LibraryDetailView(libraryId: libraryId, initialTitle: title)
         case .libraryCollection(let libraryId, let collectionId, let title, let kind):
             LibraryCollectionDetailView(
                 libraryId: libraryId,
@@ -2899,17 +3006,6 @@ struct MainTabView: View {
             )
         case .itemDetail(let contentId, _, let libraryId, let context):
             ItemDetailView(contentId: contentId, libraryId: libraryId, resumeContext: context)
-                // The iOS 26 poster → detail zoom transition
-                // (`.navigationTransition(.zoom(sourceID:in:))`, keyed off
-                // `pendingZoomSourceID`) is intentionally NOT applied here.
-                // On iOS 26 the zoom transition keeps the pushed detail bound
-                // to the source card's portal geometry; rotating the device
-                // while the detail is up recomputes that transform against
-                // stale geometry, leaving the whole page scaled up ("zoomed
-                // in") after rotating back and the source card stuck on
-                // screen. Deep-linked pushes (no zoom source) never showed
-                // the bug. Restore the modifier once Apple fixes the
-                // regression (see forums thread 807208).
         case .personDetail(let personId):
             PersonDetailView(personId: personId)
         case .player(let contentId, let startFromBeginning, let resumePosition, let prefersLastUsedVersion, let libraryId):
@@ -2959,10 +3055,8 @@ struct MainTabView: View {
             CollectionsView()
         case .collectionDetail(let id):
             CollectionDetailView(collectionId: id)
-        case .browse(let libraryId):
-            BrowseView(libraryId: libraryId)
         case .watchParty:
-            #if os(iOS) || os(tvOS)
+            #if os(iOS)
             WatchPartyHubView(session: .shared)
             #else
             EmptyView()
@@ -2983,17 +3077,8 @@ struct MainTabView: View {
             #endif
         case .settings:
             SettingsView()
-        case .recommendations:
-            RecommendationsView()
         case .serverList:
             ServerListView()
-        case .downloads:
-            #if os(tvOS)
-            EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
-                .siloPageBackground()
-            #else
-            DownloadsView()
-            #endif
         case .offlinePlayer(let downloadId, let contentId, let startFromBeginning, let resumePosition):
             #if os(macOS)
             PlayerView(
@@ -3008,19 +3093,11 @@ struct MainTabView: View {
             EmptyView()
             #endif
         case .offlineSeriesBrowse(let seriesId):
-            #if os(tvOS)
-            EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
-                .siloPageBackground()
-            #else
             OfflineSeriesBrowseView(seriesId: seriesId)
-            #endif
         case .offlineDownloadDetail(let downloadId):
-            #if os(tvOS)
-            EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
-                .siloPageBackground()
-            #else
             OfflineDownloadDetailView(downloadId: downloadId)
-            #endif
+        case .autoDownloads:
+            AutoDownloadsView()
         default:
             EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
                 .siloPageBackground()
@@ -3028,15 +3105,6 @@ struct MainTabView: View {
     }
 
     #if os(iOS)
-    private func routeNeedsSidebarToggle(_ route: Route) -> Bool {
-        switch route {
-        case .downloads, .recommendations:
-            false
-        default:
-            true
-        }
-    }
-
     /// Search and Settings use the system navigation bar at the root. The
     /// other root screens draw their own header with a `SidebarToggleButton`.
     private func destinationNeedsSidebarToggle(_ destinationID: MainTabDestinationID) -> Bool {
@@ -3049,6 +3117,7 @@ struct MainTabView: View {
     }
     #endif
 }
+#endif
 
 #if os(iOS)
 /// Native bottom-presented catalog detail card. The sheet owns a small nested

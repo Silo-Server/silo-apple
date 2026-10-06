@@ -7,7 +7,6 @@ struct APIv2CatalogPage: Decodable {
     let page: APIv2Page
     let total: Int
     let totalExact: Bool
-    let windowCursor: String
     let effectiveSort: APIv2CatalogEffectiveSort?
     let searchDiagnostics: APIv2CatalogSearchDiagnostics?
 }
@@ -36,14 +35,38 @@ struct APIv2CatalogSearchCapabilities: Decodable {
     let allowed: Bool
     let provider: String?
     let resultWindowLimit: Int?
-    let sessionTtlSeconds: Int?
-    let maxSessionsPerAccount: Int?
     /// People search accepts `media_scope` and filters credits by access.
     let peopleMediaScope: Bool?
     /// Person reads accept `prefetch=true` without queueing a refresh.
     let personPrefetch: Bool?
+    /// Text search accepts `type=video_with_episodes` (movies, series, and
+    /// episodes) on the query source, and people search accepts it as
+    /// `media_scope`. Older servers omit it and ignore or reject the value.
+    let videoWithEpisodesScope: Bool?
 
     var isAvailable: Bool { allowed && state == "available" }
+}
+
+/// What the Search screen may ask of this server, read once from
+/// ``APIv2CatalogSearchCapabilities``. An absent flag means unsupported.
+struct CatalogSearchFeatures: Equatable {
+    /// People search accepts `media_scope` and filters credits by access.
+    /// Without it search offers no people at all.
+    var peopleMediaScope = false
+    /// Search accepts the `video_with_episodes` media scope.
+    var videoWithEpisodesScope = false
+
+    init(peopleMediaScope: Bool = false, videoWithEpisodesScope: Bool = false) {
+        self.peopleMediaScope = peopleMediaScope
+        self.videoWithEpisodesScope = videoWithEpisodesScope
+    }
+
+    init(_ capabilities: APIv2CatalogSearchCapabilities) {
+        self.init(
+            peopleMediaScope: capabilities.peopleMediaScope == true,
+            videoWithEpisodesScope: capabilities.videoWithEpisodesScope == true
+        )
+    }
 }
 
 enum APIv2CatalogRuleValue: Encodable, Hashable {
@@ -94,17 +117,16 @@ struct APIv2CatalogQuery: Encodable, Hashable {
     var order = "asc"
     var group: String?
     var limit = 50
-    var queryLimit: Int?
     var skipTotal = false
     var imageSize: String?
 
     enum CodingKeys: String, CodingKey {
         case source, scope, sectionId, collectionId, personId, libraryId, q, type
-        case namePrefix, groups, match, sort, order, group, limit, queryLimit, skipTotal
+        case namePrefix, groups, match, sort, order, group, limit, skipTotal
     }
 
     func getParameters() throws -> [String: String] {
-        guard (1...100).contains(limit), queryLimit.map({ $0 >= 0 }) ?? true,
+        guard (1...100).contains(limit),
               sort.map({ !$0.hasPrefix("-") && !$0.contains(",") }) ?? true,
               order == "asc" || order == "desc" else { throw APIv2Error.invalidCatalogQuery }
         var query = ["source": source, "limit": String(limit), "match": match]
@@ -116,7 +138,6 @@ struct APIv2CatalogQuery: Encodable, Hashable {
             if let value { query[key] = value }
         }
         if let sort { query["sort"] = (order == "desc" ? "-" : "") + sort }
-        if let queryLimit { query["query_limit"] = String(queryLimit) }
         if skipTotal { query["skip_total"] = "true" }
         if !groups.isEmpty {
             let encoder = JSONEncoder()
@@ -286,16 +307,11 @@ struct APIv2LibraryCollectionTab: Decodable {
 }
 struct APIv2CuratedCollection: Decodable {
     let id: String
-    let libraryId: String
-    let libraryIds: [String]
     let title: String
     let collectionType: String
     @RequiredArtworkURL var posterUrl: String
     let posterThumbhash: String?
     let itemCount: Int
-    let sortOrder: Int
-    let createdAt: Date
-    let updatedAt: Date
 }
 struct APIv2LibraryCollectionCard: Decodable {
     let id: String
@@ -309,7 +325,6 @@ struct APIv2LibraryCollectionGroup: Decodable {
     let id: String
     let name: String
     let kind: String
-    let sortMode: String
     let sortOrder: Int
     let collections: [APIv2LibraryCollectionCard]
 }

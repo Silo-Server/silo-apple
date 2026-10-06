@@ -90,6 +90,15 @@ enum TVSignInPresentation {
         options?.acceptsPasswords ?? true
     }
 
+    /// Whether "Continue as …" is the TV's only way in: the server offers no
+    /// device sign-in and takes no password, and discovery lists a network
+    /// provider for this TV. The screen then shows no password form. Unknown
+    /// discovery keeps the form.
+    static func offersOnlyNetworkSignIn(_ options: SignInOptions?, deviceSignIn: Bool) -> Bool {
+        guard let options, !deviceSignIn else { return false }
+        return !options.acceptsPasswords && !options.networkProviders.isEmpty
+    }
+
     /// The line under the TV's password form on a server whose discovery
     /// lists an OAuth provider: those accounts have no Silo password. Nil
     /// when it lists none. One provider is named; several read as single
@@ -100,6 +109,5 @@ enum TVSignInPresentation {
         return "If you sign in with \(name), use your phone instead."
     }
 
-    static let sessionExpiredBanner = "You were signed out of %@. Sign in again."
     static let nearbyHint = "Have Silo on your phone? Open it on the same Wi‑Fi to sign in this TV."
 }

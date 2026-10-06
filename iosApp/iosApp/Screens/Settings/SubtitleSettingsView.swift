@@ -6,7 +6,7 @@ import SwiftUI
 /// the appearance block is a per-device override with a server
 /// fallback.
 struct SubtitleSettingsView: View {
-    @Bindable var viewModel: SettingsViewModel
+    let viewModel: SettingsViewModel
 
     var body: some View {
         List {
@@ -26,27 +26,20 @@ struct SubtitleSettingsView: View {
         .navigationTitle("Subtitles")
         .siloNavigationTitleDisplayMode(.inline)
         .siloToolbarColorSchemeDark()
-        .onChange(of: viewModel.prefs.subtitleLanguage) { _, _ in
-            Task { await viewModel.prefs.saveSubtitlePrefs() }
-        }
-        .onChange(of: viewModel.prefs.subtitleMode) { _, _ in
-            Task { await viewModel.prefs.saveSubtitlePrefs() }
-        }
-        .onChange(of: viewModel.prefs.showForcedSubtitles) { _, _ in
-            Task { await viewModel.prefs.saveSubtitlePrefs() }
-        }
-        .onChange(of: viewModel.prefs.preferredMetadataLanguage) { _, _ in
-            Task { await viewModel.prefs.saveMetadataLanguage() }
-        }
     }
 
     // MARK: - Metadata language (server-backed, AI-gated)
 
     @ViewBuilder
     private var metadataLanguageSection: some View {
-        @Bindable var prefs = viewModel.prefs
         Section {
-            Picker("Metadata Language", selection: $prefs.preferredMetadataLanguage) {
+            Picker(
+                "Metadata Language",
+                selection: Binding(
+                    get: { viewModel.prefs.preferredMetadataLanguage },
+                    set: { value in Task { await viewModel.prefs.setPreferredMetadataLanguage(value) } }
+                )
+            ) {
                 Text(
                     SettingPresentationMetadata.definitions[.catalogMetadataLanguage]?.unsetLabel
                         ?? "Library default"
@@ -56,11 +49,7 @@ struct SubtitleSettingsView: View {
                 }
             }
             .foregroundStyle(Color.siloOnSurface)
-            #if os(macOS)
-            .pickerStyle(.menu)
-            #else
-            .pickerStyle(.navigationLink)
-            #endif
+            .settingsPickerStyle()
         } header: {
             Text("Metadata")
                 .foregroundStyle(Color.siloSecondaryText)
@@ -76,9 +65,14 @@ struct SubtitleSettingsView: View {
 
     @ViewBuilder
     private var profileBackedSection: some View {
-        @Bindable var prefs = viewModel.prefs
         Section {
-            Picker("Language", selection: $prefs.subtitleLanguage) {
+            Picker(
+                "Language",
+                selection: Binding(
+                    get: { viewModel.prefs.subtitleLanguage },
+                    set: { value in Task { await viewModel.prefs.setSubtitleLanguage(value) } }
+                )
+            ) {
                 Text(
                     SettingPresentationMetadata.definitions[.playbackSubtitleLanguage]?.unsetLabel
                         ?? "None"
@@ -88,29 +82,27 @@ struct SubtitleSettingsView: View {
                 }
             }
             .foregroundStyle(Color.siloOnSurface)
-            #if os(macOS)
-            .pickerStyle(.menu)
-            #else
-            .pickerStyle(.navigationLink)
-            #endif
+            .settingsPickerStyle()
 
-            Picker("Behavior", selection: $prefs.subtitleMode) {
+            Picker(
+                "Behavior",
+                selection: Binding(
+                    get: { viewModel.prefs.subtitleMode },
+                    set: { value in Task { await viewModel.prefs.setSubtitleMode(value) } }
+                )
+            ) {
                 ForEach(SubtitleMode.allCases, id: \.rawValue) { mode in
                     Text(mode.displayLabel).tag(mode.rawValue)
                 }
             }
             .foregroundStyle(Color.siloOnSurface)
-            #if os(macOS)
-            .pickerStyle(.menu)
-            #else
-            .pickerStyle(.navigationLink)
-            #endif
+            .settingsPickerStyle()
 
             Toggle(
                 "Show Forced Subtitles",
                 isOn: Binding(
                     get: { viewModel.prefs.showForcedSubtitles == "on" },
-                    set: { viewModel.prefs.showForcedSubtitles = $0 ? "on" : "off" }
+                    set: { isOn in Task { await viewModel.prefs.setShowForcedSubtitles(isOn) } }
                 )
             )
             .foregroundStyle(Color.siloOnSurface)
@@ -170,9 +162,7 @@ struct SubtitleSettingsView: View {
                 "Use Device Settings",
                 isOn: Binding(
                     get: { viewModel.subtitleMatchesSystemAppearance },
-                    set: { enabled in
-                        Task { await viewModel.setSubtitleMatchesSystemAppearance(enabled) }
-                    }
+                    set: { viewModel.setSubtitleMatchesSystemAppearance($0) }
                 )
             )
             .foregroundStyle(Color.siloOnSurface)
@@ -216,11 +206,7 @@ struct SubtitleSettingsView: View {
                 }
             }
             .foregroundStyle(Color.siloOnSurface)
-            #if os(macOS)
-            .pickerStyle(.menu)
-            #else
-            .pickerStyle(.navigationLink)
-            #endif
+            .settingsPickerStyle()
 
             Picker("Font Family", selection: appearanceBinding(\.fontFamily)) {
                 ForEach(SubtitleFontFamilyPreset.allCases) { option in
@@ -228,11 +214,7 @@ struct SubtitleSettingsView: View {
                 }
             }
             .foregroundStyle(Color.siloOnSurface)
-            #if os(macOS)
-            .pickerStyle(.menu)
-            #else
-            .pickerStyle(.navigationLink)
-            #endif
+            .settingsPickerStyle()
 
             ColorChoicePicker(
                 title: "Font Color",
@@ -281,11 +263,7 @@ struct SubtitleSettingsView: View {
                 }
             }
             .foregroundStyle(Color.siloOnSurface)
-            #if os(macOS)
-            .pickerStyle(.menu)
-            #else
-            .pickerStyle(.navigationLink)
-            #endif
+            .settingsPickerStyle()
 
             opacityRow
                 .disabled(viewModel.subtitleAppearance.backgroundStyle != .box)
@@ -313,11 +291,7 @@ struct SubtitleSettingsView: View {
                 }
             }
             .foregroundStyle(Color.siloOnSurface)
-            #if os(macOS)
-            .pickerStyle(.menu)
-            #else
-            .pickerStyle(.navigationLink)
-            #endif
+            .settingsPickerStyle()
         } header: {
             Text("Layout")
                 .foregroundStyle(Color.siloSecondaryText)
@@ -395,9 +369,8 @@ struct SubtitleSettingsView: View {
 
 // MARK: - Color choice row
 
-/// A named-color picker rendered as a standard row (navigation link on
-/// iOS, menu on macOS) so every option gets a full-size tap target,
-/// unlike the previous row of 24pt swatches.
+/// A named-color picker rendered as a standard row so every option gets a
+/// full-size tap target.
 private struct ColorChoicePicker: View {
     let title: String
     let colors: [(hex: String, label: String)]
@@ -422,11 +395,7 @@ private struct ColorChoicePicker: View {
             Text(title)
                 .foregroundStyle(Color.siloOnSurface)
         }
-        #if os(macOS)
-        .pickerStyle(.menu)
-        #else
-        .pickerStyle(.navigationLink)
-        #endif
+        .settingsPickerStyle()
     }
 
     /// Stored hex values may differ in case from the option list.

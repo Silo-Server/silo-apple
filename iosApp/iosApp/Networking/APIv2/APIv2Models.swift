@@ -77,9 +77,9 @@ enum APIv2AccountRole: APIv2StringEnum {
 struct APIv2Account: Decodable, Hashable, Sendable {
     let id: String
     let username: String
-    let email: String
+    let email: String?
     let role: APIv2AccountRole
-    let permissions: [String]
+    let permissions: [String]?
     let downloadAllowed: Bool
     /// Present only while an administrator impersonates this account.
     let impersonation: APIv2Impersonation?
@@ -92,22 +92,6 @@ struct APIv2Impersonation: Decodable, Hashable, Sendable {
 }
 
 // MARK: Progress
-
-enum APIv2ProgressStatus: APIv2StringEnum {
-    case inProgress
-    case completed
-    case unknown(String)
-
-    static let known: [String: Self] = ["in_progress": .inProgress, "completed": .completed]
-
-    var wireValue: String {
-        switch self {
-        case .inProgress: return "in_progress"
-        case .completed: return "completed"
-        case .unknown(let value): return value
-        }
-    }
-}
 
 /// `GET /api/v2/progress` — one page of the profile's watch progress.
 struct APIv2ProgressPage: Decodable, Hashable, Sendable {
@@ -200,35 +184,28 @@ enum APIv2PlaybackQuality: APIv2StringEnum {
     }
 }
 
-/// `PATCH /api/v2/profiles/{id}` response (the full profile).
+/// A household profile (`GET /api/v2/profiles` rows, `PATCH` response).
 ///
 /// Every string member is always emitted; the empty string means "unset".
 /// `avatarUrl` is the one member the server omits when there is nothing to
-/// fetch.
+/// fetch. Most members the app never reads are optional, so their absence
+/// cannot fail a profile list.
 struct APIv2Profile: Decodable, Hashable, Sendable {
     let id: String
     let name: String
     let avatar: String
     @ArtworkURL var avatarUrl: String?
-    let avatarSource: APIv2AvatarSource
+    let avatarSource: APIv2AvatarSource?
     let hasPin: Bool
     let isChild: Bool
     let isPrimary: Bool
-    let maxContentRating: String
-    let qualityPreference: String
-    let language: String
+    let maxContentRating: String?
     let preferredMetadataLanguage: String
     let subtitleLanguage: String
     let subtitleMode: String
-    let autoSkipIntro: Bool
-    let autoSkipCredits: Bool
-    let autoSkipRecap: Bool
-    let autoPlayNextPreview: Bool
     let showForcedSubtitles: Bool
-    let libraryRestrictionsEnabled: Bool
-    let allowedLibraryIds: [String]
-    let maxPlaybackQuality: String
-    let createdAt: Date
+    let allowedLibraryIds: [String]?
+    let createdAt: Date?
     let updatedAt: Date
 }
 
@@ -381,13 +358,11 @@ extension UpdateProfileBody {
         patch.qualityPreference = qualityPreference.map(APIv2QualityPreference.init(wireValue:))
         if let subtitleLanguage { patch.subtitleLanguage = Self.languagePatch(subtitleLanguage) }
         patch.subtitleMode = subtitleMode.map(APIv2SubtitleMode.init(wireValue:))
-        patch.showForcedSubtitles = showForcedSubtitles
         if let preferredMetadataLanguage {
             patch.preferredMetadataLanguage = Self.languagePatch(preferredMetadataLanguage)
         }
         patch.autoSkipIntro = autoSkipIntro
         patch.autoSkipCredits = autoSkipCredits
-        patch.autoSkipRecap = autoSkipRecap
         return patch
     }
 

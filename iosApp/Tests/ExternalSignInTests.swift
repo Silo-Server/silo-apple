@@ -723,6 +723,7 @@ final class ExternalSignInTests: XCTestCase {
             Self.provider(startPath: "//evil.example.test" + Self.startPath),
             Self.provider(startPath: "https://evil.example.test" + Self.startPath),
             Self.provider(startPath: "/not/a/start"),
+            Self.provider(startPath: Self.startPath + "#x"),
         ]
         for provider in unusable {
             XCTAssertNil(SignInOptions.nativeStart(of: provider), "\(provider)")

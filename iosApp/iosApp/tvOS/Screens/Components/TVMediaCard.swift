@@ -1,16 +1,15 @@
 #if os(tvOS)
 import SwiftUI
 
-/// tvOS-only poster card. Uses the cached Nuke renderer so scrolling through
-/// a large grid doesn't re-download posters as cells are reused.
-///
-/// `.buttonStyle(.card)` gives us native focus lift + parallax + shadow, so
-/// we do not roll our own scale animation. A title caption lives below the
-/// card and brightens on focus.
+/// tvOS poster card on the cached Nuke renderer. `.nativeCard` uses the system
+/// `.card` lift and parallax; `.ring` uses a white ring and scale to match the
+/// episode and cast rails. A caption below brightens on focus.
 struct TVMediaCard: View {
     let title: String
     let posterUrl: String
     var posterThumbhash: String? = nil
+    /// Catalog type; picks the glyph shown when the poster cannot load.
+    var mediaType: String? = nil
     var year: Int? = nil
     /// Optional second caption line rendered in place of the year (same
     /// type treatment) — e.g. "Book 3" on audiobook series rails.
@@ -52,23 +51,21 @@ struct TVMediaCard: View {
     }
 
     @FocusState private var isFocused: Bool
-    @State private var actionFeedback = MediaActionFeedback()
-    @State private var playedOverride: Bool?
-    @State private var favoriteOverride: Bool?
-    @State private var watchlistOverride: Bool?
+    @State private var personalState = MediaCardPersonalState()
     @State private var uiCustomization = UICustomizationPreferences.shared
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
 
-    private var resolvedCardWidth: CGFloat {
-        cardWidth * uiCustomization.cardPresentation.posterSize.scale
-    }
+    private var resolvedCardWidth: CGFloat { artworkSize.width }
+    private var cardHeight: CGFloat { artworkSize.height }
+    private var artworkSize: CGSize { Self.artworkSize(cardWidth: cardWidth, aspect: aspect) }
 
-    private var cardHeight: CGFloat {
+    /// The size a card of `cardWidth` draws its artwork at, at the current
+    /// card-size setting.
+    static func artworkSize(cardWidth: CGFloat, aspect: MediaCardAspect) -> CGSize {
+        let width = cardWidth * UICustomizationPreferences.shared.cardPresentation.posterSize.scale
         switch aspect {
-        case .poster:
-            resolvedCardWidth * 1.5
-        case .square:
-            resolvedCardWidth
+        case .poster: return CGSize(width: width, height: width * 1.5)
+        case .square: return CGSize(width: width, height: width)
         }
     }
 
@@ -81,11 +78,9 @@ struct TVMediaCard: View {
             }
         }
         .frame(width: resolvedCardWidth)
-        .mediaActionFeedback(actionFeedback)
+        .mediaActionFeedback(personalState.feedback)
         .onChange(of: userState) { _, _ in
-            playedOverride = nil
-            favoriteOverride = nil
-            watchlistOverride = nil
+            personalState.reset()
         }
     }
 
@@ -95,22 +90,18 @@ struct TVMediaCard: View {
         contentId != nil && userState != nil
     }
 
-    private var isFavorite: Bool {
-        favoriteOverride ?? (userState?.isFavorite == true)
-    }
+    private var isFavorite: Bool { personalState.isFavorite(userState) }
 
-    private var isInWatchlist: Bool {
-        watchlistOverride ?? (userState?.inWatchlist == true)
-    }
+    private var isInWatchlist: Bool { personalState.inWatchlist(userState) }
 
-    private var isPlayed: Bool { playedOverride ?? (userState?.played == true) }
+    private var isPlayed: Bool { personalState.isPlayed(userState) }
 
     private var stateMenu: MediaStateMenuItems {
         MediaStateMenuItems(
             isWatched: isPlayed,
             isFavorite: isFavorite,
             inWatchlist: isInWatchlist,
-            isUpdating: actionFeedback.isUpdating,
+            isUpdating: personalState.feedback.isUpdating,
             onToggleWatched: aspect != .square ? toggleWatched : nil,
             onToggleFavorite: togglePersonalFavorite,
             onToggleWatchlist: togglePersonalWatchlist
@@ -119,79 +110,65 @@ struct TVMediaCard: View {
 
     private func toggleWatched() {
         guard let contentId else { return }
-        let played = !isPlayed
-        let previous = playedOverride
-        actionFeedback.perform {
-            playedOverride = played
-            let outcome = await MediaCardWatchedSync.setWatched(contentId: contentId, played: played)
-            if outcome != .applied { playedOverride = previous }
-            return outcome
-        }
+        personalState.toggleWatched(from: userState, via: .catalog(contentId: contentId))
     }
 
     private func togglePersonalFavorite() {
         guard let contentId else { return }
-        let newValue = !isFavorite
-        let watchlist = isInWatchlist
-        let previous = favoriteOverride
-        actionFeedback.perform {
-            favoriteOverride = newValue
-            let outcome = await PersonalListSync.setFavorite(
-                contentId: contentId, isFavorite: newValue, inWatchlist: watchlist
-            )
-            if outcome != .applied { favoriteOverride = previous }
-            return outcome
-        }
+        personalState.toggleFavorite(contentId: contentId, from: userState)
     }
 
     private func togglePersonalWatchlist() {
         guard let contentId else { return }
-        let newValue = !isInWatchlist
-        let favorite = isFavorite
-        let previous = watchlistOverride
-        actionFeedback.perform {
-            watchlistOverride = newValue
-            let outcome = await PersonalListSync.setWatchlist(
-                contentId: contentId, isFavorite: favorite, inWatchlist: newValue
-            )
-            if outcome != .applied { watchlistOverride = previous }
-            return outcome
-        }
+        personalState.toggleWatchlist(contentId: contentId, from: userState)
     }
 
     @ViewBuilder
     private var posterButton: some View {
         switch focusTreatment {
         case .nativeCard:
-            Button(action: action) { posterImage }
-                .buttonStyle(.card)
-                .focused($isFocused)
-                .applyDefaultFocusIfNeeded(prefersDefaultFocus, namespace: defaultFocusNamespace)
-                .applyRailFocus(focusBinding, contentId: focusContentId)
-                .applyTVCardPlayPauseAction(playAction)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(accessibilityDescription)
+            wired(Button(action: action) { posterImage }.buttonStyle(.card))
         case .ring:
-            Button(action: action) { posterImage }
-                .buttonStyle(TVPosterRingButtonStyle())
-                .focused($isFocused)
-                .applyDefaultFocusIfNeeded(prefersDefaultFocus, namespace: defaultFocusNamespace)
-                .applyRailFocus(focusBinding, contentId: focusContentId)
-                .applyTVCardPlayPauseAction(playAction)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(accessibilityDescription)
+            // The ring is the focus cue; the style suppresses the system halo.
+            wired(
+                Button(action: action) {
+                    posterImage.tvFocusRing(
+                        isFocused: isFocused,
+                        cornerRadius: SiloTheme.cornerRadius,
+                        lineWidth: 4
+                    )
+                }
+                .buttonStyle(TVCardFocusButtonStyle(
+                    unfocusedShadowOpacity: 0,
+                    unfocusedShadowRadius: 0,
+                    unfocusedShadowY: 0
+                ))
+            )
         }
+    }
+
+    /// Focus and accessibility wiring, attached directly to the styled
+    /// Button: a `.focused` on a wrapping container silently no-ops.
+    private func wired(_ button: some View) -> some View {
+        button
+            .focused($isFocused)
+            .applyDefaultFocusIfNeeded(prefersDefaultFocus, namespace: defaultFocusNamespace)
+            .tvFocused(focusBinding, equals: focusContentId)
+            .applyTVCardPlayPauseAction(playAction)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(accessibilityDescription)
     }
 
     // MARK: - Subviews
 
     private var posterImage: some View {
         ZStack(alignment: .topTrailing) {
-            CachedAsyncImage(
+            AsyncImageView(
                 url: posterUrl,
-                targetSize: CGSize(width: resolvedCardWidth, height: cardHeight),
                 thumbhash: posterThumbhash,
-                contentMode: .fill
+                targetSize: CGSize(width: resolvedCardWidth, height: cardHeight),
+                contentMode: .fill,
+                placeholderSymbol: ArtworkPlaceholderSymbol.forMediaType(mediaType)
             )
             .frame(width: resolvedCardWidth, height: cardHeight)
             .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
@@ -208,16 +185,6 @@ struct TVMediaCard: View {
             }
         }
         .frame(width: resolvedCardWidth, height: cardHeight)
-        .overlay {
-            // The `.ring` treatment supplies its own focus cue (the native
-            // halo is suppressed in TVPosterRingButtonStyle), matching the
-            // episode/cast cards.
-            if focusTreatment == .ring {
-                RoundedRectangle(cornerRadius: SiloTheme.cornerRadius)
-                    .stroke(Color.white.opacity(isFocused ? 0.9 : 0), lineWidth: isFocused ? 4 : 0)
-                    .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
-            }
-        }
     }
 
     // Plex-style: centered title with year directly underneath in a
@@ -282,52 +249,6 @@ private extension View {
         } else {
             self
         }
-    }
-
-    /// Binds the inner button to a parent rail's `@FocusState` so the rail can
-    /// route d-pad-entry default focus onto this specific card. No-op when the
-    /// rail doesn't manage focus. Mirrors `MediaCard.applyRowFocus`.
-    @ViewBuilder
-    func applyRailFocus(_ binding: FocusState<String?>.Binding?, contentId: String?) -> some View {
-        if let binding, let contentId {
-            self.focused(binding, equals: contentId)
-        } else {
-            self
-        }
-    }
-}
-
-/// Poster focus style matching the episode/cast cards: scale + drop shadow
-/// with the system halo suppressed. The white ring overlay on the poster
-/// (driven by `isFocused`) is the focus cue.
-private struct TVPosterRingButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        TVPosterRingButtonBody(configuration: configuration)
-    }
-}
-
-private struct TVPosterRingButtonBody: View {
-    let configuration: ButtonStyleConfiguration
-
-    @Environment(\.isFocused) private var isFocused
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        configuration.label
-            .scaleEffect(scale)
-            .shadow(
-                color: .black.opacity(isFocused ? 0.45 : 0.0),
-                radius: isFocused ? 18 : 0,
-                y: isFocused ? 8 : 0
-            )
-            .focusEffectDisabled()
-            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
-            .animation(.easeOut(duration: SiloTheme.fastDuration), value: configuration.isPressed)
-    }
-
-    private var scale: CGFloat {
-        let base: CGFloat = isFocused && !reduceMotion ? 1.05 : 1.0
-        return configuration.isPressed ? base * 0.97 : base
     }
 }
 #endif

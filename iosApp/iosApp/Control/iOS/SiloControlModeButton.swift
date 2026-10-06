@@ -2,7 +2,7 @@
 import SwiftUI
 
 struct SiloControlModeButton: View {
-    @Bindable var controller: SiloControlClient
+    let controller: SiloControlClient
     let onChooseTarget: () -> Void
 
     var body: some View {
@@ -15,7 +15,7 @@ struct SiloControlModeButton: View {
                     Label("Choose TV", systemImage: "tv")
                 }
                 Divider()
-                Button(role: .destructive) { controller.turnOffControlMode() } label: {
+                Button(role: .destructive) { controller.disconnect() } label: {
                     Label("Turn Off Control Mode", systemImage: "tv.slash")
                 }
             } label: {

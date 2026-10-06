@@ -50,7 +50,6 @@ final class RequestDetailCache {
 
     // MARK: - Reads
 
-    func detail(_ key: Key) -> RequestMediaDetail? { details[key] }
     func ownRecord(_ key: Key) -> MediaRequest? { ownRecords[key] }
     func moderationRecord(_ key: Key) -> MediaRequest? { moderationRecords[key] }
     func pinnedModerationRecord(_ key: Key) -> MediaRequest? { pinnedModeration[key] }
@@ -163,11 +162,10 @@ final class RequestDetailCache {
         let keys = records
             .map { Key(mediaType: $0.mediaType, tmdbId: $0.tmdbId) }
             .filter { details[$0] == nil && ($0.mediaType == .movie || $0.mediaType == .series) }
-        var unique: [Key] = []
-        for key in keys where !unique.contains(key) { unique.append(key) }
-        let batch = unique.prefix(Self.prefetchCount).filter { key in
-            !prefetchQueue.contains { $0.key == key }
-        }
+        var seen = Set<Key>()
+        let unique = keys.filter { seen.insert($0).inserted }
+        let queued = Set(prefetchQueue.map(\.key))
+        let batch = unique.prefix(Self.prefetchCount).filter { !queued.contains($0) }
         guard !batch.isEmpty else { return }
 
         Self.warmArtwork(records.prefix(Self.prefetchCount).flatMap {

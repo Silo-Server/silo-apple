@@ -23,7 +23,6 @@ struct RequestDetailView: View {
     #endif
     #if os(iOS)
     @State private var scrollState = PhoneDetailScrollState()
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     #endif
 
     init(mediaType: RequestMediaType, tmdbId: Int, onClose: (() -> Void)? = nil) {
@@ -121,15 +120,16 @@ struct RequestDetailView: View {
                         posterThumbhash: nil,
                         backdropUrl: backdrop,
                         backdropThumbhash: nil,
-                        eyebrow: eyebrow(detail),
+                        eyebrow: eyebrow,
                         sourceTokens: sourceTokens(detail),
                         ratingChip: detail.contentRating,
                         overview: detail.overview,
                         factsLine: factTokens(detail).map { PhoneHeroFactToken.text($0) },
                         ratings: ratings(detail),
                         creditText: creditText(detail),
+                        overlayData: nil,
                         enablesArtworkParallax: true,
-                        actions: { phoneActions(detail) },
+                        actions: { phoneActions },
                         belowOverview: { EmptyView() }
                     )
 
@@ -158,9 +158,7 @@ struct RequestDetailView: View {
         let showsBack = !showsClose && (!router.itemDetailPath.isEmpty || !router.path.isEmpty)
         return PhoneDetailTopChrome(
             title: viewModel.detail?.title ?? "",
-            isScrollGlassEnabled: UIDevice.current.userInterfaceIdiom == .phone
-                && horizontalSizeClass != .regular
-                && viewModel.detail != nil,
+            isScrollGlassEnabled: viewModel.detail != nil,
             scrollState: scrollState,
             leadingSystemName: showsClose ? "xmark" : (showsBack ? "chevron.left" : nil),
             leadingAccessibilityLabel: showsClose ? "Close details" : (showsBack ? "Back" : nil),
@@ -180,9 +178,9 @@ struct RequestDetailView: View {
     #endif
 
     @ViewBuilder
-    private func phoneActions(_ detail: RequestMediaDetail) -> some View {
+    private var phoneActions: some View {
         VStack(spacing: 14) {
-            primaryActionButton(detail)
+            primaryActionButton
 
             if let message = viewModel.actionErrorMessage {
                 Text(message)
@@ -270,7 +268,7 @@ struct RequestDetailView: View {
                         logoUrl: nil,
                         backdropUrl: backdrop,
                         backdropThumbhash: nil,
-                        eyebrow: eyebrow(detail),
+                        eyebrow: eyebrow,
                         sourceTokens: sourceTokens(detail),
                         ratingChip: detail.contentRating,
                         overview: detail.overview,
@@ -284,7 +282,7 @@ struct RequestDetailView: View {
                         // stay inside its clip.
                         backdropHeight: TVDetailLayout.heroHeight,
                         heroHeight: showsStatusStrip ? TVDetailLayout.heroHeight + 120 : TVDetailLayout.heroHeight,
-                        actions: { tvActions(detail) },
+                        actions: { tvActions },
                         belowSynopsis: { tvStatusStrip }
                     )
 
@@ -300,9 +298,9 @@ struct RequestDetailView: View {
         }
     }
 
-    private func tvActions(_ detail: RequestMediaDetail) -> some View {
+    private var tvActions: some View {
         HStack(spacing: 18) {
-            primaryActionButton(detail)
+            primaryActionButton
                 .focused($primaryFocused)
 
             ForEach(viewModel.moderationActions, id: \.self) { action in
@@ -383,7 +381,7 @@ struct RequestDetailView: View {
     // MARK: - Primary action (single Button, morphs in place)
 
     @ViewBuilder
-    private func primaryActionButton(_ detail: RequestMediaDetail) -> some View {
+    private var primaryActionButton: some View {
         let action = viewModel.primaryAction
 
         Button {
@@ -513,7 +511,7 @@ struct RequestDetailView: View {
 
     /// Where the title stands, in the slot a library title uses for its
     /// editorial eyebrow.
-    private func eyebrow(_ detail: RequestMediaDetail) -> String? {
+    private var eyebrow: String? {
         if viewModel.moderationRecord != nil, viewModel.openedForModeration || viewModel.record == nil {
             return "Requested by someone on this server"
         }
@@ -532,8 +530,8 @@ struct RequestDetailView: View {
             if let seasons = detail.numberOfSeasons, seasons > 0 {
                 parts.append("\(seasons) season\(seasons == 1 ? "" : "s")")
             }
-        } else if let runtime = detail.runtime, runtime > 0 {
-            parts.append(runtime >= 60 ? "\(runtime / 60)h \(runtime % 60)m" : "\(runtime)m")
+        } else if let runtime = MediaTextFormatting.runtime(minutes: detail.runtime) {
+            parts.append(runtime)
         }
         // The TMDB score renders as a rating entry (logo + score), not text.
         return parts

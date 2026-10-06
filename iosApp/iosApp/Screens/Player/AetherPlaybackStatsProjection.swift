@@ -42,9 +42,10 @@ struct AetherPlaybackStatsSourceMetadata: Equatable {
     private static func deliveryLabel(_ value: String?) -> String? {
         guard let value = normalized(value) else { return nil }
         switch value.lowercased() {
-        case "original_http": return "Original HTTP"
-        case "remux_hls": return "Remux HLS"
-        case "transcode_hls": return "Transcode HLS"
+        case PlaybackProtocolV3.PlanDelivery.originalHTTP: return "Original HTTP"
+        case PlaybackProtocolV3.PlanDelivery.remuxProgressive: return "Server Remux"
+        case PlaybackProtocolV3.PlanDelivery.remuxHLS: return "Server Remux HLS"
+        case PlaybackProtocolV3.PlanDelivery.transcodeHLS: return "Server Transcode HLS"
         default:
             return value.replacingOccurrences(of: "_", with: " ")
         }

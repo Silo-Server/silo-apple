@@ -129,7 +129,7 @@ struct DownloadActiveRow: View {
         case .paused:
             return "Paused · \(percentText) · \(sizeText)"
         case .registering, .queued: return waitText ?? "Queued"
-        case .preparing: return "Preparing on server…"
+        case .preparing: return record.preparation?.statusLine ?? "Preparing on server…"
         // Fetching the manifest, before the transfer starts.
         case .fetchingAssets: return waitText ?? "Starting…"
         case .completed: return DownloadFormatting.bytes(record.fileSize)
@@ -189,6 +189,17 @@ struct DownloadActiveRow: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(paused ? "Resume download" : "Pause download")
+        case .preparing where record.preparation?.progress != nil:
+            // The server's encode, not a transfer: nothing to pause.
+            ZStack {
+                Circle().stroke(Color.siloOnSurface.opacity(0.15), lineWidth: 3)
+                Circle()
+                    .trim(from: 0, to: max(0.02, record.preparation?.progress ?? 0))
+                    .stroke(Color.siloOnSurface.opacity(0.55), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+            }
+            .frame(width: 36, height: 36)
+            .accessibilityHidden(true)
         default:
             ProgressView().controlSize(.small).tint(.siloOnSurface)
         }
@@ -371,9 +382,8 @@ struct DownloadSeriesRow: View {
     var selected: Bool = false
     let isWatched: (DownloadRecord) -> Bool
     var onSelectToggle: () -> Void = {}
-    /// When non-nil, tapping the header opens the offline browse detail
-    /// (Phase 3). When nil, the header simply toggles inline expansion.
-    var onOpenSeries: (() -> Void)? = nil
+    /// Tapping the header opens the offline series browse screen.
+    let onOpenSeries: () -> Void
     var onPlayEpisode: (DownloadRecord) -> Void = { _ in }
     var onDeleteEpisode: (DownloadRecord) -> Void = { _ in }
 
@@ -444,10 +454,8 @@ struct DownloadSeriesRow: View {
     private func headerTap() {
         if selecting {
             onSelectToggle()
-        } else if let onOpenSeries {
-            onOpenSeries()
         } else {
-            withAnimation(.easeInOut(duration: 0.2)) { expanded.toggle() }
+            onOpenSeries()
         }
     }
 
@@ -472,13 +480,13 @@ struct DownloadSeriesRow: View {
         .frame(width: 47, height: 60, alignment: .leading)
     }
 
-    /// Antenna glyph after the title of a series with an active monitoring
-    /// subscription — the same glyph as the Monitoring section.
+    /// Antenna glyph after the title of a monitored series — the same
+    /// glyph as the Monitored row.
     private var monitorBadge: some View {
         Image(systemName: "antenna.radiowaves.left.and.right")
             .font(.footnote.weight(.semibold))
             .foregroundColor(.siloSecondaryText)
-            .accessibilityLabel("Monitoring")
+            .accessibilityLabel("Monitored")
     }
 
     private var subtitleLine: String {

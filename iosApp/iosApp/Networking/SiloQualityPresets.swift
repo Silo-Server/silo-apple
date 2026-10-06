@@ -1,7 +1,3 @@
-//
-//  SiloQualityPresets.swift
-//  Silo (iOS + tvOS + macOS)
-//
 //  The quality picker's presets, as every Silo client offers them.
 //
 //  The server stores two orthogonal values — `playback.preferred_quality` (a

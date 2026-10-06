@@ -1,31 +1,22 @@
 import SwiftUI
 
-/// Action that collapses or expands the iPad sidebar.
-///
-/// Published into the environment by `MainTabView` only when the app is in
-/// the regular-width sidebar layout. Screens whose custom header replaces
-/// the navigation bar (Home / Libraries / Recommendations) read this value
-/// and render `SidebarToggleButton` when it is non-nil.
-struct SidebarToggleEnvironmentKey: EnvironmentKey {
-    static let defaultValue: (() -> Void)? = nil
-}
-
 extension EnvironmentValues {
-    var sidebarToggle: (() -> Void)? {
-        get { self[SidebarToggleEnvironmentKey.self] }
-        set { self[SidebarToggleEnvironmentKey.self] = newValue }
-    }
+    /// Action that collapses or expands the iPad sidebar.
+    ///
+    /// Published into the environment by `MainTabView` only when the app is in
+    /// the regular-width sidebar layout. Screens whose custom header replaces
+    /// the navigation bar (Home / Libraries / Recommendations) read this value
+    /// and render `SidebarToggleButton` when it is non-nil.
+    @Entry var sidebarToggle: SidebarToggleAction? = nil
+    @Entry var reservesSidebarToggleSpace = false
 }
 
-struct ReservesSidebarToggleSpaceEnvironmentKey: EnvironmentKey {
-    static let defaultValue = false
-}
+/// Every toggle does the same thing, so instances compare equal and a new
+/// closure on each layout pass never redraws the screens that read it.
+struct SidebarToggleAction: Equatable {
+    let perform: () -> Void
 
-extension EnvironmentValues {
-    var reservesSidebarToggleSpace: Bool {
-        get { self[ReservesSidebarToggleSpaceEnvironmentKey.self] }
-        set { self[ReservesSidebarToggleSpaceEnvironmentKey.self] = newValue }
-    }
+    static func == (lhs: Self, rhs: Self) -> Bool { true }
 }
 
 /// Leading sidebar button that opens the iPad overlay.
@@ -41,7 +32,7 @@ struct SidebarToggleButton: View {
     @ViewBuilder
     var body: some View {
         if let toggle {
-            Button(action: toggle) {
+            Button(action: toggle.perform) {
                 Image(systemName: "sidebar.leading")
                     .font(.system(size: 18, weight: .semibold))
                     .foregroundStyle(Color.siloOnSurface)

@@ -107,12 +107,12 @@ final class CollectionsViewModelTests: XCTestCase {
         XCTAssertTrue(model.canSubmitGroupAction)
 
         stub.sequence([.json(412, #"{"type":"https://siloserver.org/docs/api/v2/problems/stale_version","title":"Conflict","status":412,"detail":"Changed","instance":"urn:test"}"#)])
-        await model.moveCollection(id: "c1", toGroupId: "g1")
+        await model.moveCollection(toGroupId: "g1")
         XCTAssertNotNil(model.pendingGroupAction, "the sheet stays open with the chosen target")
         XCTAssertTrue(model.editorNeedsReload)
         XCTAssertFalse(model.canSubmitGroupAction)
 
-        await model.moveCollection(id: "c1", toGroupId: "g1")
+        await model.moveCollection(toGroupId: "g1")
         XCTAssertEqual(requests("PATCH", path: "/api/v2/collections/c1").count, 1, "no resend before a reload")
 
         stub.sequence([.json(200, collection, headers: ["ETag": #""v2""#])])
@@ -120,7 +120,7 @@ final class CollectionsViewModelTests: XCTestCase {
         XCTAssertFalse(model.editorNeedsReload)
         let moved = #"{"id":"c1","name":"Saved","collection_type":"manual","group_id":"g1"}"#
         stub.sequence([.json(200, moved, headers: ["ETag": #""v3""#])])
-        await model.moveCollection(id: "c1", toGroupId: "g1")
+        await model.moveCollection(toGroupId: "g1")
 
         let patches = requests("PATCH", path: "/api/v2/collections/c1")
         XCTAssertEqual(patches.map { $0.header("if-match") }, [#""v1""#, #""v2""#])
@@ -225,7 +225,7 @@ final class CollectionsViewModelTests: XCTestCase {
         stub.sequence([.json(200, collection, headers: ["ETag": #""v1""#]), .json(404, notFound)])
         await model.loadEditor()
         stub.reply(path: "/api/v2/collections", 200, #"{"items":[],"groups":[\#(group)]}"#)
-        await model.moveCollection(id: "c1", toGroupId: "g1")
+        await model.moveCollection(toGroupId: "g1")
 
         XCTAssertNil(model.pendingGroupAction, "a 404 closes the sheet, as it does on Reload")
         XCTAssertTrue(model.collections.isEmpty)

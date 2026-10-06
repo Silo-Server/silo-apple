@@ -1,11 +1,9 @@
 #if os(tvOS)
 import SwiftUI
 
-/// Movie detail layout for tvOS. The hero fills the top of the
-/// viewport; the scrollable body underneath contains cast, a full
-/// overview, and facts. A pre-Play selector row beneath the primary
-/// actions exposes Edition / Version / Audio / Subtitles, each auto-hiding
-/// when there is no real choice.
+/// Movie detail for tvOS: a full-width hero with Play, the version/audio/
+/// subtitle selectors and More, then cast, trailers, recommendations and
+/// details rails.
 struct TVMovieDetailView<BelowSynopsis: View>: View {
     let detail: ItemDetail
     let isFavorite: Bool
@@ -72,6 +70,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                             eyebrow: nil,
                             sourceTokens: TVHeroMetadata.movieSourceTokens(from: detail),
                             ratingChip: TVHeroMetadata.contentRatingChip(from: detail),
+                            overlayData: OverlayData.from(detail),
                             overview: detail.overview,
                             factsLine: TVHeroMetadata.movieFactsLine(from: detail, version: currentVersion),
                             ratings: detail.displayRatings,
@@ -116,9 +115,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                 .defaultFocus($playFocused, true, priority: .userInitiated)
                 .detailFocusScroll(
                     proxy: scrollProxy,
-                    seasonRowFocused: false,
                     actionRowFocused: actionRowFocused,
-                    episodeSectionId: heroScrollId,
                     heroId: heroScrollId,
                     similarRailFocused: similarRailFocused,
                     similarSectionId: similarSectionScrollId
@@ -175,6 +172,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                         ? nil
                         : detail.effectiveSubtitleTrackSignature,
                     showForcedSubtitles: detail.effectiveShowForcedSubtitles ?? false,
+                    preferredSubtitleLanguage: profilePrefsStore.preferredSubtitleLanguage,
                     onSelectVersion: onSelectVersion,
                     onSelectAudioTrack: onSelectAudioTrack,
                     onSelectSubtitleTrack: onSelectSubtitleTrack

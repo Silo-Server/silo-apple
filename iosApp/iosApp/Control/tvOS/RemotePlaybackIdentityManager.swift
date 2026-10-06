@@ -58,9 +58,6 @@ final class RemotePlaybackIdentityManager {
     struct ActiveIdentity: Equatable {
         let generationID: UUID
         let serverId: String
-        /// The address this TV reached the server at. May differ from the
-        /// phone's when the handoff carried a deployment identity.
-        let serverURL: String
         let serverName: String?
         let serverIdentity: String?
         let profileId: String
@@ -180,10 +177,10 @@ final class RemotePlaybackIdentityManager {
         // With a deployment identity the phone's URL is one candidate among
         // the deployment's addresses; the first that answers with the same
         // identity from here is the one this TV can actually use. Without
-        // one (older phone) the offered URL is used exactly, as before.
+        // one (older phone) the offered URL is used as-is.
         let normalizedURL = try await resolveReachableURL(offer: offer, offeredURL: offeredURL)
 
-        let capability = try await api.remotePlaybackCapability(serverURL: normalizedURL)
+        let capability = try await api.capability(serverURL: normalizedURL)
         guard capability.offersRemotePlaybackHandoff(protocolVersion: SiloControlProtocol.version) else {
             throw HandoffError.unsupportedServer
         }
@@ -205,61 +202,67 @@ final class RemotePlaybackIdentityManager {
             expiresAt: Self.iso8601(started.expiresAt)
         ))
 
-        let deadline = Date().addingTimeInterval(TimeInterval(started.expiresIn))
-        while Date() < deadline {
-            try Task.checkCancellation()
-            let poll: APIv2DevicePoll
-            do {
-                poll = try await api.poll(serverURL: normalizedURL, deviceCode: started.deviceCode)
-            } catch APIv2Error.problem(let problem) where problem.status == 404 {
-                throw HandoffError.expired // the server has expired and removed this request
-            } catch APIv2Error.incompleteAuthResponse {
-                throw HandoffError.invalidResponse
-            }
-            try Task.checkCancellation()
-            switch DeviceLoginStatus(raw: poll.status) {
-            case .approved:
-                // `validated()` guarantees tokens, profile proof and expiry
-                // for an approved temporary session.
-                guard poll.temporary,
-                      poll.profileId == offer.profileId,
-                      let tokens = poll.tokens,
-                      let expiresAt = poll.sessionExpiresAt else {
-                    throw HandoffError.invalidResponse
-                }
-                guard await activate(TemporaryAuthScope(
-                    serverId: offer.serverId,
-                    serverURL: normalizedURL,
-                    accessToken: tokens.accessToken,
-                    refreshToken: tokens.refreshToken,
-                    profileId: offer.profileId,
-                    profileToken: poll.profileToken,
-                    controllerDeviceId: controllerDeviceId,
-                    expiresAt: expiresAt
-                ),
-                    serverName: offer.serverName,
-                    serverIdentity: offer.serverIdentity,
-                    profileName: offer.profileName,
-                    controllerDeviceName: controllerDeviceName
-                ) else {
-                    throw CancellationError()
-                }
-                return SiloControlHandoffReady(
-                    requestId: offer.requestId,
-                    serverId: offer.serverId,
-                    profileId: offer.profileId,
-                    sessionExpiresAt: Self.iso8601(expiresAt),
-                    reused: false
-                )
-            case .denied:
-                throw HandoffError.denied
-            case .expired, .consumed, .canceled:
-                throw HandoffError.expired
-            case .pending, .unknown:
-                try await Task.sleep(for: .seconds(max(1, poll.pollAfter)))
-            }
+        let poll = try await Self.awaitApproval(of: started) { [api] in
+            try await api.poll(serverURL: normalizedURL, deviceCode: started.deviceCode)
         }
-        throw HandoffError.expired
+        try Task.checkCancellation()
+        // `validated()` guarantees tokens, profile proof and expiry
+        // for an approved temporary session.
+        guard poll.temporary,
+              poll.profileId == offer.profileId,
+              let tokens = poll.tokens,
+              let expiresAt = poll.sessionExpiresAt else {
+            throw HandoffError.invalidResponse
+        }
+        guard await activate(TemporaryAuthScope(
+            serverId: offer.serverId,
+            serverURL: normalizedURL,
+            accessToken: tokens.accessToken,
+            refreshToken: tokens.refreshToken,
+            profileId: offer.profileId,
+            profileToken: poll.profileToken,
+            controllerDeviceId: controllerDeviceId,
+            expiresAt: expiresAt
+        ),
+            serverName: offer.serverName,
+            serverIdentity: offer.serverIdentity,
+            profileName: offer.profileName,
+            controllerDeviceName: controllerDeviceName
+        ) else {
+            throw CancellationError()
+        }
+        return SiloControlHandoffReady(
+            requestId: offer.requestId,
+            serverId: offer.serverId,
+            profileId: offer.profileId,
+            sessionExpiresAt: Self.iso8601(expiresAt),
+            reused: false
+        )
+    }
+
+    /// Waits for the phone to approve the handoff request, on the shared
+    /// device-code poll policy: a network blip or a 5xx while the phone
+    /// approves is polled again rather than ending the handoff. Returns the
+    /// approved poll; otherwise throws the `HandoffError` the phone is told,
+    /// or an update requirement's error unchanged.
+    static func awaitApproval(
+        of started: DeviceLoginStartResponse,
+        poll: () async throws -> APIv2DevicePoll
+    ) async throws -> APIv2DevicePoll {
+        do {
+            return try await DeviceLoginPoller.waitForApproval(
+                interval: started.interval,
+                expiresIn: started.expiresIn,
+                poll: poll
+            )
+        } catch DeviceLoginPoller.Failure.denied {
+            throw HandoffError.denied
+        } catch is DeviceLoginPoller.Failure {
+            // Expired, already used, or removed by the server.
+            throw HandoffError.expired
+        } catch APIv2Error.incompleteAuthResponse {
+            throw HandoffError.invalidResponse
+        }
     }
 
     /// Picks the address this TV will use for the handoff. Only candidates
@@ -360,11 +363,11 @@ final class RemotePlaybackIdentityManager {
             return await releaseIdentityTransition(transitionLease, returning: false)
         }
         activeIdentity = nil
-        AuthService.shared.clearCachesForTemporaryIdentityChange()
+        AuthService.shared.clearCachesForTemporaryIdentityChange(temporaryIdentityActive: false)
         let ended = await releaseIdentityTransition(transitionLease, returning: true)
         // The persistent scope owns the credential slot again and the gate is
         // open, so this probes the restored identity. See the helper for why
-        // it can't be folded into `clearCachesForTemporaryIdentityChange()`.
+        // it can't be folded into `clearCachesForTemporaryIdentityChange(temporaryIdentityActive:)`.
         refreshSubtitleProvidersAfterIdentityChange()
         return ended
     }
@@ -399,7 +402,7 @@ final class RemotePlaybackIdentityManager {
             }
             return await releaseIdentityTransition(transitionLease, returning: false)
         }
-        AuthService.shared.clearCachesForTemporaryIdentityChange()
+        AuthService.shared.clearCachesForTemporaryIdentityChange(temporaryIdentityActive: true)
         let previousScope = await TokenStore.shared.beginTemporaryScope(scope)
         let previousOwnersAligned = previousIdentity?.generationID
             == previousScope.scope?.credentialGenerationID
@@ -421,7 +424,10 @@ final class RemotePlaybackIdentityManager {
             if activationGenerationPending == generationID {
                 activationGenerationPending = nil
             }
-            AuthService.shared.clearCachesForTemporaryIdentityChange()
+            // Snapshots stay off only while a handoff identity remains: a
+            // rollback to no handoff gets no later `end()` to resume them.
+            let handoffRemains = await TokenStore.shared.getTemporaryScope() != nil
+            AuthService.shared.clearCachesForTemporaryIdentityChange(temporaryIdentityActive: handoffRemains)
             let rolledBack = await releaseIdentityTransition(transitionLease, returning: false)
             // Rollback restored (or cleared) the previous scope above, so the
             // identity that is live now is whatever `activeIdentity` reflects.
@@ -431,7 +437,6 @@ final class RemotePlaybackIdentityManager {
         activeIdentity = ActiveIdentity(
             generationID: generationID,
             serverId: scope.serverId,
-            serverURL: scope.serverURL,
             serverName: serverName,
             serverIdentity: serverIdentity,
             profileId: scope.profileId,
@@ -445,39 +450,19 @@ final class RemotePlaybackIdentityManager {
         let activated = await releaseIdentityTransition(transitionLease, returning: true)
         // Only now — identity published, pending marker cleared, gate open —
         // does a request carry the temporary scope's credentials. Probing any
-        // earlier (e.g. at the `clearCachesForTemporaryIdentityChange()` call
+        // earlier (e.g. at the `clearCachesForTemporaryIdentityChange(temporaryIdentityActive:)` call
         // above, which runs *before* `beginTemporaryScope`) would answer for
         // the outgoing identity and cache that answer against the new one.
         refreshSubtitleProvidersAfterIdentityChange()
         return activated
     }
 
-    /// Re-probe the subtitle-provider capability after a temporary-identity
-    /// transition settles.
-    ///
-    /// Needed because `clearCachesForTemporaryIdentityChange()` calls
-    /// `SubtitleProvidersStore.reset()`, and that store fails *open*: reset
-    /// restores `isAvailable = true`. So an affirmative "no providers here"
-    /// learned about the current server is thrown away on every handoff, and
-    /// — unlike sign-in — a temporary-identity swap changes no auth state, so
-    /// no other probe fires. Without this the "Search Subtitles…" row silently
-    /// re-enables and can run the empty 20–30s search this gate exists to
-    /// prevent.
-    ///
-    /// Same shape as `ServerRegistry.refreshFeaturesAfterServerSwitch()`,
-    /// which re-probes after a switch between already-signed-in servers for
-    /// exactly this reason.
-    ///
-    /// Deliberately *not* called from every
-    /// `clearCachesForTemporaryIdentityChange()` site: two of the three run
-    /// while the scope is mid-swap (before `beginTemporaryScope`), where a
-    /// probe would be answered by the outgoing identity. Each call site below
-    /// instead fires this once its scope is fully installed or restored and
-    /// the HTTP identity-transition lease has been released, so the request
-    /// isn't gated shut either. Fire-and-forget: any failure leaves the
-    /// optimistic `true` in place, which is the fail-open contract — including
-    /// the case where a queued transition takes the lease first and blocks
-    /// this probe, since that transition fires its own once it settles.
+    /// Re-probes subtitle-provider availability after a temporary-identity
+    /// transition settles. `clearCachesForTemporaryIdentityChange(temporaryIdentityActive:)` resets
+    /// `SubtitleProvidersStore` to its fail-open `true`, and an identity swap
+    /// fires no other probe (same reason as `refreshFeaturesAfterServerSwitch()`).
+    /// Call only once the scope is installed or restored and the transition
+    /// lease is released; earlier, the outgoing identity answers. Fire-and-forget.
     private func refreshSubtitleProvidersAfterIdentityChange() {
         Task { await SubtitleProvidersStore.shared.refresh() }
     }
@@ -491,7 +476,7 @@ final class RemotePlaybackIdentityManager {
     }
 
     private static func iso8601(_ date: Date) -> String {
-        ISO8601DateFormatter().string(from: date)
+        date.ISO8601Format()
     }
 }
 #endif

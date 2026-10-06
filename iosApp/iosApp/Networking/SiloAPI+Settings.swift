@@ -10,10 +10,8 @@ import Foundation
 /// manifest, and a key that is not in the manifest cannot be named because
 /// ``SettingKey`` is generated from it.
 ///
-/// Everything here codes through ``SettingsWireCoding`` rather than the shared
-/// `HTTPClient` coders, so a setting value's own object keys never come near a
-/// key strategy. See the header of SettingValueModels.swift for the reasoning;
-/// the models decode identically under either coder either way.
+/// Coding lives in `APIv2Client+Settings.swift`; setting values decode through
+/// ``SettingsWireCoding`` so their object keys survive verbatim.
 extension SiloAPI {
 
     // MARK: Contract

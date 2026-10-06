@@ -207,15 +207,9 @@ private enum RuntimeConfiguration {
     }()
 }
 
-/// Wrapper around the App Group `UserDefaults` that mirrors every write
-/// back to `UserDefaults.standard`. Legacy readers (AuthService,
-/// SettingsViewModel, ProfileAvatarView) that still read `.standard`
-/// directly keep working; the Top Shelf extension sees the same values
-/// via the App Group suite.
-///
-/// Reads prefer the suite and fall back to `.standard` so the first
-/// launch after the upgrade transparently uses pre-existing values until
-/// the next write mirrors them forward.
+/// App Group `UserDefaults`, which the Top Shelf extension reads too.
+/// Writes are mirrored to `UserDefaults.standard` and reads fall back to it,
+/// so installs from before the App Group keep their values.
 struct SharedDefaults: @unchecked Sendable {
     static let shared = SharedDefaults()
 
@@ -631,10 +625,6 @@ struct SharedKeychain {
     private func deleteLegacy(account: String, accessGroup: String?) {
         let query = baseQuery(account: account, accessGroup: accessGroup)
         SecItemDelete(query as CFDictionary)
-    }
-
-    private func baseQuery(account: String) -> [String: Any] {
-        baseQuery(account: account, accessGroup: accessGroup)
     }
 
     private func baseQuery(account: String, accessGroup: String?) -> [String: Any] {

@@ -1,24 +1,20 @@
 import Foundation
 import SwiftUI
 
-/// Observable sleep timer. When `start(minutes:)` is called, it schedules a
-/// task that pauses playback after the requested interval. The timer is
-/// purely session-scoped — nothing persists; the user sets it once per
-/// movie/episode. All callers are expected to be on the main thread (the
-/// player sheet and VM are both view-layer).
-///
-/// Exposes `remainingSeconds` for the settings sheet to tick down a countdown.
+/// Session-scoped sleep timer: pauses playback after the requested interval
+/// and exposes `remainingSeconds` for the settings countdown. Main-actor so
+/// its countdown task, and the pause it fires, run on the main thread.
+@MainActor
 @Observable
 final class SleepTimer {
     private(set) var isActive: Bool = false
     private(set) var remainingSeconds: Int = 0
 
     private var task: Task<Void, Never>?
-    private var onFire: (() -> Void)?
+    private var onFire: (@MainActor () -> Void)?
 
-    /// Install the callback that performs the pause action. Called once from
-    /// the ViewModel; the timer itself stays backend-agnostic.
-    func configure(onFire: @escaping () -> Void) {
+    /// Install the callback that performs the pause action.
+    func configure(onFire: @escaping @MainActor () -> Void) {
         self.onFire = onFire
     }
 

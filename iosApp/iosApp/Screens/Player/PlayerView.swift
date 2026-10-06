@@ -28,16 +28,22 @@ struct PlayerView: View {
     let posterURLHint: String?
     let backdropURLHint: String?
     let watchPartyContext: WatchPartyPlaybackContext?
+    let shuffle: APIv2Shuffle?
     let onPlaybackStarted: (() -> Void)?
     let onDismissRequested: (() -> Void)?
 
-    @State private var viewModel: PlayerViewModel
+    @StateObject private var viewModelBox: PlayerViewModelBox
+    private var viewModel: PlayerViewModel {
+        get { viewModelBox.model }
+        nonmutating set { viewModelBox.model = newValue }
+    }
     @State private var didNotifyPlaybackStarted = false
     @State private var showsPartyPanel = false
     @Environment(\.dismiss) var dismiss
     #if os(iOS)
     @State private var orientationCoordinator = PlayerOrientationCoordinator.shared
     @State private var pictureInPicture = PictureInPictureCoordinator.shared
+    @Environment(\.scenePhase) private var scenePhase
     #endif
     #if os(tvOS)
     @State private var remoteIdentityNotice: RemotePlaybackIdentityManager.ActiveIdentity?
@@ -61,12 +67,13 @@ struct PlayerView: View {
         posterURLHint: String? = nil,
         backdropURLHint: String? = nil,
         watchPartyContext: WatchPartyPlaybackContext? = nil,
+        shuffle: APIv2Shuffle? = nil,
         onPlaybackStarted: (() -> Void)? = nil,
         onDismissRequested: (() -> Void)? = nil
     ) {
         self.contentId = contentId
         self.libraryId = libraryId
-        _viewModel = State(initialValue: PlayerViewModel(libraryId: libraryId))
+        _viewModelBox = StateObject(wrappedValue: PlayerViewModelBox(PlayerViewModel(libraryId: libraryId)))
         self.preferredFileId = preferredFileId
         self.preferredAudioTrackIndex = preferredAudioTrackIndex
         self.preferredSubtitleTrackIndex = preferredSubtitleTrackIndex
@@ -77,6 +84,7 @@ struct PlayerView: View {
         self.posterURLHint = posterURLHint
         self.backdropURLHint = backdropURLHint
         self.watchPartyContext = watchPartyContext
+        self.shuffle = shuffle
         self.onPlaybackStarted = onPlaybackStarted
         self.onDismissRequested = onDismissRequested
     }
@@ -105,6 +113,10 @@ struct PlayerView: View {
                             if !viewModel.keepWatchingCurrentEpisode() {
                                 dismissPlayer()
                             }
+                        },
+                        onStopShuffling: {
+                            viewModel.stopShuffling()
+                            dismissPlayer()
                         }
                     )
                 }
@@ -114,6 +126,12 @@ struct PlayerView: View {
             ZStack(alignment: .top) {
                 if let error = viewModel.error {
                     errorView(error)
+                        #if os(iOS)
+                        // Centred in the player rather than pinned to the top
+                        // edge, where it ran under the status bar in portrait
+                        // and against the screen edge in landscape.
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        #endif
                     #if os(iOS)
                     loadingCloseButton
                     #endif
@@ -249,8 +267,7 @@ struct PlayerView: View {
                         // mounts once the decoder opens the file, so a standalone
                         // close control must remain available through a tap
                         // during the load/buffer phase. tvOS gets this via Menu in
-                        // `onExitCommand`; macOS keeps its controls (and Escape)
-                        // during loading.
+                        // `onExitCommand`.
                         if viewModel.isLoading {
                             loadingCloseButton
                         }
@@ -271,24 +288,26 @@ struct PlayerView: View {
                         if let identity = remoteIdentityNotice {
                             RemotePlaybackIdentityNotice(identity: identity)
                                 .transition(.opacity)
-                        } else if let notice = viewModel.activeNotice {
+                        } else if let notice = viewModel.presentedNotice {
                             PlayerNoticeOverlay(notice: notice)
                         }
                         #else
-                        if let notice = viewModel.activeNotice {
+                        if let notice = viewModel.presentedNotice {
                             PlayerNoticeOverlay(notice: notice)
                         }
                         #endif
+
+                        subtitleSyncIndicator
                     }
 
                     #if os(tvOS)
                     if let message = watchPartySyncMessage {
                         PlayerBufferingCapsule(message: message, delay: .milliseconds(500))
-                    } else if viewModel.isLoading || viewModel.isBuffering {
+                    } else if viewModel.isLoading || viewModel.isBuffering || viewModel.isReconnecting {
                         PlayerBufferingCapsule()
                     }
                     #else
-                    if viewModel.isLoading || viewModel.isBuffering {
+                    if viewModel.isLoading || viewModel.isBuffering || viewModel.isReconnecting {
                         PlayerBufferingCapsule()
                     }
                     #endif
@@ -298,6 +317,19 @@ struct PlayerView: View {
         #if os(iOS)
         .onGeometryChange(for: CGSize.self) { $0.size } action: { _ in
             orientationCoordinator.refreshInterfaceOrientation()
+        }
+        // Hardware keyboards (iPad, or the iOS app running on a Mac) get no
+        // key events from the touch gesture layer. Space toggles playback,
+        // matching the macOS player.
+        .background {
+            Button("Play/Pause") { viewModel.togglePlayPause() }
+                .keyboardShortcut(.space, modifiers: [])
+                .opacity(0)
+                .accessibilityHidden(true)
+                .disabled(
+                    viewModel.isLoading || viewModel.error != nil || viewModel.showNextUpScreen
+                        || showsPartyPanel || !viewModel.canRequestPlayPause
+                )
         }
         #endif
         #if os(tvOS)
@@ -372,6 +404,18 @@ struct PlayerView: View {
             guard pictureInPicture.ownsEngagedSession(viewModel) else { return }
             closePresentation()
         }
+        // Hand the user's brightness back while the app is away, and take the
+        // player's level again on return unless the user changed it. Automatic
+        // PiP on backgrounding keeps this cover, so coming back to the app
+        // lands on the player itself; end PiP into it.
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                PlayerScreenBrightness.shared.resume()
+                pictureInPicture.stopForReturnToPresentedPlayer(owner: viewModel)
+            } else {
+                PlayerScreenBrightness.shared.suspend()
+            }
+        }
         #endif
         .onChange(of: viewModel.remoteDismissToken) { _, newValue in
             guard newValue != nil else { return }
@@ -437,7 +481,8 @@ struct PlayerView: View {
                 startFromBeginning: startFromBeginning,
                 resumePositionOverride: resumePositionOverride,
                 prefersLastUsedVersion: prefersLastUsedVersion,
-                offlineDownloadId: offlineDownloadId
+                offlineDownloadId: offlineDownloadId,
+                shuffle: shuffle
             )
             #if os(tvOS)
             TVControlReceiver.shared.registerPlayer(activeViewModel, contentId: contentId)
@@ -471,6 +516,7 @@ struct PlayerView: View {
             #endif
             #if os(iOS)
             orientationCoordinator.deactivatePlayer()
+            PlayerScreenBrightness.shared.restore()
             #endif
             #if os(tvOS)
             // A detail/Home read launched synchronously from this disappear
@@ -486,12 +532,7 @@ struct PlayerView: View {
                 // A Home request may have started as the cover disappeared.
                 // Retire that generation before asking for the authoritative
                 // Continue Watching row produced by the completed write.
-                StartupContentPrefetcher.invalidateHomeSectionsInFlight()
-                ResponseCache.shared.remove(CacheKey.homeSections)
-                NotificationCenter.default.post(
-                    name: .homeSectionsShouldRefresh,
-                    object: nil
-                )
+                PersonalStateSync.invalidateDerivedLists()
 
                 await ItemDetailCache.shared.refreshAfterPlayback(contentIds: touchedContentIds)
             }
@@ -618,21 +659,7 @@ struct PlayerView: View {
         AetherPlayerSurface(engine: viewModel.aetherEngine)
             .background(Color.black)
             .overlay {
-                AetherSubtitleOverlay(
-                    engine: viewModel.aetherEngine,
-                    assSubtitles: viewModel.assSubtitles,
-                    sourceTime: viewModel.currentTime,
-                    primaryUsesMovieTimeline: viewModel.subtitleUsesMovieTimeline(viewModel.selectedSubtitleId),
-                    secondaryUsesMovieTimeline: viewModel.subtitleUsesMovieTimeline(viewModel.selectedSecondarySubtitleId, slot: .secondary),
-                    livePrimaryCues: viewModel.selectedSubtitleId.map(SubtitleTrackIdSpace.isAILive) == true
-                        ? viewModel.livePrimarySubtitleCues
-                        : [],
-                    liveSecondaryCues: viewModel.selectedSecondarySubtitleId.map(SubtitleTrackIdSpace.isAILive) == true
-                        ? viewModel.liveSecondarySubtitleCues
-                        : [],
-                    appearance: viewModel.settings.effectiveSubtitleAppearance,
-                    subtitleSyncMs: viewModel.settings.subtitleSyncMs
-                )
+                PlayerSubtitleLayer(viewModel: viewModel)
             }
     }
 
@@ -654,6 +681,37 @@ struct PlayerView: View {
     }
     #endif
 
+    /// The sync card for a subtitle sync this viewer started, in the
+    /// top-trailing corner. On iOS it moves below the top bar while the
+    /// controls show (two rows tall in portrait, one in landscape); on tvOS
+    /// it stays clear of the overscan margin.
+    @ViewBuilder
+    private var subtitleSyncIndicator: some View {
+        if let notice = viewModel.subtitleSync.notice {
+            #if os(tvOS)
+            // Below the player menu's panel while it is open, so the card
+            // never covers its Options column.
+            SubtitleSyncIndicator(notice: notice)
+                .padding(.top, viewModel.isHUDPresented ? 560 : 60)
+                .padding(.trailing, 80)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .transition(.opacity)
+            #else
+            GeometryReader { proxy in
+                let portrait = proxy.size.width < proxy.size.height
+                SubtitleSyncIndicator(notice: notice) {
+                    viewModel.subtitleSync.dismissNotice()
+                }
+                .padding(.top, viewModel.shouldShowMobilePlayerChrome ? (portrait ? 112 : 64) : 12)
+                .padding(.trailing, 16)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .animation(.easeOut(duration: 0.2), value: viewModel.shouldShowMobilePlayerChrome)
+            }
+            .transition(.opacity)
+            #endif
+        }
+    }
+
     #if !os(tvOS)
     /// Tap-to-reveal close control while loading and on Next Up, in
     /// the same spot, size and glass style as the close button in
@@ -666,12 +724,7 @@ struct PlayerView: View {
                     .foregroundStyle(.white)
                     .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
             }
-            #if os(iOS)
             .buttonStyle(MobilePlayerGlassButtonStyle())
-            #else
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
-            #endif
             .accessibilityLabel("Close Player")
             .accessibilityIdentifier("player.close")
 
@@ -680,9 +733,11 @@ struct PlayerView: View {
         .padding(.horizontal)
         .padding(.top)
         .transition(.opacity)
-        #if os(iOS)
-        .modifier(MobilePlayerChromeVisibility(isVisible: viewModel.shouldShowMobilePlayerChrome))
-        #endif
+        // Nothing is playing behind an error, so its close button stays up
+        // instead of waiting for a tap that reveals the transport chrome.
+        .modifier(MobilePlayerChromeVisibility(
+            isVisible: viewModel.shouldShowMobilePlayerChrome || viewModel.error != nil
+        ))
     }
     #endif
 
@@ -700,11 +755,13 @@ struct PlayerView: View {
                 .padding(.horizontal)
 
             HStack(spacing: 16) {
-                Button("Retry") {
-                    viewModel.retry()
+                if viewModel.errorIsRetryable {
+                    Button(viewModel.retryButtonTitle) {
+                        viewModel.retry()
+                    }
+                    .siloPrimaryButton()
+                    .frame(minWidth: 140)
                 }
-                .siloPrimaryButton()
-                .frame(minWidth: 140)
 
                 Button("Go Back") { dismissPlayer() }
                     .siloPrimaryButton()
@@ -714,19 +771,59 @@ struct PlayerView: View {
     }
 }
 
+/// Holds the player's view model for the life of the presentation.
+/// `StateObject` evaluates its initial value once; a `State` initial value
+/// would build a `PlayerViewModel` (an AetherEngine plus an audio-session
+/// claim) on every `PlayerView` init.
+private final class PlayerViewModelBox: ObservableObject {
+    @Published var model: PlayerViewModel
+
+    init(_ model: PlayerViewModel) {
+        self.model = model
+    }
+}
+
+/// Subtitle overlay. It reads the playback clock, so clock ticks re-render
+/// this layer rather than the player shell.
+private struct PlayerSubtitleLayer: View {
+    let viewModel: PlayerViewModel
+
+    var body: some View {
+        AetherSubtitleOverlay(
+            engine: viewModel.aetherEngine,
+            assSubtitles: viewModel.assSubtitles,
+            cueHold: viewModel.subtitleCueHold,
+            sourceTime: viewModel.currentTime,
+            primaryUsesMovieTimeline: viewModel.subtitleUsesMovieTimeline(viewModel.selectedSubtitleId),
+            secondaryUsesMovieTimeline: viewModel.subtitleUsesMovieTimeline(viewModel.selectedSecondarySubtitleId, slot: .secondary),
+            livePrimaryCues: viewModel.selectedSubtitleId.map(SubtitleTrackIdSpace.isAILive) == true
+                ? viewModel.livePrimarySubtitleCues
+                : [],
+            liveSecondaryCues: viewModel.selectedSecondarySubtitleId.map(SubtitleTrackIdSpace.isAILive) == true
+                ? viewModel.liveSecondarySubtitleCues
+                : [],
+            appearance: viewModel.settings.effectiveSubtitleAppearance,
+            subtitleSyncMs: viewModel.settings.subtitleSyncMs
+        )
+    }
+}
+
 private let playerNextUpMainScrollTarget = "player-next-up-main"
 private let playerNextUpOnDeckScrollTarget = "player-next-up-on-deck"
 
 private enum PlayerNextUpFocusTarget: Hashable {
     case playNow
+    case pickAnother
     case keepWatching
     case back
     case autoPlay
+    case stopShuffling
 }
 
 struct PlayerNextUpScreen: View {
     let viewModel: PlayerViewModel
     let onBack: () -> Void
+    var onStopShuffling: () -> Void = {}
     @FocusState private var focusedTarget: PlayerNextUpFocusTarget?
     @State private var onDeckFocusRequest = 0
     @State private var didRequestInitialActionFocus = false
@@ -768,16 +865,8 @@ struct PlayerNextUpScreen: View {
                 } panel: { compact in
                     mobileNextUpPanel(compact: compact)
                         .anchorPreference(key: PlayerPreviewBoundsKey.self, value: .bounds) { .init(actions: $0) }
-                } extras: {
-                    #if !os(iOS)
-                    if !viewModel.nextUpCarouselItems.isEmpty {
-                        onDeckSection
-                    }
-                    #endif
                 }
-                #if os(iOS)
                 .padding(.top, MobilePlayerChromeVisibility.topClearance)
-                #endif
                 #endif
             }
             #if os(iOS)
@@ -802,8 +891,9 @@ struct PlayerNextUpScreen: View {
         #endif
     }
 
+    #if os(tvOS)
     private func screenContent(columnWidth: CGFloat) -> some View {
-        let content = VStack(spacing: sectionSpacing) {
+        VStack(spacing: sectionSpacing) {
             mainContent(columnWidth: columnWidth)
                 .id(playerNextUpMainScrollTarget)
 
@@ -816,13 +906,9 @@ struct PlayerNextUpScreen: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .top)
-
-        #if os(tvOS)
-        return content.focusScope(defaultFocusNamespace)
-        #else
-        return content
-        #endif
+        .focusScope(defaultFocusNamespace)
     }
+    #endif
 
     @ViewBuilder
     private var backgroundImage: some View {
@@ -837,34 +923,34 @@ struct PlayerNextUpScreen: View {
         }
     }
 
-    @ViewBuilder
+    #if os(tvOS)
     private func mainContent(columnWidth: CGFloat) -> some View {
-        #if os(tvOS)
         // Split the column on the On Deck card grid: the preview spans the
         // first two cards and the panel starts at the third.
         let previewWidth = onDeckCardWidth * 2 + tvCardSpacing
-        HStack(alignment: .center, spacing: tvCardSpacing) {
+        return HStack(alignment: .center, spacing: tvCardSpacing) {
             miniPlayerPane
                 .frame(width: previewWidth)
             nextUpPanel
                 .frame(width: columnWidth - previewWidth - tvCardSpacing, alignment: .leading)
         }
         .frame(width: columnWidth)
-        #else
-        EmptyView()
-        #endif
     }
+    #endif
 
     #if !os(tvOS)
     func mobileNextUpPanel(compact: Bool = false) -> some View {
         VStack(spacing: compact ? 6 : 10) {
             // Keep every action reachable below the rotation bar's reserved area
             // on short landscape screens. Only the redundant eyebrow is omitted.
+            if let scopeLabel = viewModel.shuffleState?.scopeLabel {
+                shuffleBadge(scopeLabel)
+            }
             if !compact { eyebrow }
             if let episode = viewModel.nextUpEpisode {
                 metadata(for: episode, compact: true)
             } else if viewModel.isLoadingNextUpEpisode {
-                Text("Finding the next episode")
+                Text(loadingLabel)
                     .font(.callout)
                     .foregroundStyle(.white)
             } else {
@@ -873,12 +959,9 @@ struct PlayerNextUpScreen: View {
                     .foregroundStyle(.white)
             }
             actionRow(hasNextEpisode: viewModel.nextUpEpisode != nil, compact: compact)
+            shuffleActionErrorText
             if viewModel.nextUpEpisode != nil {
-                #if os(iOS)
-                if !compact { autoPlayToggle }
-                #else
-                autoPlayToggle
-                #endif
+                if !compact { autoPlayFooter }
             } else if !viewModel.isLoadingNextUpEpisode {
                 Text(finishedMessage)
                     .font(.caption)
@@ -900,6 +983,9 @@ struct PlayerNextUpScreen: View {
 
     private var nextUpPanel: some View {
         VStack(alignment: isTV ? .leading : .center, spacing: panelSpacing) {
+            if let scopeLabel = viewModel.shuffleState?.scopeLabel {
+                shuffleBadge(scopeLabel)
+            }
             eyebrow
 
             if let episode = viewModel.nextUpEpisode {
@@ -924,8 +1010,58 @@ struct PlayerNextUpScreen: View {
         VStack(alignment: isTV ? .leading : .center, spacing: panelSpacing) {
             metadata(for: episode)
             actionRow(hasNextEpisode: true)
-            autoPlayToggle
+            shuffleActionErrorText
+            autoPlayFooter
         }
+    }
+
+    /// "Shuffling Movies", "Shuffling Breaking Bad · Season 2".
+    private func shuffleBadge(_ scopeLabel: String) -> some View {
+        Label("Shuffling \(scopeLabel)", systemImage: "shuffle")
+            .font(.system(size: captionSize, weight: .semibold))
+            .foregroundStyle(.white.opacity(0.78))
+            .lineLimit(1)
+            .padding(.horizontal, isTV ? 18 : 12)
+            .padding(.vertical, isTV ? 8 : 5)
+            .background(.white.opacity(0.1), in: Capsule())
+    }
+
+    @ViewBuilder
+    private var shuffleActionErrorText: some View {
+        if let message = viewModel.shuffleActionError {
+            Text(message)
+                .font(.system(size: captionSize, weight: .medium))
+                .foregroundStyle(.white.opacity(0.7))
+        }
+    }
+
+    /// The auto-play toggle, with Stop shuffling beside it during a shuffle.
+    private var autoPlayFooter: some View {
+        HStack(spacing: isTV ? 12 : 4) {
+            autoPlayToggle
+            if viewModel.shuffleState != nil {
+                stopShufflingButton
+            }
+        }
+    }
+
+    private var stopShufflingButton: some View {
+        Button(action: onStopShuffling) {
+            Text("Stop shuffling")
+                .font(.system(size: captionSize, weight: .semibold))
+        }
+        .buttonStyle(AutoPlayToggleButtonStyle())
+        .accessibilityIdentifier("next-up-stop-shuffling")
+        #if os(tvOS)
+        .focused($focusedTarget, equals: .stopShuffling)
+        .onMoveCommand { direction in
+            if direction == .up {
+                focusPreferredAction()
+            } else if direction == .down {
+                focusFirstOnDeckItem()
+            }
+        }
+        #endif
     }
 
     private var loadingContent: some View {
@@ -934,7 +1070,7 @@ struct PlayerNextUpScreen: View {
                 ProgressView()
                     .tint(.white)
                     .scaleEffect(isTV ? 1.35 : 1.0)
-                Text("Finding the next episode")
+                Text(loadingLabel)
                     .font(.system(size: titleSize, weight: .semibold))
                     .foregroundStyle(.white)
             }
@@ -957,22 +1093,31 @@ struct PlayerNextUpScreen: View {
 
     private func metadata(for episode: PlayerNextUpEpisode, compact: Bool = false) -> some View {
         VStack(alignment: isTV ? .leading : .center, spacing: isTV ? 12 : 7) {
-            if let seriesTitle = episode.seriesTitle, !seriesTitle.isEmpty {
-                Text(seriesTitle)
+            if let episodeLabel = episode.episodeLabel {
+                if let seriesTitle = episode.seriesTitle, !seriesTitle.isEmpty {
+                    Text(seriesTitle)
+                        .font(.system(size: seriesTitleSize, weight: .bold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                }
+
+                HStack(spacing: 10) {
+                    Text(episodeLabel)
+                        .foregroundStyle(.white.opacity(0.62))
+                    Text(episode.title)
+                        .foregroundStyle(.white)
+                }
+                .font(.system(size: subtitleSize, weight: .semibold))
+                .lineLimit(compact ? 1 : 2)
+                .multilineTextAlignment(isTV ? .leading : .center)
+            } else {
+                // A shuffled movie has no series or episode line; its own
+                // title heads the card.
+                Text(episode.title)
                     .font(.system(size: seriesTitleSize, weight: .bold))
                     .foregroundStyle(.white)
-                    .lineLimit(1)
+                    .lineLimit(compact ? 1 : 2)
             }
-
-            HStack(spacing: 10) {
-                Text(episode.episodeLabel)
-                    .foregroundStyle(.white.opacity(0.62))
-                Text(episode.title)
-                    .foregroundStyle(.white)
-            }
-            .font(.system(size: subtitleSize, weight: .semibold))
-            .lineLimit(compact ? 1 : 2)
-            .multilineTextAlignment(isTV ? .leading : .center)
 
             let metadataLine = episodeMetadataLine(for: episode)
             if !compact && !metadataLine.isEmpty {
@@ -1012,9 +1157,28 @@ struct PlayerNextUpScreen: View {
                         .frame(width: 220)
                     }
                     .buttonStyle(TVPillButtonStyle(kind: .primary))
-                    .disabled(viewModel.isNextUpTransitioning)
+                    .disabled(viewModel.isStartingNextUp)
                     .focused($focusedTarget, equals: .playNow)
                     .prefersDefaultFocus(true, in: defaultFocusNamespace)
+                }
+
+                if hasNextEpisode && viewModel.shuffleState != nil {
+                    Button(action: { viewModel.pickAnotherShufflePick() }) {
+                        HStack(spacing: 16) {
+                            Image(systemName: "shuffle")
+                                .font(.system(size: 26, weight: .semibold))
+                            Text("Pick Another")
+                                .font(.system(size: 26, weight: .semibold))
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
+                        }
+                        .frame(width: 250)
+                    }
+                    .buttonStyle(TVPillButtonStyle(kind: .secondary))
+                    // Not disabled while a pick is replaced: a disabled button
+                    // loses tvOS focus, and repeat presses are ignored.
+                    .disabled(!viewModel.canPickAnotherShufflePick)
+                    .focused($focusedTarget, equals: .pickAnother)
                 }
 
                 if let seconds = viewModel.nextUpCountdownSeconds {
@@ -1036,7 +1200,7 @@ struct PlayerNextUpScreen: View {
                         .frame(width: 250)
                     }
                     .buttonStyle(TVPillButtonStyle(kind: .secondary))
-                    .disabled(viewModel.isNextUpTransitioning)
+                    .disabled(viewModel.isStartingNextUp)
                     .focused($focusedTarget, equals: .keepWatching)
                     .prefersDefaultFocus(!hasNextEpisode, in: defaultFocusNamespace)
                 }
@@ -1070,9 +1234,19 @@ struct PlayerNextUpScreen: View {
                         Label("Play Now", systemImage: "play.fill")
                             .frame(maxWidth: .infinity, minHeight: compact ? 24 : 44)
                     }
-                    .siloPrimaryButton(isLoading: viewModel.isNextUpTransitioning)
+                    .siloPrimaryButton(isLoading: viewModel.isStartingNextUp)
                     .frame(minHeight: 44)
                     .accessibilityIdentifier("next-up-play-now")
+                }
+                if hasNextEpisode && viewModel.shuffleState != nil {
+                    Button(action: { viewModel.pickAnotherShufflePick() }) {
+                        Label("Pick Another", systemImage: "shuffle")
+                            .frame(minHeight: compact ? 24 : 44)
+                    }
+                    .siloSecondaryButton()
+                    .frame(minHeight: 44)
+                    .disabled(!viewModel.canPickAnotherShufflePick)
+                    .accessibilityIdentifier("next-up-pick-another")
                 }
                 if let seconds = viewModel.nextUpCountdownSeconds {
                     CountdownRing(seconds: seconds, totalSeconds: viewModel.nextUpCountdownTotalSeconds)
@@ -1087,7 +1261,7 @@ struct PlayerNextUpScreen: View {
                     }
                     .siloSecondaryButton()
                     .frame(minHeight: 44)
-                    .disabled(viewModel.isNextUpTransitioning)
+                    .disabled(viewModel.isStartingNextUp)
                 }
                 Button(action: onBack) {
                     Label("Back", systemImage: "chevron.left")
@@ -1095,18 +1269,14 @@ struct PlayerNextUpScreen: View {
                 }
                 .siloSecondaryButton()
                 .frame(minHeight: 44)
-                #if os(iOS)
-                if compact && hasNextEpisode { autoPlayToggle }
-                #endif
+                if compact && hasNextEpisode && viewModel.shuffleState == nil { autoPlayToggle }
             }
+            // With Stop shuffling beside it, the footer needs its own line.
+            if compact && hasNextEpisode && viewModel.shuffleState != nil { autoPlayFooter }
         }
         .font(.callout)
         .lineLimit(1)
-        #if os(iOS)
         .frame(maxWidth: compact ? 560 : 380)
-        #else
-        .frame(maxWidth: 380)
-        #endif
         #endif
     }
 
@@ -1156,10 +1326,25 @@ struct PlayerNextUpScreen: View {
         if viewModel.nextUpEpisode == nil && !viewModel.isLoadingNextUpEpisode {
             return viewModel.nextUpScreenVideoEnded ? "Finished" : "More To Watch"
         }
+        if viewModel.shuffleState != nil { return "Up Next at Random" }
         return viewModel.nextUpScreenVideoEnded ? "Playing Next" : "Up Next"
     }
 
+    private var loadingLabel: String {
+        viewModel.shuffleState != nil ? "Picking at random" : "Finding the next episode"
+    }
+
     private var finishedMessage: String {
+        if viewModel.shuffleState != nil {
+            if viewModel.nextUpStartError != nil {
+                return "Couldn't start the next pick. Try again or go back."
+            }
+            return "Nothing else in this shuffle can play."
+        }
+        return episodeFinishedMessage
+    }
+
+    private var episodeFinishedMessage: String {
         #if os(iOS)
         if viewModel.nextUpStartError != nil {
             return "Couldn't start the next episode. Try again or go back."
@@ -1254,8 +1439,8 @@ struct PlayerNextUpScreen: View {
         if let airDate = episode.airDate, !airDate.isEmpty {
             parts.append(formatAirDate(airDate))
         }
-        if let runtime = episode.runtime, runtime > 0 {
-            parts.append(formatRuntime(runtime))
+        if let runtime = MediaTextFormatting.runtime(minutes: episode.runtime) {
+            parts.append(runtime)
         }
         return parts.joined(separator: " · ")
     }
@@ -1263,11 +1448,6 @@ struct PlayerNextUpScreen: View {
     private func formatAirDate(_ airDate: String) -> String {
         guard let date = try? Date(airDate, strategy: .iso8601) else { return airDate }
         return date.formatted(date: .abbreviated, time: .omitted)
-    }
-
-    private func formatRuntime(_ minutes: Int) -> String {
-        Duration.seconds(minutes * 60)
-            .formatted(.units(allowed: [.hours, .minutes], width: .abbreviated))
     }
 
     /// One centered column shared by the hero and On Deck, as wide as four
@@ -1298,7 +1478,6 @@ struct PlayerNextUpScreen: View {
     private var horizontalPadding: CGFloat { isTV ? 80 : 24 }
     private var verticalTopPadding: CGFloat { isTV ? 112 : 24 }
     private var verticalBottomPadding: CGFloat { isTV ? 260 : 24 }
-    private var verticalPadding: CGFloat { isTV ? 58 : 24 }
     private var sectionSpacing: CGFloat { isTV ? 34 : 22 }
     private var panelSpacing: CGFloat { isTV ? 22 : 14 }
     private var eyebrowSize: CGFloat { isTV ? 18 : 12 }

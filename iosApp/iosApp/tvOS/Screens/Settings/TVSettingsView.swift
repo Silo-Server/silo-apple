@@ -5,10 +5,9 @@ import SwiftUI
 /// full-width `Form`. The left rail holds the profile card, the category
 /// list, and Sign Out; the right pane renders the focused category's
 /// controls inline. The pane follows rail focus live (like the system
-/// Settings app's split screens), so there is no drill-in navigation —
-/// which also sidesteps the tvOS 26 push-from-tab-Form problem that used
-/// to force every sub-screen through a `fullScreenCover`. Option pickers
-/// mount as root overlays so their focus graph is fully isolated.
+/// Settings app's split screens), so there is no drill-in navigation.
+/// Option pickers mount as root overlays so their focus graph is fully
+/// isolated.
 ///
 /// Focus model: one native graph with one preferred owner. Each pane is a
 /// `.focusSection()`; vertical movement stays in-pane and Left/Right bridges
@@ -95,10 +94,7 @@ struct TVSettingsView: View {
         }
         .onChange(of: railFocus) { _, focus in
             if let focus,
-               activePicker == nil,
-               !showSignOutConfirm,
-               !showPrivacyPolicy,
-               !showOpenSourceAcknowledgements,
+               !isModalPresented,
                !isRestoringDetailFocus,
                !isRestoringRailFocus {
                 preferredFocusOwner = .rail
@@ -118,33 +114,23 @@ struct TVSettingsView: View {
         }
         .onChange(of: detailFocus) { _, focus in
             if let focus,
-               activePicker == nil,
-               !showSignOutConfirm,
-               !showPrivacyPolicy,
-               !showOpenSourceAcknowledgements,
+               !isModalPresented,
                !isRestoringDetailFocus,
                !isRestoringRailFocus {
                 preferredDetailFocus = focus
                 preferredFocusOwner = .detail
             }
         }
-        .onChange(of: viewModel.prefs.subtitleLanguage) { _, _ in
-            Task { await viewModel.prefs.saveSubtitlePrefs() }
-        }
-        .onChange(of: viewModel.prefs.subtitleMode) { _, _ in
-            Task { await viewModel.prefs.saveSubtitlePrefs() }
-        }
-        .onChange(of: viewModel.prefs.showForcedSubtitles) { _, _ in
-            Task { await viewModel.prefs.saveSubtitlePrefs() }
-        }
-        .onChange(of: viewModel.prefs.preferredMetadataLanguage) { _, _ in
-            Task { await viewModel.prefs.saveMetadataLanguage() }
-        }
         .onChange(of: diagnosticsModel.shouldShowSettings) { _, isVisible in
             if !isVisible, selectedCategory == .diagnostics {
                 selectedCategory = .general
             }
         }
+    }
+
+    /// A picker, confirmation, or full-screen overlay owns focus.
+    private var isModalPresented: Bool {
+        activePicker != nil || showSignOutConfirm || showPrivacyPolicy || showOpenSourceAcknowledgements
     }
 
     /// Settings always enters through General. Assign the concrete rail focus
@@ -161,10 +147,7 @@ struct TVSettingsView: View {
 
         Task { @MainActor in
             await Task.yield()
-            guard activePicker == nil,
-                  !showSignOutConfirm,
-                  !showPrivacyPolicy,
-                  !showOpenSourceAcknowledgements else { return }
+            guard !isModalPresented else { return }
             resetFocus(in: settingsFocusScope)
             resetFocus(in: railFocusScope)
             railFocus = .category(.general)
@@ -176,13 +159,7 @@ struct TVSettingsView: View {
             rail
                 .padding(.vertical, 24)
                 .frame(width: 490)
-                .disabled(
-                    showSignOutConfirm
-                        || showPrivacyPolicy
-                        || showOpenSourceAcknowledgements
-                        || activePicker != nil
-                        || isRestoringDetailFocus
-                )
+                .disabled(isModalPresented || isRestoringDetailFocus)
                 .defaultFocus(
                     $railFocus,
                     preferredFocusOwner == .detail ? .category(selectedCategory) : preferredRailFocus,
@@ -195,13 +172,7 @@ struct TVSettingsView: View {
 
             detailPane
                 .frame(maxWidth: .infinity, alignment: .topLeading)
-                .disabled(
-                    showSignOutConfirm
-                        || showPrivacyPolicy
-                        || showOpenSourceAcknowledgements
-                        || activePicker != nil
-                        || isRestoringRailFocus
-                )
+                .disabled(isModalPresented || isRestoringRailFocus)
                 .defaultFocus(
                     $detailFocus,
                     preferredDetailFocus,
@@ -251,7 +222,7 @@ struct TVSettingsView: View {
     }
 
     private var profileRow: some View {
-        Button(action: switchProfile) {
+        Button(action: router.switchProfile) {
             HStack(spacing: 18) {
                 ProfileAvatarView(
                     avatar: viewModel.profileAvatar,
@@ -326,23 +297,25 @@ struct TVSettingsView: View {
         .focused($railFocus, equals: .signOut)
     }
 
-    private func switchProfile() {
-        router.switchProfile()
-    }
-
     private func enterDetailPane(for category: TVSettingsCategory) {
         selectedCategory = category
         preferredFocusOwner = .detail
         let initialFocus = initialDetailFocus(for: category)
         preferredDetailFocus = initialFocus
-        isRestoringDetailFocus = true
+        restoreDetailFocus(to: initialFocus)
         railFocus = nil
         detailFocus = initialFocus
+    }
+
+    /// Re-asserts `target` once the pane or overlay change has committed,
+    /// holding `isRestoringDetailFocus` while the focus engine settles.
+    private func restoreDetailFocus(to target: TVSettingsDetailFocus) {
+        isRestoringDetailFocus = true
         Task { @MainActor in
             await Task.yield()
             resetFocus(in: settingsFocusScope)
             resetFocus(in: detailFocusScope)
-            detailFocus = initialFocus
+            detailFocus = target
             try? await Task.sleep(for: .milliseconds(120))
             isRestoringDetailFocus = false
         }
@@ -360,13 +333,7 @@ struct TVSettingsView: View {
     }
 
     private func returnFocusToRail() {
-        guard activePicker == nil,
-              !showSignOutConfirm,
-              !showPrivacyPolicy,
-              !showOpenSourceAcknowledgements,
-              !isRestoringDetailFocus else {
-            return
-        }
+        guard !isModalPresented, !isRestoringDetailFocus else { return }
         preferredFocusOwner = .rail
         preferredRailFocus = .category(selectedCategory)
         detailFocus = nil
@@ -411,15 +378,7 @@ struct TVSettingsView: View {
         }
         preferredFocusOwner = .detail
         preferredDetailFocus = .serverPrivacyPolicy
-        isRestoringDetailFocus = true
-        Task { @MainActor in
-            await Task.yield()
-            resetFocus(in: settingsFocusScope)
-            resetFocus(in: detailFocusScope)
-            detailFocus = .serverPrivacyPolicy
-            try? await Task.sleep(for: .milliseconds(120))
-            isRestoringDetailFocus = false
-        }
+        restoreDetailFocus(to: .serverPrivacyPolicy)
     }
 
     private func presentOpenSourceAcknowledgements() {
@@ -438,15 +397,7 @@ struct TVSettingsView: View {
         }
         preferredFocusOwner = .detail
         preferredDetailFocus = .serverOpenSourceLicenses
-        isRestoringDetailFocus = true
-        Task { @MainActor in
-            await Task.yield()
-            resetFocus(in: settingsFocusScope)
-            resetFocus(in: detailFocusScope)
-            detailFocus = .serverOpenSourceLicenses
-            try? await Task.sleep(for: .milliseconds(120))
-            isRestoringDetailFocus = false
-        }
+        restoreDetailFocus(to: .serverOpenSourceLicenses)
     }
 
     private func presentPicker(_ request: TVSettingsPickerRequest) {
@@ -497,11 +448,8 @@ struct TVSettingsView: View {
         }
     }
 
-    /// The tab request is the only action needed: TVMainTabView's
-    /// `requestedTab` handler routes `.home` through `selectRoot`, which pops
-    /// to root itself (unconditionally, including when Home is already the
-    /// selected root). Popping here too produced a second `popToRoot` and a
-    /// duplicate navigation breadcrumb for one exit.
+    /// TVMainTabView routes `.home` through `selectRoot`, which already pops
+    /// to root; popping here as well would pop twice.
     private func exitSettingsToHome() {
         router.switchTab(to: .home)
     }
@@ -562,7 +510,7 @@ struct TVSettingsView: View {
             TVGeneralSettingsPane(
                 activeProfile: viewModel.activeProfile,
                 detailFocus: $detailFocus,
-                changePairedProfile: switchProfile
+                changePairedProfile: router.switchProfile
             )
         case .playback:
             TVPlaybackSettingsPane(
@@ -639,7 +587,7 @@ struct TVSettingsView: View {
                 HStack(spacing: 16) {
                     Image(systemName: "curlybraces")
                         .font(.system(size: 22, weight: .medium))
-                    Text("Open Source Licenses")
+                    Text("Acknowledgements")
                         .font(.system(size: 26))
                     Spacer(minLength: 0)
                     Image(systemName: "doc.text.magnifyingglass")
@@ -650,7 +598,7 @@ struct TVSettingsView: View {
             .buttonStyle(TVSettingsPaneRowStyle())
             .focused($detailFocus, equals: .serverOpenSourceLicenses)
 
-            TVSettingsSectionHeader("EXPERIMENTAL")
+            TVSettingsSectionHeader("EXTRA FEATURES")
 
             ForEach(ExperimentalFeature.allCases) { feature in
                 TVSettingsToggleRow(
@@ -683,7 +631,7 @@ struct TVSettingsView: View {
         }
     }
 
-    private static var versionString: String {
+    private static let versionString: String = {
         let info = Bundle.main.infoDictionary
         let version = info?["CFBundleShortVersionString"] as? String ?? "1.0.0"
         guard let build = info?["CFBundleVersion"] as? String,
@@ -692,7 +640,7 @@ struct TVSettingsView: View {
             return version
         }
         return "\(version) (\(build))"
-    }
+    }()
 }
 
 enum TVSettingsDetailFocus: Hashable {
@@ -700,6 +648,7 @@ enum TVSettingsDetailFocus: Hashable {
     case generalAppleTVUser
     case generalProfileLaunch
     case generalHomeSections
+    case generalAdvisoryAge
     case generalCardPreset
     case generalTopMenu
     case playbackAudioLanguage

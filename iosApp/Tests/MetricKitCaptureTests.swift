@@ -45,6 +45,75 @@ final class MetricKitCaptureTests: XCTestCase {
         XCTAssertTrue(first.manifest.crash?.summary.contains("Silo") == true)
     }
 
+    func testCrashExcerptUsesThreadAttributedStack() {
+        let crash = crashInfo(Self.backgroundThreadCrash, type: .crash)
+
+        XCTAssertEqual(crash.stackExcerpt, "Silo 100\nSilo 200\nUIKitCore 300")
+        XCTAssertEqual(crash.summary, "Crash reported by MetricKit: Silo 100")
+    }
+
+    func testExcerptFallsBackToFirstStackWhenNoThreadIsAttributed() {
+        let crash = crashInfo(Self.unattributedHang, type: .hang)
+
+        XCTAssertEqual(crash.stackExcerpt, "Silo 10\nSilo 20")
+        XCTAssertFalse(crash.stackExcerpt?.contains("CoreFoundation") ?? false)
+        XCTAssertEqual(crash.summary, "Main thread hang reported by MetricKit: Silo 10")
+    }
+
+    func testExcerptCapsAttributedStackAtTwelveFramesInOrder() throws {
+        // Build a 15-deep subFrames chain, Silo 1 (top) through Silo 15.
+        var frame: [String: Any] = ["binaryName": "Silo", "offsetIntoBinaryTextSegment": 15]
+        for offset in stride(from: 14, through: 1, by: -1) {
+            frame = ["binaryName": "Silo", "offsetIntoBinaryTextSegment": offset, "subFrames": [frame]]
+        }
+        let idleFrame: [String: Any] = ["binaryName": "libsystem_kernel.dylib", "offsetIntoBinaryTextSegment": 1000]
+        let payload: [String: Any] = [
+            "callStackTree": [
+                "callStackPerThread": true,
+                "callStacks": [
+                    ["threadAttributed": false, "callStackRootFrames": [idleFrame]],
+                    ["threadAttributed": true, "callStackRootFrames": [frame]],
+                ],
+            ],
+        ]
+        let rawJSON = try JSONSerialization.data(withJSONObject: payload)
+
+        let crash = MetricKitDiagnosticParser.crashInfo(
+            rawJSON: rawJSON,
+            type: .crash,
+            periodStart: Date(timeIntervalSince1970: 10),
+            periodEnd: Date(timeIntervalSince1970: 20)
+        )
+
+        let lines = try XCTUnwrap(crash.stackExcerpt).split(separator: "\n").map(String.init)
+        XCTAssertEqual(lines, (1...12).map { "Silo \($0)" })
+    }
+
+    func testAttributedStackWithoutFramesDoesNotBorrowAnotherThread() {
+        // MetricKit has been seen to attribute a thread with an empty
+        // callStackRootFrames. Another thread's frames would be misleading.
+        let json = """
+        {"callStackTree": {"callStackPerThread": true, "callStacks": [
+          {"threadAttributed": false, "callStackRootFrames": [
+            {"binaryName": "libsystem_kernel.dylib", "offsetIntoBinaryTextSegment": 1000}]},
+          {"threadAttributed": true, "callStackRootFrames": []}
+        ]}}
+        """
+        let crash = crashInfo(json, type: .crash)
+
+        XCTAssertNil(crash.stackExcerpt)
+        XCTAssertEqual(crash.summary, "Crash reported by MetricKit")
+    }
+
+    private func crashInfo(_ json: String, type: ReportType) -> DiagnosticsCrashInfo {
+        MetricKitDiagnosticParser.crashInfo(
+            rawJSON: Data(json.utf8),
+            type: type,
+            periodStart: Date(timeIntervalSince1970: 10),
+            periodEnd: Date(timeIntervalSince1970: 20)
+        )
+    }
+
     private func makeStore() throws -> PendingReportStore {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("MetricKitCaptureTests-\(UUID().uuidString)", isDirectory: true)
@@ -115,6 +184,88 @@ final class MetricKitCaptureTests: XCTestCase {
             "binaryName": "Silo"
           }
         ]
+      }
+    }
+    """
+
+    /// A background-thread crash: thread 0 is idle in the kernel, and the
+    /// crashed thread comes second.
+    private static let backgroundThreadCrash = """
+    {
+      "callStackTree": {
+        "callStackPerThread": true,
+        "callStacks": [
+          {
+            "threadAttributed": false,
+            "callStackRootFrames": [
+              {
+                "binaryName": "libsystem_kernel.dylib",
+                "offsetIntoBinaryTextSegment": 1000,
+                "subFrames": [
+                  { "binaryName": "libsystem_pthread.dylib", "offsetIntoBinaryTextSegment": 2000 }
+                ]
+              }
+            ]
+          },
+          {
+            "threadAttributed": true,
+            "callStackRootFrames": [
+              {
+                "binaryName": "Silo",
+                "offsetIntoBinaryTextSegment": 100,
+                "subFrames": [
+                  {
+                    "binaryName": "Silo",
+                    "offsetIntoBinaryTextSegment": 200,
+                    "subFrames": [
+                      { "binaryName": "UIKitCore", "offsetIntoBinaryTextSegment": 300 }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "diagnosticMetaData": {
+        "appBuildVersion": "1"
+      }
+    }
+    """
+
+    /// Neither stack is attributed: the first says false, the second omits the key.
+    private static let unattributedHang = """
+    {
+      "callStackTree": {
+        "callStackPerThread": true,
+        "callStacks": [
+          {
+            "threadAttributed": false,
+            "callStackRootFrames": [
+              {
+                "binaryName": "Silo",
+                "offsetIntoBinaryTextSegment": 10,
+                "subFrames": [
+                  { "binaryName": "Silo", "offsetIntoBinaryTextSegment": 20 }
+                ]
+              }
+            ]
+          },
+          {
+            "callStackRootFrames": [
+              {
+                "binaryName": "CoreFoundation",
+                "offsetIntoBinaryTextSegment": 30,
+                "subFrames": [
+                  { "binaryName": "CoreFoundation", "offsetIntoBinaryTextSegment": 40 }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "diagnosticMetaData": {
+        "appBuildVersion": "1"
       }
     }
     """

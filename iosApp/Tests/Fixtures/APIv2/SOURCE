@@ -1,13 +1,13 @@
 Source: silo-server contracts/api/v2/fixtures (plus contracts/api/v2/fixtures.schema.json)
-Server ref: 9493206e837b3adfc16e4d404ae06342ca7baa64
-Server commit: 9493206e837b3adfc16e4d404ae06342ca7baa64 (2026-10-02)
+Server ref: 09c4ac176
+Server commit: 09c4ac1766b4a2fc394be9237f2762b9076b7274 (2026-10-05)
 
-Written by scripts/sync-apiv2-fixtures.sh 9493206e837b3adfc16e4d404ae06342ca7baa64. Every vendored byte is read
+Written by scripts/sync-apiv2-fixtures.sh 09c4ac176. Every vendored byte is read
 with git show <commit>:<path> from the server repository, never from a
 working tree. Do not hand-edit the vendored files; re-run the script at a
 new server commit instead, then cd iosApp && xcodegen generate.
 
-Vendored from the server, 61 files: the SELECTED bodies in the script,
+Vendored from the server, 64 files: the SELECTED bodies in the script,
 index.json filtered to those entries, and fixtures.schema.json.
   fixtures.schema.json
   index.json
@@ -38,6 +38,7 @@ index.json filtered to those entries, and fixtures.schema.json.
   get_system_info_ok.json
   link_account_identity_with_credentials_directory_refused.json
   link_account_identity_with_credentials_ok.json
+  link_account_identity_with_network_ok.json
   list_account_identities_ok.json
   list_auth_providers_ok.json
   list_progress_offset_rejected.json
@@ -61,6 +62,8 @@ index.json filtered to those entries, and fixtures.schema.json.
   rate_limited.json
   refresh_catalog_item_trailers_ok.json
   refresh_session_provider_unavailable.json
+  sign_in_with_network_identity_off_overlay.json
+  sign_in_with_network_identity_ok.json
   start_device_login_ok.json
   subtitle_ai_job_opaque_id.json
   subtitle_ai_quota.json

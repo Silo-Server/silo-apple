@@ -57,8 +57,9 @@ struct TVActionPopoverMenu: View {
             if direction == .left || direction == .right { onClose() }
         }
         .onExitCommand(perform: onClose)
+        // A Menu press that races a focus move would otherwise pop the page.
         .background(
-            TVActionPopoverMenuPressCatcher(onExit: onClose)
+            TVWindowMenuPressCatcher(onExit: onClose)
                 .frame(width: 0, height: 0)
         )
         .task {
@@ -75,14 +76,7 @@ struct TVActionPopoverMenu: View {
     }
 
     private var header: some View {
-        Text(title.uppercased())
-            .font(.system(size: SiloTheme.Skyline.dropdownHeaderSize, design: .monospaced))
-            .tracking(SiloTheme.Skyline.dropdownHeaderSize * 0.26)
-            .foregroundStyle(Color.white.opacity(0.38))
-            .lineLimit(1)
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-            .padding(.bottom, 10)
+        TVSkylinePanelHeader(text: title.uppercased())
             .accessibilityAddTraits(.isHeader)
     }
 
@@ -109,7 +103,6 @@ struct TVActionPopoverMenu: View {
             ScrollViewReader { proxy in
                 ScrollView(.vertical, showsIndicators: false) {
                     list
-                        .scrollTargetLayout()
                 }
                 .frame(maxHeight: Self.rowHeightEstimate * CGFloat(Self.maxRows))
                 .onAppear {
@@ -321,69 +314,6 @@ private struct TVActionPopoverHostModifier: ViewModifier {
                     value: requests.last?.id
                 )
             }
-    }
-}
-
-/// Window-level Menu press catcher. SwiftUI's `onExitCommand` only fires
-/// while the popover itself holds focus; a Menu press that races a focus
-/// move would otherwise pop the detail page. Same pattern as the top bar.
-private struct TVActionPopoverMenuPressCatcher: UIViewRepresentable {
-    var onExit: () -> Void
-
-    func makeUIView(context: Context) -> TVActionPopoverMenuPressUIView {
-        let view = TVActionPopoverMenuPressUIView()
-        view.onExit = onExit
-        return view
-    }
-
-    func updateUIView(_ uiView: TVActionPopoverMenuPressUIView, context: Context) {
-        uiView.onExit = onExit
-    }
-}
-
-private final class TVActionPopoverMenuPressUIView: UIView, UIGestureRecognizerDelegate {
-    var onExit: () -> Void = {}
-
-    private weak var attachedWindow: UIWindow?
-    private var recognizer: UITapGestureRecognizer?
-
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        attachRecognizerIfNeeded()
-    }
-
-    deinit {
-        detachRecognizer()
-    }
-
-    private func attachRecognizerIfNeeded() {
-        guard attachedWindow !== window else { return }
-        detachRecognizer()
-        guard let window else { return }
-        let recognizer = UITapGestureRecognizer(target: self, action: #selector(handleMenuPress(_:)))
-        recognizer.allowedPressTypes = [NSNumber(value: UIPress.PressType.menu.rawValue)]
-        recognizer.cancelsTouchesInView = true
-        recognizer.delegate = self
-        window.addGestureRecognizer(recognizer)
-        attachedWindow = window
-        self.recognizer = recognizer
-    }
-
-    private func detachRecognizer() {
-        if let recognizer, let attachedWindow {
-            attachedWindow.removeGestureRecognizer(recognizer)
-        }
-        recognizer = nil
-        attachedWindow = nil
-    }
-
-    @objc private func handleMenuPress(_ recognizer: UITapGestureRecognizer) {
-        guard recognizer.state == .ended else { return }
-        onExit()
-    }
-
-    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        window != nil
     }
 }
 #endif

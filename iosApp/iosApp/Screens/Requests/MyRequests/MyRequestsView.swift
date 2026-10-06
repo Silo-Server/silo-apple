@@ -372,9 +372,8 @@ struct MyRequestRow: View {
     var onOpenInLibrary: (() -> Void)? = nil
     var onRetry: (() -> Void)? = nil
 
-    private var progress: RequestProgress { RequestProgress(record: record) }
-
     var body: some View {
+        let progress = RequestProgress(record: record)
         HStack(spacing: 12) {
             Button(action: onOpen) {
                 HStack(spacing: 12) {
@@ -417,7 +416,7 @@ struct MyRequestRow: View {
             // The content fades while the action runs; its button doesn't.
             .opacity(isDimmed || actionPhase != nil ? 0.45 : 1)
 
-            trailing
+            trailing(progress: progress)
         }
         .padding(.vertical, 4)
         .disabled(isBusy)
@@ -427,7 +426,7 @@ struct MyRequestRow: View {
     }
 
     @ViewBuilder
-    private var trailing: some View {
+    private func trailing(progress: RequestProgress) -> some View {
         if let onRetry {
             RequestRowActionButton(
                 action: .retry,

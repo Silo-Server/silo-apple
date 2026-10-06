@@ -8,9 +8,7 @@ import Foundation
 /// Without this probe, a server with no providers wired up answers a search
 /// with an empty result set — so the user picks a language, waits out the
 /// 20–30s provider fan-out timeout, and gets "No subtitles found for
-/// English.", which is indistinguishable from a real empty result. That has
-/// already been reported as a broken feature when it was only ever an
-/// unconfigured one.
+/// English.", which is indistinguishable from a real empty result.
 ///
 /// Structurally this follows the ``AICapabilities`` / ``RequestsFeatureStore``
 /// precedent: a `@MainActor` `@Observable` singleton, probed once per session,

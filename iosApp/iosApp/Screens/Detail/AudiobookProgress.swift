@@ -1,5 +1,18 @@
 import Foundation
 
+/// The resume rule every detail page shares: resume only past a 30 s grace,
+/// and not within 5 s of the end (that far in counts as finished). The end
+/// guard applies only when the duration is known.
+enum PlaybackResumePoint {
+    static func position(_ position: Double?, duration: Double?) -> Double? {
+        guard let position, position.isFinite, position > 30 else { return nil }
+        if let duration, duration.isFinite, duration > 0, position >= duration - 5 {
+            return nil
+        }
+        return position
+    }
+}
+
 /// Pure, SwiftUI-free progress/timeline decisions for the audiobook detail
 /// screens. `AudiobookPlaybackContext` already stitches parts and chapters
 /// onto one whole-book timeline; this enum layers the pure "where am I"
@@ -10,15 +23,8 @@ import Foundation
 enum AudiobookProgress {
 
     /// The meaningful resume point, or nil when Resume should be suppressed.
-    /// nil unless the stored position is finite and past the 30s intro grace;
-    /// nil again within 5s of the end (a book that far in is "finished", not
-    /// "resumable"). The end guard only applies when we know the duration.
     static func resumePosition(position: Double?, totalDuration: Double) -> Double? {
-        guard let position, position.isFinite, position > 30 else { return nil }
-        if totalDuration.isFinite, totalDuration > 0, position >= totalDuration - 5 {
-            return nil
-        }
-        return position
+        PlaybackResumePoint.position(position, duration: totalDuration)
     }
 
     /// Whether the book is effectively finished — the played flag, or a

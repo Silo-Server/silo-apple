@@ -5,16 +5,6 @@ import XCTest
 
 @MainActor
 final class AetherPlaybackBoundaryTests: XCTestCase {
-    private struct LiveStreamFixture: Decodable {
-        let label: String?
-        let url: URL
-        let headers: [String: String]
-    }
-
-    private struct LiveStreamFixtureEnvelope: Decodable {
-        let streams: [LiveStreamFixture]
-    }
-
     func testTrueHDAtmosRendersOnlyWhenAskedAndTheOutputCanCarryIt() {
         XCTAssertEqual(AetherObjectAudioPolicy.rendering(enabled: true, output: .atmos), .apac(.l714))
         XCTAssertEqual(AetherObjectAudioPolicy.rendering(enabled: true, output: .unknown), .apac(.l714),
@@ -1125,10 +1115,16 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         object["playback_plan"] = planObject
 
         let response = try PlaybackV3FixtureTestSupport.v2Decision(object)
-        guard case .playable(let plan, let sessionID) = response.validatedForApple() else {
-            throw XCTSkip("Expected a playable sidecar-inventory fixture")
+        let validation = response.validatedForApple()
+        guard case .playable(let plan, let sessionID) = validation else {
+            // A fixture or validation regression must fail, not skip.
+            throw UnplayableFixture(description: "Expected a playable sidecar-inventory fixture, got \(validation)")
         }
         return (plan, sessionID)
+    }
+
+    private struct UnplayableFixture: Error, CustomStringConvertible {
+        let description: String
     }
 
     private static func loadSpec(
@@ -1234,30 +1230,74 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         }
     }
 
-    /// Opt-in local fixture: two embedded SRT tracks, with the second stream
-    /// at FFmpeg index 3 and text "Native track 2". No sidecar is registered.
-    func testOriginalHTTPSelectsExactEmbeddedSubtitleWithoutSidecar() async throws {
-        guard let rawURL = ProcessInfo.processInfo.environment["SILO_AETHER_EMBEDDED_FIXTURE_URL"],
-              let url = URL(string: rawURL) else {
-            throw XCTSkip("Set SILO_AETHER_EMBEDDED_FIXTURE_URL to the local two-track MKV fixture")
-        }
+    /// After a timing change, the showing sidecar is registered again and
+    /// Aether clears its cues to decode the file anew. The cue hold keeps the
+    /// renderers on the old cues until the new ones are decoded, so the swap
+    /// has no blank gap; picking another track ends the hold at once.
+    func testReloadingAShowingSidecarHoldsItsCuesUntilTheNewOnesDecode() async throws {
         let controller = try AetherPlaybackController()
         defer { controller.stop() }
-        let spec = try AetherLoadSpec(directURL: url, headers: [:], startPosition: 0, audioOnly: false)
-        XCTAssertTrue(spec.options.externalSubtitles.isEmpty)
-        let epoch = controller.beginLoad(spec)
-        try await controller.finishLoad(epoch)
-        try controller.validateEmbeddedSubtitleSelection(3)
-        controller.selectSubtitleTrack(id: 3)
-        controller.play()
-        let deadline = Date().addingTimeInterval(15)
-        while !controller.engine.subtitleCues.contains(where: { $0.text == "Native track 2" }),
-              Date() < deadline {
-            try await Task.sleep(nanoseconds: 50_000_000)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("cue-hold-\(UUID().uuidString).srt")
+        try "1\n00:00:01,000 --> 00:00:03,000\nHeld line\n\n".write(to: url, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let appID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 7)
+        controller.addExternalSubtitleTrack(ExternalSubtitleTrack(url: url), appTrackID: appID)
+        controller.selectSubtitleTrack(id: appID)
+        try await waitForCondition { !controller.engine.subtitleCues.isEmpty }
+
+        XCTAssertTrue(controller.reloadExternalSubtitleTrack(appTrackID: appID, primary: true, secondary: false))
+        XCTAssertTrue(controller.engine.subtitleCues.isEmpty, "Aether clears the cues while it fetches the file again")
+        XCTAssertTrue(controller.cueHold.holds(.primary, trackID: controller.engine.activeSubtitleTrackIndex),
+                      "so the renderers hold the ones on screen")
+        XCTAssertFalse(controller.cueHold.isHolding(.secondary), "the secondary stream was not reloaded")
+        try await waitForCondition { !controller.engine.subtitleCues.isEmpty && !controller.cueHold.isHolding(.primary) }
+        XCTAssertFalse(controller.cueHold.isHolding(.primary), "the hold ends once the new cues are decoded")
+
+        XCTAssertTrue(controller.reloadExternalSubtitleTrack(appTrackID: appID, primary: true, secondary: false))
+        XCTAssertTrue(controller.cueHold.isHolding(.primary))
+        controller.selectSubtitleTrack(id: nil)
+        XCTAssertFalse(controller.cueHold.isHolding(.primary), "turning subtitles off must not keep old cues up")
+    }
+
+    /// With preferred subtitle languages, a sidecar that is not showing cannot
+    /// be registered again when its timing changes, since registering may
+    /// select a track on its own. It is registered again when it is next
+    /// selected, so Aether fetches the new timing instead of reusing the old
+    /// decode.
+    func testSidecarWhoseTimingChangedWhileHiddenIsFetchedAgainWhenSelected() throws {
+        let controller = try AetherPlaybackController()
+        defer { controller.stop() }
+        let media = URL(string: "https://media.example.test/movie.mkv")!
+        _ = controller.beginLoad(try AetherLoadSpec(directURL: media, headers: [:], startPosition: 0,
+                                                    audioOnly: false, preferredSubtitleLanguages: ["eng"]))
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("stale-\(UUID().uuidString).srt")
+        try "1\n00:00:01,000 --> 00:00:03,000\nLine\n\n".write(to: url, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let appID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 7)
+        controller.addExternalSubtitleTrack(ExternalSubtitleTrack(url: url), appTrackID: appID)
+        let firstID = try XCTUnwrap(controller.aetherSubtitleID(forAppID: appID))
+
+        XCTAssertFalse(controller.reloadExternalSubtitleTrack(appTrackID: appID, primary: false, secondary: false))
+        XCTAssertEqual(controller.aetherSubtitleID(forAppID: appID), firstID, "nothing is registered while hidden")
+
+        controller.selectSubtitleTrack(id: appID)
+        let secondID = try XCTUnwrap(controller.aetherSubtitleID(forAppID: appID))
+        XCTAssertNotEqual(secondID, firstID, "selecting it registers the file again")
+        XCTAssertEqual(controller.engine.activeSubtitleTrackIndex, secondID)
+        XCTAssertFalse(controller.engine.subtitleTracks.contains { $0.id == firstID })
+        XCTAssertFalse(controller.cueHold.isHolding(.primary), "another track's cues are not held")
+
+        controller.selectSubtitleTrack(id: nil)
+        controller.selectSubtitleTrack(id: appID)
+        XCTAssertEqual(controller.aetherSubtitleID(forAppID: appID), secondID, "only once")
+    }
+
+    private func waitForCondition(timeout: TimeInterval = 5, _ condition: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
         }
-        XCTAssertEqual(controller.engine.activeSubtitleTrackIndex, 3)
-        XCTAssertTrue(controller.engine.subtitleCues.contains(where: { $0.text == "Native track 2" }))
-        XCTAssertFalse(controller.engine.subtitleCues.contains(where: { $0.text == "Native track 1" }))
+        XCTAssertTrue(condition(), "timed out waiting")
     }
 
     func testMovieTimelineUsesExternalTrackStateWithoutRequiringAnAlias() throws {
@@ -1405,6 +1445,40 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         XCTAssertEqual(controller.activeLoadEpoch, successorEpoch)
     }
 
+    func testDisplayStaysAwakeOnlyWhileVideoIsShownOnThisDevice() {
+        func prevents(
+            _ state: PlaybackState,
+            _ route: VideoRoute,
+            playWhenReady: Bool = true,
+            audioOnly: Bool = false,
+            external: Bool = false
+        ) -> Bool {
+            AetherPlaybackController.shouldPreventDisplaySleep(
+                state: state, route: route, playWhenReady: playWhenReady,
+                audioOnly: audioOnly, externalPlaybackActive: external
+            )
+        }
+
+        for route in [VideoRoute.loopback, .remoteBypass, .software] {
+            XCTAssertTrue(prevents(.playing, route))
+        }
+        XCTAssertFalse(prevents(.playing, .audio), "music must let the display sleep")
+        XCTAssertFalse(prevents(.playing, .none))
+
+        XCTAssertTrue(prevents(.loading, .none), "an episode boundary must not open a gap")
+        XCTAssertTrue(prevents(.seeking, .loopback))
+        XCTAssertFalse(prevents(.loading, .none, playWhenReady: false))
+        XCTAssertFalse(prevents(.loading, .audio))
+        XCTAssertFalse(prevents(.loading, .none, audioOnly: true),
+                       "an audio-only load has no picture to keep on screen")
+
+        for state in [PlaybackState.idle, .paused, .ended, .error("failed")] {
+            XCTAssertFalse(prevents(state, .loopback), "\(state) must release the display")
+        }
+        XCTAssertFalse(prevents(.playing, .loopback, external: true),
+                       "the picture is on the AirPlay receiver")
+    }
+
     func testReplacementExternalPlaybackPolicyOnlyWinsForReceiverSafeSuccessor() {
         XCTAssertTrue(AetherPlaybackController.externalPlaybackAllowed(
             activePolicy: false,
@@ -1426,72 +1500,6 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
             preservedReplacementPolicy: nil,
             preservedPolicyIsReceiverSafe: false
         ))
-    }
-
-    /// Opt-in shared-dev proof for the complete server -> StreamRequest ->
-    /// Aether boundary. The fixture stays outside the repository because it
-    /// contains a short-lived bearer credential. Normal test runs skip this;
-    /// validation supplies only its mode-0600 path through the test process
-    /// environment.
-    func testLiveHeaderAuthenticatedStreamLoadsAndAdvancesInAether() async throws {
-        guard let fixturePath = ProcessInfo.processInfo.environment["SILO_AETHER_LIVE_FIXTURE_PATH"],
-              !fixturePath.isEmpty else {
-            throw XCTSkip("Set SILO_AETHER_LIVE_FIXTURE_PATH for shared-dev playback proof")
-        }
-
-        let fixtureURL = URL(fileURLWithPath: fixturePath)
-        let data = try Data(contentsOf: fixtureURL)
-        let decoder = JSONDecoder()
-        let fixtures: [LiveStreamFixture]
-        if let envelope = try? decoder.decode(LiveStreamFixtureEnvelope.self, from: data) {
-            fixtures = envelope.streams
-        } else {
-            fixtures = [try decoder.decode(LiveStreamFixture.self, from: data)]
-        }
-        XCTAssertFalse(fixtures.isEmpty, "Live fixture envelope must contain at least one stream")
-
-        for fixture in fixtures {
-            try await assertLiveFixtureLoadsAndAdvances(fixture)
-        }
-    }
-
-    private func assertLiveFixtureLoadsAndAdvances(_ fixture: LiveStreamFixture) async throws {
-        let label = fixture.label ?? "live stream"
-        guard let scheme = fixture.url.scheme?.lowercased(),
-              ["http", "https"].contains(scheme),
-              fixture.url.host != nil else {
-            return XCTFail("\(label): URL must be an absolute HTTP(S) URL")
-        }
-        XCTAssertNotNil(
-            fixture.headers.first { $0.key.caseInsensitiveCompare("Authorization") == .orderedSame },
-            "\(label): fixture must exercise Aether's authenticated HTTP transport"
-        )
-
-        let controller = try AetherPlaybackController()
-        defer { controller.stop() }
-        let spec = try AetherLoadSpec(
-            directURL: fixture.url,
-            headers: fixture.headers,
-            startPosition: 0,
-            audioOnly: false
-        )
-        let epoch = controller.beginLoad(spec)
-        try await controller.finishLoad(epoch)
-
-        XCTAssertNotEqual(controller.engine.playbackBackend, .none)
-        XCTAssertGreaterThan(controller.engine.duration, 0)
-        XCTAssertFalse(controller.engine.audioTracks.isEmpty)
-
-        controller.play()
-        let deadline = Date().addingTimeInterval(15)
-        while controller.engine.clock.currentTime <= 0.25, Date() < deadline {
-            try await Task.sleep(nanoseconds: 100_000_000)
-        }
-        XCTAssertGreaterThan(
-            controller.engine.clock.currentTime,
-            0.25,
-            "\(label): Aether loaded the authenticated source but its playback clock never advanced"
-        )
     }
 
     // MARK: - Deferred track selection

@@ -2,61 +2,26 @@ import CoreGraphics
 import Foundation
 import SwiftUI
 
-/// Renders the compact ThumbHash preview supplied alongside server artwork.
-/// Decoding is kept off the main actor and memoized because this view appears
-/// in dense grids where SwiftUI may recreate or re-evaluate cells frequently.
+/// Renders the compact ThumbHash preview supplied alongside server artwork,
+/// on the first frame: decodes are tiny and cached, so they run inline.
 struct ThumbhashImage: View {
     let thumbhash: String?
 
-    @State private var decodedImage: DecodedThumbhashImage?
-
     var body: some View {
-        Group {
-            if let normalizedThumbhash,
-               let decodedImage,
-               decodedImage.thumbhash == normalizedThumbhash {
-                Image(platformImage: decodedImage.image)
-                    .resizable()
-                    .interpolation(.high)
-                    .scaledToFill()
-            } else {
-                Color.siloSurfaceVariant
-            }
+        if let image = ThumbHashImageCache.shared.image(for: thumbhash) {
+            Image(platformImage: image)
+                .resizable()
+                .interpolation(.high)
+                .scaledToFill()
+        } else {
+            Color.siloSurfaceVariant
         }
-        .task(id: normalizedThumbhash) {
-            guard let normalizedThumbhash else {
-                decodedImage = nil
-                return
-            }
-            guard let image = await ThumbHashImageCache.shared.image(for: normalizedThumbhash),
-                  !Task.isCancelled else {
-                return
-            }
-            decodedImage = DecodedThumbhashImage(
-                thumbhash: normalizedThumbhash,
-                image: image
-            )
-        }
-    }
-
-    private var normalizedThumbhash: String? {
-        guard let value = thumbhash?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !value.isEmpty else {
-            return nil
-        }
-        return value
     }
 }
 
-private struct DecodedThumbhashImage {
-    let thumbhash: String
-    let image: PlatformImage
-}
-
-/// A small bounded cache covers artwork placeholders across scrolling
-/// surfaces. Invalid hashes are cached too so corrupt server data is not
-/// repeatedly decoded.
-actor ThumbHashImageCache {
+/// Decoded ThumbHash previews shared by every artwork placeholder. Invalid
+/// hashes are cached too, so corrupt server data is decoded once.
+final class ThumbHashImageCache: @unchecked Sendable {
     static let shared = ThumbHashImageCache()
 
     private final class Entry {
@@ -69,17 +34,20 @@ actor ThumbHashImageCache {
 
     private let entries: NSCache<NSString, Entry> = {
         let cache = NSCache<NSString, Entry>()
-        cache.countLimit = 256
+        cache.countLimit = 512
         return cache
     }()
 
-    func image(for thumbhash: String) -> PlatformImage? {
-        let key = thumbhash as NSString
+    func image(for thumbhash: String?) -> PlatformImage? {
+        guard let value = thumbhash?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else {
+            return nil
+        }
+        let key = value as NSString
         if let entry = entries.object(forKey: key) {
             return entry.image
         }
-
-        let image = ThumbHashDecoder.platformImage(from: thumbhash)
+        let image = ThumbHashDecoder.platformImage(from: value)
         entries.setObject(Entry(image: image), forKey: key)
         return image
     }
@@ -198,112 +166,83 @@ enum ThumbHashDecoder {
         let height = Int(round(ratio > 1 ? 32 / ratio : 32))
         guard width > 0, height > 0 else { return nil }
 
-        var pixels = Data(count: width * height * 4)
+        // Cosine bases depend on only one axis, so compute them once per
+        // column and row instead of per pixel.
         let cxStop = max(header.lx, header.hasAlpha ? 5 : 3)
         let cyStop = max(header.ly, header.hasAlpha ? 5 : 3)
-        var fx = [Float32](repeating: 0, count: cxStop)
-        var fy = [Float32](repeating: 0, count: cyStop)
+        let fxTable = (0..<width).flatMap { x in
+            (0..<cxStop).map { cx in
+                cos(Float32.pi / Float32(width) * (Float32(x) + 0.5) * Float32(cx))
+            }
+        }
+        let fyTable = (0..<height).flatMap { y in
+            (0..<cyStop).map { cy in
+                cos(Float32.pi / Float32(height) * (Float32(y) + 0.5) * Float32(cy))
+            }
+        }
 
-        fx.withUnsafeMutableBytes { fxBuffer in
-            guard let fxBase = fxBuffer.baseAddress else { return }
-            let fxPointer = fxBase.bindMemory(
-                to: Float32.self,
-                capacity: fxBuffer.count / MemoryLayout<Float32>.stride
-            )
-            fy.withUnsafeMutableBytes { fyBuffer in
-                guard let fyBase = fyBuffer.baseAddress else { return }
-                let fyPointer = fyBase.bindMemory(
-                    to: Float32.self,
-                    capacity: fyBuffer.count / MemoryLayout<Float32>.stride
-                )
-                pixels.withUnsafeMutableBytes { pixelBuffer in
-                    guard let pixelBase = pixelBuffer.baseAddress else { return }
-                    var pixel = pixelBase.bindMemory(to: UInt8.self, capacity: pixelBuffer.count)
-                    var y = 0
-                    while y < height {
-                        var x = 0
-                        while x < width {
-                            var l = lDC
-                            var p = pDC
-                            var q = qDC
-                            var a = aDC
+        var pixels = Data(count: width * height * 4)
+        pixels.withUnsafeMutableBytes { pixelBuffer in
+            guard let pixelBase = pixelBuffer.baseAddress else { return }
+            var pixel = pixelBase.bindMemory(to: UInt8.self, capacity: pixelBuffer.count)
+            for y in 0..<height {
+                let fy = fyTable[(y * cyStop)..<((y + 1) * cyStop)]
+                for x in 0..<width {
+                    let fx = fxTable[(x * cxStop)..<((x + 1) * cxStop)]
+                    var l = lDC
+                    var p = pDC
+                    var q = qDC
+                    var a = aDC
 
-                            var cx = 0
-                            while cx < cxStop {
-                                fxPointer[cx] = cos(
-                                    Float32.pi / Float32(width)
-                                        * (Float32(x) + 0.5) * Float32(cx)
-                                )
+                    var coefficientIndex = 0
+                    for cy in 0..<header.ly {
+                        var cx = cy > 0 ? 0 : 1
+                        let fy2 = fy[fy.startIndex + cy] * 2
+                        while cx * header.ly < header.lx * (header.ly - cy) {
+                            l += lAC[coefficientIndex] * fx[fx.startIndex + cx] * fy2
+                            coefficientIndex += 1
+                            cx += 1
+                        }
+                    }
+
+                    coefficientIndex = 0
+                    for cy in 0..<3 {
+                        var cx = cy > 0 ? 0 : 1
+                        let fy2 = fy[fy.startIndex + cy] * 2
+                        while cx < 3 - cy {
+                            let factor = fx[fx.startIndex + cx] * fy2
+                            p += pAC[coefficientIndex] * factor
+                            q += qAC[coefficientIndex] * factor
+                            coefficientIndex += 1
+                            cx += 1
+                        }
+                    }
+
+                    if header.hasAlpha {
+                        coefficientIndex = 0
+                        for cy in 0..<5 {
+                            var cx = cy > 0 ? 0 : 1
+                            let fy2 = fy[fy.startIndex + cy] * 2
+                            while cx < 5 - cy {
+                                a += aAC[coefficientIndex] * fx[fx.startIndex + cx] * fy2
+                                coefficientIndex += 1
                                 cx += 1
                             }
-                            var cy = 0
-                            while cy < cyStop {
-                                fyPointer[cy] = cos(
-                                    Float32.pi / Float32(height)
-                                        * (Float32(y) + 0.5) * Float32(cy)
-                                )
-                                cy += 1
-                            }
-
-                            var coefficientIndex = 0
-                            cy = 0
-                            while cy < header.ly {
-                                cx = cy > 0 ? 0 : 1
-                                let fy2 = fyPointer[cy] * 2
-                                while cx * header.ly < header.lx * (header.ly - cy) {
-                                    l += lAC[coefficientIndex] * fxPointer[cx] * fy2
-                                    coefficientIndex += 1
-                                    cx += 1
-                                }
-                                cy += 1
-                            }
-
-                            coefficientIndex = 0
-                            cy = 0
-                            while cy < 3 {
-                                cx = cy > 0 ? 0 : 1
-                                let fy2 = fyPointer[cy] * 2
-                                while cx < 3 - cy {
-                                    let factor = fxPointer[cx] * fy2
-                                    p += pAC[coefficientIndex] * factor
-                                    q += qAC[coefficientIndex] * factor
-                                    coefficientIndex += 1
-                                    cx += 1
-                                }
-                                cy += 1
-                            }
-
-                            if header.hasAlpha {
-                                coefficientIndex = 0
-                                cy = 0
-                                while cy < 5 {
-                                    cx = cy > 0 ? 0 : 1
-                                    let fy2 = fyPointer[cy] * 2
-                                    while cx < 5 - cy {
-                                        a += aAC[coefficientIndex] * fxPointer[cx] * fy2
-                                        coefficientIndex += 1
-                                        cx += 1
-                                    }
-                                    cy += 1
-                                }
-                            }
-
-                            var blue = l - 2 / 3 * p
-                            var red = (3 * l - blue + q) / 2
-                            var green = red - q
-                            red = max(0, 255 * min(1, red))
-                            green = max(0, 255 * min(1, green))
-                            blue = max(0, 255 * min(1, blue))
-                            a = max(0, 255 * min(1, a))
-                            pixel[0] = UInt8(red)
-                            pixel[1] = UInt8(green)
-                            pixel[2] = UInt8(blue)
-                            pixel[3] = UInt8(a)
-                            pixel = pixel.advanced(by: 4)
-                            x += 1
                         }
-                        y += 1
                     }
+
+                    var blue = l - 2 / 3 * p
+                    var red = (3 * l - blue + q) / 2
+                    var green = red - q
+                    red = max(0, 255 * min(1, red))
+                    green = max(0, 255 * min(1, green))
+                    blue = max(0, 255 * min(1, blue))
+                    a = max(0, 255 * min(1, a))
+                    pixel[0] = UInt8(red)
+                    pixel[1] = UInt8(green)
+                    pixel[2] = UInt8(blue)
+                    pixel[3] = UInt8(a)
+                    pixel = pixel.advanced(by: 4)
                 }
             }
         }

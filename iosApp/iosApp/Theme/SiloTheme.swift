@@ -1,17 +1,8 @@
 import SwiftUI
 
-/// Central design token repository matching Plezy's mono theme.
+/// Central design token repository.
 /// On tvOS, spacing/radius tokens are scaled up to match 10-foot viewing distance.
-struct SiloTheme {
-
-    // MARK: - Platform scale
-
-    #if os(tvOS)
-    /// Uniform scale applied to tvOS — everything is ~2x bigger than iOS.
-    static let scale: CGFloat = 2.0
-    #else
-    static let scale: CGFloat = 1.0
-    #endif
+enum SiloTheme {
 
     // MARK: - Corner Radii
 
@@ -23,11 +14,11 @@ struct SiloTheme {
     /// Card container radius
     static let cardCornerRadius: CGFloat = 18
     #else
-    /// Standard card/poster corner radius (8pt — Plezy radiusSm)
+    /// Standard card/poster corner radius (8pt)
     static let cornerRadius: CGFloat = 8
     /// Smaller elements like episode thumbnail corners (6pt)
     static let smallCornerRadius: CGFloat = 6
-    /// Card container radius (14pt — Plezy CardTheme)
+    /// Card container radius (14pt)
     static let cardCornerRadius: CGFloat = 14
     #endif
 
@@ -37,9 +28,70 @@ struct SiloTheme {
     /// The glyph stays small; the frame keeps a comfortable 44pt hit area and
     /// sets the rhythm for the evenly spaced top-right cluster.
     static let topBarIconHitSize: CGFloat = 44
-    /// Gap between top-bar action items (cast / search / profile). Tuned so the
-    /// visible spacing between glyphs reads like Plex's top-right cluster.
+    /// Gap between top-bar action items (cast / search / profile).
     static let topBarIconSpacing: CGFloat = 2
+
+    #if os(macOS)
+    // MARK: - Sidebar (macOS)
+
+    /// Width range of the Mac sidebar column.
+    static let macSidebarMinWidth: CGFloat = 240
+    static let macSidebarIdealWidth: CGFloat = 260
+    static let macSidebarMaxWidth: CGFloat = 280
+    /// Width of the Silo logo pinned above the sidebar rows.
+    static let macSidebarWordmarkWidth: CGFloat = 84
+    /// Letter spacing of the sidebar's caps group headings.
+    static let macSidebarHeadingTracking: CGFloat = 1.5
+    /// Diameter of the profile avatar in the sidebar's bottom row.
+    static let macSidebarAvatarSize: CGFloat = 32
+    // MARK: - Featured hero (macOS)
+
+    /// Share of the window's height Home's featured hero takes, so the next
+    /// row stays in view. Larger than web's 66% because the title list sits
+    /// inside the hero.
+    static let macHeroWindowFraction: CGFloat = 0.8
+    /// Shortest the hero may get in a small window: enough for its details
+    /// above a list of full-size posters.
+    static let macHeroMinHeight: CGFloat = 660
+    /// Tallest the hero may get in a tall window.
+    static let macHeroMaxHeight: CGFloat = 1200
+    /// Largest a title's logo artwork is drawn in the hero.
+    static let macHeroLogoWidth: CGFloat = 320
+    static let macHeroLogoHeight: CGFloat = 110
+    /// Outline around the title currently on show in the hero's list.
+    static let macHeroSelectionRingWidth: CGFloat = 2
+    /// Darkening laid over the titles in the hero's list that are not on
+    /// show. A shade rather than transparency, so the backdrop does not
+    /// show through the posters.
+    static let macHeroUnselectedShade: Double = 0.45
+    /// Widest the hero's title, metadata and synopsis column may grow.
+    static let macHeroTextWidth: CGFloat = 560
+    /// Seconds a featured title stays up before the hero advances.
+    static let macHeroAdvanceSeconds: Double = 8
+
+    // MARK: - Detail page (macOS)
+
+    /// Width of the poster beside a detail page's title and facts.
+    static let macDetailPosterWidth: CGFloat = 230
+    /// Height of the backdrop behind a detail page's header.
+    static let macDetailBackdropHeight: CGFloat = 520
+    /// Widest the detail page's title, facts and synopsis column may grow.
+    static let macDetailTextWidth: CGFloat = 620
+    /// Space above the detail header, clearing the window's title bar.
+    static let macDetailTopInset: CGFloat = 72
+    /// Width of a season's poster card on a series detail page.
+    static let macSeasonCardWidth: CGFloat = 130
+    /// Dimming of the seasons that are not selected.
+    static let macSeasonUnselectedOpacity: Double = 0.75
+
+    /// Widest a settings page's column grows in a Mac window.
+    static let macSettingsColumnWidth: CGFloat = 860
+    /// Size of the monochrome switch on the Mac's settings pages.
+    static let macSettingsSwitchSize = CGSize(width: 34, height: 18)
+
+    /// Height of the soft fade below the scrolling header strip.
+    static let macPageChromeFadeLength: CGFloat = 32
+    #endif
 
     // MARK: - Spacing
 
@@ -55,7 +107,7 @@ struct SiloTheme {
     /// Screen safe-area padding — tvOS always wants overscan
     static let safePadding: CGFloat = 80
     #else
-    /// Base spacing unit (12pt — Plezy space token)
+    /// Base spacing unit (12pt)
     static let spacing: CGFloat = 12
     /// Standard content padding (16pt)
     static let padding: CGFloat = 16
@@ -78,6 +130,14 @@ struct SiloTheme {
     static let thumbnailCardWidth: CGFloat = 360
     /// Episode/thumbnail card height
     static let thumbnailCardHeight: CGFloat = 200
+    #elseif os(macOS)
+    // Desktop cards sit between the phone and TV sizes: a phone-sized card
+    // reads as a thumbnail in a Mac window. The poster is a true 2:3, so the
+    // artwork is not cropped at the sides.
+    static let posterCardWidth: CGFloat = 185
+    static let posterCardHeight: CGFloat = 278
+    static let thumbnailCardWidth: CGFloat = 260
+    static let thumbnailCardHeight: CGFloat = 146
     #else
     static let posterCardWidth: CGFloat = 120
     static let posterCardHeight: CGFloat = 198
@@ -85,14 +145,7 @@ struct SiloTheme {
     static let thumbnailCardHeight: CGFloat = 90
     #endif
 
-    /// Profile avatar size
-    #if os(tvOS)
-    static let profileAvatarSize: CGFloat = 160
-    #else
-    static let profileAvatarSize: CGFloat = 80
-    #endif
-
-    // MARK: - Animation Durations (Plezy mono_tokens)
+    // MARK: - Animation Durations
 
     /// Fast — focus state changes, hover effects (120ms)
     static let fastDuration: Double = 0.12

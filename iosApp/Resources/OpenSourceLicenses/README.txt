@@ -3,7 +3,7 @@ Silo Open-Source Acknowledgements
 
 This Silo build includes the components listed below. Their complete license
 texts are bundled beside this file and are available from Settings > About >
-Open Source Licenses.
+Acknowledgements.
 
 AetherEngine
   Revision: b1e4879e6a41477ebef3b68e8d9f65239d1ba80b (upstream release
@@ -122,6 +122,9 @@ SwiftAssRenderer, SwiftLibass, and local ASS rendering
   https://github.com/Silo-Server/silo-apple/releases
   Tagged builds place the archive on their release; manually dispatched
   TestFlight builds use a source-<app-commit> release. The TestFlight build's
-  What to Test notes include the exact archive URL. No original release
-  signing keys are needed to rebuild for a simulator; physical-device builds
-  use the recipient's signing identity.
+  What to Test notes include the exact archive URL. Builds from the release
+  and sideload workflows also show it at the top of these acknowledgements
+  and behind Settings > About > Source Code on iPhone and iPad; other builds
+  link the repository. No original release signing keys are needed to
+  rebuild for a simulator; physical-device builds use the recipient's
+  signing identity.

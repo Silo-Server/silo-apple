@@ -5,60 +5,42 @@ import Foundation
 /// strings; instants use the common HTTP decoder. Unknown enum values stay strings.
 enum APIv2CatalogRead {
     struct CatalogItemDetail: Decodable {
-        let addedAt: Date?
+        let advisoryAge: Int64?
+        let advisorySource: String?
         let airDate: String?
-        let airTime: String?
-        let airTimezone: String?
         let audiobook: AudiobookDetailExtension?
         let backdropThumbhash: String?
         @ArtworkURL var backdropUrl: String?
-        let badges: [String]?
         let cast: [CastCredit]
         let contentId: String
         let contentRating: String?
         let countries: [String]?
         let credits: Marker?
         let crew: [CrewCredit]
-        let durationSeconds: Double?
-        let ebook: EbookDetailExtension?
         let effectiveShowForcedSubtitles: Bool?
-        let effectiveSubtitleLanguage: String?
         let effectiveSubtitleMode: String?
         let effectiveSubtitleTrackSignature: WatchSubtitleSignature?
-        let effectiveVersionCodecVideo: String?
-        let effectiveVersionEditionKey: String?
         let effectiveVersionHdr: Bool?
         let effectiveVersionResolution: String?
         let episodeCount: Int64?
         let episodeNumber: Int64?
         let extras: [ItemExtraInfo]?
         let firstAirDate: String?
-        let folderPaths: [String]?
         let genres: [String]
         let imdbId: String?
         let intro: Marker?
         let isSpecials: Bool?
-        let itemSource: String?
-        let keywords: [String]
         let lastAirDate: String?
-        let lockedFields: [Int64]?
         @ArtworkURL var logoUrl: String?
-        let manga: MangaDetailExtension?
-        let mangaChapterCount: Int64?
-        let mangaVolumeCount: Int64?
         let networks: [String]?
         let originalLanguage: String?
         let originalTitle: String?
         let overlaySummary: CatalogItemOverlay?
         let overview: String?
         let pendingTranslationLanguage: String?
-        let playContentId: String?
         let playbackVariants: [PlaybackVariant]?
-        let positionSeconds: Double?
         let posterThumbhash: String?
         @ArtworkURL var posterUrl: String?
-        let preview: Marker?
-        let progressUpdatedAt: Date?
         let ratingImdb: Double?
         let ratingRtAudience: Int64?
         let ratingRtCritic: Int64?
@@ -66,7 +48,6 @@ enum APIv2CatalogRead {
         /// The external ratings a title page shows, chosen, ordered and
         /// formatted by the server. Absent from servers that predate it.
         let ratings: [CatalogRating]?
-        let recap: Marker?
         let releaseDate: String?
         let runtime: Int64?
         let seasonCount: Int64?
@@ -74,7 +55,6 @@ enum APIv2CatalogRead {
         let seriesId: String?
         let seriesTitle: String?
         let showStatus: String?
-        let sortMetrics: CatalogItemSortMetrics?
         let sortTitle: String?
         let status: String
         let studios: [String]?
@@ -84,15 +64,10 @@ enum APIv2CatalogRead {
         let tmdbId: String?
         let tvdbId: String?
         let `type`: String
-        let upcomingEvent: CatalogItemUpcomingEvent?
         let userData: WatchRollup?
-        let userRating: Int64?
         let userState: CatalogItemUserState?
         let versions: [FileVersion]
         let videos: [ItemVideoInfo]?
-        let workFormats: [CatalogWorkFormat]?
-        let workId: String?
-        let workTitle: String?
         let year: Int64?
     }
 
@@ -102,7 +77,6 @@ enum APIv2CatalogRead {
         let episodeCount: Int64
         let isSpecials: Bool?
         let overview: String?
-        let playContentId: String?
         let posterThumbhash: String?
         @ArtworkURL var posterUrl: String?
         let seasonNumber: Int64
@@ -116,7 +90,6 @@ enum APIv2CatalogRead {
         let episodeNumber: Int64
         let files: [EpisodeFile]?
         let imdbId: String?
-        let overlaySummary: CatalogItemOverlay?
         let overview: String?
         let runtime: Int64
         let seasonNumber: Int64
@@ -133,19 +106,16 @@ enum APIv2CatalogRead {
         let birthDate: String?
         let birthplace: String?
         let deathDate: String?
-        let homepage: String?
         let id: String
         let imdbId: String?
         let name: String
         let photoThumbhash: String?
         @ArtworkURL var photoUrl: String?
-        let plexGuid: String?
         let tmdbId: String?
         let tvdbId: String?
     }
 
     struct AudioTrack: Decodable {
-        let bitDepth: Int64?
         let bitrate: Int64?
         let channels: Int64?
         let codec: String?
@@ -153,7 +123,6 @@ enum APIv2CatalogRead {
         let embeddedTitle: String?
         let language: String?
         let layout: String?
-        let profile: String?
         let sampleRate: Int64?
         let title: String?
     }
@@ -215,7 +184,6 @@ enum APIv2CatalogRead {
         let personId: String?
         let photoThumbhash: String?
         @ArtworkURL var photoUrl: String?
-        let plexGuid: String?
         let tmdbId: String?
         let tvdbId: String?
     }
@@ -234,39 +202,10 @@ enum APIv2CatalogRead {
         let videoCodec: String?
     }
 
-    struct CatalogItemSortMetrics: Decodable {
-        let author: String?
-        let bitrateKbps: Int64?
-        let narrator: String?
-        let playCount: Int64?
-        let progressRatio: Double?
-        let releaseDate: String?
-        let resolution: String?
-        let runtimeMinutes: Int64?
-        let seriesName: String?
-        let viewedAt: String?
-    }
-
-    struct CatalogItemUpcomingEvent: Decodable {
-        let airDate: String
-        let airTime: String?
-        let badges: [String]
-        let episodeNumber: Int64?
-        let episodeTitle: String?
-        let seasonNumber: Int64?
-        let `type`: String
-    }
-
     struct CatalogItemUserState: Decodable {
         let inWatchlist: Bool
         let isFavorite: Bool
         let played: Bool
-    }
-
-    struct CatalogWorkFormat: Decodable {
-        let contentId: String
-        let libraryId: String?
-        let `type`: String
     }
 
     struct CrewCredit: Decodable {
@@ -276,16 +215,8 @@ enum APIv2CatalogRead {
         let personId: String?
         let photoThumbhash: String?
         @ArtworkURL var photoUrl: String?
-        let plexGuid: String?
         let tmdbId: String?
         let tvdbId: String?
-    }
-
-    struct EbookDetailExtension: Decodable {
-        let authors: [AudiobookPerson]
-        let publisher: String?
-        let related: AudiobookRelatedContent
-        let series: AudiobookSeriesGroup?
     }
 
     struct EpisodeFile: Decodable {
@@ -314,18 +245,13 @@ enum APIv2CatalogRead {
         let effectiveAudioTrackIndex: Int64?
         let fileId: String
         let fileName: String?
-        let filePath: String?
         let fileSize: Int64
         let hdr: Bool
         let intro: Marker?
-        let multiEpisodeEnd: Int64?
-        let multiEpisodeStart: Int64?
         let presentationGroupKey: String?
         let presentationKind: String?
         let presentationPartIndex: Int64?
         let presentationPartTotal: Int64?
-        let preview: Marker?
-        let recap: Marker?
         let resolution: String
         let subtitleTracks: [VersionSubtitleTrack]?
         let videoTracks: [VideoTrack]?
@@ -337,7 +263,6 @@ enum APIv2CatalogRead {
     }
 
     struct WatchFileVersion: Decodable {
-        let addedAt: Date
         let audioTracks: [AudioTrack]?
         let bitrate: Int64
         let chapters: [VersionChapter]?
@@ -353,18 +278,13 @@ enum APIv2CatalogRead {
         let effectiveAudioTrackIndex: Int64?
         let fileId: String
         let fileName: String?
-        let filePath: String?
         let fileSize: Int64
         let hdr: Bool
         let intro: WatchMarker?
-        let multiEpisodeEnd: Int64?
-        let multiEpisodeStart: Int64?
         let presentationGroupKey: String?
         let presentationKind: String?
         let presentationPartIndex: Int64?
         let presentationPartTotal: Int64?
-        let preview: WatchMarker?
-        let recap: WatchMarker?
         let resolution: String
         let subtitleTracks: [VersionSubtitleTrack]?
         let videoTracks: [VideoTrack]?
@@ -409,20 +329,6 @@ enum APIv2CatalogRead {
         let siteKey: String
     }
 
-    struct MangaChapter: Decodable {
-        let chapterIndex: Double?
-        let contentId: String
-        @ArtworkURL var posterUrl: String?
-        let progress: Double?
-        let read: Bool
-        let title: String
-        let volume: String?
-    }
-
-    struct MangaDetailExtension: Decodable {
-        let chapters: [MangaChapter]
-    }
-
     struct Marker: Decodable {
         let end: Double
         let start: Double
@@ -450,7 +356,6 @@ enum APIv2CatalogRead {
     struct SubtitleInfo: Decodable {
         let codec: String?
         let forced: Bool
-        let hearingImpaired: Bool
         let language: String
         let source: String
         let title: String?
@@ -476,12 +381,10 @@ enum APIv2CatalogRead {
         let hearingImpaired: Bool
         let index: Int64?
         let language: String?
-        let resolution: String?
         let title: String?
     }
 
     struct VideoTrack: Decodable {
-        let aspectRatio: String?
         let bitDepth: Int64?
         let bitrate: Int64?
         let codec: String?
@@ -490,26 +393,12 @@ enum APIv2CatalogRead {
         let colorSpace: String?
         let colorTransfer: String?
         let dolbyVision: String?
-        let dvBlCompatId: Int64?
-        let dvBlCompatIdPresent: Bool
-        let dvBlPresent: Bool?
-        let dvConfigPresent: Bool
-        let dvElPresent: Bool?
-        let dvEnhancementLayer: String?
-        let dvLevel: Int64?
-        let dvProfile: Int64?
-        let dvRpuPresent: Bool?
         let frameRate: String?
-        let hdr10Plus: Bool?
         let height: Int64?
-        let interlaced: Bool
         let level: Int64?
-        let pixelFormat: String?
         let profile: String?
-        let referenceFrames: Int64?
         let title: String?
         let videoRange: String?
-        let videoRangeType: String?
         let width: Int64?
     }
 
@@ -517,10 +406,7 @@ enum APIv2CatalogRead {
         let durationSeconds: Double?
         let inProgressCount: Int64
         let isInProgress: Bool?
-        let lastCodecVideo: String?
-        let lastEditionKey: String?
         let lastFileId: String?
-        let lastHdr: Bool?
         let lastResolution: String?
         let played: Bool
         let positionSeconds: Double?

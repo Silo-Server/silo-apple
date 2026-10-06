@@ -2,28 +2,20 @@ import SwiftUI
 
 // MARK: - Variants
 //
-// Each first-run screen gets a slightly different placement of Silo's cool
-// signal glow. The canvas stays mostly black so authentication transitions
-// naturally into the signed-in media experience.
+// Placement of Silo's cool signal glow. The canvas stays mostly black so the
+// first-run screens transition naturally into the signed-in experience.
 
 struct AuroraVariant {
     var glowCenter: UnitPoint
     var lineHeight: CGFloat
     var intensity: Double
 
-    static let welcome = AuroraVariant(glowCenter: UnitPoint(x: 0.72, y: 0.14), lineHeight: 0.38, intensity: 0.95)
-    static let server = AuroraVariant(glowCenter: UnitPoint(x: 0.18, y: 0.30), lineHeight: 0.56, intensity: 0.72)
-    static let connecting = AuroraVariant(glowCenter: UnitPoint(x: 0.50, y: 0.20), lineHeight: 0.46, intensity: 0.82)
     static let signIn = AuroraVariant(glowCenter: UnitPoint(x: 0.78, y: 0.25), lineHeight: 0.47, intensity: 0.86)
-    static let profile = AuroraVariant(glowCenter: UnitPoint(x: 0.50, y: 0.42), lineHeight: 0.58, intensity: 0.72)
 }
 
 enum AuroraScrim {
-    /// Strong darkening on the left for hero text laid directly on the art.
-    case left
     /// Radial darkening at the edges so a centered glass card pops.
     case soft
-    case none
 }
 
 // MARK: - Backdrop
@@ -31,6 +23,8 @@ enum AuroraScrim {
 struct AuroraBackdrop: View {
     var variant: AuroraVariant = .signIn
     var scrim: AuroraScrim = .soft
+
+    private static let glowShade = Color(hex: "#18212A")
 
     var body: some View {
         GeometryReader { geo in
@@ -42,7 +36,7 @@ struct AuroraBackdrop: View {
                 RadialGradient(
                     colors: [
                         Color.auroraAccent.opacity(0.08 * variant.intensity),
-                        Color(hex: "#18212A").opacity(0.08 * variant.intensity),
+                        Self.glowShade.opacity(0.08 * variant.intensity),
                         .clear,
                     ],
                     center: variant.glowCenter,
@@ -77,18 +71,10 @@ struct AuroraBackdrop: View {
     @ViewBuilder
     private func scrimView(w _: CGFloat, h: CGFloat) -> some View {
         switch scrim {
-        case .left:
-            LinearGradient(stops: [
-                .init(color: Color.black.opacity(0.94), location: 0),
-                .init(color: Color.black.opacity(0.58), location: 0.34),
-                .init(color: .clear, location: 0.72),
-            ], startPoint: .leading, endPoint: .trailing)
         case .soft:
             RadialGradient(
                 colors: [.clear, Color.black.opacity(0.76)],
                 center: .center, startRadius: h * 0.18, endRadius: h * 0.95)
-        case .none:
-            Color.clear
         }
     }
 }

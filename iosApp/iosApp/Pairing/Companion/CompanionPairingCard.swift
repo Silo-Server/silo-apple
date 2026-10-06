@@ -199,7 +199,7 @@ struct CompanionPairingCard: View {
     }
 
     /// The sign-in offer's body. It reports what the TV says, not a fact.
-    static func signInOfferBody(tvName: String) -> String {
+    private static func signInOfferBody(tvName: String) -> String {
         "A TV nearby named “\(tvName)” says it's on its sign-in screen. You'll check its code before approving."
     }
 
@@ -343,11 +343,7 @@ struct CompanionPairingCard: View {
         Button(action: action) {
             Text(title).font(.siloHeadline).frame(maxWidth: .infinity).padding(.vertical, 6)
         }
-        .buttonStyle(.borderedProminent)
-        .controlSize(.large)
-        // White fill with dark text, like the app's other primary buttons.
-        .tint(.siloOnSurface)
-        .foregroundStyle(Color.siloBackground)
+        .pairingPrimaryButton()
     }
 
     private func tertiaryButton(_ title: String, action: @escaping () -> Void) -> some View {
@@ -359,10 +355,8 @@ struct CompanionPairingCard: View {
     }
 
     private func cancelButton() -> some View {
-        tertiaryButton("Cancel") {
-            Task { [coordinator] in await coordinator?.cancel() }
-            dismiss()
-        }
+        // `dismiss()` cancels the coordinator.
+        tertiaryButton("Cancel") { dismiss() }
     }
 
     // MARK: - Actions
@@ -405,6 +399,18 @@ struct CompanionPairingCard: View {
         guard selection.isEmpty, let active = ServerRegistry.shared.activeServerId,
               servers.contains(where: { $0.id == active }) else { return }
         selection.insert(active)
+    }
+}
+
+extension View {
+    /// Large white-filled button with dark text, like the app's other
+    /// primary buttons. Shared by the pairing and TV approval cards.
+    func pairingPrimaryButton() -> some View {
+        self
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .tint(.siloOnSurface)
+            .foregroundStyle(Color.siloBackground)
     }
 }
 #endif

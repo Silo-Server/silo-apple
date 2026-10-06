@@ -21,6 +21,11 @@ struct DownloadCapability: Codable, Hashable, Sendable {
     let seasonDownload: Bool
     let seriesMonitoring: Bool
     let monitoringModes: [String]
+    /// Season and series batches accept any of `qualityPresets`; without it
+    /// they are original only.
+    let bulkQuality: Bool
+    /// Monitors store a quality; without it they download originals.
+    let monitorQuality: Bool
 
     /// Downloads are usable only when the capability is available and this
     /// principal may use it.
@@ -44,6 +49,8 @@ struct DownloadCapability: Codable, Hashable, Sendable {
         case seasonDownload
         case seriesMonitoring
         case monitoringModes
+        case bulkQuality
+        case monitorQuality
     }
 
     init(_ wire: APIv2DownloadCapability) {
@@ -60,6 +67,8 @@ struct DownloadCapability: Codable, Hashable, Sendable {
         seasonDownload = wire.seasonDownload
         seriesMonitoring = wire.seriesMonitoring
         monitoringModes = wire.monitoringModes
+        bulkQuality = wire.bulkQuality ?? false
+        monitorQuality = wire.monitorQuality ?? false
     }
 
     /// Reads the cached copy. A copy cached before `state` and `allowed`
@@ -77,6 +86,58 @@ struct DownloadCapability: Codable, Hashable, Sendable {
         seasonDownload = try container.decode(Bool.self, forKey: .seasonDownload)
         seriesMonitoring = try container.decode(Bool.self, forKey: .seriesMonitoring)
         monitoringModes = try container.decode([String].self, forKey: .monitoringModes)
+        bulkQuality = try container.decodeIfPresent(Bool.self, forKey: .bulkQuality) ?? false
+        monitorQuality = try container.decodeIfPresent(Bool.self, forKey: .monitorQuality) ?? false
+    }
+}
+
+/// `DownloadPreparation`: where a preparing entry's file is in the server's
+/// preparation queue, or how far its encode has got.
+struct DownloadPreparation: Codable, Hashable, Sendable {
+    /// `queued`, `running`, `retrying`, or `paused` (an administrator
+    /// paused the job).
+    let state: String
+    /// 1-based place among every queued preparation on the server.
+    let queuePosition: Int?
+    /// Encoded fraction, 0 to 1, once a running encode reports it.
+    let progress: Double?
+    /// Estimated seconds left at the encode's speed.
+    let remainingSeconds: Int?
+
+    /// The row's status line: "Waiting to prepare · 3rd in line",
+    /// "Preparing · 35% · 6 min left".
+    var statusLine: String {
+        switch state {
+        case "queued":
+            guard let position = queuePosition, position > 0 else { return "Waiting to prepare" }
+            if position == 1 { return "Waiting to prepare · next in line" }
+            let ordinal = Self.ordinalFormatter.string(from: NSNumber(value: position)) ?? "#\(position)"
+            return "Waiting to prepare · \(ordinal) in line"
+        case "retrying":
+            return "Preparing · trying again soon"
+        case "paused":
+            return "Preparation paused on the server"
+        default:
+            guard let progress else { return "Preparing on server…" }
+            var parts = ["Preparing", "\(Int((progress * 100).rounded(.down)))%"]
+            if let remainingSeconds { parts.append(Self.timeLeft(remainingSeconds)) }
+            return parts.joined(separator: " · ")
+        }
+    }
+
+    private static let ordinalFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .ordinal
+        return formatter
+    }()
+
+    /// "under a minute left", "6 min left", "1 hr 5 min left".
+    static func timeLeft(_ seconds: Int) -> String {
+        if seconds < 60 { return "under a minute left" }
+        let minutes = (seconds + 59) / 60
+        if minutes < 60 { return "\(minutes) min left" }
+        let rest = minutes % 60
+        return rest == 0 ? "\(minutes / 60) hr left" : "\(minutes / 60) hr \(rest) min left"
     }
 }
 
@@ -226,10 +287,6 @@ struct OfflineManifest: Codable, Hashable, Sendable {
 
     let manifestVersion: Int?
     let generatedAt: Date?
-
-    /// Compatibility alias for code paths and saved manifests that used
-    /// the former public `format` name.
-    var format: String { quality }
 
     /// Whether the downloaded file is the server's remux/transcode output
     /// rather than the original source file.
@@ -439,6 +496,10 @@ struct OfflineSubtitle: Codable, Hashable, Sendable {
     let external: Bool?
     let fetchUrl: String
     let fileSize: Int64?
+    /// Opaque; changes whenever the subtitle's delivered bytes can change (a
+    /// timing correction, or an external file edited on disk). Present on
+    /// `downloaded:` and readable `external:` subtitles.
+    var revision: String? = nil
 }
 
 /// Rescan-stable identity mirroring the watch-state identity. Used to
@@ -468,6 +529,9 @@ struct ServerSubscription: Decodable, Hashable, Sendable {
     let seasonNumbers: [Int]
     let deleteWatched: Bool
     let maxStorageBytes: Int64
+    /// Absent from servers without `monitorQuality`, whose monitors download
+    /// originals.
+    let quality: String?
     let active: Bool
     let createdAt: Date
     let updatedAt: Date
@@ -490,10 +554,10 @@ enum SubscriptionMode: String, Codable, CaseIterable, Sendable {
 
     var displayName: String {
         switch self {
-        case .all: return "All Seasons"
-        case .future: return "New Episodes Only"
-        case .latestSeason: return "Latest Season & Newer"
-        case .specificSeasons: return "Specific Seasons"
+        case .all: return "All Episodes"
+        case .future: return "Future Episodes"
+        case .latestSeason: return "Last Season"
+        case .specificSeasons: return "Custom"
         }
     }
 }
@@ -505,6 +569,8 @@ struct CreateSubscriptionRequest: Encodable, Hashable, Sendable {
     let seasonNumbers: [Int]?
     let deleteWatched: Bool
     let maxStorageBytes: Int64
+    /// Sent only to a server with `monitorQuality`.
+    var quality: String? = nil
 }
 
 /// `DownloadSubscriptionPatchBody`. A nil field is omitted, never sent as
@@ -515,6 +581,7 @@ struct UpdateSubscriptionRequest: Encodable, Hashable, Sendable {
     let deleteWatched: Bool?
     let maxStorageBytes: Int64?
     let active: Bool?
+    var quality: String? = nil
 }
 
 // MARK: - Local persistence types
@@ -568,7 +635,7 @@ enum LocalDownloadStatus: String, Codable, Sendable {
 /// `DownloadFilePaths`.
 struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     let id: String                       // server download id
-    var contentId: String                // mutable: may be re-resolved via stableIdentity
+    var contentId: String
     let episodeId: String?
     let batchId: String?
     var mediaFileId: String
@@ -588,14 +655,34 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     var posterFilename: String?
     var backdropFilename: String?
     var logoFilename: String?
-    /// The parent series poster of an episode download. Default `nil` keeps
-    /// Codable backward-compatible with stores written before it existed.
+    /// The parent series poster of an episode download.
     var seriesPosterFilename: String? = nil
     /// Manifest `fetch_url` → relative on-disk filename.
     var subtitleFilenames: [String: String]
+    /// Manifest `fetch_url` → ETag of the saved bytes. A subtitle's bytes
+    /// change with its timing correction (and an external one's with its
+    /// file on disk). Optional keeps stores written before it decodable.
+    var subtitleEntityTags: [String: String]? = nil
+    /// Manifest `fetch_url` → the manifest `revision` the saved bytes
+    /// belong to. Optional keeps stores written before it decodable.
+    var subtitleRevisions: [String: String]? = nil
+
+    /// Records the ETag of a saved subtitle's bytes; `nil` forgets it.
+    mutating func setSubtitleEntityTag(_ entityTag: String?, for fetchUrl: String) {
+        var tags = subtitleEntityTags ?? [:]
+        tags[fetchUrl] = entityTag
+        subtitleEntityTags = tags
+    }
+
+    /// Records the manifest revision of a saved subtitle's bytes; `nil`
+    /// forgets it.
+    mutating func setSubtitleRevision(_ revision: String?, for fetchUrl: String) {
+        var revisions = subtitleRevisions ?? [:]
+        revisions[fetchUrl] = revision
+        subtitleRevisions = revisions
+    }
     /// Persisted `cancel(byProducingResumeData:)` blob for a paused
-    /// transfer. Default `nil` keeps Codable backward-compatible with
-    /// stores written before pause existed.
+    /// transfer.
     var resumeDataFilename: String? = nil
 
     // Display fields cached so the Downloads list renders before the
@@ -608,8 +695,7 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     /// so the grouped Downloads UI can label a series card offline.
     var seriesTitle: String? = nil
     /// Structured season/episode numbers, populated from the offline
-    /// manifest. Default `nil` keeps the synthesized memberwise init and
-    /// Codable backward-compatible with stores written before they existed.
+    /// manifest.
     var seasonNumber: Int? = nil
     var episodeNumber: Int? = nil
     var posterThumbhash: String?
@@ -622,11 +708,17 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     var downloadedAt: Date?
     var lastError: String?
     var retryCount: Int
-    /// `URLSessionDownloadTask.taskIdentifier`, for reconnecting on relaunch.
+    /// `URLSessionDownloadTask.taskIdentifier` of the record's live transfer,
+    /// used only to cancel or pause that task in this process. Events find
+    /// their record by the task's `DownloadTaskTag`, not by this id, and
+    /// reconnect re-validates it against the tags of the live tasks.
     var taskIdentifier: Int?
     /// The latest local status event the server has not answered yet. A
     /// retry resends exactly this event.
     var pendingStatusEvent: DownloadStatusEvent? = nil
+    /// The server's preparation queue position or encode progress, while
+    /// the entry is preparing.
+    var preparation: DownloadPreparation? = nil
     /// The media file's exact size from the manifest's integrity block, when
     /// the server sends one. A finished transfer of any other size is
     /// discarded and downloaded again.
@@ -636,9 +728,10 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     /// poster, since its own poster is the episode still.
     var tileThumbhash: String? { seriesPosterThumbhash ?? posterThumbhash }
 
-    var isPlayableOffline: Bool {
-        (localStatus == .completed || localStatus == .revoked) && mediaFilename != nil
-    }
+    /// Completed or revoked: the media occupies storage and stays playable.
+    var isOnDevice: Bool { localStatus == .completed || localStatus == .revoked }
+
+    var isPlayableOffline: Bool { isOnDevice && mediaFilename != nil }
 
     /// The leaf media item id watch-progress is keyed by: the episode id for
     /// an episode download, otherwise the (movie) content id.
@@ -665,6 +758,76 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
+/// The owner of one background transfer: the scope (server and profile)
+/// whose store holds its record, and the download id. Every profile and
+/// server shares one background session, so each task carries this in its
+/// `taskDescription`, and its events reach that scope whichever one is
+/// loaded when they arrive.
+struct DownloadTaskTag: Hashable, Sendable {
+    let serverId: String
+    let profileId: String
+    let downloadId: String
+
+    init(serverId: String, profileId: String, downloadId: String) {
+        self.serverId = serverId
+        self.profileId = profileId
+        self.downloadId = downloadId
+    }
+
+    /// Download ids are server-defined text, so the fields are JSON-encoded
+    /// instead of joined with a delimiter.
+    private struct Payload: Codable {
+        let v: Int
+        let server: String
+        let profile: String
+        let download: String
+    }
+
+    private static let payloadVersion = 1
+
+    /// JSON `{"v":1,"server":…,"profile":…,"download":…}`.
+    var taskDescription: String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        let payload = Payload(v: Self.payloadVersion, server: serverId, profile: profileId, download: downloadId)
+        guard let data = try? encoder.encode(payload) else { return "" }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// Nil for nil, non-JSON, other versions, or empty fields.
+    init?(taskDescription: String?) {
+        guard let data = taskDescription?.data(using: .utf8),
+              let payload = try? JSONDecoder().decode(Payload.self, from: data),
+              payload.v == Self.payloadVersion,
+              !payload.server.isEmpty, !payload.profile.isEmpty, !payload.download.isEmpty else { return nil }
+        self.init(serverId: payload.server, profileId: payload.profile, downloadId: payload.download)
+    }
+
+    /// Attribution for a task an earlier build started without a tag: the
+    /// download id from its v2 file URL, the profile from its `X-Profile-Id`
+    /// header, and the first server whose file URL for that id has the same
+    /// origin and path. Nil when any of them is missing.
+    static func attributing(
+        requestURL: URL?,
+        profileId: String?,
+        servers: [(id: String, url: String)]
+    ) -> DownloadTaskTag? {
+        guard let downloadId = APIv2Client.downloadFileID(requestURL),
+              let profileId, !profileId.isEmpty,
+              let key = DownloadSessionDelegate.legacyTransferKey(requestURL),
+              let server = servers.first(where: {
+                  DownloadSessionDelegate.legacyTransferKey(
+                      APIv2Client.downloadFileURL(id: downloadId, serverURL: $0.url)
+                  ) == key
+              }) else { return nil }
+        return DownloadTaskTag(serverId: server.id, profileId: profileId, downloadId: downloadId)
+    }
+
+    func isOwned(byServerId serverId: String, profileId: String) -> Bool {
+        self.serverId == serverId && self.profileId == profileId
+    }
+}
+
 /// A locally-mirrored subscription with the series title cached for
 /// offline display.
 struct DownloadSubscription: Codable, Identifiable, Hashable, Sendable {
@@ -676,6 +839,8 @@ struct DownloadSubscription: Codable, Identifiable, Hashable, Sendable {
     var seasonNumbers: [Int]?
     var deleteWatched: Bool
     var maxStorageBytes: Int64
+    /// The quality the monitor downloads in; nil reads as original.
+    var quality: String?
     var active: Bool
     /// The monitor's validator when it was last read. Nil for a monitor
     /// stored before validators were kept; writes read it first.
@@ -690,6 +855,7 @@ struct DownloadSubscription: Codable, Identifiable, Hashable, Sendable {
         self.seasonNumbers = server.seasonNumbers
         self.deleteWatched = server.deleteWatched
         self.maxStorageBytes = server.maxStorageBytes
+        self.quality = server.quality
         self.active = server.active
         self.etag = server.etag
     }

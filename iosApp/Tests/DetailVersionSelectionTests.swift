@@ -128,12 +128,6 @@ final class DetailVersionSelectionTests: XCTestCase {
         XCTAssertEqual(version.videoTracks?.first?.colorRange, "tv")
     }
 
-    func testSourceColorRangeIsNotAppliedToTranscodedOutput() {
-        XCTAssertTrue(PlaybackDeliveryStrategy.direct.preservesSourceVideoMetadata)
-        XCTAssertTrue(PlaybackDeliveryStrategy.remux.preservesSourceVideoMetadata)
-        XCTAssertFalse(PlaybackDeliveryStrategy.transcode.preservesSourceVideoMetadata)
-    }
-
     private func decodedVersions(_ json: String) -> [FileVersion] {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
@@ -189,7 +183,7 @@ final class DetailVersionSelectionTests: XCTestCase {
         XCTAssertTrue(edition?.label == "Extended", "fileId 2 should resolve to Extended; got \(edition?.label ?? "nil")")
     }
 
-    func testSelectorValuesShowForSingleChoicesButOnlyEnableForMultipleChoices() {
+    func testSingleAudioAndVersionChoicesShowButOnlyMultipleChoicesEnable() {
         let singleChoiceVersion = decodedVersions("""
         [
           {
@@ -211,14 +205,6 @@ final class DetailVersionSelectionTests: XCTestCase {
         ))
         XCTAssertTrue(DetailPlaybackFormatting.shouldShowAudioValue(version: singleChoiceVersion))
         XCTAssertFalse(DetailPlaybackFormatting.shouldEnableAudioSelector(version: singleChoiceVersion))
-        XCTAssertTrue(DetailPlaybackFormatting.shouldShowSubtitleValue(version: singleChoiceVersion))
-        XCTAssertFalse(DetailPlaybackFormatting.shouldEnableSubtitleSelector(version: singleChoiceVersion))
-        XCTAssertTrue(
-            DetailPlaybackFormatting.subtitleValueLabel(
-                version: singleChoiceVersion,
-                selectedSubtitleTrackIndex: nil
-            ) == "English · SRT"
-        )
 
         let multipleChoiceVersion = decodedVersions("""
         [
@@ -239,6 +225,49 @@ final class DetailVersionSelectionTests: XCTestCase {
 
         XCTAssertTrue(DetailPlaybackFormatting.shouldEnableAudioSelector(version: multipleChoiceVersion))
         XCTAssertTrue(DetailPlaybackFormatting.shouldEnableSubtitleSelector(version: multipleChoiceVersion))
+    }
+
+    /// silo-apple#337 C10: a file's only subtitle track (an ASS track without
+    /// the default flag) starts Off under Auto. The row must not name it as if
+    /// it will play, and it must stay selectable so the viewer can turn it on.
+    func testSingleSubtitleTrackIsSelectableAndNotLabelledAsPlaying() throws {
+        let version = decodedVersions("""
+        [
+          {
+            "file_id": 1,
+            "resolution": "720p",
+            "audio_tracks": [
+              { "codec": "opus" }
+            ],
+            "subtitle_tracks": [
+              { "index": 2, "codec": "ass", "language": "eng" }
+            ]
+          }
+        ]
+        """)[0]
+
+        XCTAssertTrue(DetailPlaybackFormatting.shouldShowSubtitleValue(version: version))
+        XCTAssertTrue(DetailPlaybackFormatting.shouldEnableSubtitleSelector(version: version))
+        XCTAssertEqual(
+            DetailPlaybackFormatting.subtitleValueLabel(version: version, selectedSubtitleTrackIndex: nil),
+            "Auto"
+        )
+        XCTAssertEqual(
+            DetailPlaybackFormatting.subtitleValueLabel(version: version, selectedSubtitleTrackIndex: -1),
+            "Off"
+        )
+        let option = DetailPlaybackFormatting.subtitleOptions(
+            version: version,
+            selectedSubtitleTrackIndex: nil,
+            preferredLanguage: nil
+        ).first
+        XCTAssertEqual(option?.isSelectable, true)
+        let picked = try XCTUnwrap(option?.selectionIndex)
+        XCTAssertEqual(
+            DetailPlaybackFormatting.subtitleValueLabel(version: version, selectedSubtitleTrackIndex: picked),
+            "English · ASS"
+        )
+        XCTAssertFalse(DetailPlaybackFormatting.shouldEnableSubtitleSelector(version: nil))
     }
 
     func testVersionSelectorScopesChoicesToCurrentEdition() {

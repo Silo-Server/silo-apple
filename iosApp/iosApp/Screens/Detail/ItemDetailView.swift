@@ -54,11 +54,44 @@ private struct ControlRequestBox: Identifiable {
     init(_ request: SiloControlPlaybackRequest) { self.request = request }
 }
 
+/// Scroll offsets (as folded by `phoneDetailScrollTracking`) over which the
+/// floating chrome's backing strip fades in, the per-button glass fades out
+/// onto that strip, and the compact title fades in. The strip keeps scrolled
+/// content, such as the season chips, from sliding under the floating
+/// buttons while still being tappable.
+struct PhoneDetailScrollGlassTiming: Equatable {
+    var strip: ClosedRange<CGFloat>
+    var controlGlass: ClosedRange<CGFloat>
+    var title: ClosedRange<CGFloat>
+
+    /// Compact (phone-width) hero: tall artwork with the title on its lower
+    /// edge, so the chrome waits until the artwork has mostly scrolled away.
+    static let compact = PhoneDetailScrollGlassTiming(
+        strip: 200...360,
+        controlGlass: 150...260,
+        title: 400...480
+    )
+
+    /// Expanded (regular-width iPad) hero: the title block starts near the
+    /// top of a shorter editorial header and leaves sooner. 150 is the
+    /// earliest offset the folded tracking reports.
+    static let expanded = PhoneDetailScrollGlassTiming(
+        strip: 150...250,
+        controlGlass: 150...250,
+        title: 250...330
+    )
+
+    static func forHero(isExpanded: Bool) -> Self {
+        isExpanded ? .expanded : .compact
+    }
+}
+
 /// Static top-control layout. Scroll progress is read only by the tiny opacity
 /// leaves below, so changing chrome never rebuilds buttons or their actions.
 /// Shared with the request detail card, which has no trailing control.
 struct PhoneDetailTopChrome: View {
     let title: String
+    /// False keeps the buttons on their own glass with no backing strip.
     let isScrollGlassEnabled: Bool
     let scrollState: PhoneDetailScrollState
     let leadingSystemName: String?
@@ -67,16 +100,32 @@ struct PhoneDetailTopChrome: View {
     let trailingSystemName: String?
     let onTrailingTap: (() -> Void)?
 
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+    /// The chrome spans the detail page, so its width is the hero's width.
+    @State private var pageWidth: CGFloat = 0
+
+    /// Follows the hero's own compact/expanded choice, so the strip and the
+    /// title arrive as that hero's title scrolls away.
+    private var scrollGlass: PhoneDetailScrollGlassTiming? {
+        guard isScrollGlassEnabled else { return nil }
+        return .forHero(isExpanded: PhoneDetailHeroLayout.usesExpandedLayout(
+            availableWidth: pageWidth,
+            horizontalSizeClass: horizontalSizeClass,
+            verticalSizeClass: verticalSizeClass
+        ))
+    }
+
     var body: some View {
         ZStack(alignment: .top) {
             PhoneDetailTopGlass(
-                isEnabled: isScrollGlassEnabled,
+                timing: scrollGlass,
                 scrollState: scrollState
             )
 
             PhoneDetailScrollTitle(
                 title: title,
-                isEnabled: isScrollGlassEnabled,
+                timing: scrollGlass,
                 scrollState: scrollState
             )
 
@@ -105,13 +154,19 @@ struct PhoneDetailTopChrome: View {
             .padding(.horizontal, 18)
             .padding(.top, 9)
         }
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.width
+        } action: { width in
+            guard abs(width - pageWidth) > 1 else { return }
+            pageWidth = width
+        }
         .zIndex(20)
     }
 
     private func controlIcon(systemName: String, size: CGFloat) -> some View {
         ZStack {
             PhoneDetailControlGlass(
-                isScrollGlassEnabled: isScrollGlassEnabled,
+                timing: scrollGlass,
                 scrollState: scrollState
             )
 
@@ -130,17 +185,17 @@ struct PhoneDetailTopChrome: View {
 /// Dynamic opacity around a stable glass subtree. The expensive native glass
 /// node is equatable and retained while only its compositor alpha changes.
 private struct PhoneDetailTopGlass: View {
-    let isEnabled: Bool
+    let timing: PhoneDetailScrollGlassTiming?
     let scrollState: PhoneDetailScrollState
 
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     @ViewBuilder
     var body: some View {
-        if isEnabled {
+        if let timing {
             PhoneDetailStaticGlassStrip(reduceTransparency: reduceTransparency)
                 .equatable()
-                .opacity(phoneDetailSmoothProgress(scrollState.offset, from: 200, to: 360))
+                .opacity(phoneDetailSmoothProgress(scrollState.offset, over: timing.strip))
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
         }
@@ -167,13 +222,13 @@ private struct PhoneDetailStaticGlassStrip: View, Equatable {
 
 private struct PhoneDetailScrollTitle: View {
     let title: String
-    let isEnabled: Bool
+    let timing: PhoneDetailScrollGlassTiming?
     let scrollState: PhoneDetailScrollState
 
     @ViewBuilder
     var body: some View {
-        if isEnabled {
-            let progress = phoneDetailSmoothProgress(scrollState.offset, from: 400, to: 480)
+        if let timing {
+            let progress = phoneDetailSmoothProgress(scrollState.offset, over: timing.title)
             Text(title)
                 .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(.white)
@@ -194,16 +249,15 @@ private struct PhoneDetailScrollTitle: View {
 }
 
 private struct PhoneDetailControlGlass: View {
-    let isScrollGlassEnabled: Bool
+    let timing: PhoneDetailScrollGlassTiming?
     let scrollState: PhoneDetailScrollState
 
     var body: some View {
         PhoneDetailStaticControlGlass()
             .equatable()
             .opacity(
-                isScrollGlassEnabled
-                    ? 1 - phoneDetailSmoothProgress(scrollState.offset, from: 150, to: 260)
-                    : 1
+                timing.map { 1 - phoneDetailSmoothProgress(scrollState.offset, over: $0.controlGlass) }
+                    ?? 1
             )
     }
 }
@@ -221,10 +275,9 @@ private struct PhoneDetailStaticControlGlass: View, Equatable {
 
 private func phoneDetailSmoothProgress(
     _ value: CGFloat,
-    from lowerBound: CGFloat,
-    to upperBound: CGFloat
+    over range: ClosedRange<CGFloat>
 ) -> CGFloat {
-    let progress = min(max((value - lowerBound) / (upperBound - lowerBound), 0), 1)
+    let progress = min(max((value - range.lowerBound) / (range.upperBound - range.lowerBound), 0), 1)
     return progress * progress * (3 - (2 * progress))
 }
 #endif
@@ -276,7 +329,13 @@ private struct ItemDetailPhoneContent: View {
         self.onClose = onClose
         self.resumeContext = resumeContext
         self.onResolveSeries = onResolveSeries
-        _viewModel = State(initialValue: ItemDetailViewModel(libraryId: libraryId))
+        // Paint cached content on the first frame, so a warm visit pushes a
+        // filled page rather than an empty one that fills in from `.task`.
+        let viewModel = ItemDetailViewModel(libraryId: libraryId)
+        viewModel.initialResumeSeasonNumber = resumeContext?.seasonNumber
+        viewModel.hydrateFromCache(contentId: contentId)
+        _viewModel = State(initialValue: viewModel)
+        _selectedSeriesEpisodeId = State(initialValue: resumeContext?.episodeContentId)
     }
 
     @State private var viewModel: ItemDetailViewModel
@@ -306,8 +365,9 @@ private struct ItemDetailPhoneContent: View {
     @State private var detailScrollState = PhoneDetailScrollState()
     #if os(iOS)
     @Environment(SiloControlClient.self) private var siloControl
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var controlRequestBox: ControlRequestBox?
+    /// The cast button's in-flight watch-state read. A second tap replaces it.
+    @State private var controlResumeLookupTask: Task<Void, Never>?
     @State private var isShowingControlPicker = false
     @State private var isShowingRemoteControl = false
     #endif
@@ -340,11 +400,6 @@ private struct ItemDetailPhoneContent: View {
             preferredAudioTrackIndex = nil
             preferredSubtitleTrackIndex = nil
             preferredSubtitleTrackWasManuallySelected = false
-            preferredNextUpFileId = nil
-            preferredNextUpAudioTrackIndex = nil
-            preferredNextUpSubtitleTrackIndex = nil
-            nextUpWatchDetail = nil
-            isLoadingNextUpWatchDetail = false
             if isReturning {
                 if let playback = takePlaybackReturn() {
                     await applySeriesPlaybackReturn(playback)
@@ -357,29 +412,37 @@ private struct ItemDetailPhoneContent: View {
             }
             refreshOnPlayerDismiss = false
             detailScrollState.reset()
-            await viewModel.loadDetail(contentId: contentId)
+            // Seed from the painted detail so the selector doesn't show
+            // "Auto" while the page reloads, then again from the fresh one.
             seedSubtitleOverrideIfNeeded()
+            await viewModel.loadDetail(contentId: contentId)
+            reseedSubtitleOverride()
         }
         .onAppear {
             isPageVisible = true
             // Coming back from the player (or an extra) resumes a poll that
             // `onDisappear` cancelled — without re-POSTing, since the server
-            // already spent the item's weekly slot. Precedent:
-            // `PersonDetailView.resumeMetadataRefreshIfNeeded`.
+            // already spent the item's weekly slot.
             viewModel.resumeTrailerFetchIfNeeded()
-            seedSubtitleOverrideIfNeeded()
         }
         .onDisappear {
             isPageVisible = false
+            #if os(iOS)
+            controlResumeLookupTask?.cancel()
+            controlResumeLookupTask = nil
+            #endif
             viewModel.cancelDetailLoading()
             // The trailer poll isn't owned by `.task`, so it would otherwise
             // keep running (and retaining the view model) after the route
-            // pops. Same reasoning as `PersonDetailView.stopMetadataRefresh`.
+            // pops.
             viewModel.stopTrailerFetch()
             viewModel.stopEpisodePagePrefetch()
         }
         .onChange(of: router.presentedPlayer?.id) { oldValue, newValue in
-            guard oldValue != nil, newValue == nil, refreshOnPlayerDismiss else { return }
+            // A full-screen player hides this page, and the `.task` above
+            // reloads it when it reappears. Reload here only when the page
+            // stayed on screen under the player.
+            guard oldValue != nil, newValue == nil, refreshOnPlayerDismiss, isPageVisible else { return }
             refreshOnPlayerDismiss = false
             Task {
                 viewModel.initialResumeSeasonNumber = viewModel.selectedSeason?.seasonNumber
@@ -388,9 +451,8 @@ private struct ItemDetailPhoneContent: View {
                 // A track picked inside the player persisted server-side;
                 // drop the pre-play selector state so the reloaded pref
                 // re-seeds and the selector reflects the latest pick.
-                preferredSubtitleTrackIndex = nil
                 preferredSubtitleTrackWasManuallySelected = false
-                seedSubtitleOverrideIfNeeded()
+                reseedSubtitleOverride()
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .seriesPlaybackDidReturn)) { _ in
@@ -430,10 +492,7 @@ private struct ItemDetailPhoneContent: View {
         } message: { _ in
             Text("Play the copy saved on this device, or stream from the server.")
         }
-        .personalStateNoticeAlert(Binding(
-            get: { viewModel.personalStateNotice },
-            set: { viewModel.personalStateNotice = $0 }
-        ))
+        .personalStateNoticeAlert($viewModel.personalStateNotice)
         .alert(
             "Can't Reach Server",
             isPresented: Binding(
@@ -462,9 +521,8 @@ private struct ItemDetailPhoneContent: View {
                 : "You're offline. Connect to a network to stream, or play a downloaded title.")
         }
         #if os(iOS)
-        // The native navigation bar reserved a solid black strip above the
-        // artwork. The card owns its controls instead: the image now reaches
-        // the rounded top edge and both controls float directly over it.
+        // Hide the navigation bar so the artwork reaches the card's top edge;
+        // the card draws its own floating controls.
         .toolbar(.hidden, for: .navigationBar)
         .overlay(alignment: .top) {
             detailTopControls
@@ -515,24 +573,39 @@ private struct ItemDetailPhoneContent: View {
         return AudiobookDetailFormatting.cleanTitle(detail.title, seriesName: detail.audiobook?.series?.name)
     }
 
+    /// Phone and iPad alike: without the strip, the season chips and other
+    /// controls scroll under the floating Close button on an iPad sheet.
     private var supportsScrollGlassChrome: Bool {
-        guard UIDevice.current.userInterfaceIdiom == .phone,
-              horizontalSizeClass != .regular,
-              let detail = viewModel.detail else {
-            return false
-        }
+        guard let detail = viewModel.detail else { return false }
         return SiloMediaType.isMovieLibrary(detail.type)
             || SiloMediaType.isSeries(detail.type)
             || detail.isAudiobook
     }
 
-    /// Movies and episodes retain the existing cast-and-play behavior. Series
-    /// overview cards still show the same remote pill; there it opens the
-    /// connected remote or the TV picker because the container has no single
-    /// playable file of its own.
+    /// Movie and episode leaves cast the visible item. Containers (series,
+    /// seasons, audiobooks) have no single file, so the button opens the
+    /// connected remote or the TV picker.
     private func handleRemoteControlTap() {
         if let detail = viewModel.detail, isDirectlyPlayable(detail) {
-            playOnTV(currentControlRequest(for: detail))
+            // The TV resumes from the request's explicit position, so read
+            // the server's current one rather than the page's snapshot.
+            let fileId = playbackFileId(for: detail)
+            let audioTrackIndex = preferredAudioTrackIndex
+            let subtitleTrackIndex = preferredSubtitleTrackIndex
+            controlResumeLookupTask?.cancel()
+            controlResumeLookupTask = Task {
+                let state = await refreshedResumeState(contentId: contentId)
+                guard !Task.isCancelled else { return }
+                controlResumeLookupTask = nil
+                playOnTV(SiloControlPlaybackRequest(
+                    contentId: contentId,
+                    fileId: fileId,
+                    audioTrackIndex: audioTrackIndex,
+                    subtitleTrackIndex: subtitleTrackIndex,
+                    startFromBeginning: false,
+                    resumePosition: state.resumePosition(cached: detail.userData)
+                ))
+            }
         } else if siloControl.remotePlaybackEngaged {
             isShowingRemoteControl = true
         } else {
@@ -540,43 +613,11 @@ private struct ItemDetailPhoneContent: View {
         }
     }
 
-    /// True when the loaded detail routes to `MovieDetailContent` — the only
-    /// branch whose primary item maps to a single playback request. Series,
-    /// season, and audiobook containers have no single "this item" to cast.
+    /// True when the loaded detail is a movie or episode leaf, whose primary
+    /// item maps to a single playback request. Series, season, and audiobook
+    /// containers have no single "this item" to cast.
     private func isDirectlyPlayable(_ detail: ItemDetail) -> Bool {
         !detail.isAudiobook && detail.type != "season" && detail.type != "series"
-    }
-
-    /// Builds the cast request for the visible movie/episode using the
-    /// IDENTICAL expressions as the `MovieDetailContent.onPlay` callback
-    /// (resume-aware: play from the saved position when available).
-    private func currentControlRequest(for detail: ItemDetail) -> SiloControlPlaybackRequest {
-        currentControlRequest(
-            contentId: contentId,
-            fileId: playbackFileId(for: detail),
-            audioTrackIndex: preferredAudioTrackIndex,
-            subtitleTrackIndex: preferredSubtitleTrackIndex,
-            startFromBeginning: false,
-            resumePosition: playableResumePosition(for: detail)
-        )
-    }
-
-    private func currentControlRequest(
-        contentId: String,
-        fileId: Int?,
-        audioTrackIndex: Int?,
-        subtitleTrackIndex: Int?,
-        startFromBeginning: Bool,
-        resumePosition: Double?
-    ) -> SiloControlPlaybackRequest {
-        SiloControlPlaybackRequest(
-            contentId: contentId,
-            fileId: fileId,
-            audioTrackIndex: audioTrackIndex,
-            subtitleTrackIndex: subtitleTrackIndex,
-            startFromBeginning: startFromBeginning,
-            resumePosition: resumePosition
-        )
     }
 
     private func playOnTV(_ request: SiloControlPlaybackRequest) {
@@ -602,19 +643,10 @@ private struct ItemDetailPhoneContent: View {
                 onToggleFavorite: { Task { await viewModel.toggleFavorite() } },
                 onToggleWatchlist: { Task { await viewModel.toggleWatchlist() } },
                 onToggleWatched: { Task { await viewModel.toggleWatched() } },
-                onPersonTap: { personId in
-                    if !personId.isEmpty {
-                        router.navigate(to: .personDetail(personId: personId))
-                    }
-                },
-                onNavigateToItem: { id in
-                    router.navigate(to: .itemDetail(contentId: id))
-                },
+                onPersonTap: { openPerson($0) },
+                onNavigateToItem: { openItem($0) },
                 scrollState: detailScrollState,
-                belowOverview: {
-                    DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
-                        .id(detail.contentId)
-                }
+                belowOverview: { translationView(for: detail) }
             )
         } else if detail.type == "season" || detail.type == "episode" {
             SeriesDetailResolutionView(detail: detail, onResolve: onResolveSeries) {
@@ -623,7 +655,6 @@ private struct ItemDetailPhoneContent: View {
         } else if detail.type == "series" {
             SeriesDetailContent(
                 detail: detail,
-                libraryId: libraryId,
                 isFavorite: viewModel.isFavorite,
                 inWatchlist: viewModel.inWatchlist,
                 isWatched: viewModel.isWatched,
@@ -632,7 +663,6 @@ private struct ItemDetailPhoneContent: View {
                 episodes: viewModel.episodes,
                 episodeFavoriteStates: viewModel.episodeFavoriteStates,
                 episodeWatchlistStates: viewModel.episodeWatchlistStates,
-                episodesBySeason: viewModel.episodesBySeason,
                 isLoadingEpisodes: viewModel.isLoadingSeriesHierarchy,
                 hierarchyError: viewModel.seriesLoadErrorMessage,
                 onRetryHierarchy: { await viewModel.retrySeriesHierarchy() },
@@ -646,40 +676,23 @@ private struct ItemDetailPhoneContent: View {
                     selectedSeriesEpisodeId = nil
                     Task { await viewModel.selectSeason(season) }
                 },
-                onPlayEpisode: { id, fileId, startFromBeginning in
+                onPlayEpisode: { id, fileId, startFromBeginning, resumePosition in
                     awaitsPlaybackReturn = true
                     SeriesPlaybackReturnInbox.discardPending()
                     let usesSelectedEpisodeControls = id == playbackEpisode(for: detail)?.contentId
-                    let episode = viewModel.episodes.first(where: { $0.contentId == id })
-                    let resumePosition = startFromBeginning
-                        ? nil
-                        : playableResumePosition(
-                            position: episode?.userData?.positionSeconds,
-                            duration: episode?.userData?.durationSeconds
-                        )
-                    if usesSelectedEpisodeControls,
-                       let fileId = nextUpPlaybackFileId(resolvedFileId: fileId) {
-                        presentPlayerFromDetail(
-                            contentId: id,
-                            fileId: fileId,
-                            audioTrackIndex: preferredNextUpAudioTrackIndex,
-                            subtitleTrackIndex: preferredNextUpSubtitleTrackIndex,
-                            startFromBeginning: startFromBeginning,
-                            resumePosition: resumePosition
-                        )
-                    } else {
-                        presentPlayerFromDetail(
-                            contentId: id,
-                            fileId: usesSelectedEpisodeControls ? fileId : nil,
-                            audioTrackIndex: usesSelectedEpisodeControls
-                                ? preferredNextUpAudioTrackIndex : nil,
-                            subtitleTrackIndex: usesSelectedEpisodeControls
-                                ? preferredNextUpSubtitleTrackIndex : nil,
-                            startFromBeginning: startFromBeginning,
-                            resumePosition: resumePosition
-                        )
-                    }
+                    presentPlayerFromDetail(
+                        contentId: id,
+                        fileId: usesSelectedEpisodeControls
+                            ? nextUpPlaybackFileId(resolvedFileId: fileId) : nil,
+                        audioTrackIndex: usesSelectedEpisodeControls
+                            ? preferredNextUpAudioTrackIndex : nil,
+                        subtitleTrackIndex: usesSelectedEpisodeControls
+                            ? preferredNextUpSubtitleTrackIndex : nil,
+                        startFromBeginning: startFromBeginning,
+                        resumePosition: startFromBeginning ? nil : resumePosition
+                    )
                 },
+                refreshResumeState: { id in await refreshedResumeState(contentId: id) },
                 onEpisodeTap: { id in
                     // The rail has already completed its native deceleration by
                     // the time it reports a centered card. Publishing this
@@ -746,26 +759,17 @@ private struct ItemDetailPhoneContent: View {
                 onSetEpisodeWatchlist: { id, inWatchlist in
                     await viewModel.setEpisodeWatchlist(contentId: id, inWatchlist: inWatchlist)
                 },
-                onPersonTap: { personId in
-                    if !personId.isEmpty {
-                        router.navigate(to: .personDetail(personId: personId))
-                    }
-                },
-                onNavigateToItem: { id in
-                    router.navigate(to: .itemDetail(contentId: id))
-                },
+                onPersonTap: { openPerson($0) },
+                onNavigateToItem: { openItem($0) },
                 onPlayExtra: { id in playExtra(contentId: id) },
                 onFindTrailers: { viewModel.startTrailerFetch() },
                 trailerStatusMessage: viewModel.trailerFetch.statusMessage,
                 isFindingTrailers: viewModel.trailerFetch.isFetching,
                 onTrailerStatusShown: { viewModel.trailerFetch.acknowledge() },
                 scrollState: detailScrollState,
-                belowOverview: {
-                    DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
-                        .id(detail.contentId)
-                }
+                belowOverview: { translationView(for: detail) }
             )
-            .task(id: playbackEpisodeContentId(for: detail)) {
+            .task(id: playbackEpisode(for: detail)?.contentId) {
                 await loadNextUpWatchDetail(for: detail)
             }
         } else {
@@ -777,25 +781,19 @@ private struct ItemDetailPhoneContent: View {
                 selectedVersionFileId: preferredVersionFileId,
                 selectedAudioTrackIndex: preferredAudioTrackIndex,
                 selectedSubtitleTrackIndex: preferredSubtitleTrackIndex,
-                onPlay: { startFromBeginning in
-                    let resumePosition = startFromBeginning ? nil : playableResumePosition(for: detail)
-                    if let fileId = playbackFileId(for: detail) {
-                        presentPlayerFromDetail(
-                            contentId: contentId,
-                            fileId: fileId,
-                            audioTrackIndex: preferredAudioTrackIndex,
-                            subtitleTrackIndex: preferredSubtitleTrackIndex,
-                            startFromBeginning: startFromBeginning,
-                            resumePosition: resumePosition
-                        )
-                    } else {
-                        presentPlayerFromDetail(
-                            contentId: contentId,
-                            startFromBeginning: startFromBeginning,
-                            resumePosition: resumePosition
-                        )
-                    }
+                onPlay: { startFromBeginning, resumePosition in
+                    // Track picks only travel with a resolved file.
+                    let fileId = playbackFileId(for: detail)
+                    presentPlayerFromDetail(
+                        contentId: contentId,
+                        fileId: fileId,
+                        audioTrackIndex: fileId == nil ? nil : preferredAudioTrackIndex,
+                        subtitleTrackIndex: fileId == nil ? nil : preferredSubtitleTrackIndex,
+                        startFromBeginning: startFromBeginning,
+                        resumePosition: startFromBeginning ? nil : resumePosition
+                    )
                 },
+                refreshResumeState: { await refreshedResumeState(contentId: contentId) },
                 onSelectVersion: { fileId in
                     preferredVersionFileId = fileId
                     preferredAudioTrackIndex = sanitizedAudioTrackIndex(
@@ -840,72 +838,22 @@ private struct ItemDetailPhoneContent: View {
                 onToggleFavorite: { Task { await viewModel.toggleFavorite() } },
                 onToggleWatchlist: { Task { await viewModel.toggleWatchlist() } },
                 onToggleWatched: { Task { await viewModel.toggleWatched() } },
-                onPersonTap: { personId in
-                    if !personId.isEmpty {
-                        router.navigate(to: .personDetail(personId: personId))
-                    }
-                },
-                onNavigateToItem: { id in
-                    router.navigate(to: .itemDetail(contentId: id))
-                },
+                onPersonTap: { openPerson($0) },
+                onNavigateToItem: { openItem($0) },
                 onPlayExtra: { id in playExtra(contentId: id) },
                 onFindTrailers: { viewModel.startTrailerFetch() },
                 trailerStatusMessage: viewModel.trailerFetch.statusMessage,
                 isFindingTrailers: viewModel.trailerFetch.isFetching,
                 onTrailerStatusShown: { viewModel.trailerFetch.acknowledge() },
                 scrollState: detailScrollState,
-                belowOverview: {
-                    DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
-                        .id(detail.contentId)
-                }
+                belowOverview: { translationView(for: detail) }
             )
         }
     }
 
-    /// Play a local extra from the trailers rail. Always from the beginning
-    /// — an extra has no stored resume point.
-    ///
-    /// An extra is an ordinary watch target with its own `contentId`, so a
-    /// live Silo Control session casts it to the TV exactly like every other
-    /// play affordance on the page; anything else would make extras the one
-    /// odd affordance that plays locally while the rest beam.
-    ///
-    /// Without a session it skips only the downloaded-vs-stream choice of
-    /// `presentPlayerFromDetail`: extras can't be downloaded, so that dialog
-    /// has nothing to offer. The unreachable-server alert still applies —
-    /// it warns up front rather than dropping the user into a player that
-    /// will spin and fail, and extras must fail the same way as every other
-    /// play affordance on the page.
+    /// Plays a local extra from the start (extras can't be downloaded).
     private func playExtra(contentId: String) {
-        #if os(iOS)
-        // An engaged TV takes the request through the router's interceptor
-        // (see `AppRouter.presentPlayer`); nothing here decides destination.
-        if siloControl.remotePlaybackEngaged {
-            router.presentPlayer(contentId: contentId, startFromBeginning: true, resumePosition: nil)
-            return
-        }
-        #endif
-
-        guard ConnectionMonitor.shared.isServerReachable else {
-            unreachablePlayRequest = UnreachablePlayRequest(
-                contentId: contentId,
-                fileId: nil,
-                audioTrackIndex: nil,
-                subtitleTrackIndex: nil,
-                startFromBeginning: true,
-                resumePosition: nil
-            )
-            return
-        }
-
-        presentStreamingPlayer(
-            contentId: contentId,
-            fileId: nil,
-            audioTrackIndex: nil,
-            subtitleTrackIndex: nil,
-            startFromBeginning: true,
-            resumePosition: nil
-        )
+        presentPlayerFromDetail(contentId: contentId, startFromBeginning: true, resumePosition: nil)
     }
 
     private func playbackFileId(for detail: ItemDetail) -> Int? {
@@ -931,19 +879,15 @@ private struct ItemDetailPhoneContent: View {
         return nil
     }
 
-    private func playableResumePosition(for detail: ItemDetail) -> Double? {
-        playableResumePosition(
-            position: detail.userData?.positionSeconds,
-            duration: detail.userData?.durationSeconds
-        )
-    }
-
-    private func playableResumePosition(position: Double?, duration: Double?) -> Double? {
-        guard let position, position.isFinite, position > 30 else { return nil }
-        if let duration, duration.isFinite, duration > 0, position >= duration - 5 {
-            return nil
+    /// The server's current watch state for a Play tap. Skipped when the
+    /// server is known unreachable, so a downloaded copy still plays at once
+    /// from the page's snapshot.
+    private func refreshedResumeState(contentId: String) async -> DetailResumeState {
+        guard ConnectionMonitor.shared.isServerReachable else { return .unavailable }
+        let libraryId = libraryId
+        return await DetailResumeState.load {
+            try await SiloAPI.shared.watchDetail(contentId: contentId, libraryId: libraryId).userData
         }
-        return position
     }
 
     private func effectiveVersion(for detail: ItemDetail, versionFileId: Int?) -> FileVersion? {
@@ -1049,6 +993,14 @@ private struct ItemDetailPhoneContent: View {
         )
     }
 
+    /// Re-derive the seeded subtitle from the current detail unless the user
+    /// picked one on this visit.
+    private func reseedSubtitleOverride() {
+        guard !preferredSubtitleTrackWasManuallySelected else { return }
+        preferredSubtitleTrackIndex = nil
+        seedSubtitleOverrideIfNeeded()
+    }
+
     private func prefKey(for detail: ItemDetail) -> String? {
         TrackSelectionPersistence.prefKey(seriesId: detail.seriesId, contentId: detail.contentId)
     }
@@ -1123,9 +1075,8 @@ private struct ItemDetailPhoneContent: View {
         selectedSeriesEpisodeId = episodeId
     }
 
-    /// Series detail keeps one active episode on the main page. The user's
-    /// explicit card selection wins; otherwise retain the existing in-progress
-    /// then first-unwatched next-up policy.
+    /// The Series page's active episode: the user's card selection, else the
+    /// in-progress episode, else the first unwatched one.
     private func playbackEpisode(for detail: ItemDetail) -> EpisodeListItem? {
         if detail.type == "series",
            let selectedSeriesEpisodeId,
@@ -1135,10 +1086,6 @@ private struct ItemDetailPhoneContent: View {
             return selected
         }
         return nextUpEpisode(for: detail)
-    }
-
-    private func playbackEpisodeContentId(for detail: ItemDetail) -> String? {
-        playbackEpisode(for: detail)?.contentId
     }
 
     private func loadNextUpWatchDetail(for detail: ItemDetail) async {
@@ -1152,11 +1099,16 @@ private struct ItemDetailPhoneContent: View {
         }
 
         let requestedContentId = nextUp.contentId
-        isLoadingNextUpWatchDetail = true
-        nextUpWatchDetail = nil
+        let cacheKey = CacheKey.itemWatchDetail(requestedContentId, libraryId: libraryId)
+        let cached: WatchDetail? = ResponseCache.shared.get(cacheKey)
         preferredNextUpFileId = nil
         preferredNextUpAudioTrackIndex = nil
-        preferredNextUpSubtitleTrackIndex = nil
+        // A cached episode paints its selectors at once; only a miss shows
+        // the skeleton while the request runs.
+        nextUpWatchDetail = cached
+        preferredNextUpSubtitleTrackIndex = cached.flatMap { launchSubtitleIndex(for: $0) }
+        isLoadingNextUpWatchDetail = cached == nil
+        let seededSubtitleIndex = preferredNextUpSubtitleTrackIndex
 
         defer {
             // A cancelled request may finish after the user has already
@@ -1167,22 +1119,53 @@ private struct ItemDetailPhoneContent: View {
             }
         }
 
+        // Identity boundaries and invalidations advance the token, so a
+        // response from before either is not cached.
+        let writeToken = ResponseCache.shared.writeToken
         do {
-            let watchDetail = try await SiloAPI.shared.watchDetail(contentId: requestedContentId, libraryId: libraryId)
+            let watchDetail = try await MetadataRequestPool.shared.watchDetail(
+                contentId: requestedContentId, libraryId: libraryId
+            )
             guard !Task.isCancelled,
                   playbackEpisode(for: detail)?.contentId == requestedContentId else { return }
+            ResponseCache.shared.set(watchDetail, for: cacheKey, fetchedAt: writeToken)
+            // Keep any pick made on the cached selectors while this ran.
+            let isUntouched = preferredNextUpFileId == nil
+                && preferredNextUpAudioTrackIndex == nil
+                && preferredNextUpSubtitleTrackIndex == seededSubtitleIndex
             nextUpWatchDetail = watchDetail
-            preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.launchPreferredSubtitleIndex(
-                version: effectiveVersion(for: watchDetail, versionFileId: nil),
-                signature: watchDetail.effectiveSubtitleTrackSignature,
-                mode: watchDetail.effectiveSubtitleMode,
-                usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
-            )
+            if isUntouched {
+                preferredNextUpSubtitleTrackIndex = launchSubtitleIndex(for: watchDetail)
+            }
         } catch {
             guard !Task.isCancelled,
-                  playbackEpisode(for: detail)?.contentId == requestedContentId else { return }
+                  playbackEpisode(for: detail)?.contentId == requestedContentId,
+                  cached == nil else { return }
             nextUpWatchDetail = nil
         }
+    }
+
+    private func launchSubtitleIndex(for watchDetail: WatchDetail) -> Int? {
+        DetailPlaybackFormatting.launchPreferredSubtitleIndex(
+            version: effectiveVersion(for: watchDetail, versionFileId: nil),
+            signature: watchDetail.effectiveSubtitleTrackSignature,
+            mode: watchDetail.effectiveSubtitleMode,
+            usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
+        )
+    }
+
+    private func openPerson(_ personId: String) {
+        if !personId.isEmpty {
+            router.navigate(to: .personDetail(personId: personId))
+        }
+    }
+
+    private func openItem(_ contentId: String) {
+        router.navigate(to: .itemDetail(contentId: contentId))
+    }
+
+    private func translationView(for detail: ItemDetail) -> DescriptionTranslationView {
+        DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
     }
 
     private func presentPlayerFromDetail(

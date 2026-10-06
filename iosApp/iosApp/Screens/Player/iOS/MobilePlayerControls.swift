@@ -1,8 +1,7 @@
 #if os(iOS)
 import SwiftUI
 
-/// Touch-driven overlay used on iOS/iPadOS. Layout (see
-/// docs/ios-player-redesign/mockups.html):
+/// Touch-driven overlay used on iOS/iPadOS. Layout:
 /// - Top strip: close, title block (series eyebrow + episode title), PiP,
 ///   AirPlay, rotate, rotation lock
 /// - Center: skip back, play/pause, skip forward (profile video intervals),
@@ -12,8 +11,8 @@ import SwiftUI
 ///   preview bubble, then a labeled action row (Quality menu, Audio &
 ///   Subtitles sheet, Chapters menu, More → settings sheet)
 ///
-/// The whole thing is wrapped in a tap-to-toggle gesture; auto-hide after 3 s
-/// of inactivity. The view is stateful only for sheet presentation and the
+/// The whole thing is wrapped in a tap-to-toggle gesture and the auto-hide.
+/// The view is stateful only for sheet presentation and the
 /// trailing-time display mode; the rest of the state lives on
 /// `PlayerViewModel`. Invisible gestures (double-tap skip, hold-2×, edge
 /// swipes) live in `MobilePlayerGestureLayer` underneath this overlay.
@@ -31,15 +30,11 @@ struct MobilePlayerControls: View {
     /// it is purely presentation, and kept outside the `showControls` gate
     /// below so the auto-hide takes the transport away without it.
     @State private var showsStats = false
-    /// True only while a finger drags the scrub bar. Skip buttons and
-    /// hold-seek also set `isScrubbing`, but they shouldn't play chapter ticks.
-    @GestureState private var isDraggingScrubBar = false
-
 
     var body: some View {
         // NOTE: the .sheet modifier MUST live outside the `showControls` gate.
         // If it's attached to a view that only exists while controls are
-        // visible, the 3s auto-hide tears down the sheet's host and dismisses
+        // visible, the auto-hide tears down the sheet's host and dismisses
         // the sheet mid-interaction — then re-presents it when controls come
         // back, because @State activeSheet survives the rebuild.
         ZStack {
@@ -106,24 +101,6 @@ struct MobilePlayerControls: View {
                 TrackSelectionSheet(viewModel: viewModel) { activeSheet = nil }
                     .presentationDetents([.medium, .large])
                     .presentationDragIndicator(.visible)
-            case .aiSubtitles:
-                SubtitleTranslateMenu(
-                    viewModel: viewModel,
-                    onDismiss: { activeSheet = nil },
-                    // Job accepted: close the sheet so the live overlay is
-                    // visible on the player.
-                    onJobStarted: { activeSheet = nil }
-                )
-                .presentationDetents([.medium, .large])
-            case .subtitleSearch:
-                SubtitleSearchMenu(
-                    viewModel: viewModel,
-                    onDismiss: { activeSheet = nil },
-                    // Download succeeded (track already selected): close the
-                    // sheet so the player is visible.
-                    onDownloaded: { activeSheet = nil }
-                )
-                .presentationDetents([.large])
             case .settings:
                 PlayerSettingsSheet(
                     viewModel: viewModel,
@@ -235,8 +212,11 @@ struct MobilePlayerControls: View {
             .accessibilityHint("Rotates the screen without interrupting playback")
             .accessibilityIdentifier("player.rotate")
 
+            // The open and closed glyphs differ only in the padlock's shackle,
+            // so the lock also takes the active tint the quality pill uses.
             controlButton(
-                systemName: orientationCoordinator.isRotationLocked ? "lock.rotation" : "lock.rotation.open"
+                systemName: orientationCoordinator.isRotationLocked ? "lock.rotation" : "lock.rotation.open",
+                tint: orientationCoordinator.isRotationLocked ? Color.white.opacity(0.22) : nil
             ) {
                 orientationCoordinator.toggleRotationLock()
                 viewModel.resumeAutoHide()
@@ -347,10 +327,313 @@ struct MobilePlayerControls: View {
 
     private var bottomStack: some View {
         VStack(spacing: 10) {
-            timeRow
-            progressSlider
+            MobilePlayerTimeline(viewModel: viewModel, showsRemainingTime: $showsRemainingTime)
             actionRow
                 .opacity(recedingOpacity)
+        }
+    }
+
+    // MARK: - Action row
+
+    private enum ActionRowStyle {
+        case full      // labeled pills, value on the Quality pill
+        case compact   // shorter labels
+        case icons     // icon controls; Quality remains a pill
+    }
+
+    /// Labeled pill row. `ViewThatFits` tries the full labels first, then
+    /// compact ones, then icon controls, so the row never truncates or wraps
+    /// — an iPhone in portrait with chapters present lands on `.icons`.
+    private var actionRow: some View {
+        ViewThatFits(in: .horizontal) {
+            actionRowContent(style: .full)
+            actionRowContent(style: .compact)
+            actionRowContent(style: .icons)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func actionRowContent(style: ActionRowStyle) -> some View {
+        // The Audio & Subtitles pill is only inert when the picker would have
+        // nothing at all in it. A track-less file can still offer subtitle
+        // search (and the explanation when search isn't configured), so those
+        // entry points keep the sheet reachable.
+        let noTracks = viewModel.audioTracks.isEmpty
+            && viewModel.subtitleTracks.isEmpty
+            && !viewModel.subtitleSearchVisible
+            && !aiSubtitlesAvailable
+        return HStack(spacing: 8) {
+            qualityMenu(compact: style != .full)
+
+            trackSelectionButton(style: style)
+                .disabled(noTracks)
+                .opacity(noTracks ? 0.4 : 1)
+                .accessibilityLabel("Audio & Subtitles")
+
+            if !viewModel.chapters.isEmpty {
+                chaptersMenu(style: style)
+                    .accessibilityLabel("Chapters")
+            }
+
+            controlButton(systemName: "ellipsis") {
+                activeSheet = .settings
+            }
+            .accessibilityLabel("Playback Settings")
+        }
+    }
+
+    private func qualityMenu(compact: Bool) -> some View {
+        let menu = Menu {
+            ForEach(viewModel.qualityOptions) { option in
+                Button {
+                    viewModel.switchQuality(option.id)
+                } label: {
+                    if option.id == viewModel.activeQualityId {
+                        Label(option.labelWithBitrate, systemImage: "checkmark")
+                    } else {
+                        Text(option.labelWithBitrate)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 5) {
+                if viewModel.isQualitySwitching {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .tint(.white)
+                } else {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                if compact {
+                    Text(qualityValueText)
+                        .font(.system(size: 12, weight: .semibold))
+                } else {
+                    Text("Quality")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text(qualityValueText)
+                        .font(.system(size: 11, weight: .medium))
+                        .opacity(0.7)
+                }
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12)
+            .frame(height: SiloTheme.topBarIconHitSize)
+        }
+        .menuStyle(.button)
+        // Keep Auto at the top, reading down.
+        .menuOrder(.fixed)
+
+        return menu
+        .buttonStyle(MobilePlayerGlassButtonStyle(
+            tint: viewModel.activeQualityId == ApplePlaybackQuality.autoId ? nil : Color.white.opacity(0.22)
+        ))
+        .accessibilityLabel("Playback Quality")
+        .accessibilityValue(qualityValueText)
+    }
+
+    /// Short value for the pill — the tier's resolution ("1080p") rather
+    /// than the full "Up to 1080p HD (High)" menu label.
+    private var qualityValueText: String {
+        guard let active = viewModel.qualityOptions.first(where: { $0.id == viewModel.activeQualityId }),
+              !active.isAuto, !active.isOriginal, !active.resolution.isEmpty else {
+            return "Auto"
+        }
+        return active.resolution
+    }
+
+    // MARK: - Audio & Subtitles sheet
+
+    /// Whether any AI subtitle action is available (translate or transcribe),
+    /// per the server's capability probes **and** the current track list.
+    /// Gates the "AI Subtitles…" row so it never opens an empty menu.
+    private var aiSubtitlesAvailable: Bool {
+        SubtitleTranslateMenu.hasActionableSource(viewModel)
+    }
+
+    /// Track inventories are unbounded, so they use a scrollable sheet rather
+    /// than a native `Menu`, whose landscape popover can clip later rows.
+    private func trackSelectionButton(style: ActionRowStyle) -> some View {
+        Group {
+            if style == .icons {
+                controlButton(systemName: "captions.bubble") {
+                    activeSheet = .tracks
+                }
+            } else {
+                actionPill(
+                    systemImage: "captions.bubble",
+                    title: style == .compact ? "Audio & Subs" : "Audio & Subtitles"
+                ) {
+                    activeSheet = .tracks
+                }
+            }
+        }
+    }
+
+    // MARK: - Chapters menu
+
+    /// Native chapter picker: one row per chapter with the timestamp as the
+    /// menu subtitle and a checkmark on the chapter currently playing.
+    private func chaptersMenu(style: ActionRowStyle) -> some View {
+        Menu {
+            MobileChapterMenuItems(viewModel: viewModel)
+        } label: {
+            menuPillLabel(
+                systemImage: "list.bullet",
+                title: style == .icons ? nil : "Chapters"
+            )
+        }
+        .menuStyle(.button)
+        // Keep Chapter 1 at the top, reading down.
+        .menuOrder(.fixed)
+        .buttonStyle(MobilePlayerGlassButtonStyle())
+    }
+
+    /// Menu label matching the `actionPill` (titled) / `controlButton`
+    /// (icon circle) appearance so menus and buttons read as one family.
+    @ViewBuilder
+    private func menuPillLabel(systemImage: String, title: String?) -> some View {
+        if let title {
+            HStack(spacing: 5) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 12, weight: .semibold))
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12)
+            .frame(height: SiloTheme.topBarIconHitSize)
+        } else {
+            Image(systemName: systemImage)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
+        }
+    }
+
+    private func actionPill(
+        systemImage: String,
+        title: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 12, weight: .semibold))
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12)
+            .frame(height: SiloTheme.topBarIconHitSize)
+        }
+        .buttonStyle(MobilePlayerGlassButtonStyle())
+    }
+
+    // MARK: - Intro skip
+
+    /// The intro-skip pill: "Skip Intro" for `ask`, and a small "Intro
+    /// skipped" caption over "Watch Intro" for `always`'s undo. The same state
+    /// machine and copy as the TV, web and Android pills, with pointer rules: a
+    /// tap is Select, and a tap elsewhere is not a dismissal.
+    @ViewBuilder
+    private var introSkipPill: some View {
+        if let pill = viewModel.introSkipPrompt.pill {
+            VStack(alignment: .trailing, spacing: 4) {
+                Spacer()
+                if let caption = pill.kind.caption {
+                    Text(caption)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.75))
+                        .shadow(color: .black.opacity(0.6), radius: 3, y: 1)
+                        .padding(.trailing, 12)
+                        .accessibilityHidden(true)
+                }
+                Button {
+                    viewModel.selectIntroSkipPrompt()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: pill.kind == .skip ? "forward.end.fill" : "arrow.counterclockwise")
+                        Text(pill.kind.actionTitle)
+                    }
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 16)
+                    .frame(height: SiloTheme.topBarIconHitSize)
+                }
+                .buttonStyle(MobileIntroSkipPillButtonStyle(pill: pill))
+                .accessibilityLabel(pill.kind.accessibilityLabel)
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .padding(.horizontal, 24)
+            // Clear the bottom stack while the controls are up; hug the
+            // bottom edge when the pill is floating alone.
+            .padding(.bottom, viewModel.showControls ? 88 : 24)
+            .animation(.easeOut(duration: 0.2), value: viewModel.showControls)
+            .transition(.opacity)
+        }
+    }
+
+    private var creditsSkipPill: some View {
+        VStack {
+            Spacer()
+            HStack {
+                Spacer()
+                Button {
+                    viewModel.skipCredits()
+                } label: {
+                    Label("Skip Credits", systemImage: "forward.end.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.black.opacity(0.85))
+                        .padding(.horizontal, 16)
+                        .frame(height: SiloTheme.topBarIconHitSize)
+                }
+                .buttonStyle(MobilePlayerGlassButtonStyle(tint: .white.opacity(0.9)))
+                .accessibilityLabel("Skip Credits")
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, viewModel.showControls ? 88 : 24)
+        }
+        .animation(.easeOut(duration: 0.2), value: viewModel.showControls)
+        .transition(.opacity)
+    }
+
+    // MARK: - Helpers
+
+    private func controlButton(
+        systemName: String, tint: Color? = nil, action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.white)
+                .contentTransition(.symbolEffect(.replace))
+                .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
+        }
+        .buttonStyle(MobilePlayerGlassButtonStyle(tint: tint))
+    }
+
+    // MARK: - Sheet identifier
+
+    private enum PlayerSheet: Identifiable {
+        case tracks, settings
+        var id: Self { self }
+    }
+}
+
+/// Time row and scrubber. The only part of the controls that reads the
+/// playback clock, so clock ticks re-render this view alone.
+private struct MobilePlayerTimeline: View {
+    let viewModel: PlayerViewModel
+    @Binding var showsRemainingTime: Bool
+    /// True only while a finger drags the scrub bar. Skip buttons and
+    /// hold-seek also set `isScrubbing`, but they shouldn't play chapter ticks.
+    @GestureState private var isDraggingScrubBar = false
+
+    var body: some View {
+        VStack(spacing: 10) {
+            timeRow
+            progressSlider
         }
     }
 
@@ -514,8 +797,7 @@ struct MobilePlayerControls: View {
 
     private var bufferedFraction: Double? {
         guard viewModel.duration > 0, viewModel.bufferedAheadSeconds > 0 else { return nil }
-        let end = (viewModel.currentTime + viewModel.bufferedAheadSeconds) / viewModel.duration
-        return min(max(end, 0), 1)
+        return viewModel.bufferedEndFraction
     }
 
     /// Floating time + chapter readout pinned above the touch point while
@@ -564,316 +846,36 @@ struct MobilePlayerControls: View {
             }
         }
     }
+}
 
-    // MARK: - Action row
+/// Chapter menu rows. Reads the clock for the checkmark, so it is kept out of
+/// the controls' own body.
+private struct MobileChapterMenuItems: View {
+    let viewModel: PlayerViewModel
 
-    private enum ActionRowStyle {
-        case full      // labeled pills, value on the Quality pill
-        case compact   // shorter labels
-        case icons     // icon controls; Quality remains a pill
-    }
-
-    /// Labeled pill row. `ViewThatFits` tries the full labels first, then
-    /// compact ones, then icon controls, so the row never truncates or wraps
-    /// — an iPhone in portrait with chapters present lands on `.icons`.
-    private var actionRow: some View {
-        ViewThatFits(in: .horizontal) {
-            actionRowContent(style: .full)
-            actionRowContent(style: .compact)
-            actionRowContent(style: .icons)
-        }
-        .frame(maxWidth: .infinity)
-    }
-
-    private func actionRowContent(style: ActionRowStyle) -> some View {
-        // The Audio & Subtitles pill is only inert when the picker would have
-        // nothing at all in it. A track-less file can still offer subtitle
-        // search (and the explanation when search isn't configured), so those
-        // entry points keep the sheet reachable. This also closes a pre-existing
-        // reachability gap: before, a file with no audio and no subtitle
-        // tracks disabled the pill outright, making subtitle search — the one
-        // feature that could fix exactly that file — impossible to reach.
-        let noTracks = viewModel.audioTracks.isEmpty
-            && viewModel.subtitleTracks.isEmpty
-            && !viewModel.subtitleSearchVisible
-            && !aiSubtitlesAvailable
-        return HStack(spacing: 8) {
-            qualityMenu(compact: style != .full)
-
-            trackSelectionButton(style: style)
-                .disabled(noTracks)
-                .opacity(noTracks ? 0.4 : 1)
-                .accessibilityLabel("Audio & Subtitles")
-
-            if !viewModel.chapters.isEmpty {
-                chaptersMenu(style: style)
-                    .accessibilityLabel("Chapters")
-            }
-
-            controlButton(systemName: "ellipsis") {
-                activeSheet = .settings
-            }
-            .accessibilityLabel("Playback Settings")
-        }
-    }
-
-    private func qualityMenu(compact: Bool) -> some View {
-        let menu = Menu {
-            ForEach(viewModel.qualityOptions) { option in
-                Button {
-                    viewModel.switchQuality(option.id)
-                } label: {
-                    if option.id == viewModel.activeQualityId {
-                        Label(option.labelWithBitrate, systemImage: "checkmark")
-                    } else {
-                        Text(option.labelWithBitrate)
-                    }
-                }
-            }
-        } label: {
-            HStack(spacing: 5) {
-                if viewModel.isQualitySwitching {
-                    ProgressView()
-                        .controlSize(.mini)
-                        .tint(.white)
-                } else {
-                    Image(systemName: "slider.horizontal.3")
-                        .font(.system(size: 12, weight: .semibold))
-                }
-                if compact {
-                    Text(qualityValueText)
-                        .font(.system(size: 12, weight: .semibold))
-                } else {
-                    Text("Quality")
-                        .font(.system(size: 12, weight: .semibold))
-                    Text(qualityValueText)
-                        .font(.system(size: 11, weight: .medium))
-                        .opacity(0.7)
-                }
-            }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 12)
-            .frame(height: SiloTheme.topBarIconHitSize)
-        }
-        .menuStyle(.button)
-        // Keep Auto at the top, reading down.
-        .menuOrder(.fixed)
-
-        return menu
-        .buttonStyle(MobilePlayerGlassButtonStyle(
-            tint: viewModel.activeQualityId == ApplePlaybackQuality.autoId ? nil : Color.white.opacity(0.22)
-        ))
-        .accessibilityLabel("Playback Quality")
-        .accessibilityValue(qualityValueText)
-    }
-
-    /// Short value for the pill — the tier's resolution ("1080p") rather
-    /// than the full "Up to 1080p HD (High)" menu label.
-    private var qualityValueText: String {
-        guard let active = viewModel.qualityOptions.first(where: { $0.id == viewModel.activeQualityId }),
-              !active.isAuto, !active.isOriginal, !active.resolution.isEmpty else {
-            return "Auto"
-        }
-        return active.resolution
-    }
-
-    // MARK: - Audio & Subtitles sheet
-
-    /// Whether any AI subtitle action is available (translate or transcribe),
-    /// per the server's capability probes **and** the current track list.
-    /// Gates the "AI Subtitles…" row so it never opens an empty menu.
-    private var aiSubtitlesAvailable: Bool {
-        SubtitleTranslateMenu.hasActionableSource(viewModel)
-    }
-
-    /// Track inventories are unbounded, so they use a scrollable sheet rather
-    /// than a native `Menu`, whose landscape popover can clip later rows.
-    private func trackSelectionButton(style: ActionRowStyle) -> some View {
-        Group {
-            if style == .icons {
-                controlButton(systemName: "captions.bubble") {
-                    activeSheet = .tracks
-                }
-            } else {
-                actionPill(
-                    systemImage: "captions.bubble",
-                    title: style == .compact ? "Audio & Subs" : "Audio & Subtitles"
-                ) {
-                    activeSheet = .tracks
-                }
-            }
-        }
-    }
-
-    // MARK: - Chapters menu
-
-    private var currentChapterIndex: Int? {
-        viewModel.chapters.lastIndex(where: { $0.time <= viewModel.currentTime })
-    }
-
-    /// Native chapter picker: one row per chapter with the timestamp as the
-    /// menu subtitle and a checkmark on the chapter currently playing.
-    private func chaptersMenu(style: ActionRowStyle) -> some View {
-        Menu {
-            ForEach(viewModel.chapters) { chapter in
-                Button {
-                    viewModel.seekTo(seconds: chapter.time)
-                } label: {
-                    if currentChapterIndex == chapter.index {
-                        Label {
-                            Text(chapterMenuTitle(chapter))
-                            Text(PlayerTimeFormatter.formatHMS(chapter.time))
-                        } icon: {
-                            Image(systemName: "checkmark")
-                        }
-                    } else {
+    var body: some View {
+        let currentChapterIndex = viewModel.chapters.lastIndex(where: { $0.time <= viewModel.currentTime })
+        ForEach(viewModel.chapters) { chapter in
+            Button {
+                viewModel.seekTo(seconds: chapter.time)
+            } label: {
+                if currentChapterIndex == chapter.index {
+                    Label {
                         Text(chapterMenuTitle(chapter))
                         Text(PlayerTimeFormatter.formatHMS(chapter.time))
+                    } icon: {
+                        Image(systemName: "checkmark")
                     }
+                } else {
+                    Text(chapterMenuTitle(chapter))
+                    Text(PlayerTimeFormatter.formatHMS(chapter.time))
                 }
             }
-        } label: {
-            menuPillLabel(
-                systemImage: "list.bullet",
-                title: style == .icons ? nil : "Chapters"
-            )
         }
-        .menuStyle(.button)
-        // Keep Chapter 1 at the top, reading down.
-        .menuOrder(.fixed)
-        .buttonStyle(MobilePlayerGlassButtonStyle())
     }
 
     private func chapterMenuTitle(_ chapter: PlayerChapterInfo) -> String {
         "\(chapter.index + 1).  \(chapter.title ?? "Chapter \(chapter.index + 1)")"
-    }
-
-    /// Menu label matching the `actionPill` (titled) / `controlButton`
-    /// (icon circle) appearance so menus and buttons read as one family.
-    @ViewBuilder
-    private func menuPillLabel(systemImage: String, title: String?) -> some View {
-        if let title {
-            HStack(spacing: 5) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 12, weight: .semibold))
-                Text(title)
-                    .font(.system(size: 12, weight: .semibold))
-            }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 12)
-            .frame(height: SiloTheme.topBarIconHitSize)
-        } else {
-            Image(systemName: systemImage)
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
-        }
-    }
-
-    private func actionPill(
-        systemImage: String,
-        title: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            HStack(spacing: 5) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 12, weight: .semibold))
-                Text(title)
-                    .font(.system(size: 12, weight: .semibold))
-            }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 12)
-            .frame(height: SiloTheme.topBarIconHitSize)
-        }
-        .buttonStyle(MobilePlayerGlassButtonStyle())
-    }
-
-    // MARK: - Intro skip
-
-    /// The intro-skip pill: "Skip Intro" for `ask`, and a small "Intro
-    /// skipped" caption over "Watch Intro" for `always`'s undo. The same state
-    /// machine and copy as the TV, web and Android pills, with pointer rules: a
-    /// tap is Select, and a tap elsewhere is not a dismissal.
-    @ViewBuilder
-    private var introSkipPill: some View {
-        if let pill = viewModel.introSkipPrompt.pill {
-            VStack(alignment: .trailing, spacing: 4) {
-                Spacer()
-                if let caption = pill.kind.caption {
-                    Text(caption)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.75))
-                        .shadow(color: .black.opacity(0.6), radius: 3, y: 1)
-                        .padding(.trailing, 12)
-                        .accessibilityHidden(true)
-                }
-                Button {
-                    viewModel.selectIntroSkipPrompt()
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: pill.kind == .skip ? "forward.end.fill" : "arrow.counterclockwise")
-                        Text(pill.kind.actionTitle)
-                    }
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 16)
-                    .frame(height: SiloTheme.topBarIconHitSize)
-                }
-                .buttonStyle(MobileIntroSkipPillButtonStyle(pill: pill))
-                .accessibilityLabel(pill.kind.accessibilityLabel)
-            }
-            .frame(maxWidth: .infinity, alignment: .trailing)
-            .padding(.horizontal, 24)
-            // Clear the bottom stack while the controls are up; hug the
-            // bottom edge when the pill is floating alone.
-            .padding(.bottom, viewModel.showControls ? 88 : 24)
-            .animation(.easeOut(duration: 0.2), value: viewModel.showControls)
-            .transition(.opacity)
-        }
-    }
-
-    private var creditsSkipPill: some View {
-        VStack {
-            Spacer()
-            HStack {
-                Spacer()
-                Button {
-                    viewModel.skipCredits()
-                } label: {
-                    Label("Skip Credits", systemImage: "forward.end.fill")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.black.opacity(0.85))
-                        .padding(.horizontal, 16)
-                        .frame(height: SiloTheme.topBarIconHitSize)
-                }
-                .buttonStyle(MobilePlayerGlassButtonStyle(tint: .white.opacity(0.9)))
-                .accessibilityLabel("Skip Credits")
-            }
-            .padding(.horizontal, 24)
-            .padding(.bottom, viewModel.showControls ? 88 : 24)
-        }
-        .animation(.easeOut(duration: 0.2), value: viewModel.showControls)
-        .transition(.opacity)
-    }
-
-    // MARK: - Helpers
-
-    private func controlButton(systemName: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
-        }
-        .buttonStyle(MobilePlayerGlassButtonStyle())
-    }
-
-    // MARK: - Sheet identifier
-
-    private enum PlayerSheet: Identifiable {
-        case tracks, aiSubtitles, subtitleSearch, settings
-        var id: Self { self }
     }
 }
 

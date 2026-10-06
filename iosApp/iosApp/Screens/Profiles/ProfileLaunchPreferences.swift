@@ -1,5 +1,6 @@
 import Foundation
 import OSLog
+import Synchronization
 
 @Observable
 final class ProfileLaunchPreferences {
@@ -13,15 +14,12 @@ final class ProfileLaunchPreferences {
     private let defaults: SharedDefaults
     private let persistenceOverride: ((ProfileLaunchState) -> Bool)?
     /// SwiftUI reads this state on the main thread while `AuthService`
-    /// updates it from profile-switch tasks, so every access holds `lock`.
-    @ObservationIgnored private let lock = NSLock()
-    @ObservationIgnored private var storedState: ProfileLaunchState
+    /// updates it from profile-switch tasks, so every access takes the lock.
+    @ObservationIgnored private let storedState: Mutex<ProfileLaunchState>
 
     var state: ProfileLaunchState {
         access(keyPath: \.state)
-        lock.lock()
-        defer { lock.unlock() }
-        return storedState
+        return storedState.withLock { $0 }
     }
 
     init(
@@ -31,7 +29,7 @@ final class ProfileLaunchPreferences {
         self.defaults = defaults
         self.persistenceOverride = persistenceOverride
         let state = ProfileLaunchState.load(from: defaults)
-        self.storedState = state
+        self.storedState = Mutex(state)
         _ = persist(state)
     }
 
@@ -204,17 +202,16 @@ final class ProfileLaunchPreferences {
         )
     }
 
-    /// Applies `change` to a copy of the state under `lock`, so each
-    /// mutation, its persistence, and any rollback happen as one step.
-    /// Observers are notified after unlocking so they can read `state`.
+    /// Applies `change` to the state under the lock, so each mutation, its
+    /// persistence, and any rollback happen as one step. Observers are
+    /// notified after unlocking so they can read `state`.
     private func update<Result>(_ change: (inout ProfileLaunchState) -> Result) -> Result {
-        lock.lock()
-        let previousState = storedState
-        var state = previousState
-        let result = change(&state)
-        storedState = state
-        lock.unlock()
-        if state != previousState {
+        let (result, changed) = storedState.withLock { state in
+            let previousState = state
+            let result = change(&state)
+            return (result, state != previousState)
+        }
+        if changed {
             withMutation(keyPath: \.state) {}
         }
         return result

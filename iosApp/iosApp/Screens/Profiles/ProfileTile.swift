@@ -16,9 +16,7 @@ enum ProfileTilePalette {
         Color(red: 0.780, green: 0.640, blue: 0.380),  // amber
     ]
 
-    /// Stable derivation from profile id. `hashValue` varies per-launch under
-    /// some Swift versions but within a single launch it's consistent, which
-    /// is enough — the screen regenerates each session.
+    /// djb2 over the id's UTF-8, so a profile keeps its tint across launches.
     static func tint(for profileId: String) -> Color {
         var h: UInt64 = 5381
         for byte in profileId.utf8 {
@@ -29,131 +27,118 @@ enum ProfileTilePalette {
 }
 
 #if os(tvOS)
-private let tileSize: CGFloat = 280
-private let tileCornerRadius: CGFloat = 28
-private let emojiSize: CGFloat = 140
-private let initialSize: CGFloat = 120
-private let nameSize: CGFloat = 28
-private let focusScale: CGFloat = 1.10
+private let tileSize: CGFloat = 220
+private let emojiSize: CGFloat = 110
+private let initialSize: CGFloat = 96
+private let nameSize: CGFloat = 30
+private let metaSize: CGFloat = 20
+private let nameSpacing: CGFloat = 26
+private let focusScale: CGFloat = 1.12
+private let lockSize: CGFloat = 56
+private let kidsFont: CGFloat = 18
 #else
-private let tileSize: CGFloat = 140
-private let tileCornerRadius: CGFloat = 18
-private let emojiSize: CGFloat = 72
-private let initialSize: CGFloat = 56
-private let nameSize: CGFloat = 17
-private let focusScale: CGFloat = 1.05
+private let tileSize: CGFloat = 92
+private let emojiSize: CGFloat = 46
+private let initialSize: CGFloat = 38
+private let nameSize: CGFloat = 15
+private let metaSize: CGFloat = 12
+private let nameSpacing: CGFloat = 10
+private let focusScale: CGFloat = 1.0
+private let lockSize: CGFloat = 30
+private let kidsFont: CGFloat = 11
 #endif
 
-/// A profile tile — square, tinted, with the avatar centered inside.
-/// The tint is the identity; the avatar rides on top. On focus the whole
-/// tile lifts with a white ring and a colored halo matching its tint.
+/// One person in "Who's watching?": a round avatar like the cast rows on
+/// detail pages, with lock and KIDS badges riding on the circle.
 struct ProfileTile: View {
     let profile: UserProfile
     var isRemembered: Bool = false
+    /// Avatar diameter. The picker sizes avatars to the household; badges
+    /// and text scale with it.
+    var size: CGFloat = tileSize
+    /// Reports touch-down and release so the picker can tint the backdrop
+    /// while a finger rests on a profile.
+    var onPressChange: (Bool) -> Void = { _ in }
     let action: () -> Void
 
     @FocusState private var isFocused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var tint: Color {
         ProfileTilePalette.tint(for: profile.id)
     }
 
+    private var scale: CGFloat { size / tileSize }
+
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 20) {
-                tileBody
-                    .frame(width: tileSize, height: tileSize)
-                    // Focus ring sits *outside* the tile so it never crops
-                    // content. Inset by a negative amount so the stroke
-                    // extends past the tile bounds.
-                    .overlay {
-                        RoundedRectangle(cornerRadius: tileCornerRadius + 4)
-                            .inset(by: -4)
-                            .stroke(isFocused ? Color.white : Color.clear, lineWidth: 4)
+            VStack(spacing: 0) {
+                avatar
+                    .frame(width: size, height: size)
+                    .overlay(alignment: .bottomTrailing) {
+                        if profile.hasPin { lockBadge }
                     }
-                    .scaleEffect(isFocused ? focusScale : 1.0)
-                    // Stacked shadows: a colored halo from the tint + a
-                    // neutral drop shadow for lift. The halo is what sells
-                    // the "this profile is alive" feel when focused.
-                    .shadow(color: tint.opacity(isFocused ? 0.55 : 0),
-                            radius: isFocused ? 44 : 0, y: 0)
-                    .shadow(color: .black.opacity(isFocused ? 0.5 : 0),
-                            radius: isFocused ? 22 : 0, y: isFocused ? 14 : 0)
+                    .overlay(alignment: .topTrailing) {
+                        if profile.isChild { kidsBadge }
+                    }
+                    .background {
+                        Circle()
+                            .strokeBorder(Color.siloOnSurface, lineWidth: 6)
+                            .padding(-12)
+                            .opacity(isFocused ? 1 : 0)
+                    }
+                    .scaleEffect(isFocused && !reduceMotion ? focusScale : 1.0)
+                    .shadow(color: .black.opacity(isFocused ? 0.6 : 0), radius: isFocused ? 30 : 0, y: isFocused ? 20 : 0)
 
                 Text(profile.name)
-                    .font(.system(size: nameSize, weight: isFocused ? .semibold : .medium))
-                    .foregroundStyle(isFocused ? .white : .white.opacity(0.72))
+                    .font(.system(size: scaledNameSize(size), weight: .semibold))
+                    .foregroundStyle(isFocused ? Color.siloOnSurface : Color.siloOnSurface.opacity(nameOpacity))
                     .lineLimit(1)
+                    .padding(.top, isFocused ? nameSpacing + 18 : nameSpacing)
+
+                if isRemembered {
+                    Text(rememberedBadgeLabel)
+                        .font(.system(size: metaSize))
+                        .foregroundStyle(Color.siloOnSurface.opacity(0.4))
+                        .lineLimit(1)
+                        .padding(.top, 2)
+                }
             }
+            .frame(maxWidth: .infinity)
             .contentShape(.rect)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ProfileTileButtonStyle(onPressChange: onPressChange))
         .animation(.spring(response: 0.32, dampingFraction: 0.72), value: isFocused)
         .focused($isFocused)
+        #if os(tvOS)
+        .focusEffectDisabled()
+        #endif
         .accessibilityLabel(profile.name)
         .accessibilityValue(accessibilityValue)
     }
 
-    @ViewBuilder
-    private var tileBody: some View {
+    private var nameOpacity: Double {
+        #if os(tvOS)
+        0.62
+        #else
+        1.0
+        #endif
+    }
+
+    private var avatar: some View {
         ZStack {
-            // Primary tile fill: the tint. A thin inner highlight at the
-            // top helps the tile read as a physical surface rather than a
-            // flat swatch.
-            RoundedRectangle(cornerRadius: tileCornerRadius, style: .continuous)
-                .fill(tint)
-                .overlay(
-                    RoundedRectangle(cornerRadius: tileCornerRadius, style: .continuous)
-                        .stroke(
-                            LinearGradient(
-                                colors: [Color.white.opacity(0.22), Color.white.opacity(0.04)],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            ),
-                            lineWidth: 1
-                        )
+            Circle().fill(
+                RadialGradient(
+                    colors: [tint.mix(with: .white, by: 0.35), tint, tint.mix(with: .black, by: 0.45)],
+                    center: UnitPoint(x: 0.3, y: 0.25),
+                    startRadius: 0,
+                    endRadius: size * 0.8
                 )
-
-            // Avatar content. Emoji and letter fallbacks render directly
-            // on the tint; image avatars clip to the tile shape.
+            )
             avatarContent
-
-            // Child / lock badges ride in the top-right corner.
-            if profile.hasPin || profile.isChild {
-                VStack {
-                    HStack(spacing: 6) {
-                        Spacer()
-                        if profile.isChild {
-                            badgeChip(systemImage: "leaf.fill")
-                        }
-                        if profile.hasPin {
-                            badgeChip(systemImage: "lock.fill")
-                        }
-                    }
-                    Spacer()
-                }
-                .padding(12)
-            }
-
-            if isRemembered {
-                VStack {
-                    Spacer()
-                    HStack {
-                        Text(rememberedBadgeLabel)
-                            .font(.caption.bold())
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.75)
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(.black.opacity(0.48), in: .capsule)
-                        Spacer()
-                    }
-                }
-                .padding(12)
-            }
         }
-        .clipShape(RoundedRectangle(cornerRadius: tileCornerRadius, style: .continuous))
+        .clipShape(Circle())
+        .overlay(Circle().strokeBorder(Color.white.opacity(0.14), lineWidth: 1))
     }
 
     @ViewBuilder
@@ -161,19 +146,18 @@ struct ProfileTile: View {
         let avatar = profile.avatarEmoji?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if let serverURL = ProfileAvatarResolver.serverResolvedImageURL(profile.avatarImageUrl) {
             AsyncImageView(url: serverURL, contentMode: .fill)
-                .frame(width: tileSize, height: tileSize)
+                .frame(width: size, height: size)
         } else if ProfileAvatarResolver.isImage(avatar) {
-            // Image avatars (DiceBear preset or URL) clip to the full tile
-            // bounds for a cinematic poster effect.
             if let url = ProfileAvatarResolver.imageURL(for: avatar) {
                 AsyncImageView(url: url, contentMode: .fill)
-                    .frame(width: tileSize, height: tileSize)
+                    .frame(width: size, height: size)
             } else {
                 initialFallback
             }
-        } else if !avatar.isEmpty {
+        } else if !avatar.isEmpty, !avatar.lowercased().hasPrefix("upload:") {
+            // An `upload:` ref is only loadable through `avatar_url`.
             Text(avatar)
-                .font(.system(size: emojiSize))
+                .font(.system(size: emojiSize * scale))
         } else {
             initialFallback
         }
@@ -181,8 +165,8 @@ struct ProfileTile: View {
 
     private var initialFallback: some View {
         Text(initial)
-            .font(.system(size: initialSize, weight: .semibold, design: .rounded))
-            .foregroundStyle(.white.opacity(0.92))
+            .font(.system(size: initialSize * scale, weight: .bold, design: .rounded))
+            .foregroundStyle(.white.opacity(0.95))
     }
 
     private var initial: String {
@@ -191,27 +175,44 @@ struct ProfileTile: View {
         return String(trimmed.prefix(1)).uppercased()
     }
 
-    private func badgeChip(systemImage: String) -> some View {
-        Image(systemName: systemImage)
-            .font(.system(size: 16, weight: .semibold))
-            .foregroundStyle(.white)
-            .padding(8)
-            .background(Circle().fill(Color.black.opacity(0.35)))
+    private var lockBadge: some View {
+        let lockSize = lockSize * scale
+        return Image(systemName: "lock.fill")
+            .font(.system(size: lockSize * 0.42, weight: .semibold))
+            .foregroundStyle(Color.siloOnSurface.opacity(0.75))
+            .frame(width: lockSize, height: lockSize)
+            .background(Circle().fill(Color(hex: "#1C1C1E")))
+            .overlay(Circle().strokeBorder(Color.black, lineWidth: lockSize * 0.07))
+            .offset(x: lockSize * 0.08, y: lockSize * 0.08)
+            .accessibilityHidden(true)
+    }
+
+    private var kidsBadge: some View {
+        let kidsFont = kidsFont * scale
+        return Text("KIDS")
+            .font(.system(size: kidsFont, weight: .heavy))
+            .kerning(0.4)
+            .foregroundStyle(.black)
+            .padding(.horizontal, kidsFont * 0.75)
+            .frame(height: kidsFont * 2)
+            .background(Capsule().fill(Color.white))
+            .offset(x: kidsFont * 0.5, y: -kidsFont * 0.2)
+            .accessibilityHidden(true)
     }
 
     private var accessibilityValue: String {
         var values: [String] = []
         if isRemembered { values.append(rememberedAccessibilityValue) }
         if profile.hasPin { values.append("PIN protected") }
-        if profile.isChild { values.append("Child profile") }
+        if profile.isChild { values.append("Kids profile") }
         return values.joined(separator: ", ")
     }
 
     private var rememberedBadgeLabel: String {
         #if os(tvOS)
-        "APPLE TV USER"
+        "Apple TV user"
         #else
-        "LAST USED"
+        "Last used"
         #endif
     }
 
@@ -224,64 +225,74 @@ struct ProfileTile: View {
     }
 }
 
-/// Add-profile tile. Matches the real profile tiles in size and focus
-/// treatment but uses a neutral surface + dashed plus icon, so a user can
-/// tell "this is where I add a new one" without it looking like an
-/// existing profile.
+/// Draws only the tile itself. `.plain` would add tvOS's square focus platter
+/// behind the round avatar; the tile renders its own focus ring instead.
+private struct ProfileTileButtonStyle: ButtonStyle {
+    var onPressChange: (Bool) -> Void = { _ in }
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.8 : 1)
+            .marqueePressHaptic(configuration.isPressed)
+            .onChange(of: configuration.isPressed) { _, pressed in onPressChange(pressed) }
+    }
+}
+
+/// Names grow more slowly than avatars so large avatars keep short labels.
+private func scaledNameSize(_ size: CGFloat) -> CGFloat {
+    nameSize * (1 + (size / tileSize - 1) * 0.35)
+}
+
 struct AddProfileTile: View {
+    var size: CGFloat = tileSize
     let action: () -> Void
 
     @FocusState private var isFocused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 20) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: tileCornerRadius)
-                        .fill(Color.white.opacity(isFocused ? 0.14 : 0.06))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: tileCornerRadius)
-                                .strokeBorder(
-                                    style: StrokeStyle(lineWidth: 2, dash: [8, 6])
-                                )
-                                .foregroundStyle(Color.white.opacity(isFocused ? 0.7 : 0.28))
-                        }
+            VStack(spacing: 0) {
+                Circle()
+                    .fill(Color.white.opacity(isFocused ? 0.14 : 0))
+                    .overlay {
+                        Circle()
+                            .strokeBorder(style: StrokeStyle(lineWidth: 2, dash: [6, 5]))
+                            .foregroundStyle(Color.white.opacity(isFocused ? 0.7 : 0.25))
+                    }
+                    .overlay {
+                        Image(systemName: "plus")
+                            .font(.system(size: size * 0.3, weight: .light))
+                            .foregroundStyle(Color.siloOnSurface.opacity(isFocused ? 1 : 0.4))
+                    }
+                    .frame(width: size, height: size)
+                    .background {
+                        Circle()
+                            .strokeBorder(Color.siloOnSurface, lineWidth: 6)
+                            .padding(-12)
+                            .opacity(isFocused ? 1 : 0)
+                    }
+                    .scaleEffect(isFocused && !reduceMotion ? focusScale : 1.0)
 
-                    Image(systemName: "plus")
-                        .font(.system(size: 84, weight: .light))
-                        .foregroundStyle(.white.opacity(isFocused ? 1.0 : 0.6))
-                }
-                .frame(width: tileSize, height: tileSize)
-                .overlay {
-                    RoundedRectangle(cornerRadius: tileCornerRadius + 4)
-                        .inset(by: -4)
-                        .stroke(isFocused ? Color.white : Color.clear, lineWidth: 4)
-                }
-                .scaleEffect(isFocused ? focusScale : 1.0)
-                .shadow(color: .black.opacity(isFocused ? 0.5 : 0),
-                        radius: isFocused ? 22 : 0, y: isFocused ? 14 : 0)
-
-                Text("Add Profile")
-                    .font(.system(size: nameSize, weight: isFocused ? .semibold : .medium))
-                    .foregroundStyle(isFocused ? .white : .white.opacity(0.55))
+                Text("Add profile")
+                    .font(.system(size: scaledNameSize(size), weight: .semibold))
+                    .foregroundStyle(Color.siloOnSurface.opacity(isFocused ? 1 : 0.62))
+                    .padding(.top, isFocused ? nameSpacing + 18 : nameSpacing)
             }
+            .frame(maxWidth: .infinity)
             .contentShape(.rect)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ProfileTileButtonStyle())
         .animation(.spring(response: 0.32, dampingFraction: 0.72), value: isFocused)
         .focused($isFocused)
         #if os(tvOS)
         .focusEffectDisabled()
         #endif
-        .accessibilityLabel("Add Profile")
+        .accessibilityLabel("Add profile")
     }
 }
 
-// MARK: - Avatar resolver (mirrors ProfileAvatarView's image/emoji logic)
-
-/// Helpers extracted from `ProfileAvatarView` so the tile can render
-/// avatars in a tile shape rather than a circle. Kept as a small local
-/// utility rather than adjusting the shared view's API surface.
+/// Turns a profile's avatar ref or `avatar_url` into a loadable image URL.
 enum ProfileAvatarResolver {
     /// Resolve the server-supplied `avatar_url`. Absolute URLs (presigned
     /// upload URLs, DiceBear) are used verbatim; a server-relative path is
@@ -320,12 +331,6 @@ enum ProfileAvatarResolver {
     static func isImage(_ value: String) -> Bool {
         let lowercased = value.lowercased()
         return lowercased.hasPrefix("preset:dicebear:")
-            || lowercased.hasPrefix("http://")
-            || lowercased.hasPrefix("https://")
-            || lowercased.hasPrefix("data:image/")
-            || lowercased.hasPrefix("content://")
-            || lowercased.hasPrefix("file://")
-            || lowercased.hasPrefix("/")
             || lowercased.contains("/")
             || lowercased.contains(".png")
             || lowercased.contains(".jpg")
@@ -366,8 +371,6 @@ enum ProfileAvatarResolver {
         let style = String(parts[2]).trimmingCharacters(in: .whitespacesAndNewlines)
         let seed = String(parts[3]).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !style.isEmpty, !seed.isEmpty else { return nil }
-        let s = style.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? style
-        let d = seed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? seed
-        return "https://api.dicebear.com/9.x/\(s)/png?seed=\(d)&size=256"
+        return ProfileAvatarPresets.imageURL(styleId: style, seed: seed)
     }
 }

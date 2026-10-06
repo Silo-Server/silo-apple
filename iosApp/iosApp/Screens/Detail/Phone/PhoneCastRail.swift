@@ -10,8 +10,6 @@ struct PhoneCastRail: View {
     let groups: [CastCrewGroup]
     let onTap: (String) -> Void
 
-    private let photoSize: CGFloat = 76
-    private let cardWidth: CGFloat = 96
     private let cardSpacing: CGFloat = 14
 
     init(groups: [CastCrewGroup], onTap: @escaping (String) -> Void) {
@@ -29,34 +27,62 @@ struct PhoneCastRail: View {
             LazyHStack(alignment: HorizontalMediaRailLayout.cardAlignment, spacing: cardSpacing) {
                 ForEach(groups) { group in
                     if let label = group.dividerLabel {
-                        groupDivider(label: label)
+                        PhoneCastCrewDivider(label: label)
                     }
                     ForEach(group.entries) { entry in
-                        card(for: entry)
+                        PhoneCastCard(entry: entry, onTap: onTap)
                     }
                 }
             }
-            .padding(.horizontal, SiloTheme.safePadding)
+            .scrollTargetLayout()
             .padding(.vertical, 4)
             .phoneMediaRailBounds()
         }
+        .contentMargins(.horizontal, SiloTheme.safePadding, for: .scrollContent)
+        .mediaRailScrolling()
+        // Cards widen with the text; past AX2 one name would fill the screen.
+        .dynamicTypeSize(...DynamicTypeSize.accessibility2)
+    }
+}
+
+private enum PhoneCastCardMetrics {
+    static let photoSize: CGFloat = 76
+}
+
+private extension View {
+    func phoneCastNameFont() -> some View {
+        siloScaledFont(size: 12, weight: .semibold, relativeTo: .caption)
     }
 
-    private func card(for entry: CastCrewEntry) -> some View {
+    func phoneCastCaptionFont() -> some View {
+        siloScaledFont(size: 11, relativeTo: .caption2)
+    }
+}
+
+private struct PhoneCastCard: View {
+    let entry: CastCrewEntry
+    let onTap: (String) -> Void
+
+    private let photoSize = PhoneCastCardMetrics.photoSize
+    /// Grows with the names beneath the photo so a name keeps its default
+    /// words per line instead of breaking inside a word at large text sizes.
+    @ScaledMetric(relativeTo: .caption) private var cardWidth: CGFloat = 96
+
+    var body: some View {
         Button {
             if let personId = entry.personId { onTap(personId) }
         } label: {
             VStack(spacing: 8) {
-                photo(for: entry)
+                photo
                 VStack(spacing: 2) {
                     Text(entry.name)
-                        .font(nameFont)
+                        .phoneCastNameFont()
                         .foregroundColor(.siloOnSurface)
                         .lineLimit(2, reservesSpace: true)
                         .multilineTextAlignment(.center)
                     if let caption = entry.caption, !caption.isEmpty {
                         Text(caption)
-                            .font(captionFont)
+                            .phoneCastCaptionFont()
                             .foregroundColor(.siloSecondaryText)
                             .lineLimit(1)
                             .multilineTextAlignment(.center)
@@ -69,41 +95,7 @@ struct PhoneCastRail: View {
         .buttonStyle(.plain)
     }
 
-    private var nameFont: Font { .system(size: 12, weight: .semibold) }
-    private var captionFont: Font { .system(size: 11, weight: .regular) }
-
-    /// Thin rule beside the portraits with the group name running up it.
-    /// The hidden text below reserves the same height as a card's name and
-    /// caption, so the rule lines up with the portraits whether the rail
-    /// aligns cards to the top or the centre.
-    private func groupDivider(label: String) -> some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 6) {
-                Rectangle()
-                    .fill(Color.white.opacity(0.14))
-                    .frame(width: 1, height: photoSize)
-                Text(label.uppercased())
-                    .font(.system(size: 9, weight: .bold))
-                    .tracking(1.2)
-                    .foregroundColor(.siloSecondaryText)
-                    .fixedSize()
-                    .rotationEffect(.degrees(-90))
-                    .frame(width: 12, height: photoSize)
-            }
-            VStack(spacing: 2) {
-                Text(" ").font(nameFont).lineLimit(2, reservesSpace: true)
-                Text(" ").font(captionFont).lineLimit(1)
-            }
-            .hidden()
-            .accessibilityHidden(true)
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(label)
-        .accessibilityAddTraits(.isHeader)
-    }
-
-    @ViewBuilder
-    private func photo(for entry: CastCrewEntry) -> some View {
+    private var photo: some View {
         ZStack {
             Color.siloSurfaceElevated
             if let url = entry.photoUrl, !url.isEmpty {
@@ -119,6 +111,42 @@ struct PhoneCastRail: View {
         .overlay(
             Circle().stroke(Color.white.opacity(0.10), lineWidth: 1)
         )
+    }
+}
+
+/// Thin rule beside the portraits with the group name running up it.
+/// The hidden text below reserves the same height as a card's name and
+/// caption, so the rule lines up with the portraits whether the rail
+/// aligns cards to the top or the centre.
+private struct PhoneCastCrewDivider: View {
+    let label: String
+
+    private let photoSize = PhoneCastCardMetrics.photoSize
+
+    var body: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 6) {
+                Rectangle()
+                    .fill(Color.white.opacity(0.14))
+                    .frame(width: 1, height: photoSize)
+                Text(label.uppercased())
+                    .font(.system(size: 9, weight: .bold))
+                    .tracking(1.2)
+                    .foregroundColor(.siloSecondaryText)
+                    .fixedSize()
+                    .rotationEffect(.degrees(-90))
+                    .frame(width: 12, height: photoSize)
+            }
+            VStack(spacing: 2) {
+                Text(" ").phoneCastNameFont().lineLimit(2, reservesSpace: true)
+                Text(" ").phoneCastCaptionFont().lineLimit(1)
+            }
+            .hidden()
+            .accessibilityHidden(true)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+        .accessibilityAddTraits(.isHeader)
     }
 }
 #endif

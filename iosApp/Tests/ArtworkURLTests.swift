@@ -78,8 +78,9 @@ final class ArtworkURLTests: XCTestCase {
         XCTAssertEqual(secondURL, "https://b.example" + signedPath)
         // The visible renderer and all prefetchers receive these same strings;
         // Nuke's URL-based cache identity therefore includes the source server.
-        let a = PosterImageCache.displayRequest(url: try XCTUnwrap(URL(string: firstURL)), pixelSize: CGSize(width: 300, height: 450))
-        let b = PosterImageCache.displayRequest(url: try XCTUnwrap(URL(string: secondURL)), pixelSize: CGSize(width: 300, height: 450))
+        let cardSize = CGSize(width: 120, height: 180)
+        let a = try XCTUnwrap(PosterImageCache.displayRequest(url: try XCTUnwrap(URL(string: firstURL)), pointSize: cardSize, scale: 3))
+        let b = try XCTUnwrap(PosterImageCache.displayRequest(url: try XCTUnwrap(URL(string: secondURL)), pointSize: cardSize, scale: 3))
         XCTAssertNotEqual(a.url, b.url)
         XCTAssertEqual(first.value.items.first?.posterUrl, firstURL)
 
@@ -125,11 +126,12 @@ final class ArtworkURLTests: XCTestCase {
         for value in urls {
             let url = try XCTUnwrap(URL(string: value))
             // Exercise the same thumbnail request used by startup prefetch.
-            _ = try await pipeline.image(for: PosterImageCache.cardWarmRequest(for: url))
-            XCTAssertNotNil(pipeline.cache.cachedImage(for: PosterImageCache.cardWarmRequest(for: url)))
+            let warm = try XCTUnwrap(PosterImageCache.displayRequest(url: url, pointSize: CGSize(width: 120, height: 180), scale: 2))
+            _ = try await pipeline.image(for: warm)
+            XCTAssertNotNil(pipeline.cache.cachedImage(for: warm))
             let loaded = expectation(description: "Rendered " + (url.host ?? "artwork"))
             loaded.assertForOverFulfill = false
-            let view = CachedAsyncImage(url: value, onImageLoaded: { loaded.fulfill() })
+            let view = AsyncImageView(url: value, onImageLoaded: { loaded.fulfill() })
                 .frame(width: 120, height: 180)
             let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 240, height: 240))
             window.windowScene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first

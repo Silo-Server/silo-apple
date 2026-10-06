@@ -9,14 +9,8 @@ import Foundation
 /// bridge handles only the optional host callback and applies the media
 /// privacy boundary before a line can enter Silo-owned diagnostics.
 enum AetherDiagnosticsBridge {
-    private static let installLock = NSLock()
-    nonisolated(unsafe) private static var installed = false
-
-    static func install() {
-        installLock.lock()
-        defer { installLock.unlock() }
-        guard !installed else { return }
-
+    /// A static initializer runs exactly once, thread-safely.
+    private static let installOnce: Void = {
         EngineLog.handler = makeHandler { redactedLine in
             DiagTrace.log(
                 .verbose,
@@ -26,7 +20,10 @@ enum AetherDiagnosticsBridge {
                 message: redactedLine()
             )
         }
-        installed = true
+    }()
+
+    static func install() {
+        _ = installOnce
     }
 
     /// Injectable composition seam: tests prove the actual handler redacts

@@ -29,20 +29,19 @@ enum OverlayRegistry {
     }
 
     /// Enabled overlays for a corner, in the user's chosen order. Any
-    /// overlay not listed in `prefs.order` falls back to registry order
-    /// (preserved deterministically via a secondary index, since
-    /// `sorted` is not guaranteed stable).
+    /// overlay not listed in `prefs.order` keeps registry order (`sorted`
+    /// is stable).
     ///
     /// Duplicate IDs in `prefs.order` — possible when the wire JSON was
     /// hand-edited or written by an older client — are tolerated: the
     /// first occurrence wins, later ones are dropped, no trap.
     static func enabled(at position: OverlayPosition, in prefs: CardOverlayPrefs) -> [OverlayDef] {
-        let candidates = all.enumerated().filter { _, def in
+        let candidates = all.filter { def in
             guard let cfg = prefs.items[def.id] else { return false }
             if isSuppressed(def.id, by: prefs) { return false }
             return cfg.enabled && cfg.position == position
         }
-        if prefs.order.isEmpty { return candidates.map(\.element) }
+        if prefs.order.isEmpty { return candidates }
 
         // `uniquingKeysWith` keeps the first index a given ID appears
         // at, so a malformed `order` like `[a, b, a]` doesn't trap.
@@ -50,36 +49,15 @@ enum OverlayRegistry {
             prefs.order.enumerated().map { ($1, $0) },
             uniquingKeysWith: { first, _ in first }
         )
-        return candidates
-            .sorted { lhs, rhs in
-                let lhsRank = rank[lhs.element.id] ?? Int.max
-                let rhsRank = rank[rhs.element.id] ?? Int.max
-                if lhsRank != rhsRank { return lhsRank < rhsRank }
-                // Equal ranks (typically both unranked at Int.max) →
-                // fall back to registry order.
-                return lhs.offset < rhs.offset
-            }
-            .map(\.element)
+        return candidates.sorted {
+            (rank[$0.id] ?? Int.max) < (rank[$1.id] ?? Int.max)
+        }
     }
 }
 
 // MARK: - Tech
 
 private extension OverlayRegistry {
-
-    static func prettyResolution(_ value: String?) -> String? {
-        guard let value, !value.isEmpty else { return nil }
-        let v = value.lowercased()
-        switch v {
-        case "2160p", "4k", "uhd": return "4K"
-        case "4320p", "8k":         return "8K"
-        default:
-            if v.range(of: #"^\d+p$"#, options: .regularExpression) != nil {
-                return v
-            }
-            return value.uppercased()
-        }
-    }
 
     static func compactHdrSuffix(_ value: String?) -> String? {
         guard let value, !value.isEmpty else { return nil }
@@ -126,9 +104,9 @@ private extension OverlayRegistry {
             defaultEnabled: true,
             iconId: .monitor,
             iconCapable: true,
-            // `prettyResolution`, not raw uppercase: web renders "4K" for a
-            // `2160p` payload and the standalone badge must match it.
-            getValue: { prettyResolution($0.resolution) }
+            // `MediaTextFormatting.resolution`, not raw uppercase: web renders
+            // "4K" for a `2160p` payload and the standalone badge must match it.
+            getValue: { MediaTextFormatting.resolution($0.resolution) }
         ),
         OverlayDef(
             id: .hdr,
@@ -144,7 +122,7 @@ private extension OverlayRegistry {
             defaultEnabled: false,
             iconCapable: true,
             getValue: { data in
-                guard let res = prettyResolution(data.resolution) else { return nil }
+                guard let res = MediaTextFormatting.resolution(data.resolution) else { return nil }
                 if let hdr = compactHdrSuffix(data.hdr) { return "\(res) \(hdr)" }
                 return res
             },
@@ -281,6 +259,17 @@ private extension OverlayRegistry {
             iconCapable: true,
             getValue: { $0.contentRating }
         ),
+        OverlayDef(
+            id: .advisoryAge,
+            defaultPosition: .bottomRight,
+            defaultEnabled: false,
+            iconId: .users,
+            iconCapable: true,
+            getValue: { data in
+                guard let age = data.advisoryAge, age > 0 else { return nil }
+                return "\(age)+"
+            }
+        ),
     ]
 }
 
@@ -288,12 +277,7 @@ private extension OverlayRegistry {
 
 private extension OverlayRegistry {
 
-    static func formatRuntime(_ minutes: Int?) -> String? {
-        guard let minutes, minutes > 0 else { return nil }
-        let h = minutes / 60
-        let m = minutes % 60
-        return h > 0 ? "\(h)h \(m)m" : "\(m)m"
-    }
+    private static let english = Locale(identifier: "en")
 
     /// English display name for a language tag, matching web's
     /// `formatLanguage` (English CLDR names, so "en" → "English" not
@@ -304,7 +288,6 @@ private extension OverlayRegistry {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        let english = Locale(identifier: "en")
         let name = english.localizedString(forIdentifier: trimmed)
             ?? english.localizedString(forLanguageCode: trimmed)
         return name?.capitalized ?? trimmed.uppercased()
@@ -327,7 +310,7 @@ private extension OverlayRegistry {
             defaultEnabled: false,
             iconId: .clock,
             iconCapable: true,
-            getValue: { formatRuntime($0.runtime) }
+            getValue: { MediaTextFormatting.runtime(minutes: $0.runtime) }
         ),
         OverlayDef(
             id: .originalLanguage,

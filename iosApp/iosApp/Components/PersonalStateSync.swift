@@ -21,7 +21,7 @@ struct PersonalStateHeldChange: Identifiable, Equatable, Sendable {
     let included: Bool
 }
 
-/// How one dispatched personal-state mutation ended (plan §9 failure model).
+/// How one dispatched personal-state mutation ended.
 enum PersonalStateOutcome: Equatable {
     /// The server answered 204 under the captured owner.
     case applied
@@ -180,20 +180,31 @@ enum PersonalStateSync {
         }
     }
 
+    /// Drops the cached lists and grids derived from personal flags or watch
+    /// progress (Home, Recommendations, Favorites, Watchlist, library and
+    /// collection pages), then tells a mounted Home to re-read its rows. Home
+    /// stays mounted under a pushed detail page, so without the notification
+    /// its Continue Watching and Next Up rows keep the old cards until the
+    /// next manual refresh.
+    static func invalidateDerivedLists() {
+        StartupContentPrefetcher.invalidateDerivedListsInFlight()
+        for key in [CacheKey.homeSections, CacheKey.recommendations, CacheKey.favorites, CacheKey.watchlist] {
+            ResponseCache.shared.remove(key)
+        }
+        for prefix in ["browse:", "tvlibrary:", "library:", "collection:"] {
+            ResponseCache.shared.removeAll(withPrefix: prefix)
+        }
+        NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil)
+    }
+
     /// Drops every cached read that can show an item's personal flags.
     static func invalidateItemState(contentId: String, seriesId: String? = nil) {
         ResponseCache.shared.removeItemMetadata(contentId: contentId)
         if let seriesId {
             ResponseCache.shared.removeItemMetadata(contentId: seriesId)
         }
-        StartupContentPrefetcher.invalidateHomeSectionsInFlight()
-        for key in [CacheKey.homeSections, CacheKey.recommendations, CacheKey.favorites,
-                    CacheKey.watchlist, CacheKey.history] {
-            ResponseCache.shared.remove(key)
-        }
-        for prefix in ["browse:", "tvlibrary:", "library:", "collection:"] {
-            ResponseCache.shared.removeAll(withPrefix: prefix)
-        }
+        ResponseCache.shared.remove(CacheKey.history)
+        invalidateDerivedLists()
         #if os(tvOS)
         ItemDetailCache.shared.markStaleFamily(contentId: contentId)
         #endif

@@ -6,7 +6,7 @@ import SwiftUI
 /// timer—so it stays cheap while artwork and playback metadata are decoding.
 struct PhoneEpisodeRailSkeleton: View {
     var captionStyleOverride: CardCaptionStyle? = nil
-    @State private var uiCustomization = UICustomizationPreferences.shared
+    private var uiCustomization: UICustomizationPreferences { .shared }
 
     private var cardWidth: CGFloat {
         240 * uiCustomization.cardPresentation.posterSize.scale

@@ -44,11 +44,13 @@ struct TVRequestsPage: View {
     @Environment(AppRouter.self) private var router
 
     var body: some View {
+        // Built once per body pass: `focusedKey` re-runs body on every move.
+        let rows = self.rows
         Group {
             if rows.isEmpty {
                 placeholder
             } else {
-                feed
+                feed(rows)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -259,15 +261,15 @@ struct TVRequestsPage: View {
 
     // MARK: - Feed
 
-    private var feed: some View {
+    private func feed(_ rows: [TVRequestRow]) -> some View {
         ZStack(alignment: .top) {
-            TVRequestsBackdrop(model: marquee)
+            TVSkylineBackdrop(model: marquee)
 
-            rowBand
+            rowBand(rows)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .ignoresSafeArea(edges: .bottom)
 
-            TVRequestsMarquee(model: marquee)
+            TVSkylineMarquee(model: marquee, scale: .home)
                 .offset(y: SiloTheme.Skyline.landingContentVerticalOffset)
         }
         .onAppear {
@@ -286,7 +288,7 @@ struct TVRequestsPage: View {
 
     /// The Skyline row band: native vertical scrolling clipped to the lower
     /// half, so rows appear from the same bottom area as Home.
-    private var rowBand: some View {
+    private func rowBand(_ rows: [TVRequestRow]) -> some View {
         GeometryReader { proxy in
             let bandHeight = proxy.size.height * SiloTheme.Skyline.rowBandHeightFraction
             let bandTop = min(
@@ -600,32 +602,6 @@ enum TVRequestItem: Identifiable {
         case .record(let r), .approval(let r): r.backdropPath
         case .result(let r): r.backdropPath
         }
-    }
-}
-
-// MARK: - Leaves
-
-/// Backdrop and marquee read the model at the leaves, so preview updates
-/// never rebuild the rows and their focusable cards.
-private struct TVRequestsBackdrop: View {
-    let model: TVFocusMarqueeModel
-
-    var body: some View {
-        TVRootHeroBackdrop(
-            tintColor: model.tintColor,
-            artworkURL: model.backdropURL,
-            artworkThumbhash: model.backdropThumbhash,
-            isVisible: model.backdropURL != nil,
-            crossfadeDuration: SiloTheme.Skyline.marqueeCrossfadeDuration
-        )
-    }
-}
-
-private struct TVRequestsMarquee: View {
-    let model: TVFocusMarqueeModel
-
-    var body: some View {
-        TVFocusMarquee(content: model.content, enrichment: nil, scale: .home)
     }
 }
 

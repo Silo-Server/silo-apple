@@ -7,15 +7,13 @@ struct AudioChaptersSheet: View {
 
     @Environment(\.dismiss) private var dismiss
 
-    private var sortedChapters: [AudioPlaybackChapter] {
-        player.chapters.sorted { $0.startSeconds < $1.startSeconds }
-    }
-
     var body: some View {
+        let currentID = player.currentChapter?.id
         NavigationStack {
             ScrollViewReader { proxy in
-                List(sortedChapters) { chapter in
-                    chapterRow(chapter)
+                // `chapters` is already sorted, so the offset is the chapter number.
+                List(Array(player.chapters.enumerated()), id: \.element.id) { offset, chapter in
+                    chapterRow(chapter, number: offset + 1, isCurrent: chapter.id == currentID)
                         .id(chapter.id)
                         .listRowBackground(Color.clear)
                 }
@@ -25,8 +23,8 @@ struct AudioChaptersSheet: View {
                 .siloSheetBackground(legacyColor: .siloSurface)
                 #endif
                 .onAppear {
-                    if let current = player.currentChapter {
-                        proxy.scrollTo(current.id, anchor: .center)
+                    if let currentID {
+                        proxy.scrollTo(currentID, anchor: .center)
                     }
                 }
             }
@@ -47,9 +45,8 @@ struct AudioChaptersSheet: View {
         .preferredColorScheme(.dark)
     }
 
-    private func chapterRow(_ chapter: AudioPlaybackChapter) -> some View {
-        let isCurrent = chapter.id == player.currentChapter?.id
-        return Button {
+    private func chapterRow(_ chapter: AudioPlaybackChapter, number: Int, isCurrent: Bool) -> some View {
+        Button {
             player.jumpToChapter(chapter)
             dismiss()
         } label: {
@@ -61,7 +58,7 @@ struct AudioChaptersSheet: View {
                         .frame(width: 24)
                         .accessibilityHidden(true)
                 } else {
-                    Text("\(chapterNumber(chapter))")
+                    Text("\(number)")
                         .font(.footnote.weight(.medium))
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
@@ -84,9 +81,5 @@ struct AudioChaptersSheet: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-    }
-
-    private func chapterNumber(_ chapter: AudioPlaybackChapter) -> Int {
-        (sortedChapters.firstIndex(where: { $0.id == chapter.id }) ?? chapter.index) + 1
     }
 }

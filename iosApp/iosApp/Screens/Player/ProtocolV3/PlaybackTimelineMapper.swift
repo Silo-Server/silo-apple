@@ -23,24 +23,20 @@ struct PlaybackTimelineMapper: Equatable, Sendable {
     }
 
     let sourceStartSeconds: Double
-    let streamOriginSeconds: Double
     let playerStartSeconds: Double
     let timelineOffsetSeconds: Double
     let seekWindowStartSeconds: Double?
     let seekWindowEndSeconds: Double?
     let canSeekAnywhere: Bool
-    let seekRestoration: String
 
     init(directStartSeconds: Double) {
         let start = directStartSeconds.isFinite ? max(0, directStartSeconds) : 0
         sourceStartSeconds = start
-        streamOriginSeconds = 0
         playerStartSeconds = start
         timelineOffsetSeconds = 0
         seekWindowStartSeconds = nil
         seekWindowEndSeconds = nil
         canSeekAnywhere = true
-        seekRestoration = "player_position"
     }
 
     init(validating timeline: PlaybackV3Timeline) throws {
@@ -72,13 +68,11 @@ struct PlaybackTimelineMapper: Equatable, Sendable {
         }
 
         sourceStartSeconds = timeline.sourceStartSeconds
-        streamOriginSeconds = timeline.streamOriginSeconds
         playerStartSeconds = timeline.playerStartSeconds
         timelineOffsetSeconds = timeline.timelineOffsetSeconds
         seekWindowStartSeconds = timeline.seekWindowStartSeconds
         seekWindowEndSeconds = timeline.seekWindowEndSeconds
         canSeekAnywhere = timeline.canSeekAnywhere
-        seekRestoration = timeline.seekRestoration
     }
 
     /// The position supplied to `AetherEngine.load`. It is deliberately the
@@ -95,19 +89,6 @@ struct PlaybackTimelineMapper: Equatable, Sendable {
         return max(0, sourceSeconds - timelineOffsetSeconds)
     }
 
-    /// Converts a sidecar cue timestamp into the active Aether/player axis.
-    /// Artifact timestamps are relative to the artifact's declared source
-    /// origin; the active plan may have a different transport origin.
-    func playerPosition(
-        forArtifactTime artifactSeconds: Double,
-        timingOriginSeconds: Double
-    ) -> Double {
-        guard artifactSeconds.isFinite, timingOriginSeconds.isFinite else {
-            return playerStartSeconds
-        }
-        return playerPosition(forSourceTime: artifactSeconds + timingOriginSeconds)
-    }
-
     /// The earliest source position this transport can express.
     ///
     /// Player time is `source - timelineOffsetSeconds`, so a target below the
@@ -118,13 +99,10 @@ struct PlaybackTimelineMapper: Equatable, Sendable {
 
     func seekDisposition(forSourceTime requestedSeconds: Double) -> SeekDisposition {
         let sourceSeconds = requestedSeconds.isFinite ? max(0, requestedSeconds) : sourceStartSeconds
-        // A re-anchored transport (`timeline_offset_seconds > 0`) frequently
-        // arrives with no seek window, and the old window-only test then let a
-        // backward seek before the offset fall through to `playerPosition`,
-        // which clamps at zero. That silently played the transport's origin
-        // instead of the requested moment. Only the server can produce a
-        // transport that contains it, so ask for a plan regardless of whether a
-        // window was published or `can_seek_anywhere` was set.
+        // A target before the offset has no player coordinate, and
+        // `playerPosition` would clamp it to the transport's origin. Only the
+        // server can produce a transport that contains it, so replan even when
+        // no seek window was published or `can_seek_anywhere` is set.
         if sourceSeconds < earliestLocalSourceSeconds {
             return .replan(sourceSeconds: sourceSeconds)
         }

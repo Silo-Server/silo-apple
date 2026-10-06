@@ -27,9 +27,8 @@ struct WatchPartyInviteView: View {
         #endif
     }
 
-    #if os(iOS)
-    private var heading: some View {
-        VStack(spacing: 8) {
+    private func heading(alignment: HorizontalAlignment) -> some View {
+        VStack(alignment: alignment, spacing: 8) {
             WatchPartyEyebrow(text: "Invite friends")
             Text("Join with this code")
                 .font(.system(size: WatchPartyMetrics.heroTitle * 0.8, weight: .bold))
@@ -39,7 +38,6 @@ struct WatchPartyInviteView: View {
                 .foregroundStyle(Color.siloSecondaryText)
         }
     }
-    #endif
 
     private func codeText(_ code: String) -> some View {
         Text(code)
@@ -76,15 +74,7 @@ struct WatchPartyInviteView: View {
     private var tvLayout: some View {
         HStack(alignment: .center, spacing: 96) {
             VStack(alignment: .leading, spacing: WatchPartyMetrics.body * 1.4) {
-                VStack(alignment: .leading, spacing: 8) {
-                    WatchPartyEyebrow(text: "Invite friends")
-                    Text("Join with this code")
-                        .font(.system(size: WatchPartyMetrics.heroTitle * 0.8, weight: .bold))
-                        .foregroundStyle(Color.siloOnSurface)
-                    Text("Anyone with a profile on this Silo server can enter it from Watch Party.")
-                        .font(.system(size: WatchPartyMetrics.body))
-                        .foregroundStyle(Color.siloSecondaryText)
-                }
+                heading(alignment: .leading)
                 if let room = session.room {
                     codeText(room.code)
                 }
@@ -102,7 +92,7 @@ struct WatchPartyInviteView: View {
     #else
     private var phoneLayout: some View {
         VStack(spacing: WatchPartyMetrics.body * 1.4) {
-            heading.multilineTextAlignment(.center)
+            heading(alignment: .center).multilineTextAlignment(.center)
             if let room = session.room {
                 codeText(room.code)
                 if let url = session.inviteURL {

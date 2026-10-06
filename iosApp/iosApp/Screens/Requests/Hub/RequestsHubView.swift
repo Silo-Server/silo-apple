@@ -82,7 +82,7 @@ private struct PhoneRequestsHubView: View {
             )
             .padding(.top, 80)
         } else {
-            if viewModel.pendingApprovals > 0 || viewModel.inProgressCount + viewModel.needsAttentionCount > 0 {
+            if viewModel.pendingApprovals > 0 || !viewModel.statusCounts.isEmpty {
                 summaryRows
             }
             if !viewModel.myRequests.isEmpty {
@@ -177,7 +177,7 @@ private struct PhoneRequestsHubView: View {
     /// (opens My Requests) and, for admins, requests waiting on them.
     private var summaryRows: some View {
         VStack(spacing: 10) {
-            if viewModel.inProgressCount + viewModel.needsAttentionCount > 0 {
+            if !viewModel.statusCounts.isEmpty {
                 summaryCard(
                     title: summaryTitle,
                     parts: summaryParts,
@@ -197,25 +197,17 @@ private struct PhoneRequestsHubView: View {
     }
 
     private var summaryTitle: String {
-        let count = viewModel.inProgressCount
+        let count = viewModel.statusCounts.inProgress
         if count == 0 { return "Your requests need you" }
         return count == 1 ? "1 request in progress" : "\(count) requests in progress"
     }
 
     private var summaryParts: [(RequestStatusTint, String)] {
-        var onTheWay = 0
-        var pending = 0
-        for record in viewModel.myRequests {
-            switch RequestDisplayState(record: record) {
-            case .pending: pending += 1
-            case .onTheWay: onTheWay += 1
-            default: break
-            }
-        }
+        let counts = viewModel.statusCounts
         var parts: [(RequestStatusTint, String)] = []
-        if onTheWay > 0 { parts.append((.sky, "\(onTheWay) on the way")) }
-        if pending > 0 { parts.append((.amber, "\(pending) pending")) }
-        if viewModel.needsAttentionCount > 0 { parts.append((.rose, "\(viewModel.needsAttentionCount) need you")) }
+        if counts.onTheWay > 0 { parts.append((.sky, "\(counts.onTheWay) on the way")) }
+        if counts.pending > 0 { parts.append((.amber, "\(counts.pending) pending")) }
+        if counts.needsAttention > 0 { parts.append((.rose, "\(counts.needsAttention) need you")) }
         return parts
     }
 

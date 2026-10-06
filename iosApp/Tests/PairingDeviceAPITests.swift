@@ -169,13 +169,13 @@ final class PairingDeviceAPITests: XCTestCase {
 
     func testRemotePlaybackCapabilityNeedsAnAvailableDocument() async throws {
         stub.expect(StubURLProtocol.any) { _ in .json(Self.capability(state: "available")) }
-        let available = try await api().remotePlaybackCapability(serverURL: server)
+        let available = try await api().capability(serverURL: server)
         XCTAssertEqual(stub.requests.last?.path, "/api/v2/auth/device/capability")
         XCTAssertTrue(available.offersRemotePlaybackHandoff(protocolVersion: 2))
         XCTAssertFalse(available.offersRemotePlaybackHandoff(protocolVersion: 3))
 
         stub.expect(StubURLProtocol.any) { _ in .json(Self.capability(state: "not_configured")) }
-        let unconfigured = try await api().remotePlaybackCapability(serverURL: server)
+        let unconfigured = try await api().capability(serverURL: server)
         XCTAssertFalse(unconfigured.offersRemotePlaybackHandoff(protocolVersion: 2))
     }
 

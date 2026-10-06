@@ -118,22 +118,6 @@ private final class FakePairingAPI: PairingDeviceAuthorizing, @unchecked Sendabl
 
 // MARK: - Helpers
 
-@MainActor
-private func expectEventually(
-    _ label: String,
-    timeout: TimeInterval = 5,
-    file: StaticString = #filePath,
-    line: UInt = #line,
-    _ condition: () -> Bool
-) async {
-    let deadline = Date().addingTimeInterval(timeout)
-    while Date() < deadline {
-        if condition() { return }
-        try? await Task.sleep(for: .milliseconds(10))
-    }
-    XCTFail("timed out waiting for: \(label)", file: file, line: line)
-}
-
 private func entry(_ id: String, name: String) -> ServerEntry {
     ServerEntry(id: id, url: "https://\(id).example", fetchedName: name, profileId: nil, lastUsedAt: Date())
 }
@@ -1004,6 +988,33 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
         await runTask.value
     }
 
+    /// A status outside the poll contract ends the attempt the way every
+    /// device-code flow ends it (and the way wire validation already
+    /// refuses it), rather than being polled as if it were pending.
+    func testUnknownPollStatusFailsWithoutPollingAgain() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        api.pollResults = [.success(devicePoll("slow_down"))]
+        api.pollResponse = pendingPoll
+        let recorder = PersistRecorder()
+        let coordinator = makeCoordinator(api: api, recorder: recorder)
+        let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
+
+        await allowPush(channel, coordinator)
+        await expectEventually("unknown status failure") {
+            coordinator.state == .failed(serverName: "Home", code: .authFailed, help: nil)
+        }
+
+        XCTAssertEqual(api.pollCount, 1)
+        XCTAssertTrue(recorder.persisted.isEmpty)
+        XCTAssertTrue(channel.sent.contains {
+            if case .serverResult("https://home.example", .failed, "auth_failed") = $0 { return true }
+            return false
+        })
+        channel.deliver(.done)
+        await runTask.value
+    }
+
     func testCancellationDuringTransientPollBackoffDoesNotPublishFailure() async {
         let channel = FakePairingChannel()
         let api = FakePairingAPI()
@@ -1247,14 +1258,7 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
 }
 
 private func waitForIdentityTransitionWaiter(_ http: HTTPClient) async -> Bool {
-    let deadline = ContinuousClock.now + .seconds(2)
-    while ContinuousClock.now < deadline {
-        if await http.pendingIdentityTransitionCount() > 0 {
-            return true
-        }
-        try? await Task.sleep(for: .milliseconds(10))
-    }
-    return false
+    await eventually(timeout: .seconds(2)) { await http.pendingIdentityTransitionCount() > 0 }
 }
 
 // MARK: - TV sign-in (st=login) and setup failures

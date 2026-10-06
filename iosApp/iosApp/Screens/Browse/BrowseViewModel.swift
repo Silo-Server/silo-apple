@@ -5,9 +5,14 @@ import Foundation
 class BrowseViewModel {
     var items: [BrowseItem] = []
     var isLoading = false
-    var isRefreshing = false
+    /// False until this library's first load finishes, so the grid shows its
+    /// placeholder rather than "No items found" before anything was fetched.
+    private(set) var hasLoaded = false
     var error: ErrorState?
     var hasMore = true
+    /// Why the grid is empty. Read only when a finished load left `items`
+    /// empty; set before that load finishes so the wrong message never shows.
+    private(set) var emptyReason: BrowseEmptyReason = .libraryEmpty
 
     /// The committed filter + sort state. The filter sheet edits a draft and
     /// commits it via `apply`.
@@ -44,6 +49,7 @@ class BrowseViewModel {
             generation += 1
             continuation = nil
             hasMore = true
+            hasLoaded = false
             items = []
             filterState = BrowsePrefsStore.shared.savedState(libraryId: libraryId) ?? .none
         }
@@ -59,14 +65,9 @@ class BrowseViewModel {
     func loadItems(reset: Bool = false) async {
         if reset {
             generation += 1
-            if !items.isEmpty {
-                isRefreshing = true
-            } else {
-                // Surface the cached page-1 snapshot instantly so the grid
-                // doesn't blank out while the network call runs.
-                hydratePage1FromCache()
-                isRefreshing = !items.isEmpty
-            }
+            // Surface the cached page-1 snapshot instantly so the grid
+            // doesn't blank out while the network call runs.
+            hydratePage1FromCache()
             continuation = nil
             hasMore = true
         } else if isLoading {
@@ -74,6 +75,7 @@ class BrowseViewModel {
         }
 
         let myGeneration = generation
+        let writeToken = ResponseCache.shared.writeToken
         guard hasMore else {
             finishLoading(for: myGeneration)
             return
@@ -99,8 +101,16 @@ class BrowseViewModel {
             startsOver = startsOver || page.startsOver
             if startsOver {
                 items = page.response.items
-                ResponseCache.shared.set(page.response, for: currentCacheKey)
+                ResponseCache.shared.set(page.response, for: currentCacheKey, fetchedAt: writeToken)
                 refineMediaType(from: page.response)
+                if items.isEmpty {
+                    let probe = CatalogQueryBuilder.libraryProbe(libraryId: libraryId)
+                    let reason = await BrowseEmptyReason.classify(filter: filterState) {
+                        try await !SiloAPI.shared.catalogPage(probe).response.items.isEmpty
+                    }
+                    guard myGeneration == generation else { return }
+                    emptyReason = reason
+                }
             } else {
                 items.append(contentsOf: page.response.items)
             }
@@ -140,15 +150,17 @@ class BrowseViewModel {
         await apply(next)
     }
 
-    func removeChip(_ chip: CatalogFilterChip) async {
+    /// Clear every filter facet, keeping the chosen sort.
+    func clearFilters() async {
         var next = filterState
-        next.toggle(chip.facet, value: chip.value)
+        next.resetFilters()
+        next.namePrefix = nil
         await apply(next)
     }
 
-    func resetFilters() async {
+    func removeChip(_ chip: CatalogFilterChip) async {
         var next = filterState
-        next.resetFilters()
+        next.toggle(chip.facet, value: chip.value)
         await apply(next)
     }
 
@@ -190,7 +202,7 @@ class BrowseViewModel {
     private func finishLoading(for completedGeneration: Int) {
         guard completedGeneration == generation else { return }
         isLoading = false
-        isRefreshing = false
+        hasLoaded = true
     }
 
     private func resolveMediaType(libraryId: Int?, libraryType: String?) async -> BrowseMediaType {

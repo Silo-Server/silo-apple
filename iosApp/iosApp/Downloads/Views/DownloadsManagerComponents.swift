@@ -117,8 +117,6 @@ struct DownloadsStorageHeader: View {
     let breakdown: DownloadStorageBreakdown
     var activeCount: Int = 0
 
-    @State private var device = DownloadFilePaths.deviceStorage()
-
     private static let seriesColor = Color.siloBrandBlue
     private static let moviesColor = Color.siloBrandRed
     private static let inProgressColor = Color.siloBrandOrange
@@ -126,14 +124,13 @@ struct DownloadsStorageHeader: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            (
-                Text(DownloadFormatting.bytes(used))
-                    .font(.title2.bold())
-                    .foregroundColor(.siloOnSurface)
-                + Text(contextSuffix)
-                    .font(.subheadline)
-                    .foregroundColor(.siloSecondaryText)
-            )
+            let amount = Text(DownloadFormatting.bytes(used))
+                .font(.title2.bold())
+                .foregroundColor(.siloOnSurface)
+            let context = Text(contextSuffix)
+                .font(.subheadline)
+                .foregroundColor(.siloSecondaryText)
+            Text("\(amount)\(context)")
 
             if activeCount > 0 {
                 Text(inProgressLine)
@@ -151,8 +148,9 @@ struct DownloadsStorageHeader: View {
     }
 
     private var contextSuffix: String {
-        device.total > 0
-            ? "  of \(DownloadFormatting.bytes(device.total)) on this device"
+        let deviceTotal = DownloadFilePaths.totalCapacity
+        return deviceTotal > 0
+            ? "  of \(DownloadFormatting.bytes(deviceTotal)) on this device"
             : "  downloaded"
     }
 
@@ -232,14 +230,13 @@ struct DownloadReclaimBanner: View {
     var body: some View {
         Button(action: onReview) {
             HStack(spacing: 12) {
-                (
-                    Text("Free up \(DownloadFormatting.bytes(bytes))")
-                        .foregroundColor(.siloOnSurface)
-                    + Text(" · \(episodeCount) watched")
-                        .foregroundColor(.siloSecondaryText)
-                )
-                .font(.subheadline)
-                .lineLimit(1)
+                let amount = Text("Free up \(DownloadFormatting.bytes(bytes))")
+                    .foregroundColor(.siloOnSurface)
+                let count = Text(" · \(episodeCount) watched")
+                    .foregroundColor(.siloSecondaryText)
+                Text("\(amount)\(count)")
+                    .font(.subheadline)
+                    .lineLimit(1)
 
                 Spacer(minLength: 8)
 

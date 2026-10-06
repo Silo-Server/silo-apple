@@ -152,10 +152,7 @@ struct TVApprovalCard: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 6)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .tint(.siloOnSurface)
-            .foregroundStyle(Color.siloBackground)
+            .pairingPrimaryButton()
             .disabled(busy)
 
             Button {
@@ -229,10 +226,7 @@ struct TVApprovalCard: View {
                 Button(action: onEnterAnotherCode) {
                     Text("Enter another code").font(.siloHeadline).frame(maxWidth: .infinity).padding(.vertical, 6)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .tint(.siloOnSurface)
-                .foregroundStyle(Color.siloBackground)
+                .pairingPrimaryButton()
             }
             closeButton("Close")
         }

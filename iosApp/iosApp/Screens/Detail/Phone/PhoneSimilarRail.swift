@@ -18,7 +18,7 @@ struct PhoneSimilarRail: View {
     @State private var items: [SimilarPosterItem] = []
     @State private var isLoading = true
     @State private var loadedFor: String? = nil
-    @State private var uiCustomization = UICustomizationPreferences.shared
+    private var uiCustomization: UICustomizationPreferences { .shared }
 
     var body: some View {
         Group {
@@ -32,8 +32,6 @@ struct PhoneSimilarRail: View {
     }
 
     private func section(@ViewBuilder content: () -> some View) -> some View {
-        // Header-to-content gap matches the parents' former
-        // `VStack(spacing: 14)` so the page rhythm is unchanged.
         VStack(alignment: .leading, spacing: 14) {
             PhoneSectionHeader(title: "More Like This")
                 .padding(.horizontal, SiloTheme.safePadding)
@@ -74,7 +72,6 @@ struct PhoneSimilarRail: View {
     private func load() async {
         // Bail if we already populated for this id.
         guard loadedFor != contentId else { return }
-        loadedFor = contentId
         isLoading = true
         items = []
 
@@ -85,8 +82,12 @@ struct PhoneSimilarRail: View {
             )
             items = cards.map(SimilarPosterItem.init(card:))
         } catch {
+            // Cancelled because the page left the screen (e.g. Play was
+            // pressed early): load again when it comes back.
+            guard !Task.isCancelled else { return }
             items = []
         }
+        loadedFor = contentId
         isLoading = false
     }
 }
@@ -99,7 +100,6 @@ struct PhoneSimilarRail: View {
 /// for audiobook covers.
 struct PhonePosterRail: View {
     let title: String
-    var trailingText: String? = nil
     let items: [SimilarPosterItem]
     var aspectRatio: CGFloat = SiloTheme.posterCardWidth / SiloTheme.posterCardHeight
     var placeholderSymbol: String = "film"
@@ -108,7 +108,7 @@ struct PhonePosterRail: View {
     var body: some View {
         if !items.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
-                PhoneSectionHeader(title: title, trailingText: trailingText)
+                PhoneSectionHeader(title: title)
                     .padding(.horizontal, SiloTheme.safePadding)
                 PhonePosterRailCards(
                     items: items,
@@ -146,10 +146,12 @@ struct PhonePosterRailCards: View {
                     .accessibilityLabel(item.accessibilityDescription)
                 }
             }
-            .padding(.horizontal, SiloTheme.safePadding)
+            .scrollTargetLayout()
             .padding(.vertical, 4)
             .phoneMediaRailBounds()
         }
+        .contentMargins(.horizontal, SiloTheme.safePadding, for: .scrollContent)
+        .mediaRailScrolling()
     }
 }
 
@@ -166,6 +168,9 @@ struct SimilarPosterItem: Identifiable, Hashable {
     let year: Int?
     /// Replaces the year caption when set, e.g. "Book 2" in a series rail.
     let subtitle: String?
+    /// Glyph for a missing poster when the item's own type is known;
+    /// otherwise the rail's `placeholderSymbol` applies.
+    let placeholderSymbol: String?
     let accessibilityDescription: String
     var id: String { contentId }
 
@@ -176,6 +181,7 @@ struct SimilarPosterItem: Identifiable, Hashable {
         self.posterThumbhash = card.posterThumbhash
         self.year = card.year
         self.subtitle = nil
+        self.placeholderSymbol = ArtworkPlaceholderSymbol.forMediaType(card.type)
         self.accessibilityDescription = [card.title, card.year.map(String.init)]
             .compactMap { $0 }
             .joined(separator: ", ")
@@ -188,6 +194,7 @@ struct SimilarPosterItem: Identifiable, Hashable {
         self.posterThumbhash = nil
         self.year = item.year
         self.subtitle = item.seriesIndex.map { "Book \($0)" }
+        self.placeholderSymbol = nil
         self.accessibilityDescription = audiobookRelatedItemAccessibilityLabel(item)
     }
 }
@@ -198,7 +205,7 @@ private struct PhonePosterCard: View {
     let item: SimilarPosterItem
     let aspectRatio: CGFloat
     let placeholderSymbol: String
-    @State private var uiCustomization = UICustomizationPreferences.shared
+    private var uiCustomization: UICustomizationPreferences { .shared }
 
     private var cardWidth: CGFloat {
         SiloTheme.posterCardWidth * uiCustomization.cardPresentation.posterSize.scale
@@ -231,7 +238,12 @@ private struct PhonePosterCard: View {
     @ViewBuilder
     private var poster: some View {
         if let url = item.posterUrl, !url.isEmpty {
-            AsyncImageView(url: url, thumbhash: item.posterThumbhash, contentMode: .fill)
+            AsyncImageView(
+                url: url,
+                thumbhash: item.posterThumbhash,
+                contentMode: .fill,
+                placeholderSymbol: item.placeholderSymbol ?? placeholderSymbol
+            )
                 .frame(width: cardWidth, height: cardHeight)
                 .clipped()
                 .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
@@ -240,8 +252,7 @@ private struct PhonePosterCard: View {
                 .fill(Color.siloSurfaceElevated)
                 .frame(width: cardWidth, height: cardHeight)
                 .overlay(
-                    Image(systemName: placeholderSymbol)
-                        .foregroundColor(.siloOnSurface.opacity(0.3))
+                    ArtworkPlaceholderGlyph(symbol: item.placeholderSymbol ?? placeholderSymbol)
                 )
         }
     }

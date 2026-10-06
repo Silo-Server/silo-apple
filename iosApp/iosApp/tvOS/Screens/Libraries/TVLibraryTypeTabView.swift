@@ -3,28 +3,19 @@ import SwiftUI
 
 /// Body of a Skyline library-type tab (Movies / Series / Music /
 /// Audiobooks): the selected sub-destination's content, with the
-/// Recommended landing as the default. Receives the profile's libraries of
-/// its type from the shell.
+/// Recommended landing as the default.
 ///
-/// The on-page pill row was removed — the tab lands on Recommended with no
-/// chrome over the hero. The other sub-destinations (Collections · Browse)
-/// stay reachable from the top-bar cascade dropdown (§5.3), which commits
-/// `selectedPill`.
-///
-/// Focus zones (§7), top to bottom: top bar → content. Content now hands
-/// Up straight to the bar, since nothing sits between them.
+/// Collections and Browse are reached from the top-bar cascade (§5.3), which
+/// commits `selectedPill`. Up from content goes straight to the bar.
 struct TVLibraryTypeTabView: View {
     let type: TVLibraryTabType
-    /// Libraries of `type` visible to this profile, ordered by `sortOrder`.
-    let libraries: [Library]
     /// The library this tab is currently scoped to (§3.1). Resolved by the
     /// shell from the persisted per-profile scope, or the first library on
     /// cold start. The cascade selector (§5.3) switches it.
     let activeLibrary: Library?
     /// Selected sub-destination, owned by the shell so it survives tab
     /// switches within a session (§8); cold start always lands on
-    /// Recommended. The on-page pill row is gone, so this is written only by
-    /// the cascade dropdown.
+    /// Recommended. Written by the cascade dropdown.
     @Binding var selectedPill: TVLibraryPill
     var focusRequest: Int = 0
     var isTopMenuFocused: Bool = false

@@ -44,10 +44,11 @@ enum ApplePlaybackV3PlanAdapter {
     /// one changes nothing about how the load is issued — Aether re-derives the
     /// route from the bitstream and the live panel — so validation here only
     /// confirms the server picked something this build can honour.
-    private static let clientTransformations = ["client_dv7_to_dv81", "client_dv7_to_hdr10"]
+    private static let clientTransformations = ApplePlaybackV3Capabilities.clientTransformations.map(\.name)
 
     static func validate(_ plan: PlaybackV3Plan) throws {
-        guard PlaybackProtocolV3.PlanDelivery.supported.contains(plan.delivery) else {
+        typealias PlanDelivery = PlaybackProtocolV3.PlanDelivery
+        guard PlanDelivery.supported.contains(plan.delivery) else {
             throw ApplePlaybackV3PlanError.unsupportedDelivery(plan.delivery)
         }
         guard !plan.stream.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -59,11 +60,11 @@ enum ApplePlaybackV3PlanAdapter {
             )
         }
         if plan.stream.protocol == "hls" {
-            guard plan.delivery == "server_remux_hls" || plan.delivery == "server_transcode_hls" else {
+            guard plan.delivery == PlanDelivery.remuxHLS || plan.delivery == PlanDelivery.transcodeHLS else {
                 throw ApplePlaybackV3PlanError.invalidTransport("HLS protocol/delivery mismatch")
             }
         } else if plan.stream.protocol == "http_progressive" {
-            guard plan.delivery == "original_http" || plan.delivery == "server_remux_progressive" else {
+            guard plan.delivery == PlanDelivery.originalHTTP || plan.delivery == PlanDelivery.remuxProgressive else {
                 throw ApplePlaybackV3PlanError.invalidTransport("progressive protocol/delivery mismatch")
             }
         } else {
@@ -80,13 +81,13 @@ enum ApplePlaybackV3PlanAdapter {
                 "multiple mutually exclusive client transformations"
             )
         }
-        if !selectedClientTransformations.isEmpty && plan.delivery != "original_http" {
+        if !selectedClientTransformations.isEmpty && plan.delivery != PlanDelivery.originalHTTP {
             throw ApplePlaybackV3PlanError.invalidClientTransformation(
                 "client transformations require the original_http delivery"
             )
         }
         if let embedded = plan.subtitle.embedded {
-            guard plan.delivery == PlaybackProtocolV3.PlanDelivery.originalHTTP,
+            guard plan.delivery == PlanDelivery.originalHTTP,
                   plan.subtitle.mode == PlaybackProtocolV3.SubtitleMode.render,
                   plan.subtitle.artifact == nil,
                   embedded.streamIndex >= 0,
@@ -433,9 +434,9 @@ enum ApplePlaybackV3PlanAdapter {
 
     private static func deliveryStrategy(_ value: String) -> PlaybackDeliveryStrategy {
         switch value {
-        case "server_remux_hls", "server_remux_progressive":
+        case PlaybackProtocolV3.PlanDelivery.remuxHLS, PlaybackProtocolV3.PlanDelivery.remuxProgressive:
             return .remux
-        case "server_transcode_hls":
+        case PlaybackProtocolV3.PlanDelivery.transcodeHLS:
             return .transcode
         default:
             return .direct

@@ -9,8 +9,8 @@ import Foundation
 /// Bonjour flap keeps the same `sid`, so both stay dismissed. Falls back to the
 /// device `id` for older TVs that don't advertise a nonce.
 ///
-/// No platform guard so the command-line test can compile it directly; the
-/// logic is pure and harmless on every target.
+/// No platform guard: `CompanionDismissalKeyTests` also runs in the tvOS test
+/// bundle.
 enum CompanionPairingDismissal {
     static func key(id: String, sid: String?) -> String {
         if let sid, !sid.isEmpty { return "\(id)#\(sid)" }

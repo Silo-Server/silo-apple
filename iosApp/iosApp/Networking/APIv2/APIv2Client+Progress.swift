@@ -26,8 +26,9 @@ extension APIv2Client {
         var cursors: Set<String> = []
         var cursor: String?
         for _ in 0..<Self.progressMaxPages {
-            var query = ["limit": String(Self.progressPageLimit)]
-            if let cursor { query["cursor"] = cursor }
+            var pageQuery = ["limit": String(Self.progressPageLimit)]
+            if let cursor { pageQuery["cursor"] = cursor }
+            let query = pageQuery
             let response = try await tokenStore.withOwnerFence(auth) {
                 try await mapErrors {
                     try await http.requestData(method: "GET", path: "/api/v2/progress", query: query,
@@ -169,8 +170,8 @@ extension APIv2Client {
     }
 
     /// Whole-batch statuses the server returns before writing anything, for
-    /// a condition that passes: an auth refusal (an expired session whose
-    /// refresh failed, or a profile whose proof is missing or stale) that
+    /// a condition that passes: an auth refusal (an expired session, or a
+    /// profile whose proof is missing or stale) that
     /// clears after re-authentication, timeout, rate limit, unavailable. A
     /// 500 is not one: the server can raise it after the writes.
     private static let deferredStatuses: Set<Int> = [401, 403, 408, 429, 503]

@@ -115,7 +115,7 @@ extension APIv2Client {
                 return entry.id == id && entry.revision >= revision
             }
             return true
-        case let .seriesPage(seriesId, _, batchId, _):
+        case let .seriesPage(seriesId, _, batchId, _, _):
             guard created.batchId == batchId,
                   created.items.count + created.skipped.count <= downloadRegistryPageLimit,
                   created.items.allSatisfy({ $0.contentId == seriesId && $0.episodeId?.isEmpty == false }) else {
@@ -191,6 +191,35 @@ extension APIv2Client {
         let response = try await downloadRegistryRequest(method: "GET", path: assetPath, auth: auth)
         guard response.statusCode == 200 else { throw APIv2Error.httpStatus(response.statusCode) }
         return response.data
+    }
+
+    /// Fetches a subtitle file the entry's manifest names unless the saved
+    /// copy still matches `entityTag`. A stored (`downloaded:{id}`) or
+    /// external subtitle is delivered with its timing correction applied, so
+    /// the server revalidates it: its ETag follows the delivered bytes.
+    func revalidateDownloadSubtitle(path: String, downloadId: String, entityTag: String?,
+                                    auth: CapturedOrdinaryRequestAuth) async throws -> DownloadSubtitleRevalidation {
+        guard let assetPath = Self.downloadAssetPath(path, downloadId: downloadId) else {
+            throw DownloadRegistryError.invalidRequest
+        }
+        let response: HTTPRawResponse
+        do {
+            response = try await downloadRegistryRequest(method: "GET", path: assetPath,
+                headers: entityTag.map { ["If-None-Match": $0] } ?? [:], auth: auth)
+        } catch APIv2Error.httpStatus(304) {
+            return .unchanged
+        }
+        let tag = response.header("ETag")
+        switch response.statusCode {
+        case 304:
+            return .unchanged
+        case 200 where entityTag != nil && tag == entityTag:
+            return .unchanged
+        case 200:
+            return .changed(response.data, entityTag: tag)
+        default:
+            throw APIv2Error.httpStatus(response.statusCode)
+        }
     }
 
     /// The percent-encoded path of `path` when it is exactly
@@ -310,4 +339,9 @@ extension APIv2Client {
             }
         }
     }
+}
+
+enum DownloadSubtitleRevalidation: Equatable {
+    case unchanged
+    case changed(Data, entityTag: String?)
 }

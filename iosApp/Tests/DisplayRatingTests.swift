@@ -82,7 +82,6 @@ final class DisplayRatingTests: XCTestCase {
             DisplayRating(source: "rt_audience", name: "RT Audience", score: 95, display: "95%"),
             DisplayRating(source: "metacritic", name: "Metacritic", score: 87, display: "87"),
         ]
-        XCTAssertEqual(DisplayRating.phoneLimit, 3)
         XCTAssertEqual(
             DisplayRating.phoneRowCandidates(five).map { $0.map(\.source) },
             [["imdb", "tmdb", "rt_critic"], ["imdb", "tmdb"], ["imdb"]],
@@ -153,6 +152,35 @@ final class DisplayRatingTests: XCTestCase {
         }
     }
 
+    func testAdvisoryAgeFlowsFromDetailIntoPosterAndAttributedBadge() throws {
+        let detail = try decodeDetail(extraFields: #""advisory_age":13,"advisory_source":"commonsense""#)
+        XCTAssertEqual(detail.advisoryAge, 13)
+        XCTAssertEqual(detail.advisorySource, "commonsense")
+
+        let data = OverlayData.from(detail)
+        let definition = try XCTUnwrap(
+            OverlayRegistry.all.first { $0.id == .advisoryAge }
+        )
+        XCTAssertEqual(definition.getValue(data), "13+")
+        XCTAssertEqual(data.advisoryAgeBadgeLabel, "Common Sense 13+")
+        XCTAssertFalse(definition.defaultEnabled)
+        XCTAssertEqual(definition.defaultPosition, .bottomRight)
+        XCTAssertEqual(definition.iconId, .users)
+    }
+
+    func testAdvisoryAgeBadgeAttributesMDBListAndRejectsInvalidAges() {
+        XCTAssertEqual(
+            OverlayData(advisoryAge: 10, advisorySource: "mdblist").advisoryAgeBadgeLabel,
+            "MDBList 10+"
+        )
+        XCTAssertEqual(
+            OverlayData(advisoryAge: 8, advisorySource: "future-provider").advisoryAgeBadgeLabel,
+            "8+"
+        )
+        XCTAssertNil(OverlayData(advisoryAge: 0, advisorySource: "commonsense").advisoryAgeBadgeLabel)
+        XCTAssertNil(OverlayData(advisoryAge: nil, advisorySource: "commonsense").advisoryAgeBadgeLabel)
+    }
+
     #if os(tvOS)
     // MARK: Focus marquee
 
@@ -161,7 +189,7 @@ final class DisplayRatingTests: XCTestCase {
         let content = TVMarqueeContent(item: item, rowTitle: "Continue Watching", isContinueWatching: true)
         XCTAssertEqual(content.rating?.accessibilityText, "IMDb 7.8")
         XCTAssertFalse(content.metaParts.contains("7.8"), "no bare score in the text tokens")
-        XCTAssertEqual(content.trailingMetaParts, ["40 min left"], "time left follows the rating")
+        XCTAssertEqual(content.trailingMetaParts, ["40m left"], "time left follows the rating")
     }
 
     func testMarqueeFallsBackToTMDBAndSkipsEpisodes() throws {

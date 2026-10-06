@@ -41,9 +41,12 @@ final class RefreshSessionV2Tests: XCTestCase {
         }
     }
 
-    /// The resource answers 401 until it sees the rotated bearer; the refresh
-    /// route answers `refresh`.
-    private func harness(refresh: StubURLProtocol.Response) async throws -> Harness {
+    /// The resource answers `rejection` (a bare 401 by default) until it sees
+    /// the rotated bearer; the refresh route answers `refresh`.
+    private func harness(
+        refresh: StubURLProtocol.Response,
+        rejection: StubURLProtocol.Response = .status(401)
+    ) async throws -> Harness {
         let name = "RefreshSessionV2Tests.\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: name))
         let tokens = TokenStore(keychain: SharedKeychain(service: name, accessGroup: nil),
@@ -61,7 +64,7 @@ final class RefreshSessionV2Tests: XCTestCase {
         let stub = StubURLProtocol.Handler()
         stub.route(StubURLProtocol.method("POST", path: HTTPClient.refreshPath)) { _ in refresh }
         stub.route(StubURLProtocol.path(Self.resourcePath)) { request in
-            request.header("Authorization") == "Bearer new-access" ? .json("{}") : .status(401)
+            request.header("Authorization") == "Bearer new-access" ? .json("{}") : rejection
         }
         let identity = HTTPRequestIdentity(serverId: Self.serverId, serverURL: Self.serverURL,
             profileId: "profile", clientFamily: "mobile")
@@ -99,6 +102,35 @@ final class RefreshSessionV2Tests: XCTestCase {
             XCTAssertEqual(access, "new-access", "\(flow)")
             XCTAssertEqual(rotated, "new-refresh", "\(flow)")
         }
+    }
+
+    /// A role change answers requests that carry an access token minted
+    /// before it with 401 `token_refresh_required`. The refresh token still
+    /// works: the request refreshes quietly, retries once with the new bearer,
+    /// and the session never ends.
+    func testTokenRefreshRequiredRefreshesAndRetriesWithoutEndingTheSession() async throws {
+        let (expiry, observer) = observeSessionExpiry()
+        defer { NotificationCenter.default.removeObserver(observer) }
+        let problem = """
+        {"type":"https://siloserver.org/docs/api/v2/problems/token_refresh_required",
+         "title":"Token refresh required","status":401,"detail":"Refresh the access token."}
+        """
+        for flow in Flow.allCases {
+            let h = try await harness(refresh: .json(Self.rotatedTokens),
+                rejection: .json(problem, status: 401, headers: ["Content-Type": "application/problem+json"]))
+
+            let response = try await h.send(flow)
+
+            XCTAssertEqual(response.statusCode, 200, "\(flow)")
+            XCTAssertEqual(h.stub.requests.map(\.path),
+                [Self.resourcePath, "/api/v2/auth/refresh", Self.resourcePath], "\(flow)")
+            XCTAssertEqual(h.stub.requests.last?.header("Authorization"), "Bearer new-access", "\(flow)")
+            let access = await h.tokens.getAccessToken()
+            let refresh = await h.tokens.getRefreshToken()
+            XCTAssertEqual(access, "new-access", "\(flow)")
+            XCTAssertEqual(refresh, "new-refresh", "\(flow)")
+        }
+        XCTAssertEqual(expiry.value, 0)
     }
 
     // MARK: Failure classification

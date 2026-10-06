@@ -3,7 +3,7 @@ import SwiftUI
 
 struct SiloControlTargetPickerView: View {
     let request: SiloControlPlaybackRequest?
-    @Bindable var controller: SiloControlClient
+    let controller: SiloControlClient
 
     @State private var browser = SiloControlBrowser()
     @State private var searchTimedOut = false

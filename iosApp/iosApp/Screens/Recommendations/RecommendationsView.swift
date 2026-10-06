@@ -4,18 +4,17 @@ import SwiftUI
 /// screen. Reuses the existing SectionRow UI so each row renders with the
 /// same layout as Home.
 struct RecommendationsView: View {
-    /// Active focus hand-down token from `TVMainTabView`. When this changes
-    /// (the For You root was selected), focus is pushed onto the saved-
-    /// shortcuts row so the screen never opens with a dead remote.
+    /// tvOS: focus hand-down token from `TVMainTabView`, forwarded to the
+    /// Skyline feed so the screen never opens with a dead remote.
     var focusRequest: Int = 0
-    /// tvOS-only: the custom top menu owns focus, so deferred content focus
-    /// claims must not yank focus back into the shortcut row.
+    /// tvOS: the custom top menu owns focus, so deferred content focus
+    /// claims must not yank focus away from it.
     var isTopMenuFocused: Bool = false
     var onTopMenuFocusRequest: (() -> Void)? = nil
 
     @State private var viewModel: RecommendationsViewModel
-    @State private var savedListSelection: SavedShortcut = .watchlist
     #if !os(tvOS)
+    @State private var savedListSelection: SavedShortcut = .watchlist
     /// Feeds the shared glass strip behind the pinned header as rows scroll
     /// under it, matching Home and the Library tab.
     @State private var chromeScrollState = PageChromeScrollState()
@@ -206,9 +205,10 @@ struct RecommendationsView: View {
     }
     #endif
 
-    /// The Watchlist/Favorites shortcut row renders in every state — the
-    /// user's saved lists are reachable from here even when there are no
-    /// recommendations (or they failed to load).
+    #if !os(tvOS)
+    /// iOS/macOS: the Watchlist/Favorites shortcut row renders in every
+    /// state — the user's saved lists are reachable from here even when
+    /// there are no recommendations (or they failed to load).
     @ViewBuilder
     private var pageContent: some View {
         if !viewModel.sections.isEmpty {
@@ -216,10 +216,7 @@ struct RecommendationsView: View {
         } else {
             VStack(spacing: 0) {
                 shortcutsRow
-                    .padding(.horizontal, contentHorizontalPadding)
-                    #if os(tvOS)
-                    .padding(.top, TVTopMenuLayout.contentTopInset)
-                    #endif
+                    .padding(.horizontal, SiloTheme.padding)
 
                 Group {
                     if let error = viewModel.error {
@@ -245,8 +242,6 @@ struct RecommendationsView: View {
 
     private var shortcutsRow: some View {
         SavedShortcutsRow(
-            focusRequest: focusRequest,
-            isTopMenuFocused: isTopMenuFocused,
             selection: showsSavedListsFallback ? savedListSelection : nil,
             onSelect: { shortcut in
                 if showsSavedListsFallback {
@@ -254,18 +249,17 @@ struct RecommendationsView: View {
                 } else {
                     router.navigate(to: shortcut.route)
                 }
-            },
-            onMoveUp: onTopMenuFocusRequest
+            }
         )
     }
 
     private var content: some View {
         ScrollView(.vertical, showsIndicators: false) {
-            LazyVStack(spacing: sectionSpacing) {
+            LazyVStack(spacing: SiloTheme.largePadding) {
                 shortcutsRow
-                    .padding(.horizontal, contentHorizontalPadding)
+                    .padding(.horizontal, SiloTheme.padding)
 
-                ForEach(Array(viewModel.sections.enumerated()), id: \.element.id) { index, section in
+                ForEach(viewModel.sections) { section in
                     SectionRow(
                         section: section,
                         onItemTap: { destinationContentId, item in
@@ -275,15 +269,10 @@ struct RecommendationsView: View {
                                     sectionItem: item
                                 )
                             )
-                        },
-                        prefersDefaultFocusOnFirstItem: prefersDefaultFocus(forSectionAt: index),
-                        onMoveUp: nil
+                        }
                     )
                 }
             }
-            #if os(tvOS)
-            .padding(.top, TVTopMenuLayout.contentTopInset)
-            #endif
             .padding(.bottom, SiloTheme.largePadding)
         }
         .reportsPageChromeScroll()
@@ -299,7 +288,7 @@ struct RecommendationsView: View {
                 .font(.siloCaption)
                 .foregroundColor(.siloSecondaryText)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, contentHorizontalPadding)
+                .padding(.horizontal, SiloTheme.padding)
                 .padding(.top, SiloTheme.smallPadding)
 
             switch savedListSelection {
@@ -311,49 +300,15 @@ struct RecommendationsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
-
-
-    private var sectionSpacing: CGFloat {
-        #if os(tvOS)
-        return 30
-        #else
-        return SiloTheme.largePadding
-        #endif
-    }
-
-    private var contentHorizontalPadding: CGFloat {
-        #if os(tvOS)
-        return 96
-        #else
-        return SiloTheme.padding
-        #endif
-    }
-
-    private func prefersDefaultFocus(forSectionAt index: Int) -> Bool {
-        return false
-    }
+    #endif
 }
 
+#if !os(tvOS)
 private struct SavedShortcutsRow: View {
-    var focusRequest: Int = 0
-    var isTopMenuFocused: Bool = false
     /// Non-nil puts the row in selector mode (inline saved-lists fallback):
     /// the matching capsule renders selected instead of the row navigating.
     var selection: SavedShortcut? = nil
     let onSelect: (SavedShortcut) -> Void
-    let onMoveUp: (() -> Void)?
-
-    @FocusState private var focusedShortcut: SavedShortcut?
-
-    #if os(tvOS)
-    @Namespace private var focusScope
-    /// Last hand-down token applied, so each token claims focus exactly once.
-    /// This row lives in a `LazyVStack`; without the guard, `onAppear` re-fires
-    /// when the row is recycled back into view on scroll-up and would yank
-    /// focus away from whatever the user was on.
-    @State private var lastAppliedFocusRequest = 0
-    @State private var pendingFocusRequest: Int?
-    #endif
 
     var body: some View {
         HStack(spacing: 12) {
@@ -363,74 +318,19 @@ private struct SavedShortcutsRow: View {
                 } label: {
                     Label {
                         Text(shortcut.rawValue)
-                            .font(labelFont)
+                            .font(.system(size: 14, weight: .semibold))
                             .lineLimit(1)
                     } icon: {
                         Image(systemName: shortcut.systemImage)
-                            .font(iconFont)
+                            .font(.system(size: 13, weight: .semibold))
                     }
                     .labelStyle(.titleAndIcon)
                 }
                 .buttonStyle(SavedShortcutButtonStyle(isSelected: selection == shortcut))
                 .accessibilityLabel(shortcut.rawValue)
-                .focused($focusedShortcut, equals: shortcut)
-                #if os(tvOS)
-                .prefersDefaultFocus(shortcut == .watchlist, in: focusScope)
-                #endif
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        #if os(tvOS)
-        .focusScope(focusScope)
-        .focusSection()
-        .onMoveCommand { direction in
-            if direction == .up {
-                onMoveUp?()
-            }
-        }
-        // Imperative hand-down from the top menu: prefersDefaultFocus only
-        // fires when the engine ENTERS this scope, which doesn't happen when
-        // the For You root is swapped in beneath a remote sitting in the menu.
-        .onAppear { applyFocusRequest(focusRequest) }
-        .onChange(of: focusRequest) { _, request in applyFocusRequest(request) }
-        .onChange(of: isTopMenuFocused) { _, focused in
-            guard !focused, let pendingFocusRequest else { return }
-            applyFocusRequest(pendingFocusRequest)
-        }
-        #endif
-    }
-
-    #if os(tvOS)
-    private func applyFocusRequest(_ request: Int) {
-        guard request > 0 else { return }
-        guard request != lastAppliedFocusRequest else {
-            pendingFocusRequest = nil
-            return
-        }
-        guard !isTopMenuFocused else {
-            pendingFocusRequest = request
-            return
-        }
-        pendingFocusRequest = nil
-        lastAppliedFocusRequest = request
-        focusedShortcut = .watchlist
-    }
-    #endif
-
-    private var labelFont: Font {
-        #if os(tvOS)
-        return .system(size: 24, weight: .semibold)
-        #else
-        return .system(size: 14, weight: .semibold)
-        #endif
-    }
-
-    private var iconFont: Font {
-        #if os(tvOS)
-        return .system(size: 20, weight: .semibold)
-        #else
-        return .system(size: 13, weight: .semibold)
-        #endif
     }
 }
 
@@ -473,23 +373,16 @@ private struct SavedShortcutButtonBody: View {
 
     @Environment(\.isFocused) private var isFocused
 
-    /// tvOS keeps the filled capsule as the focus indicator, so a selected-
-    /// but-unfocused capsule only gets a stronger stroke and a faint fill.
-    /// On touch/pointer platforms there is no focus, so selection owns the
-    /// filled treatment outright.
+    /// Selection (or keyboard focus) gets the filled capsule.
     private var isProminent: Bool {
-        #if os(tvOS)
-        return isFocused
-        #else
-        return isFocused || isSelected
-        #endif
+        isFocused || isSelected
     }
 
     var body: some View {
         configuration.label
             .foregroundColor(isProminent ? .siloBackground : .siloOnSurface)
-            .padding(.horizontal, horizontalPadding)
-            .frame(height: height)
+            .padding(.horizontal, 15)
+            .frame(height: 40)
             .background(
                 Capsule()
                     .fill(
@@ -504,16 +397,6 @@ private struct SavedShortcutButtonBody: View {
                     lineWidth: isFocused ? 3 : 1.5
                 )
             )
-            .overlay {
-                #if os(tvOS)
-                if isFocused {
-                    Capsule()
-                        .stroke(Color.white.opacity(0.36), lineWidth: 7)
-                        .padding(-6)
-                        .blur(radius: 6)
-                }
-                #endif
-            }
             .scaleEffect(isFocused ? 1.045 : 1.0)
             .shadow(
                 color: isFocused ? Color.siloOnSurface.opacity(0.36) : .clear,
@@ -521,27 +404,9 @@ private struct SavedShortcutButtonBody: View {
                 y: isFocused ? 6 : 0
             )
             .opacity(configuration.isPressed ? 0.7 : 1.0)
-            #if os(tvOS)
-            .focusEffectDisabled()
-            #endif
             .animation(.easeOut(duration: SiloTheme.fastDuration), value: configuration.isPressed)
             .animation(SiloTheme.springAnimation, value: isFocused)
             .animation(SiloTheme.springAnimation, value: isSelected)
     }
-
-    private var height: CGFloat {
-        #if os(tvOS)
-        return 64
-        #else
-        return 40
-        #endif
-    }
-
-    private var horizontalPadding: CGFloat {
-        #if os(tvOS)
-        return 26
-        #else
-        return 15
-        #endif
-    }
 }
+#endif

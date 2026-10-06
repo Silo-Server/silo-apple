@@ -84,12 +84,13 @@ final class RequestDetailViewModel {
         mediaType: RequestMediaType,
         tmdbId: Int,
         api: SiloAPI = .shared,
-        cache: RequestDetailCache = .shared,
+        cache: RequestDetailCache? = nil,
         holdLifetime: Duration = .seconds(ModerationHold.lifetime)
     ) {
         self.mediaType = mediaType
         self.tmdbId = tmdbId
         self.api = api
+        let cache = cache ?? .shared
         self.cache = cache
         self.holdLifetime = holdLifetime
         // First frame from what the app already knows — the finished page

@@ -34,6 +34,11 @@ struct CreateProfileView: View {
 
     private enum Field: Hashable { case name, pin }
 
+    /// Shown under the PIN field while it holds a partial PIN, which also
+    /// keeps Create Profile disabled.
+    private static let incompletePINHint =
+        "Enter all \(ProfilePIN.length) digits, or clear the field for no PIN."
+
     /// Whether the assignable libraries are known yet. A failed read is kept
     /// apart from an empty list so the form never claims there is nothing to
     /// assign when it simply could not ask.
@@ -218,15 +223,18 @@ struct CreateProfileView: View {
                     initialsHint
                 }
             } else {
-                section(title: "Avatar", trailing: AnyView(shuffleButton)) {
+                // Built once per grid: each access rebuilds the batch.
+                let batch = presets
+                let activeSeed = activePreset?.seed
+                section(title: "Avatar", trailing: { shuffleButton }) {
                     LazyVGrid(
                         columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 6),
                         spacing: 14
                     ) {
-                        ForEach(presets) { preset in
+                        ForEach(batch) { preset in
                             PresetCell(
                                 preset: preset,
-                                isSelected: preset.seed == activePreset?.seed,
+                                isSelected: preset.seed == activeSeed,
                                 onSelect: { selectedSeed = preset.seed }
                             )
                         }
@@ -251,9 +259,15 @@ struct CreateProfileView: View {
                     .focused($focusedField, equals: .pin)
                     .autocorrectionDisabled()
                     .onChange(of: pin) { _, newValue in
-                        let filtered = String(newValue.prefix(4).filter(\.isNumber))
+                        let filtered = ProfilePIN.sanitized(newValue)
                         if filtered != newValue { pin = filtered }
                     }
+                // Plain text only: it must not join the focus graph.
+                if !ProfilePIN.isAcceptableForCreate(pin) {
+                    Text(Self.incompletePINHint)
+                        .font(.system(size: 16))
+                        .foregroundStyle(.white.opacity(0.55))
+                }
             }
 
             ChildProfileRow(isOn: $isChild)
@@ -270,15 +284,14 @@ struct CreateProfileView: View {
             // Gate validity via .disabled, but not the in-flight state: disabling
             // the focused button mid-create bounces focus to a neighbour. The
             // spinner label signals progress and re-entry is guarded above.
-            .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+            .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || !ProfilePIN.isAcceptableForCreate(pin))
             .padding(.top, 8)
         }
     }
 
-    @ViewBuilder
-    private func section<Content: View>(
+    private func section<Trailing: View, Content: View>(
         title: String,
-        trailing: AnyView? = nil,
+        @ViewBuilder trailing: () -> Trailing = { EmptyView() },
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -288,7 +301,7 @@ struct CreateProfileView: View {
                     .tracking(1.6)
                     .foregroundStyle(.white.opacity(0.5))
                 Spacer()
-                if let trailing { trailing }
+                trailing()
             }
             content()
         }
@@ -350,9 +363,14 @@ struct CreateProfileView: View {
                                 .keyboardType(.numberPad)
                                 #endif
                                 .onChange(of: pin) { _, newValue in
-                                    let filtered = String(newValue.prefix(4).filter(\.isNumber))
+                                    let filtered = ProfilePIN.sanitized(newValue)
                                     if filtered != newValue { pin = filtered }
                                 }
+                            if !ProfilePIN.isAcceptableForCreate(pin) {
+                                Text(Self.incompletePINHint)
+                                    .font(.siloCaption)
+                                    .foregroundColor(.siloSecondaryText)
+                            }
                         }
 
                         Toggle(isOn: $isChild) {
@@ -375,7 +393,11 @@ struct CreateProfileView: View {
                             Task { await createProfile() }
                         }
                         .siloPrimaryButton(isLoading: isLoading)
-                        .disabled(isLoading || name.trimmingCharacters(in: .whitespaces).isEmpty)
+                        .disabled(
+                            isLoading
+                                || name.trimmingCharacters(in: .whitespaces).isEmpty
+                                || !ProfilePIN.isAcceptableForCreate(pin)
+                        )
                     }
                     .padding(.horizontal, SiloTheme.largePadding)
                     .padding(.vertical, SiloTheme.largePadding)
@@ -417,14 +439,16 @@ struct CreateProfileView: View {
     }
 
     private var presetGrid: some View {
-        LazyVGrid(
+        // Read once per grid: `activePreset` may rebuild the batch.
+        let activeSeed = activePreset?.seed
+        return LazyVGrid(
             columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 6),
             spacing: 10
         ) {
             ForEach(presets) { preset in
                 PresetCell(
                     preset: preset,
-                    isSelected: preset.seed == activePreset?.seed,
+                    isSelected: preset.seed == activeSeed,
                     onSelect: { selectedSeed = preset.seed }
                 )
             }
@@ -613,6 +637,13 @@ struct CreateProfileView: View {
     private func createProfile() async {
         guard !name.trimmingCharacters(in: .whitespaces).isEmpty else {
             formError = CreateProfileFailure(title: "Name Required", message: "Please enter a name.")
+            return
+        }
+        guard ProfilePIN.isAcceptableForCreate(pin) else {
+            formError = CreateProfileFailure(
+                title: "PIN Too Short",
+                message: "Enter all \(ProfilePIN.length) digits, or leave the PIN empty for no PIN."
+            )
             return
         }
         guard !libraryRestrictionsEnabled || !allowedLibraryIds.isEmpty else {
@@ -825,6 +856,7 @@ private struct PresetCell: View {
 
 // MARK: - Child profile row
 
+#if os(tvOS)
 /// Replaces SwiftUI's `Toggle` because on tvOS the default toggle inverts
 /// its entire surface to white on focus — which buries the label text on
 /// our dark background and looks nothing like the rest of the form's
@@ -836,19 +868,11 @@ private struct ChildProfileRow: View {
 
     @FocusState private var isFocused: Bool
 
-    #if os(tvOS)
     private let titleSize: CGFloat = 20
     private let subtitleSize: CGFloat = 16
     private let switchWidth: CGFloat = 58
     private let switchHeight: CGFloat = 34
     private let puckSize: CGFloat = 26
-    #else
-    private let titleSize: CGFloat = 16
-    private let subtitleSize: CGFloat = 13
-    private let switchWidth: CGFloat = 44
-    private let switchHeight: CGFloat = 26
-    private let puckSize: CGFloat = 20
-    #endif
 
     var body: some View {
         HStack(alignment: .center, spacing: 16) {
@@ -880,9 +904,7 @@ private struct ChildProfileRow: View {
         .focusable(true)
         .focused($isFocused)
         .onTapGesture { isOn.toggle() }
-        #if os(tvOS)
         .focusEffectDisabled()
-        #endif
         .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
         .animation(.spring(response: 0.28, dampingFraction: 0.75), value: isOn)
         .accessibilityElement(children: .combine)
@@ -903,6 +925,4 @@ private struct ChildProfileRow: View {
         }
     }
 }
-
-// `GhostChipButtonStyle` now lives in `Theme/SiloButtonStyles.swift`
-// (shared with `ProfileSelectionView`).
+#endif

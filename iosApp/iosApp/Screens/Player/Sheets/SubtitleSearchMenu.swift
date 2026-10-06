@@ -23,11 +23,13 @@
 //  Two-platform split mirrors ``SubtitleTranslateMenu``: iOS renders a
 //  sectioned `List` in a sheet; tvOS renders a centered floating panel with a
 //  single panel-level `@FocusState` (scroll-follow + nil-recovery), backdrop
-//  tap + `onExitCommand` dismissal.
+//  tap + `onExitCommand` dismissal. Not compiled for macOS, which has no entry
+//  point to it.
 //
 
 import SwiftUI
 
+#if !os(macOS)
 struct SubtitleSearchMenu: View {
     let viewModel: PlayerViewModel
     let onDismiss: () -> Void
@@ -35,8 +37,10 @@ struct SubtitleSearchMenu: View {
     /// Called when a download succeeded and the track is registered +
     /// selected: dismisses the WHOLE subtitle UI (this menu plus the enclosing
     /// panel/sheet) down to the player, like the AI menu's `onJobStarted`.
-    /// Defaults to `onDismiss` for call sites that don't distinguish the two.
-    var onDownloaded: () -> Void = {}
+    /// It must remove this menu: after a success Done, swipe-down and the
+    /// rows stay disabled. Not called if this menu goes away before the
+    /// download settles.
+    let onDownloaded: () -> Void
 
     /// The profile's preferred subtitle language, used to pre-select and
     /// float its row. Observed so a late hydration refreshes the default.
@@ -68,6 +72,10 @@ struct SubtitleSearchMenu: View {
     /// instead of sending it twice.
     @State private var settledDownloads: [String: String] = [:]
     @State private var searchTask: Task<Void, Never>?
+    /// The menu's reaction to the in-flight download (not the download
+    /// itself); cancelled on disappear so a late result can't act on UI
+    /// that's gone.
+    @State private var downloadTask: Task<Void, Never>?
 
     #if os(tvOS)
     /// Panel-level focus for language rows and result rows (keys never
@@ -76,14 +84,6 @@ struct SubtitleSearchMenu: View {
     /// focus — mirrors ``SubtitleTranslateMenu``.
     @FocusState private var focusedRowID: String?
     #endif
-
-    /// One selectable search language. Mirrors the AI menu's shape.
-    private struct LanguageChoice: Identifiable {
-        let code: String
-        let label: String
-        let hint: String?
-        var id: String { code }
-    }
 
     var body: some View {
         platformBody
@@ -105,7 +105,10 @@ struct SubtitleSearchMenu: View {
             // Covers the sliver where the probe lands between the row's tap
             // and this view appearing, which `onChange` would never see.
             .onAppear { reflectUnavailabilityIfIdle() }
-            .onDisappear { searchTask?.cancel() }
+            .onDisappear {
+                searchTask?.cancel()
+                downloadTask?.cancel()
+            }
     }
 
     @ViewBuilder
@@ -127,50 +130,19 @@ struct SubtitleSearchMenu: View {
 
     // MARK: - Languages
 
-    /// Display name for a language code, preferring the curated label.
+    /// Languages offered, with the preferred language floated to the top.
+    private var languageChoices: SubtitleLanguageChoices {
+        SubtitleLanguageChoices(preferred: profilePrefs.preferredSubtitleLanguage)
+    }
+
     private func displayName(_ code: String) -> String {
-        if let opt = PlaybackLanguageOption.all.first(where: {
-            $0.code.caseInsensitiveCompare(code) == .orderedSame
-        }) {
-            return opt.label
-        }
-        return Locale(identifier: "en").localizedString(forLanguageCode: code)?.capitalized
-            ?? code.uppercased()
-    }
-
-    /// Languages offered, deduped, preferred language floated to the top.
-    private var orderedLanguages: [LanguageChoice] {
-        var result: [LanguageChoice] = []
-        var seen = Set<String>()
-        func add(_ code: String, hint: String?) {
-            let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return }
-            let key = PlaybackLanguageOption.languageIdentity(trimmed)
-            guard !seen.contains(key) else { return }
-            seen.insert(key)
-            result.append(.init(code: trimmed, label: displayName(trimmed), hint: hint))
-        }
-        if let preferred = profilePrefs.preferredSubtitleLanguage {
-            add(preferred, hint: "Preferred")
-        }
-        for option in PlaybackLanguageOption.all {
-            add(option.code, hint: nil)
-        }
-        return result
-    }
-
-    private var suggestedLanguages: [LanguageChoice] { orderedLanguages.filter { $0.hint != nil } }
-
-    private var otherLanguages: [LanguageChoice] {
-        orderedLanguages
-            .filter { $0.hint == nil }
-            .sorted { $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending }
+        SubtitleLanguageChoices.displayName(code)
     }
 
     /// Seed the selection from the preferred language once hydrated.
     private func seedSelectedLanguage() {
         guard selectedLanguage == nil else { return }
-        selectedLanguage = profilePrefs.preferredSubtitleLanguage ?? orderedLanguages.first?.code
+        selectedLanguage = profilePrefs.preferredSubtitleLanguage ?? SubtitleLanguageChoices.firstCatalogCode
     }
 
     // MARK: - Actions
@@ -245,8 +217,17 @@ struct SubtitleSearchMenu: View {
             return
         }
         downloadingId = key
-        Task {
-            let outcome = await viewModel.downloadSearchedSubtitle(result)
+        // The download belongs to the player, not this menu: it is
+        // non-retryable and a stored subtitle should still be added if the
+        // menu goes away. Only the menu's reaction is tied to the menu, and
+        // cancelling it doesn't reach `work` (awaiting `value` doesn't
+        // propagate cancellation).
+        let work = Task { await viewModel.downloadSearchedSubtitle(result) }
+        downloadTask = Task {
+            let outcome = await work.value
+            // The menu went away mid-download: the track may still register,
+            // but nothing in (or above) this menu should react.
+            guard !Task.isCancelled else { return }
             guard let message = outcome.message else {
                 // Track registered + auto-selected on the live player;
                 // collapse the whole subtitle UI down to the video.
@@ -312,13 +293,10 @@ struct SubtitleSearchMenu: View {
     // MARK: - tvOS
 
     #if os(tvOS)
-    /// Rows in display order for focus recovery.
-    private var displayLanguages: [LanguageChoice] { suggestedLanguages + otherLanguages }
-
     private func focusFirstRow() {
         switch phase {
         case .picking:
-            focusedRowID = selectedLanguage ?? displayLanguages.first?.code
+            focusedRowID = selectedLanguage ?? languageChoices.all.first?.code
         case .results:
             // Empty result set: land focus on the fallback row so the remote
             // isn't left with nothing focused.
@@ -332,13 +310,7 @@ struct SubtitleSearchMenu: View {
 
     private func scrollToFocusedRow(_ proxy: ScrollViewProxy, animated: Bool = true) {
         guard let target = focusedRowID else { return }
-        if animated {
-            withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
-                proxy.scrollTo(target, anchor: .center)
-            }
-        } else {
-            proxy.scrollTo(target, anchor: .center)
-        }
+        SubtitleLanguageChoices.scroll(proxy, to: target, animated: animated)
     }
 
     private var tvOSPanel: some View {
@@ -421,16 +393,17 @@ struct SubtitleSearchMenu: View {
 
     @ViewBuilder
     private var tvLanguageRows: some View {
-        if !suggestedLanguages.isEmpty {
+        let choices = languageChoices
+        if !choices.suggested.isEmpty {
             sectionHeader("Preferred language")
-            ForEach(suggestedLanguages) { tvLanguageRow($0) }
+            ForEach(choices.suggested) { tvLanguageRow($0) }
         }
-        sectionHeader(suggestedLanguages.isEmpty ? "Language" : "All Languages")
-        ForEach(otherLanguages) { tvLanguageRow($0) }
+        sectionHeader(choices.suggested.isEmpty ? "Language" : "All Languages")
+        ForEach(choices.other) { tvLanguageRow($0) }
     }
 
     @ViewBuilder
-    private func tvLanguageRow(_ choice: LanguageChoice) -> some View {
+    private func tvLanguageRow(_ choice: SubtitleLanguageChoices.Choice) -> some View {
         TVSubtitleMenuRow(
             rowID: choice.code,
             focusedID: $focusedRowID,
@@ -654,7 +627,10 @@ struct SubtitleSearchMenu: View {
             .siloNavigationTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
+                    // Leaving is blocked while a download is in flight, as on
+                    // tvOS (backdrop and Menu are inert then).
                     Button("Done") { onDismiss() }
+                        .disabled(downloadingId != nil)
                 }
                 if phase == .results {
                     ToolbarItem(placement: .primaryAction) {
@@ -667,19 +643,21 @@ struct SubtitleSearchMenu: View {
             .onAppear { seedSelectedLanguage() }
             .onChange(of: profilePrefs.preferredSubtitleLanguage) { _, _ in seedSelectedLanguage() }
         }
+        .interactiveDismissDisabled(downloadingId != nil)
     }
 
     private var languagePickingList: some View {
-        List {
-            if !suggestedLanguages.isEmpty {
+        let choices = languageChoices
+        return List {
+            if !choices.suggested.isEmpty {
                 Section("Suggested") {
-                    ForEach(suggestedLanguages) { languageRow($0) }
+                    ForEach(choices.suggested) { languageRow($0) }
                 }
             }
             Section {
-                ForEach(otherLanguages) { languageRow($0) }
+                ForEach(choices.other) { languageRow($0) }
             } header: {
-                Text(suggestedLanguages.isEmpty ? "Language" : "All Languages")
+                Text(choices.suggested.isEmpty ? "Language" : "All Languages")
             } footer: {
                 Text(explainer)
             }
@@ -688,7 +666,7 @@ struct SubtitleSearchMenu: View {
     }
 
     @ViewBuilder
-    private func languageRow(_ choice: LanguageChoice) -> some View {
+    private func languageRow(_ choice: SubtitleLanguageChoices.Choice) -> some View {
         Button {
             search(language: choice.code)
         } label: {
@@ -796,3 +774,98 @@ struct SubtitleSearchMenu: View {
         }
     }
 }
+
+// MARK: - Shared language list
+
+/// Language rows for ``SubtitleSearchMenu`` and ``SubtitleTranslateMenu``:
+/// hinted suggestions first, in priority order, then every catalog language
+/// sorted by name.
+struct SubtitleLanguageChoices {
+    struct Choice: Identifiable {
+        let code: String
+        let label: String
+        /// Provenance tag ("Preferred" / "Original language") on suggested
+        /// rows; nil on the full list.
+        let hint: String?
+        var id: String { code }
+    }
+
+    let suggested: [Choice]
+    let other: [Choice]
+
+    /// Suggested rows, then the rest, in display order.
+    var all: [Choice] { suggested + other }
+
+    /// Blank codes and codes naming an already-listed language are skipped,
+    /// and the full list leaves out any suggested language.
+    init(preferred: String?, original: String? = nil) {
+        var seen = Set<String>()
+        var suggested: [Choice] = []
+        for (rawCode, hint) in [(preferred, "Preferred"), (original, "Original language")] {
+            guard let code = rawCode?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !code.isEmpty,
+                  seen.insert(PlaybackLanguageOption.languageIdentity(code)).inserted else { continue }
+            suggested.append(Choice(code: code, label: Self.displayName(code), hint: hint))
+        }
+        self.suggested = suggested
+        self.other = Self.sortedCatalog
+            .filter { !seen.contains($0.identity) }
+            .map { $0.choice }
+    }
+
+    /// Display name for a language code, preferring the catalog label.
+    static func displayName(_ code: String) -> String {
+        catalogLabels[code.lowercased()]
+            ?? englishLocale.localizedString(forLanguageCode: code)?.capitalized
+            ?? code.uppercased()
+    }
+
+    /// The first catalog language in catalog (not display) order.
+    static var firstCatalogCode: String? { catalog.first?.choice.code }
+
+    #if os(tvOS)
+    /// Centers `target` in the list, animated unless the list is appearing.
+    @MainActor
+    static func scroll(_ proxy: ScrollViewProxy, to target: String, animated: Bool) {
+        if animated {
+            withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
+                proxy.scrollTo(target, anchor: .center)
+            }
+        } else {
+            proxy.scrollTo(target, anchor: .center)
+        }
+    }
+    #endif
+
+    private typealias Entry = (identity: String, choice: Choice)
+
+    private static let englishLocale = Locale(identifier: "en")
+
+    private static let catalogLabels: [String: String] = Dictionary(
+        PlaybackLanguageOption.all.map { ($0.code.lowercased(), $0.label) },
+        uniquingKeysWith: { first, _ in first }
+    )
+
+    /// The catalog, deduped by language identity. Built once because
+    /// `PlaybackLanguageOption.all` is fixed for the process.
+    private static let catalog: [Entry] = {
+        var seen = Set<String>()
+        var entries: [Entry] = []
+        for option in PlaybackLanguageOption.all {
+            let code = option.code.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !code.isEmpty else { continue }
+            let identity = PlaybackLanguageOption.languageIdentity(code)
+            guard seen.insert(identity).inserted else { continue }
+            entries.append((
+                identity: identity,
+                choice: Choice(code: code, label: SubtitleLanguageChoices.displayName(code), hint: nil)
+            ))
+        }
+        return entries
+    }()
+
+    private static let sortedCatalog: [Entry] = catalog.sorted {
+        $0.choice.label.localizedCaseInsensitiveCompare($1.choice.label) == .orderedAscending
+    }
+}
+#endif

@@ -3,8 +3,9 @@ import SwiftUI
 
 /// Subtitles pane of tvOS Settings, rendered inline in the right pane of
 /// the two-pane `TVSettingsView`. Profile-wide prefs (language / behavior
-/// / forced) save through the root view's `onChange` handlers; the
-/// appearance block writes a per-device override directly.
+/// / forced / metadata language) save through the `ProfilePrefsEditor`
+/// `set…` methods their controls call; the appearance block writes a
+/// per-device override directly.
 struct TVSubtitleSettingsPane: View {
     @Bindable var viewModel: SettingsViewModel
     let detailFocus: FocusState<TVSettingsDetailFocus?>.Binding
@@ -56,8 +57,7 @@ struct TVSubtitleSettingsPane: View {
             title: "Show Forced Subtitles",
             isOn: viewModel.prefs.showForcedSubtitles == "on"
         ) {
-            viewModel.prefs.showForcedSubtitles =
-                viewModel.prefs.showForcedSubtitles == "on" ? "off" : "on"
+            Task { await viewModel.prefs.setShowForcedSubtitles(viewModel.prefs.showForcedSubtitles != "on") }
         }
         .disabled(viewModel.prefs.serverUpgradeRequired || viewModel.subtitleMatchesSystemAppearance)
 
@@ -115,7 +115,7 @@ struct TVSubtitleSettingsPane: View {
             isOn: viewModel.subtitleMatchesSystemAppearance
         ) {
             let enabled = !viewModel.subtitleMatchesSystemAppearance
-            Task { await viewModel.setSubtitleMatchesSystemAppearance(enabled) }
+            viewModel.setSubtitleMatchesSystemAppearance(enabled)
         }
         .focused(detailFocus, equals: .subtitleUseDeviceSettings)
 
@@ -272,35 +272,39 @@ struct TVSubtitleSettingsPane: View {
     }
 
     private func pickerRequest(for kind: PickerKind) -> TVSettingsPickerRequest {
-        @Bindable var prefs = viewModel.prefs
         return switch kind {
         case .language:
             TVSettingsPickerRequest(
-                id: kind.id,
                 title: "Language",
                 options: TVSettingsOptions.subtitleLanguage(viewModel.subtitleLanguageOptions),
-                selection: $prefs.subtitleLanguage,
+                selection: Binding(
+                    get: { viewModel.prefs.subtitleLanguage },
+                    set: { value in Task { await viewModel.prefs.setSubtitleLanguage(value) } }
+                ),
                 returnFocus: kind.returnFocus
             )
         case .mode:
             TVSettingsPickerRequest(
-                id: kind.id,
                 title: "Behavior",
                 options: TVSettingsOptions.subtitleMode,
-                selection: $prefs.subtitleMode,
+                selection: Binding(
+                    get: { viewModel.prefs.subtitleMode },
+                    set: { value in Task { await viewModel.prefs.setSubtitleMode(value) } }
+                ),
                 returnFocus: kind.returnFocus
             )
         case .metadataLanguage:
             TVSettingsPickerRequest(
-                id: kind.id,
                 title: "Metadata Language",
                 options: TVSettingsOptions.metadataLanguage(viewModel.metadataLanguageOptions),
-                selection: $prefs.preferredMetadataLanguage,
+                selection: Binding(
+                    get: { viewModel.prefs.preferredMetadataLanguage },
+                    set: { value in Task { await viewModel.prefs.setPreferredMetadataLanguage(value) } }
+                ),
                 returnFocus: kind.returnFocus
             )
         case .fontSize:
             TVSettingsPickerRequest(
-                id: kind.id,
                 title: "Font Size",
                 options: TVSettingsOptions.subtitleSize,
                 selection: appearanceEnumBinding(\.fontSize, SubtitleFontSizePreset.self),
@@ -308,7 +312,6 @@ struct TVSubtitleSettingsPane: View {
             )
         case .fontFamily:
             TVSettingsPickerRequest(
-                id: kind.id,
                 title: "Font Family",
                 options: TVSettingsOptions.fontFamily,
                 selection: appearanceEnumBinding(\.fontFamily, SubtitleFontFamilyPreset.self),
@@ -317,7 +320,6 @@ struct TVSubtitleSettingsPane: View {
             )
         case .fontColor:
             TVSettingsPickerRequest(
-                id: kind.id,
                 title: "Font Color",
                 options: TVSettingsOptions.fontColor,
                 selection: appearanceStringBinding(\.fontColor),
@@ -325,7 +327,6 @@ struct TVSubtitleSettingsPane: View {
             )
         case .textOpacity:
             TVSettingsPickerRequest(
-                id: kind.id,
                 title: "Text Opacity",
                 options: TVSettingsOptions.textOpacity(current: viewModel.subtitleAppearance.textOpacity),
                 selection: textOpacityBinding,
@@ -333,7 +334,6 @@ struct TVSubtitleSettingsPane: View {
             )
         case .outlineColor:
             TVSettingsPickerRequest(
-                id: kind.id,
                 title: "Outline Color",
                 options: TVSettingsOptions.outlineColor,
                 selection: outlineColorBinding,
@@ -341,7 +341,6 @@ struct TVSubtitleSettingsPane: View {
             )
         case .backgroundStyle:
             TVSettingsPickerRequest(
-                id: kind.id,
                 title: "Background Style",
                 options: TVSettingsOptions.backgroundStyle,
                 selection: backgroundStyleBinding,
@@ -349,7 +348,6 @@ struct TVSubtitleSettingsPane: View {
             )
         case .backgroundOpacity:
             TVSettingsPickerRequest(
-                id: kind.id,
                 title: "Background Opacity",
                 options: TVSettingsOptions.backgroundOpacity(current: viewModel.subtitleAppearance.backgroundOpacity),
                 selection: backgroundOpacityBinding,
@@ -357,7 +355,6 @@ struct TVSubtitleSettingsPane: View {
             )
         case .backgroundColor:
             TVSettingsPickerRequest(
-                id: kind.id,
                 title: "Background Color",
                 options: TVSettingsOptions.backgroundColor,
                 selection: backgroundColorBinding,
@@ -365,7 +362,6 @@ struct TVSubtitleSettingsPane: View {
             )
         case .position:
             TVSettingsPickerRequest(
-                id: kind.id,
                 title: "Position",
                 options: TVSettingsOptions.position,
                 selection: appearanceEnumBinding(\.position, SubtitlePositionPreset.self),
@@ -374,7 +370,7 @@ struct TVSubtitleSettingsPane: View {
         }
     }
 
-    enum PickerKind: String, Identifiable {
+    enum PickerKind {
         case language
         case mode
         case metadataLanguage
@@ -387,8 +383,6 @@ struct TVSubtitleSettingsPane: View {
         case backgroundOpacity
         case backgroundColor
         case position
-
-        var id: String { rawValue }
 
         var returnFocus: TVSettingsDetailFocus {
             switch self {

@@ -7,7 +7,7 @@ import OSLog
 /// connection to a `PairingSession`. One connection at a time; later peers
 /// are rejected as busy.
 ///
-/// Self-healing (same generation-guarded pattern as `TVControlReceiver`): the
+/// Self-healing (generation-guarded restart via `BonjourSelfHeal`): the
 /// first-run screen is the longest-dwelling screen in the app, so a listener
 /// the system reclaims or fails must come back on its own — otherwise the TV
 /// shows "Looking for a phone or tablet…" while advertising nothing.
@@ -15,7 +15,7 @@ import OSLog
 final class TVPairingAdvertiser {
     private var listener: NWListener?
     private var busy = false
-    private var generation = 0
+    private let selfHeal = BonjourSelfHeal()
     private var onConnection: ((PairingSession, AsyncThrowingStream<PairingMessage, Error>) -> Void)?
     private var receiverState: PairingReceiverState = .setup
     private var serverIdentity: String?
@@ -29,9 +29,9 @@ final class TVPairingAdvertiser {
     ///     holds. A `login` TV without one is not advertised at all.
     ///   - onConnection: called on the main actor with an opened
     ///     session + its inbound stream for the coordinator to drive.
-    func start(
-        state: PairingReceiverState = .setup,
-        serverIdentity: String? = nil,
+    private func start(
+        state: PairingReceiverState,
+        serverIdentity: String?,
         onConnection: @escaping (PairingSession, AsyncThrowingStream<PairingMessage, Error>) -> Void
     ) {
         stop()
@@ -43,22 +43,13 @@ final class TVPairingAdvertiser {
         startListener()
     }
 
-    /// Advertises while the calling task runs, but only while `isCurrent`
-    /// holds; it stops when the app leaves the route and starts again when
-    /// it comes back.
-    ///
-    /// Call this from the owning screen's `.task`, with `isCurrent` checking
-    /// that the app is on the route the screen was built for (captured in the
-    /// view's `init`). View lifecycle alone is not reliable here: a
-    /// successful nearby setup changes the active server, which re-keys the
-    /// routed subtree while the app is still on the setup route, and the app
-    /// moves on to profiles in the next update. The setup screen built by
-    /// that re-key appears without ever getting `onDisappear` or a cancelled
-    /// task, and SwiftUI shows that same instance again when the user later
-    /// picks "Change server". Tying the listener to the view's lifetime left
-    /// the TV advertising `st=setup` on the profile and sign-in screens (so
-    /// phones offered setup for a TV that already had a server); ending it
-    /// for good on the first route change left "Change server" silent.
+    /// Advertises while the calling task runs and `isCurrent` holds, stopping
+    /// and restarting as it changes. Call it from the screen's `.task`, with
+    /// `isCurrent` comparing the router's route to the one captured in the
+    /// view's `init`. SwiftUI can keep or reshow this screen without
+    /// `onDisappear` or task cancellation (a nearby setup re-keys the routed
+    /// subtree), so view lifetime alone would leave `st=setup` advertised on
+    /// later screens.
     func advertise(
         state: PairingReceiverState = .setup,
         serverIdentity: String? = nil,
@@ -81,8 +72,7 @@ final class TVPairingAdvertiser {
     }
 
     private func startListener() {
-        generation += 1
-        let gen = generation
+        let gen = selfHeal.activate()
         let device = AppleDeviceIdentity.current
         // `sid` is a fresh nonce minted each time the listener starts — i.e.
         // each time the TV (re)starts advertising (reboot, leaving and
@@ -102,11 +92,11 @@ final class TVPairingAdvertiser {
         if let serverIdentity { fields[PairingProtocol.TXTKey.serverIdentity] = serverIdentity }
         let txt = NWTXTRecord(fields)
         do {
-            let listener = try NWListener(using: PairingTransport.tlsParameters())
+            let listener = try NWListener(using: PairingSession.tlsParameters())
             listener.service = NWListener.Service(name: device.name, type: PairingProtocol.serviceType, txtRecord: txt)
             listener.newConnectionHandler = { [weak self] connection in
                 Task { @MainActor in
-                    guard let self, self.generation == gen, let onConnection = self.onConnection else {
+                    guard let self, self.selfHeal.isCurrent(gen), let onConnection = self.onConnection else {
                         connection.cancel()
                         return
                     }
@@ -117,9 +107,10 @@ final class TVPairingAdvertiser {
                     onConnection(session, stream)
                 }
             }
+            // Runs on `.main` (see `start(queue:)` below).
             listener.stateUpdateHandler = { [weak self] state in
-                Task { @MainActor in
-                    guard let self, self.generation == gen else { return }
+                MainActor.assumeIsolated {
+                    guard let self, self.selfHeal.isCurrent(gen) else { return }
                     switch state {
                     case .failed(let error):
                         Self.logger.error("listener failed: \(String(describing: error), privacy: .public)")
@@ -144,8 +135,7 @@ final class TVPairingAdvertiser {
 
     private func scheduleListenerRestart() {
         listener = nil
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(2))
+        selfHeal.scheduleRestart { [weak self] in
             guard let self, self.listener == nil, self.onConnection != nil else { return }
             self.startListener()
         }
@@ -155,7 +145,7 @@ final class TVPairingAdvertiser {
     func release() { busy = false }
 
     func stop() {
-        generation += 1
+        selfHeal.deactivate()
         listener?.cancel()
         listener = nil
         busy = false

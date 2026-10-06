@@ -38,8 +38,8 @@ final class PlayerSettingsFlushTests: XCTestCase {
         let flusher = PlayerSettingsFlusher(transport: transport, debounce: .milliseconds(150))
 
         flusher.enqueue(.playerHdrEnabled, value: .bool(false))
-        // Well inside the window: nothing may have been sent yet.
-        try await Task.sleep(for: .milliseconds(30))
+        // Well inside the window: the timer is armed and nothing has been sent.
+        XCTAssertTrue(flusher.hasArmedDebounce)
         XCTAssertTrue(transport.writes().isEmpty, "a write must not leave before the debounce elapses")
 
         try await waitUntil("the debounced write lands") { transport.writes().count == 1 }
@@ -86,13 +86,10 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
     /// The debounced write must not run inside a task it has cancelled.
     ///
-    /// The timer used to call `flushNow()` directly, and `flushNow()` opens by
-    /// cancelling `debounceTask` — which on that path *is* the executing task.
-    /// Everything after ran with `Task.isCancelled == true`, and `URLSession`
-    /// reports its enclosing task's cancellation as `NSURLErrorCancelled`, so
-    /// every debounced write burned an attempt the request never survived and
-    /// only landed on the first backoff retry a second later. The fake fails a
-    /// cancelled send for exactly this reason.
+    /// The debounce timer drains through a path that doesn't cancel its own
+    /// task; a cancelled task makes `URLSession` fail the write with
+    /// `NSURLErrorCancelled`, so the write would only land on a backoff retry.
+    /// The fake fails a cancelled send the same way.
     func testTheDebouncedWriteDoesNotRunUnderACancelledTask() async throws {
         let transport = FakeSettingsTransport()
         let flusher = PlayerSettingsFlusher(
@@ -133,16 +130,19 @@ final class PlayerSettingsFlushTests: XCTestCase {
     /// runs — the fix must not turn a re-armed window into two drains.
     func testReArmingTheWindowStillCollapsesToOneWrite() async throws {
         let transport = FakeSettingsTransport()
-        let flusher = PlayerSettingsFlusher(transport: transport, debounce: .milliseconds(60))
+        let flusher = PlayerSettingsFlusher(transport: transport, debounce: .milliseconds(100))
 
         flusher.enqueue(.playerAudioSyncMs, value: .int(100))
-        try await Task.sleep(for: .milliseconds(20))
+        // Let the first timer start sleeping, well inside its window.
+        try await Task.sleep(for: .milliseconds(10))
         flusher.enqueue(.playerAudioSyncMs, value: .int(200))
 
-        try await waitUntil("the debounced write lands") { transport.writes().count == 1 }
-        try await Task.sleep(for: .milliseconds(120))
-        XCTAssertEqual(transport.writes().map(\.value), [.int(200)],
-                       "the superseded timer must not fire a second drain")
+        try await waitUntil("the debounced drain finishes") {
+            transport.writes().count == 1 && !flusher.hasPendingWrites
+        }
+        XCTAssertFalse(flusher.hasArmedDebounce, "no timer is left to fire a second drain")
+        XCTAssertFalse(flusher.hasArmedRetry)
+        XCTAssertEqual(transport.writes().map(\.value), [.int(200)])
         XCTAssertEqual(transport.cancelledAttemptCount(), 0)
     }
 
@@ -597,8 +597,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
         XCTAssertFalse(flusher.hasPendingWrites,
                        "a value the contract refuses would fail identically forever")
-        // And no timer was armed to keep hammering it.
-        try await Task.sleep(for: .milliseconds(120))
+        XCTAssertFalse(flusher.hasArmedRetry, "no timer may keep hammering it")
         XCTAssertEqual(transport.writes().count, 1)
     }
 
@@ -617,9 +616,8 @@ final class PlayerSettingsFlushTests: XCTestCase {
         // Held: only picking a profile fixes this, and dropping it would lose a
         // choice the user already made.
         XCTAssertTrue(flusher.hasPendingWrites)
-        try await Task.sleep(for: .milliseconds(120))
-        XCTAssertEqual(transport.writes().count, 1,
-                       "a precondition failure must not arm a backoff timer")
+        XCTAssertFalse(flusher.hasArmedRetry, "a precondition failure must not arm a backoff timer")
+        XCTAssertEqual(transport.writes().count, 1)
     }
 
     func testExhaustingAutomaticRetriesHoldsTheKey() async throws {
@@ -640,7 +638,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
         // Budget spent: the change is kept, on disk too, and nothing sends it
         // on its own — not even an explicit flush.
-        try await Task.sleep(for: .milliseconds(120))
+        XCTAssertFalse(flusher.hasArmedRetry)
         await flusher.flushNow()
         XCTAssertEqual(transport.writes().count, 3, "a held change must not be replayed on its own")
         XCTAssertTrue(flusher.hasPendingWrites, "an exhausted budget must not drop the write")
@@ -737,9 +735,9 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
         flusher.enqueue(.playerHdrEnabled, value: .bool(false))
         await flusher.flushNow()
-        try await Task.sleep(for: .milliseconds(120))
 
-        XCTAssertEqual(transport.writes().count, 1, "an owner change must not arm a backoff timer")
+        XCTAssertFalse(flusher.hasArmedRetry, "an owner change must not arm a backoff timer")
+        XCTAssertEqual(transport.writes().count, 1)
         XCTAssertTrue(flusher.hasPendingWrites, "the change still belongs to this partition")
         XCTAssertTrue(flusher.heldKeys.isEmpty)
     }
@@ -1102,7 +1100,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
         // manifest revision instead of being sent.
         await harness.settings.refreshFromServer()
 
-        harness.settings.setPreferredQuality("1080p-medium")
+        harness.settings.setQualityPreset(try XCTUnwrap(SiloQualityPresets.preset(id: "1080p-high")))
         harness.settings.setAudioLanguage("ja")
         harness.settings.setIntroSkipMode(.never)
         harness.settings.setAutoSkipCredits(true)
@@ -1126,7 +1124,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
         // validated nothing. The contract types these, and a string here fails
         // the schema.
         XCTAssertEqual(byKey[.playbackPreferredQuality]?.value, .string("1080p"))
-        XCTAssertEqual(byKey[.playbackMaxBitrateKbps]?.value, .int(12_000))
+        XCTAssertEqual(byKey[.playbackMaxBitrateKbps]?.value, .int(10_000))
         XCTAssertEqual(byKey[.playbackAudioLanguage]?.value, .string("ja"))
         XCTAssertEqual(byKey[.playbackIntroSkipMode]?.value, .string("never"))
         XCTAssertEqual(byKey[.playbackAutoSkipCredits]?.value, .bool(true))
@@ -1310,6 +1308,53 @@ final class PlayerSettingsFlushTests: XCTestCase {
         XCTAssertEqual(fields["fontSize"], .string("xxlarge"))
     }
 
+    func testAdoptingAProfileWriteUpdatesTheLocalValueWithoutQueueingADeviceOverride() async throws {
+        let harness = try PlayerSettingsHarness()
+
+        // The onboarding tour already wrote these at profile scope. Sending
+        // them again would create a `profile_device` row that shadows it.
+        harness.settings.adoptProfileQuality(resolution: "720p", bitrateKbps: 3_000)
+        harness.settings.adoptProfileIntroSkipMode(.always)
+        harness.settings.adoptProfileAutoSkipCredits(true)
+
+        XCTAssertEqual(harness.settings.preferredQualityResolution, "720p")
+        XCTAssertEqual(harness.settings.maxBitrateKbps, 3_000)
+        XCTAssertEqual(harness.settings.introSkipMode, .always)
+        XCTAssertTrue(harness.settings.autoSkipCredits)
+
+        await harness.settings.flushPendingDeviceSettings()
+        XCTAssertTrue(
+            harness.transport.writes().isEmpty,
+            "adopting a profile value must not queue a device-scope write"
+        )
+    }
+
+    func testStagingASubtitleAppearanceAppliesItAtOnceAndSendsItOnFlush() async throws {
+        let harness = try PlayerSettingsHarness()
+        // A subtitle appearance write waits until the server's revision is known.
+        await harness.settings.refreshFromServer()
+        harness.transport.reset()
+        harness.settings.setSubtitleMatchesSystemAppearance(true)
+        var appearance = SubtitleAppearance.default
+        appearance.position = .top
+
+        harness.settings.stageSubtitleAppearance(appearance)
+
+        // Silo Control's position command is synchronous: the edit, the
+        // override and handing control back from the system captions all
+        // apply before anything suspends.
+        XCTAssertEqual(harness.settings.subtitleAppearance.position, .top)
+        XCTAssertTrue(harness.settings.subtitleUsesDeviceAppearanceOverride)
+        XCTAssertFalse(harness.settings.subtitleMatchesSystemAppearance)
+        XCTAssertEqual(harness.settings.effectiveSubtitleAppearance.position, .top)
+
+        await harness.settings.flushPendingDeviceSettings()
+        XCTAssertEqual(
+            harness.transport.writesByKey()[.playbackSubtitleAppearance]?.value,
+            try SettingJSONValue.encoding(appearance.sanitized())
+        )
+    }
+
     func testNoAudioLanguagePreferenceIsSentAsJSONNull() async throws {
         let harness = try PlayerSettingsHarness()
 
@@ -1325,41 +1370,6 @@ final class PlayerSettingsFlushTests: XCTestCase {
         harness.settings.setAudioLanguage("ja")
         await harness.settings.flushPendingDeviceSettings()
         XCTAssertEqual(harness.transport.writesByKey()[.playbackAudioLanguage]?.value, .string("ja"))
-    }
-
-    func testCompoundQualityIsStoredAsTheContractsTwoAxes() async throws {
-        let harness = try PlayerSettingsHarness()
-
-        harness.settings.setPreferredQuality("1080p-medium")
-        await harness.settings.flushPendingDeviceSettings()
-
-        let byKey = harness.transport.writesByKey()
-        // "1080p-medium" is not a member of the contract's enum; sending it
-        // verbatim is a permanent invalid_value, which is why the tier splits.
-        XCTAssertEqual(byKey[.playbackPreferredQuality]?.value, .string("1080p"))
-        XCTAssertEqual(byKey[.playbackMaxBitrateKbps]?.value, .int(12_000))
-        // The stored pair is what the client holds; the in-player ladder id
-        // is derived from it, so playback's call sites are unaffected.
-        XCTAssertEqual(harness.settings.preferredQualityResolution, "1080p")
-        XCTAssertEqual(harness.settings.maxBitrateKbps, 12_000)
-        XCTAssertEqual(harness.settings.preferredQuality, "1080p-medium")
-    }
-
-    func testWideningTheQualityTierClearsTheOldBitrateCap() async throws {
-        let harness = try PlayerSettingsHarness()
-
-        harness.settings.setPreferredQuality("720p")
-        await harness.settings.flushPendingDeviceSettings()
-        harness.transport.reset()
-
-        harness.settings.setPreferredQuality("auto")
-        await harness.settings.flushPendingDeviceSettings()
-
-        let byKey = harness.transport.writesByKey()
-        XCTAssertEqual(byKey[.playbackPreferredQuality]?.value, .string("auto"))
-        // Null, not omitted: leaving the 2 Mbps cap in place would keep
-        // throttling a preference the user just widened to Auto.
-        XCTAssertEqual(byKey[.playbackMaxBitrateKbps]?.value, .null)
     }
 
     func testSubtitleAppearanceIsSentAsAnObjectWithItsCamelCaseKeys() async throws {
@@ -1597,7 +1607,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
     func testAnOldServerResetAppliesContractDefaultsAndDoesNotQueueDeletes() async throws {
         let harness = try PlayerSettingsHarness()
-        harness.settings.setPreferredQuality("720p-medium")
+        harness.settings.setQualityPreset(try XCTUnwrap(SiloQualityPresets.preset(id: "720p")))
         harness.settings.setIntroSkipMode(.always)
         harness.settings.setHDREnabled(false)
         var appearance = SubtitleAppearance.default
@@ -1631,7 +1641,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
     func testAnUnavailableRefreshKeepsCachedValues() async throws {
         let harness = try PlayerSettingsHarness()
-        harness.settings.setPreferredQuality("720p-medium")
+        harness.settings.setQualityPreset(try XCTUnwrap(SiloQualityPresets.preset(id: "720p")))
         harness.settings.setIntroSkipMode(.always)
         harness.transport.effectiveError = .transport(description: "offline")
 
@@ -1639,7 +1649,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
         XCTAssertEqual(result, .unavailable)
         XCTAssertEqual(harness.settings.preferredQualityResolution, "720p")
-        XCTAssertEqual(harness.settings.maxBitrateKbps, 3_000)
+        XCTAssertEqual(harness.settings.maxBitrateKbps, 2_000)
         XCTAssertEqual(harness.settings.introSkipMode, .always)
     }
 
@@ -1768,8 +1778,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
         }
     }
 
-    /// The specific regression: the two most common shared presets used to
-    /// resolve to 720p rungs here while the other clients kept 1080p.
+    /// The web's two 1080p presets map to 1080p rungs, as on the other clients.
     func testTheWebs1080pPresetsStay1080p() throws {
         XCTAssertEqual(AppleQualityAxes.join(resolution: "1080p", bitrateKbps: 6_000), "1080p-8")
         XCTAssertEqual(AppleQualityAxes.join(resolution: "1080p", bitrateKbps: 3_000), "1080p-8")
@@ -1930,23 +1939,6 @@ final class PlayerSettingsFlushTests: XCTestCase {
             subtitleTracks: nil,
             chapters: nil
         )
-    }
-
-    /// Poll until `condition` holds, so a test never depends on a fixed sleep
-    /// being long enough on a loaded machine.
-    private func waitUntil(
-        _ description: String,
-        timeout: Duration = .seconds(5),
-        _ condition: @escaping () -> Bool,
-        file: StaticString = #filePath,
-        line: UInt = #line
-    ) async throws {
-        let deadline = ContinuousClock.now + timeout
-        while ContinuousClock.now < deadline {
-            if condition() { return }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        XCTFail("timed out waiting for \(description)", file: file, line: line)
     }
 }
 

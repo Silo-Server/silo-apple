@@ -10,15 +10,6 @@ import XCTest
 /// prompt instead of silently starting a second player.
 @MainActor
 final class RemotePlaybackRoutingTests: XCTestCase {
-    private func expectEventually(_ label: String, timeout: TimeInterval = 3, _ condition: () -> Bool) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if condition() { return }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        XCTFail("timed out waiting for: \(label)")
-    }
-
     func testEngagedTVTakesTheRequestAndNoLocalPlayerAppears() async {
         let router = AppRouter()
         var received: [SiloControlPlaybackRequest] = []
@@ -29,8 +20,7 @@ final class RemotePlaybackRoutingTests: XCTestCase {
 
         router.presentPlayer(contentId: "c1", fileId: 7, startFromBeginning: false, resumePosition: 120)
 
-        await expectEventually("interceptor called") { received.count == 1 }
-        try? await Task.sleep(for: .milliseconds(50))
+        await expectEventually("the decision finished") { received.count == 1 && !router.isRoutingRemotePlayback }
         XCTAssertNil(router.presentedPlayer)
         XCTAssertEqual(received.first?.contentId, "c1")
         XCTAssertEqual(received.first?.fileId, 7)
@@ -66,7 +56,7 @@ final class RemotePlaybackRoutingTests: XCTestCase {
         router.presentPlayer(contentId: "second")
         await expectEventually("first decision started") { calls == 1 }
         gate.open()
-        try? await Task.sleep(for: .milliseconds(50))
+        await expectEventually("the decision finished") { !router.isRoutingRemotePlayback }
 
         XCTAssertEqual(calls, 1, "the second tap must not reach the interceptor or the local player")
         XCTAssertNil(router.presentedPlayer)

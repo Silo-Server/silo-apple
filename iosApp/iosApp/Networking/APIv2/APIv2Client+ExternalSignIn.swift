@@ -1,8 +1,9 @@
 import Foundation
 
-/// External sign-in (OIDC and LDAP providers) on the v2 wire: provider
-/// discovery, the native OAuth completion, and the account's linked
-/// identities. See silo-server `docs/architecture/external-sign-in.md`.
+/// External sign-in (OIDC, LDAP and network identity providers) on the v2
+/// wire: provider discovery, the native OAuth completion, network identity
+/// sign-in, and the account's linked identities. See silo-server
+/// `docs/architecture/external-sign-in.md`.
 ///
 /// Nothing here logs a completion code, a verifier, a ticket or a token:
 /// they travel only in request bodies, which the transport never logs.
@@ -15,6 +16,7 @@ extension APIv2Client {
     static let identityLinkTicketPath = "/api/v2/account/identities/link-ticket"
     static let identityLinkCompletePath = "/api/v2/account/identities/link-complete"
     static let identityLinkCredentialsPath = "/api/v2/account/identities/link-credentials"
+    static let identityLinkNetworkPath = "/api/v2/account/identities/link-network"
 
     // MARK: Discovery (public, explicit URL)
 
@@ -75,6 +77,20 @@ extension APIv2Client {
         return try await postForLoginTokens(path: Self.oauthCompletePath, body: body, expectedAccount: expectedAccount)
     }
 
+    // MARK: Network identity sign-in (public, single dispatch)
+
+    /// `signInWithNetworkIdentity` at `apiPath` (the
+    /// `/api/v2/auth/network/<id>/sign-in` of a network provider's
+    /// `network_sign_in_path`, see `NetworkSignIn.apiPath(of:)`), on the saved
+    /// base URL. The body is an empty JSON object, which the server requires;
+    /// the provider's network says who owns this device. `non_retryable` and
+    /// public like `login`: one dispatch with no bearer, never a refresh or a
+    /// replay.
+    func signInWithNetworkIdentity(apiPath: String,
+                                   expectedAccount: RefreshAccountIdentity) async throws -> APIv2LoginTokens {
+        try await postForLoginTokens(path: apiPath, body: Data("{}".utf8), expectedAccount: expectedAccount)
+    }
+
     // MARK: Account identities (authenticated, account-scoped)
 
     /// `getExternalSignInCapabilities` under the active account.
@@ -124,6 +140,18 @@ extension APIv2Client {
             "username": username, "directory_password": directoryPassword,
         ])
         return try await accountJSON(method: "POST", path: Self.identityLinkCredentialsPath, body: body, status: 201,
+            expectedAccount: expectedAccount)
+    }
+
+    /// `linkAccountIdentityWithNetwork`: links the network identity of this
+    /// device (who owns it on the provider's network) after the local
+    /// password is re-entered. Only a request through that provider's network
+    /// can link. Single dispatch: a replay would spend another password check.
+    /// 201 with the new identity.
+    func linkIdentityWithNetwork(installationId: String, password: String,
+                                 expectedAccount: RefreshAccountIdentity) async throws -> APIv2AccountIdentity {
+        let body = try JSONSerialization.data(withJSONObject: ["installation_id": installationId, "password": password])
+        return try await accountJSON(method: "POST", path: Self.identityLinkNetworkPath, body: body, status: 201,
             expectedAccount: expectedAccount)
     }
 

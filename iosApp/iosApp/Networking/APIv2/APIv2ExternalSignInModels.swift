@@ -4,7 +4,9 @@ import Foundation
 struct APIv2AuthProvider: Decodable, Hashable, Sendable {
     let id: String
     let displayName: String
-    /// `credentials` (password, sent to `login`) or `oauth` (the handshake).
+    /// `credentials` (password, sent to `login`), `oauth` (the handshake) or
+    /// `network` (the provider's network says who owns the device). Other
+    /// modes are ignored.
     let mode: String
     let `default`: Bool
     /// Absent when the provider ships no icon. May be site-relative.
@@ -15,9 +17,35 @@ struct APIv2AuthProvider: Decodable, Hashable, Sendable {
     /// server base. The app opens it on the saved base URL; an oauth
     /// provider without it offers no browser sign-in.
     var nativeStartPath: String? = nil
+    /// `signInWithNetworkIdentity` as a path below the server base, for a
+    /// network provider. The app posts `{}` to it on the saved base URL.
+    var networkSignInPath: String? = nil
+    /// Who the network provider says owns this device, for the "Continue as"
+    /// label. It authorizes nothing: the sign-in asks the provider again.
+    var networkIdentity: APIv2AuthProviderNetworkIdentity? = nil
 
     var isOAuth: Bool { mode == "oauth" }
     var isCredentials: Bool { mode == "credentials" }
+    /// Listed only to a request that came through the provider's own network
+    /// (for Tailscale: the saved address is the server's tailnet name and
+    /// this device is on the tailnet).
+    var isNetwork: Bool { mode == "network" }
+}
+
+/// `network_identity` of a network provider: the device owner's names at
+/// the provider. Either may be empty.
+struct APIv2AuthProviderNetworkIdentity: Decodable, Hashable, Sendable {
+    var displayName: String? = nil
+    var username: String? = nil
+
+    /// The name to show: the display name, else the username. Nil when both
+    /// are empty.
+    var name: String? {
+        for value in [displayName, username] {
+            if let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty { return trimmed }
+        }
+        return nil
+    }
 }
 
 /// `GET /api/v2/auth/providers`.
@@ -45,25 +73,31 @@ struct APIv2OAuthCapabilities: Decodable, Equatable, Sendable {
 }
 
 /// `GET /api/v2/auth/external-sign-in/capabilities`, the members the account
-/// screen reads. `credentials_linking` is absent from servers that predate
-/// it.
+/// screen reads. `credentials_linking` and `network_sign_in` are absent from
+/// servers that predate them.
 struct APIv2ExternalSignInCapabilities: Decodable, Equatable, Sendable {
     let state: String
     var identities: Bool? = nil
     /// Whether `linkAccountIdentityWithCredentials` links a directory (LDAP)
     /// account from the directory username and password.
     var credentialsLinking: Bool? = nil
+    /// Whether `signInWithNetworkIdentity` and `linkAccountIdentityWithNetwork`
+    /// are served. Whether this device may use them is discovery's answer: it
+    /// lists a network provider only over that provider's network.
+    var networkSignIn: Bool? = nil
 
     var supportsIdentities: Bool { state == "available" && identities == true }
     var supportsCredentialsLinking: Bool { state == "available" && credentialsLinking == true }
+    var supportsNetworkSignIn: Bool { state == "available" && networkSignIn == true }
 }
 
 /// One entry of `GET /api/v2/account/identities`.
 struct APIv2AccountIdentity: Decodable, Hashable, Sendable, Identifiable {
     let id: String
     let installationId: String
-    /// Empty while that provider is not enabled.
-    let providerId: String
+    /// Empty while that provider is not enabled. Unread by the app, so
+    /// optional: its absence must not fail the identity list.
+    let providerId: String?
     /// Empty while that provider is not enabled.
     let providerName: String
     let username: String
@@ -117,6 +151,11 @@ struct SignInOptions: Equatable, Sendable {
     /// it. The TV names it beside its password form: people who sign in
     /// with it have no password and use their phone instead.
     let oauthProviders: [APIv2AuthProvider]
+    /// Network providers (`mode: network`) with a usable
+    /// `network_sign_in_path`: "Continue as …" signs this device's owner in
+    /// with no password and no browser. Discovery lists one only to a request
+    /// that came through that provider's network.
+    let networkProviders: [APIv2AuthProvider]
 
     /// Whether the phone, tablet and Mac login screen shows the username and
     /// password form. Discovery omits the local provider while password
@@ -125,7 +164,7 @@ struct SignInOptions: Equatable, Sendable {
     var showsPasswordForm: Bool { acceptsPasswords }
 
     /// Password sign-in is off and no listed provider can run in this app.
-    var offersNoSignIn: Bool { !acceptsPasswords && browserProviders.isEmpty }
+    var offersNoSignIn: Bool { !acceptsPasswords && browserProviders.isEmpty && networkProviders.isEmpty }
 
     /// What a server that predates discovery offers: the password form only,
     /// which every server before external sign-in accepted.
@@ -142,6 +181,8 @@ struct SignInOptions: Equatable, Sendable {
     ///   (`native`).
     /// - Missing discovery (a server that predates it) keeps the password
     ///   form. A read that failed is not this: see `SignInDiscovery.failed`.
+    /// - A network provider needs a `network_sign_in_path` of the expected
+    ///   shape. It never changes whether the password form shows.
     init(providers: APIv2AuthProviders?, oauth: APIv2OAuthCapabilities?) {
         guard let providers else {
             self = .passwordOnly
@@ -154,14 +195,16 @@ struct SignInOptions: Equatable, Sendable {
         acceptsPasswords = providers.passwordLogin ?? true
         supportsSelectAccount = native && oauth?.supportsSelectAccount == true
         oauthProviders = providers.items.filter(\.isOAuth)
+        networkProviders = providers.items.filter { $0.isNetwork && NetworkSignIn.apiPath(of: $0) != nil }
     }
 
     init(browserProviders: [APIv2AuthProvider], acceptsPasswords: Bool, supportsSelectAccount: Bool,
-         oauthProviders: [APIv2AuthProvider]? = nil) {
+         oauthProviders: [APIv2AuthProvider]? = nil, networkProviders: [APIv2AuthProvider] = []) {
         self.browserProviders = browserProviders
         self.acceptsPasswords = acceptsPasswords
         self.supportsSelectAccount = supportsSelectAccount
         self.oauthProviders = oauthProviders ?? browserProviders
+        self.networkProviders = networkProviders
     }
 
     /// A provider's native start relative to a server's base URL: the
@@ -176,11 +219,8 @@ struct SignInOptions: Equatable, Sendable {
     /// The provider's native start, read from `native_start_path`. Nil when
     /// the server does not list it or it has another shape.
     static func nativeStart(of provider: APIv2AuthProvider) -> NativeStart? {
-        guard let path = provider.nativeStartPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-              path.hasPrefix("/"), !path.hasPrefix("//"), let components = URLComponents(string: path),
-              components.scheme == nil, components.host == nil else { return nil }
-        guard let apiPath = NativeSignIn.nativeStartAPIPath(components.percentEncodedPath) else { return nil }
-        return NativeStart(apiPath: apiPath, queryItems: components.queryItems ?? [])
+        ServerAuthPath.relative(provider.nativeStartPath, suffix: ServerAuthPath.nativeStart, allowsQuery: true)
+            .map { NativeStart(apiPath: $0.apiPath, queryItems: $0.queryItems) }
     }
 
     /// The button text for a provider. Plugins often configure the whole

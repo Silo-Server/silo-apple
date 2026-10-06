@@ -60,8 +60,9 @@ struct ExitSentinelMarkerStore {
     /// Attach the resolved binding/profile to this run's marker, or rebind it
     /// after a same-foreground server/account change. Filling an initially nil
     /// binding preserves the original launch time. Changing an already-bound
-    /// identity starts a fresh marker window so OSLog harvested for the new
-    /// account cannot reach back into the previous account's run segment.
+    /// identity starts a fresh marker window so breadcrumbs and log lines
+    /// captured for the new account cannot reach back into the previous
+    /// account's run segment.
     @discardableResult
     func bindCurrentRun(
         runID: String,

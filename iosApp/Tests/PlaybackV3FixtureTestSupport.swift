@@ -3,11 +3,9 @@ import XCTest
 @testable import Silo
 
 enum PlaybackV3FixtureTestSupport {
-    static var decoder: JSONDecoder {
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        return decoder
-    }
+    /// The production decoder, so a date or artwork field the client would
+    /// reject fails here too.
+    static var decoder: JSONDecoder { HTTPClient.makeJSONDecoder() }
 
     static func fixtureURL(named name: String, bundleClass: AnyClass) throws -> URL {
         try XCTUnwrap(

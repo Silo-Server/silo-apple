@@ -11,29 +11,26 @@ struct UpdateProfileBody {
     var qualityPreference: String?
     var subtitleLanguage: String?
     var subtitleMode: String?
-    var showForcedSubtitles: Bool?
     /// Preferred metadata language (ISO 639-1; `""` = inherit the library
     /// default, sent as a clearing `null`).
     var preferredMetadataLanguage: String?
     var autoSkipIntro: Bool?
     var autoSkipCredits: Bool?
-    var autoSkipRecap: Bool?
 }
 
-struct VerifyPinRequest: Codable {
+struct VerifyPinRequest: Encodable {
     let pin: String
 }
 
-struct VerifyPinResponse: Codable {
+struct VerifyPinResponse: Decodable {
     let valid: Bool
     let profileToken: String?
-    let expiresAt: String?
 }
 
 /// The new-profile form's values. `APIv2Client.createHouseholdProfile`
 /// turns it into the `POST /api/v2/profiles` body (`APIv2ProfileCreate`),
 /// sending the library IDs as strings.
-struct CreateProfileRequestBody: Codable {
+struct CreateProfileRequestBody {
     let name: String
     let avatar: String?
     let pin: String?

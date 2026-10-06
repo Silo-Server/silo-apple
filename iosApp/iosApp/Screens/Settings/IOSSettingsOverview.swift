@@ -6,9 +6,9 @@ import SwiftUI
 /// still matches each row's longer description, which VoiceOver reads as
 /// the row's hint.
 struct IOSSettingsOverview: View {
-    @Bindable var viewModel: SettingsViewModel
-    @Bindable var diagnosticsModel: DiagnosticsViewModel
-    @Bindable var uiCustomization: UICustomizationPreferences
+    let viewModel: SettingsViewModel
+    let diagnosticsModel: DiagnosticsViewModel
+    let uiCustomization: UICustomizationPreferences
     @Binding var showSignOutConfirm: Bool
 
     @Environment(AppRouter.self) private var router
@@ -25,8 +25,8 @@ struct IOSSettingsOverview: View {
                 SettingsAccountCard(
                     avatar: viewModel.activeProfile?.avatarEmoji,
                     avatarImageUrl: viewModel.activeProfile?.avatarImageUrl,
-                    name: displayName,
-                    subtitle: subtitleLine,
+                    name: viewModel.displayName,
+                    subtitle: viewModel.accountSubtitleLine,
                     isAdministrator: viewModel.userInfo?.isAdmin == true,
                     action: switchProfile
                 )
@@ -148,7 +148,7 @@ struct IOSSettingsOverview: View {
                             title: "Subtitles",
                             subtitle: "Language, behavior, and appearance",
                             systemImage: "captions.bubble.fill",
-                            value: subtitleLanguageName(viewModel.prefs.subtitleLanguage)
+                            value: viewModel.subtitleLanguageName
                         )
                     }
                 }
@@ -246,7 +246,7 @@ struct IOSSettingsOverview: View {
                 title: "Version",
                 subtitle: "Installed Silo app version",
                 systemImage: "info.circle.fill",
-                value: versionString
+                value: SettingsViewModel.versionString
             )
 
             Link(destination: SiloLegalLinks.privacyPolicy) {
@@ -259,12 +259,21 @@ struct IOSSettingsOverview: View {
             }
 
             NavigationLink {
-                OpenSourceAcknowledgementsView()
+                AcknowledgementsView()
             } label: {
                 SettingsOverviewRow(
-                    title: "Open Source Licenses",
-                    subtitle: "Acknowledgements, licenses, and exact source revisions",
+                    title: "Acknowledgements",
+                    subtitle: "Services Silo uses, and open source licenses",
                     systemImage: "curlybraces"
+                )
+            }
+
+            Link(destination: SiloLegalLinks.sourceCode) {
+                SettingsOverviewRow(
+                    title: "Source Code",
+                    subtitle: "Get Silo's source code under the AGPL",
+                    systemImage: "chevron.left.forwardslash.chevron.right",
+                    showsChevron: true
                 )
             }
         }
@@ -273,7 +282,7 @@ struct IOSSettingsOverview: View {
     private var experimentalSection: some View {
         // A query naming the section shows every row; otherwise each row
         // appears only for its own terms.
-        Section("Experimental") {
+        Section("Extra Features") {
             if matchesExperimentalName || matchesAudiobooks {
                 SettingsOverviewToggleRow(
                     title: "Show Audiobooks",
@@ -312,56 +321,8 @@ struct IOSSettingsOverview: View {
         }
     }
 
-    private var displayName: String {
-        if let name = viewModel.activeProfile?.name, !name.isEmpty {
-            return name
-        }
-        if let username = viewModel.userInfo?.username, !username.isEmpty {
-            return username
-        }
-        return "Switch Profile"
-    }
-
-    private var subtitleLine: String {
-        let host = serverHost
-        let username = viewModel.userInfo?.username
-        switch (username, host) {
-        case let (user?, host?) where !user.isEmpty && user != displayName:
-            return "\(user) · \(host)"
-        case let (_, host?):
-            return host
-        case let (user?, _) where !user.isEmpty && user != displayName:
-            return user
-        default:
-            return "Tap to switch profile"
-        }
-    }
-
-    private var serverHost: String? {
-        guard let url = URL(string: viewModel.serverUrl), let host = url.host else {
-            return viewModel.serverUrl.isEmpty ? nil : viewModel.serverUrl
-        }
-        return host
-    }
-
     private func switchProfile() {
         router.switchProfile()
-    }
-
-    private func subtitleLanguageName(_ tag: String) -> String {
-        if tag == PlaybackPrefSentinel.none || tag.isEmpty { return "None" }
-        return PlaybackLanguageOption.label(forCode: tag)
-    }
-
-    private var versionString: String {
-        let info = Bundle.main.infoDictionary
-        let version = info?["CFBundleShortVersionString"] as? String ?? "1.0"
-        guard let build = info?["CFBundleVersion"] as? String,
-              !build.isEmpty,
-              build != version else {
-            return version
-        }
-        return "\(version) (\(build))"
     }
 
     private var matchesPlayback: Bool {
@@ -401,18 +362,23 @@ struct IOSSettingsOverview: View {
         matches(
             "about",
             "version",
-            versionString,
+            SettingsViewModel.versionString,
             "privacy",
             "policy",
             "information",
             "open source",
             "licenses",
-            "acknowledgements"
+            "acknowledgements",
+            "source code",
+            "AGPL",
+            "credits",
+            "attribution",
+            "TMDB"
         )
     }
 
     private var matchesExperimentalName: Bool {
-        matches("experimental", "beta", "testing")
+        matches("extra features", "experimental")
     }
 
     private var matchesExperimentalSection: Bool {

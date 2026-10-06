@@ -62,9 +62,9 @@ struct SectionRow: View {
         section.isContinueWatchingSection
     }
 
-    private var hasEpisodeItems: Bool {
-        section.items.contains(where: { $0.type.lowercased() == "episode" })
-    }
+    private var isEpisodeRow: Bool { Self.isEpisodeRow(section) }
+
+    private var layout: MediaRowLayout { Self.layout(for: section) }
 
     /// True when the row should render 16:9 episode stills instead of posters.
     /// A dedicated "Next Up" row always does. For other episode-bearing rows
@@ -74,31 +74,39 @@ struct SectionRow: View {
     /// Continue Watching rows that actually contain episodes and render
     /// episode-discovery rows (e.g. "Recently Released Episodes") as ordinary
     /// series posters with an S·E badge.
-    private var isEpisodeRow: Bool {
+    private static func isEpisodeRow(_ section: ResolvedSection) -> Bool {
         if section.sectionType.lowercased().contains("next") {
             return true
         }
+        let hasEpisodeItems = section.items.contains(where: { $0.type.lowercased() == "episode" })
         #if os(tvOS)
-        if isContinueWatching {
+        if section.isContinueWatchingSection {
             return true
         }
         return hasEpisodeItems
         #else
-        return isContinueWatching && hasEpisodeItems
+        return section.isContinueWatchingSection && hasEpisodeItems
         #endif
     }
 
-    /// Audiobook covers are square, so rows made entirely of audiobooks
-    /// (Continue Listening, audiobook library rails) use 1:1 tiles
-    /// instead of stretching the cover into a 2:3 poster.
-    private var isAudiobookRow: Bool {
-        !section.items.isEmpty && section.items.allSatisfy(\.isAudiobook)
+    /// The card shape a section's row uses. Audiobook covers are square, so
+    /// rows made entirely of audiobooks (Continue Listening, audiobook
+    /// library rails) use 1:1 tiles instead of stretching the cover into a
+    /// 2:3 poster.
+    static func layout(for section: ResolvedSection) -> MediaRowLayout {
+        if isEpisodeRow(section) { return .thumbnail }
+        if !section.items.isEmpty, section.items.allSatisfy(\.isAudiobook) { return .square }
+        return .poster
     }
 
-    private var layout: MediaRowLayout {
-        if isEpisodeRow { return .thumbnail }
-        if isAudiobookRow { return .square }
-        return .poster
+    /// Library and recommendation rows draw their episode stills (Next Up)
+    /// at Home's still width. tvOS keeps the shared Skyline thumbnail width.
+    static var thumbnailCardWidth: CGFloat? {
+        #if os(tvOS)
+        nil
+        #else
+        HomeFeedMetrics.stillWidth
+        #endif
     }
 
     private var showProgress: Bool {
@@ -106,6 +114,27 @@ struct SectionRow: View {
     }
 
     var body: some View {
+        #if os(tvOS)
+        mediaRow
+        #else
+        // Continue Watching uses Home's row on every page, so a library's
+        // resume cards keep Home's stills, size and play button.
+        if isContinueWatching {
+            HomeFeedRow(
+                section: section,
+                onRemoveFromContinueWatching: onRemoveFromContinueWatching,
+                onSetWatched: { item, played in
+                    await setWatched(item, played: played)
+                }
+            )
+            .mediaActionFeedback(watchedFeedback)
+        } else {
+            mediaRow
+        }
+        #endif
+    }
+
+    private var mediaRow: some View {
         MediaRow(
             title: section.title,
             items: section.items,
@@ -129,6 +158,7 @@ struct SectionRow: View {
             onMoveUp: onMoveUp,
             onItemFocus: onItemFocus,
             cardWidth: cardWidth,
+            thumbnailCardWidth: Self.thumbnailCardWidth,
             cardVerticalPadding: cardVerticalPadding,
             onMoveDown: onMoveDown,
             focusRestorationOwner: focusRestorationOwner

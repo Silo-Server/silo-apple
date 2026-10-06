@@ -61,7 +61,7 @@ private struct WatchPartyMediaChoice: Hashable {
         backdropURL = episode.stillUrl ?? series.backdropUrl
         backdropThumbhash = episode.stillUrl != nil ? episode.stillThumbhash : series.backdropThumbhash
         overview = episode.overview
-        if let runtime = episode.runtime, runtime > 0 { facts = [WatchPartyFacts.runtime(runtime)] }
+        if let runtime = MediaTextFormatting.runtime(minutes: episode.runtime) { facts = [runtime] }
         lobbyTitle = episode.title ?? "Episode \(episode.episodeNumber)"
         lobbySubtitle = "\(series.title) · S\(episode.seasonNumber):E\(episode.episodeNumber)"
         runtimeMinutes = episode.runtime
@@ -83,7 +83,7 @@ private struct WatchPartyMediaChoice: Hashable {
         backdropURL = item.backdropUrl
         backdropThumbhash = item.backdropThumbhash
         overview = item.overview
-        if let runtime = item.runtime, runtime > 0 { facts = [WatchPartyFacts.runtime(runtime)] }
+        if let runtime = MediaTextFormatting.runtime(minutes: item.runtime) { facts = [runtime] }
         lobbyTitle = item.title
         seasonNumber = item.seasonNumber
         if let seriesId = item.seriesId, !seriesId.isEmpty {
@@ -118,16 +118,20 @@ private struct WatchPartyMediaChoice: Hashable {
 private extension BrowseItem {
     /// A series row built from what an episode card already carries, enough
     /// for the episode picker, which loads the seasons itself.
-    init?(seriesId: String, title: String, posterUrl: String?, posterThumbhash: String?,
-          backdropUrl: String?, backdropThumbhash: String?) {
-        var fields = ["contentId": seriesId, "type": "series", "title": title]
-        fields["posterUrl"] = posterUrl
-        fields["posterThumbhash"] = posterThumbhash
-        fields["backdropUrl"] = backdropUrl
-        fields["backdropThumbhash"] = backdropThumbhash
-        guard let data = try? JSONEncoder().encode(fields),
-              let item = try? JSONDecoder().decode(BrowseItem.self, from: data) else { return nil }
-        self = item
+    init(seriesId: String, title: String, posterUrl: String?, posterThumbhash: String?,
+         backdropUrl: String?, backdropThumbhash: String?) {
+        self.init(
+            contentId: seriesId, type: "series", title: title,
+            year: nil, genres: nil, contentRating: nil,
+            advisoryAge: nil, advisorySource: nil, status: nil,
+            ratingImdb: nil, ratingTmdb: nil, ratingRtCritic: nil, ratingRtAudience: nil,
+            runtime: nil, originalLanguage: nil, studios: nil, networks: nil,
+            showStatus: nil, overview: nil,
+            posterUrl: posterUrl, posterThumbhash: posterThumbhash,
+            backdropUrl: backdropUrl, backdropThumbhash: backdropThumbhash,
+            addedAt: nil, releaseDate: nil, lastAirDate: nil,
+            userState: nil, overlaySummary: nil
+        )
     }
 }
 
@@ -137,18 +141,12 @@ private enum WatchPartyPickerDestination: Hashable {
     case search
 }
 
-enum WatchPartyFacts {
-    static func runtime(_ minutes: Int) -> String {
-        minutes >= 60 ? "\(minutes / 60)h \(minutes % 60)m" : "\(minutes)m"
-    }
-}
-
 private extension BrowseItem {
     /// "2021 · 2h 35m · PG-13" for the picker hero.
     var watchPartyFacts: [String] {
         var facts: [String] = []
         if let year, year > 0 { facts.append(String(year)) }
-        if let runtime, runtime > 0 { facts.append(WatchPartyFacts.runtime(runtime)) }
+        if let runtimeText = MediaTextFormatting.runtime(minutes: runtime) { facts.append(runtimeText) }
         if let contentRating, !contentRating.isEmpty { facts.append(contentRating) }
         if let genres, let first = genres.first { facts.append(first) }
         return facts
@@ -297,16 +295,16 @@ struct WatchPartyMediaPicker: View {
             ?? session.picker?.watchlistUnion.first { $0.item.contentId == contentId }?.item
     }
 
-    /// Home rows come as `SectionItem`; lift one back to a `BrowseItem` shape
-    /// through the shared decoder so the confirmation page has facts and art.
+    /// Home rows come as `SectionItem`; lift one into a `BrowseItem` with
+    /// `BrowseItem(sectionItem:)` so the confirmation page has facts and art.
     /// A resume episode goes straight to its confirmation.
     private func openSection(_ item: SectionItem) {
         if item.type == "episode" {
             destination = .choice(WatchPartyMediaChoice(episode: item))
         } else if let browse = browseItem(for: item.contentId) {
             open(browse)
-        } else if let browse = BrowseItem(sectionItem: item) {
-            open(browse)
+        } else {
+            open(BrowseItem(sectionItem: item))
         }
     }
 
@@ -317,13 +315,14 @@ struct WatchPartyMediaPicker: View {
     /// carries the purpose, search, and Close; Up from the first row hands
     /// focus to it, exactly as Home hands focus to the top bar.
     private var tvBody: some View {
-        ZStack(alignment: .top) {
+        let shelves = sections
+        return ZStack(alignment: .top) {
             Color.siloBackground.ignoresSafeArea()
-            if sections.isEmpty {
+            if shelves.isEmpty {
                 tvEmptyState
             } else {
                 TVSkylineSectionFeed(
-                    sections: sections,
+                    sections: shelves,
                     focusRequest: feedFocusRequest,
                     isTopMenuFocused: chromeHasFocus,
                     onTopMenuFocusRequest: { chromeFocus = .search },
@@ -347,7 +346,7 @@ struct WatchPartyMediaPicker: View {
         .onChange(of: chromeFocus) { _, focus in
             if focus == nil { feedFocusRequest += 1 }
         }
-        .onChange(of: sections.map(\.id)) { _, ids in
+        .onChange(of: shelves.map(\.id)) { _, ids in
             if !ids.isEmpty, chromeFocus == nil { feedFocusRequest += 1 }
         }
     }
@@ -417,11 +416,14 @@ struct WatchPartyMediaPicker: View {
             LazyVStack(alignment: .leading, spacing: HomeFeedMetrics.sectionSpacing) {
                 if isSearching {
                     searchResults
-                } else if sections.isEmpty {
-                    phoneEmptyState
                 } else {
-                    ForEach(sections) { section in
-                        phoneRow(section)
+                    let shelves = sections
+                    if shelves.isEmpty {
+                        phoneEmptyState
+                    } else {
+                        ForEach(shelves) { section in
+                            phoneRow(section)
+                        }
                     }
                 }
             }
@@ -467,8 +469,10 @@ struct WatchPartyMediaPicker: View {
                         }
                     }
                 }
-                .padding(.horizontal, HomeFeedMetrics.gutter)
+                .scrollTargetLayout()
             }
+            .contentMargins(.horizontal, HomeFeedMetrics.gutter, for: .scrollContent)
+            .mediaRailScrolling()
             .scrollClipDisabled()
         }
     }
@@ -587,9 +591,10 @@ struct WatchPartyMediaPicker: View {
         if reset { continuation = nil; items = [] }
         defer { if loadID == requestID { isLoading = false } }
         if reset {
-            async let picker: Void = session.capabilities?.picker == true ? session.refreshPicker() : ()
-            async let watchlist: Void = session.capabilities?.picker != true && watchlistItems.isEmpty
-                ? loadWatchlistFallback(roomId: roomId) : ()
+            let usesPicker = session.capabilities?.picker == true
+            let needsWatchlist = !usesPicker && watchlistItems.isEmpty
+            async let picker: Void = usesPicker ? session.refreshPicker() : ()
+            async let watchlist: Void = needsWatchlist ? loadWatchlistFallback(roomId: roomId) : ()
             async let home: Void = loadHomeShelves(roomId: roomId)
             async let series: Void = loadRecentSeries(roomId: roomId)
             _ = await (picker, watchlist, home, series)
@@ -709,7 +714,7 @@ private struct WatchPartySearchPage: View {
                         .font(.siloCaption)
                         .foregroundColor(.siloSecondaryText)
                     TVCatalogGrid(
-                        items: viewModel.results.filter { !$0.isAudiobook },
+                        items: viewModel.results,
                         isLoading: viewModel.isSearching,
                         hasMore: viewModel.hasMore,
                         onItemTap: onPick,
@@ -867,7 +872,7 @@ private struct WatchPartyEpisodePicker: View {
     private func episodeLine(_ episode: EpisodeListItem) -> String {
         var parts = ["S\(episode.seasonNumber) · E\(episode.episodeNumber)"]
         if let title = episode.title, !title.isEmpty { parts.append(title) }
-        if let runtime = episode.runtime, runtime > 0 { parts.append(WatchPartyFacts.runtime(runtime)) }
+        if let runtime = MediaTextFormatting.runtime(minutes: episode.runtime) { parts.append(runtime) }
         return parts.joined(separator: " · ")
     }
     #endif
@@ -925,7 +930,7 @@ private struct WatchPartyEpisodePicker: View {
             Group {
                 if let still = episode.stillUrl, !still.isEmpty {
                     AsyncImageView(url: still, thumbhash: episode.stillThumbhash,
-                                   targetSize: CGSize(width: Self.stillWidth * 2, height: Self.stillWidth * 9 / 8))
+                                   targetSize: CGSize(width: Self.stillWidth, height: Self.stillWidth * 9 / 16))
                 } else {
                     Rectangle().fill(Color.siloSurfaceElevated)
                         .overlay { Image(systemName: "tv").foregroundStyle(Color.siloSecondaryText) }
@@ -938,8 +943,8 @@ private struct WatchPartyEpisodePicker: View {
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Color.siloOnSurface)
                     .lineLimit(2)
-                if let runtime = episode.runtime, runtime > 0 {
-                    Text(WatchPartyFacts.runtime(runtime))
+                if let runtime = MediaTextFormatting.runtime(minutes: episode.runtime) {
+                    Text(runtime)
                         .font(.caption)
                         .foregroundStyle(Color.siloSecondaryText)
                 }

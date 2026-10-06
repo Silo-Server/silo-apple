@@ -12,11 +12,11 @@ struct TVPlaybackActionSelectors: View {
     var subtitleMode: String? = nil
     var subtitleSignature: SubtitleTrackSignature? = nil
     var showForcedSubtitles = false
+    /// Read live from `ProfilePrefsStore` by the parent page.
+    let preferredSubtitleLanguage: String?
     let onSelectVersion: (Int?) -> Void
     let onSelectAudioTrack: (Int?) -> Void
     let onSelectSubtitleTrack: (Int?) -> Void
-
-    @State private var preferredSubtitleLanguage: String?
 
     var body: some View {
         HStack(spacing: 18) {
@@ -24,10 +24,8 @@ struct TVPlaybackActionSelectors: View {
             audioMenu
             subtitleMenu
         }
-        .task {
-            await ProfilePrefsStore.shared.hydrateIfNeeded()
-            preferredSubtitleLanguage = ProfilePrefsStore.shared.preferredSubtitleLanguage
-        }
+        // The parent observes the store, so hydration repaints it.
+        .task { await ProfilePrefsStore.shared.hydrateIfNeeded() }
     }
 
     private var versionMenu: some View {
@@ -49,7 +47,7 @@ struct TVPlaybackActionSelectors: View {
                     TVActionPopoverItem(
                         id: "file-\(version.fileId)",
                         title: DetailPlaybackFormatting.versionShortLabel(version),
-                        detail: versionDetail(version),
+                        detail: DetailPlaybackFormatting.versionDetailLabel(version),
                         isSelected: selectedVersionFileId == version.fileId
                     )
                 }
@@ -187,25 +185,18 @@ struct TVPlaybackActionSelectors: View {
 
     private var subtitleAutoContext: DetailPlaybackFormatting.SubtitleAutoContext {
         DetailPlaybackFormatting.SubtitleAutoContext(
+            version: currentVersion,
+            selectedAudioTrackIndex: selectedAudioTrackIndex,
             preferredLanguage: preferredSubtitleLanguage,
             mode: subtitleMode,
             signature: subtitleSignature,
-            audioLanguage: DetailPlaybackFormatting.resolvedAudioLanguage(
-                version: currentVersion,
-                selectedAudioTrackIndex: selectedAudioTrackIndex
-            ),
             showForced: showForcedSubtitles
         )
     }
-
-    private func versionDetail(_ version: FileVersion) -> String {
-        DetailPlaybackFormatting.versionDetailLabel(version)
-    }
 }
 
-/// Compact passive disclosure paired with the circular action menus. This
-/// preserves the selected values that used to live inside the lower selector
-/// capsule without adding another focus destination.
+/// Passive readout of the selected version, audio, and subtitles beside the
+/// circular menus; adds no focus target.
 struct TVPlaybackSelectionSummary: Equatable {
     let version: String?
     let audio: String?
@@ -245,13 +236,11 @@ struct TVPlaybackSelectionSummary: Equatable {
             : resolvedAudio
 
         let autoContext = DetailPlaybackFormatting.SubtitleAutoContext(
+            version: currentVersion,
+            selectedAudioTrackIndex: selectedAudioTrackIndex,
             preferredLanguage: preferredSubtitleLanguage,
             mode: subtitleMode,
             signature: subtitleSignature,
-            audioLanguage: DetailPlaybackFormatting.resolvedAudioLanguage(
-                version: currentVersion,
-                selectedAudioTrackIndex: selectedAudioTrackIndex
-            ),
             showForced: showForcedSubtitles
         )
         let resolvedSubtitle = DetailPlaybackFormatting.subtitleValueLabel(
@@ -280,6 +269,30 @@ struct TVPlaybackSelectionSummary: Equatable {
             ? String(value.dropFirst("Auto: ".count))
             : value
         return "Auto · \(resolved == "Off" ? "None" : resolved)"
+    }
+}
+
+private extension DetailPlaybackFormatting.SubtitleAutoContext {
+    /// The "Auto" subtitle preview context for the selected version and audio
+    /// track.
+    init(
+        version: FileVersion?,
+        selectedAudioTrackIndex: Int?,
+        preferredLanguage: String?,
+        mode: String?,
+        signature: SubtitleTrackSignature?,
+        showForced: Bool
+    ) {
+        self.init(
+            preferredLanguage: preferredLanguage,
+            mode: mode,
+            signature: signature,
+            audioLanguage: DetailPlaybackFormatting.resolvedAudioLanguage(
+                version: version,
+                selectedAudioTrackIndex: selectedAudioTrackIndex
+            ),
+            showForced: showForced
+        )
     }
 }
 #endif

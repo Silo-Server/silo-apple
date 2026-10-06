@@ -33,12 +33,13 @@ struct TVLibraryGridView: View {
     /// pushed grid routes where the root menu is not visible.
     let onTopMenuFocusRequest: (() -> Void)?
 
-    @State private var viewModel: TVLibraryGridViewModel
+    @State private var modelSlot = LazyModel<TVLibraryGridViewModel>()
     @State private var selectedPrefix: String? = nil
     @State private var openPanel: TVBrowsePanel? = nil
     @State private var controlFocusRequest = 0
     @State private var gridFocusRequest = 0
     @State private var lastShellFocusRequest = 0
+    @State private var shuffleLauncher = ShuffleLauncher()
 
     @Environment(AppRouter.self) private var router
 
@@ -66,12 +67,17 @@ struct TVLibraryGridView: View {
         self.focusRequest = focusRequest
         self.isTopMenuFocused = isTopMenuFocused
         self.onTopMenuFocusRequest = onTopMenuFocusRequest
-        _viewModel = State(initialValue: TVLibraryGridViewModel(
-            libraryId: libraryId,
-            libraryType: libraryType,
-            initialFilter: initialFilter
-        ))
         _selectedPrefix = State(initialValue: initialFilter.namePrefix)
+    }
+
+    private var viewModel: TVLibraryGridViewModel {
+        modelSlot.value {
+            TVLibraryGridViewModel(libraryId: libraryId, libraryType: libraryType, initialFilter: initialFilter)
+        }
+    }
+
+    private var canShuffle: Bool {
+        ShuffleAvailability.isShuffleLibraryType(libraryType) && ShuffleFeatureStore.shared.supports(.library)
     }
 
     var body: some View {
@@ -159,22 +165,41 @@ struct TVLibraryGridView: View {
                     onMoveUp: onTopMenuFocusRequest,
                     onMoveDown: claimGridFocus,
                     onSort: { openPanel = .sort },
-                    onFilter: { openPanel = .filter }
+                    onFilter: { openPanel = .filter },
+                    onShuffle: canShuffle ? {
+                        shuffleLauncher.start(ShuffleScopeRequest(kind: .library, id: String(libraryId)), router: router)
+                    } : nil,
+                    isShuffleStarting: shuffleLauncher.isStarting
                 )
                 .padding(.horizontal, SiloTheme.safePadding)
+                .shuffleFailureAlert(shuffleLauncher)
 
                 if viewModel.items.isEmpty && viewModel.isLoading {
-                    Color.clear
-                        .frame(maxWidth: .infinity, minHeight: 400)
+                    LazyVGrid(
+                        columns: Array(
+                            repeating: GridItem(.flexible(), spacing: 40),
+                            count: AdaptiveColumns.tvPosterCount(
+                                standardCount: 6,
+                                posterSize: UICustomizationPreferences.shared.cardPresentation.posterSize
+                            )
+                        ),
+                        spacing: 60
+                    ) {
+                        ForEach(0..<12, id: \.self) { _ in
+                            PosterSkeletonCard()
+                        }
+                    }
+                    .padding(.horizontal, SiloTheme.safePadding)
                 } else if let error = viewModel.error, viewModel.items.isEmpty {
                     ErrorView(state: error, onRetry: { Task { await viewModel.loadInitial() } })
                 } else if viewModel.items.isEmpty {
-                    EmptyStateView(
-                        icon: emptyGridIcon,
-                        title: "No titles match",
-                        subtitle: "Try a different letter or filter."
-                    )
-                    .frame(maxWidth: .infinity, minHeight: 400)
+                    // A full-width focus section: the centered Clear filters
+                    // button sits outside the straight-down path from the
+                    // left-aligned Sort/Filter pills, so Down only finds it
+                    // by entering this section.
+                    emptyState
+                        .frame(maxWidth: .infinity, minHeight: 400)
+                        .focusSection()
                 } else {
                     TVCatalogGrid(
                         items: viewModel.items,
@@ -211,6 +236,50 @@ struct TVLibraryGridView: View {
     private func claimGridFocus() {
         guard !viewModel.items.isEmpty else { return }
         gridFocusRequest += 1
+    }
+
+    // MARK: - Empty state
+
+    /// An empty library has nothing to act on, so it stays inert; the
+    /// control row and letter rail keep the page focusable. Filters that
+    /// match nothing add one native Clear filters button, which Down from the
+    /// control row and Left from the letter rail both reach through the
+    /// focus engine.
+    @ViewBuilder
+    private var emptyState: some View {
+        switch viewModel.emptyReason {
+        case .libraryEmpty:
+            EmptyStateView(
+                icon: emptyGridIcon,
+                title: "This library is empty",
+                subtitle: "There is nothing in this library yet."
+            )
+        case .noFilterMatches:
+            VStack(spacing: 32) {
+                EmptyStateView(
+                    icon: "line.3.horizontal.decrease.circle",
+                    title: "No titles match your filters"
+                )
+                .fixedSize(horizontal: false, vertical: true)
+
+                Button(action: clearFilters) {
+                    HStack(spacing: 10) {
+                        Image(systemName: "xmark.circle")
+                        Text("Clear filters")
+                    }
+                    .font(.system(size: 24, weight: .medium))
+                }
+                .buttonStyle(TVBrowseControlPillStyle())
+            }
+        }
+    }
+
+    private func clearFilters() {
+        selectedPrefix = nil
+        // The reload removes this button, so hand focus to the control row's
+        // first pill instead of leaving the focus engine to guess.
+        controlFocusRequest += 1
+        Task { await viewModel.clearFilters() }
     }
 
     private var emptyGridIcon: String {

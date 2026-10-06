@@ -1,7 +1,7 @@
 #if !os(tvOS)
 import SwiftUI
 
-struct DownloadRequestOptions: Hashable {
+struct DownloadRequestOptions {
     let fileId: Int?
     let quality: String
 
@@ -29,7 +29,6 @@ struct DownloadRequestOptions: Hashable {
 struct DownloadOptionsSheet: View {
     let title: String
     let versions: [FileVersion]
-    let selectedVersionFileId: Int?
     let lastVersionFileId: Int?
     let onStart: (DownloadRequestOptions) -> Void
 
@@ -38,6 +37,9 @@ struct DownloadOptionsSheet: View {
 
     @State private var fileId: Int?
     @State private var quality: String
+    /// Free space for the size warning, read once in `.task` rather than on
+    /// every render.
+    @State private var availableBytes: Int64 = 0
 
     init(
         title: String,
@@ -48,7 +50,6 @@ struct DownloadOptionsSheet: View {
     ) {
         self.title = title
         self.versions = versions
-        self.selectedVersionFileId = selectedVersionFileId
         self.lastVersionFileId = lastVersionFileId
         self.onStart = onStart
 
@@ -129,6 +130,7 @@ struct DownloadOptionsSheet: View {
             }
             .onAppear(perform: clampQuality)
             .task {
+                availableBytes = DownloadFilePaths.availableCapacity()
                 // Permissions and server-side download settings can change at
                 // any time; re-fetch so the quality list reflects them now
                 // rather than after the next app foreground.
@@ -177,9 +179,7 @@ struct DownloadOptionsSheet: View {
     /// mirroring the one-tap confirmation so switching versions in the sheet
     /// keeps the warning honest.
     private var selectionSizeWarning: String? {
-        selectionEstimate?.warningMessage(
-            availableBytes: DownloadFilePaths.deviceStorage().available
-        )
+        selectionEstimate?.warningMessage(availableBytes: availableBytes)
     }
 
     private var editionSection: some View {

@@ -30,31 +30,32 @@ final class OnboardingRuntimeSettingsRefresher: OnboardingRuntimeSettingsRefresh
         switch key {
         case "quality_preference":
             if let preset = SiloQualityPresets.preset(id: value) {
-                PlayerSettings.shared.preferredQualityResolution = preset.resolution
-                PlayerSettings.shared.maxBitrateKbps = preset.bitrateKbps
+                PlayerSettings.shared.adoptProfileQuality(
+                    resolution: preset.resolution,
+                    bitrateKbps: preset.bitrateKbps
+                )
             } else {
-                PlayerSettings.shared.preferredQualityResolution =
-                    SiloQualityPresets.normalizeResolution(value)
-                PlayerSettings.shared.maxBitrateKbps = nil
+                PlayerSettings.shared.adoptProfileQuality(resolution: value, bitrateKbps: nil)
             }
         case "subtitle_language":
             ProfilePrefsStore.shared.setPreferredSubtitleLanguage(value)
         case "auto_skip_intro":
             // The server mirrors the tour's boolean onto the mode that
             // superseded it; `never` is not reachable from the tour.
-            if let enabled = Self.boolean(value) {
-                PlayerSettings.shared.introSkipMode = IntroSkipMode(legacyAutoSkip: enabled)
+            if let enabled = Self.settingBoolean(value) {
+                PlayerSettings.shared.adoptProfileIntroSkipMode(IntroSkipMode(legacyAutoSkip: enabled))
             }
         case "auto_skip_credits":
-            if let enabled = Self.boolean(value) {
-                PlayerSettings.shared.autoSkipCredits = enabled
+            if let enabled = Self.settingBoolean(value) {
+                PlayerSettings.shared.adoptProfileAutoSkipCredits(enabled)
             }
         default:
             break
         }
     }
 
-    private static func boolean(_ value: String) -> Bool? {
+    /// Parses a boolean onboarding setting value; nil when it isn't one.
+    nonisolated static func settingBoolean(_ value: String) -> Bool? {
         switch value.lowercased() {
         case "true", "1", "yes", "on": true
         case "false", "0", "no", "off": false

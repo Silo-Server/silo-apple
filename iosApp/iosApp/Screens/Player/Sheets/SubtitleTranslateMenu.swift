@@ -13,9 +13,9 @@
 //  gated on the server's AI capabilities via ``hasActionableSource``.
 //
 //  Drives ``PlayerViewModel/subtitleAI`` (a ``SubtitleAIController``), which runs
-//  the job over polling (Milestone 3) plus live websocket cue streaming (M4) and
-//  hands the completed track back through the normal sidecar path so it appears
-//  in the picker and auto-selects.
+//  the job over polling plus live websocket cue streaming and hands the
+//  completed track back through the normal sidecar path so it appears in the
+//  picker and auto-selects.
 //
 //  Routing (`route(to:)`):
 //    - Translate: prefer an existing text subtitle track in a *different*
@@ -28,14 +28,15 @@
 //      default audio track (`-1`). If the target equals the spoken audio
 //      language it's a plain transcribe; otherwise transcribe-and-translate.
 //
-//  Two-platform split mirrors ``TrackSelectionSheet``: iOS renders a sectioned
-//  `List`; tvOS renders a centered floating panel with the same chrome and the
-//  same `onExitCommand` / backdrop-tap dismissal. The row-builders are shared;
-//  only the container + row view differ by platform.
+//  Two-platform split: iOS renders a sectioned `List`; tvOS renders a centered
+//  floating panel with `onExitCommand` / backdrop-tap dismissal. The routing
+//  and language list are shared; only the container and row view differ by
+//  platform. Not compiled for macOS, which has no entry point to it.
 //
 
 import SwiftUI
 
+#if !os(macOS)
 struct SubtitleTranslateMenu: View {
     let viewModel: PlayerViewModel
     let onDismiss: () -> Void
@@ -44,34 +45,22 @@ struct SubtitleTranslateMenu: View {
     /// flow: dismisses the WHOLE subtitle UI (this menu plus the enclosing HUD /
     /// sheet) down to the player, so the "Preparing subtitles" pause → resume
     /// plays out where the user can see it. Distinct from `onDismiss`, which
-    /// only backs out of this menu (returning to the container). Defaults to
-    /// `onDismiss` for call sites that don't distinguish the two.
-    var onJobStarted: () -> Void = {}
+    /// only backs out of this menu (returning to the container).
+    let onJobStarted: () -> Void
 
     /// The profile's preferred subtitle language, floated to the top of the
     /// list. Observed so a late hydration (below, in `.task`) refreshes the row.
     @ObservedObject private var profilePrefs = ProfilePrefsStore.shared
 
     #if os(tvOS)
-    /// Panel-level focus for the tvOS language list. Centralizing it (rather
-    /// than a per-row `@FocusState`) lets the list scroll-follow focus and
-    /// recover it when it falls to `nil` — the fix for focus vanishing while
-    /// navigating the tall list. Mirrors `TVSettingsPickerSheet`.
+    /// Panel-level focus for the tvOS language list (rather than per-row
+    /// `@FocusState`), so the tall list can scroll-follow focus and recover
+    /// it when it falls to `nil`. Mirrors `TVSettingsPickerSheet`.
     @FocusState private var focusedLanguageID: String?
     #endif
 
     private var controller: SubtitleAIController { viewModel.subtitleAI }
     private var capabilities: AICapabilities { .shared }
-
-    /// One selectable target language. `hint` floats a short provenance tag
-    /// ("Preferred" / "Original language") next to the suggested rows; nil for
-    /// the plain language list.
-    private struct LanguageChoice: Identifiable {
-        let code: String
-        let label: String
-        let hint: String?
-        var id: String { code }
-    }
 
     static func isBitmap(_ track: PlayerTrack) -> Bool {
         SubtitleCodecClassifier.isBitmap(track.codec)
@@ -188,58 +177,20 @@ struct SubtitleTranslateMenu: View {
                 spokenLanguageCode?.caseInsensitiveCompare(target) == .orderedSame ? nil : target
             viewModel.startSubtitleTranscription(audioIndex: -1, translateTo: translateTo)
         }
-        // The shared controller now enters the player-surface preparing state
-        // immediately on submit. Close the whole subtitle UI at that point so
-        // iOS follows the same pause/notice handoff as tvOS.
+        // The controller enters the player-surface preparing state on submit.
+        // Close the whole subtitle UI so the pause/notice handoff plays out
+        // over the video on both platforms.
         guard controller.phase != .failed, controller.livePresentationActive else { return }
         onJobStarted()
     }
 
-    /// Display name for a language code, preferring the curated label.
-    private func displayName(_ code: String) -> String {
-        if let opt = PlaybackLanguageOption.all.first(where: {
-            $0.code.caseInsensitiveCompare(code) == .orderedSame
-        }) {
-            return opt.label
-        }
-        return Locale(identifier: "en").localizedString(forLanguageCode: code)?.capitalized
-            ?? code.uppercased()
-    }
-
-    /// Languages offered, deduped, with the profile's preferred language and the
-    /// spoken/original language floated to the top.
-    private var orderedLanguages: [LanguageChoice] {
-        var result: [LanguageChoice] = []
-        var seen = Set<String>()
-        func add(_ code: String, hint: String?) {
-            let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return }
-            let key = PlaybackLanguageOption.languageIdentity(trimmed)
-            guard !seen.contains(key) else { return }
-            seen.insert(key)
-            result.append(.init(code: trimmed, label: displayName(trimmed), hint: hint))
-        }
-        if let preferred = profilePrefs.preferredSubtitleLanguage {
-            add(preferred, hint: "Preferred")
-        }
-        if let spoken = spokenLanguageCode {
-            add(spoken, hint: "Original language")
-        }
-        for option in PlaybackLanguageOption.all {
-            add(option.code, hint: nil)
-        }
-        return result
-    }
-
-    /// Preferred + original, kept in priority order (these are deliberately
-    /// floated to the top, so they are not alphabetized).
-    private var suggestedLanguages: [LanguageChoice] { orderedLanguages.filter { $0.hint != nil } }
-
-    /// The full language list, sorted alphabetically by display name.
-    private var otherLanguages: [LanguageChoice] {
-        orderedLanguages
-            .filter { $0.hint == nil }
-            .sorted { $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending }
+    /// Languages offered, with the profile's preferred language and the
+    /// spoken/original language floated to the top in that order.
+    private var languageChoices: SubtitleLanguageChoices {
+        SubtitleLanguageChoices(
+            preferred: profilePrefs.preferredSubtitleLanguage,
+            original: spokenLanguageCode
+        )
     }
 
     /// Show the ASR quota gauge whenever at least one offered target would rely
@@ -248,31 +199,26 @@ struct SubtitleTranslateMenu: View {
     private var showsQuota: Bool {
         capabilities.transcribeEnabled
             && !viewModel.audioTracks.isEmpty
-            && orderedLanguages.contains { requiresTranscription(for: $0.code) }
+            && languageChoices.all.contains { requiresTranscription(for: $0.code) }
             && quotaText != nil
     }
 
     #if os(tvOS)
-    /// Rows in display order: suggested (priority) then the alphabetized rest.
-    private var displayLanguages: [LanguageChoice] { suggestedLanguages + otherLanguages }
+    /// First row the user can act on, in display order.
+    private var firstServiceableLanguageID: String? {
+        languageChoices.all.first(where: { canServe($0.code) })?.code
+    }
 
     /// Recover focus when it falls to `nil`.
     private func focusFirstServiceableLanguage() {
         guard !isBusy, controller.phase != .failed else { return }
-        focusedLanguageID = displayLanguages.first(where: { canServe($0.code) })?.code
+        focusedLanguageID = firstServiceableLanguageID
     }
 
     /// Keep the focused row visible as the user navigates the tall list.
     private func scrollToFocusedLanguage(_ proxy: ScrollViewProxy, animated: Bool = true) {
-        guard let target = focusedLanguageID
-            ?? displayLanguages.first(where: { canServe($0.code) })?.code else { return }
-        if animated {
-            withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
-                proxy.scrollTo(target, anchor: .center)
-            }
-        } else {
-            proxy.scrollTo(target, anchor: .center)
-        }
+        guard let target = focusedLanguageID ?? firstServiceableLanguageID else { return }
+        SubtitleLanguageChoices.scroll(proxy, to: target, animated: animated)
     }
     #endif
 
@@ -300,10 +246,7 @@ struct SubtitleTranslateMenu: View {
                         .padding(8)
                     }
                     .focusSection()
-                    .defaultFocus(
-                        $focusedLanguageID,
-                        displayLanguages.first(where: { canServe($0.code) })?.code ?? ""
-                    )
+                    .defaultFocus($focusedLanguageID, firstServiceableLanguageID ?? "")
                     .onChange(of: focusedLanguageID) { _, value in
                         // Focus fell off the list (scrolled past an edge) —
                         // pull it back to a serviceable row instead of letting
@@ -337,16 +280,17 @@ struct SubtitleTranslateMenu: View {
                     .padding(.bottom, 4)
             }
         }
-        if !suggestedLanguages.isEmpty {
+        let choices = languageChoices
+        if !choices.suggested.isEmpty {
             sectionHeader("Suggested languages")
-            ForEach(suggestedLanguages) { tvLanguageRow($0) }
+            ForEach(choices.suggested) { tvLanguageRow($0) }
         }
-        sectionHeader(suggestedLanguages.isEmpty ? "Language" : "All Languages")
-        ForEach(otherLanguages) { tvLanguageRow($0) }
+        sectionHeader(choices.suggested.isEmpty ? "Language" : "All Languages")
+        ForEach(choices.other) { tvLanguageRow($0) }
     }
 
     @ViewBuilder
-    private func tvLanguageRow(_ choice: LanguageChoice) -> some View {
+    private func tvLanguageRow(_ choice: SubtitleLanguageChoices.Choice) -> some View {
         TVLanguageRow(
             name: choice.label,
             detail: choice.hint,
@@ -370,6 +314,7 @@ struct SubtitleTranslateMenu: View {
                 if isBusy || controller.phase == .failed {
                     progressPanel
                 } else {
+                    let choices = languageChoices
                     List {
                         if showsQuota {
                             Section {
@@ -378,15 +323,15 @@ struct SubtitleTranslateMenu: View {
                                 if isQuotaExhausted { Text(Self.quotaExhaustedFooter) }
                             }
                         }
-                        if !suggestedLanguages.isEmpty {
+                        if !choices.suggested.isEmpty {
                             Section("Suggested") {
-                                ForEach(suggestedLanguages) { languageRow($0) }
+                                ForEach(choices.suggested) { languageRow($0) }
                             }
                         }
                         Section {
-                            ForEach(otherLanguages) { languageRow($0) }
+                            ForEach(choices.other) { languageRow($0) }
                         } header: {
-                            Text(suggestedLanguages.isEmpty ? "Language" : "All Languages")
+                            Text(choices.suggested.isEmpty ? "Language" : "All Languages")
                         } footer: {
                             Text(explainer)
                         }
@@ -416,7 +361,7 @@ struct SubtitleTranslateMenu: View {
 
     #if !os(tvOS)
     @ViewBuilder
-    private func languageRow(_ choice: LanguageChoice) -> some View {
+    private func languageRow(_ choice: SubtitleLanguageChoices.Choice) -> some View {
         MenuRow(
             name: choice.label,
             detail: choice.hint,
@@ -567,7 +512,7 @@ private extension SubtitleTranslateMenu {
     }
 }
 
-// MARK: - Menu row (platform-split, mirroring TrackSelectionSheet.TrackRow)
+// MARK: - Menu rows
 
 #if os(tvOS)
 /// AI routing hints within the shared subtitle menu row.
@@ -642,4 +587,5 @@ private struct MenuRow: View {
         .disabled(isDisabled)
     }
 }
+#endif
 #endif

@@ -3,17 +3,14 @@ import SwiftUI
 
 /// The Skyline cascading library selector (§5.3, mockups `a3`/`a6`).
 ///
-/// Replaces the old full-screen library picker with an **anchored overlay
-/// over the page** (never a pushed route, never a full-screen modal): a
-/// glass panel below the tab, over a `scrim.dropdown`. One component, two
-/// levels:
+/// An anchored overlay below the tab (never a pushed route or full-screen
+/// modal). One component, two levels:
 ///
-/// - **Level 1 — libraries.** A row per real library of the type (Rev 3
-///   removed the merged `All <Type>` row). The current scope shows a `✓`;
-///   the others a `›`. Single-library tabs collapse this away and show the
-///   sections panel directly.
+/// - **Level 1 — libraries.** A row per real library of the type. The
+///   current scope shows a `✓`; the others a `›`. Single-library tabs
+///   collapse this away and show the sections panel directly.
 /// - **Level 2 — sections flyout.** Anchored to the focused library row's
-///   right, listing that type's pill set (§3 / `TVLibraryPill.set`). It
+///   right, listing that type's pill set (§3). It
 ///   follows focus up/down the library list after a 150 ms rest debounce
 ///   and never steals focus. Its first section row aligns with the highlighted
 ///   library row so the two-column selector reads as one continuous menu.
@@ -26,7 +23,8 @@ import SwiftUI
 ///   flyout (first section); **left** returns to the library row.
 /// - **Press** on a library row commits that scope → Browse landing.
 ///   **Press** on a flyout row commits the scope + that section.
-/// - **Menu/Back** closes without changing anything (`onClose`).
+/// - **Up** past the first row closes via `onClose`; Menu/Back is handled by
+///   the host.
 ///
 /// The component itself owns no scope state; every outcome is a callback so
 /// persistence and the page swap stay in the host.
@@ -50,7 +48,7 @@ struct TVCascadeSelector: View {
     /// joins this same request when the scope is committed, so a deliberate
     /// menu selection can arrive with sections and artwork already cached.
     var onPreviewLibrary: (Library) -> Void = { _ in }
-    /// Close without changing scope (Menu/Back, or focus left the bar).
+    /// Up past the first row: close without changing scope.
     let onClose: () -> Void
     /// Reports whether any panel row currently holds focus, so the host can
     /// drop the tab's focused look once focus descends (§5.1).
@@ -80,7 +78,7 @@ struct TVCascadeSelector: View {
     @State private var libraryRowCenters: [Int: CGFloat] = [:]
     /// The first flyout section row's vertical center in the flyout's own
     /// coordinate space. Measured rather than estimated so font/padding changes
-    /// do not break directional focus geometry.
+    /// keep the two columns aligned.
     @State private var flyoutFirstSectionCenter: CGFloat?
 
     /// Focus target inside the panel: a level-1 library row, or a level-2
@@ -91,7 +89,9 @@ struct TVCascadeSelector: View {
         case section(Int, TVLibraryPill)
     }
 
-    private var pills: [TVLibraryPill] { TVLibraryPill.set(for: type) }
+    /// Every library type offers Recommended (the landing default),
+    /// Collections, and Browse (§3).
+    private var pills: [TVLibraryPill] { TVLibraryPill.allCases }
 
     /// A single-library tab skips the library list and shows just that
     /// library's sections (§5.3 single-level panel).
@@ -139,11 +139,9 @@ struct TVCascadeSelector: View {
         // header/padding between the two active rows, which reads as a visual
         // jump when Right enters the section column.
         //
-        // This MUST be layout padding, not `.offset(y:)`. `.offset` is a
-        // render-only transform: it moves the flyout visually but leaves its
-        // focus frame at the top of the HStack. tvOS resolves directional moves
-        // from layout frames, so padding keeps the visible and focus geometry
-        // in the same place.
+        // Layout padding, not `.offset(y:)`: offset is render-only, so the
+        // composite's layout (and focus) frame would stop covering the visible
+        // flyout.
         HStack(alignment: .top, spacing: SiloTheme.Skyline.flyoutGap) {
             librariesPanel
 
@@ -343,27 +341,19 @@ struct TVCascadeSelector: View {
     // MARK: - Shared chrome
 
     private func panelHeader(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: SiloTheme.Skyline.dropdownHeaderSize, design: .monospaced))
-            .tracking(SiloTheme.Skyline.dropdownHeaderSize * 0.26)
-            .foregroundStyle(Color.white.opacity(0.38))
-            .lineLimit(1)
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-            .padding(.bottom, 10)
+        TVSkylinePanelHeader(text: text)
             .accessibilityHidden(true)
     }
 
     private func flyoutHeader(_ text: String) -> some View {
-        Text(text.uppercased())
-            .font(.system(size: SiloTheme.Skyline.flyoutHeaderSize, design: .monospaced))
-            .tracking(SiloTheme.Skyline.flyoutHeaderSize * 0.26)
-            .foregroundStyle(Color.white.opacity(0.38))
-            .lineLimit(1)
-            .padding(.horizontal, 14)
-            .padding(.top, 6)
-            .padding(.bottom, 8)
-            .accessibilityHidden(true)
+        TVSkylinePanelHeader(
+            text: text.uppercased(),
+            size: SiloTheme.Skyline.flyoutHeaderSize,
+            horizontalPadding: 14,
+            topPadding: 6,
+            bottomPadding: 8
+        )
+        .accessibilityHidden(true)
     }
 
     // MARK: - Focus plumbing
@@ -420,11 +410,8 @@ struct TVCascadeSelector: View {
             if let library = libraries.first(where: { $0.id == id }) {
                 onPreviewLibrary(library)
             }
-            if flyoutAnchorId != id {
-                withAnimation(reduceMotion ? nil : .easeInOut(duration: SiloTheme.Skyline.flyoutOpenDuration)) {
-                    flyoutAnchorId = id
-                }
-            }
+            // The flyout's `.animation(value: flyoutAnchorId)` animates the move.
+            if flyoutAnchorId != id { flyoutAnchorId = id }
         }
     }
 
@@ -497,7 +484,6 @@ struct TVCascadeSelector: View {
     }
 
     private func moveToLibrary(_ libraryId: Int) {
-        flyoutFollowTask?.cancel()
         // Highlight immediately; handleFocusChange moves the flyout only
         // after the user rests on this row.
         focus = .library(libraryId)
@@ -567,7 +553,6 @@ private struct TVCascadeLibraryRowLabel: View {
             RoundedRectangle(cornerRadius: SiloTheme.Skyline.cascadeRowCornerRadius, style: .continuous)
                 .fill(isFocused ? Color.white : Color.clear)
         )
-        .focusEffectDisabled()
         // Row selection should read immediately as the remote moves.
         .animation(nil, value: isFocused)
     }
@@ -603,7 +588,6 @@ private struct TVCascadeSectionRowLabel: View {
             RoundedRectangle(cornerRadius: SiloTheme.Skyline.flyoutRowCornerRadius, style: .continuous)
                 .fill(isFocused ? Color.white : Color.clear)
         )
-        .focusEffectDisabled()
         // Row selection should read immediately as the remote moves.
         .animation(nil, value: isFocused)
     }

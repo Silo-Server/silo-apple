@@ -9,6 +9,7 @@ struct BrowseView: View {
 
     @State private var viewModel = BrowseViewModel()
     @State private var showFilters = false
+    @State private var shuffleLauncher = ShuffleLauncher()
     @Environment(AppRouter.self) private var router
 
     @ViewBuilder
@@ -24,14 +25,14 @@ struct BrowseView: View {
 
     private var rootContent: some View {
         Group {
-            if !viewModel.items.isEmpty {
-                scrollContent
-            } else if let error = viewModel.error {
+            if viewModel.items.isEmpty, let error = viewModel.error {
                 ErrorView(state: error, onRetry: { Task { await viewModel.loadItems(reset: true) } })
-            } else if viewModel.isLoading {
-                Color.clear
-            } else {
+            } else if viewModel.items.isEmpty, viewModel.hasLoaded, !viewModel.isLoading {
                 emptyContent
+            } else {
+                // While the first page loads the grid draws placeholders under
+                // the search and sort controls.
+                scrollContent
             }
         }
         .siloPageBackground()
@@ -73,18 +74,46 @@ struct BrowseView: View {
                     activeFilterChips
                 }
 
-                EmptyStateView(
-                    icon: "film",
-                    title: "No items found",
-                    subtitle: "Try adjusting your filters"
-                )
-                .frame(minHeight: 320)
-                .padding(.horizontal, SiloTheme.padding)
+                emptyState
+                    .frame(minHeight: 320)
+                    .padding(.horizontal, SiloTheme.padding)
             }
             .frame(maxWidth: .infinity)
         }
         .reportsPageChromeScroll()
         .environment(\.browseLibraryId, libraryId)
+    }
+
+    @ViewBuilder
+    private var emptyState: some View {
+        switch viewModel.emptyReason {
+        case .libraryEmpty:
+            EmptyStateView(
+                icon: emptyLibraryIcon,
+                title: "This library is empty",
+                subtitle: "There is nothing in this library yet."
+            )
+        case .noFilterMatches:
+            VStack(spacing: SiloTheme.padding) {
+                EmptyStateView(
+                    icon: "line.3.horizontal.decrease.circle",
+                    title: "No items match your current filters"
+                )
+                Button("Clear filters") {
+                    Task { await viewModel.clearFilters() }
+                }
+                .siloPrimaryButton()
+                .frame(width: 200)
+            }
+        }
+    }
+
+    private var emptyLibraryIcon: String {
+        switch viewModel.mediaType {
+        case .series: return "tv"
+        case .audiobook: return "book.closed"
+        case .movie, .mixed: return "film"
+        }
     }
 
     private var scrollContent: some View {
@@ -102,7 +131,7 @@ struct BrowseView: View {
 
                 CatalogGrid(
                     items: viewModel.items,
-                    isLoading: viewModel.isLoading,
+                    isLoading: viewModel.isLoading || !viewModel.hasLoaded,
                     hasMore: viewModel.hasMore,
                     forcesThreeColumnsOnPhone: libraryId != nil,
                     onItemTap: { router.navigate(to: .itemDetail(browseItem: $0, libraryId: libraryId)) },
@@ -146,22 +175,59 @@ struct BrowseView: View {
         .padding(.horizontal, SiloTheme.padding)
     }
 
-    // MARK: - Control bar (Sort + Filter)
+    // MARK: - Control bar (Sort + Filter + Shuffle)
 
     private var controlBar: some View {
-        HStack(spacing: 9) {
-            sortMenu
-            Button { showFilters = true } label: {
-                controlChip(
-                    icon: "line.3.horizontal.decrease",
-                    text: "Filter",
-                    badge: viewModel.filterState.activeFacetCount
-                )
+        // At accessibility text sizes the chips no longer fit side by
+        // side and SwiftUI broke their labels mid-word; stack them instead.
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 9) {
+                sortMenu
+                filterButton
+                shuffleButton
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.plain)
-            Spacer(minLength: 0)
+            VStack(alignment: .leading, spacing: 9) {
+                sortMenu
+                filterButton
+                shuffleButton
+            }
         }
         .padding(.horizontal, SiloTheme.padding)
+        .shuffleFailureAlert(shuffleLauncher)
+    }
+
+    /// The library a Shuffle chip plays from; nil where Shuffle isn't offered.
+    private var shuffleLibraryId: Int? {
+        guard let libraryId,
+              ShuffleAvailability.isShuffleLibraryType(libraryType),
+              ShuffleFeatureStore.shared.supports(.library) else { return nil }
+        return libraryId
+    }
+
+    private var filterButton: some View {
+        Button { showFilters = true } label: {
+            controlChip(
+                icon: "line.3.horizontal.decrease",
+                text: "Filter",
+                badge: viewModel.filterState.activeFacetCount
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private var shuffleButton: some View {
+        if let shuffleLibraryId {
+            Button {
+                shuffleLauncher.start(ShuffleScopeRequest(kind: .library, id: String(shuffleLibraryId)), router: router)
+            } label: {
+                controlChip(icon: "shuffle", text: "Shuffle")
+            }
+            .buttonStyle(.plain)
+            .disabled(shuffleLauncher.isStarting)
+            .accessibilityIdentifier("library-shuffle")
+        }
     }
 
     private var sortMenu: some View {
@@ -308,105 +374,25 @@ struct LibraryPageTabSelector: View {
     }
 }
 
-struct LibraryDetailView: View {
-    let libraryId: Int
-    let initialTitle: String?
-    let initialLibraryType: String?
-    let showsNavigationTitle: Bool
-
-    @State private var selectedTab: LibraryPageTab = .recommended
-    @State private var title: String
-    @State private var libraryType: String?
-
-    init(
-        libraryId: Int,
-        initialTitle: String?,
-        initialLibraryType: String? = nil,
-        showsNavigationTitle: Bool = true
-    ) {
-        self.libraryId = libraryId
-        self.initialTitle = initialTitle
-        self.initialLibraryType = initialLibraryType
-        self.showsNavigationTitle = showsNavigationTitle
-        _title = State(initialValue: initialTitle ?? "Library")
-        _libraryType = State(initialValue: initialLibraryType)
-    }
-
-    var body: some View {
-        content
-            .modifier(LibraryDetailTitleModifier(title: title, isEnabled: showsNavigationTitle))
-    }
-
-    private var content: some View {
-        VStack(spacing: 0) {
-            LibraryPageTabSelector(selectedTab: $selectedTab)
-
-            tabContent
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .siloPageBackground()
-        .task {
-            await loadLibraryMetadataIfNeeded()
-        }
-    }
-
-    @ViewBuilder
-    private var tabContent: some View {
-        switch selectedTab {
-        case .recommended:
-            LibraryRecommendedView(libraryId: libraryId)
-        case .library:
-            BrowseView(libraryId: libraryId, title: nil, showsSearchShortcut: false, libraryType: libraryType)
-        case .collections:
-            LibraryCollectionsView(libraryId: libraryId)
-        }
-    }
-
-    private func loadLibraryMetadataIfNeeded() async {
-        guard initialTitle == nil || libraryType == nil else { return }
-
-        do {
-            let response = try await StartupContentPrefetcher.fetchUserLibraries()
-            if let matchedLibrary = response.libraries.first(where: { $0.id == libraryId }) {
-                if initialTitle == nil {
-                    title = matchedLibrary.name
-                }
-                libraryType = matchedLibrary.type
-            }
-        } catch {
-            // Fall back to the generic title if library metadata is unavailable.
-        }
-    }
-}
-
 @Observable
 @MainActor
 private class LibraryRecommendedViewModel {
+    /// Non-featured rows with items, in server order.
     var sections: [ResolvedSection] = []
     var isLoading = false
-    var isRefreshing = false
     var error: ErrorState?
 
-    var regularSections: [ResolvedSection] {
-        sections.filter { !$0.isFeatured && !$0.items.isEmpty }
-    }
-
     func loadSections(libraryId: Int) async {
-        let key = CacheKey.librarySections(libraryId)
         if sections.isEmpty,
-           let cached: SectionsResponse = ResponseCache.shared.get(key) {
-            sections = cached.sections.filter { !$0.items.isEmpty }
+           let cached: SectionsResponse = ResponseCache.shared.get(CacheKey.librarySections(libraryId)) {
+            sections = Self.displayed(cached.sections)
         }
-        if sections.isEmpty {
-            isLoading = true
-        } else {
-            isRefreshing = true
-        }
+        isLoading = sections.isEmpty
         error = nil
 
         do {
             let response = try await StartupContentPrefetcher.fetchLibrarySections(libraryId: libraryId)
-            sections = response.sections.filter { !$0.items.isEmpty }
+            sections = Self.displayed(response.sections)
         } catch let err {
             if sections.isEmpty {
                 error = ErrorState(err)
@@ -414,7 +400,10 @@ private class LibraryRecommendedViewModel {
         }
 
         isLoading = false
-        isRefreshing = false
+    }
+
+    private static func displayed(_ sections: [ResolvedSection]) -> [ResolvedSection] {
+        sections.filter { !$0.isFeatured && !$0.items.isEmpty }
     }
 }
 
@@ -422,20 +411,19 @@ struct LibraryRecommendedView: View {
     let libraryId: Int
 
     @State private var viewModel = LibraryRecommendedViewModel()
-    @State private var isRefreshing = false
-    @State private var refreshStartedAt: Date?
-    @State private var refreshHideTask: Task<Void, Never>?
+    @State private var refreshPill = RefreshStatusPillState()
     @Environment(AppRouter.self) private var router
 
     var body: some View {
         ZStack(alignment: .top) {
             Group {
-                if !viewModel.regularSections.isEmpty {
+                if !viewModel.sections.isEmpty {
                     content
                 } else if let error = viewModel.error {
                     ErrorView(state: error, onRetry: { Task { await viewModel.loadSections(libraryId: libraryId) } })
                 } else if viewModel.isLoading {
-                    Color.clear
+                    PosterRowsSkeleton()
+                        .padding(.top, SiloTheme.padding)
                 } else {
                     EmptyStateView(
                         icon: "rectangle.stack.fill",
@@ -445,19 +433,19 @@ struct LibraryRecommendedView: View {
                 }
             }
 
-            if isRefreshing {
+            if refreshPill.isVisible {
                 RefreshStatusPill()
-                    .padding(.top, refreshStatusTopPadding)
+                    .padding(.top, SiloTheme.padding)
                     .transition(.move(edge: .top).combined(with: .opacity))
                     .zIndex(2)
-            } else if ConnectionMonitor.shared.isOffline, !viewModel.regularSections.isEmpty {
+            } else if ConnectionMonitor.shared.isOffline, !viewModel.sections.isEmpty {
                 ServerUnreachablePill()
-                    .padding(.top, refreshStatusTopPadding)
+                    .padding(.top, SiloTheme.padding)
                     .transition(.move(edge: .top).combined(with: .opacity))
                     .zIndex(2)
             }
         }
-        .animation(.easeInOut(duration: 0.18), value: isRefreshing)
+        .animation(.easeInOut(duration: 0.18), value: refreshPill.isVisible)
         .animation(.easeInOut(duration: 0.18), value: ConnectionMonitor.shared.isOffline)
         .siloPageBackground()
         .task(id: libraryId) {
@@ -471,7 +459,7 @@ struct LibraryRecommendedView: View {
     private var content: some View {
         ScrollView(.vertical, showsIndicators: false) {
             LazyVStack(spacing: SiloTheme.largePadding) {
-                ForEach(viewModel.regularSections) { section in
+                ForEach(viewModel.sections) { section in
                     SectionRow(
                         section: section,
                         onItemTap: { destinationContentId, item in
@@ -493,59 +481,9 @@ struct LibraryRecommendedView: View {
         .environment(\.browseLibraryId, libraryId)
     }
 
-    private var refreshStatusTopPadding: CGFloat {
-        SiloTheme.padding
-    }
-
     private func refreshRecommendations() async {
-        await MainActor.run {
-            showRefreshStatus()
-        }
-
-        await viewModel.loadSections(libraryId: libraryId)
-
-        await MainActor.run {
-            scheduleRefreshStatusHide()
-        }
-    }
-
-    private func showRefreshStatus() {
-        refreshHideTask?.cancel()
-        refreshStartedAt = Date()
-        isRefreshing = true
-    }
-
-    private func scheduleRefreshStatusHide() {
-        let elapsed = Date().timeIntervalSince(refreshStartedAt ?? Date())
-        let remaining = RefreshStatusPill.minimumVisibleDuration - elapsed
-        refreshHideTask?.cancel()
-        refreshHideTask = Task { @MainActor in
-            if remaining > 0 {
-                try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
-            }
-            guard !Task.isCancelled else { return }
-
-            isRefreshing = false
-            refreshStartedAt = nil
-            refreshHideTask = nil
-        }
-    }
-}
-
-/// Applies the library's name as the navigation title when the detail view is
-/// the top-of-stack view. Disabled when embedded inside another screen (e.g.
-/// the Libraries tab, which owns its own title).
-private struct LibraryDetailTitleModifier: ViewModifier {
-    let title: String
-    let isEnabled: Bool
-
-    func body(content: Content) -> some View {
-        if isEnabled {
-            content
-                .navigationTitle(title)
-                .siloNavigationTitleDisplayMode(.large)
-        } else {
-            content
+        await refreshPill.run {
+            await viewModel.loadSections(libraryId: libraryId)
         }
     }
 }

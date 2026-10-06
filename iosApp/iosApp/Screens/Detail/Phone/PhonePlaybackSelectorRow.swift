@@ -31,10 +31,17 @@ enum PhonePlaybackSelectorKind: String, Identifiable {
 /// Opaque, low-cost placeholder for the common version/audio/subtitle card.
 /// It deliberately mirrors `PhonePlaybackSelectorRow`'s three 44pt rows so an
 /// episode change never removes or inserts vertical space while networking.
+/// Row metrics come from `PhonePlaybackSelectorMetrics`, so the placeholder
+/// keeps matching the loaded card as Dynamic Type grows it.
 struct PhonePlaybackSelectorSkeleton: View {
+    /// Card height at the default text size; larger sizes only grow it.
     static let standardHeight: CGFloat = 133
 
     private let kinds: [PhonePlaybackSelectorKind] = [.version, .audio, .subtitles]
+
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ScaledMetric(relativeTo: .subheadline) private var rowHeight = PhonePlaybackSelectorMetrics.rowHeight
+    @ScaledMetric(relativeTo: .footnote) private var iconWidth = PhonePlaybackSelectorMetrics.iconWidth
 
     var body: some View {
         VStack(spacing: 0) {
@@ -43,30 +50,31 @@ struct PhonePlaybackSelectorSkeleton: View {
                     Rectangle()
                         .fill(Color.white.opacity(0.06))
                         .frame(height: 0.5)
-                        .padding(.leading, 30)
+                        .padding(.leading, iconWidth + PhonePlaybackSelectorMetrics.iconSpacing)
                 }
 
-                HStack(spacing: 10) {
-                    Image(systemName: kind.icon)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Color.white.opacity(0.24))
-                        .frame(width: 20, alignment: .leading)
+                if dynamicTypeSize.isAccessibilitySize {
+                    stackedRow(kind)
+                } else {
+                    HStack(spacing: PhonePlaybackSelectorMetrics.iconSpacing) {
+                        icon(kind)
 
-                    RoundedRectangle(cornerRadius: 3, style: .continuous)
-                        .fill(Color.white.opacity(0.12))
-                        .frame(width: kind == .subtitles ? 64 : 50, height: 10)
+                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .fill(Color.white.opacity(0.12))
+                            .frame(width: kind == .subtitles ? 64 : 50, height: 10)
 
-                    Spacer(minLength: 12)
+                        Spacer(minLength: 12)
 
-                    RoundedRectangle(cornerRadius: 3, style: .continuous)
-                        .fill(Color.white.opacity(0.16))
-                        .frame(width: skeletonValueWidth(for: kind), height: 10)
+                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .fill(Color.white.opacity(0.16))
+                            .frame(width: skeletonValueWidth(for: kind), height: 10)
+                    }
+                    .frame(height: rowHeight)
                 }
-                .frame(height: 44)
             }
         }
         .padding(.horizontal, 14)
-        .frame(height: Self.standardHeight)
+        .frame(minHeight: Self.standardHeight)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(Color.white.opacity(0.05))
@@ -79,6 +87,31 @@ struct PhonePlaybackSelectorSkeleton: View {
         .accessibilityHidden(true)
     }
 
+    private func icon(_ kind: PhonePlaybackSelectorKind) -> some View {
+        Image(systemName: kind.icon)
+            .siloScaledFont(size: 13, weight: .semibold, relativeTo: .footnote)
+            .foregroundStyle(Color.white.opacity(0.24))
+            .frame(width: iconWidth, alignment: .leading)
+    }
+
+    /// The loaded card's accessibility-size row, with redacted text standing
+    /// in for the title and value so both lines take their real height.
+    private func stackedRow(_ kind: PhonePlaybackSelectorKind) -> some View {
+        VStack(alignment: .leading, spacing: PhonePlaybackSelectorMetrics.stackedLineSpacing) {
+            HStack(spacing: PhonePlaybackSelectorMetrics.iconSpacing) {
+                icon(kind)
+                Text(kind.title)
+                    .siloScaledFont(size: 14, weight: .medium, relativeTo: .subheadline)
+            }
+            Text("Loading")
+                .siloScaledFont(size: 14, weight: .semibold, relativeTo: .subheadline)
+        }
+        .foregroundStyle(Color.white.opacity(0.16))
+        .redacted(reason: .placeholder)
+        .padding(.vertical, PhonePlaybackSelectorMetrics.stackedVerticalPadding)
+        .frame(maxWidth: .infinity, minHeight: rowHeight, alignment: .leading)
+    }
+
     private func skeletonValueWidth(for kind: PhonePlaybackSelectorKind) -> CGFloat {
         switch kind {
         case .version: return 126
@@ -87,6 +120,16 @@ struct PhonePlaybackSelectorSkeleton: View {
         case .edition: return 82
         }
     }
+}
+
+/// Row geometry shared by the selector card and its loading placeholder.
+/// Values are the default-text-size points; both views scale them.
+enum PhonePlaybackSelectorMetrics {
+    static let rowHeight: CGFloat = 44
+    static let iconWidth: CGFloat = 20
+    static let iconSpacing: CGFloat = 10
+    static let stackedLineSpacing: CGFloat = 4
+    static let stackedVerticalPadding: CGFloat = 10
 }
 
 struct PhonePlaybackSelectorRow: View {
@@ -103,6 +146,9 @@ struct PhonePlaybackSelectorRow: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     #endif
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ScaledMetric(relativeTo: .subheadline) private var rowHeight = PhonePlaybackSelectorMetrics.rowHeight
+    @ScaledMetric(relativeTo: .footnote) private var iconWidth = PhonePlaybackSelectorMetrics.iconWidth
     @State private var activeSelector: PhonePlaybackSelectorKind?
 
     private var editions: [PlaybackEditions.Edition] {
@@ -140,7 +186,7 @@ struct PhonePlaybackSelectorRow: View {
         for kind: PhonePlaybackSelectorKind
     ) -> PhonePlaybackSelectorSheet {
         PhonePlaybackSelectorSheet(
-            kinds: [kind],
+            kind: kind,
             versions: versions,
             currentVersion: currentVersion,
             selectedVersionFileId: selectedVersionFileId,
@@ -162,15 +208,9 @@ struct PhonePlaybackSelectorRow: View {
     }
 
     /// Settings-style rows: icon and label lead, value trails, chevron last.
-    ///
-    /// Replaced a two-column `LazyVGrid` that stranded the third selector
-    /// alone in the leading column, so the common version / audio /
-    /// subtitles case always read as a broken form. A horizontally
-    /// scrollable chip strip was tried first and was worse: three chips need
-    /// more width than a phone has, so subtitles fell off the edge entirely
-    /// and the most-hunted control became the invisible one. Rows never
-    /// truncate, never go ragged, and absorb a fourth edition picker by
-    /// simply growing.
+    /// Rows never truncate and grow to fit the edition selector. At
+    /// accessibility text sizes the value moves under the label, where it
+    /// has the card's full width instead of whatever the label leaves.
     private var selectorCard: some View {
         VStack(spacing: 0) {
             ForEach(Array(selectorKinds.enumerated()), id: \.element.id) { index, kind in
@@ -178,36 +218,13 @@ struct PhonePlaybackSelectorRow: View {
                     Rectangle()
                         .fill(Color.white.opacity(0.08))
                         .frame(height: 0.5)
-                        .padding(.leading, 30)
+                        .padding(.leading, iconWidth + PhonePlaybackSelectorMetrics.iconSpacing)
                 }
 
                 selectorButton(kind) {
-                    HStack(spacing: 10) {
-                        Image(systemName: kind.icon)
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundColor(.white.opacity(0.55))
-                            .frame(width: 20, alignment: .leading)
-
-                        Text(kind.title)
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundColor(.white.opacity(0.72))
-
-                        Spacer(minLength: 12)
-
-                        Text(value(for: kind))
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundColor(.white)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-
-                        if isInteractive(kind) {
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundColor(.white.opacity(0.35))
-                        }
-                    }
-                    .frame(height: 44)
-                    .contentShape(Rectangle())
+                    selectorRowContent(kind)
+                        .frame(maxWidth: .infinity, minHeight: rowHeight, alignment: .leading)
+                        .contentShape(Rectangle())
                 }
             }
         }
@@ -221,6 +238,65 @@ struct PhonePlaybackSelectorRow: View {
                 )
         )
     }
+
+    @ViewBuilder
+    private func selectorRowContent(_ kind: PhonePlaybackSelectorKind) -> some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: PhonePlaybackSelectorMetrics.stackedLineSpacing) {
+                HStack(spacing: PhonePlaybackSelectorMetrics.iconSpacing) {
+                    selectorIcon(kind)
+                    selectorTitle(kind)
+                    Spacer(minLength: 12)
+                    selectorChevron(kind)
+                }
+                selectorValue(kind)
+                    .lineLimit(3)
+            }
+            .padding(.vertical, PhonePlaybackSelectorMetrics.stackedVerticalPadding)
+        } else {
+            HStack(spacing: PhonePlaybackSelectorMetrics.iconSpacing) {
+                selectorIcon(kind)
+                selectorTitle(kind)
+
+                Spacer(minLength: 12)
+
+                selectorValue(kind)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                selectorChevron(kind)
+            }
+        }
+    }
+
+    private func selectorIcon(_ kind: PhonePlaybackSelectorKind) -> some View {
+        Image(systemName: kind.icon)
+            .siloScaledFont(size: 13, weight: .semibold, relativeTo: .footnote)
+            .foregroundColor(.white.opacity(0.55))
+            .frame(width: iconWidth, alignment: .leading)
+    }
+
+    private func selectorTitle(_ kind: PhonePlaybackSelectorKind) -> some View {
+        Text(kind.title)
+            .siloScaledFont(size: 14, weight: .medium, relativeTo: .subheadline)
+            .foregroundColor(.white.opacity(0.72))
+    }
+
+    private func selectorValue(_ kind: PhonePlaybackSelectorKind) -> some View {
+        Text(value(for: kind))
+            .siloScaledFont(size: 14, weight: .semibold, relativeTo: .subheadline)
+            .foregroundColor(.white)
+    }
+
+    @ViewBuilder
+    private func selectorChevron(_ kind: PhonePlaybackSelectorKind) -> some View {
+        if isInteractive(kind) {
+            Image(systemName: "chevron.right")
+                .siloScaledFont(size: 11, weight: .bold, relativeTo: .caption2)
+                .foregroundColor(.white.opacity(0.35))
+        }
+    }
+
     /// Wraps a layout's row/column in a button when that selector can
     /// actually be changed, and leaves it inert when it cannot.
     @ViewBuilder
@@ -323,9 +399,7 @@ struct PhonePlaybackSelectorRow: View {
     }
 }
 private struct PhonePlaybackSelectorSheet: View {
-    /// One entry when opened from a single control, all of them when opened
-    /// from the `.summary` row.
-    let kinds: [PhonePlaybackSelectorKind]
+    let kind: PhonePlaybackSelectorKind
     let versions: [FileVersion]
     let currentVersion: FileVersion?
     let selectedVersionFileId: Int?
@@ -366,7 +440,7 @@ private struct PhonePlaybackSelectorSheet: View {
                 await ProfilePrefsStore.shared.hydrateIfNeeded()
                 preferredSubtitleLanguage = ProfilePrefsStore.shared.preferredSubtitleLanguage
             }
-            .navigationTitle(sheetTitle)
+            .navigationTitle(kind.title)
             #if !os(macOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
@@ -401,30 +475,15 @@ private struct PhonePlaybackSelectorSheet: View {
 
     @ViewBuilder
     private var optionContent: some View {
-        ForEach(kinds) { kind in
-            switch kind {
-            case .edition:
-                editionOptions
-            case .version:
-                versionOptions
-            case .audio:
-                audioOptions
-            case .subtitles:
-                subtitleOptions
-            }
-        }
-    }
-
-    private var sheetTitle: String {
-        kinds.count == 1 ? (kinds.first?.title ?? "Playback") : "Playback"
-    }
-
-    /// Section headers only earn their space when the sheet holds more than
-    /// one selector; a single-selector sheet already says so in its title.
-    @ViewBuilder
-    private func sectionHeader(_ kind: PhonePlaybackSelectorKind) -> some View {
-        if kinds.count > 1 {
-            Text(kind.title)
+        switch kind {
+        case .edition:
+            editionOptions
+        case .version:
+            versionOptions
+        case .audio:
+            audioOptions
+        case .subtitles:
+            subtitleOptions
         }
     }
 
@@ -451,8 +510,6 @@ private struct PhonePlaybackSelectorSheet: View {
                     }
                 }
             }
-        } header: {
-            sectionHeader(.edition)
         }
     }
 
@@ -477,8 +534,6 @@ private struct PhonePlaybackSelectorSheet: View {
                     dismiss()
                 }
             }
-        } header: {
-            sectionHeader(.version)
         }
     }
 
@@ -518,8 +573,6 @@ private struct PhonePlaybackSelectorSheet: View {
                     }
                 }
             }
-        } header: {
-            sectionHeader(.audio)
         }
     }
 
@@ -559,8 +612,6 @@ private struct PhonePlaybackSelectorSheet: View {
                     }
                 }
             }
-        } header: {
-            sectionHeader(.subtitles)
         }
     }
 
@@ -575,7 +626,7 @@ private struct PhonePlaybackSelectorSheet: View {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title)
-                        .font(.system(size: 16, weight: .semibold))
+                        .siloScaledFont(size: 16, weight: .semibold, relativeTo: .callout)
                         .foregroundColor(.siloOnSurface)
                         .lineLimit(2)
                     if let detail, !detail.isEmpty {
@@ -588,7 +639,7 @@ private struct PhonePlaybackSelectorSheet: View {
                 Spacer(minLength: 8)
                 if isSelected {
                     Image(systemName: "checkmark")
-                        .font(.system(size: 14, weight: .bold))
+                        .siloScaledFont(size: 14, weight: .bold, relativeTo: .subheadline)
                         .foregroundColor(.siloOnSurface)
                 }
             }

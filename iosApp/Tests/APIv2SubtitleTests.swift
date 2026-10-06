@@ -397,6 +397,7 @@ final class APIv2SubtitleTests: XCTestCase {
         stub.fail(.networkConnectionLost)
         let controller = SubtitleAIController(
             api: SiloAI(v2: api),
+            poller: AIJobPoller(pollInterval: .milliseconds(1)),
             mediaFileId: { 42 },
             currentTime: { 3 },
             handoffContext: { nil },
@@ -437,6 +438,7 @@ final class APIv2SubtitleTests: XCTestCase {
         let coordinator = LiveSubtitleCoordinator(controls: LiveControls(), sink: sink, clock: ManualSafetyClock())
         let controller = SubtitleAIController(
             api: SiloAI(v2: api),
+            poller: AIJobPoller(pollInterval: .milliseconds(1)),
             mediaFileId: { 42 },
             currentTime: { 0 },
             liveCoordinator: coordinator,
@@ -484,7 +486,7 @@ final class APIv2SubtitleTests: XCTestCase {
         let live = try await liveJobThePollerGaveUpOn()
         live.controller.realtimeDidBecomeUnavailable()
         XCTAssertEqual(live.controller.phase, .failed)
-        XCTAssertEqual(live.controller.errorMessage?.hasPrefix("Silo lost track of this subtitle job."), true)
+        XCTAssertEqual(live.controller.errorMessage, SubtitleAIController.lostTrackMessage)
         XCTAssertEqual(live.coordinator.phase, .failed)
         XCTAssertEqual(live.sink.closedEarly, ["ai-77"])
         XCTAssertEqual(live.sink.restoreCount, 1)
@@ -510,6 +512,9 @@ final class APIv2SubtitleTests: XCTestCase {
         let coordinator = LiveSubtitleCoordinator(controls: LiveControls(), sink: sink, clock: ManualSafetyClock())
         let controller = SubtitleAIController(
             api: SiloAI(v2: api),
+            // The `.started` event below must land before the poller gives up
+            // (five polls). At 1 ms a loaded runner loses that race.
+            poller: AIJobPoller(pollInterval: .milliseconds(100)),
             mediaFileId: { 42 },
             currentTime: { 0 },
             sessionId: { "sess-1" },
@@ -654,6 +659,183 @@ final class APIv2SubtitleTests: XCTestCase {
         do { _ = try await api.storedSubtitles(mediaFileID: 0); XCTFail("Listed file 0") }
         catch APIv2SubtitleRequestError.invalidMediaFile { }
         XCTAssertTrue(stub.requests.isEmpty)
+    }
+
+    // MARK: Stored subtitle sync
+
+    /// A stored row from a server without subtitle sync: no `timing`, no `sync`.
+    private static let plainRow =
+        #"{"id":"7","media_file_id":"42","provider":"upload","language":"en","format":"srt","release_name":"R","score":0,"hearing_impaired":false,"created_at":"2026-01-02T03:04:05.678Z"}"#
+
+    private static let syncedRow =
+        #"{"id":"7","media_file_id":"42","provider":"upload","language":"en","format":"srt","release_name":"R","score":0,"hearing_impaired":false,"created_at":"2026-01-02T03:04:05.678Z","timing":{"offset_ms":-3200,"scale":1},"sync":{"id":"3","subtitle_id":"7","status":"synced","trigger":"auto","confidence":0.75,"result":{"offset_ms":-3200,"scale":1},"created_at":"2026-01-02T03:04:05.678Z","finished_at":"2026-01-02T03:04:09.000Z"}}"#
+
+    func testStoredFixtureCarriesTimingAndSyncState() throws {
+        let wire = try HTTPClient.makeJSONDecoder().decode(APIv2StoredSubtitles.self, from: fixture("subtitles_stored"))
+        let player = try XCTUnwrap(wire.playerValues(mediaFileID: 42).first)
+        XCTAssertEqual(player.timing, .identity)
+        XCTAssertNil(player.sync)
+
+        let synced = try HTTPClient.makeJSONDecoder().decode(APIv2StoredSubtitle.self,
+            from: Data(Self.syncedRow.utf8)).playerValue(mediaFileID: 42)
+        XCTAssertEqual(synced.timing, SubtitleTiming(offsetMs: -3200, scale: 1))
+        XCTAssertEqual(synced.sync?.status, "synced")
+        XCTAssertEqual(synced.sync?.result, synced.timing)
+        XCTAssertFalse(synced.sync?.isInProgress ?? true)
+    }
+
+    /// A server without subtitle sync sends neither field; its rows still list.
+    func testStoredRowWithoutTimingReadsAsUncorrected() throws {
+        let row = try HTTPClient.makeJSONDecoder().decode(APIv2StoredSubtitles.self,
+            from: Data(#"{"subtitles":[\#(Self.plainRow)]}"#.utf8))
+        XCTAssertEqual(try row.playerValues(mediaFileID: 42).first?.timing, .identity)
+    }
+
+    func testSyncRequestReturnsTheJobAndRefusalsKeepTheirStatus() async throws {
+        let (api, _) = try await client()
+        stub.reply(202, #"{"job":{"id":"4","subtitle_id":"7","status":"pending","trigger":"manual","confidence":null,"created_at":"2026-01-02T03:04:05.678Z","finished_at":null}}"#)
+        let job = try await api.requestStoredSubtitleSync(id: "7")
+        XCTAssertTrue(job.isInProgress)
+        let request = try XCTUnwrap(stub.requests.first)
+        XCTAssertEqual(request.method, "POST")
+        XCTAssertEqual(request.path, "/api/v2/subtitles/stored/7/sync")
+
+        stub.reset()
+        stub.reply(403, Self.problem("forbidden", 403, "Not yours."))
+        do {
+            _ = try await api.requestStoredSubtitleSync(id: "7")
+            XCTFail("A refused sync succeeded")
+        } catch {
+            XCTAssertEqual(SubtitleSyncModel.httpStatus(of: error), 403)
+        }
+    }
+
+    /// Reset reads the metadata validator first and sends it as `If-Match`.
+    func testTimingResetSendsTheMetadataValidator() async throws {
+        let (api, _) = try await client()
+        stub.sequence([
+            .json(200, Self.plainRow, headers: ["ETag": #""abc.1""#]),
+            .json(200, #"{"subtitle":\#(Self.syncedRow.replacingOccurrences(of: #""offset_ms":-3200"#, with: #""offset_ms":0"#))}"#),
+        ])
+        let subtitle = try await api.setStoredSubtitleTiming(id: "7", mediaFileID: 42, timing: .identity)
+        XCTAssertEqual(subtitle.timing.offsetMs, 0)
+        XCTAssertEqual(stub.requests.map(\.method), ["GET", "PUT"])
+        XCTAssertEqual(stub.requests.first?.path, "/api/v2/subtitles/stored/7/metadata")
+        let put = try XCTUnwrap(stub.requests.last)
+        XCTAssertEqual(put.path, "/api/v2/subtitles/stored/7/timing")
+        XCTAssertEqual(put.header("If-Match"), #""abc.1""#)
+        let body = try XCTUnwrap(put.body.flatMap { try JSONSerialization.jsonObject(with: $0) as? [String: Any] })
+        XCTAssertEqual(body["offset_ms"] as? Int, 0)
+        XCTAssertEqual(body["scale"] as? Double, 1)
+    }
+
+    // MARK: Subtitle sync by sync key
+
+    private static let sidecarKey = "external-" + String(repeating: "ab", count: 32)
+
+    private static func syncState(key: String = sidecarKey, file: String = "42", offset: Int = 0,
+                                  job: String? = nil) -> String {
+        let sync = job.map { #","sync":\#($0)"# } ?? ""
+        return #"{"key":"\#(key)","media_file_id":"\#(file)","source":"external","language":"en","format":"srt","label":"Night Train (2024).en.srt","timing":{"offset_ms":\#(offset),"scale":1}\#(sync)}"#
+    }
+
+    private static let runningJob =
+        #"{"id":"5","status":"running","trigger":"manual","phase":"analyzing","progress":0.4,"confidence":null,"created_at":"2026-10-04T02:00:00.000Z","finished_at":null}"#
+
+    /// Sidecars carry no stored ID; a running job reports its phase and
+    /// progress; a stored subtitle keeps its ID beside the key.
+    func testSyncListDecodesSidecarsAndRunningJobs() async throws {
+        let (api, _) = try await client()
+        let stored = #"{"key":"stored-7","media_file_id":"42","source":"downloaded","stored_subtitle_id":"7","language":"fr","format":"srt","label":"R","timing":{"offset_ms":-3010,"scale":1},"sync":{"id":"3","status":"failed","trigger":"auto","failure":"no_audio","confidence":null,"created_at":"2026-10-04T02:00:00.000Z","finished_at":"2026-10-04T02:00:09.000Z"}}"#
+        stub.reply(200, #"{"subtitles":[\#(stored),\#(Self.syncState(job: Self.runningJob))]}"#)
+
+        let states = try await api.subtitleSyncStates(mediaFileID: 42)
+        XCTAssertEqual(stub.requests.first?.path, "/api/v2/subtitles/42/sync")
+        XCTAssertEqual(states.map(\.key), ["stored-7", Self.sidecarKey])
+        XCTAssertEqual(states[0].storedSubtitleId, "7")
+        XCTAssertEqual(states[0].sync?.failure, "no_audio")
+        XCTAssertFalse(states[0].isExternal)
+        XCTAssertTrue(states[1].isExternal)
+        XCTAssertNil(states[1].storedSubtitleId)
+        let job = try XCTUnwrap(states[1].sync)
+        XCTAssertNil(job.subtitleId)
+        XCTAssertEqual(job.phase, "analyzing")
+        XCTAssertEqual(job.progress, 0.4)
+        XCTAssertTrue(job.isInProgress)
+    }
+
+    func testSyncStateForAnotherFileOrKeyIsRefused() async throws {
+        let (api, _) = try await client()
+        stub.reply(200, #"{"subtitles":[\#(Self.syncState(file: "43"))]}"#)
+        do {
+            _ = try await api.subtitleSyncStates(mediaFileID: 42)
+            XCTFail("A state for another file was accepted")
+        } catch {
+            guard case APIv2Error.invalidSubtitleResponse = error else { return XCTFail("unexpected \(error)") }
+        }
+
+        stub.reset()
+        stub.reply(202, #"{"subtitle":\#(Self.syncState(key: "stored-9", job: Self.runningJob))}"#)
+        do {
+            _ = try await api.startSubtitleSync(mediaFileID: 42, key: Self.sidecarKey)
+            XCTFail("A state for another key was accepted")
+        } catch {
+            guard case APIv2Error.invalidSubtitleResponse = error else { return XCTFail("unexpected \(error)") }
+        }
+    }
+
+    func testStartSyncPostsTheKeyAndReturnsItsJob() async throws {
+        let (api, _) = try await client()
+        stub.reply(202, #"{"subtitle":\#(Self.syncState(job: Self.runningJob))}"#)
+        let state = try await api.startSubtitleSync(mediaFileID: 42, key: Self.sidecarKey)
+        XCTAssertEqual(state.sync?.id, "5")
+        let request = try XCTUnwrap(stub.requests.first)
+        XCTAssertEqual(request.method, "POST")
+        XCTAssertEqual(request.path, "/api/v2/subtitles/42/sync/\(Self.sidecarKey)")
+
+        stub.reset()
+        stub.reply(403, Self.problem("forbidden", 403, "Demo mode."))
+        do {
+            _ = try await api.startSubtitleSync(mediaFileID: 42, key: Self.sidecarKey)
+            XCTFail("A refused sync succeeded")
+        } catch {
+            XCTAssertEqual(SubtitleSyncModel.httpStatus(of: error), 403)
+        }
+    }
+
+    /// Reset reads the subtitle first and sends its validator as `If-Match`.
+    func testTimingResetByKeySendsTheReadValidator() async throws {
+        let (api, _) = try await client()
+        stub.sequence([
+            .json(200, #"{"subtitle":\#(Self.syncState(offset: -3010))}"#, headers: ["ETag": #""t.4""#]),
+            .json(200, #"{"subtitle":\#(Self.syncState())}"#, headers: ["ETag": #""t.5""#]),
+        ])
+        let state = try await api.setSubtitleTiming(mediaFileID: 42, key: Self.sidecarKey, timing: .identity)
+        XCTAssertTrue(state.timing.isIdentity)
+        XCTAssertEqual(stub.requests.map(\.method), ["GET", "PUT"])
+        XCTAssertEqual(stub.requests.first?.path, "/api/v2/subtitles/42/sync/\(Self.sidecarKey)")
+        let put = try XCTUnwrap(stub.requests.last)
+        XCTAssertEqual(put.path, "/api/v2/subtitles/42/sync/\(Self.sidecarKey)/timing")
+        XCTAssertEqual(put.header("If-Match"), #""t.4""#)
+        let body = try XCTUnwrap(put.body.flatMap { try JSONSerialization.jsonObject(with: $0) as? [String: Any] })
+        XCTAssertEqual(body["offset_ms"] as? Int, 0)
+        XCTAssertEqual(body["scale"] as? Double, 1)
+    }
+
+    /// `external` marks a server that addresses subtitles by sync key; one
+    /// that predates them omits it and syncs stored subtitles only.
+    func testSyncStatusTellsKeyedServersFromStoredOnlyOnes() throws {
+        let decoder = HTTPClient.makeJSONDecoder()
+        let keyed = try decoder.decode(APIv2SubtitleSyncStatus.self, from: Data(
+            #"{"revision":"r","state":"available","allowed":true,"auto_sync":true,"external":false}"#.utf8))
+        XCTAssertTrue(keyed.usesSyncKeys)
+        XCTAssertTrue(keyed.isAvailable)
+        let storedOnly = try decoder.decode(APIv2SubtitleSyncStatus.self, from: Data(
+            #"{"revision":"r","state":"available","allowed":true,"auto_sync":true}"#.utf8))
+        XCTAssertFalse(storedOnly.usesSyncKeys)
+        let disabled = try decoder.decode(APIv2SubtitleSyncStatus.self, from: Data(
+            #"{"revision":"r","state":"disabled","allowed":true,"auto_sync":true,"external":true}"#.utf8))
+        XCTAssertFalse(disabled.isAvailable)
     }
 
     // MARK: Provider status

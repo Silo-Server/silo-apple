@@ -1,7 +1,8 @@
 import Foundation
 
+@MainActor
 @Observable
-class LoginViewModel {
+final class LoginViewModel {
     var username: String = ""
     var password: String = ""
     var isLoading: Bool = false
@@ -11,10 +12,17 @@ class LoginViewModel {
     var discovery: SignInDiscovery = .loading
     /// Numbers `loadSignInOptions` reads; only the newest one publishes.
     @ObservationIgnored private var discoveryReads = 0
-    /// The provider whose browser sign-in is running.
+    /// The provider whose browser or network sign-in is running.
     var providerInFlight: String?
+    /// Why the last network sign-in ("Continue as …") failed, shown under its
+    /// button rather than in the password form.
+    var networkSignInError: FormError?
 
-    private let auth = AuthService.shared
+    private let auth: AuthService
+
+    init(auth: AuthService = .shared) {
+        self.auth = auth
+    }
 
     var signInOptions: SignInOptions? { discovery.options }
 
@@ -30,6 +38,10 @@ class LoginViewModel {
     }
 
     var browserProviders: [APIv2AuthProvider] { signInOptions?.browserProviders ?? [] }
+
+    /// Network providers ("Continue as …"); discovery lists one only when this
+    /// device reached the server through that provider's network.
+    var networkProviders: [APIv2AuthProvider] { signInOptions?.networkProviders ?? [] }
 
     /// Whether the screen offers a phone route (device sign-in) beside the
     /// password form. The TV turns it off on a server without device
@@ -82,6 +94,7 @@ class LoginViewModel {
     /// Authenticate with username and password. Returns whether the
     /// sign-in succeeded (and routed on).
     @discardableResult
+    @MainActor
     func login(router: AppRouter) async -> Bool {
         guard !username.trimmingCharacters(in: .whitespaces).isEmpty else {
             error = FormError("Please enter your username.")
@@ -94,11 +107,13 @@ class LoginViewModel {
 
         isLoading = true
         error = nil
+        networkSignInError = nil
         defer { isLoading = false }
 
         do {
             try await auth.login(username: username, password: password)
-            await StartupContentPrefetcher.prefetchProfiles()
+            StartupContentPrefetcher.prefetchProfiles()
+            router.skipsSingleProfilePicker = true
             router.showProfileSelection()
             return true
         } catch let loginError {
@@ -108,12 +123,36 @@ class LoginViewModel {
         }
     }
 
+    /// Signs this device's owner in through a network provider ("Continue
+    /// as …"), then routes on like a password sign-in, unless the app left
+    /// the sign-in screen meanwhile ("Change server"). Returns whether it
+    /// succeeded. A refusal shows under the button (`networkSignInError`).
+    @discardableResult
+    func signInWithNetworkIdentity(_ provider: APIv2AuthProvider, router: AppRouter) async -> Bool {
+        guard !isBusy else { return false }
+        let route = router.authState
+        providerInFlight = provider.id
+        error = nil
+        networkSignInError = nil
+        defer { providerInFlight = nil }
+        do {
+            try await auth.signInWithNetworkIdentity(provider)
+            guard router.authState == route else { return true }
+            StartupContentPrefetcher.prefetchProfiles()
+            router.skipsSingleProfilePicker = true
+            router.showProfileSelection()
+            return true
+        } catch {
+            networkSignInError = NetworkSignIn.signInMessage(for: error, provider: provider).map(FormError.init)
+            return false
+        }
+    }
+
     #if !os(tvOS)
     /// Signs in through `provider` in the system browser, then routes on like
     /// a password sign-in. Closing the sheet is not an error. `choosingAccount`
     /// is "Use a different account"; the first browser sign-in after an
     /// explicit sign-out asks for an account choice too.
-    @MainActor
     func signIn(with provider: APIv2AuthProvider, router: AppRouter, choosingAccount: Bool = false) async {
         guard !isBusy else { return }
         let serverId = ServerRegistry.shared.activeServerId ?? ""
@@ -122,11 +161,13 @@ class LoginViewModel {
             afterSignOut: prompt.isRequested(serverId: serverId))
         providerInFlight = provider.id
         error = nil
+        networkSignInError = nil
         defer { providerInFlight = nil }
         do {
             try await ExternalSignInService.live.signIn(with: provider, selectAccount: selectAccount)
             prompt.clear(serverId: serverId)
-            await StartupContentPrefetcher.prefetchProfiles()
+            StartupContentPrefetcher.prefetchProfiles()
+            router.skipsSingleProfilePicker = true
             router.showProfileSelection()
         } catch {
             self.error = Self.browserSignInMessage(for: error).map(FormError.init)
@@ -140,7 +181,6 @@ class LoginViewModel {
     /// here after the sign-out; that screen's task is already cancelled, so
     /// it leaves the request to the screen that stays, and hands it back if
     /// it goes away before the sign-in finished.
-    @MainActor
     func startRequestedSignIn(router: AppRouter) async {
         guard !Task.isCancelled, signInOptions != nil, let serverId = ServerRegistry.shared.activeServerId,
               SelectAccountPrompt.shared.consumeAutoStart(serverId: serverId),
@@ -155,12 +195,13 @@ class LoginViewModel {
     /// Whether a browser sign-in sends `prompt=select_account`: asked for
     /// ("Use a different account") or owed after an explicit sign-out, and
     /// only to a server that advertises it.
-    static func asksToSelectAccount(options: SignInOptions?, choosingAccount: Bool, afterSignOut: Bool) -> Bool {
+    nonisolated static func asksToSelectAccount(options: SignInOptions?, choosingAccount: Bool,
+                                                afterSignOut: Bool) -> Bool {
         options?.supportsSelectAccount == true && (choosingAccount || afterSignOut)
     }
 
     /// Copy for a failed browser sign-in; nil when the person canceled it.
-    static func browserSignInMessage(for error: Error) -> String? {
+    nonisolated static func browserSignInMessage(for error: Error) -> String? {
         if let external = error as? ExternalSignInError {
             return external == .canceled ? nil : external.message
         }
@@ -183,8 +224,8 @@ class LoginViewModel {
     /// `offersPhoneRoute` is false where the screen offers no phone route
     /// (see `LoginViewModel.offersPhoneRoute`); no message points there.
     /// Anything else falls back to the error's description.
-    static func message(for error: Error, browserProviders: [APIv2AuthProvider] = [],
-                        phoneHint: String? = nil, offersPhoneRoute: Bool = true) -> String {
+    nonisolated static func message(for error: Error, browserProviders: [APIv2AuthProvider] = [],
+                                    phoneHint: String? = nil, offersPhoneRoute: Bool = true) -> String {
         if let requirement = UpdateRequirement(error) { return requirement.message }
         let status: Int
         switch error {
@@ -210,8 +251,8 @@ class LoginViewModel {
         }
     }
 
-    private static func externalSignInText(_ identifier: String, browserProviders: [APIv2AuthProvider],
-                                           offersPhoneRoute: Bool) -> String? {
+    nonisolated private static func externalSignInText(_ identifier: String, browserProviders: [APIv2AuthProvider],
+                                                       offersPhoneRoute: Bool) -> String? {
         switch identifier {
         case "local_login_disabled":
             return localLoginDisabledText(browserProviders: browserProviders, offersPhoneRoute: offersPhoneRoute)
@@ -227,7 +268,8 @@ class LoginViewModel {
     /// a provider sign-in, so it points at the phone when the screen offers
     /// that route; elsewhere the screen's own provider is named when it
     /// offers exactly one.
-    static func localLoginDisabledText(browserProviders: [APIv2AuthProvider], offersPhoneRoute: Bool = true) -> String {
+    nonisolated static func localLoginDisabledText(browserProviders: [APIv2AuthProvider],
+                                                   offersPhoneRoute: Bool = true) -> String {
         let off = "Password sign-in is turned off on this server."
         #if os(tvOS)
         return offersPhoneRoute ? "\(off) Use your phone instead." : off
@@ -240,5 +282,5 @@ class LoginViewModel {
         #endif
     }
 
-    private static let rateLimitedMessage = "Too many sign-in attempts. Wait a moment, then try again."
+    nonisolated static let rateLimitedMessage = "Too many sign-in attempts. Wait a moment, then try again."
 }

@@ -99,13 +99,8 @@ enum TVSettingsOptions {
     static let subtitleMode: [TVSettingsOption] =
         SubtitleMode.allCases.map { .init(id: $0.rawValue, label: $0.displayLabel) }
 
-    static let subtitleSize: [TVSettingsOption] = [
-        .init(id: "small",   label: "Small"),
-        .init(id: "medium",  label: "Medium"),
-        .init(id: "large",   label: "Large"),
-        .init(id: "xlarge",  label: "X-Large"),
-        .init(id: "xxlarge", label: "XX-Large"),
-    ]
+    static let subtitleSize: [TVSettingsOption] =
+        SubtitleFontSizePreset.allCases.map { .init(id: $0.rawValue, label: $0.label) }
 
     static let fontFamily: [TVSettingsOption] =
         SubtitleFontFamilyPreset.allCases.map {
@@ -897,10 +892,7 @@ private struct TVSettingsPickerOptionRow: View {
 
 // MARK: - Subtitle preview
 
-/// Thin wrapper over the shared cross-platform preview so tvOS settings
-/// screens keep the Skyline rounded-card look. (The old bespoke preview
-/// drew "outline" as a stroked rectangle around the caption block, which
-/// is not what the setting does to glyphs.)
+/// Rounded-card wrapper over the shared `SubtitleAppearancePreview`.
 struct TVSettingsSubtitlePreview: View {
     let appearance: SubtitleAppearance
 

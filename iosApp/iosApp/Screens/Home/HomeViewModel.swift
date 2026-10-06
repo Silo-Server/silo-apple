@@ -162,14 +162,10 @@ class HomeViewModel {
     typealias SetWatched = (_ contentId: String, _ played: Bool) async throws -> Void
     typealias FetchHomeSections = () async throws -> SectionsResponse
 
+    /// Non-empty rows in server order; featured rows render as ordinary rows.
     var sections: [ResolvedSection] = []
-    /// True only on the very first load when no cached data exists.
-    /// Returning visits paint cached sections instantly and use
-    /// `isRefreshing` for the silent background fetch.
+    /// True only while loading with nothing cached to show.
     var isLoading = false
-    /// In-flight refresh signal — drives the inline indicator while
-    /// painted content stays on screen.
-    var isRefreshing = false
     var error: ErrorState?
     private(set) var actionError: ErrorState?
     /// An unconfirmed watched change, offered for discard. Never re-sent.
@@ -188,13 +184,6 @@ class HomeViewModel {
                 actionError = nil
             }
         }
-    }
-
-    /// Sections for Home in server order, filtered to non-empty rows.
-    /// `featured` sections render as ordinary rows in their server position —
-    /// Apple Home has no separate hero surface.
-    var regularSections: [ResolvedSection] {
-        sections.filter { !$0.items.isEmpty }
     }
 
     init(
@@ -230,11 +219,7 @@ class HomeViewModel {
     }
 
     func loadSections() async {
-        if sections.isEmpty {
-            isLoading = true
-        } else {
-            isRefreshing = true
-        }
+        isLoading = sections.isEmpty
         error = nil
 
         do {
@@ -253,7 +238,6 @@ class HomeViewModel {
         }
 
         isLoading = false
-        isRefreshing = false
     }
 
     /// The Continue Watching row mixes two kinds of cards, and the server keys

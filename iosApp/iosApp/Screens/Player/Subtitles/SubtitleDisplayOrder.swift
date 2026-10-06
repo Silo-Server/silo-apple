@@ -127,13 +127,15 @@ enum SubtitleDisplayOrder {
     /// English display name for a canonical key, used for alphabetical
     /// group ordering. Falls back to the uppercased code.
     static func languageDisplayName(_ key: String) -> String {
-        if let name = Locale(identifier: "en_US_POSIX").localizedString(forLanguageCode: key) {
+        if let name = displayLocale.localizedString(forLanguageCode: key) {
             return name.capitalized
         }
         return key.uppercased()
     }
 
     // MARK: - Private
+
+    private static let displayLocale = Locale(identifier: "en_US_POSIX")
 
     /// 3-letter ISO 639-2 (B and T) → 2-letter ISO 639-1, for the
     /// languages that realistically appear in subtitle metadata. The

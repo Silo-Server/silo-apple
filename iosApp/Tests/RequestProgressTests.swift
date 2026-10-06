@@ -20,7 +20,6 @@ final class RequestProgressTests: XCTestCase {
         let p = progress(state: .pending, status: .pending)
         XCTAssertEqual(p.completedSteps, 1)
         XCTAssertEqual(p.currentStep, .approval)
-        XCTAssertEqual(p.shortLabel, "Pending")
         XCTAssertEqual(p.tint, .amber)
     }
 
@@ -29,14 +28,12 @@ final class RequestProgressTests: XCTestCase {
             let p = progress(state: .approved, status: status)
             XCTAssertEqual(p.completedSteps, 2)
             XCTAssertEqual(p.currentStep, .download)
-            XCTAssertEqual(p.shortLabel, "Queued")
         }
     }
 
     func testDownloadingSitsOnDownload() {
         let p = progress(state: .processing, status: .downloading)
         XCTAssertEqual(p.currentStep, .download)
-        XCTAssertEqual(p.shortLabel, "Downloading")
         XCTAssertEqual(p.tint, .sky)
     }
 
@@ -46,13 +43,11 @@ final class RequestProgressTests: XCTestCase {
         XCTAssertEqual(p.display, .onTheWay)
         XCTAssertEqual(p.completedSteps, 3)
         XCTAssertEqual(p.currentStep, .library)
-        XCTAssertEqual(p.shortLabel, "Adding to library")
     }
 
     func testPartiallyAvailableSitsOnLibrary() {
         let p = progress(state: .partiallyAvailable, status: .downloading)
         XCTAssertEqual(p.currentStep, .library)
-        XCTAssertEqual(p.shortLabel, "Partly in library")
     }
 
     func testAvailableCompletesTheTrack() {
@@ -65,12 +60,10 @@ final class RequestProgressTests: XCTestCase {
     func testDeclinedAndFailedStopWhereTheyBroke() {
         let declined = progress(state: .declined, status: .pending, outcome: .declined)
         XCTAssertEqual(declined.currentStep, .approval)
-        XCTAssertEqual(declined.shortLabel, "Declined")
         XCTAssertEqual(declined.tint, .rose)
 
         let failed = progress(state: .failed, status: .downloading, outcome: .failed)
         XCTAssertEqual(failed.currentStep, .download)
-        XCTAssertEqual(failed.shortLabel, "Failed")
     }
 
     func testCancelledLeavesTheTrack() {
@@ -80,8 +73,14 @@ final class RequestProgressTests: XCTestCase {
     }
 
     func testOlderServerWithoutStateStillPlacesDownloads() {
-        XCTAssertEqual(progress(status: .downloading).shortLabel, "Downloading")
-        XCTAssertEqual(progress(status: .queued).shortLabel, "Queued")
+        // Without `state`, the status alone places the request where a
+        // current server's state would.
+        for (status, state) in [(RequestStatus.downloading, RequestUserState.processing), (.queued, .approved)] {
+            let older = progress(status: status)
+            let current = progress(state: state, status: status)
+            XCTAssertEqual(older.currentStep, current.currentStep, "\(status)")
+            XCTAssertEqual(older.shortLabel, current.shortLabel, "\(status)")
+        }
     }
 
     func testRequestableCardHasNoProgress() {

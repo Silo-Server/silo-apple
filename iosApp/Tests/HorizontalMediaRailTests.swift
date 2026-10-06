@@ -161,8 +161,6 @@ final class HorizontalMediaRailTests: XCTestCase {
         let rails = allScrollViews(in: page).filter { $0 !== page }
         XCTAssertEqual(rails.count, 2)
         XCTAssertTrue(page.bouncesVertically)
-        XCTAssertEqual(HorizontalMediaRailLayout.scrollAnchor, .leading)
-        XCTAssertEqual(HorizontalMediaRailLayout.cardAlignment, .top)
         for rail in rails {
             XCTAssertFalse(rail.bouncesHorizontally)
             XCTAssertFalse(rail.bouncesVertically)

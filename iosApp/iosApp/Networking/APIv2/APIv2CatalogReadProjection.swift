@@ -30,6 +30,8 @@ extension ItemDetail {
         self.tagline = value.tagline
         self.runtime = try value.runtime.map { try catalogLegacyInt($0) }
         self.contentRating = value.contentRating
+        self.advisoryAge = try value.advisoryAge.map { try catalogLegacyInt($0) }
+        self.advisorySource = value.advisorySource
         self.genres = value.genres
         self.ratingImdb = value.ratingImdb
         self.ratingTmdb = value.ratingTmdb
@@ -42,7 +44,7 @@ extension ItemDetail {
         self.tmdbId = value.tmdbId
         self.tvdbId = value.tvdbId
         self.cast = try value.cast.map { try CastMember(catalog: $0) }
-        self.crew = try value.crew.map { try CrewMember(catalog: $0) }
+        self.crew = value.crew.map { CrewMember(catalog: $0) }
         self.studios = value.studios
         self.networks = value.networks
         self.countries = value.countries
@@ -64,16 +66,16 @@ extension ItemDetail {
         self.playbackVariants = try value.playbackVariants.map { variants in
             try variants.map { try PlaybackVariant(catalog: $0) }
         }
-        self.subtitles = try value.subtitles.map { try SubtitleInfoBasic(catalog: $0) }
-        self.intro = try value.intro.map { try TimeRange(catalog: $0) }
-        self.credits = try value.credits.map { try TimeRange(catalog: $0) }
+        self.subtitles = value.subtitles.map { SubtitleInfoBasic(catalog: $0) }
+        self.intro = value.intro.map { TimeRange(catalog: $0) }
+        self.credits = value.credits.map { TimeRange(catalog: $0) }
         self.effectiveSubtitleMode = value.effectiveSubtitleMode
         self.effectiveShowForcedSubtitles = value.effectiveShowForcedSubtitles
-        self.effectiveSubtitleTrackSignature = try value.effectiveSubtitleTrackSignature.map { try SubtitleTrackSignature(catalog: $0) }
-        self.overlaySummary = try value.overlaySummary.map { try OverlaySummary(catalog: $0) }
+        self.effectiveSubtitleTrackSignature = value.effectiveSubtitleTrackSignature.map { SubtitleTrackSignature(catalog: $0) }
+        self.overlaySummary = value.overlaySummary.map { OverlaySummary(catalog: $0) }
         self.audiobook = try value.audiobook.map { try AudiobookDetail(catalog: $0) }
         self.pendingTranslationLanguage = value.pendingTranslationLanguage
-        self.videos = try value.videos.map { try $0.map { try ItemVideo(catalog: $0) } }
+        self.videos = value.videos.map { $0.map { ItemVideo(catalog: $0) } }
         self.extras = try value.extras.map { try $0.map { try ItemExtra(catalog: $0) } }
         self.userState = value.userState.map {
             MediaItemUserState(played: $0.played, isFavorite: $0.isFavorite, inWatchlist: $0.inWatchlist)
@@ -149,12 +151,10 @@ extension Person {
         self.birthDate = value.birthDate
         self.deathDate = value.deathDate
         self.birthplace = value.birthplace
-        self.homepage = value.homepage
         self.photoThumbhash = value.photoThumbhash
         self.tmdbId = value.tmdbId
         self.imdbId = value.imdbId
         self.tvdbId = value.tvdbId
-        self.plexGuid = value.plexGuid
         self.photoUrl = value.photoUrl
     }
 }
@@ -174,7 +174,7 @@ extension CastMember {
 }
 
 extension CrewMember {
-    init(catalog value: APIv2CatalogRead.CrewCredit) throws {
+    init(catalog value: APIv2CatalogRead.CrewCredit) {
         self.name = value.name
         self.job = value.job
         self.personId = value.personId
@@ -194,8 +194,6 @@ extension LeafItemUserData {
         self.durationSeconds = value.durationSeconds
         self.lastFileId = try value.lastFileId.map { try catalogLegacyID($0) }
         self.lastResolution = value.lastResolution
-        self.lastHdr = value.lastHdr
-        self.lastCodecVideo = value.lastCodecVideo
     }
 }
 
@@ -215,8 +213,8 @@ extension FileVersion {
         self.audioTracks = try value.audioTracks.map { try $0.map { try AudioTrack(catalog: $0) } }
         self.subtitleTracks = try value.subtitleTracks.map { try $0.map { try SubtitleTrack(catalog: $0) } }
         self.chapters = try value.chapters.map { try $0.map { try VersionChapter(catalog: $0) } }
-        self.intro = try value.intro.map { try TimeRange(catalog: $0) }
-        self.credits = try value.credits.map { try TimeRange(catalog: $0) }
+        self.intro = value.intro.map { TimeRange(catalog: $0) }
+        self.credits = value.credits.map { TimeRange(catalog: $0) }
         self.presentationKind = value.presentationKind
         self.presentationGroupKey = value.presentationGroupKey
         self.presentationPartIndex = try value.presentationPartIndex.map { try catalogLegacyInt($0) }
@@ -265,7 +263,7 @@ extension WatchDetail {
         year = value.year
         overview = value.overview
         versions = try value.versions.map { try FileVersion(watch: $0) }
-        subtitles = try value.subtitles.map { try SubtitleInfoBasic(catalog: $0) }
+        subtitles = value.subtitles.map { SubtitleInfoBasic(catalog: $0) }
         intro = value.intro.map { TimeRange(watch: $0) }
         credits = value.credits.map { TimeRange(watch: $0) }
         userData = try value.userData.map { try LeafItemUserData(catalog: $0) }
@@ -276,7 +274,7 @@ extension WatchDetail {
         effectiveSubtitleLanguage = value.effectiveSubtitleLanguage
         effectiveSubtitleMode = value.effectiveSubtitleMode
         effectiveShowForcedSubtitles = value.effectiveShowForcedSubtitles
-        effectiveSubtitleTrackSignature = try value.effectiveSubtitleTrackSignature.map { try SubtitleTrackSignature(catalog: $0) }
+        effectiveSubtitleTrackSignature = value.effectiveSubtitleTrackSignature.map { SubtitleTrackSignature(catalog: $0) }
     }
 }
 
@@ -288,7 +286,7 @@ extension TimeRange {
 }
 
 extension SubtitleInfoBasic {
-    init(catalog value: APIv2CatalogRead.SubtitleInfo) throws {
+    init(catalog value: APIv2CatalogRead.SubtitleInfo) {
         self.source = value.source
         self.language = value.language
         self.codec = value.codec
@@ -298,14 +296,14 @@ extension SubtitleInfoBasic {
 }
 
 extension TimeRange {
-    init(catalog value: APIv2CatalogRead.Marker) throws {
+    init(catalog value: APIv2CatalogRead.Marker) {
         self.start = value.start
         self.end = value.end
     }
 }
 
 extension SubtitleTrackSignature {
-    init(catalog value: APIv2CatalogRead.WatchSubtitleSignature) throws {
+    init(catalog value: APIv2CatalogRead.WatchSubtitleSignature) {
         self.source = value.source
         self.language = value.language
         self.codec = value.codec
@@ -316,7 +314,7 @@ extension SubtitleTrackSignature {
 }
 
 extension OverlaySummary {
-    init(catalog value: APIv2CatalogRead.CatalogItemOverlay) throws {
+    init(catalog value: APIv2CatalogRead.CatalogItemOverlay) {
         self.resolution = value.resolution
         self.hdr = value.hdr
         self.audio = value.audio
@@ -333,8 +331,8 @@ extension OverlaySummary {
 
 extension AudiobookDetail {
     init(catalog value: APIv2CatalogRead.AudiobookDetailExtension) throws {
-        self.authors = try value.authors.map { try AudiobookPerson(catalog: $0) }
-        self.narrators = try value.narrators.map { try AudiobookPerson(catalog: $0) }
+        self.authors = value.authors.map { AudiobookPerson(catalog: $0) }
+        self.narrators = value.narrators.map { AudiobookPerson(catalog: $0) }
         self.publisher = value.publisher
         self.totalDurationSeconds = try catalogLegacyInt(value.totalDurationSeconds)
         self.series = try value.series.map { try AudiobookSeriesGroup(catalog: $0) }
@@ -344,7 +342,7 @@ extension AudiobookDetail {
 }
 
 extension ItemVideo {
-    init(catalog value: APIv2CatalogRead.ItemVideoInfo) throws {
+    init(catalog value: APIv2CatalogRead.ItemVideoInfo) {
         self.kind = value.kind
         self.site = value.site
         self.siteKey = value.siteKey
@@ -450,7 +448,7 @@ extension VersionChapter {
 }
 
 extension AudiobookPerson {
-    init(catalog value: APIv2CatalogRead.AudiobookPerson) throws {
+    init(catalog value: APIv2CatalogRead.AudiobookPerson) {
         self.personId = value.personId
         self.name = value.name
         self.photoThumbhash = value.photoThumbhash
@@ -488,18 +486,6 @@ extension AudiobookRelatedItem {
         self.year = try value.year.map { try catalogLegacyInt($0) }
         self.seriesIndex = try value.seriesIndex.map { try catalogLegacyInt($0) }
         self.posterUrl = value.posterUrl
-    }
-}
-
-extension SeasonsResponse {
-    init(catalog items: [APIv2CatalogRead.Season]) throws {
-        seasons = try items.map { try Season(catalog: $0) }
-    }
-}
-
-extension EpisodesResponse {
-    init(catalog items: [APIv2CatalogRead.Episode]) throws {
-        episodes = try items.map { try EpisodeListItem(catalog: $0) }
     }
 }
 

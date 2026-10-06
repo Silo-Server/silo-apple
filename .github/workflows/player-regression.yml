@@ -24,12 +24,20 @@ on:
         description: Build and validate only the iOS simulator app for an iOS-only change
         type: boolean
         default: false
+  # release.yml calls this to gate TestFlight uploads on the full suite.
+  workflow_call:
+    inputs:
+      release_gate:
+        description: Keeps a release run out of the PR and main concurrency groups
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: player-regression-${{ github.ref }}-${{ inputs.baseline_ref || 'head' }}
+  # Release runs get their own group so a release from main and a main push never cancel each other.
+  group: player-regression-${{ inputs.release_gate && 'release-' || '' }}${{ github.ref }}-${{ inputs.baseline_ref || 'head' }}
   cancel-in-progress: true
 
 jobs:
@@ -108,6 +116,7 @@ jobs:
           set -euo pipefail
           curl -fsSL -o /tmp/xcodegen.zip https://github.com/yonaskolb/XcodeGen/releases/download/2.43.0/xcodegen.zip
           # Pin the official 2.43.0 release asset before unpacking/executing it.
+          # Same pin as .github/actions/install-xcodegen; kept inline because baseline_ref checkouts can predate that action.
           echo "a4847ed77d3341a4d24049bc4424a3babca4c94ff1dcaaee923eaca2b32c678f  /tmp/xcodegen.zip" | shasum -a 256 -c -
           unzip -q /tmp/xcodegen.zip -d /tmp/xcodegen-dist
           /tmp/xcodegen-dist/xcodegen/bin/xcodegen generate --spec iosApp/project.yml

@@ -9,7 +9,7 @@ struct SiloPageBackdrop: View {
     var body: some View {
         #if os(iOS)
         ZStack {
-            Color(hex: "#111111")
+            Color.siloPageCanvas
 
             RadialGradient(
                 stops: [
@@ -35,6 +35,11 @@ struct SiloPageBackdrop: View {
         .ignoresSafeArea()
         .allowsHitTesting(false)
         .accessibilityHidden(true)
+        #elseif os(macOS)
+        Color.siloPageCanvas
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
         #else
         Color.siloBackground
             .ignoresSafeArea()
@@ -84,16 +89,6 @@ extension View {
         #else
         background(legacyBackdrop)
         #endif
-    }
-
-    /// Hide the view conditionally.
-    @ViewBuilder
-    func hidden(_ isHidden: Bool) -> some View {
-        if isHidden {
-            self.hidden()
-        } else {
-            self
-        }
     }
 
     @ViewBuilder
@@ -198,11 +193,7 @@ extension View {
 
     @ViewBuilder
     func siloSearchable(text: Binding<String>, prompt: String) -> some View {
-        #if os(tvOS)
-        self.searchable(text: text, prompt: prompt)
-        #elseif os(macOS)
-        self.searchable(text: text, prompt: prompt)
-        #else
+        #if os(iOS)
         // Keep the navigation bar's back button and title visible while the
         // field is focused, and drop the search bar's Cancel button so the
         // field's own clear button is the only way to empty the query.
@@ -213,6 +204,8 @@ extension View {
         )
         .searchPresentationToolbarBehavior(.avoidHidingContent)
         .background(SearchCancelButtonSuppressor().frame(width: 0, height: 0))
+        #else
+        self.searchable(text: text, prompt: prompt)
         #endif
     }
 
@@ -411,51 +404,6 @@ private struct SecondaryButtonBody: View {
     }
 }
 
-/// Text-only button style for tertiary actions. Focused state fills a
-/// soft pill behind the label so the user can distinguish the tertiary action
-/// from the primary button above.
-struct SiloTextButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        TextButtonBody(configuration: configuration)
-    }
-}
-
-private struct TextButtonBody: View {
-    let configuration: ButtonStyle.Configuration
-    @Environment(\.isFocused) private var isFocused
-
-    var body: some View {
-        configuration.label
-            .font(.siloBody)
-            .foregroundColor(isFocused ? .siloBackground : .siloOnSurface)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 8)
-            .background(
-                Capsule().fill(
-                    isFocused ? Color.siloOnSurface : Color.clear
-                )
-            )
-            .overlay {
-                Capsule().stroke(
-                    isFocused ? Color.white.opacity(0.9) : Color.clear,
-                    lineWidth: isFocused ? 2 : 0
-                )
-            }
-            .scaleEffect(isFocused ? 1.045 : 1.0)
-            .shadow(
-                color: isFocused ? Color.siloOnSurface.opacity(0.28) : .clear,
-                radius: isFocused ? 14 : 0,
-                y: isFocused ? 4 : 0
-            )
-            .opacity(configuration.isPressed ? 0.6 : 1.0)
-            #if os(tvOS)
-            .focusEffectDisabled()
-            #endif
-            .animation(.easeOut(duration: SiloTheme.fastDuration), value: configuration.isPressed)
-            .animation(SiloTheme.springAnimation, value: isFocused)
-    }
-}
-
 // MARK: - Silo button style routing (glass on iOS/macOS, Silo on tvOS)
 
 extension View {
@@ -488,39 +436,6 @@ extension View {
             self.buttonStyle(.glass)
         } else {
             self.buttonStyle(SiloSecondaryButtonStyle())
-        }
-        #else
-        self.buttonStyle(.glass)
-        #endif
-    }
-
-    /// Tertiary / text action button: native glass on iOS/macOS, `SiloTextButtonStyle`
-    /// on tvOS.
-    @ViewBuilder
-    func siloTextButton() -> some View {
-        #if os(tvOS)
-        self.buttonStyle(SiloTextButtonStyle())
-        #elseif os(iOS)
-        if #available(iOS 26.0, *) {
-            self.buttonStyle(.glass)
-        } else {
-            self.buttonStyle(SiloTextButtonStyle())
-        }
-        #else
-        self.buttonStyle(.glass)
-        #endif
-    }
-
-    /// Compact native glass button on iOS 26+, with the corresponding native
-    /// bordered control on iOS 18. `buttonBorderShape` and `tint` remain owned
-    /// by the caller so the modern modifier order is unchanged.
-    @ViewBuilder
-    func siloGlassButtonStyle() -> some View {
-        #if os(iOS)
-        if #available(iOS 26.0, *) {
-            self.buttonStyle(.glass)
-        } else {
-            self.buttonStyle(.bordered)
         }
         #else
         self.buttonStyle(.glass)

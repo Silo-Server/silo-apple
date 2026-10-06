@@ -361,13 +361,20 @@ final class SeriesHierarchyLoadingTests: XCTestCase {
     }
 
     nonisolated private func seasons(_ numbers: [Int]) throws -> SeasonsResponse {
-        let rows = numbers.map { "{\"contentId\":\"regression-season-\($0)\",\"seasonNumber\":\($0)}" }.joined(separator: ",")
-        return try JSONDecoder().decode(SeasonsResponse.self, from: Data("{\"seasons\":[\(rows)]}".utf8))
+        let rows = numbers.map { "{\"content_id\":\"regression-season-\($0)\",\"season_number\":\($0)}" }.joined(separator: ",")
+        return SeasonsResponse(seasons: try serverDecoder().decode([Season].self, from: Data("[\(rows)]".utf8)))
     }
 
     nonisolated private func episodes(_ numbers: [Int]) throws -> EpisodesResponse {
-        let rows = numbers.map { "{\"contentId\":\"regression-episode-\($0)\",\"seasonNumber\":1,\"episodeNumber\":\($0)}" }.joined(separator: ",")
-        return try JSONDecoder().decode(EpisodesResponse.self, from: Data("{\"episodes\":[\(rows)]}".utf8))
+        let rows = numbers.map { "{\"content_id\":\"regression-episode-\($0)\",\"season_number\":1,\"episode_number\":\($0)}" }.joined(separator: ",")
+        return EpisodesResponse(episodes: try serverDecoder().decode([EpisodeListItem].self, from: Data("[\(rows)]".utf8)))
+    }
+
+    /// Server payloads are snake_case; decode fixtures the way HTTPClient does.
+    nonisolated private func serverDecoder() -> JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return decoder
     }
 }
 

@@ -100,7 +100,6 @@ enum AetherAuthenticationRecoveryPolicy {
 struct AetherLoadSpec {
     enum ValidationError: Error, Equatable {
         case invalidStreamURL(String)
-        case unsupportedDelivery(String)
         case invalidAudioTrackIndex(Int)
         case invalidSubtitleArtifactURL(String)
         case unsupportedSubtitleTimingOrigin(origin: Double, timelineOffset: Double)
@@ -140,14 +139,9 @@ struct AetherLoadSpec {
     /// but resolves directly to its container stream, without an external slot.
     let embeddedSubtitleAlias: (appTrackID: Int64, streamIndex: Int)?
 
-    /// The bridge this app assumes for codecs Aether cannot stream-copy, when
-    /// a caller does not name one.
-    ///
-    /// Deliberately not Aether's own `.surroundCompat` default: the engine this
-    /// player replaced always bridged TrueHD and DTS-HD MA losslessly, so
-    /// inheriting the lossy default would quietly downgrade shipped behavior —
-    /// which is exactly what happened before this parameter existed. The user
-    /// setting overrides it; see `PlayerSettings.losslessAudioEnabled`.
+    /// The bridge for codecs Aether cannot stream-copy, when a caller does not
+    /// name one. Lossless rather than Aether's `.surroundCompat` default;
+    /// `PlayerSettings.losslessAudioEnabled` overrides it.
     static let defaultAudioBridgeMode: AudioBridgeMode = .lossless
 
     /// The deinterlacer used when a caller does not name one.

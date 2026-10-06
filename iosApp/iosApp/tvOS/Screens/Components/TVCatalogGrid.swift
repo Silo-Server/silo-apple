@@ -5,10 +5,8 @@ import SwiftUI
 /// caller via callbacks so the same view works against any paged catalog
 /// source (library browse, collection detail, filter result).
 ///
-/// - Pagination: `onNearEnd(currentIndex)` fires when a cell in the last 8
-///   rows of items appears. That's a generous lead time on a 100-item page,
-///   which gives
-///   the network room to complete before the user reaches the bottom.
+/// - Pagination: `onNearEnd(index)` fires when a cell in the last
+///   `prefetchRowsRemaining` rows appears.
 /// - Prefetch: row visibility reports let the caller cancel stale work and
 ///   warm a bounded nearby window. The grid does not touch the image cache.
 /// - Columns: caller picks `columnCount` (default 6). Drop to 5 when a
@@ -65,14 +63,16 @@ struct TVCatalogGrid: View {
         // frame is the catchment; the engine snaps to its nearest card.
         LazyVStack(alignment: .leading, spacing: rowSpacing) {
             ForEach(rowStartIndices, id: \.self) { rowStart in
+                let row = rowItems(from: rowStart)
                 HStack(alignment: .top, spacing: columnSpacing) {
-                    ForEach(IndexedItems(rowItems(from: rowStart))) { indexed in
-                        let item = indexed.element
+                    ForEach(Array(row.enumerated()), id: \.element.id) { column, item in
                         TVMediaCard(
-                            title: item.title,
+                            title: EpisodeCardCaption.cardTitle(for: item),
                             posterUrl: item.posterUrl ?? "",
                             posterThumbhash: item.posterThumbhash,
+                            mediaType: item.type,
                             year: item.year,
+                            subtitle: EpisodeCardCaption.line(for: item),
                             userState: item.userState,
                             overlayData: OverlayData.from(item),
                             action: { onItemTap(item) },
@@ -80,18 +80,18 @@ struct TVCatalogGrid: View {
                             cardWidth: cardWidth,
                             aspect: item.isAudiobook ? .square : .poster,
                             prefersDefaultFocus: prefersDefaultFocusOnFirstItem
-                                && rowStart == 0 && indexed.index == 0,
+                                && rowStart == 0 && column == 0,
                             defaultFocusNamespace: gridFocusNamespace,
                             focusBinding: $focusedItemId,
                             focusContentId: item.contentId,
                             contentId: item.contentId
                         )
                         .frame(maxWidth: .infinity)
-                        .onAppear { onCellAppear(index: rowStart + indexed.index) }
+                        .onAppear { onCellAppear(index: rowStart + column) }
                     }
                     // Keep ragged-row cards in their column positions by
                     // filling the empty slots with equally flexible spacers.
-                    ForEach(0..<emptySlotCount(from: rowStart), id: \.self) { _ in
+                    ForEach(0..<(resolvedColumnCount - row.count), id: \.self) { _ in
                         Color.clear
                             .frame(maxWidth: .infinity)
                             .frame(height: 1)
@@ -111,7 +111,8 @@ struct TVCatalogGrid: View {
         .focusSection()
         .onAppear { applyFocusRequest(focusRequest) }
         .onChange(of: focusRequest) { _, request in applyFocusRequest(request) }
-        .onChange(of: items.map(\.contentId)) { _, _ in applyFocusRequest(focusRequest) }
+        // Only the first item matters: a pending request lands once it exists.
+        .onChange(of: items.first?.contentId) { _, _ in applyFocusRequest(focusRequest) }
 
         if isLoading {
             HStack {
@@ -126,10 +127,6 @@ struct TVCatalogGrid: View {
 
     private func rowItems(from rowStart: Int) -> [BrowseItem] {
         Array(items[rowStart..<min(rowStart + resolvedColumnCount, items.count)])
-    }
-
-    private func emptySlotCount(from rowStart: Int) -> Int {
-        resolvedColumnCount - rowItems(from: rowStart).count
     }
 
     private func onCellAppear(index: Int) {
@@ -158,36 +155,5 @@ struct TVCatalogGrid: View {
         lastAppliedFocusRequest = request
         focusedItemId = firstItemId
     }
-}
-
-private struct IndexedItems<Base: RandomAccessCollection>: RandomAccessCollection
-where Base.Index == Int, Base.Element: Identifiable {
-    let base: Base
-
-    init(_ base: Base) {
-        self.base = base
-    }
-
-    var startIndex: Int { base.startIndex }
-    var endIndex: Int { base.endIndex }
-
-    func index(after i: Int) -> Int {
-        base.index(after: i)
-    }
-
-    func index(before i: Int) -> Int {
-        base.index(before: i)
-    }
-
-    subscript(position: Int) -> IndexedItem<Base.Element> {
-        IndexedItem(index: position, element: base[position])
-    }
-}
-
-private struct IndexedItem<Element: Identifiable>: Identifiable {
-    let index: Int
-    let element: Element
-
-    var id: Element.ID { element.id }
 }
 #endif

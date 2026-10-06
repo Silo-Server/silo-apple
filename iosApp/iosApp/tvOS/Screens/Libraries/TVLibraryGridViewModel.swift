@@ -1,7 +1,6 @@
 #if os(tvOS)
 import Foundation
 import Observation
-import Nuke
 
 /// View model backing the tvOS library grid. Purpose-built for 100k-item
 /// libraries; does not share state with the iOS `BrowseViewModel`, but both
@@ -27,6 +26,9 @@ final class TVLibraryGridViewModel {
     var isRefreshing: Bool = false
     var error: ErrorState? = nil
     var hasMore: Bool = true
+    /// Why the grid is empty. Read only when a finished load left `items`
+    /// empty; set before that load finishes so the wrong message never shows.
+    private(set) var emptyReason: BrowseEmptyReason = .libraryEmpty
     private(set) var filter: CatalogFilterState
     /// Live facet vocabulary for the filter panel (loaded lazily).
     private(set) var facets: CatalogFacets?
@@ -39,37 +41,27 @@ final class TVLibraryGridViewModel {
     /// Whether to send the `type` media-scope param (video libraries only;
     /// audiobook/music libraries are scoped by `library_id`).
     private let sendsType: Bool
-    private let pageSize: Int = 100
+    private static let pageSize = 100
 
     /// Where the next page starts; `nil` before the live page 1 arrives and
     /// after the last page. A cached page 1 has no continuation.
     private var continuation: APIv2CatalogContinuation?
-    @ObservationIgnored private var prefetchedPosterURLs: Set<URL> = []
+    /// Warm-ups in flight by poster URL, kept with the size they were
+    /// started at so stopping one targets the same request.
+    @ObservationIgnored private var prefetchedPosters: [String: CardArtwork] = [:]
     @ObservationIgnored private var visiblePosterRows: [Int: Range<Int>] = [:]
-    /// Decoded into the memory cache so a cell scrolling into view paints the
-    /// warmed image on its first frame via `CachedAsyncImage.prefetchedImage()`
-    /// instead of paying the decode + resize on arrival. The window is small
-    /// (two rows either side, 48 URLs) and low priority, so visible cells and
-    /// their own requests still win the pipeline.
-    private let posterPrefetcher = ImagePrefetcher(
-        pipeline: ImagePipeline.shared,
-        destination: .memoryCache,
-        maxConcurrentRequestCount: 2
-    )
     private var generation: Int = 0
 
     init(libraryId: Int, libraryType: String, initialFilter: CatalogFilterState = .none) {
         self.libraryId = libraryId
         self.mediaType = BrowseMediaType.from(libraryType: libraryType)
-        self.sendsType = SiloMediaType.isSeries(libraryType) || SiloMediaType.isMovieLibrary(libraryType)
+        self.sendsType = Self.sendsType(libraryType: libraryType)
         // A non-default initial filter (a deep-linked landing tap) wins;
         // otherwise restore the persisted per-library state.
         if !initialFilter.isDefault {
             self.filter = initialFilter
-        } else if let saved = BrowsePrefsStore.shared.savedState(libraryId: libraryId) {
-            self.filter = saved
         } else {
-            self.filter = initialFilter
+            self.filter = Self.savedFilter(libraryId: libraryId)
         }
         facets = FacetLoader.shared.cachedFacets(libraryId: libraryId)
         hydratePage1FromCache()
@@ -77,6 +69,29 @@ final class TVLibraryGridViewModel {
 
     private var currentCacheKey: String {
         CacheKey.tvLibrary(libraryId: libraryId, filterKey: filter.cacheKeyFragment)
+    }
+
+    // MARK: - First page
+
+    /// The filter a grid opened without a deep-linked filter starts with.
+    static func savedFilter(libraryId: Int) -> CatalogFilterState {
+        BrowsePrefsStore.shared.savedState(libraryId: libraryId) ?? .none
+    }
+
+    /// Page 1 for `filter`. The startup prefetch sends this same query and
+    /// caches the result under the key the grid hydrates from.
+    static func firstPageQuery(libraryId: Int, libraryType: String, filter: CatalogFilterState) -> APIv2CatalogQuery {
+        CatalogQueryBuilder.build(
+            filter,
+            libraryId: libraryId,
+            mediaType: BrowseMediaType.from(libraryType: libraryType),
+            limit: pageSize,
+            includeType: sendsType(libraryType: libraryType)
+        )
+    }
+
+    private static func sendsType(libraryType: String) -> Bool {
+        SiloMediaType.isSeries(libraryType) || SiloMediaType.isMovieLibrary(libraryType)
     }
 
     private func hydratePage1FromCache() {
@@ -113,6 +128,14 @@ final class TVLibraryGridViewModel {
         filter = newFilter
         BrowsePrefsStore.shared.saveState(newFilter, libraryId: libraryId)
         await reload()
+    }
+
+    /// Clears every filter facet and the letter-rail prefix, keeping the sort.
+    func clearFilters() async {
+        var next = filter
+        next.resetFilters()
+        next.namePrefix = nil
+        await applyFilter(next)
     }
 
     /// Sort menu behavior: tapping the active key flips direction; tapping a
@@ -171,15 +194,18 @@ final class TVLibraryGridViewModel {
         // Keep one bounded window around the visible rows. Visible cells still
         // request their own resized image through the same coalescing
         // pipeline; the warmed decode only lets that first frame paint.
-        let urls = items[safe: range].prefix(48)
-            .compactMap { $0.posterUrl }
-            .compactMap { URL(string: $0) }
-        let desiredURLs = Set(urls)
-        let staleURLs = prefetchedPosterURLs.subtracting(desiredURLs)
-        let newURLs = urls.filter { !prefetchedPosterURLs.contains($0) }
-        prefetchedPosterURLs = desiredURLs
-        posterPrefetcher.stopPrefetching(with: staleURLs.map(PosterImageCache.cardWarmRequest(for:)))
-        posterPrefetcher.startPrefetching(with: newURLs.map(PosterImageCache.cardWarmRequest(for:)))
+        let desired = items[safe: range].prefix(48).compactMap { item -> CardArtwork? in
+            guard let url = item.posterUrl, !url.isEmpty else { return nil }
+            // `TVCatalogGrid` draws audiobook covers square.
+            let aspect: MediaCardAspect = item.isAudiobook ? .square : .poster
+            return CardArtwork(url: url, pointSize: TVMediaCard.artworkSize(cardWidth: SiloTheme.posterCardWidth, aspect: aspect))
+        }
+        let desiredByURL = Dictionary(desired.map { ($0.url, $0) }, uniquingKeysWith: { first, _ in first })
+        let stale = prefetchedPosters.values.filter { desiredByURL[$0.url]?.pointSize != $0.pointSize }
+        let fresh = desired.filter { prefetchedPosters[$0.url]?.pointSize != $0.pointSize }
+        prefetchedPosters = desiredByURL
+        PosterImageCache.stopPrefetchingArtwork(Array(stale))
+        PosterImageCache.prefetchArtwork(fresh)
     }
 
     func cancelPosterPrefetch() {
@@ -188,8 +214,8 @@ final class TVLibraryGridViewModel {
     }
 
     private func stopPosterPrefetchRequests() {
-        posterPrefetcher.stopPrefetching()
-        prefetchedPosterURLs.removeAll()
+        PosterImageCache.stopPrefetchingArtwork(Array(prefetchedPosters.values))
+        prefetchedPosters.removeAll()
     }
 
     // MARK: - Fetch logic
@@ -210,6 +236,7 @@ final class TVLibraryGridViewModel {
 
     private func fetchPage(reset: Bool) async {
         let myGeneration = generation
+        let writeToken = ResponseCache.shared.writeToken
         let nextPage = reset ? nil : continuation
         let startsOver = nextPage == nil
         if startsOver, !items.isEmpty {
@@ -218,8 +245,12 @@ final class TVLibraryGridViewModel {
             isLoading = true
         }
         defer {
-            isLoading = false
-            isRefreshing = false
+            // A superseded fetch leaves the flags to the one that replaced
+            // it; clearing them would show "No titles match" mid-load.
+            if myGeneration == generation {
+                isLoading = false
+                isRefreshing = false
+            }
         }
 
         do {
@@ -231,7 +262,7 @@ final class TVLibraryGridViewModel {
                     filter,
                     libraryId: libraryId,
                     mediaType: mediaType,
-                    limit: pageSize,
+                    limit: Self.pageSize,
                     includeType: sendsType
                 ))
             }
@@ -241,7 +272,15 @@ final class TVLibraryGridViewModel {
 
             if startsOver || page.startsOver {
                 items = page.response.items
-                ResponseCache.shared.set(page.response, for: currentCacheKey)
+                ResponseCache.shared.set(page.response, for: currentCacheKey, fetchedAt: writeToken)
+                if items.isEmpty {
+                    let probe = CatalogQueryBuilder.libraryProbe(libraryId: libraryId)
+                    let reason = await BrowseEmptyReason.classify(filter: filter) {
+                        try await !SiloAPI.shared.catalogPage(probe).response.items.isEmpty
+                    }
+                    guard myGeneration == generation else { return }
+                    emptyReason = reason
+                }
             } else {
                 items.append(contentsOf: page.response.items)
             }

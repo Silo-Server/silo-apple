@@ -1,5 +1,6 @@
 import Foundation
 import OSLog
+import Synchronization
 
 /// Immutable routing identity for a request that must not follow the app's
 /// mutable active server/profile. Settings outbox work captures this before it
@@ -80,8 +81,8 @@ struct HTTPIdentityTransitionLease: Hashable, Sendable {
 ///   `getUnauthenticated…` reads of public endpoints.
 /// - On `401`, collapse concurrent failures into a single refresh using an
 ///   in-flight `Task`; retry the original request once with the refreshed
-///   token. Semantics mirror `AuthInterceptorImpl.kt` in the shared Kotlin
-///   module, which used a `Mutex` + double-check for the same purpose.
+///   token. Semantics mirror silo-android's `AuthInterceptorImpl.kt`
+///   (Mutex + double-check).
 /// - Decode responses with `.convertFromSnakeCase`, so Swift models can use
 ///   plain camelCase properties without any `CodingKeys` boilerplate. The
 ///   `.convertToSnakeCase` encoder is used only for the token-refresh request
@@ -132,6 +133,15 @@ actor HTTPClient {
     /// same refresh token joins the renewal in flight instead of sending that
     /// token a second time.
     private var inactiveServerRenewals: [String: (refreshToken: String, task: Task<ApproverBearer, Never>)] = [:]
+    /// The profile proof the last `.siloProfileVerificationRequired` was
+    /// posted for (access token dropped), with the `TokenStore` selection
+    /// generation it was installed under. A burst of rejected requests posts
+    /// once; a new proof, profile, or selection of the same profile posts
+    /// again.
+    private var lastProfileVerificationSignal: (
+        auth: CapturedOrdinaryRequestAuth,
+        selection: UUID
+    )?
 
     /// A flight's value is the failure its refresh answer proved that the
     /// waiting requests must see, if any. Success and every other failure are
@@ -277,12 +287,7 @@ actor HTTPClient {
         let (data, response) = try await performWithAuthRetry(method: "GET", path: path, timeout: .standard) { serverURL in
             try self.buildRequest(serverUrl: serverURL, method: "GET", path: path, query: [:])
         }
-        do {
-            return try Self.makeJSONDecoder(artworkServerURL: response.url).decode(T.self, from: data)
-        } catch {
-            Self.logDecodingFailure(type: String(describing: T.self), path: path, error: error, data: data)
-            throw HTTPError.decodingFailed(type: String(describing: T.self), underlying: error)
-        }
+        return try Self.decode(data, path: path, decoder: Self.makeJSONDecoder(artworkServerURL: response.url))
     }
 
     /// Probe a candidate server without mutating global routing state or
@@ -291,7 +296,6 @@ actor HTTPClient {
         serverURL: String,
         path: String,
         quietStatuses: Set<Int> = [],
-        diagnosticPath: String? = nil,
         timeout: TimeInterval? = nil
     ) async throws -> T {
         try await getByExplicitURL(
@@ -299,14 +303,13 @@ actor HTTPClient {
             path: path,
             bearer: nil,
             quietStatuses: quietStatuses,
-            diagnosticPath: diagnosticPath,
             timeout: timeout
         )
     }
 
     /// Read a public endpoint of the active server with no bearer or profile
     /// headers. A 401 never starts a refresh, so an expired or revoked session
-    /// cannot fail the read. Unlike ``getUnauthenticated(serverURL:path:quietStatuses:diagnosticPath:timeout:)``,
+    /// cannot fail the read. Unlike ``getUnauthenticated(serverURL:path:quietStatuses:timeout:)``,
     /// the outcome feeds `ConnectionMonitor`: the response comes from the
     /// server every other request goes to.
     func getUnauthenticatedFromActiveServer<T: Decodable>(_ path: String) async throws -> T {
@@ -323,7 +326,6 @@ actor HTTPClient {
             path: path,
             bearer: nil,
             quietStatuses: [],
-            diagnosticPath: nil,
             timeout: nil,
             dispatchRevision: dispatchRevision,
             reportReachability: true
@@ -338,15 +340,13 @@ actor HTTPClient {
         serverURL: String,
         path: String,
         bearer: String,
-        quietStatuses: Set<Int> = [],
         timeout: TimeInterval? = nil
     ) async throws -> T {
         try await getByExplicitURL(
             serverURL: serverURL,
             path: path,
             bearer: bearer,
-            quietStatuses: quietStatuses,
-            diagnosticPath: nil,
+            quietStatuses: [],
             timeout: timeout
         )
     }
@@ -356,7 +356,6 @@ actor HTTPClient {
         path: String,
         bearer: String?,
         quietStatuses: Set<Int>,
-        diagnosticPath: String?,
         timeout: TimeInterval?,
         dispatchRevision capturedRevision: UInt64? = nil,
         reportReachability: Bool = false
@@ -380,15 +379,16 @@ actor HTTPClient {
             reportReachability: reportReachability
         )
         try ensureSuccess(data, response, method: "GET", quietStatuses: quietStatuses)
+        return try Self.decode(data, path: path, decoder: decoder)
+    }
+
+    /// Decodes a response body, logging a mismatch before it is rethrown as
+    /// `HTTPError.decodingFailed`.
+    private static func decode<T: Decodable>(_ data: Data, path: String, decoder: JSONDecoder) throws -> T {
         do {
             return try decoder.decode(T.self, from: data)
         } catch {
-            Self.logDecodingFailure(
-                type: String(describing: T.self),
-                path: diagnosticPath ?? path,
-                error: error,
-                data: data
-            )
+            logDecodingFailure(type: String(describing: T.self), path: path, error: error, data: data)
             throw HTTPError.decodingFailed(type: String(describing: T.self), underlying: error)
         }
     }
@@ -482,8 +482,7 @@ actor HTTPClient {
                     expectedAccount: expectedAccount,
                     expectedAuth: expectedAuth,
                     dispatchRevision: dispatchRevision,
-                    method: method,
-                    path: path
+                    method: method
                 )
             }
             var request = try scopedRequest(
@@ -504,7 +503,7 @@ actor HTTPClient {
             )
 
             if response.statusCode == 401,
-               shouldAttemptRefresh(path: path, method: method),
+               Self.shouldAttemptRefresh(path: path, method: method),
                try await refreshScopedTokens(
                    auth: auth,
                    expected: requestIdentity,
@@ -538,13 +537,7 @@ actor HTTPClient {
                         headers: headers,
                         auth: auth
                     )
-                    #if os(iOS) || os(tvOS)
-                    Self.logRefreshRetry(
-                        method: method,
-                        path: path,
-                        outcome: HTTPDiagnosticsOutcome.retried
-                    )
-                    #endif
+                    Self.logRefreshRetry(method: method, path: path, retried: true)
                     (data, response) = try await perform(
                         request: request,
                         timeout: timeout,
@@ -552,31 +545,20 @@ actor HTTPClient {
                         dispatchRecord: dispatchRecord
                     )
                 } else {
-                    #if os(iOS) || os(tvOS)
                     // Refresh reported success but the recapture disagreed, so
                     // the original 401 stands. Worth its own line: from the
                     // outside this is indistinguishable from "refresh never
                     // ran", and the two have completely different causes.
-                    Self.logRefreshRetry(
-                        method: method,
-                        path: path,
-                        outcome: HTTPDiagnosticsOutcome.notRetried
-                    )
-                    #endif
+                    Self.logRefreshRetry(method: method, path: path, retried: false)
                 }
-            } else if response.statusCode == 401, shouldAttemptRefresh(path: path, method: method) {
+            } else if response.statusCode == 401, Self.shouldAttemptRefresh(path: path, method: method) {
                 // Refresh was eligible but declined (wrong credential owner,
                 // no refresh token, dispatch blocked). `shouldAttemptRefresh`
                 // is re-checked so a 401 from `/auth/login` — an ordinary wrong
                 // password, not a refresh failure — is not reported as one.
-                #if os(iOS) || os(tvOS)
-                Self.logRefreshRetry(
-                    method: method,
-                    path: path,
-                    outcome: HTTPDiagnosticsOutcome.notRetried
-                )
-                #endif
+                Self.logRefreshRetry(method: method, path: path, retried: false)
             }
+            await signalProfileVerificationIfRequired(data, response, sent: request, auth: auth.ordinaryIdentity)
             // Scoped adapters may inspect documented error headers (for example
             // Retry-After). All other callers retain the standard non-2xx error
             // translation.
@@ -631,8 +613,7 @@ actor HTTPClient {
         expectedAccount: RefreshAccountIdentity?,
         expectedAuth: CapturedOrdinaryRequestAuth?,
         dispatchRevision: UInt64,
-        method: String,
-        path: String
+        method: String
     ) async throws -> CapturedHTTPRequestAuth {
         let renewed: Bool
         do {
@@ -652,13 +633,13 @@ actor HTTPClient {
             }
             return refreshed
         }
-        return try Self.keepingUnexpiredBearer(auth, token: auth.accessToken, method: method, path: path)
+        return try Self.keepingUnexpiredBearer(auth, token: auth.accessToken, method: method)
     }
 
     /// The captured credentials when their bearer is still usable, or the
     /// 401 the server would answer with an expired one.
     private static func keepingUnexpiredBearer<Auth>(
-        _ auth: Auth, token: String?, method: String, path: String
+        _ auth: Auth, token: String?, method: String
     ) throws -> Auth {
         guard let token, MediaAccessTokenExpiry.isExpired(token, now: Date()) else { return auth }
         logger.error("Not sending \(method, privacy: .public) with an expired bearer: the refresh did not renew it")
@@ -704,15 +685,10 @@ actor HTTPClient {
         request.url = updated
     }
 
-    /// Cancel all in-flight tasks on the shared session and drop any
-    /// pending refresh. Called by the registry *before* retargeting
-    /// `TokenStore` on a server switch so a response from the old server
-    /// cannot be routed into the new server's token slot.
-    ///
-    /// `URLSession.shared` can't be invalidated, but cancelling per-task
-    /// is sufficient. The `getAllTasks` callback is asynchronous, so we
-    /// bridge it with a continuation — the caller must be able to wait
-    /// for cancellation to actually complete before retargeting.
+    /// Cancel every in-flight task on both sessions, plus pending refresh
+    /// flights and proactive media refreshes. Callers await this before
+    /// retargeting `TokenStore`, so a response from the old server cannot
+    /// land in the new server's token slot.
     func cancelInFlightRequests() async {
         requestDispatchRevision &+= 1
         let previous = cancellationTail?.task
@@ -862,12 +838,7 @@ actor HTTPClient {
         proactiveMediaRefreshes.removeAll()
         mediaRefreshBackoff = nil
         for (index, session) in [session, longWaitSession].enumerated() {
-            await withCheckedContinuation { continuation in
-                session.getAllTasks { tasks in
-                    for task in tasks { task.cancel() }
-                    continuation.resume()
-                }
-            }
+            for task in await session.allTasks { task.cancel() }
             if let cancellationSessionBarrier {
                 await cancellationSessionBarrier(index + 1)
             }
@@ -1045,7 +1016,7 @@ actor HTTPClient {
                 }
                 capturedAuth = refreshed
             } else {
-                capturedAuth = try Self.keepingUnexpiredBearer(current, token: accessToken, method: method, path: path)
+                capturedAuth = try Self.keepingUnexpiredBearer(current, token: accessToken, method: method)
             }
         }
         let serverUrl = if let capturedAuth {
@@ -1073,7 +1044,7 @@ actor HTTPClient {
             dispatchRecord: dispatchRecord
         )
 
-        if response.statusCode == 401, shouldAttemptRefresh(path: path, method: method) {
+        if response.statusCode == 401, Self.shouldAttemptRefresh(path: path, method: method) {
             if let capturedAuth,
                let refreshedAuth = try await refreshTokens(
                    expected: capturedAuth,
@@ -1094,36 +1065,116 @@ actor HTTPClient {
                 attachOrdinaryAuthHeaders(&retry, auth: refreshedAuth)
                 Self.apply(additionalHeaders, to: &retry)
                 if !sendsProfile { Self.removeProfileHeaders(from: &retry) }
-                #if os(iOS) || os(tvOS)
-                Self.logRefreshRetry(
-                    method: method,
-                    path: path,
-                    outcome: HTTPDiagnosticsOutcome.retried
-                )
-                #endif
+                Self.logRefreshRetry(method: method, path: path, retried: true)
                 let (retryData, retryResponse) = try await perform(
                     request: retry,
                     timeout: timeout,
                     dispatchRevision: dispatchRevision,
                     dispatchRecord: dispatchRecord
                 )
+                await signalProfileVerificationIfRequired(retryData, retryResponse, sent: retry, auth: refreshedAuth)
                 try ensureSuccess(retryData, retryResponse, method: method, quietStatuses: quietStatuses)
                 return (retryData, retryResponse)
             }
-            #if os(iOS) || os(tvOS)
             // Reached only when the refresh did not yield a usable, still-current
             // credential — no captured auth, the flight failed, or the identity
             // moved underneath it. The original 401 is about to be thrown.
-            Self.logRefreshRetry(
-                method: method,
-                path: path,
-                outcome: HTTPDiagnosticsOutcome.notRetried
-            )
-            #endif
+            Self.logRefreshRetry(method: method, path: path, retried: false)
         }
 
+        await signalProfileVerificationIfRequired(data, response, sent: request, auth: capturedAuth)
         try ensureSuccess(data, response, method: method, quietStatuses: quietStatuses)
         return (data, response)
+    }
+
+    /// v2 problem type for a declared profile the server no longer accepts as
+    /// verified: a PIN-locked profile whose `X-Profile-Token` is missing,
+    /// expired, or was minted before the account's access policy changed.
+    static let profileVerificationRequiredProblem = "profile_verification_required"
+
+    /// Tell the app that the active profile must be verified again.
+    ///
+    /// Only a 403 `profile_verification_required` counts, and only when the
+    /// request carried the active profile and its proof exactly as `auth`
+    /// captured them, from the persistent account. A request addressed to a
+    /// different profile through extra headers, a temporary playback handoff,
+    /// or a request whose profile or proof has since been replaced (the user
+    /// already re-verified, or switched profile) does not trigger recovery.
+    /// A burst of rejected requests for one proof posts once per selection:
+    /// picking the same profile again (even with the same proof, or none)
+    /// starts a new selection, and its rejection posts again.
+    private func signalProfileVerificationIfRequired(
+        _ data: Data,
+        _ response: HTTPURLResponse,
+        sent request: URLRequest,
+        auth: CapturedOrdinaryRequestAuth?
+    ) async {
+        guard response.statusCode == 403,
+              let auth,
+              case .persistentServer = auth.credentialOwner,
+              let profileID = auth.profileId, !profileID.isEmpty,
+              request.value(forHTTPHeaderField: "X-Profile-Id") == profileID,
+              request.value(forHTTPHeaderField: "X-Profile-Token") == auth.profileToken,
+              Self.problemIdentifier(in: data) == Self.profileVerificationRequiredProblem else {
+            return
+        }
+        let signal = CapturedOrdinaryRequestAuth(
+            account: auth.account,
+            credentialOwner: auth.credentialOwner,
+            accessToken: nil,
+            profileId: profileID,
+            profileToken: auth.profileToken
+        )
+        guard let selection = await tokenStore.profileSelectionGeneration(matchingIdentityOf: signal),
+              !isProfileVerificationSignaled(signal, selection: selection) else {
+            return
+        }
+        lastProfileVerificationSignal = (signal, selection)
+        Self.logger.notice("Active profile verification rejected; requesting profile selection")
+        #if os(iOS) || os(tvOS)
+        // Essential: the user is about to land on Who's Watching without
+        // having asked to, and this is the only line that says which request
+        // the server refused.
+        DiagTrace.log(
+            .essential,
+            level: .warning,
+            category: .network,
+            tag: "Auth",
+            message: "profile verification required",
+            attrs: [
+                "method": .string(request.httpMethod ?? "GET"),
+                "path": .string(HTTPDiagnosticsPath.attribute(for: response.url)),
+                "status": .int(403),
+            ]
+        )
+        #endif
+        let event = ProfileVerificationRequiredEvent(
+            account: auth.account,
+            profileID: profileID,
+            profileSelection: selection
+        )
+        await MainActor.run {
+            NotificationCenter.default.post(name: .siloProfileVerificationRequired, object: event)
+        }
+    }
+
+    private func isProfileVerificationSignaled(
+        _ signal: CapturedOrdinaryRequestAuth,
+        selection: UUID
+    ) -> Bool {
+        guard let last = lastProfileVerificationSignal else { return false }
+        return last.selection == selection && last.auth.sameCredentialIdentity(as: signal)
+    }
+
+    /// The stable identifier of an `application/problem+json` body: the final
+    /// segment of its `type` URI. Nil for any other body.
+    static func problemIdentifier(in data: Data) -> String? {
+        struct ProblemType: Decodable { let type: String }
+        guard let type = try? JSONDecoder().decode(ProblemType.self, from: data).type,
+              let identifier = type.split(separator: "/").last else {
+            return nil
+        }
+        return String(identifier)
     }
 
     private static func apply(_ headers: [String: String], to request: inout URLRequest) {
@@ -1145,14 +1196,8 @@ actor HTTPClient {
     /// server URL, so a server mounted under a base path still passes.
     ///
     /// The DEBUG assertion in ``buildRequest(serverUrl:method:path:query:)``
-    /// covers only requests this client builds. Token refresh builds its URL
-    /// from the constant ``refreshPath``. Other code joins routes onto the
-    /// server URL itself and is not checked here: `TopShelfHTTPClient`,
-    /// `PairingDeviceAPI`, `APIv2Client.downloadFileURL`, the playback control
-    /// socket handshake and `ApplePushDisplayMetadata`. Requests to other
-    /// origins (the hosted diagnostics service) and server-minted absolute
-    /// media URLs are not checked either. `scripts/ci/check-no-api-v1.sh`
-    /// guards every app source against literal v1 route strings.
+    /// covers only requests built here. Code that joins routes onto the server
+    /// URL itself is guarded by `scripts/ci/check-no-api-v1.sh`.
     static func isSiloServerPath(_ path: String) -> Bool {
         let normalizedPath = path.hasPrefix("/") ? path : "/" + path
         return normalizedPath == "/api/v2" || normalizedPath.hasPrefix("/api/v2/")
@@ -1329,8 +1374,9 @@ actor HTTPClient {
     /// it is a detached single-flight `Task` with its own identity rules — so it
     /// has a parallel chokepoint in
     /// ``performRefreshTransport(request:session:)``. Those two functions are
-    /// the only places in this file that may call `session.data(for:)`; adding a
-    /// third would reintroduce an unclassified path.
+    /// the only places in this file that may call `session.data(for:)`, apart
+    /// from the best-effort, unclassified `revokeSession`; adding another
+    /// would reintroduce an unclassified path.
     private func perform(
         request: URLRequest,
         timeout: HTTPTimeout = .standard,
@@ -1357,22 +1403,7 @@ actor HTTPClient {
             try ensureRequestDispatchAllowed(expectedRevision: dispatchRevision)
         } catch {
             #if os(iOS) || os(tvOS)
-            // Essential: an identity-change rejection is invisible to the user
-            // as anything but "it didn't load", and it is the signature of the
-            // server-switch races this class exists to prevent.
-            DiagTrace.log(
-                .essential,
-                level: .warning,
-                category: .network,
-                tag: "HTTP",
-                message: "request rejected",
-                attrs: [
-                    "method": .string(diagnosticsMethod),
-                    "path": .string(diagnosticsPath),
-                    "outcome": .string(HTTPDiagnosticsOutcome.identityChanged),
-                    "error_code": .string(HTTPDiagnosticsOutcome.identityChanged),
-                ]
-            )
+            Self.logIdentityRejected("request rejected", method: diagnosticsMethod, path: diagnosticsPath)
             #endif
             throw error
         }
@@ -1387,20 +1418,8 @@ actor HTTPClient {
         } catch {
             if isRequestDispatchBlocked || requestDispatchRevision != dispatchRevision {
                 #if os(iOS) || os(tvOS)
-                DiagTrace.log(
-                    .essential,
-                    level: .warning,
-                    category: .network,
-                    tag: "HTTP",
-                    message: "request rejected",
-                    attrs: [
-                        "method": .string(diagnosticsMethod),
-                        "path": .string(diagnosticsPath),
-                        "duration_ms": .int(Self.elapsedMilliseconds(since: startedAt)),
-                        "outcome": .string(HTTPDiagnosticsOutcome.identityChanged),
-                        "error_code": .string(HTTPDiagnosticsOutcome.identityChanged),
-                    ]
-                )
+                Self.logIdentityRejected("request rejected", method: diagnosticsMethod, path: diagnosticsPath,
+                                         startedAt: startedAt)
                 #endif
                 throw HTTPError.requestIdentityChanged
             }
@@ -1447,20 +1466,8 @@ actor HTTPClient {
             try ensureRequestDispatchAllowed(expectedRevision: dispatchRevision)
         } catch {
             #if os(iOS) || os(tvOS)
-            DiagTrace.log(
-                .essential,
-                level: .warning,
-                category: .network,
-                tag: "HTTP",
-                message: "response rejected",
-                attrs: [
-                    "method": .string(diagnosticsMethod),
-                    "path": .string(diagnosticsPath),
-                    "duration_ms": .int(Self.elapsedMilliseconds(since: startedAt)),
-                    "outcome": .string(HTTPDiagnosticsOutcome.identityChanged),
-                    "error_code": .string(HTTPDiagnosticsOutcome.identityChanged),
-                ]
-            )
+            Self.logIdentityRejected("response rejected", method: diagnosticsMethod, path: diagnosticsPath,
+                                     startedAt: startedAt)
             #endif
             throw error
         }
@@ -1486,9 +1493,7 @@ actor HTTPClient {
         // Any HTTP response — success or error status — proves the server is
         // alive.
         if reportReachability {
-            await MainActor.run {
-                ConnectionMonitor.shared.noteServerResponded()
-            }
+            await Self.noteServerResponded()
         }
         #if os(iOS) || os(tvOS)
         // Verbose, and this is the highest-leverage volume decision in the
@@ -1526,33 +1531,16 @@ actor HTTPClient {
         return (data, http)
     }
 
-    /// One token-refresh round trip, classified exactly as ``perform`` classifies
-    /// an ordinary request.
+    /// One token-refresh round trip, classified the way ``perform`` classifies
+    /// an ordinary request. Refresh bypasses `perform` (it runs as a detached
+    /// single-flight `Task` and builds its own request so it never picks up
+    /// ambient auth headers), so this is its diagnostics chokepoint, shared by
+    /// the scoped and ordinary refresh paths. It only observes: errors are
+    /// rethrown and non-2xx responses returned unchanged.
     ///
-    /// Refresh is the one thing in this file that legitimately does not funnel
-    /// through `perform`: it runs as a detached single-flight `Task` off the
-    /// actor, carries no dispatch revision, and deliberately builds its own
-    /// request so it can never pick up the ambient auth headers. That made it
-    /// invisible to network diagnostics, and invisible in the worst place — a
-    /// refresh that times out, fails TLS, or is rejected outright is the *cause*
-    /// of the 401 the user notices, yet it surfaced only as the generic "401 not
-    /// retried" line, which records that the retry did not happen and nothing
-    /// about why.
-    ///
-    /// Both refresh implementations (scoped and ordinary) call this so the
-    /// classifier exists once. It only observes: the original error is rethrown
-    /// untouched, and a non-2xx or non-HTTP response is returned rather than
-    /// turned into a throw, so each caller's own cancellation checks,
-    /// reachability reporting, and session-invalidation rules are unchanged.
-    ///
-    /// **No credential can reach a log line from here.** The request body holds a
-    /// refresh token and a 2xx response body holds two more, but neither
-    /// `httpBody`, `allHTTPHeaderFields`, nor `data` is ever read: the only
-    /// values emitted are the method, the templated path, the status, a
-    /// duration, and the two closed-vocabulary classifications. The response
-    /// body is in scope in this function, so unlike
-    /// ``recordDecodingFailureDiagnostic(type:path:error:)`` that is a rule
-    /// rather than a structural guarantee — keep the attribute list literal.
+    /// **No credential may reach a log line from here.** The request and a 2xx
+    /// response both carry tokens, so never read `httpBody`,
+    /// `allHTTPHeaderFields` or `data`; keep the attribute list literal.
     private static func performRefreshTransport(
         request: URLRequest,
         session: URLSession
@@ -1649,18 +1637,22 @@ actor HTTPClient {
     #if os(iOS) || os(tvOS)
     /// Monotonic elapsed milliseconds. `ContinuousClock` rather than `Date` so
     /// a wall-clock change mid-request cannot put a negative or absurd
-    /// `duration_ms` into a report. Saturating arithmetic for the same reason:
-    /// a garbage duration is worse than a clamped one.
+    /// `duration_ms` into a report. Clamped for the same reason: a garbage
+    /// duration is worse than a clamped one.
     private static func elapsedMilliseconds(since start: ContinuousClock.Instant) -> Int {
-        let (seconds, attoseconds) = (ContinuousClock.now - start).components
-        let milliseconds = seconds.multipliedReportingOverflow(by: 1_000)
-        guard !milliseconds.overflow else { return Int(Int32.max) }
-        let total = milliseconds.partialValue
-            .addingReportingOverflow(attoseconds / 1_000_000_000_000_000)
-        guard !total.overflow else { return Int(Int32.max) }
-        return Int(max(0, total.partialValue))
+        let milliseconds = (ContinuousClock.now - start) / .milliseconds(1)
+        return Int(min(max(0, milliseconds), Double(Int32.max)))
     }
     #endif
+
+    /// Runs after every response. Always hops to the main actor, like
+    /// `noteServerUnreachable`, so a failure queued there before this
+    /// success cannot be applied after it and mark a live server unreachable.
+    private static func noteServerResponded() async {
+        await MainActor.run {
+            ConnectionMonitor.shared.noteServerResponded()
+        }
+    }
 
     /// Only the absence of an HTTP response is a reachability signal. Decode,
     /// validation, and other response-processing errors still prove that the
@@ -1726,6 +1718,23 @@ actor HTTPClient {
     }
 
     #if os(iOS) || os(tvOS)
+    /// Essential: an identity-change rejection is invisible to the user as
+    /// anything but "it didn't load", and it is the signature of the
+    /// server-switch races this class exists to prevent. `startedAt` is nil
+    /// for a request rejected before it was sent.
+    private static func logIdentityRejected(_ message: String, method: String, path: String,
+                                            startedAt: ContinuousClock.Instant? = nil) {
+        var attrs: [String: DiagLogAttributeValue] = [
+            "method": .string(method),
+            "path": .string(path),
+            "outcome": .string(HTTPDiagnosticsOutcome.identityChanged),
+            "error_code": .string(HTTPDiagnosticsOutcome.identityChanged),
+        ]
+        if let startedAt { attrs["duration_ms"] = .int(elapsedMilliseconds(since: startedAt)) }
+        DiagTrace.log(.essential, level: .warning, category: .network, tag: "HTTP", message: message, attrs: attrs)
+    }
+    #endif
+
     /// The single emitter for the 401 refresh-retry decision, shared by the
     /// scoped (`requestData`) and ordinary (`performWithAuthRetry`) paths so
     /// both spell the outcome identically.
@@ -1741,47 +1750,37 @@ actor HTTPClient {
     /// credential itself — presence, length, prefix, expiry, or whether it
     /// actually rotated — is representable in this call, by design.
     ///
-    /// Note on `attempt` and the hosted collector: `network.attempt` is in the
-    /// canonical attribute registry, but `attempt` is *also* in the hosted
-    /// collector's `FORBIDDEN_KEYS`, so a hosted bundle carrying it would be
-    /// privacy-*flagged* (the report still processes to `ready`; only the
-    /// `privacy_fields` check fails) on every session containing a routine 401
-    /// refresh — all false positives. That conflict is now RESOLVED at the
-    /// bundle boundary rather than here: `attempt` is withheld from
-    /// `DiagnosticsBundleBuilder.hostedAttributeRegistry`, exactly as
-    /// `playback.session_id` is, so it is stripped from hosted bundles while
-    /// self-hosted uploads keep it. Emit it unconditionally; do not special-case
-    /// destinations in this function.
-    ///
-    /// That makes `msg` load-bearing, not merely a fallback: on hosted evidence
-    /// the attribute genuinely is absent, and "401 retry" versus "401 not
-    /// retried" is the only thing carrying the distinction. Keep those two
-    /// strings self-sufficient.
+    /// `attempt` is withheld from hosted bundles by
+    /// `DiagnosticsBundleBuilder.hostedAttributeRegistry`, because the hosted
+    /// collector forbids it; emit it unconditionally here. On hosted evidence
+    /// `msg` therefore carries the distinction, so keep "401 retry" and
+    /// "401 not retried" self-sufficient.
     ///
     /// `path` here is the caller's route argument rather than a built URL, and
     /// it still goes through ``HTTPDiagnosticsPath``: callers interpolate ids
     /// into it (`"/api/v2/catalog/items/\(itemID)"`), and that helper also truncates
     /// at the first `?` or `#`, so neither an id nor a query string can leak
     /// through this line.
-    private static func logRefreshRetry(method: String, path: String, outcome: String) {
-        let isRetry = outcome == HTTPDiagnosticsOutcome.retried
+    /// A no-op on macOS, which has no diagnostics capture.
+    private static func logRefreshRetry(method: String, path: String, retried: Bool) {
+        #if os(iOS) || os(tvOS)
         var attrs: [String: DiagLogAttributeValue] = [
             "method": .string(method),
             "path": .string(HTTPDiagnosticsPath.attribute(forRawPath: path)),
             "status": .int(401),
-            "outcome": .string(outcome),
+            "outcome": .string(retried ? HTTPDiagnosticsOutcome.retried : HTTPDiagnosticsOutcome.notRetried),
         ]
-        if isRetry { attrs["attempt"] = .int(2) }
+        if retried { attrs["attempt"] = .int(2) }
         DiagTrace.log(
             .essential,
-            level: isRetry ? .info : .warning,
+            level: retried ? .info : .warning,
             category: .network,
             tag: "Auth",
-            message: isRetry ? "401 retry" : "401 not retried",
+            message: retried ? "401 retry" : "401 not retried",
             attrs: attrs
         )
+        #endif
     }
-    #endif
 
     /// Public auth operations carry no bearer. Collecting polls and other
     /// public auth mutations may consume one-use state, so a rejected or
@@ -1790,7 +1789,7 @@ actor HTTPClient {
     /// Matched by suffix: `buildRequest` keeps the server URL's base path, so
     /// the path seen at header-attachment time may be `/prefix/api/v2/...`.
     private static func isPublicAuthPath(_ path: String) -> Bool {
-        publicAuthPathSuffixes.contains { path.hasSuffix($0) }
+        publicAuthPathSuffixes.contains { path.hasSuffix($0) } || ServerAuthPath.isNetworkSignIn(path)
     }
 
     private static let publicAuthPathSuffixes = [
@@ -1800,48 +1799,20 @@ actor HTTPClient {
         "/api/v2/system/setup", "/api/v2/auth/signup",
     ]
 
-    /// The v2 exclusions are single-dispatch mutations (`docs/native-api-v2.md`):
-    /// a 401 on one of them surfaces as the failure it is instead of being
-    /// re-sent under a refreshed bearer, because the server may already have
+    /// Whether a 401 may refresh the session and re-send the request. Reads
+    /// (GET, HEAD) always may. A mutation may only when it is on the replay
+    /// allowlist taken from the contract's `x-silo-retry-safety` annotations:
+    /// `APIv2MutationCatalog` in `APIv2RetrySafety.swift`. Everything else,
+    /// including a mutation the catalog does not know, is sent once, and its
+    /// 401 surfaces as the failure it is, because the server may already have
     /// consumed the first attempt. A bearer known to be expired is renewed
-    /// before any request is sent, so these operations do not meet that 401
-    /// just because the token timed out. Settings value writes are
-    /// `natural_idempotent` and are not excluded: a 401 refreshes once and
-    /// re-sends the same desired value under the same captured owner.
-    private func shouldAttemptRefresh(path: String, method: String) -> Bool {
-        // Matches the guard in AuthInterceptorImpl.kt:96.
-        let diagnosticsUploads = "/api/v2/diagnostics/reports/uploads"
-        return !Self.isPublicAuthPath(path) && path != "/api/v2/diagnostics/reports"
-            && !(path.hasPrefix("/api/v2/watch-together/rooms/")
-                && ((method == "POST" && (path.hasSuffix("/playback/start") || path.hasSuffix("/suggestions/promote")))
-                    || (method == "PUT" && path.hasSuffix("/selection"))))
-            && !(method == "POST" && path.hasPrefix("/api/v2/playback/sessions/") && path.hasSuffix("/control/ws-ticket"))
-            && !(method == "POST" && path.hasPrefix("/api/v2/playback/") && (path.hasSuffix("/replan") || path.hasSuffix("/route-events")))
-            && path != "/api/v2/subtitles/download"
-            && !(method == "POST" && path == "/api/v2/devices/push/apple")
-            && !(["PUT", "DELETE"].contains(method) && path.hasPrefix("/api/v2/watchlist/"))
-            && !(["PUT", "DELETE"].contains(method) && path.hasPrefix("/api/v2/favorites/"))
-            && !(["POST", "DELETE"].contains(method) && path.hasPrefix("/api/v2/watched/"))
-            && !(path == "/api/v2/downloads/subscriptions" && method == "POST")
-            && path != "/api/v2/onboarding/progress"
-            && path != "/api/v2/subtitles/ai/translate"
-            && !(path.hasPrefix("/api/v2/catalog/items/") && path.hasSuffix("/translate-description"))
-            && !(method == "POST" && path.hasPrefix("/api/v2/catalog/items/") && path.hasSuffix("/trailers/refresh"))
-            && !(method == "POST" && path.hasPrefix("/api/v2/catalog/people/") && path.hasSuffix("/refresh"))
-            && !(path == "/api/v2/profiles" && method == "POST")
-            // A link ticket and a link code are single use, and a credentials
-            // link checks two passwords: the first attempt may already have
-            // spent them.
-            && !(method == "POST" && (path == "/api/v2/account/identities/link-ticket"
-                || path == "/api/v2/account/identities/link-complete"
-                || path == "/api/v2/account/identities/link-credentials"))
-            // A journaled own-profile PATCH has one dispatch, even when a
-            // refresh could obtain another bearer for the same account.
-            && !(method == "PATCH" && path.hasPrefix("/api/v2/profiles/")
-                && path.split(separator: "/").count == 4)
-            && !(path == "/api/v2/downloads" && method == "POST")
-            && path != diagnosticsUploads
-            && !(path.hasPrefix(diagnosticsUploads + "/") && path.hasSuffix("/complete"))
+    /// before any request is sent, so single-dispatch operations do not meet
+    /// that 401 just because the token timed out.
+    static func shouldAttemptRefresh(path: String, method: String) -> Bool {
+        guard !isPublicAuthPath(path) else { return false }
+        let verb = method.uppercased()
+        if verb == "GET" || verb == "HEAD" { return true }
+        return APIv2MutationCatalog.operation(method: verb, path: path)?.replaysAfterRefresh ?? false
     }
 
     private var isRequestDispatchBlocked: Bool {
@@ -1956,9 +1927,7 @@ actor HTTPClient {
                 Self.logger.error("Scoped refresh: non-HTTP response")
                 return nil
             }
-            await MainActor.run {
-                ConnectionMonitor.shared.noteServerResponded()
-            }
+            await noteServerResponded()
             if (200..<300).contains(http.statusCode) {
                 let tokens = try decoder.decode(RefreshResponse.self, from: data)
                 _ = await tokenStore.saveRefreshedTokens(
@@ -2129,13 +2098,7 @@ actor HTTPClient {
         if let existing = inFlightRefreshes[key] {
             refreshFlightJoinObserver?(.ordinary)
             if let failure = await existing.task.value { throw failure.error }
-            if let current = await tokenStore.currentOrdinaryRequestAuth(
-                matchingIdentityOf: expected
-            ), current.accessToken != expected.accessToken,
-               current.accessToken != nil {
-                return current
-            }
-            return nil
+            return await rotatedAuth(since: expected)
         }
 
         let task = Task<RefreshFlightFailure?, Never> { [tokenStore, session, decoder, encoder] in
@@ -2154,13 +2117,15 @@ actor HTTPClient {
             inFlightRefreshes.removeValue(forKey: key)
         }
         if let failure { throw failure.error }
-        if let current = await tokenStore.currentOrdinaryRequestAuth(
-            matchingIdentityOf: expected
-        ), current.accessToken != expected.accessToken,
-           current.accessToken != nil {
-            return current
-        }
-        return nil
+        return await rotatedAuth(since: expected)
+    }
+
+    /// The current credentials for `expected`'s identity, when the access
+    /// token rotated since `expected` was captured.
+    private func rotatedAuth(since expected: CapturedOrdinaryRequestAuth) async -> CapturedOrdinaryRequestAuth? {
+        guard let current = await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: expected),
+              current.accessToken != nil, current.accessToken != expected.accessToken else { return nil }
+        return current
     }
 
     private static func performRefresh(
@@ -2200,9 +2165,7 @@ actor HTTPClient {
                 return nil
             }
             // Refresh bypasses perform(), so feed reachability from here too.
-            await MainActor.run {
-                ConnectionMonitor.shared.noteServerResponded()
-            }
+            await noteServerResponded()
             if (200..<300).contains(http.statusCode) {
                 let tokens = try decoder.decode(RefreshResponse.self, from: data)
                 _ = await tokenStore.saveRefreshedTokens(
@@ -2467,16 +2430,15 @@ struct HTTPMultipartPart {
 /// sent: both surface as `HTTPError.requestIdentityChanged` or
 /// `.authorityChanged`. Once set it stays set, so a 401 refresh retry that is
 /// refused still counts as dispatched.
-final class HTTPDispatchRecord: @unchecked Sendable {
-    private let lock = NSLock()
-    private var dispatched = false
+final class HTTPDispatchRecord: Sendable {
+    private let dispatched = Atomic(false)
 
     var didDispatch: Bool {
-        lock.withLock { dispatched }
+        dispatched.load(ordering: .acquiring)
     }
 
     fileprivate func markDispatched() {
-        lock.withLock { dispatched = true }
+        dispatched.store(true, ordering: .releasing)
     }
 }
 
@@ -2598,12 +2560,9 @@ enum HTTPError: LocalizedError, CustomStringConvertible {
 /// * **Dotted segments.** `/api/v2/settings/values/downloads.default_quality`
 ///   is a static route with a static key, and every segment is a legal
 ///   identifier — but the collector reads `downloads.default_quality` as a
-///   hostname-shaped token and rejects the report. It maintains a hand-curated
-///   `SAFE_DOTTED_SETTING_KEYS` allowlist that our generated `SettingKey` table
-///   has already outgrown: of 53 shipping keys, 28 are *not* on it, including
-///   every `nav.*`, `ui.library_page_state`, and `subtitle.matches_device`. We
-///   cannot fix that from this repo and must not gamble a whole bundle on the
-///   allowlist being current, so any dotted segment is templated.
+///   hostname-shaped token and rejects the report. Its hand-curated
+///   `SAFE_DOTTED_SETTING_KEYS` allowlist lags the generated `SettingKey`
+///   table, and this repo cannot update it, so any dotted segment is templated.
 /// * **Empty and non-ASCII segments.** `//`, `/a b/`, percent-encoding, and
 ///   anything outside `[A-Za-z0-9_-]` are all rejected or ambiguous under the
 ///   collector's decode-then-match pass.

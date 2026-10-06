@@ -15,11 +15,21 @@ struct DownloadsSettingsView: View {
     }
 
     /// Mentions the resolution only when the server reports one; an older
-    /// server's presets are labelled by bitrate alone.
+    /// server's presets are labelled by bitrate alone. A server without
+    /// batch quality downloads seasons and series in original quality.
     private var qualityFooter: String {
-        let base = "Original prefers source quality and may prepare a compatibility file if this device needs one. For single items, bitrate presets are prepared on the server when the original is larger"
+        let batches = manager.canChooseBatchQuality
+        let base = "Original prefers source quality and may prepare a compatibility file if this device needs one. "
+            + (batches ? "Bitrate presets" : "For single items, bitrate presets")
+            + " are prepared on the server when the original is larger"
         let showsResolution = manager.capability?.qualityOptions.contains { ($0.maxHeight ?? 0) > 0 } ?? false
-        return base + (showsResolution ? ", at up to the resolution shown." : ".") + " Series and season downloads use original quality."
+        let monitors = manager.canChooseMonitorQuality
+        let scope = batches
+            ? (monitors
+                ? " This is the default for every download and monitor; the Download sheet can change it."
+                : " This is the default for every download; the Download sheet can change it. Monitored series download in original quality.")
+            : " Series and season downloads use original quality."
+        return base + (showsResolution ? ", at up to the resolution shown." : ".") + scope
     }
 
     private var heldProgressFooter: String {
@@ -60,8 +70,8 @@ struct DownloadsSettingsView: View {
             }
             .listRowBackground(Color.siloGroupedCell)
 
-            Section("Series Monitoring Defaults") {
-                Toggle("Delete watched episodes", isOn: $settings.defaultDeleteWatched)
+            Section("Monitoring Defaults") {
+                Toggle("Delete after watching", isOn: $settings.defaultDeleteWatched)
                     .tint(.siloSwitchOn)
                 Stepper(
                     settings.defaultMaxStorageGB == 0
@@ -80,7 +90,11 @@ struct DownloadsSettingsView: View {
             } header: {
                 Text("Cleanup")
             } footer: {
+                #if os(macOS)
+                Text("When off, the Downloads page suggests freeing up space by removing items you've finished watching.")
+                #else
                 Text("When off, the Downloads tab suggests freeing up space by removing items you've finished watching.")
+                #endif
             }
             .listRowBackground(Color.siloGroupedCell)
 
@@ -91,7 +105,7 @@ struct DownloadsSettingsView: View {
                     Text(DownloadFormatting.bytes(manager.totalBytesUsed))
                         .foregroundColor(.siloSecondaryText)
                 }
-                if !manager.records.isEmpty {
+                if manager.hasRecords {
                     Button(role: .destructive) {
                         showDeleteAllConfirm = true
                     } label: {

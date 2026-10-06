@@ -53,16 +53,10 @@ struct TVDetailPageSurface<Content: View>: View {
     }
 }
 
-/// Full-bleed cinematic hero for the tvOS item-detail screen. Modeled
-/// after Apple TV's detail page: a nearly full-viewport backdrop layered
-/// with a tall left-column editorial stack (eyebrow pill → title →
-/// source row → overview → facts+quality → actions) and a quiet
-/// right-side "Starring ..." line positioned mid-hero.
-///
-/// The intent is to show enough of the below-fold rail peeking at the
-/// bottom that the viewer instinctively drifts down when they want
-/// episodes / similar titles — rather than reaching the "end" of the
-/// hero.
+/// Full-bleed detail hero: backdrop on the right, and a left editorial column
+/// (eyebrow, title or logo, facts + ratings + genres, synopsis, credit,
+/// playback readout) above the action row. Sized so the first rail peeks
+/// below the fold.
 struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     let title: String
     let logoUrl: String?
@@ -71,10 +65,11 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     /// Optional short editorial line placed in a capsule above the title
     /// (e.g. "New Episode Friday", "Continuing Series"). Hidden when nil.
     let eyebrow: String?
-    /// Source/genre labels shown under the title. The optional outlined
-    /// rating chip leads the metadata, followed by dot-separated text.
+    /// Source/genre labels shown under the title. Optional outlined rating
+    /// and advisory-age chips lead the metadata, followed by dot-separated text.
     let sourceTokens: [String]
     let ratingChip: String?
+    var overlayData: OverlayData? = nil
     /// Short description shown in the hero. Clamped to 3 lines.
     let overview: String?
     /// Inline facts row shown above the action buttons. Mixes plain text
@@ -85,8 +80,7 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     /// before the genre labels. The row stays on one line: entries that
     /// don't fit drop from the end.
     var ratings: [DisplayRating] = []
-    /// Optional "Starring A, B, C" line floated on the right of the hero
-    /// at mid-height. Hidden when nil.
+    /// Optional credit line ("Starring …" / "Directed by …") under the synopsis.
     let starringText: String?
     /// Non-interactive playback readout shown directly below the credits. It
     /// reserves a stable slot while an episode's playback detail is loading,
@@ -98,7 +92,6 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     /// coupled, which is the default behavior for every other detail page.
     var backdropHeight: CGFloat? = nil
     var heroHeight: CGFloat = TVDetailLayout.heroHeight
-    var heroTopInset: CGFloat = TVDetailLayout.heroTopInset
     /// Episode mode narrows only the editorial column. The logo keeps the
     /// same leading/top anchor while long episode copy wraps before it reaches
     /// the backdrop subject.
@@ -130,13 +123,20 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     /// description-translation control). Pass `{ EmptyView() }` when there's
     /// nothing to show.
     @ViewBuilder let belowSynopsis: () -> BelowSynopsis
+    @ObservedObject private var advisoryAgePreference = AdvisoryAgePreferenceStore.shared
 
     @ViewBuilder
     var body: some View {
-        if extendsBackdropFadeBelowHero {
-            heroComposition
-        } else {
-            heroComposition.clipped()
+        Group {
+            if extendsBackdropFadeBelowHero {
+                heroComposition
+            } else {
+                heroComposition.clipped()
+            }
+        }
+        .task(id: overlayData?.advisoryAge) {
+            guard (overlayData?.advisoryAge ?? 0) > 0 else { return }
+            await advisoryAgePreference.hydrateIfNeeded()
         }
     }
 
@@ -159,10 +159,10 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
             )
 
             if let url = backdropUrl, !url.isEmpty {
-                CachedAsyncImage(
+                AsyncImageView(
                     url: url,
-                    targetSize: artworkSize,
                     thumbhash: backdropThumbhash,
+                    targetSize: artworkSize,
                     contentMode: .fill
                 )
                 .frame(width: artworkSize.width, height: artworkSize.height)
@@ -195,7 +195,7 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .focusSection()
         }
-        .padding(.top, heroTopInset)
+        .padding(.top, TVDetailLayout.heroTopInset)
         .padding(.horizontal, TVDetailLayout.horizontalInset)
         .frame(
             maxWidth: .infinity,
@@ -296,11 +296,11 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     @ViewBuilder
     private var reservedMetadataBlock: some View {
         if metadataReservedHeight > 0 {
-            metadataBlock
+            factsRow
                 .frame(height: metadataReservedHeight, alignment: .leading)
                 .clipped()
         } else {
-            metadataBlock
+            factsRow
         }
     }
 
@@ -345,18 +345,11 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
         }
     }
 
-    // MARK: - Metadata
-
-    @ViewBuilder
-    private var metadataBlock: some View {
-        factsRow
-    }
-
     // MARK: - Facts + quality row
 
     @ViewBuilder
     private var factsRow: some View {
-        if !factsLine.isEmpty || !ratings.isEmpty || !sourceTokens.isEmpty || ratingChip != nil {
+        if !factsLine.isEmpty || !ratings.isEmpty || !sourceTokens.isEmpty || !ratingChips.isEmpty {
             HStack(spacing: 14) {
                 if hasLeadingFacts {
                     // The row never wraps. When the ratings don't all fit,
@@ -384,7 +377,7 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     }
 
     private var hasLeadingFacts: Bool {
-        !(ratingChip ?? "").isEmpty || !factsLine.isEmpty || !ratings.isEmpty
+        !ratingChips.isEmpty || !factsLine.isEmpty || !ratings.isEmpty
     }
 
     /// Every rating first, then one fewer at a time. A single empty row
@@ -396,8 +389,8 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     /// The rating chip, facts and the given ratings, none of which truncate.
     private func leadingFacts(ratings shown: [DisplayRating]) -> some View {
         HStack(spacing: 14) {
-            if let ratingChip, !ratingChip.isEmpty {
-                ratingBadge(ratingChip)
+            ForEach(Array(ratingChips.enumerated()), id: \.offset) { _, chip in
+                ratingBadge(chip)
                     .fixedSize(horizontal: true, vertical: false)
             }
 
@@ -432,6 +425,17 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
             )
     }
 
+    private var ratingChips: [String] {
+        var chips = [ratingChip].compactMap { value in
+            value.flatMap { $0.isEmpty ? nil : $0 }
+        }
+        if advisoryAgePreference.showsAdvisoryAge,
+           let advisory = overlayData?.advisoryAgeBadgeLabel {
+            chips.append(advisory)
+        }
+        return chips
+    }
+
     @ViewBuilder
     private func factsItem(_ token: TVHeroFactToken) -> some View {
         switch token {
@@ -439,26 +443,6 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
             Text(value)
                 .font(.system(size: 24, weight: .medium))
                 .foregroundColor(Color.white.opacity(0.88))
-        case .rating(let value):
-            HStack(spacing: 6) {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundColor(Color.siloSuccess.opacity(0.9))
-                Text(value)
-                    .font(.system(size: 22, weight: .medium))
-                    .foregroundColor(Color.white.opacity(0.88))
-            }
-        case .chip(let value):
-            Text(value)
-                .font(.system(size: 16, weight: .heavy))
-                .tracking(1.0)
-                .foregroundColor(.white)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 4)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 4)
-                        .stroke(Color.white.opacity(0.65), lineWidth: 1.2)
-                )
         }
     }
 
@@ -501,19 +485,8 @@ private struct TVHeroTitle: View {
         }
     }
 
-    private var primaryFont: Font {
-        if #available(tvOS 16.0, *) {
-            return .system(size: 92, weight: .black).width(.compressed)
-        }
-        return .system(size: 88, weight: .black)
-    }
-
-    private var subtitleFont: Font {
-        if #available(tvOS 16.0, *) {
-            return .system(size: 40, weight: .heavy).width(.compressed)
-        }
-        return .system(size: 38, weight: .heavy)
-    }
+    private let primaryFont = Font.system(size: 92, weight: .black).width(.compressed)
+    private let subtitleFont = Font.system(size: 40, weight: .heavy).width(.compressed)
 
     private func split(_ raw: String) -> (primary: String, subtitle: String?) {
         let separators: [String] = [": ", " — ", " – ", " - "]
@@ -633,13 +606,9 @@ private struct TVHeroEyebrow: View {
 
 // MARK: - Tokens
 
-/// A token in the combined facts row. `.text` items get pipe separators
-/// between them; `.rating` renders a green check + maturity label;
-/// `.chip` renders an outlined pill (e.g. 4K / HDR / ATMOS).
+/// A token in the combined facts row, separated by "·".
 enum TVHeroFactToken: Hashable {
     case text(String)
-    case rating(String)
-    case chip(String)
 }
 
 // MARK: - Metadata builders
@@ -703,21 +672,22 @@ enum TVHeroMetadata {
         } else if let year = detail.year, year > 0 {
             tokens.append(.text(String(year)))
         }
-        if let runtime = SelectedMediaRuntime.minutes(
-            detail: detail,
-            selectedVersion: selectedVersion
-        ), runtime > 0 {
-            tokens.append(.text(formatRuntime(runtime)))
+        let runtime = SelectedMediaRuntime.minutes(detail: detail, selectedVersion: selectedVersion)
+        if let runtimeText = MediaTextFormatting.runtime(minutes: runtime) {
+            tokens.append(.text(runtimeText))
         }
         return tokens
     }
 
-    static func seriesFactsLine(from detail: ItemDetail) -> [TVHeroFactToken] {
+    /// `seasons` is the season list the page loaded from the library; the
+    /// count stays off the line until it arrives.
+    static func seriesFactsLine(from detail: ItemDetail, seasons: [Season]) -> [TVHeroFactToken] {
         var tokens: [TVHeroFactToken] = []
         if let year = detail.year, year > 0 {
             tokens.append(.text(String(year)))
         }
-        if let count = detail.seasonCount, count > 0 {
+        let count = seasons.librarySeasonCount
+        if count > 0 {
             tokens.append(.text("\(count) Season\(count == 1 ? "" : "s")"))
         }
         return tokens
@@ -735,35 +705,10 @@ enum TVHeroMetadata {
         let runtime = playbackDetail.flatMap {
             SelectedMediaRuntime.minutes(detail: $0, selectedVersion: selectedVersion)
         } ?? episode.runtime
-        if let runtime, runtime > 0 {
-            tokens.append(.text(formatRuntime(runtime)))
+        if let runtimeText = MediaTextFormatting.runtime(minutes: runtime) {
+            tokens.append(.text(runtimeText))
         }
         return tokens
-    }
-
-    // Eyebrow (short editorial line)
-
-    static func eyebrow(from detail: ItemDetail) -> String? {
-        if detail.type == "episode" {
-            if let seriesTitle = detail.seriesTitle?.trimmingCharacters(in: .whitespaces),
-               !seriesTitle.isEmpty {
-                return seriesTitle
-            }
-        }
-        if let status = detail.status?.trimmingCharacters(in: .whitespaces),
-           !status.isEmpty,
-           detail.type == "series" {
-            switch status.lowercased() {
-            case "continuing", "returning series", "returning":
-                return "Continuing Series"
-            case "ended":
-                return "Complete Series"
-            case "in production":
-                return "New Season Coming"
-            default: break
-            }
-        }
-        return nil
     }
 
     // Starring (first 3 cast names)
@@ -780,15 +725,6 @@ enum TVHeroMetadata {
         let names = cast.prefix(3).map(\.name)
         guard !names.isEmpty else { return nil }
         return "Starring " + names.joined(separator: ", ")
-    }
-
-    // MARK: - Helpers
-
-    private static func formatRuntime(_ minutes: Int) -> String {
-        if minutes >= 60 {
-            return "\(minutes / 60)h \(minutes % 60)m"
-        }
-        return "\(minutes) min"
     }
 }
 

@@ -131,8 +131,8 @@ final class MediaLogRedactorTests: XCTestCase {
         XCTAssertTrue(redacted.contains("[redacted-path]"))
     }
 
-    /// The media-name rule used to start at the first word of the line and run
-    /// through an already-inserted marker, collapsing everything.
+    /// The media-name rule replaces only the filename, not the words before it
+    /// or a marker an earlier rule inserted.
     func testMediaNameRuleReplacesOnlyTheFilenameToken() {
         let redacted = MediaLogRedactor.sanitize("playing [redacted-url] Movie.mkv")
 
@@ -159,9 +159,8 @@ final class MediaLogRedactorTests: XCTestCase {
         }
     }
 
-    /// Rules 2 and 9 used to re-match rule 1's own output, so a single pass
-    /// over `Authorization: Bearer abc` already yielded `[redacted]]]` — one
-    /// stray bracket per rule that re-consumed the marker.
+    /// A later rule must not re-match an earlier rule's marker: one pass over
+    /// `Authorization: Bearer abc` yields a single `[redacted]`.
     func testRedactionMarkerDoesNotAccreteBrackets() {
         let header = MediaLogRedactor.sanitize("Authorization: Bearer abc")
         XCTAssertEqual(header, "Authorization: [redacted]")

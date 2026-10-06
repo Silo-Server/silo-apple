@@ -58,9 +58,8 @@ enum ProfileAvatarPresets {
         "preset:dicebear:\(styleId):\(seed)"
     }
 
-    /// DiceBear PNG URL for a preset at the requested pixel size. PNG keeps
-    /// the renderer simple (SwiftUI `AsyncImage` can't decode SVG without
-    /// extra plumbing); the web uses SVG because browsers can.
+    /// DiceBear PNG URL for a preset at the requested pixel size. PNG because
+    /// the app's image pipeline has no SVG decoder; the web uses SVG.
     static func imageURL(styleId: String, seed: String, size: Int = 256) -> String {
         let s = styleId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? styleId
         let d = seed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? seed

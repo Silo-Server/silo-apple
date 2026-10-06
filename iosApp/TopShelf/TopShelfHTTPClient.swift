@@ -4,9 +4,9 @@ import Foundation
 ///
 /// The main app's `HTTPClient` owns a lot we don't need here: token
 /// refresh, in-flight request cancellation, cookie storage, logging. The
-/// extension runs for a second or two at a time, reads exactly one
-/// endpoint, and has no UI surface to refresh into — so a single
-/// `URLSession.data(for:)` call with pre-attached headers is sufficient.
+/// extension runs for a few seconds with no UI to refresh into, so each call
+/// is a single `URLSession.data(for:)` with pre-attached headers and a 5 s
+/// timeout.
 ///
 /// Access token refresh is intentionally absent: Silo's access
 /// tokens effectively don't expire, so a 401 here would indicate the
@@ -24,6 +24,15 @@ struct TopShelfHTTPClient {
     let accountKeychain: SharedKeychain
     let profileKeychain: SharedKeychain
     let session: URLSession
+    /// Read once by `authenticated()` so each request skips the keychain.
+    private var credentials: Credentials?
+
+    private struct Credentials {
+        let serverURL: String
+        let accessToken: String
+        let profileID: String?
+        let profileToken: String?
+    }
 
     init(defaults: SharedDefaults = .shared,
          keychain: SharedKeychain = SharedKeychain(),
@@ -50,6 +59,24 @@ struct TopShelfHTTPClient {
                 SharedStorage.profileTokenAccount(for: serverID)
             ) != nil
         )
+    }
+
+    /// A copy carrying the active server's credentials, or nil without an
+    /// access token. Check `isPersonalizedContentAllowed` first.
+    func authenticated() -> TopShelfHTTPClient? {
+        guard let serverID = defaults.string(forKey: SharedStorage.activeServerIdKey),
+              let serverURL = defaults.string(forKey: SharedStorage.serverUrlKey),
+              !serverURL.isEmpty,
+              let accessToken = accountKeychain.get(SharedStorage.accessTokenAccount(for: serverID))
+        else { return nil }
+        var client = self
+        client.credentials = Credentials(
+            serverURL: serverURL,
+            accessToken: accessToken,
+            profileID: defaults.string(forKey: SharedStorage.profileIdKey),
+            profileToken: profileKeychain.get(SharedStorage.profileTokenAccount(for: serverID))
+        )
+        return client
     }
 
     /// Negotiate the same large-image contract as the main tvOS app. Older
@@ -97,18 +124,11 @@ struct TopShelfHTTPClient {
         _ path: String,
         query: [String: String] = [:]
     ) async throws -> T {
-        guard let serverID = defaults.string(forKey: SharedStorage.activeServerIdKey),
-              isPersonalizedContentAllowed,
-              let serverUrl = defaults.string(forKey: SharedStorage.serverUrlKey),
-              !serverUrl.isEmpty,
-              let accessToken = accountKeychain.get(
-                SharedStorage.accessTokenAccount(for: serverID)
-              )
-        else {
-            throw Error.notAuthenticated
-        }
+        // Rechecked per request: a timed profile policy can expire while an
+        // earlier request in the same refresh was in flight.
+        guard isPersonalizedContentAllowed, let credentials else { throw Error.notAuthenticated }
 
-        guard var components = URLComponents(string: serverUrl) else {
+        guard var components = URLComponents(string: credentials.serverURL) else {
             throw Error.invalidURL
         }
         let base = components.percentEncodedPath
@@ -122,13 +142,11 @@ struct TopShelfHTTPClient {
         var request = URLRequest(url: url, timeoutInterval: 5)
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        if let profileId = defaults.string(forKey: SharedStorage.profileIdKey) {
-            request.setValue(profileId, forHTTPHeaderField: "X-Profile-Id")
+        request.setValue("Bearer \(credentials.accessToken)", forHTTPHeaderField: "Authorization")
+        if let profileID = credentials.profileID {
+            request.setValue(profileID, forHTTPHeaderField: "X-Profile-Id")
         }
-        if let profileToken = profileKeychain.get(
-            SharedStorage.profileTokenAccount(for: serverID)
-        ) {
+        if let profileToken = credentials.profileToken {
             request.setValue(profileToken, forHTTPHeaderField: "X-Profile-Token")
         }
 

@@ -19,19 +19,9 @@ struct TVDiagnosticsPendingReportScreen: View {
                     .font(.system(size: 48, weight: .bold))
 
                 if let summary {
-                    VStack(alignment: .leading, spacing: 14) {
-                        Text(summary.typeTitle)
-                            .font(.system(size: 32, weight: .semibold))
-                        if let crashSummary = summary.crashSummary {
-                            Text(crashSummary)
-                        }
-                        Text("Device: \(summary.deviceIdentity)")
-                        Text("Logs: \(summary.lineCount) lines · \(summary.categoriesDescription)")
-                        Text("Destination: \(summary.destinationServerName)")
-                        Text("Expires \(summary.expiresAt, format: .relative(presentation: .named))")
-                    }
-                    .font(.system(size: 23))
-                    .foregroundStyle(Color.siloSecondaryText)
+                    TVDiagnosticsSummaryLines(summary: summary, spacing: 14, titleSize: 32)
+                        .font(.system(size: 23))
+                        .foregroundStyle(Color.siloSecondaryText)
                 } else {
                     ProgressView("Building report summary…")
                 }

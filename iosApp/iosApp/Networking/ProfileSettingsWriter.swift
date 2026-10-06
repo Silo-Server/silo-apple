@@ -1,19 +1,10 @@
-//
-//  ProfileSettingsWriter.swift
-//  Silo (iOS + tvOS + macOS)
-//
 //  Writes the profile-scoped preferences — subtitle language / mode / forced,
 //  metadata language — through the canonical settings API at `scope=profile`.
 //
-//  These used to travel as fields on `PUT /profiles/{id}`. The server still
-//  accepts that and mirrors the fields into the canonical rows
-//  (internal/api/handlers/profiles_settings_sync.go), so the legacy path is not
-//  broken — but it is a narrower pipe than the contract: it can only address
-//  the profile's own scope, spells "no preference" as the empty string where
-//  the contract spells it null, and validates nothing a client sends until the
-//  mirror runs. Writing the canonical keys directly is what lets a value
-//  authored here read back identically on web and Android, and what will keep
-//  working when the legacy fields are eventually retired.
+//  Writes go to the canonical rows so a value authored here reads back
+//  identically on web and Android. (The onboarding tour still writes its
+//  choices through `PATCH /api/v2/profiles/{id}`, which the server mirrors
+//  into these rows.)
 //
 //  Reads go through the same batched effective endpoint every other surface
 //  uses, so a value overridden at a library, series or device scope is reported
@@ -111,7 +102,7 @@ struct ProfilePreferences: Equatable, Sendable {
 /// so a retry after a lost response converges instead of applying twice.
 /// When the bound runs out the write throws ``HeldChange`` and the editor
 /// holds that key until the user retries or discards it.
-final class ProfileSettingsWriter: @unchecked Sendable {
+final class ProfileSettingsWriter: Sendable {
 
     /// The latest value for a key ran out of automatic retries. It may or may
     /// not have reached the server.

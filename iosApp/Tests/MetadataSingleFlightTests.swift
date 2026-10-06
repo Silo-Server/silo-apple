@@ -6,12 +6,16 @@ final class MetadataSingleFlightTests: XCTestCase {
         let flights = MetadataSingleFlight<String, String>()
         let probe = MetadataSingleFlightProbe()
 
+        // The first request stays open until both callers share its flight.
         async let first = flights.value(for: "same") {
-            try await probe.value(for: "same", delay: .milliseconds(100))
+            await probe.gatedValue(for: "same")
         }
         async let second = flights.value(for: "same") {
-            try await probe.value(for: "same", delay: .milliseconds(100))
+            await probe.gatedValue(for: "same")
         }
+        let joined = await eventually { await flights.waiterCount(for: "same") == 2 }
+        XCTAssertTrue(joined, "both callers must join one flight")
+        await probe.open()
         let matchingValues = try await (first, second)
 
         XCTAssertEqual(matchingValues.0, "same")
@@ -19,18 +23,24 @@ final class MetadataSingleFlightTests: XCTestCase {
         let matchingCallCount = await probe.count(for: "same")
         XCTAssertEqual(matchingCallCount, 1)
 
+        // Different keys each start their own request while both are open.
+        let distinct = MetadataSingleFlightProbe()
         async let alpha = flights.value(for: "alpha") {
-            try await probe.value(for: "alpha", delay: .milliseconds(20))
+            await distinct.gatedValue(for: "alpha")
         }
         async let beta = flights.value(for: "beta") {
-            try await probe.value(for: "beta", delay: .milliseconds(20))
+            await distinct.gatedValue(for: "beta")
         }
-        _ = try await (alpha, beta)
-
-        let alphaCallCount = await probe.count(for: "alpha")
-        let betaCallCount = await probe.count(for: "beta")
-        XCTAssertEqual(alphaCallCount, 1)
-        XCTAssertEqual(betaCallCount, 1)
+        let bothStarted = await eventually {
+            let alphaCalls = await distinct.count(for: "alpha")
+            let betaCalls = await distinct.count(for: "beta")
+            return alphaCalls == 1 && betaCalls == 1
+        }
+        XCTAssertTrue(bothStarted, "different keys must not share a flight")
+        await distinct.open()
+        let distinctValues = try await (alpha, beta)
+        XCTAssertEqual(distinctValues.0, "alpha")
+        XCTAssertEqual(distinctValues.1, "beta")
 
         _ = try await flights.value(for: "completed") {
             await probe.immediateValue(for: "completed")
@@ -46,11 +56,23 @@ final class MetadataSingleFlightTests: XCTestCase {
 
 private actor MetadataSingleFlightProbe {
     private var counts: [String: Int] = [:]
+    private var isOpen = false
+    private var gateWaiters: [CheckedContinuation<Void, Never>] = []
 
-    func value(for key: String, delay: Duration) async throws -> String {
+    /// Counts the call, then waits for ``open()``.
+    func gatedValue(for key: String) async -> String {
         counts[key, default: 0] += 1
-        try await Task.sleep(for: delay)
+        if !isOpen {
+            await withCheckedContinuation { gateWaiters.append($0) }
+        }
         return key
+    }
+
+    func open() {
+        isOpen = true
+        let waiters = gateWaiters
+        gateWaiters.removeAll()
+        waiters.forEach { $0.resume() }
     }
 
     func immediateValue(for key: String) -> String {

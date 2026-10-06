@@ -2,15 +2,10 @@
 //  PlayerSettingsFlusher.swift
 //  Silo (iOS + tvOS + macOS)
 //
-//  Debounced writer for the player's device-scoped settings, speaking the
-//  canonical settings API (`PUT`/`DELETE /api/v2/settings/values/{key}` at
-//  scope `profile_device`).
-//
-//  Failure handling is the point of this type, not an afterthought. The
-//  inline flusher this replaces dropped nothing on purpose but also retried
-//  nothing: a write that failed mid-drain sat in the queue until the *next*
-//  user edit happened to trigger another flush, so one server hiccup made a
-//  setting look non-persistent until the user toggled something unrelated.
+//  Debounced, retried writer for device-scoped player settings (PUT/DELETE
+//  `/api/v2/settings/values/{key}` at `profile_device`). One pending value per
+//  key; transient failures retry on a bounded backoff, then the key is held
+//  until the user retries or discards it.
 //
 //  The writes are `natural_idempotent`: each one names the desired value of
 //  one row, so sending it again converges instead of applying twice. There
@@ -411,8 +406,7 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     ///
     /// Without this the debounce window is a data-loss hole: a user who flips a
     /// toggle and immediately swipes the app away has their change sitting in a
-    /// timer that never fires. The old inline flusher had no window and so no
-    /// such gap; adding the window means adding this.
+    /// timer that never fires.
     ///
     /// The notification alone is not enough, which is why the durable journal
     /// exists alongside it. On macOS the only lifecycle signal available before
@@ -569,6 +563,16 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return !pending.isEmpty || !inFlight.isEmpty || isDraining
+    }
+
+    /// Whether a debounce timer is waiting to drain the queue. Read by tests.
+    var hasArmedDebounce: Bool {
+        lock.withLock { debounceTask != nil }
+    }
+
+    /// Whether a backoff timer is waiting to retry a failed write. Read by tests.
+    var hasArmedRetry: Bool {
+        lock.withLock { retryTask != nil }
     }
 
     /// True while a flush has something to send: held changes do not count.

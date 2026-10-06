@@ -25,6 +25,10 @@ final class SiloControlArtworkResolver {
             return
         }
 
+        // Drop the previous title's artwork while this one loads.
+        posterURL = nil
+        backdropURL = nil
+        resolvedContentId = nil
         do {
             let detail = try await SiloAPI.shared.itemDetail(contentId: contentId)
             try Task.checkCancellation()

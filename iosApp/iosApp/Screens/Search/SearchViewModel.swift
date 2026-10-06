@@ -19,12 +19,16 @@ enum SearchMediaType: String, CaseIterable, Identifiable {
     }
 
     /// The `type` query value for this filter. `.all` is context-dependent:
-    /// when audiobooks aren't part of this search it means video-only (the old
-    /// "Movies & Series" filter), so hidden audiobooks never leak into
-    /// unfiltered results; when they are, it sends no filter (true everything).
-    func queryValue(audiobooksEnabled: Bool) -> String? {
+    /// when audiobooks are part of this search it sends no filter (true
+    /// everything). When they aren't, it names a video scope so hidden
+    /// audiobooks never leak into unfiltered results: `video_with_episodes`
+    /// (movies, series, and episodes) when `includesEpisodes`, else `video`
+    /// (movies and series). Pass `includesEpisodes` only for a text search on
+    /// a server that advertises the scope; older servers ignore the value
+    /// and search every type.
+    func queryValue(audiobooksEnabled: Bool, includesEpisodes: Bool = false) -> String? {
         switch self {
-        case .all: audiobooksEnabled ? nil : "video"
+        case .all: audiobooksEnabled ? nil : (includesEpisodes ? "video_with_episodes" : "video")
         case .movie: "movie"
         case .series: "series"
         case .audiobook: "audiobook"
@@ -32,6 +36,20 @@ enum SearchMediaType: String, CaseIterable, Identifiable {
     }
 }
 
+/// What the Search screen shows under the filters.
+enum SearchContentState: Equatable {
+    /// No query yet.
+    case prompt
+    /// A new search has no titles or people yet: it is waiting for the
+    /// server (capabilities, titles, or people).
+    case loading
+    /// The search failed; Try Again reruns it.
+    case failed(ErrorState)
+    case noResults
+    case results
+}
+
+@MainActor
 @Observable
 class SearchViewModel {
     var query = ""
@@ -69,16 +87,29 @@ class SearchViewModel {
     var hasMore = false
     var total = 0
 
+    var contentState: SearchContentState {
+        if (isSearching || isSearchingPeople) && results.isEmpty && people.isEmpty { return .loading }
+        if let error { return .failed(error) }
+        if results.isEmpty && people.isEmpty { return hasSearched ? .noResults : .prompt }
+        return .results
+    }
+
     private var searchTask: Task<Void, Never>?
     private var peopleTask: Task<Void, Never>?
+    private let api: SiloAPI
     /// Only the Search screen shows people; pickers that reuse this model
     /// never ask for them.
     private let includesPeople: Bool
+    /// Only the Search screen lists episodes under "All"; pickers that reuse
+    /// this model choose movies and series.
+    private let includesEpisodes: Bool
     private let pageSize = 60
     private let peopleLimit = 20
-    /// Whether the server can scope people search and filter it by access;
-    /// `nil` until the first search asks.
-    private var peopleSearchSupported: Bool?
+    /// The server's search features; `nil` until a search first needs them.
+    /// A failed read is not kept, so the next search asks again.
+    private var searchFeatures: CatalogSearchFeatures?
+    /// The read in flight, shared by the title and people lookups.
+    private var searchFeaturesTask: Task<CatalogSearchFeatures, Error>?
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "Search"
@@ -90,8 +121,10 @@ class SearchViewModel {
     /// cannot append to (or hand its continuation to) the new ones.
     private var generation = 0
 
-    init(includesPeople: Bool = false) {
+    init(api: SiloAPI = .shared, includesPeople: Bool = false, includesEpisodes: Bool = false) {
+        self.api = api
         self.includesPeople = includesPeople
+        self.includesEpisodes = includesEpisodes
     }
 
     /// Debounced search triggered on query change.
@@ -104,8 +137,7 @@ class SearchViewModel {
         }
 
         searchTask = Task {
-            // 300ms debounce
-            try? await Task.sleep(nanoseconds: 300_000_000)
+            try? await Task.sleep(for: .milliseconds(300))
             guard !Task.isCancelled else { return }
             await performSearch(reset: true)
         }
@@ -143,15 +175,15 @@ class SearchViewModel {
         isSearching = true
         error = nil
 
-        let mediaType = selectedMediaType.queryValue(audiobooksEnabled: audiobooksEnabled)
-        if reset { startPeopleSearch(for: trimmed, mediaScope: mediaType, generation: myGeneration) }
-
         do {
             let page: CatalogListPage
             if let nextPage {
-                page = try await SiloAPI.shared.nextCatalogPage(nextPage)
+                page = try await api.nextCatalogPage(nextPage)
             } else {
-                page = try await SiloAPI.shared.catalogPage(.search(trimmed, type: mediaType, limit: pageSize))
+                let mediaType = try await mediaScope()
+                guard !Task.isCancelled, myGeneration == generation else { return }
+                startPeopleSearch(for: trimmed, mediaScope: mediaType, generation: myGeneration)
+                page = try await api.catalogPage(.search(trimmed, type: mediaType, limit: pageSize))
             }
             guard !Task.isCancelled, myGeneration == generation else { return }
             let response = page.response
@@ -182,6 +214,39 @@ class SearchViewModel {
         isSearching = false
     }
 
+    /// The `type` for a new search, also sent as the people `media_scope`.
+    /// "All" without audiobooks covers episodes only when the server
+    /// advertises `video_with_episodes`, and stays `video` when the server
+    /// answers without it. A capability read that fails (timeout, lost
+    /// connection, refused credentials) fails the search instead of quietly
+    /// narrowing it to `video`, which would report "No results" for an
+    /// episode.
+    private func mediaScope() async throws -> String? {
+        let mediaType = selectedMediaType
+        let audiobooksEnabled = audiobooksEnabled
+        var includesEpisodes = false
+        if self.includesEpisodes, mediaType == .all, !audiobooksEnabled {
+            includesEpisodes = try await loadSearchFeatures().videoWithEpisodesScope
+        }
+        return mediaType.queryValue(audiobooksEnabled: audiobooksEnabled, includesEpisodes: includesEpisodes)
+    }
+
+    /// The server's search features, read once per model. Concurrent callers
+    /// share one request.
+    private func loadSearchFeatures() async throws -> CatalogSearchFeatures {
+        if let searchFeatures { return searchFeatures }
+        let task = searchFeaturesTask ?? Task { [api] in try await api.catalogSearchFeatures() }
+        searchFeaturesTask = task
+        do {
+            let features = try await task.value
+            searchFeatures = features
+            return features
+        } catch {
+            if searchFeaturesTask == task { searchFeaturesTask = nil }
+            throw error
+        }
+    }
+
     /// Loads people for a new search on their own task, so titles publish as
     /// soon as their page arrives. A later search or a reset discards the
     /// result.
@@ -189,7 +254,7 @@ class SearchViewModel {
         peopleTask?.cancel()
         guard includesPeople else { return }
         isSearchingPeople = true
-        peopleTask = Task { @MainActor in
+        peopleTask = Task {
             let found = await matchingPeople(for: query, mediaScope: mediaScope)
             guard !Task.isCancelled, searchGeneration == generation else { return }
             people = found
@@ -208,11 +273,8 @@ class SearchViewModel {
     /// fails, so people never replace title results.
     private func matchingPeople(for query: String, mediaScope: String?) async -> [Person] {
         do {
-            if peopleSearchSupported == nil {
-                peopleSearchSupported = try await SiloAPI.shared.peopleSearchSupported()
-            }
-            guard peopleSearchSupported == true else { return [] }
-            return try await SiloAPI.shared.searchPeople(query: query, mediaScope: mediaScope, limit: peopleLimit)
+            guard try await loadSearchFeatures().peopleMediaScope else { return [] }
+            return try await api.searchPeople(query: query, mediaScope: mediaScope, limit: peopleLimit)
         } catch {
             if !Task.isCancelled {
                 Self.logger.error("people search failed: \(error.localizedDescription, privacy: .public)")

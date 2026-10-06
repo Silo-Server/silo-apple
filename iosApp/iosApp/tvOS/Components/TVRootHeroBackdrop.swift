@@ -63,9 +63,8 @@ struct TVBackdropArtworkFadeMask: View {
 /// top-right corner and fades out toward the leading edge and the bottom
 /// into a color sampled from the art itself, which is carried (dimmed)
 /// across the rest of the page so the metadata and rows below sit on the
-/// same tint. Calendar and Recommendations keep passing static (nil)
-/// artwork with `tintColor: .siloBackground`, so they render as the
-/// flat app background.
+/// same tint. Calendar passes nil artwork with `.siloBackground` and
+/// renders flat.
 struct TVRootHeroBackdrop: View {
     let tintColor: Color
     let artworkURL: String?
@@ -82,8 +81,8 @@ struct TVRootHeroBackdrop: View {
     /// one — only artwork→artwork swaps get the ambient crossfade.
     @State private var hasDisplayedArtwork = false
 
-    /// Full-width top scrim height so the menu bar stays legible over the
-    /// bright art now sitting directly behind the tabs and profile avatar.
+    /// Height of the full-width top scrim that keeps the menu bar legible over
+    /// bright artwork.
     private let topScrimHeight: CGFloat = 190
 
     var body: some View {
@@ -99,10 +98,7 @@ struct TVRootHeroBackdrop: View {
         }
         .ignoresSafeArea()
         .allowsHitTesting(false)
-        .onAppear {
-            if artworkURL?.isEmpty == false { hasDisplayedArtwork = true }
-        }
-        .onChange(of: artworkURL) { _, url in
+        .onChange(of: artworkURL, initial: true) { _, url in
             if url?.isEmpty == false { hasDisplayedArtwork = true }
         }
     }
@@ -110,7 +106,7 @@ struct TVRootHeroBackdrop: View {
     /// Sampled-color wash: richest in the top-right behind the art, carried
     /// dimmed down to the bottom-left so the page keeps the art's color
     /// without washing out the metadata or row captions. When the caller
-    /// passes `.siloBackground` (Calendar/Recommendations) every stop
+    /// passes `.siloBackground` (Calendar) every stop
     /// collapses to the app background, so the wash renders flat.
     private var tintBackground: some View {
         LinearGradient(
@@ -177,8 +173,8 @@ struct TVRootHeroBackdrop: View {
         .ignoresSafeArea()
     }
 
-    /// Full-width black ramp pinned to the top so the wordmark, tabs, and
-    /// profile avatar stay legible now that bright art sits behind them.
+    /// Black ramp pinned to the top so the wordmark, tabs, and avatar stay
+    /// legible over bright artwork.
     private var topChromeScrim: some View {
         LinearGradient(
             colors: [.black.opacity(0.5), .clear],

@@ -22,9 +22,8 @@ enum DiagnosticsVerbosity {
 /// Gating differs by destination, and the difference is deliberate:
 ///
 /// * `DiagTrace.log` writes to `DiagLog.ring`, the in-memory ring. `DiagLog`
-///   itself performs **no** consent check — the capture gate has always lived
-///   at the call site (this is exactly what `cmpLog` did before this helper
-///   existed), so it lives here.
+///   itself performs **no** consent check — the capture gate lives at the
+///   call site, so it lives here.
 /// * `DiagTrace.breadcrumb` writes to the on-disk `BreadcrumbJournal`, whose
 ///   consent gate lives inside `appendRenderedLine` and purges the journal
 ///   directory when capture is off. Pre-checking the capture gate here would
@@ -41,9 +40,7 @@ enum DiagTrace {
     // MARK: - Predicates
 
     /// Pure, injectable form of the tiering decision for ring capture.
-    /// Semantics are the historical `shouldCaptureCMPLog` predicate verbatim:
-    /// capture must be on, and verbose lines additionally require the user's
-    /// Debug Logging toggle.
+    /// Capture must be on; verbose lines also need Debug Logging.
     static func shouldCapture(
         _ verbosity: DiagnosticsVerbosity,
         debugLoggingEnabled: Bool,
@@ -66,24 +63,24 @@ enum DiagTrace {
     ///
     /// This runs on *every* instrumented call, including the verbose lines it
     /// then suppresses (`perform()` emits one per HTTP response), so both reads
-    /// must stay cheap. `debugLoggingEnabled` is a single `UserDefaults` bool;
-    /// `isDiagnosticsCaptureEnabled` is memoized by
+    /// must stay cheap. `debugLoggingEnabled` is held in memory by the consent
+    /// store; `isDiagnosticsCaptureEnabled` is memoized by
     /// `DiagnosticsCaptureGateCache` in the coordinator, which invalidates on
     /// every consent/destination/profile boundary and fails closed. Neither read
     /// may write to `UserDefaults` — see `persistentCaptureEnabled`, which
     /// deliberately resolves the notice-version migration in memory instead of
     /// persisting it, so asking "should I log?" cannot mutate consent state.
+    ///
+    /// The tier is checked first: a verbose line with Debug Logging off is
+    /// dropped whatever the capture gate says, so it never reaches the gate.
     static func shouldCapture(_ verbosity: DiagnosticsVerbosity) -> Bool {
-        shouldCapture(
-            verbosity,
-            debugLoggingEnabled: debugLoggingEnabled,
-            captureEnabled: DiagnosticsCoordinator.isDiagnosticsCaptureEnabled
-        )
+        guard isTierEnabled(verbosity) else { return false }
+        return DiagnosticsCoordinator.isDiagnosticsCaptureEnabled
     }
 
-    /// Live-state form of `isTierEnabled`.
+    /// Live-state form of `isTierEnabled`. Essential lines skip the toggle read.
     static func isTierEnabled(_ verbosity: DiagnosticsVerbosity) -> Bool {
-        isTierEnabled(verbosity, debugLoggingEnabled: debugLoggingEnabled)
+        !verbosity.isVerbose || debugLoggingEnabled
     }
 
     private static var debugLoggingEnabled: Bool {

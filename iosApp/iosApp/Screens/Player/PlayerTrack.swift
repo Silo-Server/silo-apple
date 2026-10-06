@@ -56,20 +56,8 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
     }
 
     var attributesLabel: String? {
-        let parts = attributeParts()
+        let parts = attributePillLabels()
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
-    }
-
-    /// Same attributes as `attributesLabel`, unjoined — for UIs that render
-    /// each attribute as its own pill instead of a dot-separated line.
-    var attributePillLabels: [String] {
-        attributeParts()
-    }
-
-    /// Pill labels with the language optionally omitted — for rows that
-    /// already surface the language as the primary name.
-    func attributePillLabels(includeLanguage: Bool) -> [String] {
-        attributeParts(includeLanguage: includeLanguage)
     }
 
     /// Language-first display name for subtitle pickers. Embedded subtitle
@@ -96,13 +84,59 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
             "vtt", "webvtt", "vobsub", "dvdsub", "mov_text",
         ]
         if formatNames.contains(lowered) { return nil }
+        if Self.looksLikeReleaseName(lowered) { return nil }
         if let codec, lowered == codec.lowercased() { return nil }
         if title.caseInsensitiveCompare(languageDisplayName(lang)) == .orderedSame { return nil }
         if title.caseInsensitiveCompare(lang) == .orderedSame { return nil }
         return title
     }
 
-    private func attributeParts(includeLanguage: Bool = true) -> [String] {
+    /// Detail line for a language-first subtitle row: the meaningful title,
+    /// then flags and codec. The language is left out when it already leads
+    /// the row.
+    var languageFirstAttributesLabel: String? {
+        var parts: [String] = []
+        if let detail = languageFirstDetailLabel {
+            parts.append(detail)
+        }
+        parts += attributePillLabels(includeLanguage: normalizedLanguageCode == nil)
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// One-line subtitle name for surfaces that show only a name, such as the
+    /// phone remote's menus: the language plus whatever tells same-language
+    /// tracks apart, e.g. "English", "English (SDH)", "English (Signs & Songs, Forced)".
+    var languageFirstSingleLineLabel: String {
+        var qualifiers: [String] = []
+        if let detail = languageFirstDetailLabel {
+            qualifiers.append(detail)
+        }
+        if isForced {
+            qualifiers.append("Forced")
+        }
+        if isHearingImpaired {
+            qualifiers.append("SDH")
+        }
+        guard !qualifiers.isEmpty else { return languageFirstPrimaryLabel }
+        return "\(languageFirstPrimaryLabel) (\(qualifiers.joined(separator: ", ")))"
+    }
+
+    /// Release groups often stamp every track with the release name
+    /// ("Movie (2026) [Remux-2160p HEVC DV …]"), which says nothing about the
+    /// track. Expects a lowercased title.
+    private static func looksLikeReleaseName(_ lowered: String) -> Bool {
+        let markers = [
+            "2160p", "1080p", "720p", "480p", "remux", "bluray", "blu-ray",
+            "web-dl", "webrip", "hdtv", "x264", "x265", "h.264", "h.265",
+            "hevc", "10-bit", "hdr10", ".mkv", ".mp4",
+        ]
+        return markers.contains { lowered.contains($0) }
+    }
+
+    /// Same attributes as `attributesLabel`, unjoined — for UIs that render
+    /// each attribute as its own pill. Rows that already show the language as
+    /// the primary name pass `includeLanguage: false`.
+    func attributePillLabels(includeLanguage: Bool = true) -> [String] {
         var parts: [String] = []
 
         if includeLanguage,
@@ -135,43 +169,6 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
         return parts
     }
 
-    /// Rich human-readable label for track pickers,
-    /// e.g. "English · 5.1 · EAC3 · default".
-    var displayLabel: String {
-        var parts: [String] = []
-
-        if let title = normalizedTitle {
-            parts.append(title)
-        }
-        if let lang = normalizedLanguageCode,
-           !(normalizedTitle?.localizedCaseInsensitiveContains(lang) ?? false) {
-            parts.append(languageDisplayName(lang))
-        }
-        if kind == .audio, let label = channelCountLabel {
-            parts.append(label)
-        }
-        if let codec = Self.normalizedText(codec) {
-            parts.append(codec.uppercased())
-        }
-        if isDefault {
-            parts.append("default")
-        }
-        if isForced {
-            parts.append("forced")
-        }
-        if isHearingImpaired {
-            parts.append("SDH")
-        }
-        if isExternal {
-            parts.append("external")
-        }
-
-        if parts.isEmpty {
-            parts.append("Track \(trackId)")
-        }
-        return parts.joined(separator: " · ")
-    }
-
     /// Human-readable channel count for audio tracks (e.g. "5.1"), or nil when
     /// the demuxer reported no usable count.
     var channelCountLabel: String? {
@@ -189,9 +186,10 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
         }
     }
 
+    private static let englishLocale = Locale(identifier: "en")
+
     private func languageDisplayName(_ code: String) -> String {
-        let locale = Locale(identifier: "en")
-        return locale.localizedString(forLanguageCode: code)?.capitalized ?? code.uppercased()
+        Self.englishLocale.localizedString(forLanguageCode: code)?.capitalized ?? code.uppercased()
     }
 
     static func normalizedText(_ value: String?) -> String? {

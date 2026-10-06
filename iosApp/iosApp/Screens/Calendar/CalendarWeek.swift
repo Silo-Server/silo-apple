@@ -16,6 +16,8 @@ struct CalendarWeek: Equatable, Hashable {
 
     /// Midnight on the week's Monday, in the device timezone.
     let startDate: Date
+    /// All 7 day dates, Monday through Sunday.
+    let days: [Date]
 
     /// The week containing `date`.
     init(containing date: Date) {
@@ -23,12 +25,9 @@ struct CalendarWeek: Equatable, Hashable {
             [.yearForWeekOfYear, .weekOfYear],
             from: date
         )
-        self.startDate = Self.isoCalendar.date(from: components) ?? date
-    }
-
-    /// All 7 day dates, Monday through Sunday.
-    var days: [Date] {
-        (0..<7).compactMap {
+        let startDate = Self.isoCalendar.date(from: components) ?? date
+        self.startDate = startDate
+        self.days = (0..<7).compactMap {
             Self.isoCalendar.date(byAdding: .day, value: $0, to: startDate)
         }
     }

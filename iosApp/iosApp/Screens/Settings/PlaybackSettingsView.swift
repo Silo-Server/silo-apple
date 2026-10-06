@@ -38,7 +38,7 @@ struct PlaybackSettingsView: View {
                 get: { viewModel.preferredQualityPresetId ?? Self.customPresetTag },
                 set: { newValue in
                     guard newValue != Self.customPresetTag else { return }
-                    Task { await viewModel.setQualityPreset(newValue) }
+                    viewModel.setQualityPreset(newValue)
                 }
             )) {
                 // A pair no preset covers — set through the API, or written by
@@ -54,19 +54,9 @@ struct PlaybackSettingsView: View {
                 }
             }
             .foregroundStyle(Color.siloOnSurface)
-            #if os(macOS)
-            .pickerStyle(.menu)
-            #else
-            .pickerStyle(.navigationLink)
-            #endif
+            .settingsPickerStyle()
 
-            Picker("Audio Language", selection: Binding(
-                get: { viewModel.preferredAudioLanguage },
-                set: { newValue in
-                    viewModel.preferredAudioLanguage = newValue
-                    Task { await viewModel.setPreferredAudioLanguage(newValue) }
-                }
-            )) {
+            Picker("Audio Language", selection: $viewModel.preferredAudioLanguage) {
                 Text(
                     SettingPresentationMetadata.definitions[.playbackAudioLanguage]?.unsetLabel
                         ?? "No preference"
@@ -76,119 +66,55 @@ struct PlaybackSettingsView: View {
                 }
             }
             .foregroundStyle(Color.siloOnSurface)
-            #if os(macOS)
-            .pickerStyle(.menu)
-            #else
-            .pickerStyle(.navigationLink)
-            #endif
+            .settingsPickerStyle()
 
-            Toggle("Dolby Vision", isOn: Binding(
-                get: { viewModel.dolbyVisionEnabled },
-                set: { enabled in
-                    viewModel.dolbyVisionEnabled = enabled
-                    Task { await viewModel.setDolbyVisionEnabled(enabled) }
-                }
-            ))
-            .foregroundStyle(Color.siloOnSurface)
-            .tint(.siloSwitchOn)
+            Toggle("Dolby Vision", isOn: $viewModel.dolbyVisionEnabled)
+                .foregroundStyle(Color.siloOnSurface)
+                .tint(.siloSwitchOn)
 
-            Toggle("Seek Cache", isOn: Binding(
-                get: { viewModel.seekCacheEnabled },
-                set: { enabled in
-                    viewModel.seekCacheEnabled = enabled
-                    Task { await viewModel.setSeekCacheEnabled(enabled) }
-                }
-            ))
-            .foregroundStyle(Color.siloOnSurface)
-            .tint(.siloSwitchOn)
+            Toggle("Seek Cache", isOn: $viewModel.seekCacheEnabled)
+                .foregroundStyle(Color.siloOnSurface)
+                .tint(.siloSwitchOn)
 
-            Picker("Buffer Ahead", selection: Binding(
-                get: { viewModel.bufferAhead },
-                set: { newValue in
-                    viewModel.bufferAhead = newValue
-                    Task { await viewModel.setBufferAhead(newValue) }
-                }
-            )) {
+            Picker("Buffer Ahead", selection: $viewModel.bufferAhead) {
                 ForEach(BufferAheadMode.allCases, id: \.self) { mode in
                     Text(mode.label).tag(mode)
                 }
             }
             .foregroundStyle(Color.siloOnSurface)
-            #if os(macOS)
-            .pickerStyle(.menu)
-            #else
-            .pickerStyle(.navigationLink)
-            #endif
+            .settingsPickerStyle()
 
-            Toggle("Lossless Multichannel Audio", isOn: Binding(
-                get: { viewModel.losslessAudioEnabled },
-                set: { enabled in
-                    viewModel.losslessAudioEnabled = enabled
-                    Task { await viewModel.setLosslessAudioEnabled(enabled) }
-                }
-            ))
-            .foregroundStyle(Color.siloOnSurface)
-            .tint(.siloSwitchOn)
+            Toggle("Lossless Multichannel Audio", isOn: $viewModel.losslessAudioEnabled)
+                .foregroundStyle(Color.siloOnSurface)
+                .tint(.siloSwitchOn)
 
-            Toggle("TrueHD Atmos", isOn: Binding(
-                get: { viewModel.trueHDAtmosEnabled },
-                set: { enabled in
-                    viewModel.trueHDAtmosEnabled = enabled
-                    Task { await viewModel.setTrueHDAtmosEnabled(enabled) }
-                }
-            ))
-            .foregroundStyle(Color.siloOnSurface)
-            .tint(.siloSwitchOn)
+            Toggle("TrueHD Atmos", isOn: $viewModel.trueHDAtmosEnabled)
+                .foregroundStyle(Color.siloOnSurface)
+                .tint(.siloSwitchOn)
 
-            Picker("Deinterlacing", selection: Binding(
-                get: { viewModel.deinterlaceMode },
-                set: { newValue in
-                    viewModel.deinterlaceMode = newValue
-                    Task { await viewModel.setDeinterlaceMode(newValue) }
-                }
-            )) {
+            Picker("Deinterlacing", selection: $viewModel.deinterlaceMode) {
                 ForEach(DeinterlacePreference.allCases, id: \.self) { mode in
                     Text(mode.label).tag(mode)
                 }
             }
             .foregroundStyle(Color.siloOnSurface)
-            #if os(macOS)
-            .pickerStyle(.menu)
-            #else
-            .pickerStyle(.navigationLink)
-            #endif
+            .settingsPickerStyle()
 
-            Picker("Deinterlacing Field Rate", selection: Binding(
-                get: { viewModel.deinterlaceFieldRate },
-                set: { newValue in
-                    viewModel.deinterlaceFieldRate = newValue
-                    Task { await viewModel.setDeinterlaceFieldRate(newValue) }
-                }
-            )) {
+            Picker("Deinterlacing Field Rate", selection: $viewModel.deinterlaceFieldRate) {
                 ForEach(DeinterlaceFieldRatePreference.allCases, id: \.self) { rate in
                     Text(rate.label).tag(rate)
                 }
             }
             .foregroundStyle(Color.siloOnSurface)
-            #if os(macOS)
-            .pickerStyle(.menu)
-            #else
-            .pickerStyle(.navigationLink)
-            #endif
+            .settingsPickerStyle()
 
             // iOS only: the engine's background policy is driven by the app
             // lifecycle notifications, which macOS does not post — a toggle
             // there would control nothing.
             #if os(iOS)
-            Toggle("Background Playback", isOn: Binding(
-                get: { viewModel.backgroundPlaybackEnabled },
-                set: { enabled in
-                    viewModel.backgroundPlaybackEnabled = enabled
-                    Task { await viewModel.setBackgroundPlaybackEnabled(enabled) }
-                }
-            ))
-            .foregroundStyle(Color.siloOnSurface)
-            .tint(.siloSwitchOn)
+            Toggle("Background Playback", isOn: $viewModel.backgroundPlaybackEnabled)
+                .foregroundStyle(Color.siloOnSurface)
+                .tint(.siloSwitchOn)
             #endif
         } header: {
             Text("Streaming")
@@ -216,63 +142,30 @@ struct PlaybackSettingsView: View {
 
     private var behaviorSection: some View {
         Section {
-            Toggle("Auto-Play Next Episode", isOn: Binding(
-                get: { viewModel.autoPlayNext },
-                set: { enabled in
-                    viewModel.autoPlayNext = enabled
-                    Task { await viewModel.setAutoPlayNext(enabled) }
-                }
-            ))
-            .foregroundStyle(Color.siloOnSurface)
-            .tint(.siloSwitchOn)
+            Toggle("Auto-Play Next Episode", isOn: $viewModel.autoPlayNext)
+                .foregroundStyle(Color.siloOnSurface)
+                .tint(.siloSwitchOn)
 
-            Picker("Show Next Up", selection: Binding(
-                get: { viewModel.nextUpPromptSeconds },
-                set: { newValue in
-                    viewModel.nextUpPromptSeconds = newValue
-                    Task { await viewModel.setNextUpPromptSeconds(newValue) }
-                }
-            )) {
+            Picker("Show Next Up", selection: $viewModel.nextUpPromptSeconds) {
                 ForEach(nextUpPromptOptions, id: \.0) { seconds, label in
                     Text(label).tag(seconds)
                 }
             }
             .foregroundStyle(Color.siloOnSurface)
-            #if os(macOS)
-            .pickerStyle(.menu)
-            #else
-            .pickerStyle(.navigationLink)
-            #endif
+            .settingsPickerStyle()
 
-            // Three-way, not a switch: the boolean this replaced could not
-            // say "never". Labels and semantics are fixed by the contract.
-            Picker("Skip Intros", selection: Binding(
-                get: { viewModel.introSkipMode },
-                set: { mode in
-                    viewModel.introSkipMode = mode
-                    Task { await viewModel.setIntroSkipMode(mode) }
-                }
-            )) {
+            // Three-way (labels fixed by the contract).
+            Picker("Skip Intros", selection: $viewModel.introSkipMode) {
                 ForEach(IntroSkipMode.allCases) { mode in
                     Text(mode.label).tag(mode)
                 }
             }
             .foregroundStyle(Color.siloOnSurface)
-            #if os(macOS)
-            .pickerStyle(.menu)
-            #else
-            .pickerStyle(.navigationLink)
-            #endif
+            .settingsPickerStyle()
 
-            Toggle("Skip Credits", isOn: Binding(
-                get: { viewModel.skipCredits },
-                set: { enabled in
-                    viewModel.skipCredits = enabled
-                    Task { await viewModel.setSkipCredits(enabled) }
-                }
-            ))
-            .foregroundStyle(Color.siloOnSurface)
-            .tint(.siloSwitchOn)
+            Toggle("Skip Credits", isOn: $viewModel.skipCredits)
+                .foregroundStyle(Color.siloOnSurface)
+                .tint(.siloSwitchOn)
         } header: {
             Text("Episodes")
                 .foregroundStyle(Color.siloSecondaryText)

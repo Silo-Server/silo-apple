@@ -14,24 +14,46 @@ enum HorizontalMediaRailLayout {
         #endif
     }
 
-    static var cardAlignment: VerticalAlignment { isPhone ? .top : .center }
+    static var cardAlignment: VerticalAlignment {
+        #if os(macOS)
+        // Centre alignment shifts a card whose caption has fewer lines than
+        // its neighbours, so artwork in one row sat at different heights.
+        .top
+        #else
+        isPhone ? .top : .center
+        #endif
+    }
     static var scrollAnchor: UnitPoint { isPhone ? .leading : .center }
+    /// A swipe keeps its momentum and can travel several cards, then the
+    /// rail settles the nearest card into place. `.always` capped every
+    /// swipe at one card, which made the rails feel touchy.
     static var targetBehavior: ViewAlignedScrollTargetBehavior {
         #if os(iOS)
-        // The explicit leading anchor is iOS 26+. iOS 18 keeps the system
-        // anchor, which still snaps whole cards into view.
+        // The explicit leading anchor is iOS 26+. iOS 18 keeps the system anchor.
         if #available(iOS 26.0, *) {
-            return .viewAligned(limitBehavior: .always, anchor: isPhone ? .leading : nil)
+            return .viewAligned(limitBehavior: .never, anchor: isPhone ? .leading : nil)
         } else {
-            return .viewAligned(limitBehavior: .always)
+            return .viewAligned(limitBehavior: .never)
         }
         #else
-        return .viewAligned(limitBehavior: .always, anchor: isPhone ? .leading : nil)
+        return .viewAligned(limitBehavior: .never)
         #endif
     }
 }
 
 extension View {
+    /// Attach to a horizontal media rail's ScrollView, whose card stack is
+    /// marked `.scrollTargetLayout()`, so every rail settles the same way.
+    /// tvOS rails follow focus instead, so this is a no-op there.
+    @ViewBuilder
+    func mediaRailScrolling() -> some View {
+        #if os(tvOS)
+        self
+        #else
+        scrollTargetBehavior(HorizontalMediaRailLayout.targetBehavior)
+        #endif
+    }
+
     /// Attach to the stack INSIDE a horizontal media ScrollView, so the
     /// nearest native scroll view is the rail, not its vertically scrolling page.
     @ViewBuilder

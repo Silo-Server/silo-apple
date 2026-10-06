@@ -11,7 +11,7 @@ enum DateFormatters {
         formatter.dateFormat = "yyyy-MM-dd"
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = .current
+        formatter.timeZone = .autoupdatingCurrent
         return formatter
     }()
 
@@ -27,7 +27,7 @@ enum DateFormatters {
     /// Localized short time ("9:00 PM" / "21:00" per locale) from an
     /// RFC3339 instant string. Returns nil when parsing fails.
     static func localShortTime(fromRFC3339 raw: String) -> String? {
-        guard let date = rfc3339.date(from: raw) ?? rfc3339Fractional.date(from: raw) else {
+        guard let date = parseRFC3339(raw) else {
             return nil
         }
         return date.formatted(date: .omitted, time: .shortened)
@@ -46,6 +46,11 @@ enum DateFormatters {
             return nil
         }
         return date.formatted(date: .omitted, time: .shortened)
+    }
+
+    /// An RFC 3339 instant, with or without fractional seconds.
+    static func parseRFC3339(_ raw: String) -> Date? {
+        rfc3339Fractional.date(from: raw) ?? rfc3339.date(from: raw)
     }
 
     private static let rfc3339: ISO8601DateFormatter = {

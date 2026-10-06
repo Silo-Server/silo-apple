@@ -6,14 +6,8 @@ extension Notification.Name {
 
 @MainActor
 enum StartupContentPrefetcher {
-    // tvOS paints a full-width first row plus the focus marquee's logo and
-    // backdrop on entry, so it needs a deeper artwork warmup than the
-    // phone-sized first screen.
-    #if os(tvOS)
-    private static let maxHomeArtworkURLs = 28
-    #else
-    private static let maxHomeArtworkURLs = 12
-    #endif
+    /// Home rows' artwork bytes warmed past what Home itself shows.
+    private static let maxHomeArtworkURLs = 40
     private static let maxSectionArtworkURLs = 12
     /// For You shows two eight-card rows in its initial viewport. Logos are
     /// tiny compared with backdrops, so warm exactly those visible candidates
@@ -22,27 +16,25 @@ enum StartupContentPrefetcher {
     private static let maxRecommendationLogoURLs = 16
     #endif
     private static let maxBrowseArtworkURLs = 12
+    #if os(tvOS)
+    /// About the first three rows of the library grid.
+    private static let maxGridArtworkURLs = 18
+    #endif
     private static let maxProfileArtworkURLs = 8
     private static let browsePageSize = 60
-    private static let selectedLibraryDefaultsKey = "librariesTabSelectedLibraryId"
-    private static let episodeSectionTypes: Set<String> = [
-        "continue_watching",
-        "in_progress",
-        "next_up",
-    ]
 
-    private static var profilesTask: Task<[UserProfile], Error>?
-    private static var homeSectionsTask: Task<APIv2HomeSectionsRead, Error>?
-    private static var recommendationsTask: Task<SectionsResponse, Error>?
-    private static var userLibrariesTask: Task<LibrariesResponse, Error>?
-    private static var librarySectionsTasks: [Int: Task<APIv2LibrarySectionsRead, Error>] = [:]
-    private static var browseFirstPageTasks: [String: Task<CatalogListPage, Error>] = [:]
+    private static let profiles = SharedFetch<[UserProfile]>()
+    private static let homeSections = SharedFetch<APIv2HomeSectionsRead>()
+    private static let recommendations = SharedFetch<SectionsResponse>()
+    /// Most screens read the library list as they appear; reuse a result this
+    /// fresh instead of repeating the request at launch.
+    private static let userLibraries = SharedFetch<LibrariesResponse>(reuseWindow: .seconds(15))
+    private static var librarySections: [Int: SharedFetch<APIv2LibrarySectionsRead>] = [:]
+    private static var browseFirstPages: [String: SharedFetch<CatalogListPage>] = [:]
     #if os(tvOS)
     /// One bounded cold-start warmup for the Series library the top-level tab
-    /// will actually open. This is separate from `librarySectionsTasks`: the
-    /// latter makes the landing page available, while this task also primes
-    /// the first Series hero payload so Select never has to paint a loading
-    /// action pill before the real detail screen.
+    /// will actually open: its landing payload plus the first Series hero, so
+    /// Select never paints a loading action pill before the detail screen.
     private static var tvSeriesLandingTasks: [Int: Task<Void, Never>] = [:]
     #endif
     private static var profileScopedGeneration = 0
@@ -51,30 +43,22 @@ enum StartupContentPrefetcher {
 
     static func resetProfileScopedPrefetches() {
         profileScopedGeneration += 1
-
-        homeSectionsTask?.cancel()
-        recommendationsTask?.cancel()
-        userLibrariesTask?.cancel()
-        librarySectionsTasks.values.forEach { $0.cancel() }
-        browseFirstPageTasks.values.forEach { $0.cancel() }
+        homeSections.reset()
+        recommendations.reset()
+        userLibraries.reset()
+        librarySections.values.forEach { $0.reset() }
+        librarySections.removeAll()
+        browseFirstPages.values.forEach { $0.reset() }
+        browseFirstPages.removeAll()
         #if os(tvOS)
         tvSeriesLandingTasks.values.forEach { $0.cancel() }
-        #endif
-
-        homeSectionsTask = nil
-        recommendationsTask = nil
-        userLibrariesTask = nil
-        librarySectionsTasks.removeAll()
-        browseFirstPageTasks.removeAll()
-        #if os(tvOS)
         tvSeriesLandingTasks.removeAll()
         #endif
     }
 
     static func resetAllPrefetches() {
         profilesGeneration += 1
-        profilesTask?.cancel()
-        profilesTask = nil
+        profiles.reset()
         resetProfileScopedPrefetches()
     }
 
@@ -86,38 +70,23 @@ enum StartupContentPrefetcher {
 
     static func fetchProfiles() async throws -> [UserProfile] {
         let generation = profilesGeneration
-        // Read the single-flight slot before it is filled below: after the
-        // assignment there is no way to tell an originator from a waiter.
         #if os(iOS) || os(tvOS)
-        let probe = PrefetchProbe.begin("profiles", isOriginator: profilesTask == nil)
+        let probe = PrefetchProbe.begin("profiles", isOriginator: !profiles.isInFlight)
         #endif
-        let task: Task<[UserProfile], Error>
-        if let profilesTask {
-            task = profilesTask
-        } else {
-            task = Task {
-                try await AuthService.shared.getProfiles()
-            }
-            profilesTask = task
-        }
-
+        let task = profiles.join { try await AuthService.shared.getProfiles() }
         do {
-            let profiles = try await task.value
+            let result = try await task.value
             try validateProfilesGeneration(generation)
-            if profilesGeneration == generation {
-                profilesTask = nil
-            }
+            profiles.finish(task, value: nil)
             #if os(iOS) || os(tvOS)
             probe.finish(error: nil)
             #endif
-            ResponseCache.shared.set(profiles, for: CacheKey.profiles)
-            await AuthService.shared.reconcileAvailableProfiles(profiles)
-            prefetchProfileArtwork(for: profiles)
-            return profiles
+            ResponseCache.shared.set(result, for: CacheKey.profiles)
+            await AuthService.shared.reconcileAvailableProfiles(result)
+            prefetchProfileArtwork(for: result)
+            return result
         } catch {
-            if profilesGeneration == generation {
-                profilesTask = nil
-            }
+            profiles.finish(task, value: nil)
             #if os(iOS) || os(tvOS)
             probe.finish(error: error)
             #endif
@@ -136,8 +105,17 @@ enum StartupContentPrefetcher {
     /// response cache is intentionally left intact for the caller to update.
     static func invalidateHomeSectionsInFlight() {
         homeSectionsGeneration += 1
-        homeSectionsTask?.cancel()
-        homeSectionsTask = nil
+        homeSections.reset()
+    }
+
+    /// A personal-state change (watched, favorite, watchlist) alters these
+    /// lists: requests already in flight carry the old rows, so callers that
+    /// join after the change must start a fresh one.
+    static func invalidateDerivedListsInFlight() {
+        invalidateHomeSectionsInFlight()
+        recommendations.reset()
+        librarySections.values.forEach { $0.reset() }
+        browseFirstPages.values.forEach { $0.reset() }
     }
 
     /// Capture the active profile/server generation when a player is created.
@@ -147,9 +125,9 @@ enum StartupContentPrefetcher {
         let generation = profileScopedGeneration
         return {
             guard generation == profileScopedGeneration else { return }
-            invalidateHomeSectionsInFlight()
-            ResponseCache.shared.remove(CacheKey.homeSections)
-            NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil)
+            // Progress and watched state show on every derived list, not
+            // only Home: drop them all and refresh a mounted Home.
+            PersonalStateSync.invalidateDerivedLists()
         }
     }
 
@@ -158,18 +136,10 @@ enum StartupContentPrefetcher {
         let homeGeneration = homeSectionsGeneration
         let requestProfileID = AuthService.shared.profileId
         #if os(iOS) || os(tvOS)
-        let probe = PrefetchProbe.begin("home_sections", isOriginator: homeSectionsTask == nil)
+        let probe = PrefetchProbe.begin("home_sections", isOriginator: !homeSections.isInFlight)
         #endif
-        let task: Task<APIv2HomeSectionsRead, Error>
-        if let homeSectionsTask {
-            task = homeSectionsTask
-        } else {
-            task = Task {
-                try await SiloAPI.shared.homeSections()
-            }
-            homeSectionsTask = task
-        }
-
+        let task = homeSections.join { try await SiloAPI.shared.homeSections() }
+        let writeToken = homeSections.writeToken
         do {
             let read = try await task.value
             // The rows belong to the profile they were fetched for. Never
@@ -178,22 +148,15 @@ enum StartupContentPrefetcher {
             try validateProfileScopedGeneration(profileGeneration)
             try validateHomeSectionsGeneration(homeGeneration)
             guard isCurrentOwner else { throw HTTPError.requestIdentityChanged }
-            let response = read.response
-            if profileScopedGeneration == profileGeneration,
-               homeSectionsGeneration == homeGeneration {
-                homeSectionsTask = nil
-            }
+            homeSections.finish(task, value: nil)
             #if os(iOS) || os(tvOS)
             probe.finish(error: nil)
             #endif
-            ResponseCache.shared.set(response, for: CacheKey.homeSections)
-            prefetchHomeArtwork(for: response)
-            return response
+            ResponseCache.shared.set(read.response, for: CacheKey.homeSections, fetchedAt: writeToken)
+            prefetchHomeArtwork(for: read.response)
+            return read.response
         } catch {
-            if profileScopedGeneration == profileGeneration,
-               homeSectionsGeneration == homeGeneration {
-                homeSectionsTask = nil
-            }
+            homeSections.finish(task, value: nil)
             // Emitted before the recovery call: `recoverFromInvalidProfile`
             // tears the session down to profile selection, and the breadcrumb
             // explaining why must precede the transition it causes.
@@ -221,28 +184,10 @@ enum StartupContentPrefetcher {
     #if os(iOS) || os(tvOS)
     // MARK: - Diagnostics
 
-    /// Classifies a prefetch failure into a small, stable set of tokens for the
-    /// `reason` attribute.
-    ///
-    /// The vocabulary is deliberately coarse. `reason` is what a reader groups
-    /// on across reports, so it has to mean the same thing in every build; a
-    /// pass-through of the error's own text would be neither stable nor
-    /// necessarily free of server-authored detail. Anything not recognised here
-    /// becomes `other` rather than leaking a description.
-    ///
-    /// `invalid_profile` is called out because it is the one classification
-    /// that already drives recovery (`recoverFromInvalidProfile`): a user who
-    /// reports "it bounced me to Who's Watching on launch" is looking at that
-    /// token, and it is otherwise indistinguishable from a plain HTTP failure.
-    /// `nonisolated` because `PrefetchProbe` is a nested type and so does not
-    /// inherit this enum's `@MainActor`; its `finish` calls this from whatever
-    /// context the failing fetch unwound on. The classification is a pure
-    /// function of the error value and touches no actor state, so there is
-    /// nothing to hop for.
-    ///
-    /// Cancellation arrives in three shapes and all three mean the same thing,
-    /// so the check is factored out rather than repeated per branch — see
-    /// `indicatesCancellation`.
+    /// Stable, coarse reason token for the breadcrumb `reason`; anything
+    /// unrecognized is `other`, so no server text leaks. `invalid_profile` is
+    /// separate because it triggers profile recovery. Nonisolated: pure, and
+    /// called from `PrefetchProbe.finish`.
     nonisolated static func prefetchFailureReason(_ error: Error) -> String {
         if indicatesCancellation(error) { return "cancelled" }
         if let apiError = error as? APIv2Error {
@@ -277,17 +222,8 @@ enum StartupContentPrefetcher {
         case .requestIdentityChanged, .authorityChanged:
             return "identity_changed"
         case .network(let underlying):
-            // A cancellation reaches here wrapped: `HTTPClient.perform` catches
-            // the transport error and rethrows it as `.network(underlying:)`
-            // regardless of cause, so the outer case says only "the transport
-            // threw", not what it threw. Unwrapping it is the same distinction
-            // `HTTPClient.noteServerUnreachable` already makes when it refuses
-            // to feed a cancelled request into reachability — "cancellation
-            // says nothing about reachability" — and for the same reason: a
-            // server or profile switch cancelling its own in-flight prefetches
-            // is the routine path, and classifying it as `network` would put a
-            // warning-level phantom connectivity failure in every report that
-            // contains an identity transition.
+            // HTTPClient wraps every transport error, cancellation included,
+            // in `.network`; cancellation is not a connectivity failure.
             return indicatesCancellation(underlying) ? "cancelled" : "network"
         case .decodingFailed:
             return "decode_failed"
@@ -307,45 +243,17 @@ enum StartupContentPrefetcher {
         return "http_\(statusCode / 100)xx"
     }
 
-    /// True for every shape a cancelled prefetch can take.
-    ///
-    /// There are three, because a prefetch can be torn down at three different
-    /// depths and each layer reports in its own vocabulary:
-    ///
-    /// 1. `CancellationError` — the prefetcher's own generation guards, thrown
-    ///    when a `resetProfileScopedPrefetches` bumped the generation while the
-    ///    fetch was awaiting.
-    /// 2. A bare `URLError.cancelled` — URLSession tearing the request down,
-    ///    reaching a caller that did not route through `HTTPClient.perform`.
-    /// 3. That same `URLError.cancelled` wrapped in `HTTPError.network` —
-    ///    the common case, because `perform` rethrows *every* transport error
-    ///    as `.network(underlying:)` and the cause survives only in the payload.
-    ///
-    /// Matching on `NSURLErrorDomain`/`NSURLErrorCancelled` rather than
-    /// `URLError` alone so a bridged `NSError` — which is what a cancellation
-    /// looks like once it has crossed an `Error` existential more than once —
-    /// is caught by the same test.
+    /// `CancellationError`, or `NSURLErrorCancelled` bare or bridged through
+    /// `NSError` (often wrapped in `HTTPError.network`).
     nonisolated static func indicatesCancellation(_ error: Error) -> Bool {
         if error is CancellationError { return true }
         let nsError = error as NSError
         return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
     }
 
-    /// One line per prefetch, essential tier.
-    ///
-    /// These fetches are the launch path's only network work, and a cold launch
-    /// that lands on an empty Home or bounces to profile selection is explained
-    /// entirely by their outcomes. `phase` is the fetch name, so they form a
-    /// readable startup block; nothing about the response contents (item
-    /// counts, titles, library names) is recorded — the outcome and its
-    /// classification are the whole diagnostic value.
-    ///
-    /// Every fetch here is single-flight, so only the caller that *started* the
-    /// request reports. Waiters that join an in-flight task would otherwise
-    /// emit a duplicate line per screen that asked, padding the launch block
-    /// with joins rather than work. `begin` captures that decision at the one
-    /// point where it is knowable — before the task is stored — and carries it
-    /// to the `finish` in both exit paths.
+    /// One breadcrumb per prefetch outcome, reported only by the caller that
+    /// started the shared request, never by waiters that joined it. Records
+    /// the outcome, never response contents.
     struct PrefetchProbe {
         let phase: String
         let verbosity: DiagnosticsVerbosity
@@ -401,37 +309,25 @@ enum StartupContentPrefetcher {
     static func fetchRecommendations() async throws -> SectionsResponse {
         let generation = profileScopedGeneration
         #if os(iOS) || os(tvOS)
-        let probe = PrefetchProbe.begin("recommendations", isOriginator: recommendationsTask == nil)
+        let probe = PrefetchProbe.begin("recommendations", isOriginator: !recommendations.isInFlight)
         #endif
-        let task: Task<SectionsResponse, Error>
-        if let recommendationsTask {
-            task = recommendationsTask
-        } else {
-            task = Task {
-                try await SiloAPI.shared.recommendationsDiscover()
-            }
-            recommendationsTask = task
-        }
-
+        let task = recommendations.join { try await SiloAPI.shared.recommendationsDiscover() }
+        let writeToken = recommendations.writeToken
         do {
             let response = try await task.value
             try validateProfileScopedGeneration(generation)
-            if profileScopedGeneration == generation {
-                recommendationsTask = nil
-            }
+            recommendations.finish(task, value: nil)
             #if os(iOS) || os(tvOS)
             probe.finish(error: nil)
             #endif
-            ResponseCache.shared.set(response, for: CacheKey.recommendations)
+            ResponseCache.shared.set(response, for: CacheKey.recommendations, fetchedAt: writeToken)
             prefetchSectionArtwork(for: response, maxCount: maxSectionArtworkURLs)
             #if os(tvOS)
             prefetchRecommendationLogos(for: response)
             #endif
             return response
         } catch {
-            if profileScopedGeneration == generation {
-                recommendationsTask = nil
-            }
+            recommendations.finish(task, value: nil)
             #if os(iOS) || os(tvOS)
             probe.finish(error: error)
             #endif
@@ -439,40 +335,31 @@ enum StartupContentPrefetcher {
         }
     }
 
-    static func fetchUserLibraries() async throws -> LibrariesResponse {
+    /// `reusingRecent: false` is for an explicit refresh by the user.
+    static func fetchUserLibraries(reusingRecent: Bool = true) async throws -> LibrariesResponse {
+        if reusingRecent, let recent = userLibraries.recentValue() { return recent }
         let generation = profileScopedGeneration
         #if os(iOS) || os(tvOS)
-        let probe = PrefetchProbe.begin("user_libraries", isOriginator: userLibrariesTask == nil)
+        let probe = PrefetchProbe.begin("user_libraries", isOriginator: !userLibraries.isInFlight)
         #endif
-        let task: Task<LibrariesResponse, Error>
-        if let userLibrariesTask {
-            task = userLibrariesTask
-        } else {
-            task = Task {
-                try await SiloAPI.shared.libraries()
-            }
-            userLibrariesTask = task
-        }
-
+        let task = userLibraries.join { try await SiloAPI.shared.libraries() }
+        let writeToken = userLibraries.writeToken
         do {
             let response = try await task.value
             try validateProfileScopedGeneration(generation)
-            if profileScopedGeneration == generation {
-                userLibrariesTask = nil
-            }
+            // Only the first caller to resume announces the refresh; waiters
+            // that joined the same request would repeat it.
+            let isFirstToLand = userLibraries.finish(task, value: response)
             #if os(iOS) || os(tvOS)
             probe.finish(error: nil)
             #endif
-            ResponseCache.shared.set(response, for: CacheKey.userLibraries)
-            NotificationCenter.default.post(
-                name: .userLibrariesDidRefresh,
-                object: response
-            )
+            ResponseCache.shared.set(response, for: CacheKey.userLibraries, fetchedAt: writeToken)
+            if isFirstToLand {
+                NotificationCenter.default.post(name: .userLibrariesDidRefresh, object: response)
+            }
             return response
         } catch {
-            if profileScopedGeneration == generation {
-                userLibrariesTask = nil
-            }
+            userLibraries.finish(task, value: nil)
             #if os(iOS) || os(tvOS)
             probe.finish(error: error)
             #endif
@@ -480,9 +367,14 @@ enum StartupContentPrefetcher {
         }
     }
 
+    /// The landing rows plus the first grid page with the library's saved
+    /// filter, which is the query the Library tab sends.
     static func prefetchLibraryLanding(libraryId: Int) {
         prefetchLibrarySections(libraryId: libraryId)
-        prefetchBrowseFirstPage(libraryId: libraryId)
+        prefetchBrowseFirstPage(
+            libraryId: libraryId,
+            state: BrowsePrefsStore.shared.savedState(libraryId: libraryId) ?? .none
+        )
     }
 
     static func prefetchLibrarySections(libraryId: Int) {
@@ -527,6 +419,33 @@ enum StartupContentPrefetcher {
         }
     }
 
+    /// Page 1 of the library's Browse grid with its saved filter, cached
+    /// under the key the grid hydrates from, and its first posters as bytes.
+    /// Bytes only: decoding a grid's worth of 4K posters for a screen the
+    /// user may never open would crowd Home out of the decoded-image budget.
+    private static func prefetchTVLibraryGrid(_ library: Library) {
+        let generation = profileScopedGeneration
+        let filter = TVLibraryGridViewModel.savedFilter(libraryId: library.id)
+        let query = TVLibraryGridViewModel.firstPageQuery(
+            libraryId: library.id,
+            libraryType: library.type,
+            filter: filter
+        )
+        let writeToken = ResponseCache.shared.writeToken
+        Task {
+            guard let page = try? await SiloAPI.shared.catalogPage(query),
+                  profileScopedGeneration == generation else { return }
+            ResponseCache.shared.set(
+                page.response,
+                for: CacheKey.tvLibrary(libraryId: library.id, filterKey: filter.cacheKeyFragment),
+                fetchedAt: writeToken
+            )
+            PosterImageCache.prefetchArtworkData(
+                uniqueURLs(page.response.items.map(\.posterUrl), limit: maxGridArtworkURLs)
+            )
+        }
+    }
+
     private static func firstSeriesItem(in response: SectionsResponse) -> SectionItem? {
         for section in response.sections where !section.isFeatured && !section.items.isEmpty {
             if let item = section.items.first(where: { SiloMediaType.isSeries($0.type) }) {
@@ -539,28 +458,23 @@ enum StartupContentPrefetcher {
 
     static func fetchLibrarySections(libraryId: Int) async throws -> SectionsResponse {
         let generation = profileScopedGeneration
-        // Verbose: these two run once per library on the landing prefetch and
-        // again on every browse navigation, so at essential tier a session's
-        // worth of them would crowd out the launch chain. The library id is
-        // deliberately not recorded — there is no registered key for it, and
-        // it identifies the user's own content.
+        let flight = librarySections[libraryId] ?? {
+            let flight = SharedFetch<APIv2LibrarySectionsRead>()
+            librarySections[libraryId] = flight
+            return flight
+        }()
+        // Verbose: this runs on the landing prefetch and again on every browse
+        // navigation. The library id is not recorded; it identifies the
+        // user's own content.
         #if os(iOS) || os(tvOS)
         let probe = PrefetchProbe.begin(
             "library_sections",
             verbosity: .verbose,
-            isOriginator: librarySectionsTasks[libraryId] == nil
+            isOriginator: !flight.isInFlight
         )
         #endif
-        let task: Task<APIv2LibrarySectionsRead, Error>
-        if let existing = librarySectionsTasks[libraryId] {
-            task = existing
-        } else {
-            task = Task {
-                try await SiloAPI.shared.librarySections(libraryId: libraryId)
-            }
-            librarySectionsTasks[libraryId] = task
-        }
-
+        let task = flight.join { try await SiloAPI.shared.librarySections(libraryId: libraryId) }
+        let writeToken = flight.writeToken
         do {
             let read = try await task.value
             // Sections belong to the profile they were fetched for. Never
@@ -568,20 +482,15 @@ enum StartupContentPrefetcher {
             let isCurrentOwner = await SiloAPI.shared.isCurrentOwner(read.auth)
             try validateProfileScopedGeneration(generation)
             guard isCurrentOwner else { throw HTTPError.requestIdentityChanged }
-            let response = read.response
-            if profileScopedGeneration == generation {
-                librarySectionsTasks[libraryId] = nil
-            }
+            flight.finish(task, value: nil)
             #if os(iOS) || os(tvOS)
             probe.finish(error: nil)
             #endif
-            ResponseCache.shared.set(response, for: CacheKey.librarySections(libraryId))
-            prefetchSectionArtwork(for: response, maxCount: maxSectionArtworkURLs)
-            return response
+            ResponseCache.shared.set(read.response, for: CacheKey.librarySections(libraryId), fetchedAt: writeToken)
+            prefetchSectionArtwork(for: read.response, maxCount: maxSectionArtworkURLs)
+            return read.response
         } catch {
-            if profileScopedGeneration == generation {
-                librarySectionsTasks[libraryId] = nil
-            }
+            flight.finish(task, value: nil)
             #if os(iOS) || os(tvOS)
             probe.finish(error: error)
             #endif
@@ -603,51 +512,45 @@ enum StartupContentPrefetcher {
     ) async throws -> CatalogListPage {
         let generation = profileScopedGeneration
         let key = CacheKey.browse(libraryId: libraryId, filterKey: state.cacheKeyFragment)
-        // Verbose for the same reason as `library_sections`, and the cache key
+        let flight = browseFirstPages[key] ?? {
+            let flight = SharedFetch<CatalogListPage>()
+            browseFirstPages[key] = flight
+            return flight
+        }()
+        // Verbose for the same reason as `library_sections`; the cache key
         // (library id plus the user's filter selections) is never logged.
         #if os(iOS) || os(tvOS)
         let probe = PrefetchProbe.begin(
             "browse_first_page",
             verbosity: .verbose,
-            isOriginator: browseFirstPageTasks[key] == nil
+            isOriginator: !flight.isInFlight
         )
         #endif
-        let task: Task<CatalogListPage, Error>
-        if let existing = browseFirstPageTasks[key] {
-            task = existing
-        } else {
-            task = Task {
-                // iOS omits `type` (library_id already scopes the page); the
-                // builder is the single source of the wire format, and later
-                // pages follow this page's continuation.
-                let query = CatalogQueryBuilder.build(
-                    state,
-                    libraryId: libraryId,
-                    mediaType: .movie,
-                    limit: browsePageSize,
-                    includeType: false
-                )
-                return try await SiloAPI.shared.catalogPage(query)
-            }
-            browseFirstPageTasks[key] = task
+        let task = flight.join {
+            // iOS omits `type` (library_id already scopes the page); later
+            // pages follow this page's continuation.
+            let query = CatalogQueryBuilder.build(
+                state,
+                libraryId: libraryId,
+                mediaType: .movie,
+                limit: browsePageSize,
+                includeType: false
+            )
+            return try await SiloAPI.shared.catalogPage(query)
         }
-
+        let writeToken = flight.writeToken
         do {
             let page = try await task.value
             try validateProfileScopedGeneration(generation)
-            if profileScopedGeneration == generation {
-                browseFirstPageTasks[key] = nil
-            }
+            flight.finish(task, value: nil)
             #if os(iOS) || os(tvOS)
             probe.finish(error: nil)
             #endif
-            ResponseCache.shared.set(page.response, for: key)
+            ResponseCache.shared.set(page.response, for: key, fetchedAt: writeToken)
             prefetchBrowseArtwork(for: page.response)
             return page
         } catch {
-            if profileScopedGeneration == generation {
-                browseFirstPageTasks[key] = nil
-            }
+            flight.finish(task, value: nil)
             #if os(iOS) || os(tvOS)
             probe.finish(error: error)
             #endif
@@ -656,9 +559,10 @@ enum StartupContentPrefetcher {
     }
 
     static func prefetchAuthenticatedContent() {
+        ResponseCache.shared.seedFromSnapshots()
         prefetchHomeSections()
         prefetchRecommendations()
-        prefetchActiveLibraryLanding()
+        prefetchLibraryTabLandings()
         Task {
             await OverlayPrefsStore.shared.hydrateIfNeeded()
         }
@@ -696,177 +600,109 @@ enum StartupContentPrefetcher {
         }
     }
 
-    private static func prefetchActiveLibraryLanding() {
+    /// Warm the landing of each library tab, for the library that tab opens
+    /// on, resolved the way the tab itself resolves it.
+    private static func prefetchLibraryTabLandings() {
         Task {
             guard let response = try? await fetchUserLibraries() else { return }
-
-            // Preserve the existing selected-library landing prefetch on every
-            // platform. tvOS additionally has a dedicated Series root tab;
-            // warm its persisted scope during the same launch window instead
-            // of waiting for the user to enter that tab.
-            if let library = preferredLibrary(from: response.libraries) {
-                prefetchLibraryLanding(libraryId: library.id)
-            }
-
             #if os(tvOS)
-            let seriesLibraries = response.libraries
-                .filter { TVLibraryTabType.series.matches($0) }
-                .sorted {
-                    ($0.sortOrder ?? Int.max, $0.id) < ($1.sortOrder ?? Int.max, $1.id)
+            var gridLibraryIds = Set<Int>()
+            for type in [TVLibraryTabType.movies, .series] {
+                let candidates = response.libraries
+                    .filter { type.matches($0) }
+                    .sorted { ($0.sortOrder ?? Int.max, $0.id) < ($1.sortOrder ?? Int.max, $1.id) }
+                guard let library = TVLibraryScopeStore.shared.resolvedLibrary(for: type, in: candidates) else {
+                    continue
                 }
-            if let library = TVLibraryScopeStore.shared.resolvedLibrary(
-                for: .series,
-                in: seriesLibraries
-            ) {
-                prefetchTVSeriesLanding(libraryId: library.id)
+                if type == .series {
+                    prefetchTVSeriesLanding(libraryId: library.id)
+                } else {
+                    prefetchLibrarySections(libraryId: library.id)
+                }
+                // A mixed library sits under both tabs; warm its grid once.
+                if gridLibraryIds.insert(library.id).inserted {
+                    prefetchTVLibraryGrid(library)
+                }
+            }
+            #else
+            let registry = ServerRegistry.shared
+            let authority = MainTabLibraryAuthority(
+                serverId: registry.activeServerId,
+                profileId: registry.activeProfileId
+            )
+            for category in [PrimaryMenuBuiltin.movies, .series] {
+                let storageKey = librarySelectionStorageKey(
+                    category: category,
+                    fixedLibraryId: nil,
+                    authority: authority
+                )
+                guard let libraryId = resolvedLibraryIdForRoot(
+                    response.libraries,
+                    category: category,
+                    fixedLibraryId: nil,
+                    showAudiobooks: AppNavPreferences.shared.showAudiobooks,
+                    storedLibraryId: storedLibrarySelectionId(for: storageKey)
+                ) else { continue }
+                prefetchLibraryLanding(libraryId: libraryId)
             }
             #endif
         }
     }
 
-    private static func preferredLibrary(from libraries: [Library]) -> Library? {
-        AppNavPreferences.shared.refresh()
-        let visibleLibraries = libraries
-            .filter {
-                AppNavPreferences.shared.showAudiobooks || !$0.isAudiobookLibrary
-            }
-            .sorted {
-                ($0.sortOrder ?? Int.max, $0.id) < ($1.sortOrder ?? Int.max, $1.id)
-            }
-        let storedId = UserDefaults.standard.integer(forKey: selectedLibraryDefaultsKey)
-        if storedId != 0,
-           let stored = visibleLibraries.first(where: { $0.id == storedId }) {
-            return stored
-        }
-        return visibleLibraries.first
-    }
-
+    /// Home renders under the startup splash and loads what it shows. Warm
+    /// the bytes of the rest of its rows, and the first card's marquee logo,
+    /// so scrolling and focus moves paint from local data.
     private static func prefetchHomeArtwork(for response: SectionsResponse) {
-        // Each kind is warmed at the size its consumer reads synchronously:
-        // cards at the shared card thumbnail, the marquee logo at its native
-        // size, and the initial backdrop at the exact hero decode size. Warming
-        // full-size decodes instead used to cost ~4 MB per poster and ~8 MB
-        // per backdrop, which overflowed the 96 MB budget on 3 GB Apple TVs
-        // and evicted the very cards the warm-up was meant to paint.
-        var cardURLs: [URL] = []
-        var backdropURLs: [URL] = []
-        var logoURLs: [URL] = []
-        // Deduplicated per bucket: the same URL is a different cache key as
-        // a card thumbnail and as the hero decode, so an episode still that
-        // is also the marquee backdrop legitimately belongs to both.
-        var seenCards = Set<String>()
-        var seenBackdrops = Set<String>()
-        var seenLogos = Set<String>()
-        // Tracked separately: reading the arrays while one is bound as an
-        // `inout` bucket is an exclusivity violation.
-        var count = 0
-
-        func append(_ urlString: String?, into bucket: inout [URL], seen: inout Set<String>) {
-            guard count < maxHomeArtworkURLs,
-                  let url = normalizedURL(from: urlString),
-                  seen.insert(url.absoluteString).inserted else {
-                return
-            }
-            bucket.append(url)
-            count += 1
+        let sections = response.sections.filter { !$0.items.isEmpty }
+        let cards = sections.lazy.flatMap { section in
+            section.items.lazy.map { rowCardArtwork(for: $0, in: section, onHome: true)?.url }
         }
-
-        /// Hero backdrops render only on tvOS; other platforms must not
-        /// spend their smaller budget on requests that are never started.
-        func appendBackdrop(_ urlString: String?) {
-            #if os(tvOS)
-            append(urlString, into: &backdropURLs, seen: &seenBackdrops)
-            #endif
-        }
-
-        // No client renders a featured hero anymore — featured sections show
-        // as ordinary rows. Entry lands on the first card of the first content
-        // row. Warm that row's logo + art first (so a cold start paints a
-        // finished first row), then the rest. (The first row's logo + backdrop
-        // are sized for the tvOS focus marquee; on other platforms only
-        // posters/episode stills render, so those two are speculative but
-        // harmless.)
-        let contentSections = response.sections.filter { !$0.items.isEmpty }
-        if let firstRow = contentSections.first {
-            append(firstRow.items.first?.logoUrl, into: &logoURLs, seen: &seenLogos)
-            // Only the marquee's initial selection earns a hero-size decode.
-            // A w1920 backdrop is ~8 MB decoded, so warming the whole first
-            // row would spend the entire 96 MB tvOS budget on artwork the
-            // user may never rest on and evict the very cards this warm-up
-            // exists to paint. The neighbours the user is most likely to
-            // reach are pulled into the disk cache (bytes only) by
-            // `PosterImageCache.warmNeighborBackdrops` once the marquee
-            // rests, which removes the network round trip without a decode.
-            appendBackdrop(firstRow.items.first?.backdropUrl)
-            for item in firstRow.items {
-                if episodeSectionTypes.contains(firstRow.sectionType) {
-                    // Episode stills render the backdrop as the card art and
-                    // the marquee shows the same image as the hero. One
-                    // download, two decode sizes.
-                    append(item.backdropUrl ?? item.posterUrl, into: &cardURLs, seen: &seenCards)
-                } else {
-                    append(item.posterUrl, into: &cardURLs, seen: &seenCards)
-                }
-                if count >= maxHomeArtworkURLs { break }
-            }
-        }
-        for section in contentSections.dropFirst() {
-            for item in section.items {
-                if episodeSectionTypes.contains(section.sectionType) {
-                    append(item.backdropUrl ?? item.posterUrl, into: &cardURLs, seen: &seenCards)
-                } else {
-                    append(item.posterUrl, into: &cardURLs, seen: &seenCards)
-                }
-                if count >= maxHomeArtworkURLs { break }
-            }
-            if count >= maxHomeArtworkURLs { break }
-        }
-
-        PosterImageCache.prefetchOriginalArtwork(logoURLs)
-        PosterImageCache.prefetchCardArtwork(cardURLs)
+        PosterImageCache.prefetchArtworkData(uniqueURLs(cards, limit: maxHomeArtworkURLs))
         #if os(tvOS)
-        PosterImageCache.prefetchHeroBackdrops(backdropURLs)
-        #endif
-
-        // Warm the marquee's initial tint: tvOS seeds the marquee with the
-        // first row's first item on cold entry, and a cached sample lets the
-        // tint wash paint on the same frame as the backdrop instead of
-        // fading up from the black background once sampling finishes. Other
-        // platforms render no marquee, so skip the fetch + sampling there.
-        #if os(tvOS)
-        if let firstBackdrop = normalizedURL(from: contentSections.first?.items.first?.backdropUrl) {
-            Task { _ = await HeroBackdropPalette.tintColor(for: firstBackdrop) }
+        if let logo = normalizedURL(from: sections.first?.items.first?.logoUrl) {
+            PosterImageCache.prefetchOriginalArtwork([logo])
         }
         #endif
     }
 
+    /// Landing rows of a tab the user has not opened yet: decode their first
+    /// posters at the size the row cards draw them, and warm episode stills
+    /// as bytes.
     private static func prefetchSectionArtwork(for response: SectionsResponse, maxCount: Int) {
-        var urls: [URL] = []
-        var seen = Set<String>()
-
-        func append(_ urlString: String?) {
-            guard urls.count < maxCount,
-                  let url = normalizedURL(from: urlString) else {
-                return
-            }
-            let key = url.absoluteString
-            guard seen.insert(key).inserted else { return }
-            urls.append(url)
-        }
-
+        var posters: [CardArtwork] = []
+        var stills: [String?] = []
         for section in response.sections where !section.isFeatured && !section.items.isEmpty {
+            let showsStills = SectionRow.layout(for: section) == .thumbnail
             for item in section.items {
-                if episodeSectionTypes.contains(section.sectionType) {
-                    append(item.backdropUrl ?? item.posterUrl)
+                guard let card = rowCardArtwork(for: item, in: section, onHome: false) else { continue }
+                if showsStills {
+                    stills.append(card.url)
                 } else {
-                    append(item.posterUrl)
+                    posters.append(card)
                 }
-                if urls.count >= maxCount { break }
             }
-            if urls.count >= maxCount { break }
         }
+        var seen = Set<String>()
+        PosterImageCache.prefetchArtwork(Array(posters.filter { !$0.url.isEmpty && seen.insert($0.url).inserted }.prefix(maxCount)))
+        PosterImageCache.prefetchArtworkData(uniqueURLs(stills, limit: maxCount))
+    }
 
-        PosterImageCache.prefetchCardArtwork(urls)
+    /// The artwork a card in `section`'s row draws, by the rules that row
+    /// uses: Skyline rows on tvOS, Home's rows or `SectionRow` elsewhere.
+    private static func rowCardArtwork(for item: SectionItem, in section: ResolvedSection, onHome: Bool) -> CardArtwork? {
+        #if os(tvOS)
+        return MediaRow.cardArtwork(for: item, layout: SectionRow.layout(for: section), cardWidth: SiloTheme.Skyline.densePosterCardWidth)
+        #else
+        if onHome || section.isContinueWatchingSection {
+            return HomeFeedRow.cardArtwork(for: item, in: section)
+        }
+        return MediaRow.cardArtwork(
+            for: item,
+            layout: SectionRow.layout(for: section),
+            cardWidth: nil,
+            thumbnailCardWidth: SectionRow.thumbnailCardWidth
+        )
+        #endif
     }
 
     #if os(tvOS)
@@ -876,70 +712,48 @@ enum StartupContentPrefetcher {
         let nonEmpty = response.sections.filter { !$0.items.isEmpty }
         let forYou = nonEmpty.filter { $0.title.lowercased() == "for you" }
         let others = nonEmpty.filter { $0.title.lowercased() != "for you" }
-        let initialRows = (forYou + others).prefix(2)
-
-        var urls: [URL] = []
-        var seen = Set<String>()
-        for section in initialRows {
-            for item in section.items.prefix(8) {
-                guard urls.count < maxRecommendationLogoURLs,
-                      let url = normalizedURL(from: item.logoUrl),
-                      seen.insert(url.absoluteString).inserted else { continue }
-                urls.append(url)
-            }
-        }
-
-        PosterImageCache.prefetchOriginalArtwork(urls)
+        let logos = (forYou + others).prefix(2).flatMap { $0.items.prefix(8).map(\.logoUrl) }
+        PosterImageCache.prefetchOriginalArtwork(uniqueURLs(logos, limit: maxRecommendationLogoURLs))
     }
     #endif
 
+    /// `CatalogGrid` draws audiobook covers square.
     private static func prefetchBrowseArtwork(for response: CatalogResponse) {
-        var urls: [URL] = []
         var seen = Set<String>()
-
-        for item in response.items {
-            guard urls.count < maxBrowseArtworkURLs,
-                  let url = normalizedURL(from: item.posterUrl) else {
-                continue
-            }
-            let key = url.absoluteString
-            guard seen.insert(key).inserted else { continue }
-            urls.append(url)
+        let cards = response.items.compactMap { item -> CardArtwork? in
+            guard let url = item.posterUrl, !url.isEmpty, seen.insert(url).inserted else { return nil }
+            return CardArtwork(
+                url: url,
+                pointSize: MediaCard.artworkSize(cardWidthOverride: nil, aspect: item.isAudiobook ? .square : .poster)
+            )
         }
-
-        PosterImageCache.prefetchCardArtwork(urls)
+        PosterImageCache.prefetchArtwork(Array(cards.prefix(maxBrowseArtworkURLs)))
     }
 
     private static func prefetchProfileArtwork(for profiles: [UserProfile]) {
-        var urls: [URL] = []
-        var seen = Set<String>()
-
-        for profile in profiles {
-            guard urls.count < maxProfileArtworkURLs else { continue }
-
-            // Mirror the view-side precedence: server-resolved `avatar_url`
-            // first, then the client-side resolution of the raw ref.
-            let resolved: String?
+        // Same precedence as the avatar view: the server-resolved URL first,
+        // then the client-side resolution of the raw ref.
+        let avatars = profiles.map { profile -> String? in
             if let serverURL = ProfileAvatarResolver.serverResolvedImageURL(profile.avatarImageUrl) {
-                resolved = serverURL
-            } else if let avatar = profile.avatarEmoji?.trimmingCharacters(in: .whitespacesAndNewlines),
-                      ProfileAvatarResolver.isImage(avatar) {
-                resolved = ProfileAvatarResolver.imageURL(for: avatar)
-            } else {
-                resolved = nil
+                return serverURL
             }
-
-            guard let urlString = resolved,
-                  let url = normalizedURL(from: urlString) else {
-                continue
-            }
-
-            let key = url.absoluteString
-            guard seen.insert(key).inserted else { continue }
-            urls.append(url)
+            guard let avatar = profile.avatarEmoji?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  ProfileAvatarResolver.isImage(avatar) else { return nil }
+            return ProfileAvatarResolver.imageURL(for: avatar)
         }
+        PosterImageCache.prefetchArtworkData(uniqueURLs(avatars, limit: maxProfileArtworkURLs))
+    }
 
-        PosterImageCache.prefetchCardArtwork(urls)
+    /// Up to `limit` distinct, valid absolute URLs, in order.
+    private static func uniqueURLs(_ strings: some Sequence<String?>, limit: Int) -> [URL] {
+        var urls: [URL] = []
+        var seen = Set<URL>()
+        for string in strings {
+            guard let url = normalizedURL(from: string), seen.insert(url).inserted else { continue }
+            urls.append(url)
+            if urls.count >= limit { break }
+        }
+        return urls
     }
 
     private static func validateProfileScopedGeneration(_ generation: Int) throws {
@@ -968,5 +782,56 @@ enum StartupContentPrefetcher {
             return nil
         }
         return url
+    }
+}
+
+/// One request shared by every concurrent caller, and optionally reused for a
+/// short window after it lands. Callers validate their own generation after
+/// awaiting and report back through `finish`.
+@MainActor
+final class SharedFetch<Value> {
+    private var task: Task<Value, Error>?
+    /// `ResponseCache.writeToken` when the in-flight request started. A
+    /// caller that joins later caches the result under this token, not its own.
+    private(set) var writeToken: UInt64 = 0
+    private var landed: (value: Value, at: ContinuousClock.Instant)?
+    private let reuseWindow: Duration
+
+    init(reuseWindow: Duration = .zero) {
+        self.reuseWindow = reuseWindow
+    }
+
+    var isInFlight: Bool { task != nil }
+
+    func recentValue() -> Value? {
+        guard let landed, ContinuousClock.now - landed.at < reuseWindow else { return nil }
+        return landed.value
+    }
+
+    func join(_ start: @escaping @MainActor () async throws -> Value) -> Task<Value, Error> {
+        if let task { return task }
+        writeToken = ResponseCache.shared.writeToken
+        let task = Task { try await start() }
+        self.task = task
+        return task
+    }
+
+    /// Clears the slot if `task` still owns it and remembers a successful
+    /// `value` for reuse. Returns whether this call cleared the slot, which is
+    /// true only for the first caller to resume.
+    @discardableResult
+    func finish(_ task: Task<Value, Error>, value: Value?) -> Bool {
+        guard self.task == task else { return false }
+        self.task = nil
+        if let value, reuseWindow > .zero {
+            landed = (value, .now)
+        }
+        return true
+    }
+
+    func reset() {
+        task?.cancel()
+        task = nil
+        landed = nil
     }
 }

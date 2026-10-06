@@ -119,10 +119,6 @@ func visibleLibrariesForRoot(
     return libraries.filter { libraryMatchesPrimaryMenuCategory($0, category: category) }
 }
 
-func libraryRootCanSwitch(fixedLibraryId: Int?, visibleLibraryCount: Int) -> Bool {
-    visibleLibraryCount > 1
-}
-
 func resolvedLibraryIdForRoot(
     _ libraries: [Library],
     category: PrimaryMenuBuiltin?,
@@ -312,9 +308,9 @@ struct LibrariesTabView: View {
 
     @ViewBuilder
     private func loadedContent(activeLibrary: Library) -> some View {
-        // Switch tab content directly here (rather than going through
-        // `LibraryDetailView`) so we can hoist the top bar + tab selector
-        // into a single `safeAreaInset` overlay shared by all three tabs.
+        // Switch tab content directly here so we can hoist the top bar + tab
+        // selector into a single `safeAreaInset` overlay shared by all three
+        // tabs.
         tabContent(activeLibrary: activeLibrary)
             // Forces the whole tab subtree to reset when switching
             // libraries, so stale content never flashes on screen.
@@ -347,10 +343,7 @@ struct LibrariesTabView: View {
         VStack(spacing: 0) {
             LibrariesTopBar(
                 activeLibrary: activeLibrary,
-                canSwitch: libraryRootCanSwitch(
-                    fixedLibraryId: fixedLibraryId,
-                    visibleLibraryCount: visibleLibraries.count
-                ),
+                canSwitch: canSwitchLibraries,
                 onLibraryTap: { showPicker = true },
                 onSearch: { router.navigate(to: .search) },
                 onOpenSettings: { router.navigate(to: .settings) },
@@ -387,6 +380,16 @@ struct LibrariesTabView: View {
         return [PrimaryMenuBuiltin.movies, .series, .audiobooks].first {
             libraryMatchesPrimaryMenuCategory(fixed, category: $0)
         }
+    }
+
+    /// The Mac lists every library in its sidebar, so the page title offers
+    /// no picker there.
+    private var canSwitchLibraries: Bool {
+        #if os(macOS)
+        false
+        #else
+        visibleLibraries.count > 1
+        #endif
     }
 
     private var visibleLibraries: [Library] {

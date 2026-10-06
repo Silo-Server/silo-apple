@@ -19,14 +19,9 @@ struct HomeView: View {
     var onTopMenuFocusRequest: (() -> Void)? = nil
 
     @State private var viewModel = HomeViewModel()
-    #if os(tvOS)
     @State private var homeSectionPreferences = HomeSectionPreferences.shared
-    #endif
     #if !os(tvOS)
-    @State private var homeSectionPreferences = HomeSectionPreferences.shared
-    @State private var isRefreshing = false
-    @State private var refreshStartedAt: Date?
-    @State private var refreshHideTask: Task<Void, Never>?
+    @State private var refreshPill = RefreshStatusPillState()
     /// Feeds the glass strip behind the floating header as rows scroll under it.
     @State private var chromeScrollState = PageChromeScrollState()
     #if os(iOS)
@@ -85,7 +80,7 @@ struct HomeView: View {
                         accessibilityLabel: "Loading home",
                         onMoveUp: onTopMenuFocusRequest
                     )
-            } else if !viewModel.regularSections.isEmpty {
+            } else if !viewModel.sections.isEmpty {
                 EmptyStateView(
                     icon: "eye.slash",
                     title: "Home sections are hidden",
@@ -112,21 +107,15 @@ struct HomeView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Runs on every appear, so returning from the player refreshes
+        // Continue Watching.
         .task {
             homeSectionPreferences.refresh()
             await viewModel.loadSections()
         }
-        .onAppear {
-            // Refresh on return (e.g. after player dismiss) so
-            // Continue Watching reflects new progress. Skip the
-            // very first appear — `.task` handles the initial
-            // load and we don't want two concurrent fetches.
-            guard !viewModel.sections.isEmpty else { return }
-            Task { await viewModel.loadSections() }
-        }
         #else
         ZStack(alignment: .top) {
-            homeFeedBackground
+            SiloPageBackdrop()
                 .ignoresSafeArea()
 
             Group {
@@ -139,8 +128,9 @@ struct HomeView: View {
                         onManageServers: { router.navigate(to: .serverList) }
                     )
                 } else if viewModel.isLoading {
-                    Color.clear
-                } else if !viewModel.regularSections.isEmpty {
+                    PosterRowsSkeleton()
+                        .padding(.top, topRunwaySpacing(topSafeAreaInset: 0))
+                } else if !viewModel.sections.isEmpty {
                     EmptyStateView(
                         icon: "eye.slash",
                         title: "Home sections are hidden",
@@ -162,8 +152,10 @@ struct HomeView: View {
                 // over the glass strip instead of scrolling away with the feed.
                 // It occupies the same 44pt row as the icon buttons so its
                 // centre lines up with theirs.
+                #if !os(macOS)
                 SiloWordmarkView(width: 72)
                     .frame(height: SiloTheme.topBarIconHitSize)
+                #endif
                 Spacer(minLength: 8)
 
                 // Trailing action cluster shared by every root page.
@@ -190,7 +182,7 @@ struct HomeView: View {
                 PageChromeGlass(scrollState: chromeScrollState)
             }
 
-            if isRefreshing {
+            if refreshPill.isVisible {
                 RefreshStatusPill()
                     .padding(.top, 64)
                     .transition(.move(edge: .top).combined(with: .opacity))
@@ -205,7 +197,7 @@ struct HomeView: View {
             }
 
         }
-        .animation(.easeInOut(duration: 0.18), value: isRefreshing)
+        .animation(.easeInOut(duration: 0.18), value: refreshPill.isVisible)
         .animation(.easeInOut(duration: 0.18), value: ConnectionMonitor.shared.isOffline)
         #if !os(macOS)
         .toolbar(.hidden, for: .navigationBar)
@@ -219,11 +211,9 @@ struct HomeView: View {
         }
         #endif
         }
-        #if os(iOS) || os(tvOS)
         .onReceive(NotificationCenter.default.publisher(for: .homeSectionsShouldRefresh)) { _ in
             Task { await viewModel.loadSections() }
         }
-        #endif
         .alert(
             "Couldn’t Update Item",
             isPresented: $viewModel.isShowingActionError
@@ -237,95 +227,102 @@ struct HomeView: View {
 
     // MARK: - Content
 
-    #if !os(tvOS)
+    #if os(iOS)
+    private var scrollContent: some View {
+        feedScrollView(topSafeAreaInset: 0)
+    }
+    #elseif os(macOS)
     private var scrollContent: some View {
         GeometryReader { geometry in
-            ScrollView(.vertical, showsIndicators: false) {
-                LazyVStack(alignment: .leading, spacing: HomeFeedMetrics.sectionSpacing) {
-                    // Clear runway under the pinned header so the first row
-                    // starts below the wordmark and utilities.
-                    Color.clear
-                        .frame(height: topRunwaySpacing(topSafeAreaInset: runwaySafeAreaInset(geometry)))
-                        .id(HomeFocusTarget.topSpacer)
-
-                    ForEach(displayedSections) { section in
-                        HomeFeedRow(
-                            section: section,
-                            onRemoveFromContinueWatching: dismissContinueWatching,
-                            onSetWatched: setWatched
-                        )
-                        .id(HomeFocusTarget.row(section.id))
-                    }
-                }
-                .padding(.bottom, HomeFeedMetrics.bottomRunway)
-            }
-            .reportsPageChromeScroll(to: chromeScrollState)
-            #if os(macOS)
-            .siloScrollEdgeEffect()
-            #endif
+            feedScrollView(topSafeAreaInset: geometry.safeAreaInsets.top)
+                .siloScrollEdgeEffect()
         }
     }
     #endif
 
-    private enum HomeFocusTarget: Hashable {
-        case topSpacer
-        case row(String)
+    #if !os(tvOS)
+    private func feedScrollView(topSafeAreaInset: CGFloat) -> some View {
+        let sections = feedSections
+        return ScrollView(.vertical, showsIndicators: false) {
+            LazyVStack(alignment: .leading, spacing: HomeFeedMetrics.sectionSpacing) {
+                // Clear runway under the pinned header so the first row
+                // starts below the wordmark and utilities.
+                Color.clear
+                    .frame(height: topRunwaySpacing(topSafeAreaInset: topSafeAreaInset))
+
+                ForEach(sections) { section in
+                    feedSection(section, leadsPage: section.id == sections.first?.id)
+                        .onAppear { warmRows(after: section) }
+                }
+            }
+            .padding(.bottom, HomeFeedMetrics.bottomRunway)
+        }
+        .reportsPageChromeScroll(to: chromeScrollState)
     }
 
-    /// Rows for the vertical list, in server Home order after filtering empty
-    /// and featured sections. Recommendations stay in the For You tab.
-    private var displayedSections: [ResolvedSection] {
-        #if os(tvOS) || os(iOS)
-        // Filter before the Skyline feed performs layout. A hidden section
-        // therefore leaves no placeholder: the next visible section inherits
-        // the same fixed row slot and vertical anchor.
-        return homeSectionPreferences.arrangedSections(viewModel.regularSections)
+    /// The displayed rows in feed order. The Mac draws the first featured
+    /// section as a hero at the top of the page wherever it sits in the Home
+    /// order, as web does; any other featured section stays a row in place.
+    private var feedSections: [ResolvedSection] {
+        var sections = displayedSections
+        #if os(macOS)
+        if let index = sections.firstIndex(where: \.isFeatured), index > 0 {
+            sections.insert(sections.remove(at: index), at: 0)
+        }
+        #endif
+        return sections
+    }
+
+    @ViewBuilder
+    private func feedSection(_ section: ResolvedSection, leadsPage: Bool) -> some View {
+        #if os(macOS)
+        if leadsPage, section.isFeatured {
+            MacFeaturedHero(section: section)
+                // The hero sits flush with the top of the window, so it takes
+                // back the stack's leading gap and the page's top margin.
+                .padding(.top, -(HomeFeedMetrics.sectionSpacing + SiloTheme.padding))
+        } else {
+            feedRow(section)
+        }
         #else
-        return viewModel.regularSections
+        feedRow(section)
         #endif
     }
 
+    private func feedRow(_ section: ResolvedSection) -> some View {
+        HomeFeedRow(
+            section: section,
+            onRemoveFromContinueWatching: dismissContinueWatching,
+            onSetWatched: setWatched
+        )
+    }
+
+    /// Decode the leading cards of the rows below one that appeared, so
+    /// scrolling down reveals painted artwork rather than thumbhashes.
+    private func warmRows(after section: ResolvedSection) {
+        let sections = feedSections
+        guard let index = sections.firstIndex(where: { $0.id == section.id }) else { return }
+        let next = sections.dropFirst(index + 1).prefix(ArtworkLookahead.rowsAhead)
+        ArtworkLookahead.warmRows(next, items: \.items) { section, item in
+            HomeFeedRow.cardArtwork(for: item, in: section)
+        }
+    }
+    #endif
+
+    /// Rows in the profile's Home order with hidden rows removed. Filtering
+    /// before layout means a hidden row leaves no gap: the next row takes its
+    /// slot.
+    private var displayedSections: [ResolvedSection] {
+        homeSectionPreferences.arrangedSections(viewModel.sections)
+    }
+
     #if !os(tvOS)
-    /// Home uses the same fixed canvas as the rest of the signed-in app.
-    private var homeFeedBackground: some View {
-        SiloPageBackdrop()
-    }
-
-
     private func refreshHome() async {
-        await MainActor.run {
-            showRefreshStatus()
-        }
-
-        async let homeRefresh: Void = viewModel.loadSections()
-        async let libraryRefresh: LibrariesResponse? = try? await StartupContentPrefetcher
-            .fetchUserLibraries()
-        _ = await (homeRefresh, libraryRefresh)
-
-        await MainActor.run {
-            scheduleRefreshStatusHide()
-        }
-    }
-
-    private func showRefreshStatus() {
-        refreshHideTask?.cancel()
-        refreshStartedAt = Date()
-        isRefreshing = true
-    }
-
-    private func scheduleRefreshStatusHide() {
-        let elapsed = Date().timeIntervalSince(refreshStartedAt ?? Date())
-        let remaining = RefreshStatusPill.minimumVisibleDuration - elapsed
-        refreshHideTask?.cancel()
-        refreshHideTask = Task { @MainActor in
-            if remaining > 0 {
-                try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
-            }
-            guard !Task.isCancelled else { return }
-
-            isRefreshing = false
-            refreshStartedAt = nil
-            refreshHideTask = nil
+        await refreshPill.run {
+            async let homeRefresh: Void = viewModel.loadSections()
+            async let libraryRefresh: LibrariesResponse? = try? await StartupContentPrefetcher
+                .fetchUserLibraries(reusingRecent: false)
+            _ = await (homeRefresh, libraryRefresh)
         }
     }
 
@@ -353,24 +350,16 @@ struct HomeView: View {
     }
 
     #if !os(tvOS)
-    private var sectionSpacing: CGFloat {
-        SiloTheme.largePadding
-    }
-
-    /// On iOS the ScrollView already starts inside the safe area, so the
-    /// runway must not count the status-bar inset a second time.
-    private func runwaySafeAreaInset(_ geometry: GeometryProxy) -> CGFloat {
-        #if os(iOS)
-        return 0
-        #else
-        return geometry.safeAreaInsets.top
-        #endif
-    }
-
     private func topRunwaySpacing(topSafeAreaInset: CGFloat) -> CGFloat {
         // Mirror the floating header's vertical footprint (icon-frame height +
         // bottom padding) so the first row clears it. LazyVStack supplies the
         // remaining row gap; don't double-count it here.
+        #if os(macOS)
+        // The Mac sidebar carries the logo and utilities, so Home has no
+        // floating header to clear, and the feed already starts below the
+        // title bar. The stack's section spacing is the only top gap.
+        return 0
+        #else
         var runway = topSafeAreaInset + SiloTheme.topBarIconHitSize + SiloTheme.smallPadding
         #if os(iOS)
         runway += headerTopInset + headerToContentGap
@@ -378,6 +367,7 @@ struct HomeView: View {
         runway += SiloTheme.largePadding + SiloTheme.smallPadding
         #endif
         return runway
+        #endif
     }
     #endif
 }

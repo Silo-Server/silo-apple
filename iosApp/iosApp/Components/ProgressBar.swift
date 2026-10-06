@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// A thin progress bar (0-1) for showing watch progress.
-/// Uses white fill on translucent track (Plezy style — no accent color).
+/// White fill on a translucent track, no accent color.
 struct ProgressBar: View {
     let value: Double
 

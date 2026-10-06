@@ -12,6 +12,11 @@ struct PhoneDetailFactsSection: View {
     /// appear in the Cast & Crew row.
     var includesCredits = true
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    /// The label column grows with its text so "FIRST AIRED" and "NARRATORS"
+    /// keep their default line breaks at larger text sizes.
+    @ScaledMetric(relativeTo: .caption2) private var labelWidth: CGFloat = 100
+
     var body: some View {
         let facts = DetailFacts(detail: detail, includesCredits: includesCredits).assembleFacts()
         if !facts.isEmpty {
@@ -22,22 +27,45 @@ struct PhoneDetailFactsSection: View {
                             .fill(Color.white.opacity(0.08))
                             .frame(height: 1)
                     }
-                    HStack(alignment: .top, spacing: 16) {
-                        Text(fact.label.uppercased())
-                            .font(.system(size: 11, weight: .bold))
-                            .tracking(1.2)
-                            .foregroundColor(.siloOnSurface.opacity(0.5))
-                            .frame(width: 100, alignment: .leading)
-                        Text(fact.value)
-                            .font(.system(size: 14, weight: .regular))
-                            .foregroundColor(.siloOnSurface)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .padding(.vertical, 12)
+                    factRow(fact)
+                        .padding(.vertical, 12)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    /// Label beside value; at accessibility sizes a side column would leave
+    /// the value a few words per line, so the label sits above it instead.
+    @ViewBuilder
+    private func factRow(_ fact: DetailFacts.Fact) -> some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: 4) {
+                label(fact)
+                value(fact)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            HStack(alignment: .top, spacing: 16) {
+                label(fact)
+                    .frame(width: labelWidth, alignment: .leading)
+                value(fact)
+            }
+        }
+    }
+
+    private func label(_ fact: DetailFacts.Fact) -> some View {
+        Text(fact.label.uppercased())
+            .siloScaledFont(size: 11, weight: .bold, relativeTo: .caption2)
+            .tracking(1.2)
+            .foregroundColor(.siloOnSurface.opacity(0.5))
+    }
+
+    private func value(_ fact: DetailFacts.Fact) -> some View {
+        Text(fact.value)
+            .siloScaledFont(size: 14, relativeTo: .subheadline)
+            .foregroundColor(.siloOnSurface)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 #endif

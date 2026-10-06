@@ -1,6 +1,7 @@
 #if os(iOS)
 import Foundation
 import Network
+import OSLog
 
 struct SiloControlTarget: Identifiable, Equatable {
     let id: String
@@ -34,14 +35,33 @@ struct SiloControlTarget: Identifiable, Equatable {
     }
 }
 
+/// Browses `_silocast._tcp` for TVs the phone can control.
+///
+/// Self-healing: a failed `NWBrowser` (for example after a post-suspension
+/// network-stack reset) restarts itself until `stop()`, so the picker and the
+/// auto-resume probe don't stay empty while TVs are advertising.
 @MainActor
 @Observable
 final class SiloControlBrowser {
     private(set) var found: [SiloControlTarget] = []
     private var browser: NWBrowser?
+    private let selfHeal: BonjourSelfHeal
+    private nonisolated static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
+        category: "control.browser"
+    )
+
+    init(selfHeal: BonjourSelfHeal = BonjourSelfHeal()) {
+        self.selfHeal = selfHeal
+    }
 
     func start() {
         guard browser == nil else { return }
+        startBrowser()
+    }
+
+    private func startBrowser() {
+        let gen = selfHeal.activate()
         let params = NWParameters()
         params.includePeerToPeer = true
         let browser = NWBrowser(
@@ -50,17 +70,37 @@ final class SiloControlBrowser {
         )
         browser.browseResultsChangedHandler = { [weak self] results, _ in
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, self.selfHeal.isCurrent(gen) else { return }
                 self.found = results
                     .compactMap { Self.makeTarget($0) }
                     .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            }
+        }
+        browser.stateUpdateHandler = { [weak self] state in
+            Task { @MainActor in
+                self?.handleStateUpdate(state, generation: gen)
             }
         }
         browser.start(queue: .main)
         self.browser = browser
     }
 
+    /// Restarts discovery after the current browser fails. Only `.failed` is
+    /// terminal; `NWBrowser` recovers from `.waiting` on its own.
+    func handleStateUpdate(_ state: NWBrowser.State, generation: Int) {
+        guard selfHeal.isCurrent(generation), case .failed(let error) = state else { return }
+        Self.logger.error("browser failed: \(String(describing: error), privacy: .public)")
+        browser?.cancel()
+        browser = nil
+        found = []
+        selfHeal.scheduleRestart { [weak self] in
+            guard let self, self.browser == nil else { return }
+            self.startBrowser()
+        }
+    }
+
     func stop() {
+        selfHeal.deactivate()
         browser?.cancel()
         browser = nil
         found = []

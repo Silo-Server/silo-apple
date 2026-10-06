@@ -14,8 +14,8 @@ struct TVDetailCastRail: View {
     var focusRequest = 0
     var onFocusChange: ((Bool) -> Void)? = nil
 
-    private let photoWidth: CGFloat = 200
-    private let photoHeight: CGFloat = 200
+    /// Also the decode size `PosterImageCache.prefetchVisibleMovieCast` warms.
+    static let photoSize = CGSize(width: 200, height: 200)
     private let cardSpacing: CGFloat = 60
     @FocusState private var focusedEntryId: String?
 
@@ -51,12 +51,12 @@ struct TVDetailCastRail: View {
             LazyHStack(spacing: cardSpacing) {
                 ForEach(groups) { group in
                     if let label = group.dividerLabel {
-                        TVCastCrewDivider(label: label, photoHeight: photoHeight)
+                        TVCastCrewDivider(label: label, photoHeight: Self.photoSize.height)
                     }
                     ForEach(group.entries) { entry in
                         TVCastCard(
                             entry: entry,
-                            photoSize: CGSize(width: photoWidth, height: photoHeight),
+                            photoSize: Self.photoSize,
                             onTap: onTap
                         )
                         .focused($focusedEntryId, equals: entry.id)
@@ -66,7 +66,8 @@ struct TVDetailCastRail: View {
             .padding(.vertical, 12)
         }
         .focusSection()
-        .applyCastRailDefaultFocus(defaultFocusId, binding: $focusedEntryId)
+        // Land on the first person rather than the geometrically nearest card.
+        .tvDefaultFocus(defaultFocusId, in: $focusedEntryId)
         .scrollClipDisabled()
         .onChange(of: focusedEntryId != nil) { _, focused in
             onFocusChange?(focused)
@@ -79,22 +80,6 @@ struct TVDetailCastRail: View {
 
     private var defaultFocusId: String? {
         groups.first?.entries.first?.id
-    }
-}
-
-private extension View {
-    /// When focus enters the cast/crew rail, land on the first person rather
-    /// than letting tvOS choose a geometrically-nearest card.
-    @ViewBuilder
-    func applyCastRailDefaultFocus(
-        _ firstEntryId: String?,
-        binding: FocusState<String?>.Binding
-    ) -> some View {
-        if let firstEntryId {
-            self.defaultFocus(binding, firstEntryId, priority: .userInitiated)
-        } else {
-            self
-        }
     }
 }
 
@@ -158,10 +143,10 @@ private struct CastCardLabel: View {
         ZStack {
             Color.siloSurfaceElevated
             if let url = entry.photoUrl, !url.isEmpty {
-                CachedAsyncImage(
+                AsyncImageView(
                     url: url,
-                    targetSize: photoSize,
                     thumbhash: entry.photoThumbhash,
+                    targetSize: photoSize,
                     contentMode: .fill
                 )
             } else {

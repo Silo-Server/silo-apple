@@ -58,7 +58,11 @@ final class StubURLProtocol: URLProtocol {
         let method: String
         let url: URL?
         let path: String
+        /// The last value for each query name. Use `queryItems` when a name
+        /// repeats or order matters.
         let query: [String: String]
+        /// Every query item in URL order, repeated names included.
+        let queryItems: [URLQueryItem]
         let headers: [String: String]
         let body: Data?
 
@@ -70,8 +74,9 @@ final class StubURLProtocol: URLProtocol {
             url = request.url
             let components = request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }
             path = components?.path ?? ""
+            queryItems = components?.queryItems ?? []
             var query: [String: String] = [:]
-            for item in components?.queryItems ?? [] {
+            for item in queryItems {
                 query[item.name] = item.value ?? ""
             }
             self.query = query
@@ -114,10 +119,6 @@ final class StubURLProtocol: URLProtocol {
             Response(status: status, headers: ["Content-Type": contentType], body: Data(body.utf8))
         }
 
-        static func data(_ body: Data, status: Int = 200, contentType: String) -> Response {
-            Response(status: status, headers: ["Content-Type": contentType], body: body)
-        }
-
         /// An empty body with only a status code.
         static func status(_ status: Int) -> Response {
             Response(status: status)
@@ -137,14 +138,6 @@ final class StubURLProtocol: URLProtocol {
 
     static func method(_ method: String, path: String) -> Matcher {
         { $0.method == method && $0.path == path }
-    }
-
-    static func method(_ method: String) -> Matcher {
-        { $0.method == method }
-    }
-
-    static func pathPrefix(_ prefix: String) -> Matcher {
-        { $0.path.hasPrefix(prefix) }
     }
 
     static func pathSuffix(_ suffix: String) -> Matcher {

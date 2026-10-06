@@ -2,10 +2,16 @@
 //  LiveSubtitleCoordinator.swift
 //  Silo (iOS + tvOS)
 //
-//  The live AI-subtitle state machine (Milestone 4). Layers a real-time,
-//  playhead-first cue experience over the websocket on top of the M3 polling
-//  authority:
+//  The live AI-subtitle state machine. Layers a real-time, playhead-first cue
+//  experience over the websocket on top of the polling authority:
 //
+//    beginPreparing
+//              → on submit: snapshot the selection; pause if playing; show
+//                "Preparing…"; arm the 30s safety timer. If no `started`
+//                arrives in that window (poll-only job, or one still queued on
+//                the server), resume if we paused and retract the notice while
+//                the job keeps running; the poller handoff, a failure, a
+//                cancel, or a late `started` still settles it.
 //    started   → snapshot the current subtitle selection; pause if playing
 //                (remember `wasPlaying`); install + select a synthetic Aether-
 //                clocked overlay track; show "Preparing…"; arm a 30s safety-resume
@@ -14,16 +20,16 @@
 //    cues      → feed each cue to the live track; on the FIRST batch, cancel
 //                the safety timer, hide the overlay, and resume playback
 //                (playhead-first) if we paused.
-//    completed → hand the persisted subtitle off (via the M3 controller
+//    completed → hand the persisted subtitle off (via the controller
 //                handoff, which the poller may have already performed — the
 //                two share ONE terminal action and must not double-register);
 //                swap selection from the live track to the persisted one;
 //                close the live track.
-//    failed    → also fired on the 30s timeout or a socket-lost-with-no-poll-
+//    failed    → also fired on the 30s cue timeout or a socket-lost-with-no-poll-
 //                completion: close the live track, restore the prior
 //                selection, resume if we paused, surface a soft notice.
 //
-//  Design contract (matches the spec's Data flow (e)):
+//  Design contract:
 //    - The coordinator is the SINGLE owner of pause/resume intent. Nothing
 //      else pauses/resumes during a live job; the coordinator tracks
 //      `wasPlaying` and resumes exactly once.
@@ -59,8 +65,8 @@ protocol LivePlaybackControls: AnyObject {
 
 /// The live-track surface the coordinator manipulates: a synthetic overlay
 /// track, its selection, the persisted-track handoff, and the "Preparing…"
-/// notice. Implemented as an adapter over the M2 live-track primitives, the
-/// M3 completion handoff, the VM's selection plumbing, and the notice surface.
+/// notice. Implemented as an adapter over the live-track primitives, the
+/// completion handoff, the VM's selection plumbing, and the notice surface.
 @MainActor
 protocol LiveSubtitleSink: AnyObject {
     /// Open a synthetic styled live track (and add its picker row) for the
@@ -77,11 +83,11 @@ protocol LiveSubtitleSink: AnyObject {
     /// where no persisted track is arriving to take over the caption.
     func closeLiveTrack(trackKey: String)
     /// Close the synthetic live track for `trackKey`, but DEFER the row removal
-    /// until AFTER the handed-off persisted track is selected
-    /// (M5 seamless swap). Used on the success path so there is never a frame
-    /// with no subtitle selected between dropping the live row and the persisted
-    /// track landing. If the persisted selection never lands (handoff failed),
-    /// the deferred close is dropped — the failure path closes the track itself.
+    /// until AFTER the handed-off persisted track is selected. Used on the
+    /// success path so there is never a frame with no subtitle selected
+    /// between dropping the live row and the persisted track landing. If the
+    /// persisted selection never lands (handoff failed), the deferred close is
+    /// dropped — the failure path closes the track itself.
     func closeLiveTrackAfterPersistedSelected(trackKey: String)
     /// Restore whatever subtitle selection was active before the live job
     /// began (the snapshot the coordinator captured and passed back here).
@@ -164,8 +170,10 @@ final class LiveSubtitleCoordinator {
         category: "LiveSubtitle"
     )
 
-    /// Safety net: if a started job streams no cue within this window, resume
-    /// playback and fail out rather than strand the viewer on a paused frame.
+    /// Safety net so the viewer is never stranded on a paused frame. If no
+    /// `started` arrives within this window after submit, resume playback and
+    /// keep waiting for the job. If a started job streams no cue within this
+    /// window, resume playback and fail out.
     static let safetyResumeSeconds: TimeInterval = 30
 
     /// Where the live machine is. The owning controller maps this onto the
@@ -174,8 +182,11 @@ final class LiveSubtitleCoordinator {
         /// No live job.
         case idle
         /// Submit/start received: paused, overlay up, waiting for either the
-        /// live `started` frame or poller completion. Once `started` lands, the
-        /// synthetic track is installed/selected and the cue safety timer arms.
+        /// live `started` frame or poller completion. The submit pause lasts
+        /// at most `safetyResumeSeconds`; if `started` hasn't landed by then,
+        /// playback resumes and the job stays here until the poller settles
+        /// it. Once `started` lands, the synthetic track is installed/selected
+        /// and the cue safety timer arms.
         case preparing
         /// First cues arrived: resumed, cues rendering live.
         case streaming
@@ -193,13 +204,9 @@ final class LiveSubtitleCoordinator {
     private let sink: LiveSubtitleSink
     private let clock: LiveSubtitleClock
 
-    /// `@MainActor`-isolated (the type default). The owning `PlayerViewModel`
-    /// is a Swift-5-mode type that isn't globally `@MainActor`, so it builds
-    /// this coordinator inside a `MainActor.assumeIsolated` block (see
-    /// `makeLiveSubtitleCoordinator`) — the same construction `SubtitleAIController`
-    /// uses. The selection snapshot hook is injected here as an immutable `let`
-    /// (constructor injection) rather than a settable property, so the seam is
-    /// fixed at construction and the Swift-6 actor-isolation warnings stay off.
+    /// Main-actor isolated. The selection snapshot hook is injected as an
+    /// immutable `let` rather than a settable property, so the seam is fixed
+    /// at construction.
     init(
         controls: LivePlaybackControls,
         sink: LiveSubtitleSink,
@@ -266,6 +273,10 @@ final class LiveSubtitleCoordinator {
     /// Start the user-visible AI subtitle wait as soon as the user submits the
     /// job, before the websocket's `started` event exists. This keeps the
     /// pause/progress UX tied to the user's action instead of backend timing.
+    ///
+    /// Arms the safety timer so the pause is bounded. If `started` lands in
+    /// time, it replaces this timer with the cue timer. If not, the timer
+    /// resumes playback and retracts the notice but keeps the job active.
     func beginPreparing() {
         guard !isActive else { return }
         generation &+= 1
@@ -278,6 +289,7 @@ final class LiveSubtitleCoordinator {
         }
         sink.showPreparingNotice()
         phase = .preparing
+        armSafetyTimer()
     }
 
     /// Feed one decoded subtitle event into the machine. The owning controller
@@ -402,7 +414,7 @@ final class LiveSubtitleCoordinator {
         }
         sink.registerPersisted(subtitleId: subtitleId)
 
-        // M5 seamless swap: the persisted track is being registered + selected
+        // Seamless swap: the persisted track is being registered + selected
         // asynchronously (the registration hops the main queue). Defer closing
         // the synthetic live row until that selection lands so there is no
         // no-subtitle flicker; the live track keeps rendering its last cues in
@@ -426,14 +438,33 @@ final class LiveSubtitleCoordinator {
         safetyTimer = clock.scheduleSafetyResume(after: Self.safetyResumeSeconds) { [weak self] in
             guard let self, gen == self.generation else { return }
             guard self.phase == .preparing else { return }
+            self.safetyTimer = nil
+            if self.activeTrackKey == nil {
+                self.releaseSubmitPause()
+                return
+            }
             Self.logger.warning("[AI-LIVE] safety timeout — no cues within \(Self.safetyResumeSeconds, privacy: .public)s, resuming")
             self.failOut(message: "Couldn't start live subtitles. Try again.")
             self.onSafetyTimeout?()
         }
     }
 
-    /// Terminal failure path shared by the `failed` event, the safety timeout,
-    /// and a socket-lost-with-no-poll-completion give-up: close the live
+    /// No `started` frame arrived within the safety window: the job is poll-only
+    /// (no `session_id`) or still queued on the server. Resume if we paused and
+    /// retract the notice, but keep the job owned so the poller handoff, a
+    /// failure, a cancel, or a late `started` still settle it. Clearing
+    /// `wasPlaying` means no later path resumes again or pauses a second time.
+    private func releaseSubmitPause() {
+        Self.logger.warning("[AI-LIVE] no live start within \(Self.safetyResumeSeconds, privacy: .public)s; resuming while the job finishes")
+        if !didResume, wasPlaying {
+            controls.play()
+        }
+        wasPlaying = false
+        sink.hidePreparingNotice()
+    }
+
+    /// Terminal failure path shared by the `failed` event, the cue safety
+    /// timeout, and a socket-lost-with-no-poll-completion give-up: close the live
     /// track, restore the prior selection, resume if we paused, soft notice.
     private func failOut(message: String) {
         guard isActive || activeTrackKey != nil else { return }
@@ -474,7 +505,7 @@ final class LiveSubtitleCoordinator {
         didResume = true
         sink.hidePreparingNotice()
         if let active = activeTrackKey {
-            // M5 seamless swap: the poller authority has already registered +
+            // Seamless swap: the poller authority has already registered +
             // selected the persisted track (or is doing so on the main queue);
             // defer the live-row close until that selection lands so there is no
             // no-subtitle flicker.

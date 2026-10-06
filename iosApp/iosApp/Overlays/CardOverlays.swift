@@ -108,7 +108,7 @@ struct CardOverlays: View {
 // MARK: - Single-badge resolution + rendering
 
 /// Resolved values needed to render one badge. Missing labels suppress the badge.
-struct OverlayBadgeRenderState: Equatable {
+private struct OverlayBadgeRenderState {
     let id: OverlayId
     let label: String
     let iconId: OverlayIconId?
@@ -133,13 +133,13 @@ struct OverlayBadgeRenderState: Equatable {
             id: def.id,
             label: label,
             iconId: showIcon ? iconId : nil,
-            accentColor: accent.flatMap { Color(hex: $0) }
+            accentColor: accent.map(Color.init(hex:))
         )
     }
 }
 
 /// Renders one resolved badge on a media card.
-struct OverlayBadgeView: View {
+private struct OverlayBadgeView: View {
     let state: OverlayBadgeRenderState
     let preset: OverlayPreset
     let scale: CGFloat
@@ -153,8 +153,8 @@ struct OverlayBadgeView: View {
                     tint: preset.foregroundColor(state.accentColor)
                 )
             }
-            if !labelRedundantWithIcon {
-                badgeText
+            if let label = displayLabel {
+                badgeText(label)
             }
         }
         .padding(.horizontal, preset.horizontalPadding * scale)
@@ -164,30 +164,24 @@ struct OverlayBadgeView: View {
         .clipShape(shape)
     }
 
-    /// A wordmark icon (HDR10, ATMOS, …) spells its text as the mark
-    /// itself; when the label says the same thing, showing both reads
-    /// "HDR10 HDR10". Mirrors web's `labelRedundantWithIcon`.
-    private var labelRedundantWithIcon: Bool {
-        guard let iconId = state.iconId, let mark = iconId.wordmarkText else { return false }
-        return mark.lowercased() == state.label
-            .trimmingCharacters(in: .whitespaces)
-            .lowercased()
+    /// The label without the token a brand mark already draws, so a badge
+    /// never reads "HDR10 HDR10" or "DV DV HDR10". Nil when nothing is left.
+    private var displayLabel: String? {
+        guard let mark = state.iconId?.brandText else { return state.label }
+        let remaining = state.label
+            .split(separator: " ")
+            .filter { $0.caseInsensitiveCompare(mark) != .orderedSame }
+            .joined(separator: " ")
+        return remaining.isEmpty ? nil : remaining
     }
 
-    @ViewBuilder
-    private var badgeText: some View {
-        let text = Text(state.label)
+    private func badgeText(_ label: String) -> some View {
+        Text(label)
             .font(.system(size: preset.fontSize * scale, weight: preset.textWeight))
             .tracking(preset.tracking * scale)
-            .foregroundColor(preset.foregroundColor(state.accentColor))
-        Group {
-            if let textCase = preset.textCase {
-                text.textCase(textCase)
-            } else {
-                text
-            }
-        }
-        .modifier(BadgeShadow(enabled: preset.textShadow, scale: scale))
+            .foregroundStyle(preset.foregroundColor(state.accentColor))
+            .textCase(preset.textCase)
+            .modifier(BadgeShadow(enabled: preset.textShadow, scale: scale))
     }
 
     @ViewBuilder
@@ -209,10 +203,7 @@ struct OverlayBadgeView: View {
         }
     }
 
-    /// Type-erased shape so the same value can feed `fill`, `stroke`,
-    /// and `clipShape` regardless of which corner style the preset
-    /// chose. AnyShape (iOS 16+) carries no measurable overhead vs.
-    /// the opaque alternatives.
+    /// One shape value feeds fill, stroke and clipShape for either corner style.
     private var shape: AnyShape {
         switch preset.cornerStyle {
         case .capsule:

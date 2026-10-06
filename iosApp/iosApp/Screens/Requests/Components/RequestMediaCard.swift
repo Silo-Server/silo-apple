@@ -117,19 +117,16 @@ struct RequestMediaCard: View {
     }
 
     private var posterImage: some View {
-        ZStack(alignment: .topTrailing) {
+        Group {
             if let url = RequestImageURL.build(posterPath, size: .poster) {
                 AsyncImageView(
                     url: url,
                     targetSize: CGSize(width: width, height: height),
                     contentMode: .fill
                 )
-                .frame(width: width, height: height)
-                .clipped()
             } else {
                 posterPlaceholder
             }
-
         }
         .frame(width: width, height: height)
         .overlay(alignment: .bottomTrailing) {

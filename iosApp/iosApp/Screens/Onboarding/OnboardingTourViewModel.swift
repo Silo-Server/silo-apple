@@ -387,11 +387,10 @@ class OnboardingTourViewModel {
     }
 
     private func boolean(_ value: String, key: String) throws -> Bool {
-        switch value.lowercased() {
-        case "true", "1", "yes", "on": return true
-        case "false", "0", "no", "off": return false
-        default: throw OnboardingTourError.unsupportedSetting(key)
+        guard let parsed = OnboardingRuntimeSettingsRefresher.settingBoolean(value) else {
+            throw OnboardingTourError.unsupportedSetting(key)
         }
+        return parsed
     }
 }
 #endif

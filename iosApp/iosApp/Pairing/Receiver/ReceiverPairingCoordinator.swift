@@ -21,7 +21,8 @@ protocol NearbySignInCodeSource: AnyObject {
 
 /// Drives the TV side of a pairing session over an accepted `PairingChannel`.
 /// Persist-on-success: a pushed server URL is written to ServerRegistry /
-/// TokenStore ONLY after its poll returns tokens (design spec §5/§6).
+/// TokenStore ONLY after its poll returns tokens (§5/§6 of
+/// docs/superpowers/specs/2026-06-14-companion-pairing-design.md).
 ///
 /// Two modes. `setup` (first-run screen, TXT `st=setup`) accepts any pushed
 /// server and runs its own device authorization per server. `login` (the
@@ -29,15 +30,13 @@ protocol NearbySignInCodeSource: AnyObject {
 /// only a push whose verified identity is that server, and answers with the
 /// code the sign-in screen already shows (`NearbySignInCodeSource`).
 ///
-/// State drives the in-place pairing panel (`TVPairingReceiverView`) inside
-/// `TVServerSetupView` (setup) and `TVLoginView` (sign-in):
-/// `idle` (advertising) → `linked` (phone connected, picking servers) →
-/// `consentRequested` (the session's one TV-side gate: the user must allow
-/// the first pushed server before ANY network call is made on its behalf) →
-/// `awaitingApproval` (match code shown) → `signedIn` (per server) →
-/// `completed` (all done; the view dwells then advances). A failure that ends
-/// the session STAYS on screen as `failed` so the user gets an explanation;
-/// cancels and drops return to `idle` so a fresh attempt just works.
+/// State drives `TVPairingReceiverView` in `TVServerSetupView` and
+/// `TVLoginView`: `idle` → `linked` → `consentRequested` (the user must allow
+/// the first push before any network call) → `reaching` (`unreachable` when
+/// the pushed address fails; sign-in mode uses `preparingCode` instead) →
+/// `awaitingApproval` → `signedIn` per server → `completed`. A failure that
+/// ends the session stays on screen as `failed`; cancels and drops return to
+/// `idle`.
 ///
 /// Compiled on every platform (only tvOS uses it) so the iOS test bundle can
 /// drive the state machine with a scripted channel.
@@ -187,9 +186,10 @@ final class ReceiverPairingCoordinator {
     }
 
     /// Consume the session stream. The stream is ALWAYS being read here; each
-    /// server's start+poll runs as a cancellable child task so a Cancel
+    /// server's start+poll runs as a cancellable separate task so a Cancel
     /// message or a dropped connection aborts the attempt immediately rather
-    /// than after the poll loop finishes (design spec §7).
+    /// than after the poll loop finishes (§7 of the companion-pairing design
+    /// spec).
     func run(session: any PairingChannel, stream: AsyncThrowingStream<PairingMessage, Error>) async {
         isCancelling = false
         signedInNames = []
@@ -215,8 +215,7 @@ final class ReceiverPairingCoordinator {
                     // The protocol is one-server-at-a-time: a new push while
                     // one is in flight means the phone gave up on the
                     // previous server — supersede it, don't ignore the push.
-                    pollTask?.cancel()
-                    await pollTask?.value
+                    await abandonAttempt()
                     guard !isCancelling else { return }
                     let push = PushedServer(
                         serverURL: serverURL,
@@ -232,14 +231,12 @@ final class ReceiverPairingCoordinator {
                     }
                 case .done:
                     // An in-flight server has no committed result; abandon it.
-                    pollTask?.cancel()
-                    await pollTask?.value
+                    await abandonAttempt()
                     await concludeSession(session)
                     return
                 case let .cancel(reason):
                     Self.logger.notice("peer cancelled: \(reason, privacy: .public)")
-                    pollTask?.cancel()
-                    await pollTask?.value
+                    await abandonAttempt()
                     if signedInNames.isEmpty {
                         await teardown(session: session, resetState: true)
                     } else {
@@ -265,9 +262,14 @@ final class ReceiverPairingCoordinator {
     }
 
     private func onStreamClosed(_ session: any PairingChannel) async {
+        await abandonAttempt()
+        await concludeSession(session)
+    }
+
+    /// Cancels the in-flight server attempt and waits for it to unwind.
+    private func abandonAttempt() async {
         pollTask?.cancel()
         await pollTask?.value
-        await concludeSession(session)
     }
 
     /// Land on the right terminal (or idle) state for however the session
@@ -450,72 +452,61 @@ final class ReceiverPairingCoordinator {
                                       matchWords: ServerIdentity.usable(started.matchCode), automatic: automatic)
             try await session.send(.deviceStarted(serverURL: pushedURL, userCode: started.userCode, matchCode: started.matchCode))
 
-            // 2. Poll until approved or the device code expires.
-            let deadline = Date().addingTimeInterval(TimeInterval(started.expiresIn))
-            var pollInterval = max(1, started.interval)
-            while Date() < deadline {
-                try Task.checkCancellation() // abort promptly on peer cancel / drop
-                let poll: APIv2DevicePoll
-                do {
-                    poll = try await api.poll(serverURL: loginURL, deviceCode: started.deviceCode)
-                } catch {
-                    try Task.checkCancellation()
-                    if let requirement = UpdateRequirement(error) { throw AttemptFailure.updateRequired(requirement) }
-                    if Self.isMissingRequest(error) {
-                        throw AttemptFailure.expired // the server has expired and removed this request
-                    }
-                    // An approval without usable tokens cannot be collected
-                    // again: the server issues them once.
-                    if case APIv2Error.incompleteAuthResponse = error { throw error }
-                    // Match the ordinary device-login flow and Android TV:
-                    // a deploy, proxy hiccup, or brief network loss must not
-                    // invalidate a still-live device code.
-                    Self.logger.notice("transient device-login poll failure; retrying")
-                    try await Task.sleep(for: .seconds(pollInterval))
-                    continue
+            // 2. Poll until approved or the device code expires. The shared
+            //    policy keeps polling through a deploy, proxy hiccup or brief
+            //    network loss, since none of them invalidates a live code.
+            let poll: APIv2DevicePoll
+            do {
+                poll = try await DeviceLoginPoller.waitForApproval(
+                    interval: started.interval,
+                    expiresIn: started.expiresIn
+                ) { [api] in
+                    try await api.poll(serverURL: loginURL, deviceCode: started.deviceCode)
                 }
-                try Task.checkCancellation() // a cancel that raced the network must win — persist nothing
-                switch poll.status {
-                case "approved":
-                    // Collected: nothing is left to withdraw.
-                    openRequest = nil
-                    // `validated()` guarantees complete tokens on `approved`.
-                    guard let tokens = poll.tokens else { throw APIv2Error.incompleteAuthResponse }
-                    guard await persist(PersistedPairing(
-                        url: loginURL,
-                        fetchedName: push.serverName,
-                        verifiedServerId: push.serverIdentity,
-                        accessToken: tokens.accessToken,
-                        refreshToken: tokens.refreshToken,
-                        accountID: tokens.user.id
-                    )) else {
-                        // A cancellation before the first write is not a
-                        // failure (the catch below returns quietly). Anything
-                        // else is: say so here and tell the phone, instead of
-                        // idling on this screen until the peer times out.
-                        try Task.checkCancellation()
-                        throw AttemptFailure.saveFailed
-                    }
-                    signedInNames.append(displayName)
-                    state = .signedIn(serverCount: signedInNames.count)
-                    // Best-effort: the tokens are committed, so a lost
-                    // confirmation frame must not repaint a real sign-in as a
-                    // failure. If the send is lost the phone may undercount,
-                    // but EOF-after-success still completes on both ends.
-                    await session.queue(.serverResult(serverURL: pushedURL, status: .signedIn, error: nil))
-                    return
-                case "denied":
-                    openRequest = nil
-                    throw AttemptFailure.denied
-                case "expired", "consumed", "canceled":
-                    openRequest = nil
-                    throw AttemptFailure.expired
-                default: // "pending"
-                    pollInterval = max(1, poll.pollAfter)
-                    try await Task.sleep(for: .seconds(pollInterval))
-                }
+            } catch let failure as DeviceLoginPoller.Failure {
+                // Decided on the server: nothing is left to withdraw. An
+                // expiry may be this TV's own deadline, so that request is
+                // still withdrawn, as is one the server answered 404 for.
+                if failure != .expired, failure != .removed { openRequest = nil }
+                // An expired, already used, withdrawn or removed request all
+                // read as expired.
+                throw failure == .denied ? AttemptFailure.denied : AttemptFailure.expired
+            } catch {
+                if let requirement = UpdateRequirement(error) { throw AttemptFailure.updateRequired(requirement) }
+                // An approval whose tokens cannot be collected again (the
+                // server issues them once) fails as `auth_failed`; a
+                // cancellation stays silent. Both are decided below.
+                throw error
             }
-            throw AttemptFailure.expired // local timeout
+            // Collected: nothing is left to withdraw.
+            openRequest = nil
+            try Task.checkCancellation() // a cancel that raced the network must win — persist nothing
+            // `validated()` guarantees complete tokens on `approved`.
+            guard let tokens = poll.tokens else { throw APIv2Error.incompleteAuthResponse }
+            // Nothing is committed when this returns false. The catch
+            // stays silent when the attempt was cancelled (whoever
+            // cancelled owns state) and otherwise shows the failure
+            // and tells the phone, so neither device waits it out.
+            guard await persist(PersistedPairing(
+                url: loginURL,
+                fetchedName: push.serverName,
+                verifiedServerId: push.serverIdentity,
+                accessToken: tokens.accessToken,
+                refreshToken: tokens.refreshToken,
+                accountID: tokens.user.id
+            )) else {
+                // A cancellation before the first write is not a failure
+                // (the catch below returns quietly).
+                try Task.checkCancellation()
+                throw AttemptFailure.saveFailed
+            }
+            signedInNames.append(displayName)
+            state = .signedIn(serverCount: signedInNames.count)
+            // Best-effort: the tokens are committed, so a lost
+            // confirmation frame must not repaint a real sign-in as a
+            // failure. If the send is lost the phone may undercount,
+            // but EOF-after-success still completes on both ends.
+            await session.queue(.serverResult(serverURL: pushedURL, status: .signedIn, error: nil))
         } catch {
             if let openRequest { withdraw(openRequest.deviceCode, at: openRequest.url) }
             // Persist-on-success: nothing was written, so nothing to roll back.
@@ -577,7 +568,7 @@ final class ReceiverPairingCoordinator {
     /// Best effort; the answer changes nothing here.
     private func withdraw(_ deviceCode: String, at serverURL: String) {
         let api = self.api
-        Task.detached {
+        Task {
             let capability = try? await api.capability(serverURL: serverURL)
             await api.withdraw(serverURL: serverURL, deviceCode: deviceCode, capability: capability)
         }
@@ -625,17 +616,6 @@ final class ReceiverPairingCoordinator {
             let code = failure?.code ?? .authFailed
             state = .failed(serverName: displayName, code: code, help: failure?.help(for: push))
             try? await session.send(.serverResult(serverURL: pushedURL, status: .failed, error: code.wireValue))
-        }
-    }
-
-    /// A poll the server answers with 404 names a request it no longer has
-    /// (expired and removed); a legacy 404 was already classified as an
-    /// update requirement.
-    private static func isMissingRequest(_ error: Error) -> Bool {
-        switch error {
-        case APIv2Error.problem(let problem): return problem.status == 404
-        case APIv2Error.httpStatus(404): return true
-        default: return false
         }
     }
 

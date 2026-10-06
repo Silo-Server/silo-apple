@@ -25,10 +25,7 @@ enum DownloadBackgroundRefresh {
     /// land on a release schedule, not minute-by-minute.
     private static let earliestInterval: TimeInterval = 4 * 60 * 60
 
-    private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
-        category: "Downloads"
-    )
+    private static let logger = Logger.downloads
 
     /// Must run before `didFinishLaunching` returns — the system traps if a
     /// task it launched the app for has no registered handler.

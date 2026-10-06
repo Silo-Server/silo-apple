@@ -42,10 +42,13 @@ final class ItemDetailCache {
     func viewModel(for contentId: String, libraryId: Int? = nil) -> ItemDetailViewModel {
         let key = Key(contentId: contentId, libraryId: libraryId)
         if let existing = entries[key] {
-            // A source-card preload may have completed after this model was
-            // first created. Re-adopt the response before the destination's
-            // first body evaluation instead of returning an older empty shell.
-            existing.hydrateFromCache(contentId: contentId)
+            // A source-card preload may have completed after this empty shell
+            // was created; adopt it before the destination's first body pass.
+            // A model that already has its detail refreshes in its own `.task`;
+            // re-hydrating here would run on every init of the view.
+            if existing.detail == nil {
+                existing.hydrateFromCache(contentId: contentId)
+            }
             touch(key)
             return existing
         }
@@ -59,12 +62,6 @@ final class ItemDetailCache {
         order.append(key)
         evictIfNeeded()
         return vm
-    }
-
-    /// Peek without creating or touching. Used by invalidation helpers
-    /// that need to walk the parent chain from an existing entry.
-    func peek(_ contentId: String, libraryId: Int? = nil) -> ItemDetailViewModel? {
-        entries[Key(contentId: contentId, libraryId: libraryId)]
     }
 
     /// Invalidate the cached entry and any parent series/season entries

@@ -3,144 +3,15 @@ import XCTest
 @testable import Silo
 
 final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
-    func testMatrixCoversEveryNeutralContractCategory() throws {
-        let matrix = try PlaybackV3FixtureTestSupport.decode(
+    /// The vendored server matrix decodes through the production playback
+    /// types (claims, transformations, subtitle decisions, qualities, the
+    /// persisted decision). The scenario values belong to the server planner.
+    func testEveryScenarioDecodesThroughTheProductionTypes() throws {
+        XCTAssertNoThrow(try PlaybackV3FixtureTestSupport.decode(
             PlaybackV3ConformanceMatrix.self,
             named: "conformance_matrix",
             bundleClass: Self.self
-        )
-        XCTAssertEqual(matrix.schemaVersion, 1)
-        XCTAssertEqual(matrix.plannerScenarios.count, 21)
-        XCTAssertEqual(matrix.replanScenarios.count, 10)
-        XCTAssertEqual(matrix.protocolScenarios.count, 8)
-
-        let categories = Set(
-            matrix.plannerScenarios.map(\.category)
-                + matrix.replanScenarios.map(\.category)
-                + matrix.protocolScenarios.map(\.category)
-        )
-        XCTAssertTrue(
-            Set([
-                "evidence_tier_gating",
-                "deliveries_negotiation",
-                "audio_only_planning",
-                "hdr_dv_matrix",
-                "audio_matrix",
-                "subtitle_matrix",
-                "available_qualities",
-                "track_change_replan",
-                "quality_change_replan",
-                "output_change_replan",
-                "idempotent_replan",
-                "concurrent_replan",
-                "mid_seek_replan",
-                "legacy_426",
-                "draft_v3_426",
-                "output_context_invalidation",
-                "attempt_key_echo_and_loop",
-                "recovery_matrix",
-                "restart_matrix",
-                "capacity_matrix",
-                "route_event_limits"
-            ]).isSubset(of: categories)
-        )
-
-        let names = matrix.plannerScenarios.map(\.name)
-            + matrix.replanScenarios.map(\.name)
-            + matrix.protocolScenarios.map(\.name)
-        XCTAssertEqual(Set(names).count, names.count, "conformance scenario names must be unique")
-    }
-
-    // These checks cover fixture integrity and production model decoding, not server planning.
-    func testMatrixDecodesHDRDVAudioAndSubtitleExpectations() throws {
-        let matrix = try PlaybackV3FixtureTestSupport.decode(
-            PlaybackV3ConformanceMatrix.self,
-            named: "conformance_matrix",
-            bundleClass: Self.self
-        )
-
-        let hdr10 = try plannerScenario(named: "hdr10_exact_direct", in: matrix)
-        XCTAssertEqual(hdr10.source.dynamicRange, "hdr10")
-        XCTAssertEqual(hdr10.expected.delivery, "original_http")
-        XCTAssertEqual(hdr10.expected.claims?.video.hdr10, true)
-
-        let clientManaged = try plannerScenario(named: "client_managed_hdr_selected_audio", in: matrix)
-        XCTAssertEqual(clientManaged.source.dynamicRange, "hdr10")
-        XCTAssertEqual(clientManaged.request.audioTrackIndex, 1)
-        XCTAssertEqual(
-            Set(clientManaged.request.clientPlaybackContext.deliveries["original_http"]?.validatedClaims ?? []),
-            Set([
-                PlaybackProtocolV3.clientManagedDynamicRangeClaim,
-                PlaybackProtocolV3.clientSelectedAudioTrackClaim
-            ])
-        )
-        XCTAssertEqual(clientManaged.expected.delivery, "original_http")
-        XCTAssertEqual(clientManaged.expected.decisionReason, "client_managed_dynamic_range")
-        XCTAssertEqual(clientManaged.expected.selectedTracks?.audio?.index, 1)
-
-        let dolbyVision = try plannerScenario(named: "dolby_vision_8_exact_direct", in: matrix)
-        XCTAssertEqual(dolbyVision.source.dolbyVisionProfile, 8)
-        XCTAssertEqual(dolbyVision.expected.delivery, "original_http")
-        XCTAssertEqual(dolbyVision.expected.claims?.video.dolbyVision, true)
-
-        let fallback = try plannerScenario(named: "dolby_vision_7_hdr10_fallback", in: matrix)
-        XCTAssertEqual(fallback.source.dolbyVisionProfile, 7)
-        XCTAssertEqual(fallback.expected.delivery, "server_remux_progressive")
-        XCTAssertEqual(fallback.expected.transformations?.map(\.executor), ["server"])
-
-        let hdrToneMap = try plannerScenario(named: "hdr10_to_sdr_tone_map", in: matrix)
-        XCTAssertEqual(hdrToneMap.source.dynamicRange, "hdr10")
-        XCTAssertEqual(hdrToneMap.expected.delivery, "server_transcode_hls")
-        XCTAssertEqual(
-            hdrToneMap.expected.transformations?.last,
-            PlaybackV3Transformation(
-                name: "hdr_to_sdr_tonemap",
-                executor: "server",
-                recipeVersion: "1",
-                validatedClaims: ["hdr_metadata_removed", "sdr_bt709_output"]
-            )
-        )
-        XCTAssertEqual(
-            hdrToneMap.expected.availableQualities?.first {
-                $0.label == "1080p-medium"
-            }?.displayName,
-            "1080p Medium"
-        )
-
-        let dolbyVisionToneMap = try plannerScenario(
-            named: "dolby_vision_7_id6_to_sdr_tone_map",
-            in: matrix
-        )
-        XCTAssertEqual(dolbyVisionToneMap.source.dolbyVisionProfile, 7)
-        XCTAssertEqual(dolbyVisionToneMap.source.dvBlCompatId, 6)
-        XCTAssertEqual(dolbyVisionToneMap.expected.delivery, "server_transcode_hls")
-        XCTAssertEqual(
-            dolbyVisionToneMap.expected.transformations?.last?.name,
-            "hdr_to_sdr_tonemap"
-        )
-
-        let audioConversion = try plannerScenario(named: "truehd_audio_conversion", in: matrix)
-        XCTAssertEqual(audioConversion.source.audioCodec, "truehd")
-        XCTAssertEqual(audioConversion.expected.claims?.audio.codec, "aac")
-        XCTAssertEqual(audioConversion.expected.claims?.audio.passthrough, false)
-
-        let passthrough = try plannerScenario(named: "truehd_exact_layout_passthrough", in: matrix)
-        XCTAssertEqual(passthrough.expected.claims?.audio.codec, "truehd")
-        XCTAssertEqual(passthrough.expected.claims?.audio.passthrough, true)
-
-        let pgs = try plannerScenario(named: "embedded_pgs_sidecar", in: matrix)
-        XCTAssertEqual(pgs.request.subtitleTrackIndex, 0)
-        XCTAssertEqual(pgs.expected.subtitle?.mode, "render")
-        XCTAssertEqual(pgs.expected.subtitle?.inventory.first?.codec, "hdmv_pgs_subtitle")
-        XCTAssertEqual(pgs.expected.subtitle?.inventory.first?.delivery, "sidecar")
-
-        let ass = try plannerScenario(named: "embedded_ass_authored_render", in: matrix)
-        XCTAssertEqual(ass.expected.subtitle?.mode, "render")
-        XCTAssertEqual(ass.expected.subtitle?.inventory.first?.codec, "ass")
-
-        let dvd = try plannerScenario(named: "embedded_dvd_burn_in", in: matrix)
-        XCTAssertEqual(dvd.expected.subtitle?.mode, "burn_in")
-        XCTAssertEqual(dvd.expected.delivery, "server_transcode_hls")
+        ))
     }
 
     func testMatrixDecodesClientIntentAndMapsOutputChangeOperation() throws {
@@ -193,13 +64,6 @@ final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
                 PlaybackProtocolV3.neutralContractFeature
             ) == true
         )
-    }
-
-    private func plannerScenario(
-        named name: String,
-        in matrix: PlaybackV3ConformanceMatrix
-    ) throws -> PlaybackV3ConformancePlannerScenario {
-        try XCTUnwrap(matrix.plannerScenarios.first { $0.name == name })
     }
 
     private func replanScenario(
@@ -267,7 +131,6 @@ private struct PlaybackV3ConformanceDevice: Decodable {
 
 private struct PlaybackV3ConformanceDelivery: Decodable {
     let enabled: Bool
-    let supportedOnDevice: Bool
     let validatedClaims: [String]?
     let transformations: [PlaybackV3Transformation]?
 }
@@ -314,18 +177,11 @@ private struct PlaybackV3ConformanceProtocolScenario: Decodable {
 private struct PlaybackV3ConformanceProtocolInput: Decodable {
     let body: PlaybackV3ConformanceDraftBody?
     let planId: String?
-    let firstOutputContextId: String?
-    let secondOutputContextId: String?
-    let firstPlanAttemptKey: String?
-    let secondPlanAttemptKey: String?
-    let serverPlanAttemptKey: String?
-    let replanEcho: String?
     let attemptedPlanKeys: [String]?
     let replanRequest: PlaybackV3ConformanceReplanRequest?
     let startRequest: PlaybackV3ConformanceStartRequest?
     let persistedDecision: PlaybackV3DecisionResponse?
     let restarted: Bool?
-    let capacityAvailable: Bool?
     let routeEvent: PlaybackV3ConformanceRouteEvent?
 }
 

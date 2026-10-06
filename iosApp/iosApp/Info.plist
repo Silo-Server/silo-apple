@@ -62,14 +62,17 @@
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Silo uses your local network to find, set up, and control Silo on your Apple TV.</string>
+	<string>Silo uses your local network to find Silo servers, and to set up and control Silo on your Apple TV.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_silopair._tcp</string>
 		<string>_silocast._tcp</string>
+		<string>_silo._tcp</string>
 	</array>
 	<key>SiloBuildChannel</key>
 	<string>$(SILO_BUILD_CHANNEL)</string>
+	<key>SiloSourceURL</key>
+	<string>$(SILO_SOURCE_URL)</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UIBackgroundModes</key>

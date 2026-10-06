@@ -274,10 +274,9 @@ final class DiagnosticsViewModel {
 
     func declinePrompt() {
         guard let prompt else { return }
-        // Suppress re-prompting for each declined report's lifetime. The
-        // auto-upload throttle used previously only lasts 24h (reports live 7
-        // days), so it would re-surface the same crash on a later foreground.
-        // The report stays sendable manually from settings.
+        // Suppress re-prompting for the report's lifetime (7 days); the 24h
+        // auto-upload throttle alone would re-surface it. The report stays
+        // sendable from settings.
         for report in prompt.reports {
             pendingStore.markPromptDeclined(report)
         }
@@ -302,7 +301,8 @@ final class DiagnosticsViewModel {
         for report in prompt.reports {
             let decision = await coordinator.upload(report: report)
             guard startingGeneration == generation else { return }
-            messages.append(message(for: decision))
+            messages.append(Self.message(for: decision))
+            applyConsentChange(of: decision)
             recordSuccessfulUpload(decision, binding: report.binding.binding)
         }
         let uniqueMessages = messages.reduce(into: [String]()) { result, message in
@@ -473,15 +473,21 @@ final class DiagnosticsViewModel {
                 binding: binding
             )
             let decision = await coordinator.upload(report: report)
-            notice = DiagnosticsNotice(message: message(for: decision))
+            notice = DiagnosticsNotice(message: Self.message(for: decision))
+            applyConsentChange(of: decision)
             recordSuccessfulUpload(decision, binding: binding)
         }
         await reloadLocalStateIfPossible()
     }
 
     private func handle(_ decision: DiagnosticsUploadDecision, report: PendingReport) {
-        notice = DiagnosticsNotice(message: message(for: decision))
+        notice = DiagnosticsNotice(message: Self.message(for: decision))
         recordSuccessfulUpload(decision, binding: report.binding.binding)
+        applyConsentChange(of: decision)
+    }
+
+    /// A stale-consent answer means Crash Reports was reset to Ask.
+    private func applyConsentChange(of decision: DiagnosticsUploadDecision) {
         if decision == .keptStaleConsent {
             consentMode = .ask
         }
@@ -495,7 +501,7 @@ final class DiagnosticsViewModel {
         consentStore.recordSent(shortID: response.shortID, for: binding)
     }
 
-    private func message(for decision: DiagnosticsUploadDecision) -> String {
+    private static func message(for decision: DiagnosticsUploadDecision) -> String {
         switch decision {
         case .uploaded(let response):
             if let state = response.state {
@@ -516,7 +522,6 @@ final class DiagnosticsViewModel {
         case .keptTooLarge:
             return "Report is too large to send and won't be retried."
         case .keptStaleConsent:
-            consentMode = .ask
             return "Consent changed; Crash Reports was reset to Ask."
         case .keptDestinationMismatch:
             return "Report kept for the server where it was captured."

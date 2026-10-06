@@ -15,19 +15,55 @@ enum TVAudiobookStyle {
 struct TVAudiobookViewModel {
     let detail: ItemDetail
 
-    /// Stitched once at init: `AudiobookPlaybackContext(detail:)` walks every
-    /// part and chapter, so computing it per property access would make nearly
-    /// the whole surface O(parts + chapters) on each body evaluation.
+    /// Stitched at init: `AudiobookPlaybackContext(detail:)` walks every part
+    /// and chapter, so computing it per property access would make nearly the
+    /// whole surface O(parts + chapters) on each body evaluation.
     private let context: AudiobookPlaybackContext?
 
     // MARK: - Timeline
 
     let parts: [FileVersion]
 
+    @MainActor
     init(detail: ItemDetail) {
         self.detail = detail
-        self.context = AudiobookPlaybackContext(detail: detail)
-        self.parts = AudiobookPlaybackContext.audioParts(of: detail)
+        let timeline = Timeline.resolve(for: detail)
+        self.context = timeline.context
+        self.parts = timeline.parts
+    }
+
+    /// The stitched timeline depends only on the book's files and its total
+    /// duration. Views build this model in their initializers, which re-run on
+    /// every parent body pass, so the last timeline is reused while those
+    /// inputs are unchanged (the array compare short-circuits on shared
+    /// storage).
+    private struct Timeline {
+        let contentId: String
+        let versions: [FileVersion]?
+        let totalDurationSeconds: Int?
+        let context: AudiobookPlaybackContext?
+        let parts: [FileVersion]
+
+        @MainActor private static var last: Timeline?
+
+        @MainActor
+        static func resolve(for detail: ItemDetail) -> Timeline {
+            if let last,
+               last.contentId == detail.contentId,
+               last.totalDurationSeconds == detail.audiobook?.totalDurationSeconds,
+               last.versions == detail.versions {
+                return last
+            }
+            let timeline = Timeline(
+                contentId: detail.contentId,
+                versions: detail.versions,
+                totalDurationSeconds: detail.audiobook?.totalDurationSeconds,
+                context: AudiobookPlaybackContext(detail: detail),
+                parts: AudiobookPlaybackContext.audioParts(of: detail)
+            )
+            last = timeline
+            return timeline
+        }
     }
 
     var chapters: [AudioPlaybackChapter] { context?.chapters ?? [] }
@@ -61,10 +97,7 @@ struct TVAudiobookViewModel {
         AudiobookProgress.currentChapterIndex(chapters: chapters, position: position)
     }
 
-    var percentComplete: Int {
-        guard totalDuration > 0 else { return 0 }
-        return Int(min(1, max(0, position / totalDuration)) * 100 + 0.5)
-    }
+    var percentComplete: Int { Int(fraction * 100 + 0.5) }
 
     var fraction: Double {
         guard totalDuration > 0 else { return 0 }
