@@ -3631,6 +3631,13 @@ class PlayerViewModel {
             shouldPlayWhenReady: shouldPlayWhenReady
         )
         activeAetherLoadEpoch = loadEpoch
+        // A progressive remux opens at its stream origin, behind the position
+        // the caller just published. Clock updates earlier than `currentTime`
+        // are dropped as stale, so move it back to where the engine starts or
+        // the scrubber and progress stay frozen until playback catches up.
+        if spec.delivery == PlaybackProtocolV3.PlanDelivery.remuxProgressive {
+            currentTime = min(currentTime, spec.timeline.sourcePosition(forPlayerTime: spec.aetherStartPosition))
+        }
         // A new transport starts at its own position with its own reader.
         sourceWatch = PlaybackSourceWatch()
         establishedAetherLoadEpoch = nil

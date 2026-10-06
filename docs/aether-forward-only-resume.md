@@ -63,11 +63,19 @@ log line for line.
 What it costs:
 
 - Playback restarts at the keyframe before the resume point, so up to one GOP (typically a
-  few seconds) is shown again. Progress reporting stays correct because
-  `timeline_offset_seconds` still maps the engine clock to the source position.
+  few seconds) is shown again. `timeline_offset_seconds` still maps the engine clock to
+  the source position, and `PlayerViewModel.loadAether` moves `currentTime` back to the
+  stream origin so the scrubber and progress follow the replay instead of waiting for it
+  to catch up.
 - A credential-recovery reload on this route (`resumeSourcePosition`) returns to the
   stream origin instead of the current position. Before the guard that reload hit the same
   failure, so this is a worse position, not a new failure.
+- A watch party member on this delivery starts up to one GOP behind the room and relies
+  on the party's catch-up to close the gap. Not tested.
+
+Not covered by the guard: audiobooks. `AudioPlayerViewModel` passes the plan's start
+straight to the engine without `AetherLoadSpec`. If the server plans a progressive remux
+for an audiobook resume, the original failure remains.
 
 Remove the guard when the engine fix below is pinned.
 
@@ -97,8 +105,11 @@ at `if let start = startPosition, start > 0`:
   `start` is beyond a small limit (suggest 30 s), start at 0 and report the start as
   dropped instead of decoding silently for minutes.
 - `SoftwarePlaybackHost.seek(to:)` on a forward-only source during playback. The app
-  routes seeks on this delivery through a server replan, so it should not be reached, but
-  it runs the same seek and flush and should refuse cleanly.
+  sends a seek to the server as a replan only when the plan says so
+  (`can_seek_anywhere: false` with an open seek window, which the protocol specifies for
+  this delivery); nothing in the client keys on the delivery itself. A plan that allowed
+  local seeks would reach this path, which runs the same seek and flush and should refuse
+  cleanly.
 - Upstream `superuser404notfound/AetherEngine` no longer contains this exact branch, and
   its issue 693 describes a sequential origin that drops `startPosition`. Check whether a
   newer upstream revision already handles forward-only starts before writing new code; the
