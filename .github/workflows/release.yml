@@ -109,15 +109,17 @@ jobs:
     # No status function in the if -> implicit success() gate on needs, so a
     # failed tests or build-numbers job skips this build.
     if: ${{ needs.setup.outputs.platform != 'tvos' }}
-    runs-on: macos-15
+    # GitHub's Xcode 27 image (in preview). Building with the iOS 27 SDK keeps
+    # iPhone Duo out of the letterboxed compatibility mode older SDKs get.
+    runs-on: xcode-27
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0   # tags + history for changelog fallback
           persist-credentials: false
 
-      - name: Select Xcode 26
-        run: sudo xcode-select -s /Applications/Xcode_26.3.app
+      - name: Select Xcode 27
+        run: sudo xcode-select -s /Applications/Xcode_27.0.app
 
       - name: Install XcodeGen (pinned, checksum-verified)
         uses: ./.github/actions/install-xcodegen
@@ -165,15 +167,17 @@ jobs:
     needs: [tests, setup, build-numbers, source]
     # Skip only when the selection is iOS-only. Implicit success() gate on needs.
     if: ${{ needs.setup.outputs.platform != 'ios' }}
-    runs-on: macos-15
+    # GitHub's Xcode 27 image (in preview). Building with the iOS 27 SDK keeps
+    # iPhone Duo out of the letterboxed compatibility mode older SDKs get.
+    runs-on: xcode-27
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Select Xcode 26
-        run: sudo xcode-select -s /Applications/Xcode_26.3.app
+      - name: Select Xcode 27
+        run: sudo xcode-select -s /Applications/Xcode_27.0.app
 
       - name: Install XcodeGen (pinned, checksum-verified)
         uses: ./.github/actions/install-xcodegen

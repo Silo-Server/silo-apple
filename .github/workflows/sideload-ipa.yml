@@ -134,7 +134,9 @@ jobs:
 
   build:
     needs: [setup, release, source]
-    runs-on: macos-15
+    # GitHub's Xcode 27 image (in preview). Building with the iOS 27 SDK keeps
+    # iPhone Duo out of the letterboxed compatibility mode older SDKs get.
+    runs-on: xcode-27
     # Only the release-upload step (tag builds) needs write; scope it to the job
     # rather than the whole workflow to keep the rest at least privilege.
     permissions:
@@ -149,8 +151,8 @@ jobs:
           fetch-depth: 0            # tags + history for version resolution
           persist-credentials: false  # don't leave GITHUB_TOKEN in git config for xcodegen/SPM
 
-      - name: Select Xcode 26
-        run: sudo xcode-select -s /Applications/Xcode_26.3.app
+      - name: Select Xcode 27
+        run: sudo xcode-select -s /Applications/Xcode_27.0.app
 
       - name: Install XcodeGen (pinned, checksum-verified)
         uses: ./.github/actions/install-xcodegen

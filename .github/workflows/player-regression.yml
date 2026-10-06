@@ -42,7 +42,8 @@ concurrency:
 
 jobs:
   validate:
-    runs-on: macos-15
+    # Same Xcode 27 image as the release builds.
+    runs-on: xcode-27
     timeout-minutes: 40
     strategy:
       fail-fast: false
@@ -60,7 +61,7 @@ jobs:
           ref: ${{ inputs.baseline_ref || github.sha }}
       - uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: '26.3'
+          xcode-version: '27.0'
       - name: Prepare simulator
         if: matrix.action == 'test'
         timeout-minutes: 10
@@ -150,6 +151,8 @@ jobs:
           name: Silo-simulator-tests
           path: /tmp/Silo-simulator-tests.zip
           retention-days: 3
+      # Xcode 27 can spend ten minutes collecting simulator diagnostics after the
+      # tests finish, which would run past this step's timeout.
       - name: Run complete simulator suite
         if: matrix.action == 'test'
         timeout-minutes: 12
@@ -163,6 +166,7 @@ jobs:
             -only-testing:"$TEST_TARGET" \
             -parallel-testing-enabled NO \
             -test-timeouts-enabled YES -maximum-test-execution-time-allowance 60 \
+            -collect-test-diagnostics never \
             -resultBundlePath /tmp/player-validation.xcresult \
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- | tee /tmp/player-validation.log
       - name: Record synthetic preview expansion and successor playback
@@ -191,6 +195,7 @@ jobs:
             -parallel-testing-enabled NO \
             -destination-timeout 60 \
             -test-timeouts-enabled YES -maximum-test-execution-time-allowance 60 \
+            -collect-test-diagnostics never \
             -only-testing:SiloTests/PlayerSurfaceLayoutTests/testPlayingPreviewExpandsWithoutReplacingItemOrLosingItsLayer \
             -resultBundlePath /tmp/preview-recording.xcresult CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-
           kill -INT "$recorder_pid"
