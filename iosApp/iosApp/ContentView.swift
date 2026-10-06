@@ -2445,9 +2445,9 @@ struct MainTabView: View {
             ItemDetailSheet(presentation: presentation, router: router)
         }
         .onGeometryChange(for: Bool.self) { proxy in
-            PhoneDetailHeroLayout.usesSplitLayout(pageSize: proxy.size)
-        } action: { isWideAndShort in
-            router.presentsItemDetailFullWindow = isWideAndShort
+            PhoneDetailHeroLayout.usesSplitLayout(pageSize: proxy.size, verticalSizeClass: vSize)
+        } action: { splitsDetail in
+            router.presentsItemDetailFullWindow = splitsDetail
                 && UIDevice.current.userInterfaceIdiom == .phone
         }
         .sheet(isPresented: Binding(
@@ -2513,6 +2513,7 @@ struct MainTabView: View {
     }
 
     @Environment(\.horizontalSizeClass) private var hSize
+    @Environment(\.verticalSizeClass) private var vSize
 
     /// The open detail, routed to whichever presentation it opened in: the
     /// sheet, or the full-window cover (`ItemDetailPresentation.fillsWindow`).

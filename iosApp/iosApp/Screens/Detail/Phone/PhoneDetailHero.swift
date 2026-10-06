@@ -317,9 +317,18 @@ enum PhoneDetailHeroLayout {
     /// landscape — leaves a single hero-first column showing little more
     /// than artwork. It splits instead: the hero holds the leading half and
     /// the rest of the page scrolls in the trailing half, so the halves meet
-    /// at the fold. Taller pages (portrait, iPad page sheets) keep one column.
-    static func usesSplitLayout(pageSize: CGSize) -> Bool {
-        pageSize.width >= splitMinimumWidth && pageSize.width >= pageSize.height * 1.2
+    /// at the fold. Taller pages (portrait, iPad page sheets) keep one column,
+    /// and so do compact-height ones: an iPhone turned to landscape for the
+    /// player also rotates the pages beneath it, which must not re-lay out.
+    static func usesSplitLayout(pageSize: CGSize, verticalSizeClass: UserInterfaceSizeClass?) -> Bool {
+        #if os(macOS)
+        // Mac detail pages have their own header beside the sidebar.
+        return false
+        #else
+        return verticalSizeClass == .regular
+            && pageSize.width >= splitMinimumWidth
+            && pageSize.width >= pageSize.height * 1.2
+        #endif
     }
 }
 

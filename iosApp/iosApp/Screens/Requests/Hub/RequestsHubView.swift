@@ -22,6 +22,7 @@ private struct PhoneRequestsHubView: View {
     @State private var uiCustomization = UICustomizationPreferences.shared
     @State private var gridWidth: CGFloat = 0
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     @Environment(AppRouter.self) private var router
 
     var body: some View {
@@ -140,7 +141,8 @@ private struct PhoneRequestsHubView: View {
         guard UIDevice.current.userInterfaceIdiom == .phone else { return nil }
         return AdaptiveColumns.widePhonePosterFit(
             containerWidth: gridWidth,
-            posterSize: uiCustomization.cardPresentation.posterSize
+            posterSize: uiCustomization.cardPresentation.posterSize,
+            verticalSizeClass: verticalSizeClass
         )
         #else
         return nil

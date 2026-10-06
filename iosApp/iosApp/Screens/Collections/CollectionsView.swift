@@ -517,6 +517,7 @@ struct LibraryCollectionsView: View {
     @State private var uiCustomization = UICustomizationPreferences.shared
     @State private var gridWidth: CGFloat = 0
     @Environment(\.horizontalSizeClass) private var hSize
+    @Environment(\.verticalSizeClass) private var vSize
 
     private var columns: [GridItem] {
         if let fit = widePhonePosterFit {
@@ -623,7 +624,8 @@ struct LibraryCollectionsView: View {
         guard usesThreeColumnPhoneLayout else { return nil }
         return AdaptiveColumns.widePhonePosterFit(
             containerWidth: gridWidth - 2 * SiloTheme.padding,
-            posterSize: uiCustomization.cardPresentation.posterSize
+            posterSize: uiCustomization.cardPresentation.posterSize,
+            verticalSizeClass: vSize
         )
     }
 

@@ -365,6 +365,7 @@ private struct ItemDetailPhoneContent: View {
     @State private var detailScrollState = PhoneDetailScrollState()
     /// Whether a movie or series page lays out as a split; see `supportsScrollGlassChrome`.
     @State private var isSplitPage = false
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     #if os(iOS)
     @Environment(SiloControlClient.self) private var siloControl
     @State private var controlRequestBox: ControlRequestBox?
@@ -530,7 +531,7 @@ private struct ItemDetailPhoneContent: View {
             detailTopControls
         }
         .onGeometryChange(for: Bool.self) { proxy in
-            PhoneDetailHeroLayout.usesSplitLayout(pageSize: proxy.size)
+            PhoneDetailHeroLayout.usesSplitLayout(pageSize: proxy.size, verticalSizeClass: verticalSizeClass)
         } action: { isSplit in
             isSplitPage = isSplit
         }

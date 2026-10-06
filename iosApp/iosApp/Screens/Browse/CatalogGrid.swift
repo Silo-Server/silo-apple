@@ -36,6 +36,7 @@ struct CatalogGrid: View {
     private let rowSpacing: CGFloat = 60
     #else
     @Environment(\.horizontalSizeClass) private var hSize
+    @Environment(\.verticalSizeClass) private var vSize
     private var columns: [GridItem] {
         if dynamicTypeSize.isAccessibilitySize {
             return Array(
@@ -160,7 +161,11 @@ struct CatalogGrid: View {
         #if os(iOS)
         let posterSize = uiCustomization.cardPresentation.posterSize
         guard UIDevice.current.userInterfaceIdiom == .pad else {
-            return AdaptiveColumns.widePhonePosterFit(containerWidth: gridWidth, posterSize: posterSize)
+            return AdaptiveColumns.widePhonePosterFit(
+                containerWidth: gridWidth,
+                posterSize: posterSize,
+                verticalSizeClass: vSize
+            )
         }
         return AdaptiveColumns.widthFittedPosters(
             containerWidth: gridWidth,

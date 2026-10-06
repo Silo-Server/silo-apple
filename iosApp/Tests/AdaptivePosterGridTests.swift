@@ -52,10 +52,20 @@ final class AdaptivePosterGridTests: XCTestCase {
     func testPhoneWidthsKeepThreeUpGrid() {
         for screenWidth: CGFloat in [375, 440, 466] {
             XCTAssertNil(
-                AdaptiveColumns.widePhonePosterFit(containerWidth: screenWidth - 32, posterSize: .standard),
+                AdaptiveColumns.widePhonePosterFit(
+                    containerWidth: screenWidth - 32, posterSize: .standard, verticalSizeClass: .regular
+                ),
                 "width \(screenWidth)"
             )
         }
+    }
+
+    /// An iPhone turned to landscape for the player rotates the grids beneath
+    /// it too. Wide but compact height, they keep three-up.
+    func testLandscapeIPhoneGridKeepsThreeUp() {
+        XCTAssertNil(AdaptiveColumns.widePhonePosterFit(
+            containerWidth: 956 - 124 - 32, posterSize: .standard, verticalSizeClass: .compact
+        ))
     }
 
     /// The iPhone Duo's inner display is a phone idiom but iPad-sized. It
@@ -64,11 +74,11 @@ final class AdaptivePosterGridTests: XCTestCase {
     /// landscape beside the vertical tab bar, each less side padding.
     func testDuoInnerDisplayFillsRowWithPhoneSizePosters() throws {
         let portrait = try XCTUnwrap(
-            AdaptiveColumns.widePhonePosterFit(containerWidth: 637, posterSize: .standard)
+            AdaptiveColumns.widePhonePosterFit(containerWidth: 637, posterSize: .standard, verticalSizeClass: .regular)
         )
         XCTAssertEqual(portrait.columnCount, 5)
         let landscape = try XCTUnwrap(
-            AdaptiveColumns.widePhonePosterFit(containerWidth: 835, posterSize: .standard)
+            AdaptiveColumns.widePhonePosterFit(containerWidth: 835, posterSize: .standard, verticalSizeClass: .regular)
         )
         XCTAssertEqual(landscape.columnCount, 6)
         for fit in [portrait, landscape] {
@@ -121,11 +131,19 @@ final class AdaptivePosterGridTests: XCTestCase {
             .zero,
         ]
         for size in split {
-            XCTAssertTrue(PhoneDetailHeroLayout.usesSplitLayout(pageSize: size), "\(size)")
+            XCTAssertTrue(PhoneDetailHeroLayout.usesSplitLayout(pageSize: size, verticalSizeClass: .regular), "\(size)")
         }
         for size in column {
-            XCTAssertFalse(PhoneDetailHeroLayout.usesSplitLayout(pageSize: size), "\(size)")
+            XCTAssertFalse(PhoneDetailHeroLayout.usesSplitLayout(pageSize: size, verticalSizeClass: .regular), "\(size)")
         }
+    }
+
+    /// An iPhone turned to landscape for the player rotates the detail page
+    /// beneath it. That page is wide and short but compact height, and keeps
+    /// its single column (and scroll position) rather than splitting.
+    func testLandscapeIPhoneUnderThePlayerKeepsOneColumn() {
+        let proMaxLandscape = CGSize(width: 956 - 124, height: 440)
+        XCTAssertFalse(PhoneDetailHeroLayout.usesSplitLayout(pageSize: proMaxLandscape, verticalSizeClass: .compact))
     }
     #endif
 }

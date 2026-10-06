@@ -224,16 +224,21 @@ final class AppRouter {
     #if os(iOS)
     var presentedItemDetail: ItemDetailPresentation?
     var itemDetailPath = NavigationPath()
-    /// Kept current by the tab view: true while its phone window is wide and
-    /// short, as on the iPhone Duo's open display held in landscape. A sheet
-    /// there is capped at a centered card about two-thirds of the width, so
-    /// details opened then cover the window and can split into two panes.
+    /// Kept current by the tab view: true while its phone window would split
+    /// a detail page (see `PhoneDetailHeroLayout.usesSplitLayout`), as on the
+    /// iPhone Duo's open display held in landscape. A sheet there is capped at
+    /// a centered card about two-thirds of the width, so details opened then
+    /// cover the window.
     var presentsItemDetailFullWindow = false
 
-    private func openItemDetail(_ presentation: ItemDetailPresentation) {
-        var presentation = presentation
-        presentation.fillsWindow = presentsItemDetailFullWindow
-        presentedItemDetail = presentation
+    /// Opens or restores the detail card in the presentation the window calls
+    /// for now. Request details stay sheets: their page has no split layout.
+    private func openItemDetail(_ presentation: ItemDetailPresentation?) {
+        presentedItemDetail = presentation.map { presentation in
+            var presentation = presentation
+            presentation.fillsWindow = presentsItemDetailFullWindow && presentation.request == nil
+            return presentation
+        }
     }
     #endif
 
@@ -836,7 +841,7 @@ final class AppRouter {
         path = returnPoint.path
         #if os(iOS)
         itemDetailPath = returnPoint.itemDetailPath
-        presentedItemDetail = returnPoint.itemDetail
+        openItemDetail(returnPoint.itemDetail)
         #endif
     }
 

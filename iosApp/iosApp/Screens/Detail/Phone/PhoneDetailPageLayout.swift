@@ -19,6 +19,7 @@ struct PhoneDetailPageLayout<Column: View, PaneHero: View, PaneContent: View>: V
     @ViewBuilder let paneContent: () -> PaneContent
 
     @State private var page = PageGeometry()
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     /// Clears the floating Close and Remote buttons, which sit 9pt below the
     /// top edge and are 44pt tall. The content pane scrolls beneath this inset
@@ -27,7 +28,7 @@ struct PhoneDetailPageLayout<Column: View, PaneHero: View, PaneContent: View>: V
 
     var body: some View {
         Group {
-            if PhoneDetailHeroLayout.usesSplitLayout(pageSize: page.size) {
+            if PhoneDetailHeroLayout.usesSplitLayout(pageSize: page.size, verticalSizeClass: verticalSizeClass) {
                 split
             } else {
                 singleColumn
@@ -48,7 +49,12 @@ struct PhoneDetailPageLayout<Column: View, PaneHero: View, PaneContent: View>: V
         ScrollView(.vertical, showsIndicators: false) {
             column()
         }
+        #if os(macOS)
+        // The Mac surface keeps its leading inset to stay clear of the sidebar.
+        .ignoresSafeArea(edges: .top)
+        #else
         .ignoresSafeArea(edges: [.top, .horizontal])
+        #endif
         .coordinateSpace(name: PhoneDetailScrollCoordinateSpace.name)
         .detailScrollDismissal()
         .phoneDetailScrollTracking(scrollState)

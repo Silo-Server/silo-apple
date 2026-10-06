@@ -111,12 +111,16 @@ enum AdaptiveColumns {
 
     /// A width-fitted grid for a phone container too wide for three-up
     /// posters, such as the iPhone Duo's inner display. Nil for narrower
-    /// containers.
+    /// containers and compact-height windows: an iPhone turned to landscape
+    /// for the player also rotates the grids beneath it, which keep their
+    /// three-up layout and scroll position.
     static func widePhonePosterFit(
         containerWidth: CGFloat,
-        posterSize: CardPosterSize
+        posterSize: CardPosterSize,
+        verticalSizeClass: UserInterfaceSizeClass?
     ) -> PosterGridFit? {
-        guard containerWidth >= widePhoneGridMinimumWidth else { return nil }
+        guard containerWidth >= widePhoneGridMinimumWidth,
+              verticalSizeClass == .regular else { return nil }
         return widthFittedPosters(
             containerWidth: containerWidth,
             minimumCardWidth: widePhoneMinimumPosterWidth * posterSize.scale,

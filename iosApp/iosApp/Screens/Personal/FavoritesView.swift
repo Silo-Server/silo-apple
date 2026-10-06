@@ -50,6 +50,7 @@ struct IOSPersonalMediaPosterLayout: View {
     @State private var uiCustomization = UICustomizationPreferences.shared
     @State private var gridWidth: CGFloat = 0
     @State private var originID = UUID().uuidString
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     @State private var rowScrollPositions: [Int: String] = [:]
 
     @ViewBuilder
@@ -169,7 +170,8 @@ struct IOSPersonalMediaPosterLayout: View {
     private var widePhonePosterFit: AdaptiveColumns.PosterGridFit? {
         AdaptiveColumns.widePhonePosterFit(
             containerWidth: gridWidth,
-            posterSize: uiCustomization.cardPresentation.posterSize
+            posterSize: uiCustomization.cardPresentation.posterSize,
+            verticalSizeClass: verticalSizeClass
         )
     }
 
