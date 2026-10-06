@@ -420,8 +420,9 @@ struct APIv2Client: Sendable {
     /// URL session (this guard, the fence's entry check, or `HTTPClient`'s
     /// dispatch gate), and `HTTPError.requestIdentityChanged` or
     /// `.authorityChanged` when it was sent and its answer discarded.
-    func collectionRequest(_ method: String, path: String, body: Data? = nil, ifMatch: String? = nil,
-                           status: Int, auth: CapturedOrdinaryRequestAuth) async throws -> HTTPRawResponse {
+    func collectionRequest(_ method: String, path: String, query: [String: String] = [:], body: Data? = nil,
+                           ifMatch: String? = nil, status: Int,
+                           auth: CapturedOrdinaryRequestAuth) async throws -> HTTPRawResponse {
         try await gate()
         let dispatch = HTTPDispatchRecord()
         let raw: HTTPRawResponse
@@ -433,7 +434,7 @@ struct APIv2Client: Sendable {
             let identity = Self.requestIdentity(auth, profile: profile)
             raw = try await tokenStore.withOwnerFence(auth) {
                 try await mapErrors {
-                    try await http.requestData(method: method, path: path, body: body,
+                    try await http.requestData(method: method, path: path, query: query, body: body,
                         headers: ifMatch.map { ["If-Match": $0] } ?? [:], requestIdentity: identity,
                         expectedAccount: auth.account, expectedAuth: auth, dispatchRecord: dispatch)
                 }

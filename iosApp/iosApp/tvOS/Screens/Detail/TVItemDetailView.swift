@@ -37,6 +37,9 @@ struct TVItemDetailView: View {
     @State private var isPageVisible = false
     /// Set when this page starts playback, so it only acts on its own return.
     @State private var awaitsPlaybackReturn = false
+    /// A Resume/Play press's in-flight watch-state read. A second press
+    /// replaces it; leaving the page cancels it.
+    @State private var resumeLookupTask: Task<Void, Never>?
     @State private var carouselLoadFailed = false
     @State private var carouselRetryGeneration = 0
     /// Whether remote YouTube trailers should be presented, probed once per
@@ -95,6 +98,8 @@ struct TVItemDetailView: View {
         }
         .onDisappear {
             isPageVisible = false
+            resumeLookupTask?.cancel()
+            resumeLookupTask = nil
             viewModel.cancelDetailLoading()
             Self.focusLogger.debug("itemDetail.disappear contentId=\(contentId, privacy: .public) pathDepth=\(router.path.count, privacy: .public)")
             viewModel.cancelDeferredEpisodePersonalListStateRefresh()
@@ -326,39 +331,44 @@ struct TVItemDetailView: View {
                     activeSeriesEpisodeContentId = id
                 },
                 onPlayEpisode: { id, fileId, startFromBeginning in
-                    awaitsPlaybackReturn = true
-                    SeriesPlaybackReturnInbox.discardPending()
                     let episode = viewModel.seriesEpisodeWindow.episodes.first(where: { $0.contentId == id })
-                    let resumePosition = startFromBeginning
-                        ? nil
-                        : playableResumePosition(
-                            position: episode?.userData?.positionSeconds,
-                            duration: episode?.userData?.durationSeconds
-                        )
-                    if let fileId = nextUpPlaybackFileId(
+                    // Version and track picks are read at the press, not
+                    // after the watch-state read.
+                    let playbackFileId = nextUpPlaybackFileId(
                         resolvedFileId: fileId,
                         contentId: id
-                    ) {
-                        router.navigate(
-                            to: .playerWithFile(
-                                contentId: id,
-                                fileId: fileId,
-                                audioTrackIndex: preferredNextUpAudioTrackIndex,
-                                subtitleTrackIndex: preferredNextUpSubtitleTrackIndex,
-                                startFromBeginning: startFromBeginning,
-                                resumePosition: resumePosition,
-                                libraryId: libraryId
+                    )
+                    let audioTrackIndex = preferredNextUpAudioTrackIndex
+                    let subtitleTrackIndex = preferredNextUpSubtitleTrackIndex
+                    playWithFreshResumePosition(
+                        contentId: id,
+                        startFromBeginning: startFromBeginning,
+                        cached: episode?.userData
+                    ) { resumePosition in
+                        awaitsPlaybackReturn = true
+                        SeriesPlaybackReturnInbox.discardPending()
+                        if let playbackFileId {
+                            router.navigate(
+                                to: .playerWithFile(
+                                    contentId: id,
+                                    fileId: playbackFileId,
+                                    audioTrackIndex: audioTrackIndex,
+                                    subtitleTrackIndex: subtitleTrackIndex,
+                                    startFromBeginning: startFromBeginning,
+                                    resumePosition: resumePosition,
+                                    libraryId: libraryId
+                                )
                             )
-                        )
-                    } else {
-                        router.navigate(
-                            to: .player(
-                                contentId: id,
-                                startFromBeginning: startFromBeginning,
-                                resumePosition: resumePosition,
-                                libraryId: libraryId
+                        } else {
+                            router.navigate(
+                                to: .player(
+                                    contentId: id,
+                                    startFromBeginning: startFromBeginning,
+                                    resumePosition: resumePosition,
+                                    libraryId: libraryId
+                                )
                             )
-                        )
+                        }
                     }
                 },
                 onSetEpisodeWatched: { id, played in
@@ -466,28 +476,38 @@ struct TVItemDetailView: View {
                 isFetchingTrailers: viewModel.trailerFetch.isFetching,
                 onTrailerStatusShown: { viewModel.trailerFetch.acknowledge() },
                 onPlay: { startFromBeginning in
-                    let resumePosition = startFromBeginning ? nil : playableResumePosition(for: detail)
-                    if let fileId = playbackFileId(for: detail) {
-                        router.navigate(
-                            to: .playerWithFile(
-                                contentId: contentId,
-                                fileId: fileId,
-                                audioTrackIndex: preferredAudioTrackIndex,
-                                subtitleTrackIndex: preferredSubtitleTrackIndex,
-                                startFromBeginning: startFromBeginning,
-                                resumePosition: resumePosition,
-                                libraryId: libraryId
+                    // Version and track picks are read at the press, not
+                    // after the watch-state read.
+                    let fileId = playbackFileId(for: detail)
+                    let audioTrackIndex = preferredAudioTrackIndex
+                    let subtitleTrackIndex = preferredSubtitleTrackIndex
+                    playWithFreshResumePosition(
+                        contentId: contentId,
+                        startFromBeginning: startFromBeginning,
+                        cached: detail.userData
+                    ) { resumePosition in
+                        if let fileId {
+                            router.navigate(
+                                to: .playerWithFile(
+                                    contentId: contentId,
+                                    fileId: fileId,
+                                    audioTrackIndex: audioTrackIndex,
+                                    subtitleTrackIndex: subtitleTrackIndex,
+                                    startFromBeginning: startFromBeginning,
+                                    resumePosition: resumePosition,
+                                    libraryId: libraryId
+                                )
                             )
-                        )
-                    } else {
-                        router.navigate(
-                            to: .player(
-                                contentId: contentId,
-                                startFromBeginning: startFromBeginning,
-                                resumePosition: resumePosition,
-                                libraryId: libraryId
+                        } else {
+                            router.navigate(
+                                to: .player(
+                                    contentId: contentId,
+                                    startFromBeginning: startFromBeginning,
+                                    resumePosition: resumePosition,
+                                    libraryId: libraryId
+                                )
                             )
-                        )
+                        }
                     }
                 },
                 onSelectVersion: { fileId in
@@ -580,19 +600,39 @@ struct TVItemDetailView: View {
         )?.fileId
     }
 
-    private func playableResumePosition(for detail: ItemDetail) -> Double? {
-        playableResumePosition(
-            position: detail.userData?.positionSeconds,
-            duration: detail.userData?.durationSeconds
-        )
+    /// Starts playback from the server's current position. The page's
+    /// snapshot can be minutes old when another device kept playing, and an
+    /// explicit resume position overrides the one the player would read, so
+    /// a Resume/Play press re-reads the item's watch state first. The
+    /// snapshot (`cached`) is used only when the server is known unreachable,
+    /// errors, or takes longer than `DetailResumeState.defaultTimeout`.
+    /// Start Over skips the read.
+    private func playWithFreshResumePosition(
+        contentId id: String,
+        startFromBeginning: Bool,
+        cached: LeafItemUserData?,
+        play: @escaping (_ resumePosition: Double?) -> Void
+    ) {
+        resumeLookupTask?.cancel()
+        resumeLookupTask = nil
+        guard !startFromBeginning else {
+            play(nil)
+            return
+        }
+        resumeLookupTask = Task {
+            let state = await refreshedResumeState(contentId: id)
+            guard !Task.isCancelled, isPageVisible else { return }
+            resumeLookupTask = nil
+            play(state.resumePosition(cached: cached))
+        }
     }
 
-    private func playableResumePosition(position: Double?, duration: Double?) -> Double? {
-        guard let position, position.isFinite, position > 30 else { return nil }
-        if let duration, duration.isFinite, duration > 0, position >= duration - 5 {
-            return nil
+    private func refreshedResumeState(contentId id: String) async -> DetailResumeState {
+        guard ConnectionMonitor.shared.isServerReachable else { return .unavailable }
+        let libraryId = libraryId
+        return await DetailResumeState.load {
+            try await SiloAPI.shared.watchDetail(contentId: id, libraryId: libraryId).userData
         }
-        return position
     }
 
     private func effectiveVersion(for detail: ItemDetail, versionFileId: Int?) -> FileVersion? {

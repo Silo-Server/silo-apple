@@ -10,6 +10,9 @@ class BrowseViewModel {
     private(set) var hasLoaded = false
     var error: ErrorState?
     var hasMore = true
+    /// Why the grid is empty. Read only when a finished load left `items`
+    /// empty; set before that load finishes so the wrong message never shows.
+    private(set) var emptyReason: BrowseEmptyReason = .libraryEmpty
 
     /// The committed filter + sort state. The filter sheet edits a draft and
     /// commits it via `apply`.
@@ -100,6 +103,14 @@ class BrowseViewModel {
                 items = page.response.items
                 ResponseCache.shared.set(page.response, for: currentCacheKey, fetchedAt: writeToken)
                 refineMediaType(from: page.response)
+                if items.isEmpty {
+                    let probe = CatalogQueryBuilder.libraryProbe(libraryId: libraryId)
+                    let reason = await BrowseEmptyReason.classify(filter: filterState) {
+                        try await !SiloAPI.shared.catalogPage(probe).response.items.isEmpty
+                    }
+                    guard myGeneration == generation else { return }
+                    emptyReason = reason
+                }
             } else {
                 items.append(contentsOf: page.response.items)
             }
@@ -136,6 +147,14 @@ class BrowseViewModel {
             next.sort = key
             next.order = nil
         }
+        await apply(next)
+    }
+
+    /// Clear every filter facet, keeping the chosen sort.
+    func clearFilters() async {
+        var next = filterState
+        next.resetFilters()
+        next.namePrefix = nil
         await apply(next)
     }
 

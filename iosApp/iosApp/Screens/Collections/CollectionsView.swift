@@ -720,10 +720,15 @@ struct LibraryCollectionDetailView: View {
     /// Where the next page starts; `nil` before the live first page and
     /// after the last one. A cached first page has no continuation.
     @State private var continuation: APIv2CatalogContinuation?
+    @State private var shuffleLauncher = ShuffleLauncher()
 
     @Environment(AppRouter.self) private var router
 
     private let pageSize = 60
+
+    private var shuffleKind: ShuffleScopeKind {
+        (kind ?? .regular).shuffleScopeKind
+    }
 
     var body: some View {
         Group {
@@ -748,6 +753,7 @@ struct LibraryCollectionDetailView: View {
         .task(id: "\(libraryId)-\(collectionId)") {
             await loadItems(reset: true)
         }
+        .shuffleFailureAlert(shuffleLauncher)
         .refreshable {
             await loadItems(reset: true)
         }
@@ -756,9 +762,20 @@ struct LibraryCollectionDetailView: View {
     private var content: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: SiloTheme.padding) {
-                Text(countLabel)
-                    .font(.siloCaption)
-                    .foregroundColor(.siloSecondaryText)
+                HStack(spacing: SiloTheme.padding) {
+                    if ShuffleFeatureStore.shared.supports(shuffleKind) {
+                        ShuffleButton(isStarting: shuffleLauncher.isStarting) {
+                            shuffleLauncher.start(ShuffleScopeRequest(kind: shuffleKind, id: collectionId), router: router)
+                        }
+                    }
+                    Text(countLabel)
+                        .font(.siloCaption)
+                        .foregroundColor(.siloSecondaryText)
+                }
+                #if os(tvOS)
+                // Up from any grid column reaches the Shuffle button.
+                .focusSection()
+                #endif
 
                 CatalogGrid(
                     items: items,

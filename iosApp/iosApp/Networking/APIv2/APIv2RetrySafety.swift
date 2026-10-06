@@ -105,6 +105,11 @@ enum APIv2MutationCatalog {
         .init("POST", "/api/v2/playback/start", .domainIdentity),
         .init("POST", "/api/v2/playback/{session_id}/progress", .domainIdentity),
         .init("DELETE", "/api/v2/playback/{session_id}", .domainIdentity),
+        // Shuffle: advance and skip name the item they act on, so a replay
+        // after that item has moved changes nothing.
+        .init("POST", "/api/v2/shuffles/{shuffle_id}/advance", .naturalIdempotent),
+        .init("POST", "/api/v2/shuffles/{shuffle_id}/skip", .naturalIdempotent),
+        .init("DELETE", "/api/v2/shuffles/{shuffle_id}", .naturalIdempotent),
         // Diagnostics uploads
         .init("PUT", "/api/v2/diagnostics/reports/uploads/{upload_id}/chunks/{chunk_index}", .naturalIdempotent),
         .init("DELETE", "/api/v2/diagnostics/reports/uploads/{upload_id}", .naturalIdempotent),
@@ -161,6 +166,8 @@ enum APIv2MutationCatalog {
         .init("POST", "/api/v2/watch-together/rooms/{room_id}/suggestions/promote", .nonRetryable),
         // Playback
         .init("POST", "/api/v2/playback/route-events", .nonRetryable),
+        // Shuffle: a resent create would start a second shuffle.
+        .init("POST", "/api/v2/shuffles", .nonRetryable),
         // Subtitles
         .init("POST", "/api/v2/subtitles/download", .nonRetryable),
         .init("POST", "/api/v2/subtitles/ai/translate", .nonRetryable),
