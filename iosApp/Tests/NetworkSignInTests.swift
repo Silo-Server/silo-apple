@@ -324,9 +324,8 @@ final class NetworkSignInTests: XCTestCase {
         XCTAssertTrue(AccountSignInModel.connectable(providers: [network], oauth: nil, credentialsLinking: false,
             networkLinking: true, linked: [linked]).isEmpty, "a linked installation is not offered again")
 
-        // Linking turns password sign-in off, so a provider the login screen
-        // would drop for its path is never offered: the account would have
-        // no way back in on this app.
+        // A provider the login screen would drop for its path is never
+        // offered: the connection would give no way to sign in on this app.
         for unusable in [nil, "/api/v2/auth/network/abc/sign-in", "https://evil.example/api/v2/auth/network/5/sign-in"] {
             XCTAssertTrue(SignInOptions(providers: APIv2AuthProviders(items: [Self.network(path: unusable)],
                 passwordLogin: true), oauth: nil).networkProviders.isEmpty, unusable ?? "nil")

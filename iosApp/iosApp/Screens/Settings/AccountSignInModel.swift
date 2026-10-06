@@ -126,8 +126,8 @@ final class AccountSignInModel {
             if provider.isCredentials, credentialsLinking {
                 return Connectable(provider: provider, method: .directory)
             }
-            // Only a provider the login screen can sign in with: linking
-            // turns password sign-in off.
+            // Only a provider the login screen can sign in with, so the
+            // connection is usable from this app.
             if networkLinking, NetworkSignIn.apiPath(of: provider) != nil {
                 return Connectable(provider: provider, method: .network)
             }
