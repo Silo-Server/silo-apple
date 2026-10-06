@@ -291,7 +291,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     var creditText: String? = nil
     /// Overlay metadata used to add the advisory-age badge when the active
     /// profile has enabled it.
-    var overlayData: OverlayData? = nil
+    let overlayData: OverlayData?
     var enablesArtworkParallax = false
     var artworkStyle: PhoneDetailArtworkStyle = .backdrop
     @ViewBuilder let actions: () -> Actions

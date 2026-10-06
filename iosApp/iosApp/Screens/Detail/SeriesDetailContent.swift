@@ -168,6 +168,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             factsLine: PhoneHeroMetadata.seriesFactsLine(from: detail),
             ratings: detail.displayRatings,
             creditText: PhoneHeroMetadata.creditText(from: detail),
+            overlayData: OverlayData.from(detail),
             enablesArtworkParallax: true,
             actions: { actionStack },
             // Match MovieDetailContent exactly through the playback controls:

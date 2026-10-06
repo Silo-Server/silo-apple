@@ -93,6 +93,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
             factsLine: PhoneHeroMetadata.movieFactsLine(from: detail, version: effectiveVersion),
             ratings: detail.displayRatings,
             creditText: PhoneHeroMetadata.creditText(from: detail),
+            overlayData: OverlayData.from(detail),
             enablesArtworkParallax: SiloMediaType.isMovieLibrary(detail.type),
             actions: { actionStack },
             belowOverview: {

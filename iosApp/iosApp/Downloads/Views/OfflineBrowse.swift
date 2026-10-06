@@ -273,6 +273,7 @@ struct OfflineDownloadDetailView: View {
             ratingChip: ratingChip,
             overview: manifest?.overview,
             factsLine: factsLine(record),
+            overlayData: nil,
             enablesArtworkParallax: true,
             actions: { actions(record) },
             belowOverview: { EmptyView() }

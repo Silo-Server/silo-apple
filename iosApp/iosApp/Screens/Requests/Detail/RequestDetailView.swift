@@ -128,6 +128,7 @@ struct RequestDetailView: View {
                         factsLine: factTokens(detail).map { PhoneHeroFactToken.text($0) },
                         ratings: ratings(detail),
                         creditText: creditText(detail),
+                        overlayData: nil,
                         enablesArtworkParallax: true,
                         actions: { phoneActions },
                         belowOverview: { EmptyView() }
