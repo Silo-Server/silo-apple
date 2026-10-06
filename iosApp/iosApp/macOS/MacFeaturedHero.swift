@@ -47,7 +47,7 @@ struct MacFeaturedHero: View {
             }
             .clipped()
             .onHover { isHovering = $0 }
-            .task(id: AdvanceTrigger(index: index, isPaused: isPaused)) {
+            .task(id: AdvanceTrigger(index: index, isPaused: isPaused, count: section.items.count)) {
                 await advanceAfterDelay()
             }
             .onChange(of: section.items.map(\.contentId)) { _, ids in
@@ -64,10 +64,12 @@ struct MacFeaturedHero: View {
 
     private func backdrop(for item: SectionItem) -> some View {
         Group {
-            if let url = item.backdropUrl ?? item.posterUrl {
+            // An empty URL is no artwork: fall back as for a missing one.
+            let backdropURL = item.backdropUrl?.nonEmpty
+            if let url = backdropURL ?? item.posterUrl?.nonEmpty {
                 AsyncImageView(
                     url: url,
-                    thumbhash: item.backdropUrl == nil ? item.posterThumbhash : item.backdropThumbhash,
+                    thumbhash: backdropURL == nil ? item.posterThumbhash : item.backdropThumbhash,
                     contentMode: .fill
                 )
             } else {
@@ -257,7 +259,7 @@ struct MacFeaturedHero: View {
     private func thumbnail(for entry: SectionItem, isCurrent: Bool) -> some View {
         let shape = RoundedRectangle(cornerRadius: HomeFeedMetrics.posterRadius, style: .continuous)
         return Group {
-            if let url = entry.posterUrl {
+            if let url = entry.posterUrl?.nonEmpty {
                 AsyncImageView(
                     url: url,
                     thumbhash: entry.posterThumbhash,
@@ -292,6 +294,9 @@ struct MacFeaturedHero: View {
     private struct AdvanceTrigger: Equatable {
         let index: Int
         let isPaused: Bool
+        /// A reload that adds titles must restart the timer: with one
+        /// title there is nothing to advance to, so the task has ended.
+        let count: Int
     }
 
     /// The title must not change under someone reading or operating the
@@ -362,5 +367,9 @@ struct MacFeaturedHero: View {
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
+}
+
+private extension String {
+    var nonEmpty: String? { isEmpty ? nil : self }
 }
 #endif
