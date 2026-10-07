@@ -1,4 +1,4 @@
-name: Private Apple source download comparison
+name: Private Apple source gzip assessment
 
 on:
   workflow_dispatch:
@@ -7,12 +7,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: apple-source-download-pilot
+  group: apple-source-gzip-pilot
   cancel-in-progress: false
 
 jobs:
   compare:
-    if: github.event_name == 'workflow_dispatch' && github.repository == 'Silo-Server/silo-apple' && github.ref == 'refs/heads/private/apple-source-download-pilot'
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'Silo-Server/silo-apple' && github.ref == 'refs/heads/private/apple-source-gzip-pilot'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -27,27 +27,31 @@ jobs:
           python-version: '3.12'
       - name: Require the reviewed frozen source before checkout
         id: source
-        run: python3 controller/scripts/ci/source-download-pilot/compare.py --source-sha >> "$GITHUB_OUTPUT"
+        run: python3 controller/scripts/ci/source-download-pilot/gzip-levels.py --source-sha >> "$GITHUB_OUTPUT"
       - name: Checkout the same committed app source for every arm
         uses: actions/checkout@v4
         with:
           path: source
           ref: ${{ steps.source.outputs.sha }}
           persist-credentials: false
-      - name: Compare sequential and concurrent source acquisition
+      - name: Acquire one real source tar and compare fixed gzip levels
         run: |
-          python3 controller/scripts/ci/source-download-pilot/compare.py \
-            --source "$GITHUB_WORKSPACE/source" --output "$RUNNER_TEMP/source-download-pilot"
+          python3 controller/scripts/ci/source-download-pilot/gzip-levels.py \
+            --source "$GITHUB_WORKSPACE/source" --output "$RUNNER_TEMP/source-gzip-pilot"
       - name: Retain comparison records after success or failure
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: apple-source-download-pilot-${{ github.run_id }}-${{ github.run_attempt }}
+          name: apple-source-gzip-pilot-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            ${{ runner.temp }}/source-download-pilot/binding.json
-            ${{ runner.temp }}/source-download-pilot/comparison.json
-            ${{ runner.temp }}/source-download-pilot/*/timing.json
-            ${{ runner.temp }}/source-download-pilot/*/members.json
-            ${{ runner.temp }}/source-download-pilot/*/process.log
+            ${{ runner.temp }}/source-gzip-pilot/binding.json
+            ${{ runner.temp }}/source-gzip-pilot/compression.json
+            ${{ runner.temp }}/source-gzip-pilot/payload.json
+            ${{ runner.temp }}/source-gzip-pilot/input/timing.json
+            ${{ runner.temp }}/source-gzip-pilot/input/members.json
+            ${{ runner.temp }}/source-gzip-pilot/input/process.log
+            ${{ runner.temp }}/source-gzip-pilot/levels/*/timing.json
+            ${{ runner.temp }}/source-gzip-pilot/levels/*/members.json
+            ${{ runner.temp }}/source-gzip-pilot/levels/*/process.log
           if-no-files-found: ignore
           retention-days: 7
