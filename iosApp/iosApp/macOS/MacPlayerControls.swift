@@ -27,22 +27,19 @@ struct MacPlayerControls: View {
             ZStack {
                 HStack(spacing: 10) {
                     iconButton("captions.bubble", help: "Audio and subtitle options") {
-                        selectedOptionsTab = .subtitles
-                        isOptionsPresented.toggle()
+                        showOptions(.subtitles)
                     }
                     .disabled(!viewModel.hasTrackSelectionOptions)
                     .opacity(viewModel.hasTrackSelectionOptions ? 1 : 0.45)
 
                     iconButton("list.bullet", help: "Chapters") {
-                        selectedOptionsTab = .chapters
-                        isOptionsPresented.toggle()
+                        showOptions(.chapters)
                     }
                     .disabled(viewModel.chapters.isEmpty)
                     .opacity(viewModel.chapters.isEmpty ? 0.45 : 1)
 
                     iconButton("speedometer", help: "Playback speed, stats and route") {
-                        selectedOptionsTab = .playback
-                        isOptionsPresented.toggle()
+                        showOptions(.playback)
                     }
 
                     qualityButton
@@ -122,12 +119,21 @@ struct MacPlayerControls: View {
         .help(help)
     }
 
+    /// Opens the options panel on `tab`. With the panel already open on
+    /// another tab it switches tabs; on the same tab it closes the panel.
+    private func showOptions(_ tab: MacPlayerOptionsPanel.Tab) {
+        let switchesTab = isOptionsPresented && selectedOptionsTab != tab
+        selectedOptionsTab = tab
+        if !switchesTab {
+            isOptionsPresented.toggle()
+        }
+    }
+
     /// Opens the Quality tab and names the active choice, like the quality
     /// pill on iOS.
     private var qualityButton: some View {
         Button {
-            selectedOptionsTab = .quality
-            isOptionsPresented.toggle()
+            showOptions(.quality)
         } label: {
             HStack(spacing: 6) {
                 if viewModel.isQualitySwitching {

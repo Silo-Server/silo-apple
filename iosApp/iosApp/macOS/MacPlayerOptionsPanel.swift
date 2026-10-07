@@ -131,6 +131,9 @@ struct MacPlayerOptionsPanel: View {
                     ) {
                         viewModel.switchQuality(option.id)
                     }
+                    // A second pick during a replan is refused as busy and
+                    // reports a failure even when the first switch succeeds.
+                    .disabled(viewModel.isQualitySwitching)
                 }
 
                 if viewModel.isQualitySwitching {
