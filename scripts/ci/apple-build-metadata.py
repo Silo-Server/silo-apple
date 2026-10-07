@@ -92,7 +92,9 @@ def benchmark(result, env):
             'cache_regime': 'warm' if spm_hit or derived_hit else 'cold',
             'cache_namespace': result['cache_namespace'], 'platform': platform,
             'toolchain': tools[scheme], 'spm_cache_hit': spm_hit,
-            'derived_cache_hit': derived_hit, 'xcodegen_cache_hit': xcodegen_hit, 'cache_mode': env.get('SILO_CACHE_MODE', 'dependencies')}
+            'derived_cache_hit': derived_hit, 'xcodegen_cache_hit': xcodegen_hit,
+            'dependency_lock_sha256': result['lock_sha256'],
+            'build_config_sha256': result['build_config_sha256'], 'cache_mode': env.get('SILO_CACHE_MODE', 'dependencies')}
 
 
 def main():
