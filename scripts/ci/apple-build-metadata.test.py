@@ -49,6 +49,7 @@ class MetadataTests(unittest.TestCase):
 
     def test_cache_hit_claim_requires_actual_restore_hit(self):
         result = {'source_sha': 'a' * 40, 'cache_namespace': 'v1',
+                  'lock_sha256': 'b' * 64, 'build_config_sha256': 'c' * 64,
                   'toolchain_json': json.dumps({'Silo': {'xcode_build': '27A266a'}})}
         env = {'PLATFORM': 'iOS', 'SILO_SPM_CACHE_HIT': 'false', 'SILO_CACHE_MODE': 'dependencies'}
         self.assertEqual(metadata.benchmark(result, env)['cache_regime'], 'cold')
