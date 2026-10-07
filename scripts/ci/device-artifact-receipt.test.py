@@ -137,6 +137,25 @@ class ReceiptTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'entitlements'):
             fixture.inspect(entitled)
 
+    def test_invalid_adhoc_reports_payload_path_exit_and_bounded_stderr(self):
+        fixture = Fixture(self.root, signature='adhoc')
+        binary = fixture.app / 'Frameworks/Example.framework/Example'
+        for suffix in ('code or signature modified', 'code or signature modified ' + 'x' * 1000):
+            with self.subTest(suffix_length=len(suffix)):
+                def invalid(argv):
+                    if '--verify' in argv and argv[-1] == str(binary):
+                        detail = (str(binary) + ': ' + suffix).encode()
+                        return 7, b'', detail
+                    return fixture.runner(argv)
+                with self.assertRaises(ValueError) as failure:
+                    fixture.inspect(invalid)
+                message = str(failure.exception)
+                self.assertIn('Silo.app/Frameworks/Example.framework/Example', message)
+                self.assertIn('exit=7', message)
+                self.assertIn('stderr=Example: code or signature modified', message)
+                self.assertNotIn(str(fixture.archive), message)
+                self.assertLessEqual(len(message), 300)
+
     def test_unknown_codesign_failure_is_not_unsigned_proof(self):
         fixture = Fixture(self.root)
         def malformed(argv):

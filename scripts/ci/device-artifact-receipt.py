@@ -181,7 +181,11 @@ def native(binary, platforms, runner, expected_sdk=None):
                        'has_code_signature_command': 'cmd LC_CODE_SIGNATURE' in text})
     if any(s['signature'] == 'adhoc-no-identity' for s in slices):
         code, output, error = runner(['codesign', '--verify', '--strict', str(binary)])
-        require(code == 0, 'Ad-hoc signature integrity verification failed')
+        app = next((p for p in binary.parents if p.suffix == '.app'), None)
+        label = binary.relative_to(app.parent).as_posix() if app else binary.name
+        detail = error.decode(errors='replace').strip().replace(str(binary), binary.name)
+        require(code == 0, 'Ad-hoc signature integrity verification failed: ' + label +
+                '; exit=' + str(code) + '; stderr=' + detail[:160])
     return {'architectures': arches, 'slices': slices}
 
 
