@@ -47,6 +47,12 @@ outputs:
   derived-cache-hit:
     description: Whether an exact compilation key was restored
     value: ${{ steps.derived.outputs.cache-hit }}
+  derived-cache-restored:
+    description: Whether compilation state was restored by an exact or compatible prefix key
+    value: ${{ steps.derived.outputs.cache-matched-key != '' }}
+  derived-cache-key:
+    description: Actual key of the compilation state restored
+    value: ${{ steps.derived.outputs.cache-matched-key }}
 runs:
   using: composite
   steps:
