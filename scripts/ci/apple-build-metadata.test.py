@@ -3,6 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -20,6 +21,14 @@ class MetadataTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 metadata.validate_controls({'SILO_CACHE_NAMESPACE': value})
         self.assertEqual(metadata.validate_controls({'SILO_CACHE_NAMESPACE': 'bench-1'}), 'bench-1')
+
+    def test_command_is_bounded_and_timeout_is_a_failure(self):
+        with patch.object(metadata.subprocess, 'check_output',
+                          side_effect=subprocess.TimeoutExpired(('xcrun', 'simctl'), 60)) as run:
+            with self.assertRaisesRegex(RuntimeError, 'Build metadata command timed out: xcrun'):
+                metadata.command('xcrun', 'simctl', 'list', 'runtimes', '--json')
+        self.assertEqual(run.call_args.kwargs['timeout'], 60)
+        self.assertNotIn('shell', run.call_args.kwargs)
 
     def test_xcode_build_is_measured_and_version_output_is_validated(self):
         self.assertEqual(metadata.parse_xcode('Xcode 27.0\nBuild version 27A266a\n'),

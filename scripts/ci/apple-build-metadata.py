@@ -14,7 +14,10 @@ SDKS = {'Silo': 'iphonesimulator', 'SiloTV': 'appletvsimulator', 'SiloMac': 'mac
 
 
 def command(*args, cwd=None):
-    return subprocess.check_output(args, cwd=cwd, text=True).strip()
+    try:
+        return subprocess.check_output(args, cwd=cwd, text=True, timeout=60).strip()
+    except subprocess.TimeoutExpired:
+        raise RuntimeError('Build metadata command timed out: ' + args[0]) from None
 
 
 def parse_xcode(text):
