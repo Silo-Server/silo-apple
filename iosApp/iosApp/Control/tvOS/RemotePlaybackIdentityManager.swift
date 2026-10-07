@@ -151,10 +151,17 @@ final class RemotePlaybackIdentityManager {
             && activeIdentity.controllerDeviceId == controllerDeviceId
     }
 
+    /// Installs the phone's temporary identity once the server approves it.
+    /// `beforeActivation` runs after approval and before the credentials change,
+    /// while the outgoing identity (the TV's own or an earlier phone's) still
+    /// owns them, so whatever is playing can close its server session under the
+    /// identity it started with. An offer that fails or is denied leaves the
+    /// current identity and playback alone.
     func prepare(
         offer: SiloControlHandoffOffer,
         controllerDeviceId: String,
         controllerDeviceName: String?,
+        beforeActivation: () async throws -> Void = {},
         onChallenge: @escaping (SiloControlHandoffChallenge) async throws -> Void
     ) async throws -> SiloControlHandoffReady {
         let offeredURL = ServerRegistry.normalize(url: offer.serverURL)
@@ -214,6 +221,8 @@ final class RemotePlaybackIdentityManager {
               let expiresAt = poll.sessionExpiresAt else {
             throw HandoffError.invalidResponse
         }
+        try await beforeActivation()
+        try Task.checkCancellation()
         guard await activate(TemporaryAuthScope(
             serverId: offer.serverId,
             serverURL: normalizedURL,

@@ -30,6 +30,9 @@ final class TVControlReceiver {
     private var heartbeatTask: Task<Void, Never>?
     private var authWatchdogTask: Task<Void, Never>?
     private var handoffTask: Task<Void, Never>?
+    /// Session teardown of a player a handoff stopped. Kept apart from the
+    /// handoff, so a replacement handoff still waits for it.
+    private var playerCleanupTask: Task<Void, Never>?
     private var readyTimeoutTask: Task<Void, Never>?
     private var missedHeartbeats = 0
     private var isAuthorized = false
@@ -405,24 +408,13 @@ final class TVControlReceiver {
             guard let self else { return }
             do {
                 let manager = RemotePlaybackIdentityManager.shared
-                // A new handoff swaps this TV's credentials. Stop what is
-                // playing first, including a title the TV started under its
-                // own account: once the swap lands, that player's stop is
-                // refused and its server session lingers beside the phone's.
-                if !manager.matches(offer, controllerDeviceId: controllerDeviceId),
-                   manager.activeIdentity != nil || self.playerViewModel != nil {
-                    let previousPlayer = self.playerViewModel
-                    self.stopRemotePlayback()
-                    await previousPlayer?.waitForCleanupCompletion()
-                    if manager.activeIdentity != nil {
-                        await manager.end()
-                    }
-                }
-
                 let ready = try await manager.prepare(
                     offer: offer,
                     controllerDeviceId: controllerDeviceId,
-                    controllerDeviceName: self.remoteControllerName
+                    controllerDeviceName: self.remoteControllerName,
+                    beforeActivation: { [weak self] in
+                        try await self?.stopPlaybackBeforeIdentitySwap()
+                    }
                 ) { [weak self] challenge in
                     guard let self,
                           self.activeConnectionId == connectionId,
@@ -459,6 +451,38 @@ final class TVControlReceiver {
                 self.handoffTask = nil
             }
         }
+    }
+
+    /// Stops what is playing, waits for its server session to close, then ends
+    /// an earlier phone's identity. An approved handoff runs this just before
+    /// it installs the phone's identity, including for a title the TV started
+    /// under its own account: the player's stop rides on the identity it
+    /// started under, so after the swap it is refused and the session lingers
+    /// beside the phone's.
+    private func stopPlaybackBeforeIdentitySwap() async throws {
+        let manager = RemotePlaybackIdentityManager.shared
+        if let player = playerViewModel {
+            stopRemotePlayback()
+            playerCleanupTask = Task { await player.waitForCleanupCompletion() }
+        } else if manager.activeIdentity != nil {
+            stopRemotePlayback()
+        }
+        // Also covers a stop an earlier, replaced handoff started.
+        if let cleanup = playerCleanupTask {
+            await cleanup.value
+            if playerCleanupTask == cleanup { playerCleanupTask = nil }
+        }
+        try Task.checkCancellation()
+        // Something started playing on the TV meanwhile; swapping the identity
+        // now would strand that player's session instead.
+        guard playerViewModel == nil else { throw PlaybackStartedDuringHandoff() }
+        if manager.activeIdentity != nil {
+            await manager.end()
+        }
+    }
+
+    private struct PlaybackStartedDuringHandoff: LocalizedError {
+        var errorDescription: String? { "The TV started playing something else. Try again." }
     }
 
     private func armReadyTimeout(connectionId: UUID) {
