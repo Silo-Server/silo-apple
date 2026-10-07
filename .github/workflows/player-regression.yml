@@ -18,8 +18,8 @@ on:
       profile:
         description: Dependency cache arm
         type: choice
-        options: [off, prime, warm]
-        default: off
+        options: ['off', 'prime', 'warm']
+        default: 'off'
       namespace:
         description: Isolated cohort namespace, apple-device- plus 1-16 safe characters
         type: string
