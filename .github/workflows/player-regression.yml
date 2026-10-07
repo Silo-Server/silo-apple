@@ -43,7 +43,7 @@ on:
         description: Compilation caching is an opt-in experiment
         type: choice
         default: dependencies
-        options: [off, dependencies, derived_data]
+        options: ['off', dependencies, derived_data]
       cache_namespace:
         description: Isolate benchmark caches (1-32 lowercase letters, digits, underscores or hyphens)
         type: string
