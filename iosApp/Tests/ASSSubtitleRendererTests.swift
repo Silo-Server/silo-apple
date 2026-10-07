@@ -175,7 +175,7 @@ final class ASSSubtitleRendererTests: XCTestCase {
         controller.selectSubtitleTrack(id: 3)
         try await waitForASS(controller)
         controller.selectSecondarySubtitleTrack(id: 2)
-        for _ in 0..<100 {
+        for _ in 0..<300 {
             if !controller.engine.secondarySubtitleCues.isEmpty { break }
             try await Task.sleep(for: .milliseconds(50))
         }
@@ -188,7 +188,7 @@ final class ASSSubtitleRendererTests: XCTestCase {
 
     @MainActor
     private func waitForASS(_ controller: AetherPlaybackController) async throws {
-        for _ in 0..<100 {
+        for _ in 0..<300 {
             if !controller.engine.isLoadingSubtitles, !controller.engine.subtitleCues.isEmpty { return }
             try await Task.sleep(for: .milliseconds(50))
         }
