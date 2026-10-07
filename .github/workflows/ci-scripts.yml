@@ -7,6 +7,9 @@ on:
       - 'fastlane/Fastfile'
       - 'scripts/sync-apiv2-fixtures*.sh'
       - '.github/workflows/ci-scripts.yml'
+      - '.github/workflows/player-regression.yml'
+      - 'iosApp/project.yml'
+      - 'iosApp/Signing/**'
       - 'iosApp/iosApp/**'
       - 'iosApp/TopShelf/**'
       - 'iosApp/NotificationService/**'
@@ -19,6 +22,9 @@ on:
       - 'fastlane/Fastfile'
       - 'scripts/sync-apiv2-fixtures*.sh'
       - '.github/workflows/ci-scripts.yml'
+      - '.github/workflows/player-regression.yml'
+      - 'iosApp/project.yml'
+      - 'iosApp/Signing/**'
       - 'iosApp/iosApp/**'
       - 'iosApp/TopShelf/**'
       - 'iosApp/NotificationService/**'
@@ -47,6 +53,8 @@ jobs:
         run: python3 scripts/ci/package-release-source.test.py
       - name: Test Apple build metadata
         run: python3 scripts/ci/apple-build-metadata.test.py
+      - name: Test Apple platform routing and aggregate result
+        run: python3 scripts/ci/select-apple-platforms.test.py
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.4'

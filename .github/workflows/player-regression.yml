@@ -2,20 +2,8 @@ name: Apple regression
 
 on:
   pull_request:
-    paths:
-      - 'iosApp/**'
-      - '.github/workflows/player-regression.yml'
-      - '.github/actions/cache-spm/**'
-      - '.github/actions/install-xcodegen/**'
-      - 'scripts/ci/apple-build-metadata*'
   push:
     branches: [main]
-    paths:
-      - 'iosApp/**'
-      - '.github/workflows/player-regression.yml'
-      - '.github/actions/cache-spm/**'
-      - '.github/actions/install-xcodegen/**'
-      - 'scripts/ci/apple-build-metadata*'
   workflow_dispatch:
     inputs:
       baseline_ref:
@@ -71,23 +59,42 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  select:
+    name: Select regression platforms
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      platforms: ${{ steps.plan.outputs.platforms }}
+      selection: ${{ steps.plan.outputs.selection }}
+      has_platforms: ${{ steps.plan.outputs.has_platforms }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Select from the complete commit comparison
+        id: plan
+        env:
+          # Reusable release runs inherit the caller's event name. Release gates
+          # and tags require full coverage before any ordinary push routing.
+          FORCE_PLATFORMS: >-
+            ${{ (inputs.release_gate || startsWith(github.ref, 'refs/tags/')) && 'all' ||
+                github.event_name == 'workflow_dispatch' &&
+                ((inputs.ios_only || inputs.baseline_ref) && 'ios' || inputs.benchmark_platform || 'all') || '' }}
+        run: python3 scripts/ci/select-apple-platforms.py
   validate:
+    name: Regression (${{ matrix.scheme }})
+    needs: select
+    # Job conditions are evaluated before matrix expansion. An empty verified
+    # plan skips the matrix; a failed selection is rejected by the result job.
+    if: needs.select.result == 'success' && needs.select.outputs.has_platforms == 'true'
     # Same Xcode 27 image as the release builds.
     runs-on: xcode-27
     timeout-minutes: 40
     strategy:
       fail-fast: false
-      matrix:
-        include: >-
-          ${{ fromJSON((inputs.ios_only || inputs.baseline_ref || inputs.benchmark_platform == 'ios') &&
-            '[{"scheme":"Silo","destination":"platform=iOS Simulator,name=iPhone 17 Pro","action":"test","platform":"iOS","test_target":"SiloTests"}]' ||
-            inputs.benchmark_platform == 'tvos' &&
-            '[{"scheme":"SiloTV","destination":"platform=tvOS Simulator,name=Apple TV 4K (3rd generation)","action":"test","platform":"tvOS","test_target":"SiloTVTests"}]' ||
-            inputs.benchmark_platform == 'macos' &&
-            '[{"scheme":"SiloMac","destination":"generic/platform=macOS","action":"build","platform":"macOS"}]' ||
-            '[{"scheme":"Silo","destination":"platform=iOS Simulator,name=iPhone 17 Pro","action":"test","platform":"iOS","test_target":"SiloTests"},
-              {"scheme":"SiloTV","destination":"platform=tvOS Simulator,name=Apple TV 4K (3rd generation)","action":"test","platform":"tvOS","test_target":"SiloTVTests"},
-              {"scheme":"SiloMac","destination":"generic/platform=macOS","action":"build","platform":"macOS"}]') }}
+      matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
     defaults:
       run:
         shell: bash
@@ -355,3 +362,25 @@ jobs:
             /tmp/preview-transition.mp4
             /tmp/preview-recording.xcresult
           retention-days: 7
+  result:
+    name: Apple regression result
+    needs: [select, validate]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        timeout-minutes: 1
+        with:
+          persist-credentials: false
+      - name: Require successful validation for the complete selected matrix
+        if: always()
+        env:
+          APPLE_REGRESSION_NEEDS: ${{ toJSON(needs) }}
+          APPLE_REGRESSION_REQUIRE_ALL: ${{ inputs.release_gate || startsWith(github.ref, 'refs/tags/') }}
+        run: python3 scripts/ci/select-apple-platforms.py --verify-result
+      - name: Reject a cancelled workflow
+        if: cancelled()
+        run: |
+          echo "::error::The Apple regression workflow was cancelled."
+          exit 1
