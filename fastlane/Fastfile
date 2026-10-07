@@ -549,7 +549,8 @@ def distribute_testflight_release(platform)
     distribute_only: true,
     skip_submission: false,
     skip_waiting_for_build_processing: false,
-    wait_processing_timeout_duration: 900,
+    # The Linux jobs allow 45 minutes; keep 5 minutes for setup and distribution.
+    wait_processing_timeout_duration: 2400,
     changelog: changelog,
     groups: groups.empty? ? nil : groups.map(&:id),
     distribute_external: distribution[:distribute_external],
