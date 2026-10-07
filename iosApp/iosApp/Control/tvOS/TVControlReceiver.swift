@@ -463,7 +463,12 @@ final class TVControlReceiver {
         let manager = RemotePlaybackIdentityManager.shared
         if let player = playerViewModel {
             stopRemotePlayback()
-            playerCleanupTask = Task { await player.waitForCleanupCompletion() }
+            // Chained, so a stop a cancelled handoff left running is still awaited.
+            let earlierCleanup = playerCleanupTask
+            playerCleanupTask = Task {
+                await earlierCleanup?.value
+                await player.waitForCleanupCompletion()
+            }
         } else if manager.activeIdentity != nil {
             stopRemotePlayback()
         }
