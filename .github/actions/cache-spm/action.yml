@@ -1,0 +1,96 @@
+name: Cache Apple packages and optional compilation state
+description: Restore or save package sources; compilation caching requires an explicit experiment.
+inputs:
+  operation:
+    description: restore or save
+    default: restore
+  root:
+    description: Checkout directory relative to the workspace
+    default: source
+  mode:
+    description: off, dependencies, or derived_data
+    default: dependencies
+  namespace:
+    description: Cache namespace for isolating controlled comparisons
+    default: production
+  toolchain-key:
+    description: Xcode, SDK, and architecture fingerprint
+    required: true
+  lock-key:
+    description: Package.resolved SHA-256
+    required: true
+  project-key:
+    description: Project configuration SHA-256 for compilation cache compatibility
+    required: true
+  source-sha:
+    description: Immutable checked-out app commit
+    required: true
+  scheme:
+    description: Scheme whose compilation state can be restored
+    required: true
+  save-cache:
+    description: Whether the caller is a trusted run allowed to save caches
+    default: 'false'
+  save-dependencies:
+    description: Allow this platform job to populate its complete package cache
+    default: 'false'
+  spm-cache-hit:
+    description: Exact package restore hit from the earlier restore invocation
+    default: 'false'
+  derived-cache-hit:
+    description: Exact compilation restore hit from the earlier restore invocation
+    default: 'false'
+outputs:
+  spm-cache-hit:
+    description: Whether an exact package key was restored
+    value: ${{ steps.spm.outputs.cache-hit }}
+  derived-cache-hit:
+    description: Whether an exact compilation key was restored
+    value: ${{ steps.derived.outputs.cache-hit }}
+runs:
+  using: composite
+  steps:
+    - name: Validate cache scope
+      shell: bash
+      env:
+        CACHE_OPERATION: ${{ inputs.operation }}
+        CACHE_MODE: ${{ inputs.mode }}
+        CACHE_NAMESPACE: ${{ inputs.namespace }}
+      run: |
+        set -euo pipefail
+        [[ "$CACHE_OPERATION" == restore || "$CACHE_OPERATION" == save ]]
+        [[ "$CACHE_MODE" == off || "$CACHE_MODE" == dependencies || "$CACHE_MODE" == derived_data ]]
+        [[ "$CACHE_NAMESPACE" =~ ^[a-z0-9_-]{1,32}$ ]]
+    - name: Restore package sources and binary artifacts
+      if: inputs.operation == 'restore' && inputs.mode != 'off'
+      id: spm
+      uses: actions/cache/restore@v5
+      with:
+        path: ${{ github.workspace }}/${{ inputs.root }}/.ci-cache/packages
+        key: silo-spm-v2-${{ inputs.namespace }}-${{ inputs.toolchain-key }}-${{ inputs.scheme }}-${{ inputs.lock-key }}
+    - name: Restore compilation state (experiment)
+      if: inputs.operation == 'restore' && inputs.mode == 'derived_data'
+      id: derived
+      uses: actions/cache/restore@v5
+      with:
+        path: ${{ github.workspace }}/${{ inputs.root }}/.ci-cache/derived/${{ inputs.scheme }}
+        key: silo-derived-v1-${{ inputs.namespace }}-${{ inputs.toolchain-key }}-${{ inputs.scheme }}-Debug-${{ inputs.project-key }}-${{ inputs.lock-key }}-${{ inputs.source-sha }}
+        restore-keys: |
+          silo-derived-v1-${{ inputs.namespace }}-${{ inputs.toolchain-key }}-${{ inputs.scheme }}-Debug-${{ inputs.project-key }}-${{ inputs.lock-key }}-
+    - name: Save package sources and binary artifacts
+      if: >-
+        inputs.operation == 'save' && inputs.mode != 'off' &&
+        inputs.save-cache == 'true' && inputs.save-dependencies == 'true' &&
+        inputs.spm-cache-hit != 'true'
+      uses: actions/cache/save@v5
+      with:
+        path: ${{ github.workspace }}/${{ inputs.root }}/.ci-cache/packages
+        key: silo-spm-v2-${{ inputs.namespace }}-${{ inputs.toolchain-key }}-${{ inputs.scheme }}-${{ inputs.lock-key }}
+    - name: Save compilation state (experiment)
+      if: >-
+        inputs.operation == 'save' && inputs.mode == 'derived_data' &&
+        inputs.save-cache == 'true' && inputs.derived-cache-hit != 'true'
+      uses: actions/cache/save@v5
+      with:
+        path: ${{ github.workspace }}/${{ inputs.root }}/.ci-cache/derived/${{ inputs.scheme }}
+        key: silo-derived-v1-${{ inputs.namespace }}-${{ inputs.toolchain-key }}-${{ inputs.scheme }}-Debug-${{ inputs.project-key }}-${{ inputs.lock-key }}-${{ inputs.source-sha }}

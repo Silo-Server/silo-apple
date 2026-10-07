@@ -1,4 +1,5 @@
 require "base64"
+require "shellwords"
 
 # iOS and tvOS release automation. CI reserves each platform's build number
 # before launching parallel TestFlight builds. Signing credentials come from
@@ -89,6 +90,29 @@ def injected_build_number
   value
 end
 
+# CI restores package downloads at this path; local lanes use Xcode's default
+# when the variable is unset. Every resolve and build must use the same path.
+def source_packages_path
+  value = ENV["SILO_SOURCE_PACKAGES_PATH"].to_s.strip
+  value.empty? ? nil : File.expand_path(value)
+end
+
+def locked_package_xcargs
+  args = %w[-disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile]
+  path = source_packages_path
+  args.concat(["-clonedSourcePackagesDirPath", path]) if path
+  "#{args.shelljoin} "
+end
+
+def resolve_source_packages(project:, scheme:)
+  args = ["xcodebuild", "-project", project, "-scheme", scheme,
+          "-resolvePackageDependencies", "-disableAutomaticPackageResolution",
+          "-onlyUsePackageVersionsFromResolvedFile"]
+  path = source_packages_path
+  args.concat(["-clonedSourcePackagesDirPath", path]) if path
+  sh(*args)
+end
+
 # Optional CURRENT_PROJECT_VERSION override for the unsigned sideload lanes, so
 # each sideload build carries a distinct CFBundleVersion. Empty when
 # BUILD_NUMBER is unset: local builds keep the project.yml value.
@@ -164,8 +188,7 @@ end
 def prepare_xcode_project(scheme:)
   ios_app_dir = File.expand_path("../iosApp", __dir__)
   sh("xcodegen generate --spec '#{ios_app_dir}/project.yml'")
-  sh("xcodebuild -project '#{ios_app_dir}/Silo.xcodeproj' " \
-     "-scheme #{scheme} -resolvePackageDependencies")
+  resolve_source_packages(project: "#{ios_app_dir}/Silo.xcodeproj", scheme: scheme)
   ios_app_dir
 end
 
@@ -351,8 +374,7 @@ def testflight_release(platform)
   )
 
   # Resolve SPM packages before building.
-  sh("xcodebuild -project '#{project}' " \
-     "-scheme #{config[:scheme]} -resolvePackageDependencies")
+  resolve_source_packages(project: project, scheme: config[:scheme])
 
   # Profile name for each of this platform's bundle IDs, from match.
   profile_map = lane_context[SharedValues::MATCH_PROVISIONING_PROFILE_MAPPING]
@@ -382,10 +404,16 @@ def testflight_release(platform)
     export_method:    "app-store",
     output_directory: config[:output_directory],
     output_name:      config[:output_name],
+    cloned_source_packages_path: source_packages_path,
+    skip_package_dependencies_resolution: true,
+    disable_package_automatic_updates: true,
+    build_timing_summary: true,
     # PROVISIONING_PROFILE_SPECIFIER is intentionally absent from xcargs —
     # a global value would override every target with the same profile.
     # Per-target settings were written above via update_code_signing_settings.
-    xcargs: "#{marketing_version_xcarg}#{source_url_xcarg}" \
+    # Gym emits the package directory and disabled automatic resolution from
+    # the options above. This extra flag makes a stale/missing lockfile fail.
+    xcargs: "-onlyUsePackageVersionsFromResolvedFile #{marketing_version_xcarg}#{source_url_xcarg}" \
             "CODE_SIGN_STYLE=Manual " \
             "CODE_SIGN_IDENTITY='Apple Distribution' " \
             "CURRENT_PROJECT_VERSION=#{build_number} " \
@@ -560,7 +588,8 @@ platform :ios do
       scheme:       "Silo",
       destination:  "generic/platform=iOS",
       archive_path: archive_path,
-      xcargs:       "#{marketing_version_xcarg}#{build_number_xcarg}#{source_url_xcarg}" \
+      xcargs:       "#{locked_package_xcargs}-showBuildTimingSummary " \
+                    "#{marketing_version_xcarg}#{build_number_xcarg}#{source_url_xcarg}" \
                     "#{SIDELOAD_CHANNEL_XCARG}" \
                     "CODE_SIGNING_ALLOWED=NO " \
                     "CODE_SIGNING_REQUIRED=NO " \
@@ -591,7 +620,8 @@ platform :ios do
       scheme:       "SiloTV",
       destination:  "generic/platform=tvOS",
       archive_path: archive_path,
-      xcargs:       "#{marketing_version_xcarg}#{build_number_xcarg}#{source_url_xcarg}" \
+      xcargs:       "#{locked_package_xcargs}-showBuildTimingSummary " \
+                    "#{marketing_version_xcarg}#{build_number_xcarg}#{source_url_xcarg}" \
                     "#{SIDELOAD_CHANNEL_XCARG}" \
                     "#{TVOS_SIDELOAD_KEYCHAIN_XCARG}" \
                     "CODE_SIGNING_ALLOWED=NO " \
