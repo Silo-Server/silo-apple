@@ -1,76 +1,53 @@
-name: CI scripts
+name: Private Apple source download comparison
 
 on:
-  pull_request:
-    paths:
-      - 'scripts/ci/**'
-      - 'fastlane/Fastfile'
-      - '.github/workflows/release.yml'
-      - 'scripts/sync-apiv2-fixtures*.sh'
-      - '.github/workflows/ci-scripts.yml'
-      - '.github/workflows/player-regression.yml'
-      - 'iosApp/project.yml'
-      - 'iosApp/Signing/**'
-      - 'iosApp/iosApp/**'
-      - 'iosApp/TopShelf/**'
-      - 'iosApp/NotificationService/**'
-      - 'iosApp/DownloadsActivity/**'
-      - 'iosApp/Tests/**'
-  push:
-    branches: [main]
-    paths:
-      - 'scripts/ci/**'
-      - 'fastlane/Fastfile'
-      - '.github/workflows/release.yml'
-      - 'scripts/sync-apiv2-fixtures*.sh'
-      - '.github/workflows/ci-scripts.yml'
-      - '.github/workflows/player-regression.yml'
-      - 'iosApp/project.yml'
-      - 'iosApp/Signing/**'
-      - 'iosApp/iosApp/**'
-      - 'iosApp/TopShelf/**'
-      - 'iosApp/NotificationService/**'
-      - 'iosApp/DownloadsActivity/**'
-      - 'iosApp/Tests/**'
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: apple-source-download-pilot
+  cancel-in-progress: false
+
 jobs:
-  test:
+  compare:
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'Silo-Server/silo-apple' && github.ref == 'refs/heads/private/apple-source-download-pilot'
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout reviewed comparison controller
+        uses: actions/checkout@v4
         with:
+          path: controller
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Test release input parsing
-        run: |
-          bash scripts/ci/resolve-marketing-version.test.sh
-          bash scripts/ci/resolve-platform.test.sh
-      - name: Test release source archive
-        run: python3 scripts/ci/package-release-source.test.py
-      - name: Test Apple build metadata
-        run: python3 scripts/ci/apple-build-metadata.test.py
-      - name: Test trusted regression proof reuse
-        run: python3 scripts/ci/find-regression-proof.test.py
-      - name: Test Apple platform routing and aggregate result
-        run: python3 scripts/ci/select-apple-platforms.test.py
-      - uses: ruby/setup-ruby@v1
+      - name: Require the reviewed frozen source before checkout
+        id: source
+        run: python3 controller/scripts/ci/source-download-pilot/compare.py --source-sha >> "$GITHUB_OUTPUT"
+      - name: Checkout the same committed app source for every arm
+        uses: actions/checkout@v4
         with:
-          ruby-version: '3.4'
-      - name: Test locked Fastlane package resolution
-        run: ruby scripts/ci/fastlane-cache.test.rb
-      - name: Test deferred TestFlight distribution contracts
-        run: ruby scripts/ci/fastlane.test.rb
-      - name: Test subtitle packaging validation
-        run: python3 scripts/ci/validate-subtitle-packaging.test.py
-      - name: Test API v2 fixture sync
-        run: bash scripts/sync-apiv2-fixtures.test.sh
-      - name: Test the /api/v1 path guard
-        run: bash scripts/ci/check-no-api-v1.test.sh
-      - name: Block new /api/v1 paths in app sources
-        run: bash scripts/ci/check-no-api-v1.sh
+          path: source
+          ref: ${{ steps.source.outputs.sha }}
+          persist-credentials: false
+      - name: Compare sequential and concurrent source acquisition
+        run: |
+          python3 controller/scripts/ci/source-download-pilot/compare.py \
+            --source "$GITHUB_WORKSPACE/source" --output "$RUNNER_TEMP/source-download-pilot"
+      - name: Retain comparison records after success or failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apple-source-download-pilot-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/source-download-pilot/binding.json
+            ${{ runner.temp }}/source-download-pilot/comparison.json
+            ${{ runner.temp }}/source-download-pilot/*/timing.json
+            ${{ runner.temp }}/source-download-pilot/*/members.json
+            ${{ runner.temp }}/source-download-pilot/*/process.log
+          if-no-files-found: ignore
+          retention-days: 7

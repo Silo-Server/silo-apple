@@ -1,0 +1,15 @@
+{
+  "source_sha": "e4d3cd2f562451a2a5d5a4ca709810c35ce8998b",
+  "source_tree": "9e7dbc4601012b0617327918ac9ba221a0d070bc",
+  "source_inputs": {
+    "iosApp/Silo.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved": "40e3e0fbe264adac749a1f7db3f91a311e67f6419eeecad6bd4d88c07efd9410",
+    "scripts/ci/swift-libass-sources.json": "2d4d87b4e1e55857c00d43900a61e621cf6251fe50fbf89d85e77ba0406e8a64",
+    "scripts/ci/REBUILD-SOURCE.md": "d90272eb43f083a5fdc81c019ab51b7cb81c1eb37c61afb086245a3cc1809d9f"
+  },
+  "helpers": {
+    "sequential": "6b2ff38a9b532c4d6c43fc7de09b83667426e9a017c50fe88cdaab2cbf1f9c2c",
+    "candidate": "ff12fa6466e6ef7a876a19067a89e5107fb938af780dcf21dc8858a59d8dc8e8"
+  },
+  "accepted_sequential_commit": "9e5182cb075e8d8a22add59b74b197e661291836",
+  "accepted_candidate_patch_sha256": "f024098397a2612bfdd9a00bdd122b6ba63e4305741da076bba0534a361bad18"
+}
