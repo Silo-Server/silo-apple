@@ -6,9 +6,12 @@ struct BrowseItem: Codable, Identifiable, Hashable {
     let contentId: String
     let type: String
     let title: String
-    /// Episode / progress fields carried by section-sourced catalog pages
-    /// (e.g. a Continue Watching shelf paged through `source=section`).
-    /// Defaulted so the memberwise init and synthesized decoder stay intact.
+    /// Episode context; the server sends it on episode rows (text search
+    /// with the `video_with_episodes` or `episode` scope) and on
+    /// section-sourced catalog pages (e.g. a Continue Watching shelf paged
+    /// through `source=section`), with progress on the latter, and omits it
+    /// elsewhere. Defaulted so the memberwise init and synthesized decoder
+    /// stay intact.
     var seriesId: String? = nil
     var seriesTitle: String? = nil
     var seasonNumber: Int? = nil
@@ -42,13 +45,6 @@ struct BrowseItem: Codable, Identifiable, Hashable {
     let lastAirDate: String?
     let userState: MediaItemUserState?
     let overlaySummary: OverlaySummary?
-    /// Episode context; the server sends it on episode rows (text search
-    /// with the `video_with_episodes` or `episode` scope) and omits it
-    /// elsewhere.
-    var seriesId: String? = nil
-    var seriesTitle: String? = nil
-    var seasonNumber: Int? = nil
-    var episodeNumber: Int? = nil
     var id: String { contentId }
 }
 
@@ -320,11 +316,7 @@ extension BrowseItem {
             releaseDate: nil,
             lastAirDate: nil,
             userState: item.userState,
-            overlaySummary: item.overlaySummary,
-            seriesId: item.seriesId,
-            seriesTitle: item.seriesTitle,
-            seasonNumber: item.seasonNumber,
-            episodeNumber: item.episodeNumber
+            overlaySummary: item.overlaySummary
         )
     }
 }
