@@ -405,12 +405,18 @@ final class TVControlReceiver {
             guard let self else { return }
             do {
                 let manager = RemotePlaybackIdentityManager.shared
-                if manager.activeIdentity != nil,
-                   !manager.matches(offer, controllerDeviceId: controllerDeviceId) {
+                // A new handoff swaps this TV's credentials. Stop what is
+                // playing first, including a title the TV started under its
+                // own account: once the swap lands, that player's stop is
+                // refused and its server session lingers beside the phone's.
+                if !manager.matches(offer, controllerDeviceId: controllerDeviceId),
+                   manager.activeIdentity != nil || self.playerViewModel != nil {
                     let previousPlayer = self.playerViewModel
                     self.stopRemotePlayback()
                     await previousPlayer?.waitForCleanupCompletion()
-                    await manager.end()
+                    if manager.activeIdentity != nil {
+                        await manager.end()
+                    }
                 }
 
                 let ready = try await manager.prepare(
