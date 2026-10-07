@@ -31,6 +31,13 @@ on:
       - 'iosApp/DownloadsActivity/**'
       - 'iosApp/Tests/**'
   workflow_dispatch:
+    inputs:
+      contract_case:
+        description: Linux fixture for the production Apple routing result
+        type: choice
+        required: true
+        default: success
+        options: [success, empty, mixed, cancel]
 
 permissions:
   contents: read
@@ -68,3 +75,91 @@ jobs:
         run: bash scripts/ci/check-no-api-v1.test.sh
       - name: Block new /api/v1 paths in app sources
         run: bash scripts/ci/check-no-api-v1.sh
+  # These Linux fixtures exercise the production selector and result verifier.
+  select:
+    name: Select regression platforms
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      platforms: ${{ steps.plan.outputs.platforms }}
+      selection: ${{ steps.plan.outputs.selection }}
+      has_platforms: ${{ steps.plan.outputs.has_platforms }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Produce the fixture selection with the production helper
+        id: plan
+        env:
+          CONTRACT_CASE: ${{ inputs.contract_case }}
+        run: |
+          set -euo pipefail
+          if [ "$CONTRACT_CASE" = empty ]; then
+            # A synthetic push with before=after proves a complete empty diff.
+            python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          sha = os.environ["GITHUB_SHA"]
+          Path(os.environ["RUNNER_TEMP"], "routing-empty-event.json").write_text(
+              json.dumps({"before": sha, "after": sha}))
+          PY
+            FORCE_PLATFORMS= python3 scripts/ci/select-apple-platforms.py \
+              --event "$RUNNER_TEMP/routing-empty-event.json" --event-name push
+          else
+            FORCE_PLATFORMS=all python3 scripts/ci/select-apple-platforms.py
+          fi
+  validate:
+    name: Regression (${{ matrix.scheme }})
+    needs: select
+    if: needs.select.result == 'success' && needs.select.outputs.has_platforms == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
+    steps:
+      - name: Exercise the selected dummy matrix leg
+        env:
+          CONTRACT_CASE: ${{ inputs.contract_case }}
+          SCHEME: ${{ matrix.scheme }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          echo "Fixture=$CONTRACT_CASE scheme=$SCHEME attempt=$RUN_ATTEMPT"
+          if [ "$CONTRACT_CASE" = cancel ]; then
+            for remaining in 90 80 70 60 50 40 30 20 10; do
+              echo "Cancellation fixture: $remaining seconds remain"
+              sleep 10
+            done
+          fi
+          if [ "$CONTRACT_CASE" = mixed ] && [ "$RUN_ATTEMPT" = 1 ] && [ "$SCHEME" != Silo ]; then
+            echo "::error::Intentional first-attempt failure for $SCHEME"
+            exit 1
+          fi
+          echo "Dummy regression leg passed for $SCHEME"
+  result:
+    name: Apple regression result
+    needs: [select, validate]
+    if: always() && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        timeout-minutes: 1
+        with:
+          persist-credentials: false
+      - name: Verify the production result against fixture dependencies
+        if: always()
+        env:
+          APPLE_REGRESSION_NEEDS: ${{ toJSON(needs) }}
+          FIXTURE_EVENT_NAME: ${{ inputs.contract_case == 'empty' && 'push' || github.event_name }}
+        run: GITHUB_EVENT_NAME="$FIXTURE_EVENT_NAME" python3 scripts/ci/select-apple-platforms.py --verify-result
+      - name: Reject a cancelled workflow
+        if: cancelled()
+        run: |
+          echo "::error::The Apple regression workflow was cancelled."
+          exit 1
