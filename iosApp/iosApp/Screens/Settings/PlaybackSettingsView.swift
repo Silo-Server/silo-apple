@@ -6,6 +6,7 @@ import SwiftUI
 /// and footers for the fine print.
 struct PlaybackSettingsView: View {
     @Bindable var viewModel: SettingsViewModel
+    @State private var showUseProfileSettingsConfirmation = false
 
     var body: some View {
         List {
@@ -28,45 +29,26 @@ struct PlaybackSettingsView: View {
         .navigationTitle("Playback")
         .siloNavigationTitleDisplayMode(.inline)
         .siloToolbarColorSchemeDark()
+        .alert(
+            SettingsViewModel.useProfileSettingsTitle,
+            isPresented: $showUseProfileSettingsConfirmation
+        ) {
+            Button("Use Profile Settings", role: .destructive) {
+                Task { await viewModel.resetPlaybackDeviceSettings() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(viewModel.useProfileSettingsMessage)
+        }
     }
 
     // MARK: - Streaming
 
     private var streamingSection: some View {
         Section {
-            Picker("Quality", selection: Binding(
-                get: { viewModel.preferredQualityPresetId ?? Self.customPresetTag },
-                set: { newValue in
-                    guard newValue != Self.customPresetTag else { return }
-                    viewModel.setQualityPreset(newValue)
-                }
-            )) {
-                // A pair no preset covers — set through the API, or written by
-                // a client whose ladder has a rung this table does not — gets
-                // its own disabled entry describing what is actually stored,
-                // rather than the picker showing a preset the user never chose.
-                if viewModel.preferredQualityPresetId == nil {
-                    Text(viewModel.preferredQualityLabel)
-                        .tag(Self.customPresetTag)
-                }
-                ForEach(SiloQualityPresets.all) { preset in
-                    Text(preset.label).tag(preset.id)
-                }
-            }
-            .foregroundStyle(Color.siloOnSurface)
-            .settingsPickerStyle()
+            choiceRow("Quality", .quality, value: viewModel.preferredQualityLabel, options: qualityChoices)
 
-            Picker("Audio Language", selection: $viewModel.preferredAudioLanguage) {
-                Text(
-                    SettingPresentationMetadata.definitions[.playbackAudioLanguage]?.unsetLabel
-                        ?? "No preference"
-                ).tag("")
-                ForEach(viewModel.audioLanguageOptions) { option in
-                    Text(option.label).tag(option.code)
-                }
-            }
-            .foregroundStyle(Color.siloOnSurface)
-            .settingsPickerStyle()
+            choiceRow("Audio Language", .audioLanguage, value: audioLanguageLabel, options: audioLanguageChoices)
 
             Toggle("Dolby Vision", isOn: $viewModel.dolbyVisionEnabled)
                 .foregroundStyle(Color.siloOnSurface)
@@ -142,30 +124,37 @@ struct PlaybackSettingsView: View {
 
     private var behaviorSection: some View {
         Section {
-            Toggle("Auto-Play Next Episode", isOn: $viewModel.autoPlayNext)
-                .foregroundStyle(Color.siloOnSurface)
-                .tint(.siloSwitchOn)
+            // On / Off choices rather than switches: a switch has no third
+            // position for going back to the profile's choice.
+            choiceRow(
+                "Auto-Play Next Episode",
+                .autoPlayNext,
+                value: viewModel.autoPlayNext ? "On" : "Off",
+                options: onOffChoices
+            )
 
-            Picker("Show Next Up", selection: $viewModel.nextUpPromptSeconds) {
-                ForEach(nextUpPromptOptions, id: \.0) { seconds, label in
-                    Text(label).tag(seconds)
-                }
-            }
-            .foregroundStyle(Color.siloOnSurface)
-            .settingsPickerStyle()
+            choiceRow(
+                "Show Next Up",
+                .nextUpPrompt,
+                value: nextUpPromptOptions.first { $0.0 == viewModel.nextUpPromptSeconds }?.1
+                    ?? "\(viewModel.nextUpPromptSeconds) seconds before end",
+                options: nextUpPromptOptions.map { SettingsChoice(id: String($0.0), label: $0.1) }
+            )
 
             // Three-way (labels fixed by the contract).
-            Picker("Skip Intros", selection: $viewModel.introSkipMode) {
-                ForEach(IntroSkipMode.allCases) { mode in
-                    Text(mode.label).tag(mode)
-                }
-            }
-            .foregroundStyle(Color.siloOnSurface)
-            .settingsPickerStyle()
+            choiceRow(
+                "Skip Intros",
+                .introSkipMode,
+                value: viewModel.introSkipMode.label,
+                options: IntroSkipMode.allCases.map { SettingsChoice(id: $0.wireValue, label: $0.label) }
+            )
 
-            Toggle("Skip Credits", isOn: $viewModel.skipCredits)
-                .foregroundStyle(Color.siloOnSurface)
-                .tint(.siloSwitchOn)
+            choiceRow(
+                "Skip Credits",
+                .autoSkipCredits,
+                value: viewModel.skipCredits ? "On" : "Off",
+                options: onOffChoices
+            )
         } header: {
             Text("Episodes")
                 .foregroundStyle(Color.siloSecondaryText)
@@ -190,15 +179,15 @@ struct PlaybackSettingsView: View {
         .listRowBackground(Color.siloGroupedCell)
     }
 
-    // MARK: - Reset
+    // MARK: - Use Profile Settings
 
     private var resetSection: some View {
         Section {
-            Button("Reset Playback Overrides", role: .destructive) {
-                Task { await viewModel.resetPlaybackDeviceSettings() }
+            Button("Use Profile Settings", role: .destructive) {
+                showUseProfileSettingsConfirmation = true
             }
         } footer: {
-            Text("Resets playback choices for this device and profile back to the server fallback.")
+            Text("Removes the settings changed on this device, so it uses your profile's settings again.")
                 .foregroundStyle(Color.siloSecondaryText)
         }
         .listRowBackground(Color.siloGroupedCell)
@@ -206,9 +195,69 @@ struct PlaybackSettingsView: View {
 
     // MARK: - Options
 
-    /// Tag for the "stored pair matches no preset" entry. Not a preset id, so
-    /// selecting it is a no-op rather than a write.
-    private static let customPresetTag = "__custom__"
+    /// A profile-backed row. The row always shows the value that applies,
+    /// wherever it comes from; the choice list leads with "Use Profile
+    /// Setting", checked while this device has no value of its own.
+    private func choiceRow(
+        _ title: String,
+        _ setting: ProfileBackedPlaybackSetting,
+        value: String,
+        options: [SettingsChoice]
+    ) -> some View {
+        SettingsChoiceRow(
+            title: title,
+            value: value,
+            options: [
+                SettingsChoice(
+                    id: SettingsViewModel.useProfileSettingTag,
+                    label: SettingsViewModel.useProfileSettingLabel
+                ),
+            ] + options,
+            selection: Binding(
+                get: { viewModel.playbackSelectionTag(setting) },
+                set: { viewModel.selectPlayback($0, for: setting) }
+            )
+        )
+    }
+
+    private var qualityChoices: [SettingsChoice] {
+        // A pair no preset covers — set through the API, or written by a
+        // client whose ladder has a rung this table does not — gets its own
+        // entry describing what is actually stored, rather than the list
+        // checking a preset the user never chose.
+        var choices: [SettingsChoice] = []
+        if !viewModel.usesProfileSetting(.quality), viewModel.preferredQualityPresetId == nil {
+            choices.append(SettingsChoice(
+                id: SettingsViewModel.customQualityTag,
+                label: viewModel.preferredQualityLabel
+            ))
+        }
+        return choices + SiloQualityPresets.all.map { SettingsChoice(id: $0.id, label: $0.label) }
+    }
+
+    private var noAudioLanguageLabel: String {
+        SettingPresentationMetadata.definitions[.playbackAudioLanguage]?.unsetLabel ?? "No preference"
+    }
+
+    private var audioLanguageLabel: String {
+        let code = viewModel.preferredAudioLanguage
+        guard !code.isEmpty else { return noAudioLanguageLabel }
+        return viewModel.audioLanguageOptions.first { $0.code == code }?.label ?? code
+    }
+
+    private var audioLanguageChoices: [SettingsChoice] {
+        let stored = viewModel.hasStoredNoAudioLanguagePreference
+            ? [SettingsChoice(id: "", label: noAudioLanguageLabel)]
+            : []
+        return stored + viewModel.audioLanguageOptions.map { SettingsChoice(id: $0.code, label: $0.label) }
+    }
+
+    private var onOffChoices: [SettingsChoice] {
+        [
+            SettingsChoice(id: SettingsViewModel.onTag, label: "On"),
+            SettingsChoice(id: SettingsViewModel.offTag, label: "Off"),
+        ]
+    }
 
     private var nextUpPromptOptions: [(Int, String)] {
         [
@@ -220,4 +269,87 @@ struct PlaybackSettingsView: View {
         ]
     }
 }
+
+struct SettingsChoice: Identifiable, Hashable {
+    let id: String
+    let label: String
+}
+
+/// A settings row whose trailing text is the value that applies, which a
+/// native Picker cannot show once its selected option is "Use Profile
+/// Setting". Looks like the navigation-link pickers beside it on iOS and a
+/// menu picker on macOS.
+struct SettingsChoiceRow: View {
+    let title: String
+    let value: String
+    let options: [SettingsChoice]
+    @Binding var selection: String
+
+    var body: some View {
+        #if os(macOS)
+        LabeledContent(title) {
+            Menu {
+                Picker(title, selection: $selection) {
+                    ForEach(options) { Text($0.label).tag($0.id) }
+                }
+                .pickerStyle(.inline)
+                .labelsHidden()
+            } label: {
+                Text(value)
+            }
+            .fixedSize()
+        }
+        .foregroundStyle(Color.siloOnSurface)
+        #else
+        NavigationLink {
+            SettingsChoiceList(title: title, options: options, selection: $selection)
+        } label: {
+            LabeledContent(title, value: value)
+        }
+        .foregroundStyle(Color.siloOnSurface)
+        #endif
+    }
+}
+
+#if !os(macOS)
+/// The pushed choice list, in the style of the navigation-link picker it
+/// stands in for: a checkmark on the selected row, and back on choosing.
+struct SettingsChoiceList: View {
+    let title: String
+    let options: [SettingsChoice]
+    @Binding var selection: String
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        List {
+            Section {
+                ForEach(options) { option in
+                    Button {
+                        selection = option.id
+                        dismiss()
+                    } label: {
+                        HStack {
+                            Text(option.label)
+                                .foregroundStyle(Color.siloOnSurface)
+                            Spacer(minLength: 16)
+                            if option.id == selection {
+                                Image(systemName: "checkmark")
+                                    .font(.body.weight(.semibold))
+                                    .foregroundStyle(.tint)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .accessibilityAddTraits(option.id == selection ? .isSelected : [])
+                }
+            }
+            .listRowBackground(Color.siloGroupedCell)
+        }
+        .settingsListChrome()
+        .navigationTitle(title)
+        .siloNavigationTitleDisplayMode(.inline)
+        .siloToolbarColorSchemeDark()
+    }
+}
+#endif
 #endif

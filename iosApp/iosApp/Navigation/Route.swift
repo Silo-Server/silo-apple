@@ -8,7 +8,7 @@ enum Route: Hashable {
 
     // Main tabs
     case search
-    case libraryCollection(libraryId: Int, collectionId: String, title: String?, kind: LibraryCollectionKind?)
+    case libraryCollection(libraryId: Int, collectionId: String, title: String?, kind: LibraryCollectionKind?, mediaScope: LibraryVideoScope? = nil)
     case itemDetail(
         contentId: String,
         tvSeed: TVItemDetailRouteSeed? = nil,

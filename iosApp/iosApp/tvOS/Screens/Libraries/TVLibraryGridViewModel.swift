@@ -36,6 +36,7 @@ final class TVLibraryGridViewModel {
     // MARK: - Private state
 
     private let libraryId: Int
+    private let mediaScope: LibraryVideoScope?
     /// Media family — picks the sort/facet vocabulary in the panels.
     let mediaType: BrowseMediaType
     /// Whether to send the `type` media-scope param (video libraries only;
@@ -52,30 +53,32 @@ final class TVLibraryGridViewModel {
     @ObservationIgnored private var visiblePosterRows: [Int: Range<Int>] = [:]
     private var generation: Int = 0
 
-    init(libraryId: Int, libraryType: String, initialFilter: CatalogFilterState = .none) {
+    init(libraryId: Int, libraryType: String, mediaScope: LibraryVideoScope? = nil, initialFilter: CatalogFilterState = .none) {
         self.libraryId = libraryId
-        self.mediaType = BrowseMediaType.from(libraryType: libraryType)
+        self.mediaScope = mediaScope
+        self.mediaType = BrowseMediaType.from(libraryType: mediaScope?.rawValue ?? libraryType)
         self.sendsType = Self.sendsType(libraryType: libraryType)
         // A non-default initial filter (a deep-linked landing tap) wins;
         // otherwise restore the persisted per-library state.
         if !initialFilter.isDefault {
             self.filter = initialFilter
         } else {
-            self.filter = Self.savedFilter(libraryId: libraryId)
+            self.filter = Self.savedFilter(libraryId: libraryId, mediaScope: mediaScope)
         }
         facets = FacetLoader.shared.cachedFacets(libraryId: libraryId)
         hydratePage1FromCache()
     }
 
     private var currentCacheKey: String {
-        CacheKey.tvLibrary(libraryId: libraryId, filterKey: filter.cacheKeyFragment)
+        CacheKey.tvLibrary(libraryId: libraryId, filterKey: (mediaScope.map { "type=\($0.rawValue)|" } ?? "") + filter.cacheKeyFragment)
     }
 
     // MARK: - First page
 
     /// The filter a grid opened without a deep-linked filter starts with.
-    static func savedFilter(libraryId: Int) -> CatalogFilterState {
-        BrowsePrefsStore.shared.savedState(libraryId: libraryId) ?? .none
+    /// A mixed library's Movies/Series tab keeps its own saved state.
+    static func savedFilter(libraryId: Int, mediaScope: LibraryVideoScope? = nil) -> CatalogFilterState {
+        BrowsePrefsStore.shared.savedState(libraryId: libraryId, mediaScope: mediaScope?.rawValue) ?? .none
     }
 
     /// Page 1 for `filter`. The startup prefetch sends this same query and
@@ -126,7 +129,7 @@ final class TVLibraryGridViewModel {
     func applyFilter(_ newFilter: CatalogFilterState) async {
         guard newFilter != filter else { return }
         filter = newFilter
-        BrowsePrefsStore.shared.saveState(newFilter, libraryId: libraryId)
+        BrowsePrefsStore.shared.saveState(newFilter, libraryId: libraryId, mediaScope: mediaScope?.rawValue)
         await reload()
     }
 
@@ -156,12 +159,12 @@ final class TVLibraryGridViewModel {
         facets = try? await FacetLoader.shared.facets(libraryId: libraryId)
     }
 
-    var preserveEnabled: Bool { BrowsePrefsStore.shared.preserveEnabled(libraryId: libraryId) }
+    var preserveEnabled: Bool { BrowsePrefsStore.shared.preserveEnabled(libraryId: libraryId, mediaScope: mediaScope?.rawValue) }
 
     func setPreserveEnabled(_ enabled: Bool) {
-        BrowsePrefsStore.shared.setPreserveEnabled(enabled, libraryId: libraryId)
+        BrowsePrefsStore.shared.setPreserveEnabled(enabled, libraryId: libraryId, mediaScope: mediaScope?.rawValue)
         if enabled {
-            BrowsePrefsStore.shared.saveState(filter, libraryId: libraryId)
+            BrowsePrefsStore.shared.saveState(filter, libraryId: libraryId, mediaScope: mediaScope?.rawValue)
         }
     }
 
@@ -263,7 +266,8 @@ final class TVLibraryGridViewModel {
                     libraryId: libraryId,
                     mediaType: mediaType,
                     limit: Self.pageSize,
-                    includeType: sendsType
+                    includeType: sendsType,
+                    enforcedScope: mediaScope
                 ))
             }
 

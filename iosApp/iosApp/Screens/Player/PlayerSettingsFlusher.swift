@@ -629,6 +629,27 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
         }
     }
 
+    /// Keys whose latest owed change is a clear — queued, in flight or held —
+    /// for the active partition. Until it lands the server still answers with
+    /// the device value the clear removes, so a refresh must not read that
+    /// answer as this device still holding its own value.
+    var unsettledClears: Set<SettingKey> {
+        lock.withLock {
+            var keys: Set<SettingKey> = []
+            for (key, write) in inFlight where write.scopeIdentifier == activeJournalScope {
+                if case .delete = write.operation { keys.insert(key) }
+            }
+            for (key, write) in pending {
+                if case .delete = write.operation {
+                    keys.insert(key)
+                } else {
+                    keys.remove(key)
+                }
+            }
+            return keys
+        }
+    }
+
     /// Keys with any change still owed to the server, clears included.
     var unsettledKeys: Set<SettingKey> {
         lock.withLock {

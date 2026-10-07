@@ -458,6 +458,9 @@ struct TVMainTabView: View {
                     type: type,
                     activeLibrary: library,
                     selectedPill: shortcutPillSelection(for: libraryId, categoryType: type),
+                    // `type` only picks the pill vocabulary here; a shortcut
+                    // shows the whole library, so a mixed one stays unscoped.
+                    scopesMixedLibraries: false,
                     focusRequest: contentFocusRequest,
                     isTopMenuFocused: menuOwnsFocus,
                     onTopMenuFocusRequest: { focusTopMenuIfVisible() }
@@ -1366,12 +1369,13 @@ struct TVMainTabView: View {
     @ViewBuilder
     private func routeContent(for route: Route) -> some View {
         switch route {
-        case .libraryCollection(let libraryId, let collectionId, let title, let kind):
+        case .libraryCollection(let libraryId, let collectionId, let title, let kind, let mediaScope):
             LibraryCollectionDetailView(
                 libraryId: libraryId,
                 collectionId: collectionId,
                 title: title,
-                kind: kind
+                kind: kind,
+                mediaScope: mediaScope
             )
         case .itemDetail(let contentId, let tvSeed, let libraryId, let context):
             ItemDetailView(contentId: contentId, libraryId: libraryId, tvSeed: tvSeed, resumeContext: context)

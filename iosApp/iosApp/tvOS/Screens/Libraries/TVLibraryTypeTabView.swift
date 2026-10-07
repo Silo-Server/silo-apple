@@ -17,6 +17,11 @@ struct TVLibraryTypeTabView: View {
     /// switches within a session (§8); cold start always lands on
     /// Recommended. Written by the cascade dropdown.
     @Binding var selectedPill: TVLibraryPill
+    /// Whether this body is a Movies/Series category tab, which narrows a
+    /// mixed library to that tab's media type. A pinned library shortcut
+    /// passes false: the user picked the whole library, not a video tab, so
+    /// a mixed library keeps both movies and series.
+    var scopesMixedLibraries: Bool = true
     var focusRequest: Int = 0
     var isTopMenuFocused: Bool = false
     let onTopMenuFocusRequest: (() -> Void)?
@@ -39,7 +44,7 @@ struct TVLibraryTypeTabView: View {
                 }
                 // Re-create the tab body when the scoped library changes so
                 // section fetches and grid state reset cleanly.
-                .id(activeLibrary.id)
+                .id("\(activeLibrary.id)-\(mediaScope?.rawValue ?? "all")")
             } else {
                 EmptyStateView(
                     icon: "square.stack.3d.up",
@@ -58,12 +63,33 @@ struct TVLibraryTypeTabView: View {
         .siloBackground()
     }
 
+    private var mediaScope: LibraryVideoScope? {
+        Self.mediaScope(for: type, library: activeLibrary, scopesMixedLibraries: scopesMixedLibraries)
+    }
+
+    /// The media type a mixed library is narrowed to. Only an explicitly
+    /// selected Movies or Series category tab narrows; single-type libraries
+    /// and library shortcuts are never narrowed.
+    static func mediaScope(
+        for type: TVLibraryTabType,
+        library: Library?,
+        scopesMixedLibraries: Bool
+    ) -> LibraryVideoScope? {
+        guard scopesMixedLibraries, library?.isMixedLibrary == true else { return nil }
+        switch type {
+        case .movies: return .movie
+        case .series: return .series
+        case .music, .audiobooks: return nil
+        }
+    }
+
     @ViewBuilder
     private func pillContent(for library: Library) -> some View {
         switch selectedPill {
         case .recommended:
             TVLibraryBrowseView(
                 library: library,
+                mediaScope: mediaScope,
                 focusRequest: focusRequest,
                 isTopMenuFocused: isTopMenuFocused,
                 onMoveUp: onTopMenuFocusRequest
@@ -71,6 +97,7 @@ struct TVLibraryTypeTabView: View {
         case .collections:
             TVLibraryCollectionsView(
                 library: library,
+                mediaScope: mediaScope,
                 focusRequest: focusRequest,
                 isTopMenuFocused: isTopMenuFocused,
                 onMoveUp: onTopMenuFocusRequest
@@ -80,6 +107,7 @@ struct TVLibraryTypeTabView: View {
                 libraryId: library.id,
                 libraryName: library.name,
                 libraryType: library.type,
+                mediaScope: mediaScope,
                 initialFilter: .none,
                 showsHeader: false,
                 showsAlphabetRail: true,

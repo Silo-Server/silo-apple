@@ -334,6 +334,102 @@ final class SettingsViewModel {
         await PlayerSettings.shared.resetAllDeviceSettings()
     }
 
+    // MARK: Device value or profile value
+
+    /// Picker tag for "Use Profile Setting": selected while this device has
+    /// no value of its own for the row, and choosing it clears that value.
+    static let useProfileSettingTag = "__profile__"
+    static let useProfileSettingLabel = "Use Profile Setting"
+    /// Tag for a stored quality pair no preset covers. Not a preset id, so
+    /// selecting it is a no-op rather than a write.
+    static let customQualityTag = "__custom__"
+    static let onTag = "on"
+    static let offTag = "off"
+
+    /// Whether the row shows the profile's value rather than this device's.
+    func usesProfileSetting(_ setting: ProfileBackedPlaybackSetting) -> Bool {
+        !PlayerSettings.shared.hasDeviceOverride(setting)
+    }
+
+    /// The selected picker tag for a profile-backed Playback row.
+    func playbackSelectionTag(_ setting: ProfileBackedPlaybackSetting) -> String {
+        guard !usesProfileSetting(setting) else { return Self.useProfileSettingTag }
+        switch setting {
+        case .quality: return preferredQualityPresetId ?? Self.customQualityTag
+        case .audioLanguage: return preferredAudioLanguage
+        case .introSkipMode: return introSkipMode.wireValue
+        case .autoSkipCredits: return skipCredits ? Self.onTag : Self.offTag
+        case .autoPlayNext: return autoPlayNext ? Self.onTag : Self.offTag
+        case .nextUpPrompt: return String(nextUpPromptSeconds)
+        }
+    }
+
+    /// Apply a picker choice for a profile-backed Playback row.
+    func selectPlayback(_ tag: String, for setting: ProfileBackedPlaybackSetting) {
+        // Choosing what is already checked changes nothing — in particular a
+        // stored "No preference" re-chosen must not fall back to the profile.
+        guard tag != playbackSelectionTag(setting) else { return }
+        // "No preference" is not stored on a device either: it clears the
+        // device's own language, exactly like "Use Profile Setting".
+        if tag == Self.useProfileSettingTag || (setting == .audioLanguage && tag.isEmpty) {
+            useProfileSetting(setting)
+            return
+        }
+        switch setting {
+        case .quality:
+            guard tag != Self.customQualityTag else { return }
+            setQualityPreset(tag)
+        case .audioLanguage:
+            preferredAudioLanguage = tag
+        case .introSkipMode:
+            guard let mode = IntroSkipMode(wireValue: tag) else { return }
+            introSkipMode = mode
+        case .autoSkipCredits:
+            skipCredits = tag == Self.onTag
+        case .autoPlayNext:
+            autoPlayNext = tag == Self.onTag
+        case .nextUpPrompt:
+            guard let seconds = Int(tag) else { return }
+            nextUpPromptSeconds = seconds
+        }
+    }
+
+    /// Clear this device's own value for one row so the profile's applies.
+    func useProfileSetting(_ setting: ProfileBackedPlaybackSetting) {
+        guard !usesProfileSetting(setting) else { return }
+        Task { @MainActor in
+            await PlayerSettings.shared.useProfileSetting(setting)
+        }
+    }
+
+    /// A device "No preference" left by an earlier build, which stored it as
+    /// a value. It gets its own entry so the picker never shows a choice that
+    /// is not what is stored; choosing anything else replaces it.
+    var hasStoredNoAudioLanguagePreference: Bool {
+        !usesProfileSetting(.audioLanguage) && preferredAudioLanguage.isEmpty
+    }
+
+    // MARK: Use Profile Settings
+
+    static let useProfileSettingsTitle = "Use your profile's settings on this device?"
+
+    /// The confirmation's message. It says plainly that settings the profile
+    /// has no value for — the device-only ones — go back to their defaults,
+    /// since there is no profile setting for them to return to.
+    var useProfileSettingsMessage: String {
+        let count = PlayerSettings.shared.deviceChangedSettingCount
+        var message: String
+        switch count {
+        case 0: message = "This removes any settings changed on this device."
+        case 1: message = "This removes the setting changed on this device."
+        default: message = "This removes the \(count) settings changed on this device."
+        }
+        if count == 0 || PlayerSettings.shared.deviceChangesIncludeDeviceOnlySettings {
+            message += " Settings that only apply to this device, like Dolby Vision and Buffer Ahead, go back to their defaults."
+        }
+        return message
+    }
+
     @MainActor
     func setSubtitleAppearance(_ appearance: SubtitleAppearance) async {
         await PlayerSettings.shared.setSubtitleAppearance(appearance)

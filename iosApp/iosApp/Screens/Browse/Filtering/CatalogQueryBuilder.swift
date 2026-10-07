@@ -18,8 +18,11 @@ enum CatalogQueryBuilder {
         /// `library_id`-scoped query is already homogeneous, and resolving
         /// the wrong scope (e.g. `movie` for an audiobook library) would
         /// filter every item out. tvOS sends it (it knows the library type).
-        includeType: Bool = true
+        includeType: Bool = true,
+        enforcedScope: LibraryVideoScope? = nil
     ) -> APIv2CatalogQuery {
+        var state = state
+        if enforcedScope != nil { state.mediaScope = nil }
         var q = APIv2CatalogQuery()
         q.limit = limit
         q.sort = state.sort.field
@@ -29,6 +32,7 @@ enum CatalogQueryBuilder {
         if state.mediaScope == nil, includeType {
             q.type = mediaType.catalogTypeParam
         }
+        if let enforcedScope { q.type = enforcedScope.rawValue }
         q.namePrefix = state.namePrefix
 
         var groups = GroupAccumulator()
