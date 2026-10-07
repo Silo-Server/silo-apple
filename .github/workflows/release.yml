@@ -208,7 +208,7 @@ jobs:
 
       - name: Record archive cache inputs
         id: metadata
-        run: python3 scripts/ci/apple-build-metadata.py --root . --outputs
+        run: python3 scripts/ci/apple-build-metadata.py --root . --device-scheme Silo-device --outputs
 
       - name: Install XcodeGen (pinned, checksum-verified)
         uses: ./.github/actions/install-xcodegen
@@ -296,7 +296,7 @@ jobs:
 
       - name: Record archive cache inputs
         id: metadata
-        run: python3 scripts/ci/apple-build-metadata.py --root . --outputs
+        run: python3 scripts/ci/apple-build-metadata.py --root . --device-scheme SiloTV-device --outputs
 
       - name: Install XcodeGen (pinned, checksum-verified)
         uses: ./.github/actions/install-xcodegen

@@ -333,6 +333,7 @@ jobs:
           !inputs.baseline_ref && !inputs.benchmark_source_ref
         env:
           SILO_FULL_SUITE: 'true'
+          SILO_PREPARED_SIMULATOR_RUNTIMES: ${{ matrix.action == 'test' && format('{0}/apple-simulator-runtimes.json', runner.temp) || '' }}
         run: >-
           python3 ../ci/scripts/ci/apple-build-metadata.py --root .
           --proof "$SCHEME" --output /tmp/regression-proof.json

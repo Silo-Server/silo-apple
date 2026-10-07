@@ -7,6 +7,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -163,7 +164,8 @@ class RegressionProofTests(unittest.TestCase):
     def test_real_metadata_producer_and_proof_consumer_share_the_same_contract(self):
         # Exercise the actual producer rather than separately inventing its
         # source-tree digest, lock hash, toolchain fields or proof JSON shape.
-        # Git reads this checkout; only the unavailable Apple tools are mocked.
+        # Clone the committed app source so helper edits under test cannot make
+        # this positive fixture dirty. Only the unavailable Apple tools are mocked.
         original_command = build_metadata.command
         runtimes = {"runtimes": [
             {"identifier": "com.apple.CoreSimulator.SimRuntime.iOS-27-0", "version": "27.0",
@@ -182,20 +184,25 @@ class RegressionProofTests(unittest.TestCase):
                 return "27A123" if args[-1] == "--show-sdk-build-version" else "27.0"
             return original_command(*args, cwd=cwd)
 
-        root = Path(__file__).resolve().parents[2]
-        with patch.object(build_metadata, "command", side_effect=measured_command):
-            result = build_metadata.metadata(root, {})
-        producer_env = {"GITHUB_EVENT_NAME": "push", "GITHUB_REF_NAME": "main",
-                        "GITHUB_SHA": result["source_sha"], "GITHUB_REPOSITORY": REPOSITORY,
-                        "GITHUB_RUN_ID": "100", "GITHUB_RUN_ATTEMPT": "2", "SILO_FULL_SUITE": "true"}
-        self.env.update(TARGET_SHA=result["source_sha"], EXPECTED_FINGERPRINT=result["fingerprint"],
-                        EXPECTED_LOCK_SHA256=result["lock_sha256"],
-                        EXPECTED_TOOLCHAIN_JSON=result["toolchain_json"])
-        self.api.run["head_sha"] = result["source_sha"]
-        for number, scheme in enumerate(proof.SCHEMES):
-            self.api.jobs[number]["head_sha"] = result["source_sha"]
-            self.api.artifacts[number]["workflow_run"]["head_sha"] = result["source_sha"]
-            self.api.manifests[number + 2000] = build_metadata.proof(result, root, producer_env, scheme)
+        checkout = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "source"
+            subprocess.run(["git", "clone", "--shared", "--quiet", str(checkout), str(root)],
+                           check=True, capture_output=True)
+            with patch.object(build_metadata, "command", side_effect=measured_command):
+                result = build_metadata.metadata(root, {})
+            self.assertEqual(result["source_dirty"], "false")
+            producer_env = {"GITHUB_EVENT_NAME": "push", "GITHUB_REF_NAME": "main",
+                            "GITHUB_SHA": result["source_sha"], "GITHUB_REPOSITORY": REPOSITORY,
+                            "GITHUB_RUN_ID": "100", "GITHUB_RUN_ATTEMPT": "2", "SILO_FULL_SUITE": "true"}
+            self.env.update(TARGET_SHA=result["source_sha"], EXPECTED_FINGERPRINT=result["fingerprint"],
+                            EXPECTED_LOCK_SHA256=result["lock_sha256"],
+                            EXPECTED_TOOLCHAIN_JSON=result["toolchain_json"])
+            self.api.run["head_sha"] = result["source_sha"]
+            for number, scheme in enumerate(proof.SCHEMES):
+                self.api.jobs[number]["head_sha"] = result["source_sha"]
+                self.api.artifacts[number]["workflow_run"]["head_sha"] = result["source_sha"]
+                self.api.manifests[number + 2000] = build_metadata.proof(result, root, producer_env, scheme)
         self.assertTrue(self.lookup()["reusable"])
 
     def test_current_branch_path_suffixes_are_supported(self):

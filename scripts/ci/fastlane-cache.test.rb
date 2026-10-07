@@ -59,13 +59,27 @@ class FastlaneCacheTest < Minitest::Test
 
   def test_unsigned_archive_uses_the_same_locked_package_path_and_timing
     ENV["SILO_SOURCE_PACKAGES_PATH"] = File.expand_path("work/sideload packages")
-    @lane.define_singleton_method(:package_unsigned_ipa) { |**_options| }
-    @lane.run_lane(:ipa_tvos_unsigned)
-    build_args = Shellwords.split(action_options(:xcodebuild)[:xcargs])
-    assert_includes build_args, "-showBuildTimingSummary"
-    assert_includes build_args, "-onlyUsePackageVersionsFromResolvedFile"
-    assert_includes build_args, "-disableAutomaticPackageResolution"
-    assert_equal ENV.fetch("SILO_SOURCE_PACKAGES_PATH"), build_args[build_args.index("-clonedSourcePackagesDirPath") + 1]
+    { ipa_ios_unsigned: "Silo", ipa_tvos_unsigned: "SiloTV" }.each do |lane, scheme|
+      @lane = FastfileHarness.new
+      @lane.define_singleton_method(:package_unsigned_ipa) { |**_options| }
+      @lane.run_lane(lane)
+      resolves = @lane.actions.select { |action, args| action == :sh && args.first == "xcodebuild" }
+      assert_equal 1, resolves.length
+      resolve_args = resolves.first.last
+      assert_equal scheme, resolve_args[resolve_args.index("-scheme") + 1]
+      assert_equal ENV.fetch("SILO_SOURCE_PACKAGES_PATH"), resolve_args[resolve_args.index("-clonedSourcePackagesDirPath") + 1]
+      assert_includes resolve_args, "-onlyUsePackageVersionsFromResolvedFile"
+      assert_includes resolve_args, "-disableAutomaticPackageResolution"
+      build_args = Shellwords.split(action_options(:xcodebuild)[:xcargs])
+      assert_includes build_args, "-showBuildTimingSummary"
+      assert_includes build_args, "-onlyUsePackageVersionsFromResolvedFile"
+      assert_includes build_args, "-disableAutomaticPackageResolution"
+      assert_equal ENV.fetch("SILO_SOURCE_PACKAGES_PATH"), build_args[build_args.index("-clonedSourcePackagesDirPath") + 1]
+      assert_includes build_args, "SILO_BUILD_CHANNEL=sideload"
+      assert_includes build_args, "CURRENT_PROJECT_VERSION=7"
+      assert_includes build_args, "CODE_SIGNING_ALLOWED=NO"
+      assert_includes build_args, "CODE_SIGN_ENTITLEMENTS="
+    end
   end
 
   private

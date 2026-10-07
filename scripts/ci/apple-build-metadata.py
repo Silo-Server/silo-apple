@@ -11,6 +11,7 @@ import subprocess
 
 LOCK = Path('iosApp/Silo.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved')
 SDKS = {'Silo': 'iphonesimulator', 'SiloTV': 'appletvsimulator', 'SiloMac': 'macosx'}
+DEVICE_SDKS = {'Silo-device': 'iphoneos', 'SiloTV-device': 'appletvos'}
 SHARED_SPM_LOCK_SHA256 = '40e3e0fbe264adac749a1f7db3f91a311e67f6419eeecad6bd4d88c07efd9410'
 SHARED_SPM_PROJECT_SHA256 = 'b698ee86dc410c8ada9251778a655f5428b2ea663ccfc8ba1291f180aa472eca'
 SHARED_SPM_TOOLCHAIN_KEY = '5e23d2022187a1fa502ad4a6'
@@ -147,18 +148,35 @@ def toolchains(runtime_capture=None, selected_scheme='', runtime_identifier=''):
     return result
 
 
-def metadata(root, env, runtime_capture=None):
+def device_toolchain(scheme):
+    sdk = DEVICE_SDKS[scheme]
+    result = {**parse_xcode(command('xcodebuild', '-version')),
+              'architecture': command('uname', '-m'), 'sdk': sdk,
+              'sdk_version': command('xcrun', '--sdk', sdk, '--show-sdk-version'),
+              'sdk_build': command('xcrun', '--sdk', sdk, '--show-sdk-build-version')}
+    if result['architecture'] not in ('arm64', 'x86_64') or not re.fullmatch(
+            r'[0-9]+(?:\.[0-9]+)*', result['sdk_version']) or not re.fullmatch(
+            r'[A-Za-z0-9]+', result['sdk_build']):
+        raise ValueError('Device SDK or architecture metadata is unavailable')
+    return result
+
+
+def metadata(root, env, runtime_capture=None, *, device_scheme=None):
     namespace = validate_controls(env)
     sha = command('git', 'rev-parse', 'HEAD', cwd=root)
     fingerprint = command('git', 'rev-parse', 'HEAD^{tree}', cwd=root)
     dirty = bool(command('git', 'status', '--porcelain', '--untracked-files=no', cwd=root))
     lock = hashlib.sha256((root / LOCK).read_bytes()).hexdigest()
     project = hashlib.sha256((root / 'iosApp/project.yml').read_bytes()).hexdigest()
-    tools = toolchains(runtime_capture, env.get('SCHEME', ''), env.get('SILO_TEST_RUNTIME_IDENTIFIER', ''))
-    # SDK build and architecture also scope caches; runtime changes are covered
-    # separately by the complete release-proof toolchain metadata.
-    cache_inputs = {'xcode': tools['Silo']['xcode_build'], 'architecture': tools['Silo']['architecture'],
-                    'sdks': {scheme: tools[scheme]['sdk_build'] for scheme in SDKS}}
+    if device_scheme:
+        tools = {device_scheme: device_toolchain(device_scheme)}
+        cache_inputs = {'profile': device_scheme, **tools[device_scheme]}
+    else:
+        tools = toolchains(runtime_capture, env.get('SCHEME', ''), env.get('SILO_TEST_RUNTIME_IDENTIFIER', ''))
+        # SDK build and architecture also scope caches; runtime changes are covered
+        # separately by the complete release-proof toolchain metadata.
+        cache_inputs = {'xcode': tools['Silo']['xcode_build'], 'architecture': tools['Silo']['architecture'],
+                        'sdks': {scheme: tools[scheme]['sdk_build'] for scheme in SDKS}}
     key = hashlib.sha256(json.dumps(cache_inputs, sort_keys=True).encode()).hexdigest()[:24]
     config = hashlib.sha256()
     for path in [root / 'iosApp/project.yml', *sorted((root / 'iosApp/Signing').glob('*.xcconfig'))]:
@@ -221,6 +239,9 @@ def proof(result, root, env, scheme):
         raise ValueError('Only main push regressions produce trusted release proof')
     if result['source_sha'] != env['GITHUB_SHA'] or env.get('SILO_FULL_SUITE') != 'true':
         raise ValueError('Release proof requires the workflow source and complete suite')
+    if (result.get('source_dirty') != 'false'
+            or command('git', 'status', '--porcelain', '--untracked-files=no', cwd=root)):
+        raise ValueError('Release proof requires clean tracked source')
     committed = subprocess.check_output(['git', 'show', f'HEAD:{LOCK.as_posix()}'], cwd=root)
     if hashlib.sha256(committed).hexdigest() != result['lock_sha256']:
         raise ValueError('Package.resolved changed during dependency preparation')
@@ -242,18 +263,23 @@ def main():
     parser.add_argument('--root', type=Path, default=Path('.'))
     parser.add_argument('--validate-controls', action='store_true')
     parser.add_argument('--outputs', action='store_true')
-    parser.add_argument('--benchmark', action='store_true')
-    parser.add_argument('--proof', choices=SDKS)
+    profile = parser.add_mutually_exclusive_group()
+    profile.add_argument('--benchmark', action='store_true')
+    profile.add_argument('--proof', choices=SDKS)
+    profile.add_argument('--device-scheme', choices=DEVICE_SDKS)
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
     if args.validate_controls:
         validate_controls(os.environ)
         return
-    # Only the final benchmark uses the inventory that selected this job's
-    # simulator. Initial cache inputs and release proof metadata remain live.
+    # Reuse only the inventory that selected this job's mobile test runtime.
+    # Initial inputs and macOS proof metadata retain live runtime discovery.
     runtime_capture = (Path(os.environ['SILO_PREPARED_SIMULATOR_RUNTIMES'])
-                       if args.benchmark and os.environ.get('SILO_PREPARED_SIMULATOR_RUNTIMES') else None)
-    result = metadata(args.root.resolve(), os.environ, runtime_capture)
+                       if (args.benchmark or args.proof in ('Silo', 'SiloTV'))
+                       and os.environ.get('SILO_PREPARED_SIMULATOR_RUNTIMES') else None)
+    if runtime_capture and args.proof and args.proof != os.environ.get('SCHEME'):
+        raise ValueError('Release proof scheme does not match the prepared simulator')
+    result = metadata(args.root.resolve(), os.environ, runtime_capture, device_scheme=args.device_scheme)
     if args.outputs:
         emit_outputs(result, os.environ['GITHUB_OUTPUT'])
     elif args.benchmark:

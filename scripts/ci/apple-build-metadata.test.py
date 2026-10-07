@@ -19,6 +19,71 @@ QUALIFIED_SPM_TOOLCHAIN = '5e23d2022187a1fa502ad4a6'
 
 
 class MetadataTests(unittest.TestCase):
+    def test_device_metadata_queries_the_selected_device_sdk_without_simulators(self):
+        for scheme, sdk in metadata.DEVICE_SDKS.items():
+            calls = []
+            def command(*args):
+                calls.append(args)
+                return {('xcodebuild', '-version'): 'Xcode 27.0\nBuild version 27A266a',
+                        ('uname', '-m'): 'arm64',
+                        ('xcrun', '--sdk', sdk, '--show-sdk-version'): '27.0',
+                        ('xcrun', '--sdk', sdk, '--show-sdk-build-version'): '24A100'}[args]
+            with self.subTest(scheme=scheme), patch.object(metadata, 'command', command):
+                result = metadata.device_toolchain(scheme)
+            self.assertEqual(result['sdk'], sdk)
+            self.assertEqual(result['sdk_version'], '27.0')
+            self.assertEqual(result['sdk_build'], '24A100')
+            self.assertEqual(len(calls), 4)
+            self.assertNotIn('runtime_build', result)
+
+    def test_device_cache_key_changes_with_actual_sdk_toolchain_and_profile(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / metadata.LOCK).parent.mkdir(parents=True)
+            (root / metadata.LOCK).write_text('locked packages')
+            (root / 'iosApp/project.yml').write_text('project')
+            toolchain = {'xcode_version': '27.0', 'xcode_build': '27A266a',
+                         'architecture': 'arm64', 'sdk': 'iphoneos',
+                         'sdk_version': '27.0', 'sdk_build': '24A100'}
+            with patch.object(metadata, 'command', return_value='a' * 40), \
+                    patch.object(metadata, 'toolchains', side_effect=AssertionError('simulator query')), \
+                    patch.object(metadata, 'device_toolchain', return_value=toolchain):
+                original = metadata.metadata(root, {}, device_scheme='Silo-device')
+                self.assertEqual(json.loads(original['toolchain_json']), {'Silo-device': toolchain})
+                for key, value in [('xcode_version', '27.1'), ('xcode_build', '27B100'),
+                                   ('architecture', 'x86_64'), ('sdk', 'appletvos'),
+                                   ('sdk_version', '27.1'), ('sdk_build', '24A101')]:
+                    with self.subTest(changed=key), patch.object(
+                            metadata, 'device_toolchain', return_value={**toolchain, key: value}):
+                        changed = metadata.metadata(root, {}, device_scheme='Silo-device')
+                        self.assertNotEqual(original['toolchain_key'], changed['toolchain_key'])
+                other = metadata.metadata(root, {}, device_scheme='SiloTV-device')
+                self.assertNotEqual(original['toolchain_key'], other['toolchain_key'])
+
+    def test_device_metadata_rejects_missing_or_malformed_sdk_and_architecture(self):
+        valid = {('xcodebuild', '-version'): 'Xcode 27.0\nBuild version 27A266a',
+                 ('uname', '-m'): 'arm64',
+                 ('xcrun', '--sdk', 'iphoneos', '--show-sdk-version'): '27.0',
+                 ('xcrun', '--sdk', 'iphoneos', '--show-sdk-build-version'): '24A100'}
+        for args, value in [(('uname', '-m'), ''), (('uname', '-m'), 'unknown'),
+                            (('xcrun', '--sdk', 'iphoneos', '--show-sdk-version'), ''),
+                            (('xcrun', '--sdk', 'iphoneos', '--show-sdk-version'), '27.0\nother'),
+                            (('xcrun', '--sdk', 'iphoneos', '--show-sdk-build-version'), ''),
+                            (('xcrun', '--sdk', 'iphoneos', '--show-sdk-build-version'), 'bad/build')]:
+            with self.subTest(args=args, value=value), patch.object(
+                    metadata, 'command', side_effect=lambda *call: {**valid, args: value}[call]):
+                with self.assertRaisesRegex(ValueError, 'Device SDK or architecture'):
+                    metadata.device_toolchain('Silo-device')
+
+    def test_device_profiles_cannot_be_used_for_simulator_proof_or_benchmarks(self):
+        for option in ('--benchmark', '--proof=Silo'):
+            with self.subTest(option=option), patch.object(sys, 'argv',
+                    ['metadata', '--device-scheme=Silo-device', option]), \
+                    patch.object(metadata, 'metadata', side_effect=AssertionError('metadata queried')):
+                with self.assertRaises(SystemExit) as error:
+                    metadata.main()
+                self.assertEqual(error.exception.code, 2)
+
     def spm_scope(self, env, lock, project, toolchain='', *, source_sha='a' * 40, source_dirty=False):
         return metadata.spm_cache_scope(env, lock, project, toolchain,
                                         source_sha=source_sha, source_dirty=source_dirty)
@@ -200,6 +265,146 @@ class MetadataTests(unittest.TestCase):
                 metadata.main()
             self.assertEqual(inspect.call_args.args[2], expected)
 
+    def committed_proof_source(self, root):
+        root.mkdir()
+        lock = root / metadata.LOCK
+        lock.parent.mkdir(parents=True)
+        lock.write_text('committed dependency lock\n')
+        (root / 'iosApp/project.yml').write_text('committed project\n')
+        source = root / 'iosApp/Tests/TrackedSource.swift'
+        source.parent.mkdir(parents=True)
+        source.write_text('let testedValue = "committed"\n')
+        for args in (['git', 'init', '--quiet'], ['git', 'add', '.'],
+                     ['git', '-c', 'user.name=CI fixture', '-c', 'user.email=ci-fixture@invalid',
+                      'commit', '--quiet', '-m', 'Committed proof fixture']):
+            subprocess.run(args, cwd=root, check=True, capture_output=True)
+        return source
+
+    def proof_env(self, root, capture, scheme='Silo'):
+        return {'GITHUB_EVENT_NAME': 'push', 'GITHUB_REF_NAME': 'main',
+                'GITHUB_SHA': metadata.command('git', 'rev-parse', 'HEAD', cwd=root),
+                'GITHUB_REPOSITORY': 'Silo-Server/silo-apple', 'GITHUB_RUN_ID': '100',
+                'GITHUB_RUN_ATTEMPT': '1', 'SILO_FULL_SUITE': 'true', 'SCHEME': scheme,
+                'SILO_COMPILATION_CACHE_ENABLED': 'false', 'SILO_BENCHMARK_SOURCE_REF': '',
+                'SILO_PREPARED_SIMULATOR_RUNTIMES': str(capture),
+                'SILO_TEST_RUNTIME_IDENTIFIER': 'com.apple.CoreSimulator.SimRuntime.' +
+                    ('tvOS-27-0' if scheme == 'SiloTV' else 'iOS-27-0')}
+
+    def proof_inventory(self):
+        return {'runtimes': [*self.runtime_inventory()['runtimes'],
+                            {'identifier': 'com.apple.CoreSimulator.SimRuntime.tvOS-27-0',
+                             'version': '27.0', 'buildversion': '24J100', 'isAvailable': True}]}
+
+    def test_actual_cli_produces_captured_mobile_proof_and_live_mac_proof(self):
+        original_command = metadata.command
+        inventory = self.proof_inventory()
+        def command(*args, cwd=None):
+            if args[0] == 'git':
+                return original_command(*args, cwd=cwd)
+            if args == ('xcrun', 'simctl', 'list', 'runtimes', '--json'):
+                return json.dumps(inventory)
+            return self.live_tool_command(*args, cwd=cwd)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / 'source'
+            self.committed_proof_source(root)
+            capture = Path(folder) / 'runtimes.json'
+            capture.write_text(json.dumps(inventory))
+            for scheme in metadata.SDKS:
+                output = Path(folder) / (scheme + '.json')
+                env = self.proof_env(root, capture, scheme)
+                with self.subTest(scheme=scheme), patch.dict(os.environ, env), \
+                        patch.object(sys, 'argv', ['metadata', '--root', str(root), '--proof', scheme,
+                                                  '--output', str(output)]), \
+                        patch.object(metadata, 'command', side_effect=command) as run:
+                    metadata.main()
+                value = json.loads(output.read_text())
+                self.assertEqual(value['sha'], env['GITHUB_SHA'])
+                self.assertEqual(value['fingerprint'], original_command('git', 'rev-parse', 'HEAD^{tree}', cwd=root))
+                self.assertTrue(value['full_suite'])
+                self.assertEqual(value['toolchain']['architecture'], 'arm64')
+                self.assertEqual(value['toolchain']['sdk_build'], '24A100')
+                queried = ('xcrun', 'simctl', 'list', 'runtimes', '--json') in [call.args for call in run.call_args_list]
+                self.assertEqual(queried, scheme == 'SiloMac')
+                if scheme != 'SiloMac':
+                    self.assertEqual(value['toolchain']['runtime_build'], '24J100' if scheme == 'SiloTV' else '24A100')
+
+    def test_actual_cli_rejects_invalid_capture_partial_or_changed_source_without_emitting_proof(self):
+        original_command = metadata.command
+        def command(*args, cwd=None):
+            if args[0] == 'git':
+                return original_command(*args, cwd=cwd)
+            if args == ('xcrun', 'simctl', 'list', 'runtimes', '--json'):
+                raise AssertionError('Captured proof repeated runtime discovery')
+            if change_sdk and args == ('xcrun', '--sdk', 'iphonesimulator', '--show-sdk-version'):
+                return '27.1'
+            return self.live_tool_command(*args, cwd=cwd)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / 'source'
+            source = self.committed_proof_source(root)
+            capture = Path(folder) / 'runtimes.json'
+            output = Path(folder) / 'proof.json'
+            cases = ('dirty_source', 'partial_suite', 'wrong_source', 'untrusted_event',
+                     'wrong_branch', 'missing_capture', 'malformed_capture', 'unavailable_runtime',
+                     'wrong_runtime', 'wrong_scheme', 'changed_sdk')
+            for case in cases:
+                source.write_text('let testedValue = "committed"\n')
+                capture.write_text(json.dumps(self.proof_inventory()))
+                env = self.proof_env(root, capture)
+                change_sdk = case == 'changed_sdk'
+                if case == 'dirty_source':
+                    source.write_text('let testedValue = "uncommitted mutation"\n')
+                elif case == 'partial_suite':
+                    env['SILO_FULL_SUITE'] = 'false'
+                elif case == 'wrong_source':
+                    env['GITHUB_SHA'] = 'f' * 40
+                elif case == 'untrusted_event':
+                    env['GITHUB_EVENT_NAME'] = 'workflow_dispatch'
+                elif case == 'wrong_branch':
+                    env['GITHUB_REF_NAME'] = 'private/fixture'
+                elif case == 'missing_capture':
+                    capture.unlink()
+                elif case == 'malformed_capture':
+                    capture.write_text('{')
+                elif case == 'unavailable_runtime':
+                    capture.write_text(json.dumps(self.runtime_inventory(isAvailable=False)))
+                elif case == 'wrong_runtime':
+                    env['SILO_TEST_RUNTIME_IDENTIFIER'] = 'com.apple.CoreSimulator.SimRuntime.tvOS-27-0'
+                elif case == 'wrong_scheme':
+                    env['SCHEME'] = 'SiloTV'
+                with self.subTest(case=case), patch.dict(os.environ, env), \
+                        patch.object(sys, 'argv', ['metadata', '--root', str(root), '--proof', 'Silo',
+                                                  '--output', str(output)]), \
+                        patch.object(metadata, 'command', side_effect=command):
+                    if case == 'dirty_source':
+                        measured = metadata.metadata(root, env, capture)
+                        self.assertEqual(measured['source_sha'], env['GITHUB_SHA'])
+                        self.assertEqual(measured['fingerprint'], original_command('git', 'rev-parse', 'HEAD^{tree}', cwd=root))
+                        self.assertEqual(measured['source_dirty'], 'true')
+                    with self.assertRaises((ValueError, FileNotFoundError)):
+                        metadata.main()
+                    self.assertFalse(output.exists())
+
+    def test_proof_rechecks_actual_source_after_a_clean_metadata_record(self):
+        original_command = metadata.command
+        def command(*args, cwd=None):
+            if args[0] == 'git':
+                return original_command(*args, cwd=cwd)
+            return self.live_tool_command(*args, cwd=cwd)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / 'source'
+            source = self.committed_proof_source(root)
+            capture = Path(folder) / 'runtimes.json'
+            capture.write_text(json.dumps(self.proof_inventory()))
+            env = self.proof_env(root, capture)
+            with patch.object(metadata, 'command', command):
+                clean = metadata.metadata(root, env, capture)
+                self.assertEqual(clean['source_dirty'], 'false')
+                source.write_text('let testedValue = "mutation after metadata"\n')
+                self.assertEqual(original_command('git', 'rev-parse', 'HEAD', cwd=root), clean['source_sha'])
+                self.assertEqual(original_command('git', 'rev-parse', 'HEAD^{tree}', cwd=root), clean['fingerprint'])
+                with self.assertRaisesRegex(ValueError, 'clean tracked source'):
+                    metadata.proof(clean, root, env, 'Silo')
+
     def test_cache_hit_claim_requires_actual_restore_hit(self):
         result = {'source_sha': 'a' * 40, 'cache_namespace': 'v1',
                   'lock_sha256': 'b' * 64, 'build_config_sha256': 'c' * 64,
@@ -357,7 +562,7 @@ class MetadataTests(unittest.TestCase):
                         return status
                     return 'fixture toolchain'
                 with self.subTest(status=status), patch.object(metadata, 'command', command), \
-                        patch.object(metadata, 'toolchains', return_value={'Silo': {'xcode_build': '27A266a'}}), \
+                        patch.object(metadata, 'toolchains', return_value={scheme: {'xcode_build': '27A266a', 'architecture': 'arm64', 'sdk_build': 'fixture-sdk-build'} for scheme in metadata.SDKS}), \
                         patch.object(metadata, 'spm_cache_scope', wraps=metadata.spm_cache_scope) as scope:
                     result = metadata.metadata(root, self.shared_spm_env())
                 self.assertEqual(scope.call_args.kwargs, {'source_sha': 'a' * 40, 'source_dirty': expected_dirty})
