@@ -1,0 +1,6 @@
+# Pull requests that change the iOS, tvOS, or macOS app source need evidence before the
+# Evidence check passes. The check reads this file at a pull request's base commit.
+# Maintainers override it with the evidence-required and evidence-not-needed labels.
+# See "Show visible changes" in CONTRIBUTING.md.
+require:
+  - iosApp/iosApp/**

@@ -74,12 +74,34 @@ Provide evidence that fits the change:
   motion, timing, focus movement, or a multi-step flow matters.
 - Name the surface and the build or commit each capture came from.
 
-Capture against a test library or public-domain media where you can. Crop or
-blur hostnames, URLs, account names, and personal library contents. When the
-evidence cannot be made public, a maintainer may link an
-`evidence.siloserver.org` page instead. If you could not capture evidence,
-say why; the reviewer decides whether the pull request can merge without it.
-Changes users cannot see write `Evidence: none, no user-visible change`.
+Capture against a test library or public-domain media where you can, and keep
+passwords, tokens, and API keys out of every capture. Then put the evidence in
+one of two places:
+
+- **On GitHub:** attach the screenshots or recordings under the pull request's
+  Evidence heading. Everything on GitHub is public, so crop or blur hostnames,
+  URLs, account names, and personal library contents.
+- **On [evidence.siloserver.org](https://evidence.siloserver.org/) (optional):**
+  only you and Silo maintainers can open what you publish there, after signing
+  in with GitHub, so captures need no cropping or blurring. Captions that start
+  with `Before:` and `After:` become a side-by-side comparison, and recordings
+  get a player. Upload from the Details link of the pull request's `Evidence`
+  check, or with the command line (Node.js 22 or later):
+  `npx @silo-server/evidence login` once on each computer, then
+  `npx @silo-server/evidence publish <folder> --pr <number>`. The
+  [package README](https://www.npmjs.com/package/@silo-server/evidence) describes
+  the folder. Then write
+  `Evidence: https://evidence.siloserver.org/r/silo-apple/pr-<number>/` under
+  the Evidence heading. Until a pull request of yours has merged here, a
+  maintainer approves you once before your first upload.
+
+The pull request's `Evidence` check passes once evidence is published or
+attached. It asks for evidence when the change touches the app source under `iosApp/iosApp/`,
+or when a maintainer adds the `evidence-required` label; a maintainer adds
+`evidence-not-needed` when nothing visible changed. Changes users cannot see
+write `Evidence: none, no user-visible change`. If you could not capture
+evidence, say why; the reviewer decides whether the pull request can merge
+without it.
 
 ## Open the pull request
 

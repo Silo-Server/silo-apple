@@ -44,10 +44,12 @@ item details a screen shows, such as search results, home sections, recommendati
 metadata, artwork, sorting, or filtering. See "Show visible changes" in
 CONTRIBUTING.md. Use before-and-after screenshots of the same screen and data for each
 affected surface, and a short recording when motion, timing, or focus matters. Crop or
-blur private details. A maintainer may link
-`Evidence: https://evidence.siloserver.org/r/<repo>/<topic>/` instead; that page
-requires Silo-Server organization sign-in. When nothing visible changes, replace this
-section's content with "Evidence: none, no user-visible change". -->
+blur private details in anything attached here. To keep captures private instead,
+publish them to evidence.siloserver.org, where only you and Silo maintainers can open
+them, and replace the table with
+`Evidence: https://evidence.siloserver.org/r/silo-apple/pr-<number>/`. When nothing
+visible changes, replace this section's content with "Evidence: none, no user-visible
+change". -->
 
 ## Risks
 

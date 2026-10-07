@@ -87,8 +87,15 @@ follow-up work.
   metadata, or artwork. Use before-and-after captures of the same screen with the
   same data, and a short recording when motion, timing, or focus matters. Write
   `Evidence: none, no user-visible change` only when that is true.
-- Check evidence media for private information before posting, and upload it to
-  GitHub. Never commit PR-only assets such as `.github/pr-assets/`.
+- Attach evidence on GitHub under the PR body's Evidence heading, or publish it
+  with `npx @silo-server/evidence publish <folder> --pr <number>` and put its
+  `Evidence:` link there. Only Silo maintainers and the pull request's author can
+  open a published page. GitHub has no API for attaching images to a pull
+  request, so an agent either publishes with the CLI or gives the developer the
+  captures to attach. Check media for private information before it goes on
+  GitHub. When publishing exits 4, ask the developer to run
+  `npx @silo-server/evidence login`; never approve that login or read the saved
+  key. Never commit PR-only assets such as `.github/pr-assets/`.
 - When babysitting a pull request, poll checks and review comments created
   after the last push. Verify bot findings against the source, fix real issues,
   and dismiss false positives with a written reason. Remain quiet when nothing
