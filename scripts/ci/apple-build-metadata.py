@@ -79,6 +79,32 @@ def spm_cache_scope(env, lock_sha256, project_sha256, toolchain_key='', *,
             'spm_cache_save_owner': owner if shared else scheme}
 
 
+def parallel_test_workers(env):
+    enabled = env.get('SILO_IOS_PARALLEL_PILOT', 'false')
+    if enabled not in ('true', 'false'):
+        raise ValueError('Parallel iOS pilot must be true or false')
+    if enabled == 'false':
+        return 1
+    if (env.get('GITHUB_REPOSITORY') != 'Silo-Server/silo-apple'
+            or env.get('GITHUB_EVENT_NAME') != 'workflow_dispatch'
+            or env.get('SILO_RELEASE_GATE', 'false') != 'false'):
+        raise ValueError('Parallel iOS pilot requires a manual Silo Apple benchmark')
+    if (env.get('SILO_BENCH_VARIANT') != 'optimized'
+            or env.get('SILO_BASELINE_REF')
+            or env.get('SILO_BENCHMARK_PLATFORM') != 'ios'
+            or env.get('SILO_IOS_ONLY', 'false') != 'false'
+            or env.get('SILO_RECORD_PREVIEW', 'false') != 'false'):
+        raise ValueError('Parallel iOS pilot requires only the optimized iOS benchmark suite')
+    if not re.fullmatch(r'[0-9a-f]{40}', env.get('SILO_BENCHMARK_SOURCE_REF', '')):
+        raise ValueError('Parallel iOS pilot requires an immutable app commit')
+    # Selection validates controls before matrix expansion; each Mac job also
+    # verifies that the selected row is the complete iOS simulator suite.
+    if any(key in env for key in ('PLATFORM', 'SCHEME', 'ACTION')):
+        if (env.get('PLATFORM'), env.get('SCHEME'), env.get('ACTION')) != ('iOS', 'Silo', 'test'):
+            raise ValueError('Parallel iOS pilot requires the iOS simulator test row')
+    return 2
+
+
 def validate_controls(env):
     if env.get('SILO_CACHE_PROBE', 'none') != 'none':
         raise ValueError('Diagnostic cache probes are unavailable in this workflow')
@@ -90,6 +116,7 @@ def validate_controls(env):
         raise ValueError('Benchmark source must be an immutable 40-character commit SHA')
     compilation_cache_profile(env)
     spm_cache_scope(env, '', '')
+    parallel_test_workers(env)
     return namespace
 
 
@@ -216,6 +243,7 @@ def benchmark(result, env):
         spm_scope['spm_cache_save_owner'] = (env['SILO_SPM_CACHE_SAVE_OWNER']
             if env['SILO_SPM_CACHE_PROFILE_EFFECTIVE'] == 'shared_qualified' else env['SILO_SPM_CACHE_SCOPE'])
     dirty = result.get('source_dirty', 'false') == 'true'
+    workers = parallel_test_workers(env)
     return {'source_sha': result['source_sha'], 'variant': env.get('SILO_BENCH_VARIANT', 'optimized'),
             'cache_probe': 'none',
             'cache_regime': 'warm' if spm_hit or derived_restored else 'cold',
@@ -226,6 +254,9 @@ def benchmark(result, env):
             'compilation_cache_profile': profile,
             **spm_scope, 'project_yml_sha256': result.get('project_yml_sha256', ''),
             'source_dirty': dirty, 'timing_eligible': not dirty,
+            'parallel_testing_enabled': workers == 2, 'parallel_testing_worker_count': workers,
+            'test_destination': env.get('SILO_TEST_DESTINATION', ''),
+            'test_runtime_identifier': env.get('SILO_TEST_RUNTIME_IDENTIFIER', ''),
             'compilation_cache_enabled': profile != 'standard',
             'compilation_cache_diagnostic_remarks': profile != 'standard',
             'derived_cache_kind': 'exact' if derived_hit else 'prefix' if derived_restored else 'miss',

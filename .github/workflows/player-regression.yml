@@ -1,9 +1,6 @@
 name: Apple regression
 
 on:
-  pull_request:
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       baseline_ref:
@@ -23,9 +20,9 @@ on:
         type: boolean
         default: false
       benchmark_source_ref:
-        description: Optional immutable 40-character app commit for a controlled benchmark
+        description: Required immutable app commit for the current-source comparison
         type: string
-        required: false
+        required: true
       benchmark_variant:
         description: Compare the original build sequence with the optimized sequence
         type: choice
@@ -39,14 +36,36 @@ on:
       cache_namespace:
         description: Isolate benchmark caches (1-32 lowercase letters, digits, underscores or hyphens)
         type: string
-        default: production
+        default: apple-phase1-20261007
       benchmark_platform:
         description: Platforms to include in the controlled benchmark
         type: choice
         default: all
         options: [all, ios, tvos, macos]
+      cache_save_policy:
+        description: Timing runs are read-only; compiler bootstrap may save successful compilation state
+        type: choice
+        default: read_only
+        options: [read_only, compiler_bootstrap]
+      cache_probe:
+        description: This private controller runs no diagnostic cache probes
+        type: choice
+        default: none
+        options: [none]
+      resource_observations:
+        description: Observe CPU, memory and simulator lifecycle for both matched iOS arms
+        type: boolean
+        default: false
+      ios_parallel_pilot:
+        description: Run the complete optimized iOS benchmark suite with exactly two test workers
+        type: boolean
+        default: false
       compilation_cache:
         description: Enable Xcode compilation cache and diagnostics for an optimized derived_data benchmark
+        type: boolean
+        default: false
+      unflagged_dependency_control:
+        description: Observe the unflagged optimized dependency-only serial iOS profile
         type: boolean
         default: false
       spm_cache_profile:
@@ -54,28 +73,38 @@ on:
         type: choice
         default: shared_qualified
         options: [scheme, shared_qualified]
-  # release.yml calls this to gate TestFlight uploads on the full suite.
-  workflow_call:
-    inputs:
-      release_gate:
-        description: Keeps a release run out of the PR and main concurrency groups
-        type: boolean
-        default: true
 
 permissions:
   contents: read
 
 concurrency:
-  # Manual comparisons must finish independently; PR and main runs coalesce by ref.
-  # Release runs retain their own group so a main push cannot cancel a release gate.
-  group: player-regression-${{ inputs.release_gate && 'release-' || '' }}${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || 'latest' }}
-  cancel-in-progress: true
+  group: apple-final-benchmark-${{ github.ref }}-${{ github.run_id }}
+  cancel-in-progress: false
 
 jobs:
   select:
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'Silo-Server/silo-apple' && github.ref == 'refs/heads/private/apple-shared-spm-controller'
     name: Select regression platforms
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    env:
+      SILO_BENCH_VARIANT: ${{ inputs.benchmark_variant }}
+      SILO_BENCHMARK_SOURCE_REF: ${{ inputs.benchmark_source_ref }}
+      SILO_CACHE_MODE: ${{ inputs.cache_mode }}
+      SILO_CACHE_NAMESPACE: ${{ inputs.cache_namespace }}
+      SILO_SPM_CACHE_PROFILE: ${{ inputs.spm_cache_profile }}
+      SILO_COMPILATION_CACHE_ENABLED: ${{ inputs.compilation_cache && 'true' || 'false' }}
+      SILO_UNFLAGGED_DEPENDENCY_CONTROL: ${{ inputs.unflagged_dependency_control && 'true' || 'false' }}
+      SILO_IOS_PARALLEL_PILOT: ${{ inputs.ios_parallel_pilot && 'true' || 'false' }}
+      SILO_RESOURCE_OBSERVATIONS: ${{ inputs.resource_observations && 'true' || 'false' }}
+      SILO_BENCHMARK_PLATFORM: ${{ inputs.benchmark_platform }}
+      SILO_BASELINE_REF: ${{ inputs.baseline_ref }}
+      SILO_IOS_ONLY: ${{ inputs.ios_only && 'true' || 'false' }}
+      SILO_RECORD_PREVIEW: ${{ inputs.record_preview && 'true' || 'false' }}
+      SILO_EXPORT_SIMULATOR_TESTS: ${{ inputs.export_simulator_tests && 'true' || 'false' }}
+      SILO_CACHE_PROBE: ${{ inputs.cache_probe || 'none' }}
+      SILO_CACHE_SAVE_POLICY: ${{ inputs.cache_save_policy || 'read_only' }}
+      SILO_RELEASE_GATE: 'false'
     outputs:
       platforms: ${{ steps.plan.outputs.platforms }}
       selection: ${{ steps.plan.outputs.selection }}
@@ -86,22 +115,44 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+      - name: Validate current-source controller inputs before Mac allocation
+        run: python3 .ci-benchmark/controller-controls.py controls
+      - name: Validate private resource observations before Mac allocation
+        if: inputs.resource_observations
+        env:
+          SILO_BENCHMARK_PLATFORM: ${{ inputs.benchmark_platform }}
+          SILO_BENCH_VARIANT: ${{ inputs.benchmark_variant }}
+          SILO_BENCHMARK_SOURCE_REF: ${{ inputs.benchmark_source_ref }}
+          SILO_BASELINE_REF: ${{ inputs.baseline_ref }}
+          SILO_IOS_ONLY: ${{ inputs.ios_only && 'true' || 'false' }}
+          SILO_RECORD_PREVIEW: ${{ inputs.record_preview && 'true' || 'false' }}
+          SILO_RELEASE_GATE: 'false'
+          SILO_CACHE_PROBE: ${{ inputs.cache_probe || 'none' }}
+        run: python3 .ci-benchmark/resource-observations.py validate-controls
+      - name: Validate the manual iOS parallel pilot before Mac allocation
+        if: inputs.ios_parallel_pilot
+        env:
+          SILO_IOS_PARALLEL_PILOT: ${{ inputs.ios_parallel_pilot && 'true' || 'false' }}
+          SILO_BENCHMARK_PLATFORM: ${{ inputs.benchmark_platform }}
+          SILO_BENCH_VARIANT: ${{ inputs.benchmark_variant }}
+          SILO_BENCHMARK_SOURCE_REF: ${{ inputs.benchmark_source_ref }}
+          SILO_BASELINE_REF: ${{ inputs.baseline_ref }}
+          SILO_IOS_ONLY: ${{ inputs.ios_only && 'true' || 'false' }}
+          SILO_RECORD_PREVIEW: ${{ inputs.record_preview && 'true' || 'false' }}
+          SILO_RELEASE_GATE: 'false'
+        run: python3 scripts/ci/apple-build-metadata.py --validate-controls
       - name: Select from the complete commit comparison
         id: plan
         env:
-          # Reusable release runs inherit the caller's event name. Release gates
-          # and tags require full coverage before any ordinary push routing.
           FORCE_PLATFORMS: >-
-            ${{ (inputs.release_gate || startsWith(github.ref, 'refs/tags/')) && 'all' ||
-                github.event_name == 'workflow_dispatch' &&
-                ((inputs.ios_only || inputs.baseline_ref) && 'ios' || inputs.benchmark_platform || 'all') || '' }}
+            ${{ (inputs.ios_only || inputs.baseline_ref) && 'ios' || inputs.benchmark_platform || 'all' }}
         run: python3 scripts/ci/select-apple-platforms.py
   validate:
     name: Regression (${{ matrix.scheme }})
     needs: select
     # Job conditions are evaluated before matrix expansion. An empty verified
     # plan skips the matrix; a failed selection is rejected by the result job.
-    if: needs.select.result == 'success' && needs.select.outputs.has_platforms == 'true'
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'Silo-Server/silo-apple' && github.ref == 'refs/heads/private/apple-shared-spm-controller' && needs.select.result == 'success' && needs.select.outputs.has_platforms == 'true'
     # Same Xcode 27 image as the release builds.
     runs-on: xcode-27
     timeout-minutes: 40
@@ -116,10 +167,22 @@ jobs:
       SILO_BENCH_VARIANT: ${{ inputs.baseline_ref && 'baseline' || inputs.benchmark_variant || 'optimized' }}
       SILO_BENCHMARK_SOURCE_REF: ${{ inputs.benchmark_source_ref }}
       SILO_CACHE_MODE: ${{ (inputs.baseline_ref || inputs.benchmark_variant == 'baseline') && 'off' || inputs.cache_mode || 'dependencies' }}
-      SILO_CACHE_NAMESPACE: ${{ inputs.cache_namespace || 'production' }}
+      SILO_CACHE_NAMESPACE: ${{ inputs.cache_namespace }}
       SILO_COMPILATION_CACHE_ENABLED: ${{ inputs.compilation_cache && 'true' || 'false' }}
+      SILO_UNFLAGGED_DEPENDENCY_CONTROL: ${{ inputs.unflagged_dependency_control && 'true' || 'false' }}
+      SILO_IOS_PARALLEL_PILOT: ${{ inputs.ios_parallel_pilot && 'true' || 'false' }}
+      SILO_RESOURCE_OBSERVATIONS: ${{ inputs.resource_observations && 'true' || 'false' }}
+      SILO_RESOURCE_OBSERVATIONS_PATH: ${{ github.workspace }}/ci-benchmark-observations
+      SILO_CACHE_PROBE: ${{ inputs.cache_probe || 'none' }}
+      SILO_CACHE_SAVE_POLICY: ${{ inputs.cache_save_policy || 'read_only' }}
+      SILO_CONTROLLER_CONTROLS_PATH: ${{ github.workspace }}/ci-benchmark-controls
+      SILO_EXPORT_SIMULATOR_TESTS: ${{ inputs.export_simulator_tests && 'true' || 'false' }}
+      SILO_BENCHMARK_PLATFORM: ${{ inputs.benchmark_platform || 'all' }}
+      SILO_BASELINE_REF: ${{ inputs.baseline_ref }}
+      SILO_IOS_ONLY: ${{ inputs.ios_only && 'true' || 'false' }}
+      SILO_RECORD_PREVIEW: ${{ inputs.record_preview && 'true' || 'false' }}
       SILO_SPM_CACHE_PROFILE: ${{ github.event_name == 'workflow_dispatch' && inputs.spm_cache_profile || 'shared_qualified' }}
-      SILO_RELEASE_GATE: ${{ inputs.release_gate && 'true' || 'false' }}
+      SILO_RELEASE_GATE: 'false'
       SILO_PULL_REQUEST_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
       SILO_SPM_CACHE_SAVE_OWNER: >-
         ${{ contains(fromJSON(needs.select.outputs.matrix).include.*.scheme, 'SiloMac') && 'SiloMac' ||
@@ -139,15 +202,24 @@ jobs:
           persist-credentials: false
           path: ci
           ref: ${{ github.sha }}
+      - name: Record validated current-source controller controls
+        working-directory: ci
+        run: python3 .ci-benchmark/controller-controls.py controls --folder "$SILO_CONTROLLER_CONTROLS_PATH"
       - name: Validate benchmark controls before source preparation
         working-directory: ci
         run: python3 scripts/ci/apple-build-metadata.py --validate-controls
+      - name: Validate private resource test row before source preparation
+        if: env.SILO_RESOURCE_OBSERVATIONS == 'true'
+        working-directory: ci
+        run: python3 .ci-benchmark/resource-observations.py validate-controls
       - name: Checkout app source
         uses: actions/checkout@v4
         with:
           persist-credentials: false
           path: source
-          ref: ${{ inputs.benchmark_source_ref || inputs.baseline_ref || github.sha }}
+          ref: ${{ inputs.benchmark_source_ref }}
+      - name: Require fresh DerivedData before restore
+        run: python3 ../ci/.ci-benchmark/controller-controls.py pre_restore --folder "$SILO_CONTROLLER_CONTROLS_PATH"
       - uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: '27.0'
@@ -163,7 +235,7 @@ jobs:
         with:
           cache: ${{ env.SILO_CACHE_MODE != 'off' }}
           namespace: ${{ env.SILO_CACHE_NAMESPACE }}
-          save-cache: ${{ !inputs.release_gate }}
+          save-cache: 'false'
       - name: Generate Xcode project before simulator boot
         if: env.SILO_BENCH_VARIANT != 'baseline'
         run: xcodegen generate --spec iosApp/project.yml
@@ -258,14 +330,24 @@ jobs:
           echo "a4847ed77d3341a4d24049bc4424a3babca4c94ff1dcaaee923eaca2b32c678f  /tmp/xcodegen.zip" | shasum -a 256 -c -
           unzip -q /tmp/xcodegen.zip -d /tmp/xcodegen-dist
           /tmp/xcodegen-dist/xcodegen/bin/xcodegen generate --spec iosApp/project.yml
+      - name: Qualify restored caches and fresh control state before building
+        env:
+          SILO_SPM_CACHE_PROFILE_EFFECTIVE: ${{ steps.cache.outputs.spm-cache-profile }}
+          SILO_SPM_CACHE_HIT: ${{ steps.cache.outputs.spm-cache-hit }}
+          SILO_DERIVED_CACHE_HIT: ${{ steps.cache.outputs.derived-cache-hit }}
+        run: python3 ../ci/.ci-benchmark/controller-controls.py pre_build --folder "$SILO_CONTROLLER_CONTROLS_PATH"
       - name: Build player
         id: build
         run: |
           set -euo pipefail
-          compilation_args=()
+          # Controlled arms request explicit settings; the optional default arm omits both overrides.
+          compilation_args=(COMPILATION_CACHE_ENABLE_CACHING=NO
+            COMPILATION_CACHE_ENABLE_DIAGNOSTIC_REMARKS=NO)
           if [ "$SILO_COMPILATION_CACHE_ENABLED" = true ]; then
             compilation_args=(COMPILATION_CACHE_ENABLE_CACHING=YES
               COMPILATION_CACHE_ENABLE_DIAGNOSTIC_REMARKS=YES)
+          elif [ "$SILO_UNFLAGGED_DEPENDENCY_CONTROL" = true ]; then
+            compilation_args=()
           fi
           package_args=()
           if [ "$SILO_BENCH_VARIANT" != baseline ]; then
@@ -286,23 +368,62 @@ jobs:
               -resultBundlePath /tmp/player-validation.xcresult \
               CODE_SIGNING_ALLOWED=NO | tee /tmp/player-validation.log
           fi
+      - name: Record resolved compiler settings after the build
+        timeout-minutes: 3
+        env:
+          TEST_TARGET: ${{ matrix.test_target }}
+        run: |
+          set -euo pipefail
+          compilation_args=(COMPILATION_CACHE_ENABLE_CACHING=NO
+            COMPILATION_CACHE_ENABLE_DIAGNOSTIC_REMARKS=NO)
+          if [ "$SILO_COMPILATION_CACHE_ENABLED" = true ]; then
+            compilation_args=(COMPILATION_CACHE_ENABLE_CACHING=YES
+              COMPILATION_CACHE_ENABLE_DIAGNOSTIC_REMARKS=YES)
+          elif [ "$SILO_UNFLAGGED_DEPENDENCY_CONTROL" = true ]; then
+            compilation_args=()
+          fi
+          package_args=()
+          if [ "$SILO_BENCH_VARIANT" != baseline ]; then
+            package_args=(-clonedSourcePackagesDirPath "$SILO_SOURCE_PACKAGES_PATH"
+              -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile)
+          fi
+          query_action=build
+          query_destination="$DESTINATION"
+          signing_args=(CODE_SIGNING_ALLOWED=NO)
+          if [ "$ACTION" = test ]; then
+            query_action=build-for-testing
+            query_destination="$SILO_TEST_DESTINATION"
+            signing_args=(CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-)
+          fi
+          settings_raw="$RUNNER_TEMP/apple-controlled-build-settings.json"
+          xcodebuild "$query_action" -showBuildSettings -json \
+            -project iosApp/Silo.xcodeproj -scheme "$SCHEME" \
+            -destination "$query_destination" -derivedDataPath "$SILO_DERIVED_DATA" \
+            ${package_args[@]+"${package_args[@]}"} ${compilation_args[@]+"${compilation_args[@]}"} "${signing_args[@]}" \
+            > "$settings_raw"
+          python3 ../ci/.ci-benchmark/controller-controls.py settings \
+            --input "$settings_raw" --folder "$SILO_CONTROLLER_CONTROLS_PATH"
       - name: Package simulator tests for focused visual verification
         if: >-
           matrix.action == 'test' && matrix.platform == 'iOS' &&
-          !inputs.baseline_ref && !inputs.release_gate &&
-          inputs.export_simulator_tests && github.event_name == 'workflow_dispatch'
+          !inputs.baseline_ref && github.event_name == 'workflow_dispatch' &&
+          inputs.export_simulator_tests
         run: ditto -c -k --keepParent "$SILO_DERIVED_DATA/Build/Products" /tmp/Silo-simulator-tests.zip
       - name: Upload compiled simulator tests
         if: >-
           matrix.action == 'test' && matrix.platform == 'iOS' &&
-          !inputs.baseline_ref && !inputs.release_gate &&
-          inputs.export_simulator_tests && github.event_name == 'workflow_dispatch'
+          !inputs.baseline_ref && github.event_name == 'workflow_dispatch' &&
+          inputs.export_simulator_tests
         uses: actions/upload-artifact@v4
         with:
           name: Silo-simulator-tests
           path: /tmp/Silo-simulator-tests.zip
           compression-level: 0
           retention-days: 3
+      - name: Record private benchmark resources before the suite
+        if: env.SILO_RESOURCE_OBSERVATIONS == 'true'
+        timeout-minutes: 1
+        run: python3 ../ci/.ci-benchmark/resource-observations.py before --folder "$SILO_RESOURCE_OBSERVATIONS_PATH"
       # Xcode 27 can spend ten minutes collecting simulator diagnostics after the
       # tests finish, which would run past this step's timeout.
       - name: Run complete simulator suite
@@ -317,37 +438,63 @@ jobs:
             package_args=(-clonedSourcePackagesDirPath "$SILO_SOURCE_PACKAGES_PATH"
               -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile)
           fi
+          parallel_args=(-parallel-testing-enabled NO)
+          if [ "$SILO_IOS_PARALLEL_PILOT" = true ]; then
+            parallel_args=(-parallel-testing-enabled YES -parallel-testing-worker-count 2)
+          fi
+          observer_pid=''
+          xcodebuild_exit=''
+          tee_exit=''
+          finish_observations() {
+            suite_exit=$?
+            trap - EXIT
+            kill -TERM "$observer_pid" 2>/dev/null || true
+            set +e
+            wait "$observer_pid"
+            sampler_exit=$?
+            set -e
+            terminal_args=(--sampler-exit "$sampler_exit")
+            if [ -n "$xcodebuild_exit" ]; then
+              terminal_args+=(--xcodebuild-exit "$xcodebuild_exit" --tee-exit "$tee_exit")
+            fi
+            python3 ../ci/.ci-benchmark/resource-observations.py terminal --folder "$SILO_RESOURCE_OBSERVATIONS_PATH" "${terminal_args[@]}"
+            exit "$suite_exit"
+          }
+          if [ "$SILO_RESOURCE_OBSERVATIONS" = true ]; then
+            python3 ../ci/.ci-benchmark/resource-observations.py sample --folder "$SILO_RESOURCE_OBSERVATIONS_PATH" &
+            observer_pid=$!
+            trap finish_observations EXIT
+            for _ in {1..40}; do
+              [ -f "$SILO_RESOURCE_OBSERVATIONS_PATH/sampler-ready.json" ] && break
+              kill -0 "$observer_pid" 2>/dev/null || break
+              sleep 0.25
+            done
+            test -f "$SILO_RESOURCE_OBSERVATIONS_PATH/sampler-ready.json"
+            set +e
+          fi
           xcodebuild test-without-building -project iosApp/Silo.xcodeproj -scheme "$SCHEME" \
             -destination "$SILO_TEST_DESTINATION" -derivedDataPath "$SILO_DERIVED_DATA" \
             ${package_args[@]+"${package_args[@]}"} -showBuildTimingSummary \
             -only-testing:"$TEST_TARGET" \
-            -parallel-testing-enabled NO \
+            ${parallel_args[@]+"${parallel_args[@]}"} \
             -test-timeouts-enabled YES -maximum-test-execution-time-allowance 60 \
             -collect-test-diagnostics never \
             -resultBundlePath /tmp/player-validation.xcresult \
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- | tee /tmp/player-validation.log
-      - name: Record regression proof
-        if: >-
-          github.event_name == 'push' && github.ref == 'refs/heads/main' &&
-          env.SILO_BENCH_VARIANT != 'baseline' && !inputs.release_gate &&
-          !inputs.baseline_ref && !inputs.benchmark_source_ref
-        env:
-          SILO_FULL_SUITE: 'true'
-          SILO_PREPARED_SIMULATOR_RUNTIMES: ${{ matrix.action == 'test' && format('{0}/apple-simulator-runtimes.json', runner.temp) || '' }}
-        run: >-
-          python3 ../ci/scripts/ci/apple-build-metadata.py --root .
-          --proof "$SCHEME" --output /tmp/regression-proof.json
-      - name: Upload regression proof
-        if: >-
-          github.event_name == 'push' && github.ref == 'refs/heads/main' &&
-          env.SILO_BENCH_VARIANT != 'baseline' && !inputs.release_gate &&
-          !inputs.baseline_ref && !inputs.benchmark_source_ref
-        uses: actions/upload-artifact@v4
-        with:
-          name: apple-regression-proof-${{ matrix.scheme }}-${{ github.run_attempt }}
-          path: /tmp/regression-proof.json
-          if-no-files-found: error
-          retention-days: 7
+          command_exits=("${PIPESTATUS[@]}")
+          if [ "$SILO_RESOURCE_OBSERVATIONS" = true ]; then
+            set -e
+            xcodebuild_exit="${command_exits[0]}"
+            tee_exit="${command_exits[1]}"
+            if [ "$xcodebuild_exit" -ne 0 ]; then
+              exit "$xcodebuild_exit"
+            fi
+            exit "$tee_exit"
+          fi
+      - name: Record private benchmark resources after the suite
+        if: always() && env.SILO_RESOURCE_OBSERVATIONS == 'true'
+        timeout-minutes: 1
+        run: python3 ../ci/.ci-benchmark/resource-observations.py after --folder "$SILO_RESOURCE_OBSERVATIONS_PATH"
       - name: Record synthetic preview expansion and successor playback
         if: matrix.action == 'test' && matrix.platform == 'iOS' && !inputs.baseline_ref && steps.build.outcome == 'success' && !cancelled() && github.event_name == 'workflow_dispatch' && inputs.record_preview
         timeout-minutes: 10
@@ -386,12 +533,15 @@ jobs:
           wait "$recorder_pid"
           trap - EXIT
           test -s /tmp/preview-transition.mp4
-      - name: Save build caches after successful validation
-        if: >-
-          env.SILO_BENCH_VARIANT != 'baseline' && !inputs.release_gate &&
-          (github.event_name == 'workflow_dispatch' ||
-           (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) ||
-           (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))
+      - name: Recheck tracked source before the declared compiler bootstrap save
+        if: env.SILO_CACHE_SAVE_POLICY == 'compiler_bootstrap'
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SILO_BENCHMARK_SOURCE_REF"
+          git diff --quiet
+          git diff --cached --quiet
+      - name: Save only the declared successful compiler bootstrap
+        if: env.SILO_CACHE_SAVE_POLICY == 'compiler_bootstrap'
         uses: ./ci/.github/actions/cache-spm
         with:
           operation: save
@@ -407,8 +557,7 @@ jobs:
           project-spec-key: ${{ steps.metadata.outputs.project_yml_sha256 }}
           derived-profile: ${{ steps.metadata.outputs.compilation_cache_profile }}
           save-cache: 'true'
-          # The qualified shared graph has one selected save owner.
-          save-dependencies: ${{ steps.metadata.outputs.spm_cache_profile_effective != 'shared_qualified' || matrix.scheme == steps.metadata.outputs.spm_cache_save_owner }}
+          save-dependencies: 'false'
           spm-cache-hit: ${{ steps.cache.outputs.spm-cache-hit }}
           derived-cache-hit: ${{ steps.cache.outputs.derived-cache-hit }}
       - name: Record benchmark metadata
@@ -422,7 +571,9 @@ jobs:
           SILO_DERIVED_CACHE_HIT: ${{ steps.cache.outputs.derived-cache-hit }}
           SILO_DERIVED_CACHE_RESTORED: ${{ steps.cache.outputs.derived-cache-restored }}
           SILO_DERIVED_CACHE_KEY: ${{ steps.cache.outputs.derived-cache-key }}
-        run: python3 ../ci/scripts/ci/apple-build-metadata.py --root . --benchmark | tee /tmp/apple-benchmark.log
+        run: |
+          echo "SILO_CI_RESOURCE_OBSERVATIONS_ENABLED=$SILO_RESOURCE_OBSERVATIONS"
+          python3 ../ci/scripts/ci/apple-build-metadata.py --root . --benchmark | tee /tmp/apple-benchmark.log
       - name: Upload validation evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -433,6 +584,8 @@ jobs:
             /tmp/player-validation.log
             /tmp/package-resolution.log
             /tmp/apple-benchmark.log
+            ${{ env.SILO_CONTROLLER_CONTROLS_PATH }}/
+            ${{ env.SILO_RESOURCE_OBSERVATIONS_PATH }}/
             /tmp/player-validation.xcresult
             /tmp/preview-transition.mp4
             /tmp/preview-recording.xcresult
@@ -440,7 +593,7 @@ jobs:
   result:
     name: Apple regression result
     needs: [select, validate]
-    if: always()
+    if: always() && github.event_name == 'workflow_dispatch' && github.repository == 'Silo-Server/silo-apple' && github.ref == 'refs/heads/private/apple-shared-spm-controller'
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
@@ -452,7 +605,7 @@ jobs:
         if: always()
         env:
           APPLE_REGRESSION_NEEDS: ${{ toJSON(needs) }}
-          APPLE_REGRESSION_REQUIRE_ALL: ${{ inputs.release_gate || startsWith(github.ref, 'refs/tags/') }}
+          APPLE_REGRESSION_REQUIRE_ALL: 'false'
         run: python3 scripts/ci/select-apple-platforms.py --verify-result
       - name: Reject a cancelled workflow
         if: cancelled()

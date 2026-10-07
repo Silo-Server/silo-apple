@@ -647,6 +647,82 @@ class MetadataTests(unittest.TestCase):
         self.assertFalse(normal['compilation_cache_enabled'])
         self.assertEqual(normal['compilation_cache_profile'], 'standard')
 
+    def parallel_pilot_env(self):
+        return {'GITHUB_REPOSITORY': 'Silo-Server/silo-apple',
+                'GITHUB_EVENT_NAME': 'workflow_dispatch', 'SILO_IOS_PARALLEL_PILOT': 'true',
+                'SILO_BENCH_VARIANT': 'optimized', 'SILO_BENCHMARK_PLATFORM': 'ios',
+                'SILO_BENCHMARK_SOURCE_REF': 'a' * 40, 'SILO_RELEASE_GATE': 'false',
+                'SILO_BASELINE_REF': '', 'SILO_IOS_ONLY': 'false',
+                'SILO_RECORD_PREVIEW': 'false', 'SILO_CACHE_PROBE': 'none'}
+
+    def test_parallel_pilot_rejects_ineligible_requests_before_source_preparation(self):
+        env = self.parallel_pilot_env()
+        self.assertEqual(metadata.parallel_test_workers(env), 2)
+        self.assertEqual(metadata.parallel_test_workers({}), 1)
+        invalid = {'GITHUB_REPOSITORY': ('other/silo-apple', ''),
+                   'GITHUB_EVENT_NAME': ('push', 'pull_request', 'workflow_call', ''),
+                   'SILO_IOS_PARALLEL_PILOT': ('TRUE', '1', 'true\n'),
+                   'SILO_BENCH_VARIANT': ('baseline', ''),
+                   'SILO_BASELINE_REF': ('main', 'b' * 40),
+                   'SILO_BENCHMARK_PLATFORM': ('all', 'tvos', 'macos', ''),
+                   'SILO_BENCHMARK_SOURCE_REF': ('', 'main', 'a' * 39, 'a' * 40 + '\n'),
+                   'SILO_RELEASE_GATE': ('true', 'TRUE'),
+                   'SILO_IOS_ONLY': ('true', 'TRUE'),
+                   'SILO_RECORD_PREVIEW': ('true', 'TRUE')}
+        for key, values in invalid.items():
+            for value in values:
+                with self.subTest(key=key, value=value), patch.dict(os.environ, {**env, key: value}, clear=True), \
+                        patch.object(sys, 'argv', ['metadata', '--validate-controls']), \
+                        patch.object(metadata, 'command', side_effect=AssertionError('Source preparation started')):
+                    with self.assertRaises(ValueError):
+                        metadata.main()
+
+    def test_parallel_pilot_verifies_the_actual_ios_test_matrix_row(self):
+        env = {**self.parallel_pilot_env(), 'PLATFORM': 'iOS', 'SCHEME': 'Silo', 'ACTION': 'test'}
+        self.assertEqual(metadata.parallel_test_workers(env), 2)
+        for key, values in {'PLATFORM': ('tvOS', 'macOS', ''),
+                            'SCHEME': ('SiloTV', 'SiloMac', ''),
+                            'ACTION': ('build', '')}.items():
+            for value in values:
+                with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                    metadata.validate_controls({**env, key: value})
+        with self.assertRaises(ValueError):
+            metadata.validate_controls({**self.parallel_pilot_env(), 'PLATFORM': 'iOS'})
+
+    def test_parallel_pilot_preserves_cache_keys_profile_and_source_metadata(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            lock = root / metadata.LOCK
+            lock.parent.mkdir(parents=True)
+            lock.write_text('unchanged dependency lock')
+            (root / 'iosApp/project.yml').write_text('unchanged project')
+            capture = root / 'runtimes.json'
+            capture.write_text(json.dumps(self.runtime_inventory()))
+            env = {**self.parallel_pilot_env(), 'PLATFORM': 'iOS', 'SCHEME': 'Silo', 'ACTION': 'test',
+                   'SILO_TEST_DESTINATION': 'platform=iOS Simulator,id=owned-ios-device',
+                   'SILO_TEST_RUNTIME_IDENTIFIER': 'com.apple.CoreSimulator.SimRuntime.iOS-27-0'}
+            for mode, compiler in (('off', 'false'), ('dependencies', 'false'),
+                                   ('derived_data', 'false'), ('derived_data', 'true')):
+                controls = {**env, 'SILO_CACHE_MODE': mode, 'SILO_COMPILATION_CACHE_ENABLED': compiler}
+                with self.subTest(mode=mode, compiler=compiler), \
+                        patch.object(metadata, 'command', side_effect=self.live_tool_command):
+                    serial = metadata.metadata(root, {**controls, 'SILO_IOS_PARALLEL_PILOT': 'false'}, capture)
+                    parallel = metadata.metadata(root, controls, capture)
+                self.assertEqual(serial, parallel)
+                marker = metadata.benchmark(parallel, controls)
+                self.assertTrue(marker['parallel_testing_enabled'])
+                self.assertEqual(marker['parallel_testing_worker_count'], 2)
+                self.assertEqual(marker['test_destination'], env['SILO_TEST_DESTINATION'])
+                self.assertEqual(marker['test_runtime_identifier'], env['SILO_TEST_RUNTIME_IDENTIFIER'])
+                self.assertEqual(marker['cache_mode'], mode)
+                self.assertEqual(marker['compilation_cache_enabled'], compiler == 'true')
+                self.assertEqual(marker['source_sha'], parallel['source_sha'])
+                serial_marker = metadata.benchmark(serial, {**controls, 'SILO_IOS_PARALLEL_PILOT': 'false'})
+                self.assertFalse(serial_marker['parallel_testing_enabled'])
+                self.assertEqual(serial_marker['parallel_testing_worker_count'], 1)
+                self.assertEqual({key: value for key, value in marker.items() if not key.startswith('parallel_testing_')},
+                                 {key: value for key, value in serial_marker.items() if not key.startswith('parallel_testing_')})
+
     def test_actions_output_rejects_multiline_values(self):
         with tempfile.TemporaryDirectory() as folder:
             with self.assertRaises(ValueError):
