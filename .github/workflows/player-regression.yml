@@ -280,6 +280,27 @@ jobs:
             -collect-test-diagnostics never \
             -resultBundlePath /tmp/player-validation.xcresult \
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- | tee /tmp/player-validation.log
+      - name: Record regression proof
+        if: >-
+          github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+          env.SILO_BENCH_VARIANT != 'baseline' && !inputs.release_gate &&
+          !inputs.baseline_ref && !inputs.benchmark_source_ref
+        env:
+          SILO_FULL_SUITE: 'true'
+        run: >-
+          python3 ../ci/scripts/ci/apple-build-metadata.py --root .
+          --proof "$SCHEME" --output /tmp/regression-proof.json
+      - name: Upload regression proof
+        if: >-
+          github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+          env.SILO_BENCH_VARIANT != 'baseline' && !inputs.release_gate &&
+          !inputs.baseline_ref && !inputs.benchmark_source_ref
+        uses: actions/upload-artifact@v4
+        with:
+          name: apple-regression-proof-${{ matrix.scheme }}-${{ github.run_attempt }}
+          path: /tmp/regression-proof.json
+          if-no-files-found: error
+          retention-days: 7
       - name: Record synthetic preview expansion and successor playback
         if: matrix.action == 'test' && matrix.platform == 'iOS' && !inputs.baseline_ref && steps.build.outcome == 'success' && !cancelled() && github.event_name == 'workflow_dispatch' && inputs.record_preview
         timeout-minutes: 10
