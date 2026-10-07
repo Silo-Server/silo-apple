@@ -87,12 +87,17 @@ def benchmark(result, env):
     scheme = {'iOS': 'Silo', 'tvOS': 'SiloTV', 'macOS': 'SiloMac'}[platform]
     spm_hit = env.get('SILO_SPM_CACHE_HIT') == 'true'
     derived_hit = env.get('SILO_DERIVED_CACHE_HIT') == 'true'
+    derived_restored = derived_hit or env.get('SILO_DERIVED_CACHE_RESTORED') == 'true'
+    derived_key = env.get('SILO_DERIVED_CACHE_KEY', '')
     xcodegen_hit = env.get('SILO_XCODEGEN_CACHE_HIT') == 'true'
     return {'source_sha': result['source_sha'], 'variant': env.get('SILO_BENCH_VARIANT', 'optimized'),
-            'cache_regime': 'warm' if spm_hit or derived_hit else 'cold',
+            'cache_regime': 'warm' if spm_hit or derived_restored else 'cold',
             'cache_namespace': result['cache_namespace'], 'platform': platform,
             'toolchain': tools[scheme], 'spm_cache_hit': spm_hit,
-            'derived_cache_hit': derived_hit, 'xcodegen_cache_hit': xcodegen_hit,
+            'derived_cache_hit': derived_hit, 'derived_cache_restored': derived_restored,
+            'derived_cache_key': derived_key,
+            'derived_cache_kind': 'exact' if derived_hit else 'prefix' if derived_restored else 'miss',
+            'xcodegen_cache_hit': xcodegen_hit,
             'dependency_lock_sha256': result['lock_sha256'],
             'build_config_sha256': result['build_config_sha256'], 'cache_mode': env.get('SILO_CACHE_MODE', 'dependencies')}
 

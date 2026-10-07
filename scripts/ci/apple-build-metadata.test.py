@@ -55,6 +55,14 @@ class MetadataTests(unittest.TestCase):
         self.assertEqual(metadata.benchmark(result, env)['cache_regime'], 'cold')
         env['SILO_SPM_CACHE_HIT'] = 'true'
         self.assertEqual(metadata.benchmark(result, env)['cache_regime'], 'warm')
+        env.update(SILO_SPM_CACHE_HIT='false', SILO_DERIVED_CACHE_HIT='false',
+                   SILO_DERIVED_CACHE_RESTORED='true', SILO_DERIVED_CACHE_KEY='prior-source-key')
+        partial = metadata.benchmark(result, env)
+        self.assertEqual(partial['cache_regime'], 'warm')
+        self.assertFalse(partial['derived_cache_hit'])
+        self.assertTrue(partial['derived_cache_restored'])
+        self.assertEqual(partial['derived_cache_kind'], 'prefix')
+        self.assertEqual(partial['derived_cache_key'], 'prior-source-key')
 
     def test_actions_output_rejects_multiline_values(self):
         with tempfile.TemporaryDirectory() as folder:

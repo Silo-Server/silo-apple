@@ -338,6 +338,8 @@ jobs:
           SILO_XCODEGEN_CACHE_HIT: ${{ steps.xcodegen.outputs.cache-hit }}
           SILO_SPM_CACHE_HIT: ${{ steps.cache.outputs.spm-cache-hit }}
           SILO_DERIVED_CACHE_HIT: ${{ steps.cache.outputs.derived-cache-hit }}
+          SILO_DERIVED_CACHE_RESTORED: ${{ steps.cache.outputs.derived-cache-restored }}
+          SILO_DERIVED_CACHE_KEY: ${{ steps.cache.outputs.derived-cache-key }}
         run: python3 ../ci/scripts/ci/apple-build-metadata.py --root . --benchmark | tee /tmp/apple-benchmark.log
       - name: Upload validation evidence
         if: always()
