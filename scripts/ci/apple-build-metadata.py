@@ -121,6 +121,7 @@ def prepared_runtimes(path, scheme, identifier, sdk_version):
 
 def toolchains(runtime_capture=None, selected_scheme='', runtime_identifier=''):
     xcode = parse_xcode(command('xcodebuild', '-version'))
+    architecture = command('uname', '-m')
     sdk_versions = {scheme: command('xcrun', '--sdk', sdk, '--show-sdk-version')
                     for scheme, sdk in SDKS.items()}
     runtimes = (prepared_runtimes(runtime_capture, selected_scheme, runtime_identifier, sdk_versions.get(selected_scheme))
@@ -128,7 +129,9 @@ def toolchains(runtime_capture=None, selected_scheme='', runtime_identifier=''):
                 json.loads(command('xcrun', 'simctl', 'list', 'runtimes', '--json'))['runtimes'])
     result = {}
     for scheme, sdk in SDKS.items():
-        item = {**xcode, 'sdk_version': sdk_versions[scheme]}
+        item = {**xcode, 'architecture': architecture,
+                'sdk_version': sdk_versions[scheme],
+                'sdk_build': command('xcrun', '--sdk', sdk, '--show-sdk-build-version')}
         if scheme != 'SiloMac':
             prefix = 'com.apple.CoreSimulator.SimRuntime.' + ('iOS-' if scheme == 'Silo' else 'tvOS-')
             matching = [runtime for runtime in runtimes if runtime.get('isAvailable')
@@ -154,9 +157,8 @@ def metadata(root, env, runtime_capture=None):
     tools = toolchains(runtime_capture, env.get('SCHEME', ''), env.get('SILO_TEST_RUNTIME_IDENTIFIER', ''))
     # SDK build and architecture also scope caches; runtime changes are covered
     # separately by the complete release-proof toolchain metadata.
-    cache_inputs = {'xcode': tools['Silo']['xcode_build'], 'architecture': command('uname', '-m'),
-                    'sdks': {scheme: command('xcrun', '--sdk', sdk, '--show-sdk-build-version')
-                             for scheme, sdk in SDKS.items()}}
+    cache_inputs = {'xcode': tools['Silo']['xcode_build'], 'architecture': tools['Silo']['architecture'],
+                    'sdks': {scheme: tools[scheme]['sdk_build'] for scheme in SDKS}}
     key = hashlib.sha256(json.dumps(cache_inputs, sort_keys=True).encode()).hexdigest()[:24]
     config = hashlib.sha256()
     for path in [root / 'iosApp/project.yml', *sorted((root / 'iosApp/Signing').glob('*.xcconfig'))]:
@@ -214,12 +216,35 @@ def benchmark(result, env):
             'build_config_sha256': result['build_config_sha256'], 'cache_mode': env.get('SILO_CACHE_MODE', 'dependencies')}
 
 
+def proof(result, root, env, scheme):
+    if env['GITHUB_EVENT_NAME'] != 'push' or env['GITHUB_REF_NAME'] != 'main':
+        raise ValueError('Only main push regressions produce trusted release proof')
+    if result['source_sha'] != env['GITHUB_SHA'] or env.get('SILO_FULL_SUITE') != 'true':
+        raise ValueError('Release proof requires the workflow source and complete suite')
+    committed = subprocess.check_output(['git', 'show', f'HEAD:{LOCK.as_posix()}'], cwd=root)
+    if hashlib.sha256(committed).hexdigest() != result['lock_sha256']:
+        raise ValueError('Package.resolved changed during dependency preparation')
+    tools = json.loads(result['toolchain_json'])[scheme]
+    if scheme != 'SiloMac' and (not tools['runtime_version'] or not tools['runtime_build']):
+        raise ValueError('Simulator runtime metadata is unavailable')
+    return {'schema_version': 1, 'repository': env['GITHUB_REPOSITORY'],
+            'workflow_path': '.github/workflows/player-regression.yml',
+            'event': env['GITHUB_EVENT_NAME'], 'branch': env['GITHUB_REF_NAME'],
+            'sha': result['source_sha'], 'run_id': int(env['GITHUB_RUN_ID']),
+            'run_attempt': int(env['GITHUB_RUN_ATTEMPT']), 'scheme': scheme,
+            'fingerprint': result['fingerprint'], 'toolchain': tools,
+            'dependency_lock_sha256': result['lock_sha256'], 'frozen_dependencies': True,
+            'full_suite': env.get('SILO_FULL_SUITE') == 'true'}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, default=Path('.'))
     parser.add_argument('--validate-controls', action='store_true')
     parser.add_argument('--outputs', action='store_true')
     parser.add_argument('--benchmark', action='store_true')
+    parser.add_argument('--proof', choices=SDKS)
+    parser.add_argument('--output', type=Path)
     args = parser.parse_args()
     if args.validate_controls:
         validate_controls(os.environ)
@@ -233,6 +258,11 @@ def main():
         emit_outputs(result, os.environ['GITHUB_OUTPUT'])
     elif args.benchmark:
         print('SILO_CI_BENCHMARK ' + json.dumps(benchmark(result, os.environ), sort_keys=True))
+    elif args.proof:
+        if not args.output:
+            parser.error('--proof requires --output')
+        args.output.write_text(json.dumps(proof(result, args.root.resolve(), os.environ, args.proof),
+                                          sort_keys=True, indent=2) + '\n')
     else:
         print(json.dumps(result, sort_keys=True))
 

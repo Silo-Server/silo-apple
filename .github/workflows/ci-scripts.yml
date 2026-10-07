@@ -5,6 +5,7 @@ on:
     paths:
       - 'scripts/ci/**'
       - 'fastlane/Fastfile'
+      - '.github/workflows/release.yml'
       - 'scripts/sync-apiv2-fixtures*.sh'
       - '.github/workflows/ci-scripts.yml'
       - '.github/workflows/player-regression.yml'
@@ -20,6 +21,7 @@ on:
     paths:
       - 'scripts/ci/**'
       - 'fastlane/Fastfile'
+      - '.github/workflows/release.yml'
       - 'scripts/sync-apiv2-fixtures*.sh'
       - '.github/workflows/ci-scripts.yml'
       - '.github/workflows/player-regression.yml'
@@ -53,6 +55,8 @@ jobs:
         run: python3 scripts/ci/package-release-source.test.py
       - name: Test Apple build metadata
         run: python3 scripts/ci/apple-build-metadata.test.py
+      - name: Test trusted regression proof reuse
+        run: python3 scripts/ci/find-regression-proof.test.py
       - name: Test Apple platform routing and aggregate result
         run: python3 scripts/ci/select-apple-platforms.test.py
       - uses: ruby/setup-ruby@v1
@@ -60,6 +64,8 @@ jobs:
           ruby-version: '3.4'
       - name: Test locked Fastlane package resolution
         run: ruby scripts/ci/fastlane-cache.test.rb
+      - name: Test deferred TestFlight distribution contracts
+        run: ruby scripts/ci/fastlane.test.rb
       - name: Test subtitle packaging validation
         run: python3 scripts/ci/validate-subtitle-packaging.test.py
       - name: Test API v2 fixture sync

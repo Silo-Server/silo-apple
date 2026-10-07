@@ -67,6 +67,10 @@ class MetadataTests(unittest.TestCase):
         def command(*args):
             if args == ('xcodebuild', '-version'):
                 return 'Xcode 27.0\nBuild version 27A266a'
+            if args == ('uname', '-m'):
+                return 'arm64'
+            if args[-1] == '--show-sdk-build-version':
+                return '24A100'
             if args == ('xcrun', 'simctl', 'list', 'runtimes', '--json'):
                 return json.dumps(runtimes)
             return '27.0'
