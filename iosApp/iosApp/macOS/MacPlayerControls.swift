@@ -45,6 +45,8 @@ struct MacPlayerControls: View {
                         isOptionsPresented.toggle()
                     }
 
+                    qualityButton
+
                     Spacer(minLength: 8)
 
                     Text(speedLabel)
@@ -118,6 +120,43 @@ struct MacPlayerControls: View {
                 .fill(Color.white.opacity(0.08))
         )
         .help(help)
+    }
+
+    /// Opens the Quality tab and names the active choice, like the quality
+    /// pill on iOS.
+    private var qualityButton: some View {
+        Button {
+            selectedOptionsTab = .quality
+            isOptionsPresented.toggle()
+        } label: {
+            HStack(spacing: 6) {
+                if viewModel.isQualitySwitching {
+                    ProgressView()
+                        .controlSize(.mini)
+                } else {
+                    Image(systemName: "slider.horizontal.3")
+                }
+                Text(activeQualityLabel)
+                    .lineLimit(1)
+            }
+            .font(.system(size: 13, weight: .semibold))
+            .padding(.horizontal, 10)
+            .frame(height: 30)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.white)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(Color.white.opacity(0.08))
+        )
+        .help("Quality")
+        .accessibilityLabel("Playback Quality")
+        .accessibilityValue(activeQualityLabel)
+    }
+
+    private var activeQualityLabel: String {
+        viewModel.qualityOptions.first(where: { $0.id == viewModel.activeQualityId })?.label
+            ?? ApplePlaybackQuality.displayName(for: viewModel.activeQualityId)
     }
 
     private var speedLabel: String {

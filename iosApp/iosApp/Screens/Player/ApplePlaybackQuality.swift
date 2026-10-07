@@ -23,9 +23,15 @@ struct ApplePlaybackQualityOption: Identifiable, Hashable {
         ApplePlaybackQuality.formatBitrate(kbps: bitrateKbps)
     }
 
+    /// Bitrate shown beside a capped rung; nil for Auto, Original, and
+    /// rungs without a bitrate cap.
+    var bitrateText: String? {
+        guard !isOriginal, !isAuto, bitrateKbps > 0 else { return nil }
+        return bitrateLabel
+    }
+
     var labelWithBitrate: String {
-        guard !isOriginal, !isAuto, bitrateKbps > 0 else { return label }
-        return "\(label) (\(bitrateLabel))"
+        bitrateText.map { "\(label) (\($0))" } ?? label
     }
 }
 

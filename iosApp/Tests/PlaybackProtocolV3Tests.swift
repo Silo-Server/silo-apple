@@ -2338,6 +2338,49 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertFalse(settingsFallback.isServerOwned)
     }
 
+    func testPlannedQualityMenuKeepsServerOrderAndShowsBitrateForCappedRungs() {
+        // A plan that offers a lower-resolution version ("1080p") beside
+        // transcode rungs of the 4K source.
+        let options = ApplePlaybackQuality.playbackOptions(
+            serverQualities: [
+                PlaybackV3AvailableQuality(
+                    label: "original",
+                    displayName: "Original",
+                    height: 2_160,
+                    bitrateKbps: 60_000,
+                    preservesSource: true
+                ),
+                PlaybackV3AvailableQuality(
+                    label: "1080p",
+                    displayName: "1080p",
+                    height: 1_080,
+                    bitrateKbps: 9_500,
+                    preservesSource: false
+                ),
+                PlaybackV3AvailableQuality(
+                    label: "1080p-high",
+                    displayName: "1080p High",
+                    height: 1_080,
+                    bitrateKbps: 20_000,
+                    preservesSource: false
+                ),
+                PlaybackV3AvailableQuality(
+                    label: "720p-low",
+                    displayName: "720p Low",
+                    height: 720,
+                    bitrateKbps: 2_500,
+                    preservesSource: false
+                )
+            ]
+        )
+
+        XCTAssertEqual(options.map(\.id), ["auto", "original", "1080p", "1080p-high", "720p-low"])
+        XCTAssertEqual(options.map(\.label), ["Auto", "Original", "1080p", "1080p High", "720p Low"])
+        XCTAssertEqual(options.map(\.bitrateText), [nil, nil, "9.5 Mbps", "20 Mbps", "2.5 Mbps"])
+        XCTAssertEqual(options[3].labelWithBitrate, "1080p High (20 Mbps)")
+        XCTAssertEqual(options[0].labelWithBitrate, "Auto")
+    }
+
     func testEmptyServerQualityCatalogOnlyOffersAuto() {
         let options = ApplePlaybackQuality.playbackOptions(
             serverQualities: []

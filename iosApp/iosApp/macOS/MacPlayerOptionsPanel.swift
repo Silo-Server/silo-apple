@@ -7,6 +7,7 @@ struct MacPlayerOptionsPanel: View {
         case audio = "Audio"
         case subtitles = "Subtitles"
         case chapters = "Chapters"
+        case quality = "Quality"
         case playback = "Playback"
 
         var id: String { rawValue }
@@ -117,6 +118,39 @@ struct MacPlayerOptionsPanel: View {
                     }
                 }
             }
+        case .quality:
+            // The same plan-built list iOS and tvOS offer: Auto, then each
+            // server rung in plan order.
+            optionList {
+                ForEach(viewModel.qualityOptions) { option in
+                    trackButton(
+                        title: option.label,
+                        detail: nil,
+                        trailing: option.bitrateText,
+                        selected: option.id == viewModel.activeQualityId
+                    ) {
+                        viewModel.switchQuality(option.id)
+                    }
+                }
+
+                if viewModel.isQualitySwitching {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Switching quality…")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.72))
+                    .padding(.horizontal, 12)
+                    .padding(.top, 4)
+                } else if let error = viewModel.qualitySwitchError {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .padding(.horizontal, 12)
+                        .padding(.top, 4)
+                }
+            }
         case .playback:
             optionList {
                 Text("Speed")
@@ -164,6 +198,7 @@ struct MacPlayerOptionsPanel: View {
     private func trackButton(
         title: String,
         detail: String?,
+        trailing: String? = nil,
         selected: Bool,
         action: @escaping () -> Void
     ) -> some View {
@@ -188,6 +223,13 @@ struct MacPlayerOptionsPanel: View {
                 }
 
                 Spacer(minLength: 8)
+
+                if let trailing {
+                    Text(trailing)
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.58))
+                        .monospacedDigit()
+                }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
