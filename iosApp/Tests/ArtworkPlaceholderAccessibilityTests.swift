@@ -22,6 +22,7 @@ final class ArtworkPlaceholderAccessibilityTests: XCTestCase {
         }
         let labels = try await accessibilityLabels(of: view, waitingFor: "Marker")
         XCTAssertFalse(labels.contains { $0.caseInsensitiveCompare("tv") == .orderedSame }, "\(labels)")
+        XCTAssertFalse(labels.contains { $0.contains(ArtworkPlaceholderGlyph.label) }, "\(labels)")
     }
 
     func testLibraryCardExposesOnlyItsOwnLabel() async throws {
@@ -36,6 +37,7 @@ final class ArtworkPlaceholderAccessibilityTests: XCTestCase {
         .environmentObject(OverlayPrefsStore())
         let labels = try await accessibilityLabels(of: card, waitingFor: "Placeholder Show")
         XCTAssertFalse(labels.contains { $0.caseInsensitiveCompare("tv") == .orderedSame }, "\(labels)")
+        XCTAssertFalse(labels.contains { $0.contains(ArtworkPlaceholderGlyph.label) }, "\(labels)")
     }
 
     // MARK: - Helpers

@@ -168,21 +168,42 @@ enum ArtworkPlaceholderSymbol {
     }
 }
 
-/// The faint glyph drawn over missing artwork.
+/// What is drawn over missing artwork: the Silo mark above "Artwork pending"
+/// when there is room, else the faint type glyph.
 ///
 /// It is decoration: the enclosing card's label already names the item, and
 /// the symbol's own label ("Movie", "Tv") would misstate it. An `Image` with
 /// `accessibilityHidden` is gone for VoiceOver but still listed in the
-/// UI-automation tree that XCUITest and Maestro read, so the symbol is drawn
+/// UI-automation tree that XCUITest and Maestro read, so everything is drawn
 /// into a canvas, which exposes no element for it.
 struct ArtworkPlaceholderGlyph: View {
     let symbol: String
 
+    /// Narrower artwork cannot fit the label on one line.
+    static let brandedMinWidth: CGFloat = 100
+    static let label = "Artwork pending"
+
     var body: some View {
         Canvas { context, size in
-            var glyph = context.resolve(Image(systemName: symbol))
-            glyph.shading = .color(Color.siloOnSurface.opacity(0.3))
-            context.draw(glyph, at: CGPoint(x: size.width / 2, y: size.height / 2))
+            let center = CGPoint(x: size.width / 2, y: size.height / 2)
+            guard size.width >= Self.brandedMinWidth else {
+                var glyph = context.resolve(Image(systemName: symbol))
+                glyph.shading = .color(Color.siloOnSurface.opacity(0.3))
+                context.draw(glyph, at: center)
+                return
+            }
+            let mark = context.resolve(Image("SiloMark"))
+            // Capped so a hero backdrop does not get a billboard-sized mark.
+            let markHeight = min(size.height * 0.3, 120)
+            let markWidth = markHeight * mark.size.width / max(mark.size.height, 1)
+            let label = context.resolve(
+                Text(Self.label).font(.siloCaption).foregroundColor(.siloSecondaryText)
+            )
+            let labelHeight = label.measure(in: size).height
+            let spacing: CGFloat = 8
+            let top = center.y - (markHeight + spacing + labelHeight) / 2
+            context.draw(mark, in: CGRect(x: center.x - markWidth / 2, y: top, width: markWidth, height: markHeight))
+            context.draw(label, at: CGPoint(x: center.x, y: top + markHeight + spacing + labelHeight / 2))
         }
         .accessibilityHidden(true)
         .allowsHitTesting(false)
