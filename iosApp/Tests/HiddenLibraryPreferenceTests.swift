@@ -111,7 +111,7 @@ final class HiddenLibraryPreferenceTests: XCTestCase {
             "items": [row],
             "revision": SettingKey.revision,
         ])
-        return try JSONDecoder().decode(EffectiveSettingValuesResponse.self, from: data)
+        return try SettingsWireCoding.makeDecoder().decode(EffectiveSettingValuesResponse.self, from: data)
     }
 
     private func library(_ id: Int) -> Library {
