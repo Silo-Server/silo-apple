@@ -4,12 +4,13 @@ import Foundation
 /// player's auto resolver consumes.
 ///
 /// Candidates are ordered external-first to match the Protocol V3 combined
-/// ordinal space (externals, then embedded, then downloaded). The watch detail
-/// lists embedded tracks before externals, and the resolver is first-match
-/// within a track class, so resolving in catalog order picks a different
-/// track than the post-load resolver does over the plan inventory. That
-/// disagreement forced a `subtitle_track_changed` replan, and a full engine
-/// reload, on every episode start.
+/// ordinal space (externals, then embedded, then downloaded), so an ordinal
+/// here is the index a start request sends. The watch detail lists embedded
+/// tracks before externals. The resolver ranks embedded tracks above external
+/// ones itself and keeps list order only for full ties, so it lands on the
+/// same track here as over the plan inventory after load. A disagreement
+/// forces a `subtitle_track_changed` replan, and a full engine reload, on
+/// every episode start.
 enum SubtitleTrackCandidates {
     /// `ordinal` is the position in the returned combined order, not the
     /// catalog offset the track came from.

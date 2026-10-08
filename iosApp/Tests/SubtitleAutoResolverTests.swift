@@ -7,23 +7,27 @@ final class SubtitleAutoResolverTests: XCTestCase {
         lang: String?,
         forced: Bool = false,
         hearingImpaired: Bool = false,
-        title: String? = nil
+        title: String? = nil,
+        codec: String = "subrip",
+        external: Bool = false,
+        downloaded: Bool = false
     ) -> PlayerTrack {
         PlayerTrack(
             trackId: id,
             kind: .sub,
             title: title,
             lang: lang,
-            codec: "subrip",
+            codec: codec,
             audioChannelCount: nil,
             bitrate: nil,
             isDefault: false,
             isForced: forced,
             isHearingImpaired: hearingImpaired,
-            isExternal: false,
+            isExternal: external || downloaded,
             isSelected: false,
-            ffIndex: Int(id),
-            srcId: nil
+            ffIndex: external || downloaded ? nil : Int(id),
+            srcId: external || downloaded ? Int(id) : nil,
+            isDownloaded: downloaded
         )
     }
 
@@ -36,7 +40,8 @@ final class SubtitleAutoResolverTests: XCTestCase {
         additionalLanguages: [String] = [],
         forcedOnly: Bool = false,
         preferAccessibility: Bool = false,
-        disableWhenNoLanguageMatch: Bool = false
+        disableWhenNoLanguageMatch: Bool = false,
+        signature: SubtitleTrackSignature? = nil
     ) -> SubtitleAutoResolver.Inputs {
         SubtitleAutoResolver.Inputs(
             preferredLanguage: preferredLanguage,
@@ -46,7 +51,7 @@ final class SubtitleAutoResolverTests: XCTestCase {
             forcedOnly: forcedOnly,
             preferAccessibilityTracks: preferAccessibility,
             disableWhenNoLanguageMatch: disableWhenNoLanguageMatch,
-            trackSignature: nil,
+            trackSignature: signature,
             availableSubtitles: tracks,
             currentAudioLanguage: audioLanguage
         )
@@ -297,5 +302,89 @@ final class SubtitleAutoResolverTests: XCTestCase {
             audioLanguage: "eng"
         ))
         XCTAssertEqual(result, .noChange)
+    }
+
+    // MARK: - Embedded, external, and downloaded tracks (silo-server #1849)
+
+    private func englishPick(_ tracks: [PlayerTrack], showForced: Bool = false) -> SubtitleAutoSelection {
+        SubtitleAutoResolver.resolve(inputs(
+            preferredLanguage: "en",
+            mode: .always,
+            showForced: showForced,
+            tracks: tracks,
+            audioLanguage: "ja"
+        ))
+    }
+
+    /// External sidecars come first in the V3 combined order, but one may
+    /// have been cut for another release: the muxed track wins the tie.
+    func testEmbeddedBeatsExternalInSameLanguage() {
+        let external = track(id: 0, lang: "eng", codec: "srt", external: true)
+        let embedded = track(id: 3, lang: "eng")
+        XCTAssertEqual(englishPick([external, embedded]), .select(embedded))
+    }
+
+    func testExternalBeatsDownloaded() {
+        let downloaded = track(id: 0, lang: "eng", codec: "srt", downloaded: true)
+        let external = track(id: 1, lang: "eng", codec: "srt", external: true)
+        XCTAssertEqual(englishPick([downloaded, external]), .select(external))
+    }
+
+    /// Track class outranks source: a file's own forced or SDH track never
+    /// displaces the full external track the viewer asked for.
+    func testEmbeddedForcedOrSDHDoesNotDisplaceFullExternal() {
+        let external = track(id: 0, lang: "eng", codec: "srt", external: true)
+        let forced = track(id: 3, lang: "eng", forced: true)
+        let sdh = track(id: 4, lang: "eng", hearingImpaired: true)
+        XCTAssertEqual(englishPick([external, forced, sdh], showForced: true), .select(external))
+    }
+
+    /// Original-file playback draws embedded PGS itself, so being a bitmap
+    /// is no reason to lose to an external text file.
+    func testEmbeddedPGSBeatsExternalText() {
+        let external = track(id: 0, lang: "eng", codec: "srt", external: true)
+        let pgs = track(id: 3, lang: "eng", codec: "hdmv_pgs_subtitle")
+        XCTAssertFalse(SubtitleAutoResolver.needsBurnIn(pgs))
+        XCTAssertEqual(englishPick([external, pgs]), .select(pgs))
+    }
+
+    /// A bitmap sidecar or download needs a server burn-in here, as does an
+    /// embedded codec Aether has no decoder for.
+    func testBurnInTracksLoseToRenderableTracks() {
+        let externalPGS = track(id: 0, lang: "eng", codec: "pgs", external: true)
+        let externalText = track(id: 1, lang: "eng", codec: "srt", external: true)
+        let xsub = track(id: 3, lang: "eng", codec: "xsub")
+        XCTAssertTrue(SubtitleAutoResolver.needsBurnIn(externalPGS))
+        XCTAssertTrue(SubtitleAutoResolver.needsBurnIn(xsub))
+        XCTAssertEqual(englishPick([externalPGS, xsub, externalText]), .select(externalText))
+    }
+
+    func testBurnInTrackStillWinsWhenItIsTheOnlyMatch() {
+        let externalPGS = track(id: 0, lang: "eng", codec: "pgs", external: true)
+        let french = track(id: 3, lang: "fra")
+        XCTAssertEqual(englishPick([externalPGS, french]), .select(externalPGS))
+    }
+
+    /// The remembered per-series track is not re-ranked: a signature that
+    /// names an external track restores it over a same-language embedded one.
+    func testSignatureNamingExternalTrackStillRestoresIt() {
+        let external = track(id: 0, lang: "eng", title: "English (Director)", codec: "srt", external: true)
+        let embedded = track(id: 3, lang: "eng", title: "English")
+        let result = SubtitleAutoResolver.resolve(inputs(
+            preferredLanguage: "en",
+            mode: .always,
+            showForced: false,
+            tracks: [external, embedded],
+            audioLanguage: "ja",
+            signature: SubtitleTrackSignature(
+                source: "external",
+                language: "en",
+                codec: "srt",
+                label: "Director",
+                forced: false,
+                hearingImpaired: false
+            )
+        ))
+        XCTAssertEqual(result, .select(external))
     }
 }

@@ -252,7 +252,8 @@ enum ApplePlaybackV3PlanAdapter {
                 isExternal: item.source != "embedded",
                 isSelected: item.combinedIndex == selectedIndex,
                 ffIndex: ffIndex,
-                srcId: item.combinedIndex
+                srcId: item.combinedIndex,
+                isDownloaded: item.source == "downloaded"
             )
         }
     }

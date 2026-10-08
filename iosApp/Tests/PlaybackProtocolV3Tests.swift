@@ -1339,12 +1339,14 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertFalse(renewal.startFromBeginning)
     }
 
-    func testInitialAutoSubtitleIntentResolvesInCombinedOrdinalOrder() {
+    func testInitialAutoSubtitleIntentPrefersEmbeddedInCombinedOrdinalSpace() {
         // Watch detail lists embedded tracks before externals; the V3 combined
-        // ordinal space and the plan inventory list externals first. With two
-        // English full-dialogue tracks the resolver's first match must be the
-        // same track on both sides, or the post-load policy replans (a full
-        // engine reload) on every episode start.
+        // ordinal space and the plan inventory list externals first. The pick
+        // used to be the first external track (ordinal 0); the embedded
+        // full-dialogue track now wins (silo-server #1849), and its index must
+        // still be the combined ordinal. The post-load resolver over the plan
+        // inventory must land on the same ordinal, or it replans (a full engine
+        // reload) on every episode start.
         let version = makeVersion(
             container: "mkv",
             videoCodec: "h264",
@@ -1368,9 +1370,35 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         )
         XCTAssertEqual(
             intent,
-            PlaybackSessionBridge.InitialProtocolV3SubtitleIntent(ffmpegStreamIndex: nil, combinedIndex: 0),
-            "first external English track is combined ordinal 0 and must win over the embedded one at ordinal 2"
+            PlaybackSessionBridge.InitialProtocolV3SubtitleIntent(ffmpegStreamIndex: 3, combinedIndex: 2),
+            "the embedded English track (stream 3) is combined ordinal 2 and must win over both externals"
         )
+
+        let inventory = ApplePlaybackV3PlanAdapter.subtitlePickerTracks(
+            plan: makePlan(
+                container: "mkv",
+                subtitleInventory: [
+                    makeInventoryItem(combinedIndex: 0, source: "external"),
+                    makeInventoryItem(combinedIndex: 1, source: "external"),
+                    makeInventoryItem(combinedIndex: 2, source: "embedded"),
+                    makeInventoryItem(combinedIndex: 3, source: "downloaded")
+                ]
+            ),
+            version: version
+        )
+        let postLoad = SubtitleAutoResolver.resolve(.init(
+            preferredLanguage: "en",
+            mode: .always,
+            showForced: false,
+            trackSignature: nil,
+            availableSubtitles: inventory,
+            currentAudioLanguage: "ja"
+        ))
+        guard case .select(let postLoadPick) = postLoad else {
+            return XCTFail("post-load resolver must select a track, got \(postLoad)")
+        }
+        XCTAssertEqual(postLoadPick.srcId, 2, "the post-load pick must be the same combined ordinal")
+        XCTAssertEqual(inventory.map(\.isDownloaded), [false, false, false, true])
 
         // The same preference over the plan inventory must land on the same ordinal.
         let indexed = SubtitleTrackCandidates.indexedPlayerTracks(from: version.subtitleTracks ?? [])

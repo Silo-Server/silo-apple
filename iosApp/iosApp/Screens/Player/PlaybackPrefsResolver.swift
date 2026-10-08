@@ -262,14 +262,14 @@ struct SubtitleAutoResolver {
         preferForced: Bool,
         preferAccessibility: Bool
     ) -> PlayerTrack? {
-        let predicates = trackClassPredicates(
+        let predicates = rankedTrackClassPredicates(
             preferForced: preferForced,
             preferAccessibility: preferAccessibility
         )
         for predicate in predicates {
             for language in languages {
                 let normalized = normalizedLanguageIdentifier(language)
-                if let exact = tracks.first(where: { track in
+                if let exact = preferredSource(in: tracks.filter { track in
                     predicate(track)
                         && track.lang.map(normalizedLanguageIdentifier) == normalized
                 }) {
@@ -277,7 +277,7 @@ struct SubtitleAutoResolver {
                 }
             }
             for language in languages {
-                if let fallback = tracks.first(where: { track in
+                if let fallback = preferredSource(in: tracks.filter { track in
                     predicate(track)
                         && track.lang.map { languagesMatch($0, language) } == true
                 }) {
@@ -293,13 +293,66 @@ struct SubtitleAutoResolver {
         preferForced: Bool,
         preferAccessibility: Bool
     ) -> PlayerTrack? {
-        for predicate in trackClassPredicates(
+        for predicate in rankedTrackClassPredicates(
             preferForced: preferForced,
             preferAccessibility: preferAccessibility
         ) {
-            if let track = tracks.first(where: predicate) { return track }
+            if let track = preferredSource(in: tracks.filter(predicate)) { return track }
         }
         return nil
+    }
+
+    /// Ranking within the matching tracks, each tier only breaking ties in
+    /// the one before (silo-server #1849's web and Jellyfin rule):
+    /// 1. a track this player renders itself beats one needing a burn-in;
+    /// 2. the track class: full dialogue beats forced, plain beats SDH;
+    /// 3. embedded beats external beats downloaded (`preferredSource`).
+    /// A burn-in track still wins when nothing else matches.
+    private static func rankedTrackClassPredicates(
+        preferForced: Bool,
+        preferAccessibility: Bool
+    ) -> [(PlayerTrack) -> Bool] {
+        let classes = trackClassPredicates(
+            preferForced: preferForced,
+            preferAccessibility: preferAccessibility
+        )
+        return [false, true].flatMap { burnIn in
+            classes.map { matchesClass in
+                { needsBurnIn($0) == burnIn && matchesClass($0) }
+            }
+        }
+    }
+
+    /// Embedded first: a muxed track was timed against this release, while a
+    /// sidecar may have been cut for another one. `min(by:)` keeps the first
+    /// of equal elements, so a full tie stays in list order.
+    private static func preferredSource(in tracks: [PlayerTrack]) -> PlayerTrack? {
+        tracks.min { sourceRank($0) < sourceRank($1) }
+    }
+
+    private static func sourceRank(_ track: PlayerTrack) -> Int {
+        if !track.isExternal { return 0 }
+        return track.isDownloaded ? 2 : 1
+    }
+
+    /// Embedded subtitle codecs Aether decodes from the original file.
+    private static let nativeEmbeddedSubtitleCodecs = Set(
+        ApplePlaybackV3Capabilities.nativeEmbeddedSubtitleCapabilities(containers: ["mkv"])
+            .flatMap(\.codecs)
+    )
+
+    /// Whether showing the track needs a server burn-in on this player. The
+    /// original-file route renders text and embedded PGS/DVD/DVB itself but
+    /// declares no bitmap sidecars (`ApplePlaybackV3Capabilities`), so only a
+    /// bitmap sidecar or download, or an embedded bitmap codec Aether cannot
+    /// decode (XSUB), qualifies. The inventory's `burn_in_only` is not used:
+    /// it also marks embedded DVD/DVB, which play here without one.
+    static func needsBurnIn(_ track: PlayerTrack) -> Bool {
+        guard let codec = track.codec, SubtitleCodecClassifier.isBitmap(codec) else { return false }
+        if track.isExternal { return true }
+        return !nativeEmbeddedSubtitleCodecs.contains(
+            ApplePlaybackV3Capabilities.normalizedSubtitleCodec(codec)
+        )
     }
 
     private static func trackClassPredicates(

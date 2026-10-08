@@ -471,17 +471,19 @@ final class DetailVersionSelectionTests: XCTestCase {
         )
     }
 
-    func testAutoSubtitlePreviewMatchesPlaybackCombinedOrder() {
-        // Catalog lists the embedded English track first; Protocol V3 resolves
-        // in combined order (externals first), so playback starts the external
-        // one. The detail "Auto:" preview must name that same track.
+    func testAutoSubtitlePreviewPrefersEmbeddedOverExternal() {
+        // Protocol V3 resolves in combined order (externals first), and this
+        // used to start the external ASS file. Playback now prefers the
+        // embedded track (silo-server #1849: a sidecar may be out of sync with
+        // this release), and the detail "Auto:" preview must name that same
+        // track. The external row comes first here so list order can't decide.
         let versions = decodedVersions("""
         [
           {
             "file_id": 1,
             "subtitle_tracks": [
-              { "index": 2, "codec": "subrip", "language": "eng" },
-              { "index": 7, "codec": "ass", "language": "eng", "external": true, "external_path": "movie.en.ass" }
+              { "index": 7, "codec": "ass", "language": "eng", "external": true, "external_path": "movie.en.ass" },
+              { "index": 2, "codec": "subrip", "language": "eng" }
             ]
           }
         ]
@@ -491,7 +493,7 @@ final class DetailVersionSelectionTests: XCTestCase {
             selectedSubtitleTrackIndex: nil,
             autoContext: .init(preferredLanguage: "en", mode: "always", audioLanguage: "ja")
         )
-        XCTAssertEqual(label, "Auto: English · ASS", "preview must follow the external-first order playback uses; got \(label)")
+        XCTAssertEqual(label, "Auto: English · SRT", "preview must name the embedded track playback starts on; got \(label)")
     }
 
     func testAutoSubtitlePreviewKeepsEmbeddedStreamZero() {
