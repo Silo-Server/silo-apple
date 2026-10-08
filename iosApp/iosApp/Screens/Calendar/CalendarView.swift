@@ -30,6 +30,11 @@ struct CalendarView: View {
             .task {
                 await viewModel.load()
             }
+            // The device timezone changed while Calendar is open: reload so
+            // the week, its day keys and the request agree on the new zone.
+            .onReceive(NotificationCenter.default.publisher(for: .NSSystemTimeZoneDidChange)) { _ in
+                Task { await viewModel.load() }
+            }
         #if !os(tvOS)
             .refreshable {
                 await viewModel.load()
