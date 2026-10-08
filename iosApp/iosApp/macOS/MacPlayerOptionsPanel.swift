@@ -28,6 +28,11 @@ struct MacPlayerOptionsPanel: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                // The Quality tab is gone when a replan leaves one quality;
+                // leave it rather than keep showing its content.
+                .onChange(of: viewModel.hasQualityChoice, initial: true) { _, hasChoice in
+                    if !hasChoice, selectedTab == .quality { selectedTab = .playback }
+                }
 
                 Button {
                     onDismiss()
