@@ -335,6 +335,8 @@ enum StartupContentPrefetcher {
         }
     }
 
+    /// The libraries the active profile browses: every library it can open,
+    /// less the ones it hid from navigation (`ui.disabled_library_ids`).
     /// `reusingRecent: false` is for an explicit refresh by the user.
     static func fetchUserLibraries(reusingRecent: Bool = true) async throws -> LibrariesResponse {
         if reusingRecent, let recent = userLibraries.recentValue() { return recent }
@@ -342,7 +344,13 @@ enum StartupContentPrefetcher {
         #if os(iOS) || os(tvOS)
         let probe = PrefetchProbe.begin("user_libraries", isOriginator: !userLibraries.isInFlight)
         #endif
-        let task = userLibraries.join { try await SiloAPI.shared.libraries() }
+        let task = userLibraries.join {
+            async let hidden = HiddenLibraryPreference.hiddenLibraryIds()
+            let response = try await SiloAPI.shared.libraries()
+            return LibrariesResponse(
+                libraries: HiddenLibraryPreference.visibleLibraries(response.libraries, hiding: await hidden)
+            )
+        }
         let writeToken = userLibraries.writeToken
         do {
             let response = try await task.value
