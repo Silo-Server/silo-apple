@@ -46,6 +46,10 @@ struct AsyncImageView: View {
         let resolved = resolveArtwork(drawnAt: pointSize)
         if let cached = resolved.cached, cached.isSufficient {
             artworkImage(cached.image, frame: frame)
+        } else if URL(string: url) == nil {
+            // Nothing to load, so draw what stands in for the artwork on the
+            // first frame rather than after an empty request fails.
+            missingPlaceholder(frame: frame)
         } else {
             LazyImage(
                 request: artworkLoadingEnabled ? resolved.request : nil,
@@ -65,7 +69,7 @@ struct AsyncImageView: View {
                         .onAppear(perform: notifyImageLoaded)
                 } else if let cached = resolved.cached {
                     artworkImage(cached.image, frame: frame)
-                } else if state.error != nil && artworkLoadingEnabled {
+                } else if let error = state.error, !Self.isUnstartedRequest(error) {
                     missingPlaceholder(frame: frame)
                 } else {
                     placeholder(frame: frame)
@@ -75,6 +79,14 @@ struct AsyncImageView: View {
             .priority(.high)
             .onDisappear(.cancel)
         }
+    }
+
+    /// No request was made: a tvOS row loading offscreen, or no size yet. The
+    /// artwork is not known to be missing, and the error lingers for a frame
+    /// after the request arrives.
+    private static func isUnstartedRequest(_ error: Error) -> Bool {
+        if case .imageRequestMissing = error as? ImagePipeline.Error { return true }
+        return false
     }
 
     private struct ResolvedArtwork {
@@ -123,21 +135,17 @@ struct AsyncImageView: View {
     /// it failed to load.
     @ViewBuilder
     private func missingPlaceholder(frame: CGSize?) -> some View {
-        switch placeholderStyle {
-        case .surface:
+        let hasThumbhash = ThumbHashImageCache.shared.image(for: thumbhash) != nil
+        switch placeholderStyle.whenMissing(hasThumbhash: hasThumbhash) {
+        case .placeholder:
+            placeholder(frame: frame)
+        case .glyph:
             placeholder(frame: frame)
                 .overlay { ArtworkPlaceholderGlyph() }
-        case .clear:
-            placeholder(frame: frame)
-        case .artwork:
-            // A ThumbHash already shows the real artwork's colours.
-            if ThumbHashImageCache.shared.image(for: thumbhash) != nil {
-                placeholder(frame: frame)
-            } else {
-                DefaultArtwork()
-                    .framed(frame)
-                    .clipped()
-            }
+        case .defaultArtwork:
+            DefaultArtwork()
+                .framed(frame)
+                .clipped()
         }
     }
 }
@@ -188,4 +196,22 @@ enum ImagePlaceholderStyle {
     /// Posters, covers and stills: a missing image shows `DefaultArtwork`
     /// instead of a glyph.
     case artwork
+
+    /// What fills the slot once the image is known to be missing.
+    enum Missing: Equatable {
+        /// The loading placeholder stays: the ThumbHash, the surface, or nothing.
+        case placeholder
+        /// The loading placeholder with the faint film glyph over it.
+        case glyph
+        case defaultArtwork
+    }
+
+    func whenMissing(hasThumbhash: Bool) -> Missing {
+        switch self {
+        case .surface: .glyph
+        case .clear: .placeholder
+        // A ThumbHash already shows the real artwork's colours.
+        case .artwork: hasThumbhash ? .placeholder : .defaultArtwork
+        }
+    }
 }

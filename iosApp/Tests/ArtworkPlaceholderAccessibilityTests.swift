@@ -17,10 +17,6 @@ final class ArtworkPlaceholderAccessibilityTests: XCTestCase {
                 .frame(width: 120, height: 180)
             AsyncImageView(url: "", targetSize: CGSize(width: 120, height: 180))
                 .frame(width: 120, height: 180)
-            // Drawn on the first pass, so the assertion does not depend on
-            // the empty requests above failing in time.
-            DefaultArtwork()
-                .frame(width: 120, height: 180)
         }
         let labels = try await accessibilityLabels(of: view, waitingFor: "Marker")
         XCTAssertTrue(labels.allSatisfy { $0 == "Marker" }, "\(labels)")
@@ -75,8 +71,7 @@ final class ArtworkPlaceholderAccessibilityTests: XCTestCase {
         defer { window.isHidden = true; window.rootViewController = nil }
 
         var labels: [String] = []
-        // The placeholders appear once the empty requests have failed; give the
-        // render a few passes after the marker shows up.
+        // Give the render a few passes after the marker shows up.
         var passesAfterMarker = 0
         for _ in 0..<40 {
             window.layoutIfNeeded()
