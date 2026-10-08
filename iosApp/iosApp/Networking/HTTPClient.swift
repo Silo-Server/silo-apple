@@ -435,9 +435,8 @@ actor HTTPClient {
     /// earlier. `expectedAuth` compares through
     /// `CapturedOrdinaryRequestAuth.sameCredentialIdentity(as:)`, the one
     /// comparator, so the credential owner and the profile proof are covered.
-    /// `acceptedStatuses` only applies with `requestIdentity`; it exposes
-    /// selected non-2xx responses after normal scoped auth handling, without
-    /// adding retries. `repeatedQuery` carries query items that repeat a name.
+    /// `acceptedStatuses` exposes selected non-2xx responses after normal
+    /// auth handling, without adding retries. `repeatedQuery` carries query items that repeat a name.
     /// `sendsProfile: false` sends the account credential without
     /// `X-Profile-Id`/`X-Profile-Token`, for operations whose contract forbids
     /// the profile header (v2 logout). It applies only without
@@ -581,7 +580,8 @@ actor HTTPClient {
             expectedAccount: expectedAccount,
             expectedAuth: expectedAuth,
             sendsProfile: sendsProfile,
-            dispatchRecord: dispatchRecord
+            dispatchRecord: dispatchRecord,
+            acceptedStatuses: acceptedStatuses
         ) { serverUrl in
             var request = try self.buildRequest(
                 serverUrl: serverUrl,
@@ -981,6 +981,7 @@ actor HTTPClient {
         expectedAuth: CapturedOrdinaryRequestAuth? = nil,
         sendsProfile: Bool = true,
         dispatchRecord: HTTPDispatchRecord? = nil,
+        acceptedStatuses: Set<Int> = [],
         makeRequest: (String) throws -> URLRequest
     ) async throws -> (Data, HTTPURLResponse) {
         let dispatchRevision = try captureRequestDispatchRevision()
@@ -1073,7 +1074,9 @@ actor HTTPClient {
                     dispatchRecord: dispatchRecord
                 )
                 await signalProfileVerificationIfRequired(retryData, retryResponse, sent: retry, auth: refreshedAuth)
-                try ensureSuccess(retryData, retryResponse, method: method, quietStatuses: quietStatuses)
+                if !acceptedStatuses.contains(retryResponse.statusCode) {
+                    try ensureSuccess(retryData, retryResponse, method: method, quietStatuses: quietStatuses)
+                }
                 return (retryData, retryResponse)
             }
             // Reached only when the refresh did not yield a usable, still-current
@@ -1083,7 +1086,9 @@ actor HTTPClient {
         }
 
         await signalProfileVerificationIfRequired(data, response, sent: request, auth: capturedAuth)
-        try ensureSuccess(data, response, method: method, quietStatuses: quietStatuses)
+        if !acceptedStatuses.contains(response.statusCode) {
+            try ensureSuccess(data, response, method: method, quietStatuses: quietStatuses)
+        }
         return (data, response)
     }
 

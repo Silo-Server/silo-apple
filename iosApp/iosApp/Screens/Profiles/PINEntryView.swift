@@ -150,6 +150,7 @@ struct PINEntryView: View {
             Text(errorMessage)
                 .font(.system(size: statusFont))
                 .foregroundStyle(Color(hex: "#FF6961"))
+                .multilineTextAlignment(.center)
                 .transition(.opacity)
         } else if isVerifying {
             ProgressView()

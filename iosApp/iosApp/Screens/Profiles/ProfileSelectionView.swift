@@ -521,6 +521,10 @@ struct ProfileSelectionView: View {
                 if case ProfileTransitionError.incorrectPIN = error {
                     wrongPINCount += 1
                     pinError = "Wrong PIN. Try again."
+                } else if case ProfileTransitionError.pinLockedOut = error {
+                    // Clears the entry; the lockout is not another wrong PIN.
+                    wrongPINCount += 1
+                    pinError = error.localizedDescription
                 } else {
                     closePINEntry()
                     viewModel.error = ErrorState(error)

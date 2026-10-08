@@ -125,6 +125,25 @@ final class ProfilesV2Tests: XCTestCase {
         }
     }
 
+    func testLockedOutPINReportsTheWaitFromRetryAfter() async throws {
+        let api = try await api()
+        let lockout = Self.problem("rate_limited", status: 429, detail: "Too many incorrect PINs.")
+        for (headers, message) in [
+            (["Retry-After": "241"], "Too many incorrect PINs. Try again in 5 minutes."),
+            (["Retry-After": "60"], "Too many incorrect PINs. Try again in 1 minute."),
+            ([:], "Too many incorrect PINs. Try again later."),
+        ] {
+            stub.reply(429, lockout, headers: headers)
+            do {
+                _ = try await api.verifyProfileSelection(profileId: "p-2", pin: "0000")
+                XCTFail("A locked-out profile must throw")
+            } catch let error as ProfileTransitionError {
+                guard case .pinLockedOut = error else { return XCTFail("\(error)") }
+                XCTAssertEqual(error.localizedDescription, message)
+            }
+        }
+    }
+
     func testProfileWithoutAPINIsSelectedWithoutARequest() async throws {
         let api = try await api()
         let token = try await api.verifyProfileSelection(profileId: "p-2", pin: nil)
