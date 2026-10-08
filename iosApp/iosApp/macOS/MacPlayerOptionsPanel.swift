@@ -23,7 +23,7 @@ struct MacPlayerOptionsPanel: View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Picker("Options", selection: $selectedTab) {
-                    ForEach(Tab.allCases) { tab in
+                    ForEach(Tab.allCases.filter { $0 != .quality || viewModel.hasQualityChoice }) { tab in
                         Text(tab.rawValue).tag(tab)
                     }
                 }

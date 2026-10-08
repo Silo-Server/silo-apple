@@ -157,6 +157,12 @@ enum ApplePlaybackQuality {
         return [auto] + planned
     }
 
+    /// Whether the plan offers more than one quality. Auto is added by the
+    /// client, so it does not count: Auto beside a lone Original is no choice.
+    static func hasChoice(among options: [ApplePlaybackQualityOption]) -> Bool {
+        options.filter { !$0.isAuto }.count > 1
+    }
+
     /// Quality labels in an active V3 plan are server-owned identifiers. Keep
     /// unknown additive rungs instead of coercing them to Auto; only Settings
     /// persistence uses the closed local catalog in `normalizeStoredId`.
