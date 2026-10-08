@@ -132,6 +132,8 @@ final class ProfilesV2Tests: XCTestCase {
             (["Retry-After": "241"], "Too many incorrect PINs. Try again in 5 minutes."),
             (["Retry-After": "60"], "Too many incorrect PINs. Try again in 1 minute."),
             ([:], "Too many incorrect PINs. Try again later."),
+            (["Retry-After": "1e300"], "Too many incorrect PINs. Try again later."),
+            (["Retry-After": "inf"], "Too many incorrect PINs. Try again later."),
         ] {
             stub.reply(429, lockout, headers: headers)
             do {

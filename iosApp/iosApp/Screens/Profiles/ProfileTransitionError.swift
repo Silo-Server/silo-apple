@@ -24,7 +24,12 @@ enum ProfileTransitionError: LocalizedError {
         case .incorrectPIN:
             return "That PIN is incorrect. Try again."
         case .pinLockedOut(let retryAfter):
-            guard let retryAfter, retryAfter > 0 else { return "Too many incorrect PINs. Try again later." }
+            // The header is server input: "inf" and "1e300" parse as numbers
+            // and would trap in the Int conversion. A day is far past any
+            // real lockout.
+            guard let retryAfter, retryAfter > 0, retryAfter <= 86_400 else {
+                return "Too many incorrect PINs. Try again later."
+            }
             let minutes = Int((retryAfter / 60).rounded(.up))
             return "Too many incorrect PINs. Try again in \(minutes) \(minutes == 1 ? "minute" : "minutes")."
         case .noActiveServer:
