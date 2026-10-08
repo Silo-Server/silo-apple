@@ -312,7 +312,7 @@ struct MediaCard: View {
                 thumbhash: thumbhash,
                 targetSize: CGSize(width: cardWidth, height: cardHeight),
                 contentMode: .fill,
-                placeholderSymbol: ArtworkPlaceholderSymbol.forMediaType(mediaType)
+                missingArtwork: MissingArtwork(mediaType: mediaType, title: title, subtitle: year.map(String.init))
             )
                 .frame(width: cardWidth, height: cardHeight)
 

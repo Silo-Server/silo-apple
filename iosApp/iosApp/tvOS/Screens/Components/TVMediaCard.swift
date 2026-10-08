@@ -168,7 +168,11 @@ struct TVMediaCard: View {
                 thumbhash: posterThumbhash,
                 targetSize: CGSize(width: resolvedCardWidth, height: cardHeight),
                 contentMode: .fill,
-                placeholderSymbol: ArtworkPlaceholderSymbol.forMediaType(mediaType)
+                missingArtwork: MissingArtwork(
+                    mediaType: mediaType,
+                    title: title,
+                    subtitle: subtitle ?? year.map(String.init)
+                )
             )
             .frame(width: resolvedCardWidth, height: cardHeight)
             .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))

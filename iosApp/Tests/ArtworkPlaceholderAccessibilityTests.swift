@@ -5,9 +5,9 @@ import UIKit
 import XCTest
 @testable import Silo
 
-/// A missing poster's glyph is decoration: neither VoiceOver nor UI
-/// automation (XCUITest, Maestro) may see it as an element labelled
-/// "Movie" or "Tv" next to the card's title.
+/// A missing poster's stand-in is decoration: neither VoiceOver nor UI
+/// automation (XCUITest, Maestro) may see its glyph ("Movie", "Tv") or its
+/// drawn title as elements next to the card's own label.
 @MainActor
 final class ArtworkPlaceholderAccessibilityTests: XCTestCase {
     func testPlaceholderGlyphIsNotAnAccessibilityElement() async throws {
@@ -16,12 +16,17 @@ final class ArtworkPlaceholderAccessibilityTests: XCTestCase {
             AsyncImageView(
                 url: "",
                 targetSize: CGSize(width: 120, height: 180),
-                placeholderSymbol: ArtworkPlaceholderSymbol.forMediaType("series")
+                missingArtwork: MissingArtwork(mediaType: "series", title: "Drawn Title", subtitle: "1999")
             )
             .frame(width: 120, height: 180)
+            // Drawn on the first pass, so the assertions below do not depend
+            // on the empty request above failing in time.
+            MissingArtworkView(artwork: MissingArtwork(mediaType: "series", title: "Drawn Title", subtitle: "1999"))
+                .frame(width: 120, height: 180)
         }
         let labels = try await accessibilityLabels(of: view, waitingFor: "Marker")
         XCTAssertFalse(labels.contains { $0.caseInsensitiveCompare("tv") == .orderedSame }, "\(labels)")
+        XCTAssertFalse(labels.contains { $0.contains("Drawn Title") || $0.contains("1999") }, "\(labels)")
     }
 
     func testLibraryCardExposesOnlyItsOwnLabel() async throws {
@@ -71,7 +76,7 @@ final class ArtworkPlaceholderAccessibilityTests: XCTestCase {
         defer { window.isHidden = true; window.rootViewController = nil }
 
         var labels: [String] = []
-        // The glyph appears once the empty request has failed; give the
+        // The stand-in appears once the empty request has failed; give the
         // render a few passes after the marker shows up.
         var passesAfterMarker = 0
         for _ in 0..<40 {

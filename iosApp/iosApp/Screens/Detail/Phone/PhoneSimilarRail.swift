@@ -235,26 +235,21 @@ private struct PhonePosterCard: View {
         .contentShape(Rectangle())
     }
 
-    @ViewBuilder
     private var poster: some View {
-        if let url = item.posterUrl, !url.isEmpty {
-            AsyncImageView(
-                url: url,
-                thumbhash: item.posterThumbhash,
-                contentMode: .fill,
-                placeholderSymbol: item.placeholderSymbol ?? placeholderSymbol
+        AsyncImageView(
+            url: item.posterUrl ?? "",
+            thumbhash: item.posterThumbhash,
+            targetSize: CGSize(width: cardWidth, height: cardHeight),
+            contentMode: .fill,
+            missingArtwork: MissingArtwork(
+                symbol: item.placeholderSymbol ?? placeholderSymbol,
+                title: item.title,
+                subtitle: item.subtitle ?? item.year.map(String.init)
             )
-                .frame(width: cardWidth, height: cardHeight)
-                .clipped()
-                .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
-        } else {
-            RoundedRectangle(cornerRadius: SiloTheme.cornerRadius)
-                .fill(Color.siloSurfaceElevated)
-                .frame(width: cardWidth, height: cardHeight)
-                .overlay(
-                    ArtworkPlaceholderGlyph(symbol: item.placeholderSymbol ?? placeholderSymbol)
-                )
-        }
+        )
+            .frame(width: cardWidth, height: cardHeight)
+            .clipped()
+            .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
     }
 }
 #endif

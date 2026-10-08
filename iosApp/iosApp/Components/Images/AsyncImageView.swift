@@ -17,10 +17,9 @@ struct AsyncImageView: View {
     var targetSize: CGSize? = nil
     var contentMode: ContentMode = .fill
     var placeholderStyle: ImagePlaceholderStyle = .surface
-    /// Glyph drawn when the artwork cannot load. Pass the item's type
-    /// through `ArtworkPlaceholderSymbol` so a series without artwork does
-    /// not show a film reel.
-    var placeholderSymbol: String = ArtworkPlaceholderSymbol.fallback
+    /// Drawn when the artwork cannot load. Pass the item's type and title so
+    /// the card shows a stand-in poster rather than a bare film reel.
+    var missingArtwork = MissingArtwork()
     var onImageLoaded: (() -> Void)? = nil
 
     @Environment(\.displayScale) private var displayScale
@@ -73,7 +72,12 @@ struct AsyncImageView: View {
                     placeholder(frame: frame)
                         .overlay {
                             if placeholderStyle.showsErrorIcon {
-                                ArtworkPlaceholderGlyph(symbol: placeholderSymbol)
+                                MissingArtworkView(
+                                    artwork: missingArtwork,
+                                    // A ThumbHash already colours the slot
+                                    // with the real artwork's palette.
+                                    isTinted: ThumbHashImageCache.shared.image(for: thumbhash) == nil
+                                )
                             }
                         }
                 } else {
@@ -168,24 +172,115 @@ enum ArtworkPlaceholderSymbol {
     }
 }
 
-/// The faint glyph drawn over missing artwork.
+/// What a card shows when its artwork is missing. With a title it becomes a
+/// stand-in poster; without one, only the faint type glyph is drawn.
+struct MissingArtwork {
+    var symbol: String = ArtworkPlaceholderSymbol.fallback
+    var title: String? = nil
+    /// A second line under the title, such as the year.
+    var subtitle: String? = nil
+}
+
+extension MissingArtwork {
+    init(mediaType: String?, title: String? = nil, subtitle: String? = nil) {
+        self.init(symbol: ArtworkPlaceholderSymbol.forMediaType(mediaType), title: title, subtitle: subtitle)
+    }
+}
+
+/// Drawn over missing artwork. With room and a title, it is a stand-in
+/// poster: a muted tint picked from the title, the type glyph, the title and
+/// its second line, centred so it clears overlay badges in any corner.
+/// Narrower artwork, or artwork with no title, keeps the faint glyph alone.
 ///
 /// It is decoration: the enclosing card's label already names the item, and
-/// the symbol's own label ("Movie", "Tv") would misstate it. An `Image` with
-/// `accessibilityHidden` is gone for VoiceOver but still listed in the
-/// UI-automation tree that XCUITest and Maestro read, so the symbol is drawn
-/// into a canvas, which exposes no element for it.
-struct ArtworkPlaceholderGlyph: View {
-    let symbol: String
+/// the symbol's own label ("Movie", "Tv") would misstate it. An `Image` or
+/// `Text` with `accessibilityHidden` is gone for VoiceOver but still listed
+/// in the UI-automation tree that XCUITest and Maestro read, so everything is
+/// drawn into a canvas, which exposes no element for it or its symbols.
+struct MissingArtworkView: View {
+    let artwork: MissingArtwork
+    /// False when something behind the view already colours the slot; the
+    /// title then sits on a dimming scrim instead of a tint.
+    var isTinted = true
+
+    /// Narrower artwork has no room for a readable title.
+    static let titleMinWidth: CGFloat = 100
 
     var body: some View {
-        Canvas { context, size in
-            var glyph = context.resolve(Image(systemName: symbol))
-            glyph.shading = .color(Color.siloOnSurface.opacity(0.3))
-            context.draw(glyph, at: CGPoint(x: size.width / 2, y: size.height / 2))
+        GeometryReader { geometry in
+            let title = titleToDraw(in: geometry.size)
+            Canvas { context, size in
+                let bounds = CGRect(origin: .zero, size: size)
+                guard let title, let card = context.resolveSymbol(id: 0) else {
+                    var glyph = context.resolve(Image(systemName: artwork.symbol))
+                    glyph.shading = .color(Color.siloOnSurface.opacity(0.3))
+                    context.draw(glyph, at: CGPoint(x: bounds.midX, y: bounds.midY))
+                    return
+                }
+                if isTinted {
+                    // Lowercased so "The Office" and "the office" match.
+                    context.fill(Path(bounds), with: .linearGradient(
+                        PlaceholderTint.gradient(for: title.lowercased()),
+                        startPoint: .zero,
+                        endPoint: CGPoint(x: bounds.maxX, y: bounds.maxY)
+                    ))
+                } else {
+                    // Dark enough that white text clears WCAG AA over a
+                    // near-white ThumbHash.
+                    context.fill(Path(bounds), with: .color(.black.opacity(0.55)))
+                }
+                context.draw(card, in: bounds)
+            } symbols: {
+                if let title {
+                    TitleCard(artwork: artwork, title: title, size: geometry.size)
+                        .tag(0)
+                }
+            }
         }
         .accessibilityHidden(true)
         .allowsHitTesting(false)
+    }
+
+    private func titleToDraw(in size: CGSize) -> String? {
+        guard size.width >= Self.titleMinWidth,
+              let title = artwork.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !title.isEmpty else { return nil }
+        return title
+    }
+}
+
+/// The glyph, title and second line, scaled to the artwork's size.
+private struct TitleCard: View {
+    let artwork: MissingArtwork
+    let title: String
+    let size: CGSize
+
+    var body: some View {
+        // Sized from the shorter dimension so a wide still does not get a
+        // title too tall for it.
+        let base = min(size.width, size.height * 0.75)
+        let titleSize = min(max(base * 0.13, 12), 40)
+        let isWide = size.width > size.height
+        VStack(spacing: titleSize * 0.4) {
+            Image(systemName: artwork.symbol)
+                .font(.system(size: titleSize * 1.1, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.45))
+            Text(title)
+                .font(.system(size: titleSize, weight: .bold))
+                .foregroundStyle(.white)
+                .lineLimit(isWide ? 2 : 4)
+                .minimumScaleFactor(0.75)
+            if let subtitle = artwork.subtitle, !subtitle.isEmpty {
+                Text(subtitle)
+                    .font(.system(size: max(titleSize * 0.7, 10), weight: .medium))
+                    .foregroundStyle(.white.opacity(0.65))
+                    .lineLimit(1)
+            }
+        }
+        .multilineTextAlignment(.center)
+        .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
+        .padding(base * 0.1)
+        .frame(width: size.width, height: size.height)
     }
 }
 
