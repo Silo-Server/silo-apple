@@ -41,7 +41,8 @@ final class SubtitleAutoResolverTests: XCTestCase {
         forcedOnly: Bool = false,
         preferAccessibility: Bool = false,
         disableWhenNoLanguageMatch: Bool = false,
-        signature: SubtitleTrackSignature? = nil
+        signature: SubtitleTrackSignature? = nil,
+        sourceContainer: String? = nil
     ) -> SubtitleAutoResolver.Inputs {
         SubtitleAutoResolver.Inputs(
             preferredLanguage: preferredLanguage,
@@ -53,7 +54,8 @@ final class SubtitleAutoResolverTests: XCTestCase {
             disableWhenNoLanguageMatch: disableWhenNoLanguageMatch,
             trackSignature: signature,
             availableSubtitles: tracks,
-            currentAudioLanguage: audioLanguage
+            currentAudioLanguage: audioLanguage,
+            sourceContainer: sourceContainer
         )
     }
 
@@ -306,13 +308,18 @@ final class SubtitleAutoResolverTests: XCTestCase {
 
     // MARK: - Embedded, external, and downloaded tracks (silo-server #1849)
 
-    private func englishPick(_ tracks: [PlayerTrack], showForced: Bool = false) -> SubtitleAutoSelection {
+    private func englishPick(
+        _ tracks: [PlayerTrack],
+        showForced: Bool = false,
+        sourceContainer: String? = nil
+    ) -> SubtitleAutoSelection {
         SubtitleAutoResolver.resolve(inputs(
             preferredLanguage: "en",
             mode: .always,
             showForced: showForced,
             tracks: tracks,
-            audioLanguage: "ja"
+            audioLanguage: "ja",
+            sourceContainer: sourceContainer
         ))
     }
 
@@ -357,6 +364,16 @@ final class SubtitleAutoResolverTests: XCTestCase {
         XCTAssertTrue(SubtitleAutoResolver.needsBurnIn(externalPGS))
         XCTAssertTrue(SubtitleAutoResolver.needsBurnIn(xsub))
         XCTAssertEqual(englishPick([externalPGS, xsub, externalText]), .select(externalText))
+    }
+
+    /// Native embedded bitmap rendering is per container: MKV only. Embedded
+    /// PGS in MP4 or a Blu-ray M2TS needs a burn-in, so a sidecar wins there.
+    func testEmbeddedPGSOutsideMKVLosesToExternalText() {
+        let external = track(id: 0, lang: "eng", codec: "srt", external: true)
+        let pgs = track(id: 3, lang: "eng", codec: "hdmv_pgs_subtitle")
+        XCTAssertEqual(englishPick([external, pgs], sourceContainer: "mkv"), .select(pgs))
+        XCTAssertEqual(englishPick([external, pgs], sourceContainer: "mp4"), .select(external))
+        XCTAssertEqual(englishPick([external, pgs], sourceContainer: "m2ts"), .select(external))
     }
 
     func testBurnInTrackStillWinsWhenItIsTheOnlyMatch() {

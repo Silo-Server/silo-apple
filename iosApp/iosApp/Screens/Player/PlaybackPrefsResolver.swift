@@ -63,6 +63,10 @@ struct SubtitleAutoResolver {
         /// preferred subtitle language (e.g. English audio + English
         /// sub preference → no subs).
         let currentAudioLanguage: String?
+        /// The file's container (`FileVersion.container`). Decides which
+        /// embedded bitmap tracks this player renders without a burn-in; nil
+        /// assumes MKV.
+        let sourceContainer: String?
 
         init(
             preferredLanguage: String?,
@@ -74,7 +78,8 @@ struct SubtitleAutoResolver {
             disableWhenNoLanguageMatch: Bool = false,
             trackSignature: SubtitleTrackSignature?,
             availableSubtitles: [PlayerTrack],
-            currentAudioLanguage: String?
+            currentAudioLanguage: String?,
+            sourceContainer: String? = nil
         ) {
             self.preferredLanguage = preferredLanguage
             self.additionalPreferredLanguages = additionalPreferredLanguages
@@ -86,6 +91,7 @@ struct SubtitleAutoResolver {
             self.trackSignature = trackSignature
             self.availableSubtitles = availableSubtitles
             self.currentAudioLanguage = currentAudioLanguage
+            self.sourceContainer = sourceContainer
         }
     }
 
@@ -110,7 +116,8 @@ struct SubtitleAutoResolver {
                 preferredLanguages,
                 in: inputs.availableSubtitles.filter(\.isForced),
                 preferForced: true,
-                preferAccessibility: inputs.preferAccessibilityTracks
+                preferAccessibility: inputs.preferAccessibilityTracks,
+                sourceContainer: inputs.sourceContainer
             ) {
                 return .select(forced)
             }
@@ -130,7 +137,8 @@ struct SubtitleAutoResolver {
                 nil,
                 in: inputs.availableSubtitles,
                 preferForced: inputs.showForced,
-                preferAccessibility: inputs.preferAccessibilityTracks
+                preferAccessibility: inputs.preferAccessibilityTracks,
+                sourceContainer: inputs.sourceContainer
             ) {
                 return .select(any)
             }
@@ -156,7 +164,8 @@ struct SubtitleAutoResolver {
                    matchingLanguage,
                    in: inputs.availableSubtitles.filter(\.isForced),
                    preferForced: true,
-                   preferAccessibility: inputs.preferAccessibilityTracks
+                   preferAccessibility: inputs.preferAccessibilityTracks,
+                   sourceContainer: inputs.sourceContainer
                ) {
                 return .select(forced)
             }
@@ -171,7 +180,8 @@ struct SubtitleAutoResolver {
             preferredLanguages,
             in: inputs.availableSubtitles,
             preferForced: false,
-            preferAccessibility: inputs.preferAccessibilityTracks
+            preferAccessibility: inputs.preferAccessibilityTracks,
+            sourceContainer: inputs.sourceContainer
         ) {
             return .select(pick)
         }
@@ -238,17 +248,20 @@ struct SubtitleAutoResolver {
         _ language: String?,
         in tracks: [PlayerTrack],
         preferForced: Bool,
-        preferAccessibility: Bool = false
+        preferAccessibility: Bool = false,
+        sourceContainer: String?
     ) -> PlayerTrack? {
         guard let language else {
             return bestTrackClass(in: tracks, preferForced: preferForced,
-                                  preferAccessibility: preferAccessibility)
+                                  preferAccessibility: preferAccessibility,
+                                  sourceContainer: sourceContainer)
         }
         return bestLanguageMatch(
             [language],
             in: tracks,
             preferForced: preferForced,
-            preferAccessibility: preferAccessibility
+            preferAccessibility: preferAccessibility,
+            sourceContainer: sourceContainer
         )
     }
 
@@ -260,11 +273,13 @@ struct SubtitleAutoResolver {
         _ languages: [String],
         in tracks: [PlayerTrack],
         preferForced: Bool,
-        preferAccessibility: Bool
+        preferAccessibility: Bool,
+        sourceContainer: String?
     ) -> PlayerTrack? {
         let predicates = rankedTrackClassPredicates(
             preferForced: preferForced,
-            preferAccessibility: preferAccessibility
+            preferAccessibility: preferAccessibility,
+            sourceContainer: sourceContainer
         )
         for predicate in predicates {
             for language in languages {
@@ -291,11 +306,13 @@ struct SubtitleAutoResolver {
     private static func bestTrackClass(
         in tracks: [PlayerTrack],
         preferForced: Bool,
-        preferAccessibility: Bool
+        preferAccessibility: Bool,
+        sourceContainer: String?
     ) -> PlayerTrack? {
         for predicate in rankedTrackClassPredicates(
             preferForced: preferForced,
-            preferAccessibility: preferAccessibility
+            preferAccessibility: preferAccessibility,
+            sourceContainer: sourceContainer
         ) {
             if let track = preferredSource(in: tracks.filter(predicate)) { return track }
         }
@@ -310,7 +327,8 @@ struct SubtitleAutoResolver {
     /// A burn-in track still wins when nothing else matches.
     private static func rankedTrackClassPredicates(
         preferForced: Bool,
-        preferAccessibility: Bool
+        preferAccessibility: Bool,
+        sourceContainer: String?
     ) -> [(PlayerTrack) -> Bool] {
         let classes = trackClassPredicates(
             preferForced: preferForced,
@@ -318,7 +336,7 @@ struct SubtitleAutoResolver {
         )
         return [false, true].flatMap { burnIn in
             classes.map { matchesClass in
-                { needsBurnIn($0) == burnIn && matchesClass($0) }
+                { needsBurnIn($0, sourceContainer: sourceContainer) == burnIn && matchesClass($0) }
             }
         }
     }
@@ -335,24 +353,26 @@ struct SubtitleAutoResolver {
         return track.isDownloaded ? 2 : 1
     }
 
-    /// Embedded subtitle codecs Aether decodes from the original file.
-    private static let nativeEmbeddedSubtitleCodecs = Set(
-        ApplePlaybackV3Capabilities.nativeEmbeddedSubtitleCapabilities(containers: ["mkv"])
-            .flatMap(\.codecs)
-    )
-
     /// Whether showing the track needs a server burn-in on this player. The
-    /// original-file route renders text and embedded PGS/DVD/DVB itself but
-    /// declares no bitmap sidecars (`ApplePlaybackV3Capabilities`), so only a
-    /// bitmap sidecar or download, or an embedded bitmap codec Aether cannot
-    /// decode (XSUB), qualifies. The inventory's `burn_in_only` is not used:
-    /// it also marks embedded DVD/DVB, which play here without one.
-    static func needsBurnIn(_ track: PlayerTrack) -> Bool {
+    /// original-file route declares no bitmap sidecars, and renders an embedded
+    /// bitmap track only when the container's native capability lists its
+    /// codec (`ApplePlaybackV3Capabilities`): PGS/DVD/DVB in MKV, none in MP4
+    /// or MPEG-TS. So a bitmap sidecar or download qualifies, as does embedded
+    /// bitmap in another container or XSUB. A nil container assumes MKV. The
+    /// inventory's `burn_in_only` is not used: it also marks embedded DVD/DVB,
+    /// which play here without one.
+    ///
+    /// The server may still choose a packaged delivery, which burns in any
+    /// bitmap track, but it decides that after this resolver runs for the
+    /// start request; ranking against the original-file route keeps the
+    /// detail preview, the start request and the post-load pass in agreement.
+    static func needsBurnIn(_ track: PlayerTrack, sourceContainer: String? = nil) -> Bool {
         guard let codec = track.codec, SubtitleCodecClassifier.isBitmap(codec) else { return false }
         if track.isExternal { return true }
-        return !nativeEmbeddedSubtitleCodecs.contains(
-            ApplePlaybackV3Capabilities.normalizedSubtitleCodec(codec)
-        )
+        let nativeCodecs = ApplePlaybackV3Capabilities.nativeEmbeddedSubtitleCapabilities(
+            containers: [sourceContainer ?? "mkv"]
+        ).flatMap(\.codecs)
+        return !nativeCodecs.contains(ApplePlaybackV3Capabilities.normalizedSubtitleCodec(codec))
     }
 
     private static func trackClassPredicates(

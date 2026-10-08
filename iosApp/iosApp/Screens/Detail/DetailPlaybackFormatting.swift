@@ -343,7 +343,8 @@ enum DetailPlaybackFormatting {
             showForced: context.showForced,
             trackSignature: context.signature,
             availableSubtitles: candidates,
-            currentAudioLanguage: context.audioLanguage
+            currentAudioLanguage: context.audioLanguage,
+            sourceContainer: version?.container
         ))
         guard case .select(let pick) = resolution,
               let position = candidates.firstIndex(of: pick) else {

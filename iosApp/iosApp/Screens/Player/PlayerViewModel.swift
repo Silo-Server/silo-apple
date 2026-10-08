@@ -8627,7 +8627,8 @@ class PlayerViewModel {
             disableWhenNoLanguageMatch: prefs.disableWhenNoLanguageMatch,
             trackSignature: prefs.trackSignature,
             availableSubtitles: allSubs,
-            currentAudioLanguage: audioLang
+            currentAudioLanguage: audioLang,
+            sourceContainer: currentSelectedVersion?.container
         ))
         // An empty callback still has to clear a server-seeded automatic
         // selection in device-settings mode, but it must not latch the
@@ -8667,7 +8668,8 @@ class PlayerViewModel {
             availableSubtitles: subtitleTracks,
             currentAudioLanguage: audioTracks
                 .first(where: { $0.trackId == selectedAudioId })?
-                .lang
+                .lang,
+            sourceContainer: currentSelectedVersion?.container
         ))
         guard case .select(let track) = pick else { return }
         Self.logger.info(
