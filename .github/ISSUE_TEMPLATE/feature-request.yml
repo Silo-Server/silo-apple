@@ -1,7 +1,7 @@
 name: Feature request
 description: Suggest an improvement to the iOS, tvOS, or macOS app
 title: "[feature] "
-labels: ["enhancement"]
+labels: ["enhancement", "feature-request"]
 body:
   - type: markdown
     attributes:
