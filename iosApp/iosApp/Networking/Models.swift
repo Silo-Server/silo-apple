@@ -352,7 +352,7 @@ struct ResolvedSection: Codable, Identifiable {
     ) {
         self.id = id
         self.sectionType = sectionType
-        self.title = title
+        self.title = Self.displayTitle(title, sectionType: sectionType)
         self.featured = featured
         self.itemLimit = itemLimit
         self.totalCount = totalCount
@@ -365,13 +365,22 @@ struct ResolvedSection: Codable, Identifiable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
         sectionType = try c.decode(String.self, forKey: .sectionType)
-        title = try c.decode(String.self, forKey: .title)
+        title = Self.displayTitle(try c.decode(String.self, forKey: .title), sectionType: sectionType)
         featured = try c.decodeIfPresent(Bool.self, forKey: .featured)
         itemLimit = try c.decodeIfPresent(Int.self, forKey: .itemLimit)
         totalCount = try c.decodeIfPresent(Int.self, forKey: .totalCount)
         isCustom = try c.decodeIfPresent(Bool.self, forKey: .isCustom)
         customized = try c.decodeIfPresent(Bool.self, forKey: .customized)
         items = try c.decodeIfPresent([SectionItem].self, forKey: .items) ?? []
+    }
+
+    /// Servers before silo-server#2096 store an untitled section's raw type
+    /// as its title (`trending_on_server`). Show that key as words instead.
+    static func displayTitle(_ title: String, sectionType: String) -> String {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty || trimmed == sectionType else { return title }
+        let words = sectionType.replacingOccurrences(of: "_", with: " ")
+        return words.prefix(1).uppercased() + words.dropFirst()
     }
 }
 
