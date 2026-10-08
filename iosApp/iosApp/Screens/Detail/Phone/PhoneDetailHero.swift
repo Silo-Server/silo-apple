@@ -194,7 +194,7 @@ private enum PhoneDetailGrainTexture {
 /// `aspectRatio` is the cover's width ÷ height.
 enum PhoneDetailArtworkStyle: Equatable {
     case backdrop
-    case cover(aspectRatio: CGFloat, placeholderSymbol: String)
+    case cover(aspectRatio: CGFloat)
 }
 
 /// Artwork moves at roughly half foreground speed. Its translation and
@@ -252,14 +252,13 @@ private struct PhoneDetailParallaxArtwork: View {
             } else {
                 Color.siloSurface
             }
-        case .cover(let aspectRatio, let placeholderSymbol):
+        case .cover(let aspectRatio):
             // The cover clears the floating top controls and leaves the lower
             // part of the slot to the title, which overlays it as usual.
             PhoneDetailCoverArtwork(
                 url: url,
                 thumbhash: thumbhash,
                 aspectRatio: aspectRatio,
-                placeholderSymbol: placeholderSymbol,
                 coverHeight: min(max(height * 0.48, 190), 250),
                 coverTopInset: 100
             )
@@ -696,7 +695,8 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
                 url: url,
                 thumbhash: posterThumbhash,
                 targetSize: size,
-                contentMode: .fill
+                contentMode: .fill,
+                placeholderStyle: .artwork
             )
             .frame(width: size.width, height: size.height)
             .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cardCornerRadius, style: .continuous))
@@ -707,7 +707,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
 
     private var macPosterSize: CGSize {
         let width = SiloTheme.macDetailPosterWidth
-        if case .cover(let aspectRatio, _) = artworkStyle, aspectRatio > 0 {
+        if case .cover(let aspectRatio) = artworkStyle, aspectRatio > 0 {
             return CGSize(width: width, height: width / aspectRatio)
         }
         return CGSize(width: width, height: width * 1.5)
@@ -742,13 +742,12 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
             } else {
                 Color.siloSurface
             }
-        case .cover(let aspectRatio, let placeholderSymbol):
+        case .cover(let aspectRatio):
             GeometryReader { geometry in
                 PhoneDetailCoverArtwork(
                     url: resolvedArtworkURL,
                     thumbhash: resolvedArtworkThumbhash,
                     aspectRatio: aspectRatio,
-                    placeholderSymbol: placeholderSymbol,
                     coverHeight: geometry.size.height * 0.68,
                     coverTopInset: nil
                 )
@@ -950,7 +949,6 @@ private struct PhoneDetailCoverArtwork: View {
     let url: String?
     let thumbhash: String?
     let aspectRatio: CGFloat
-    let placeholderSymbol: String
     let coverHeight: CGFloat
     let coverTopInset: CGFloat?
 
@@ -986,23 +984,13 @@ private struct PhoneDetailCoverArtwork: View {
 
     private var cover: some View {
         let width = coverHeight * aspectRatio
-        return Group {
-            if let url, !url.isEmpty {
-                AsyncImageView(
-                    url: url,
-                    thumbhash: thumbhash,
-                    targetSize: CGSize(width: width, height: coverHeight),
-                    contentMode: .fill
-                )
-            } else {
-                Color.siloSurfaceElevated
-                    .overlay {
-                        Image(systemName: placeholderSymbol)
-                            .font(.system(size: coverHeight * 0.2, weight: .semibold))
-                            .foregroundStyle(Color.siloOnSurface.opacity(0.45))
-                    }
-            }
-        }
+        return AsyncImageView(
+            url: url ?? "",
+            thumbhash: thumbhash,
+            targetSize: CGSize(width: width, height: coverHeight),
+            contentMode: .fill,
+            placeholderStyle: .artwork
+        )
         .frame(width: width, height: coverHeight)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(

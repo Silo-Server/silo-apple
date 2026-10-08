@@ -80,9 +80,11 @@ struct TVCollectionPosterCard: View {
     /// still reads as a collection.
     private var placeholder: some View {
         ZStack {
-            // Keyed by id so the tile looks the same on every launch.
             LinearGradient(
-                gradient: PlaceholderTint.gradient(for: collection.id),
+                colors: [
+                    Color(hue: hue, saturation: 0.50, brightness: 0.42),
+                    Color(hue: hue, saturation: 0.32, brightness: 0.22),
+                ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
@@ -149,6 +151,14 @@ struct TVCollectionPosterCard: View {
             label += ", \(count) \(count == 1 ? "item" : "items")"
         }
         return label
+    }
+
+    /// Stable hue for the art-less placeholder, derived from the id so a
+    /// collection's fallback tile looks the same on every launch. FNV-1a,
+    /// because `Hasher` is randomly seeded per process.
+    private var hue: Double {
+        let hash = collection.id.utf8.reduce(UInt32(2_166_136_261)) { ($0 ^ UInt32($1)) &* 16_777_619 }
+        return Double(hash % 360) / 360.0
     }
 }
 #endif

@@ -786,20 +786,14 @@ private struct EpisodeCardLabel: View {
             Color.siloSurfaceElevated
                 .frame(width: cardWidth, height: stillHeight)
 
-            if let url = episode.stillUrl, !url.isEmpty {
-                AsyncImageView(
-                    url: url,
-                    thumbhash: episode.stillThumbhash,
-                    targetSize: CGSize(width: cardWidth, height: stillHeight),
-                    contentMode: .fill
-                )
-                .frame(width: cardWidth, height: stillHeight)
-            } else {
-                Image(systemName: "film")
-                    .font(.system(size: 48))
-                    .foregroundColor(.siloSecondaryText)
-                    .frame(width: cardWidth, height: stillHeight)
-            }
+            AsyncImageView(
+                url: episode.stillUrl ?? "",
+                thumbhash: episode.stillThumbhash,
+                targetSize: CGSize(width: cardWidth, height: stillHeight),
+                contentMode: .fill,
+                placeholderStyle: .artwork
+            )
+            .frame(width: cardWidth, height: stillHeight)
 
             if isPlayed {
                 Color.black.opacity(0.35)

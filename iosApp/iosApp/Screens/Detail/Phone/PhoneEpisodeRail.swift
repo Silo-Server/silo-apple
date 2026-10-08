@@ -293,9 +293,7 @@ private struct PhoneEpisodeCard: View {
                 thumbhash: episode.stillThumbhash,
                 targetSize: CGSize(width: cardWidth, height: stillHeight),
                 contentMode: .fill,
-                // Glyph only: the centred play button would cover a title,
-                // and the caption below names the episode.
-                missingArtwork: MissingArtwork(mediaType: "episode")
+                placeholderStyle: .artwork
             )
             .frame(width: cardWidth, height: stillHeight)
             .clipped()

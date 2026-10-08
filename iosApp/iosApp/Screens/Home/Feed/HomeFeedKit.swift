@@ -346,12 +346,7 @@ struct HomePosterCard: View {
             thumbhash: item.posterThumbhash,
             targetSize: CGSize(width: width, height: height),
             contentMode: .fill,
-            // The same two lines as the caption.
-            missingArtwork: MissingArtwork(
-                mediaType: item.type,
-                title: HomeFeedMeta.cardTitle(for: item),
-                subtitle: secondLineOverride ?? HomeFeedMeta.cardSecondLine(for: item)
-            )
+            placeholderStyle: .artwork
         )
         .frame(width: width, height: height)
         .clipped()
@@ -513,9 +508,7 @@ struct HomeStillCard: View {
                 thumbhash: art.thumbhash,
                 targetSize: CGSize(width: width, height: height),
                 contentMode: .fill,
-                // Glyph only: the centred play badge would cover a title,
-                // and the caption below names the item.
-                missingArtwork: MissingArtwork(mediaType: item.type)
+                placeholderStyle: .artwork
             )
             .frame(width: width, height: height)
             .clipped()

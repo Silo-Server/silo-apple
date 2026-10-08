@@ -102,7 +102,6 @@ struct PhonePosterRail: View {
     let title: String
     let items: [SimilarPosterItem]
     var aspectRatio: CGFloat = SiloTheme.posterCardWidth / SiloTheme.posterCardHeight
-    var placeholderSymbol: String = "film"
     let onSelect: (String) -> Void
 
     var body: some View {
@@ -113,7 +112,6 @@ struct PhonePosterRail: View {
                 PhonePosterRailCards(
                     items: items,
                     aspectRatio: aspectRatio,
-                    placeholderSymbol: placeholderSymbol,
                     onSelect: onSelect
                 )
             }
@@ -125,7 +123,6 @@ struct PhonePosterRail: View {
 struct PhonePosterRailCards: View {
     let items: [SimilarPosterItem]
     var aspectRatio: CGFloat = SiloTheme.posterCardWidth / SiloTheme.posterCardHeight
-    var placeholderSymbol: String = "film"
     let onSelect: (String) -> Void
 
     var body: some View {
@@ -135,11 +132,7 @@ struct PhonePosterRailCards: View {
                     Button {
                         onSelect(item.contentId)
                     } label: {
-                        PhonePosterCard(
-                            item: item,
-                            aspectRatio: aspectRatio,
-                            placeholderSymbol: placeholderSymbol
-                        )
+                        PhonePosterCard(item: item, aspectRatio: aspectRatio)
                     }
                     .buttonStyle(.plain)
                     .accessibilityElement(children: .ignore)
@@ -168,9 +161,6 @@ struct SimilarPosterItem: Identifiable, Hashable {
     let year: Int?
     /// Replaces the year caption when set, e.g. "Book 2" in a series rail.
     let subtitle: String?
-    /// Glyph for a missing poster when the item's own type is known;
-    /// otherwise the rail's `placeholderSymbol` applies.
-    let placeholderSymbol: String?
     let accessibilityDescription: String
     var id: String { contentId }
 
@@ -181,7 +171,6 @@ struct SimilarPosterItem: Identifiable, Hashable {
         self.posterThumbhash = card.posterThumbhash
         self.year = card.year
         self.subtitle = nil
-        self.placeholderSymbol = ArtworkPlaceholderSymbol.forMediaType(card.type)
         self.accessibilityDescription = [card.title, card.year.map(String.init)]
             .compactMap { $0 }
             .joined(separator: ", ")
@@ -194,7 +183,6 @@ struct SimilarPosterItem: Identifiable, Hashable {
         self.posterThumbhash = nil
         self.year = item.year
         self.subtitle = item.seriesIndex.map { "Book \($0)" }
-        self.placeholderSymbol = nil
         self.accessibilityDescription = audiobookRelatedItemAccessibilityLabel(item)
     }
 }
@@ -204,7 +192,6 @@ struct SimilarPosterItem: Identifiable, Hashable {
 private struct PhonePosterCard: View {
     let item: SimilarPosterItem
     let aspectRatio: CGFloat
-    let placeholderSymbol: String
     private var uiCustomization: UICustomizationPreferences { .shared }
 
     private var cardWidth: CGFloat {
@@ -241,11 +228,7 @@ private struct PhonePosterCard: View {
             thumbhash: item.posterThumbhash,
             targetSize: CGSize(width: cardWidth, height: cardHeight),
             contentMode: .fill,
-            missingArtwork: MissingArtwork(
-                symbol: item.placeholderSymbol ?? placeholderSymbol,
-                title: item.title,
-                subtitle: item.subtitle ?? item.year.map(String.init)
-            )
+            placeholderStyle: .artwork
         )
             .frame(width: cardWidth, height: cardHeight)
             .clipped()

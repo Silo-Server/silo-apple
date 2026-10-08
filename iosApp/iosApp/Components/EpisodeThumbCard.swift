@@ -173,7 +173,7 @@ struct EpisodeThumbCard: View {
                 thumbhash: item.backdropThumbhash ?? item.posterThumbhash,
                 targetSize: CGSize(width: cardWidth, height: cardHeight),
                 contentMode: .fill,
-                missingArtwork: MissingArtwork(mediaType: item.type, title: displayTitle, subtitle: subtitleLine)
+                placeholderStyle: .artwork
             )
             .frame(width: cardWidth, height: cardHeight)
             .clipped()
