@@ -8,6 +8,14 @@ final class ResolvedSectionTitleTests: XCTestCase {
         XCTAssertEqual(section.title, "Trending on server")
     }
 
+    func testDirectInitializerNormalizesRawSectionTypeTitle() {
+        let section = ResolvedSection(
+            id: "s1", sectionType: "trending_on_server", title: "trending_on_server",
+            featured: true, itemLimit: nil, totalCount: nil, isCustom: nil, customized: nil, items: []
+        )
+        XCTAssertEqual(section.title, "Trending on server")
+    }
+
     func testBlankTitleFallsBackToSectionType() {
         XCTAssertEqual(ResolvedSection.displayTitle(" \n", sectionType: "new_to_library"), "New to library")
     }
