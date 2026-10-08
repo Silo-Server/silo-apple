@@ -156,16 +156,17 @@ actor HTTPClient {
     private enum RefreshFlightFailure: Sendable {
         /// A version mismatch (see `noteRefreshUpdateRequirement`).
         case updateRequired(UpdateRequirement)
-        /// 503 `provider_unavailable`: the provider re-check could not ask
-        /// the provider. The waiting requests fail with that problem, which
+        /// 503 `provider_unavailable` or `dependency_unavailable`: the
+        /// server could not ask the sign-in provider, or could not reach its
+        /// own database. The waiting requests fail with that problem, which
         /// reads as a transient outage, instead of the 401 that sent them
         /// to refresh (which would read as an ended session).
-        case providerUnavailable(body: String)
+        case unavailable(body: String)
 
         var error: Error {
             switch self {
             case .updateRequired(let requirement): return requirement
-            case .providerUnavailable(let body): return HTTPError.http(statusCode: 503, body: body)
+            case .unavailable(let body): return HTTPError.http(statusCode: 503, body: body)
             }
         }
     }
@@ -618,8 +619,8 @@ actor HTTPClient {
         let renewed: Bool
         do {
             renewed = try await refreshScopedTokens(auth: auth, expected: requestIdentity, dispatchRevision: dispatchRevision)
-        } catch let error where Self.isProviderUnavailableRefresh(error) && !Self.hasExpired(auth.accessToken) {
-            // The bearer still works; the next renewal asks the provider again.
+        } catch let error where Self.isOutageRefresh(error) && !Self.hasExpired(auth.accessToken) {
+            // The bearer still works; the next renewal asks again.
             renewed = false
         }
         if renewed {
@@ -1004,8 +1005,8 @@ actor HTTPClient {
             let renewed: CapturedOrdinaryRequestAuth?
             do {
                 renewed = try await refreshTokens(expected: current, dispatchRevision: dispatchRevision)
-            } catch let error where Self.isProviderUnavailableRefresh(error) && !Self.hasExpired(accessToken) {
-                // The bearer still works; the next renewal asks the provider again.
+            } catch let error where Self.isOutageRefresh(error) && !Self.hasExpired(accessToken) {
+                // The bearer still works; the next renewal asks again.
                 renewed = nil
             }
             if let refreshed = renewed {
@@ -1952,8 +1953,8 @@ actor HTTPClient {
                 await noteRefreshUpdateRequirement(requirement, serverId: auth.account.serverId)
                 return .updateRequired(requirement)
             }
-            if isProviderUnavailable(statusCode: http.statusCode, body: body) {
-                return .providerUnavailable(body: body)
+            if isRefreshOutage(statusCode: http.statusCode, body: body) {
+                return .unavailable(body: body)
             }
             guard shouldInvalidateSessionAfterRefreshFailure(http.statusCode) else {
                 return nil
@@ -2187,8 +2188,8 @@ actor HTTPClient {
                     await noteRefreshUpdateRequirement(requirement, serverId: expected.serverId)
                     return .updateRequired(requirement)
                 }
-                if isProviderUnavailable(statusCode: http.statusCode, body: body) {
-                    return .providerUnavailable(body: body)
+                if isRefreshOutage(statusCode: http.statusCode, body: body) {
+                    return .unavailable(body: body)
                 }
                 guard shouldInvalidateSessionAfterRefreshFailure(http.statusCode) else {
                     return nil
@@ -2374,16 +2375,34 @@ actor HTTPClient {
     /// Whether a refresh answer is the server's external-sign-in re-check
     /// failing closed: 503 with the `provider_unavailable` problem.
     static func isProviderUnavailable(statusCode: Int, body: String) -> Bool {
-        guard statusCode == 503, let data = body.data(using: .utf8),
+        statusCode == 503 && problemIdentifier(in: body) == "provider_unavailable"
+    }
+
+    /// Whether a refresh answer is an outage the session survives: 503
+    /// `provider_unavailable`, or 503 `dependency_unavailable` when the
+    /// server cannot reach its database.
+    static func isRefreshOutage(statusCode: Int, body: String) -> Bool {
+        guard statusCode == 503, let identifier = problemIdentifier(in: body) else { return false }
+        return identifier == "provider_unavailable" || identifier == "dependency_unavailable"
+    }
+
+    private static func problemIdentifier(in body: String) -> Substring? {
+        guard let data = body.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let type = object["type"] as? String else { return false }
-        return type.split(separator: "/").last == "provider_unavailable"
+              let type = object["type"] as? String else { return nil }
+        return type.split(separator: "/").last
     }
 
     /// Whether `error` is a refresh flight's `provider_unavailable` failure.
     private static func isProviderUnavailableRefresh(_ error: Error) -> Bool {
         guard case HTTPError.http(let statusCode, let body) = error else { return false }
         return isProviderUnavailable(statusCode: statusCode, body: body ?? "")
+    }
+
+    /// Whether `error` is a refresh flight's outage failure (`isRefreshOutage`).
+    private static func isOutageRefresh(_ error: Error) -> Bool {
+        guard case HTTPError.http(let statusCode, let body) = error else { return false }
+        return isRefreshOutage(statusCode: statusCode, body: body ?? "")
     }
 
     /// Match Android's refresh-failure classifier (AuthInterceptorImpl.kt).
@@ -2403,8 +2422,10 @@ actor HTTPClient {
     /// 503 `provider_unavailable` is the server's external-sign-in re-check
     /// failing closed because the provider (OIDC or LDAP) could not be asked:
     /// the session stays valid and the next refresh asks again, so it is kept
-    /// like any other 5xx. The requests waiting on that refresh fail with the
-    /// problem itself rather than their 401 (`RefreshFlightFailure`).
+    /// like any other 5xx. 503 `dependency_unavailable` is the server failing
+    /// to reach its database, and is kept the same way. The requests waiting
+    /// on either refresh fail with the problem itself rather than their 401
+    /// (`RefreshFlightFailure`).
     static func shouldInvalidateSessionAfterRefreshFailure(_ statusCode: Int) -> Bool {
         statusCode == 400 || statusCode == 401 || statusCode == 403
     }

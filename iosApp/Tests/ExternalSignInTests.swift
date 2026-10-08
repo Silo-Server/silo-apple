@@ -1301,6 +1301,46 @@ final class ExternalSignInTests: XCTestCase {
         let rotated = await tokens.getAccessToken()
         XCTAssertEqual(rotated, "new-access")
     }
+
+    /// 503 `dependency_unavailable` on refresh (the server cannot reach its
+    /// database) reaches the waiting request as a temporary server problem,
+    /// not as the 401 that reads "session expired".
+    func testDatabaseOutageOnRefreshReadsAsATemporaryServerProblem() async throws {
+        let name = "ExternalSignInTests.dependency.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: name))
+        let tokens = TokenStore(keychain: SharedKeychain(service: name, accessGroup: nil),
+            defaults: SharedDefaults(suite: suite, standard: suite))
+        addTeardownBlock {
+            _ = await tokens.clearTokens()
+            UserDefaults().removePersistentDomain(forName: name)
+        }
+        await tokens.switchActiveServer(serverId: "server")
+        await tokens.setServerUrl("https://refresh.example")
+        let saved = await tokens.saveTokens(accessToken: "access", refreshToken: "refresh")
+        XCTAssertTrue(saved)
+
+        let outage = #"{"type":"https://siloserver.org/docs/api/v2/problems/dependency_unavailable","title":"Unavailable","status":503,"detail":"Down","instance":"urn:test"}"#
+        let handler = StubURLProtocol.Handler()
+        handler.route(StubURLProtocol.method("POST", path: HTTPClient.refreshPath)) { _ in
+            .json(outage, status: 503, headers: ["Content-Type": "application/problem+json"])
+        }
+        handler.route(StubURLProtocol.path("/api/v2/account/me")) { _ in .status(401) }
+        let http = HTTPClient(session: handler.makeSession(), tokenStore: tokens)
+
+        do {
+            _ = try await http.requestData(method: "GET", path: "/api/v2/account/me")
+            XCTFail("the request cannot succeed while the database is unreachable")
+        } catch {
+            let state = ErrorState(error)
+            XCTAssertEqual(state.statusCode, 503)
+            XCTAssertFalse(state.isAuthFailure)
+            XCTAssertTrue(state.isTransient)
+        }
+        let keptAccess = await tokens.getAccessToken()
+        let keptRefresh = await tokens.getRefreshToken()
+        XCTAssertEqual(keptAccess, "access")
+        XCTAssertEqual(keptRefresh, "refresh")
+    }
 }
 
 extension ExternalSignInTests {
