@@ -445,8 +445,9 @@ server fallback.
   ring after media URL, filename, path, and credential redaction. Most lines
   need Debug Logging; the few that place missing TrueHD Atmos heights or LFE
   (the audio path, bed levels, the master's audio attributes, the audio route
-  and its channel-count warnings) are essential tier, and route lines lose
-  user-chosen device names first (`AetherDiagnosticsBridge`).
+  and its channel-count warnings) are essential tier (`AetherDiagnosticsBridge`).
+  Aether's route lines name output ports by type, never by the user's name for
+  the device.
 - Project semantic metrics rather than fabricating removed PlayerCore/loopback
   counters.
 - Audit Aether's clear temporary fMP4 cache, data protection, stale-directory

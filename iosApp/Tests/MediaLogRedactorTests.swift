@@ -221,7 +221,7 @@ final class MediaLogRedactorTests: XCTestCase {
                 + "presentation, with the objects mixed into the floor channels",
             #"[HLSVideoEngine] master audio: codecs="avc1.640029,apac.31.03" audioRendition=no channels=none"#,
             "[NativeAVPlayerHost] #3 audioRoute output=2 preferred=2 max=2 rendering=notApplicable "
-                + "multichannelContent=false ports=[Speaker[Speaker, ch=-1]] latency=0ms io=10.0ms (settled)",
+                + "multichannelContent=false ports=[Speaker[ch=-1]] latency=0ms io=10.0ms (settled)",
             "[AetherEngine] audioRoute rendering mode changed output=8 preferred=8 max=8 rendering=surround",
             "[SoftwarePlaybackHost] audioRoute output=2 preferred=2 max=2 (session start, live=false)",
             "[NativeAVPlayerHost] #3 item.audioTrack codec='apac' enabled=true sr=48000 ch=12 (readyToPlay)",
@@ -250,29 +250,6 @@ final class MediaLogRedactorTests: XCTestCase {
         let warning = "[NativeAVPlayerHost] #3 WARNING: ec-3 6-channel track playing into a 2-channel route."
         XCTAssertEqual(AetherDiagnosticsBridge.level(for: warning, verbosity: .essential), .warning)
         XCTAssertEqual(AetherDiagnosticsBridge.level(for: error, verbosity: .verbose), .debug)
-    }
-
-    /// A port name is whatever the user called the device, so a route line
-    /// keeps the port's type and channels and loses its name, brackets in the
-    /// name included. An HDMI sink's EDID name stays: AVR or TV matters.
-    func testAudioRouteLinesLoseUserChosenPortNames() {
-        let line = "[NativeAVPlayerHost] #3 audioRoute output=2 preferred=2 max=2 rendering=spatialAudio "
-            + "multichannelContent=true ports=[Alex’s [work] AirPods], Pro[BluetoothA2DPOutput, ch=2, labels=L R, "
-            + "heights=0, spatial], SONY HT-ST5000[HDMIOutput, ch=8, labels=L R C LFE Ls Rs Rls Rrs, heights=0]] "
-            + "latency=160ms io=10.0ms (settled)"
-        XCTAssertEqual(
-            AetherDiagnosticsBridge.withoutPortNames(line),
-            "[NativeAVPlayerHost] #3 audioRoute output=2 preferred=2 max=2 rendering=spatialAudio "
-                + "multichannelContent=true ports=[port[BluetoothA2DPOutput, ch=2, labels=L R, heights=0, spatial], "
-                + "SONY HT-ST5000[HDMIOutput, ch=8, labels=L R C LFE Ls Rs Rls Rrs, heights=0]] "
-                + "latency=160ms io=10.0ms (settled)"
-        )
-        let simulator = "[NativeAVPlayerHost] #3 audioRoute output=2 preferred=2 max=2 rendering=notApplicable "
-            + "multichannelContent=false ports=[Speaker[Speaker, ch=-1]] latency=0ms io=10.0ms (settled)"
-        XCTAssertEqual(AetherDiagnosticsBridge.withoutPortNames(simulator),
-                       simulator.replacingOccurrences(of: "ports=[Speaker[", with: "ports=[port["))
-        XCTAssertEqual(AetherDiagnosticsBridge.withoutPortNames("no route here"), "no route here")
-        XCTAssertEqual(AetherDiagnosticsBridge.withoutPortNames("ports=[] latency=0ms"), "ports=[] latency=0ms")
     }
 
     func testBoundsUntrustedErrorText() {

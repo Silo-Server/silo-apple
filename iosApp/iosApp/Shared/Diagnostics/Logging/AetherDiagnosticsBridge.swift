@@ -80,36 +80,10 @@ enum AetherDiagnosticsBridge {
         return .info
     }
 
+    /// Audio route lines name ports by type, never by the user's name for
+    /// the device, so the media redaction is the whole boundary here too.
     static func sanitizedLine(_ line: String) -> String {
-        MediaLogRedactor.sanitize(withoutPortNames(line), maxLength: 2_048)
+        MediaLogRedactor.sanitize(line, maxLength: 2_048)
     }
-
-    /// An audio route line names each output port, and for AirPods, AirPlay
-    /// and Bluetooth that is whatever the user called the device ("Alex's
-    /// AirPods Pro"). Those names become `port`. An HDMI port keeps its name:
-    /// it is the sink's EDID model name, and whether the Apple TV feeds an AVR
-    /// or a TV is the first question a missing-heights report asks.
-    ///
-    /// Each port is `name[type, ch=n…]`, so the name is everything between
-    /// `ports=[` (or the previous port's `], `) and the next `[<type>, ch=`,
-    /// whatever brackets the name itself contains.
-    static func withoutPortNames(_ line: String) -> String {
-        guard line.contains("ports=[") else { return line }
-        let nsLine = line as NSString
-        var result = ""
-        var copied = 0
-        for match in portNamePattern.matches(in: line, range: NSRange(location: 0, length: nsLine.length)) {
-            let name = match.range(at: 1)
-            let type = nsLine.substring(with: match.range(at: 2))
-            result += nsLine.substring(with: NSRange(location: copied, length: name.location - copied))
-            result += type == "HDMIOutput" ? nsLine.substring(with: name) : "port"
-            copied = name.location + name.length
-        }
-        return result + nsLine.substring(from: copied)
-    }
-
-    private static let portNamePattern = try! NSRegularExpression(
-        pattern: #"(?:ports=\[|\], )((?:(?!\[[A-Za-z0-9]+, ch=-?\d).)*)\[([A-Za-z0-9]+), ch=-?\d"#
-    )
 }
 #endif
