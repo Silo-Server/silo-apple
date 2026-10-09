@@ -419,6 +419,9 @@ struct ContentView: View {
             guard !Task.isCancelled else { return }
             Task { await AuthService.shared.refreshActiveServerName() }
             if router.authState == .authenticated {
+                // Nothing below reads title art, and surfaces show its cached
+                // answer meanwhile, so it need not hold up overlay hydration.
+                Task { await TitleArtPreferences.shared.refresh() }
                 await uiCustomization.refresh()
                 await SeekIntervalPreferences.shared.refresh()
                 // The one hydration whose outcome is never optional: `clear()`
@@ -437,6 +440,7 @@ struct ContentView: View {
             diagnosticsModel.reset()
             #endif
             if router.authState == .authenticated {
+                Task { await TitleArtPreferences.shared.refresh() }
                 await uiCustomization.refresh()
                 await SeekIntervalPreferences.shared.refresh()
                 #if os(iOS) || os(tvOS)
@@ -553,7 +557,8 @@ struct ContentView: View {
         async let profile: Void = CurrentProfileStore.shared.refresh()
         async let customization: Void = uiCustomization.refresh()
         async let seek: Void = SeekIntervalPreferences.shared.refresh()
-        _ = await (overlay, ai, imageSize, requests, shuffle, subtitles, profile, customization, seek)
+        async let titleArt: Void = TitleArtPreferences.shared.refresh()
+        _ = await (overlay, ai, imageSize, requests, shuffle, subtitles, profile, customization, seek, titleArt)
     }
 
     @MainActor

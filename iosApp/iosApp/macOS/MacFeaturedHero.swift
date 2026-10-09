@@ -166,7 +166,8 @@ struct MacFeaturedHero: View {
         .padding(.leading, HomeFeedMetrics.gutter)
     }
 
-    /// The title's logo artwork where the server has one, otherwise its name.
+    /// The title's logo artwork where the server has one and the profile shows
+    /// title art, otherwise its name.
     @ViewBuilder
     private func title(for item: SectionItem) -> some View {
         let name = Text(item.title)
@@ -175,7 +176,9 @@ struct MacFeaturedHero: View {
             .lineLimit(2)
             .minimumScaleFactor(0.7)
 
-        if let logoURL = item.logoUrl, !logoURL.isEmpty {
+        // A profile that turned title art off (`ui.title_art`) gets the name.
+        if TitleArtPreferences.shared.showsTitleArt,
+           let logoURL = item.logoUrl, !logoURL.isEmpty {
             let isLoaded = loadedLogoURL == logoURL
             ZStack(alignment: .bottomLeading) {
                 name.opacity(isLoaded ? 0 : 1)

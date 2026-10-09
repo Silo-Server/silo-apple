@@ -725,7 +725,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
 
     @ViewBuilder
     private var macTitle: some View {
-        if let logoUrl = nonEmpty(logoUrl) {
+        if let logoUrl = displayedLogoUrl {
             MacTitleLogo(
                 url: logoUrl,
                 size: CGSize(width: SiloTheme.macHeroLogoWidth, height: SiloTheme.macHeroLogoHeight)
@@ -786,9 +786,17 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
         return value
     }
 
+    /// Logo art only while the profile shows title art on this device;
+    /// otherwise the text title, exactly as for a title without a logo.
+    private var displayedLogoUrl: String? {
+        guard TitleArtPreferences.shared.showsTitleArt,
+              let logoUrl, !logoUrl.isEmpty else { return nil }
+        return logoUrl
+    }
+
     @ViewBuilder
     private func titleBlock(textAlignment: TextAlignment, logoHeight: CGFloat) -> some View {
-        if let logoUrl, !logoUrl.isEmpty {
+        if let logoUrl = displayedLogoUrl {
             AsyncImageView(url: logoUrl, contentMode: .fit, placeholderStyle: .clear)
                 .frame(maxWidth: textAlignment == .leading ? 430 : .infinity)
                 .frame(height: logoHeight, alignment: textAlignment == .leading ? .leading : .center)

@@ -676,7 +676,9 @@ enum StartupContentPrefetcher {
         }
         PosterImageCache.prefetchArtworkData(uniqueURLs(cards, limit: maxHomeArtworkURLs))
         #if os(tvOS)
-        if let logo = normalizedURL(from: sections.first?.items.first?.logoUrl) {
+        // A profile that turned title art off never shows the logo.
+        if TitleArtPreferences.shared.showsTitleArt,
+           let logo = normalizedURL(from: sections.first?.items.first?.logoUrl) {
             PosterImageCache.prefetchOriginalArtwork([logo])
         }
         #endif
@@ -726,6 +728,8 @@ enum StartupContentPrefetcher {
     /// Match `RecommendationsViewModel` ordering so the first two rows the
     /// user can actually focus are the ones whose logo art is ready first.
     private static func prefetchRecommendationLogos(for response: SectionsResponse) {
+        // A profile that turned title art off never shows these logos.
+        guard TitleArtPreferences.shared.showsTitleArt else { return }
         let nonEmpty = response.sections.filter { !$0.items.isEmpty }
         let forYou = nonEmpty.filter { $0.title.lowercased() == "for you" }
         let others = nonEmpty.filter { $0.title.lowercased() != "for you" }

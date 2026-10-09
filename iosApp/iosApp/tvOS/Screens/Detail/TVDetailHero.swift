@@ -506,6 +506,7 @@ private struct TVHeroTitle: View {
 /// Keeps the text identity on screen until server logo artwork has actually
 /// decoded. A prefetched logo is seeded synchronously so warm detail entry does
 /// not paint one intermediate frame of text before showing the finished art.
+/// With title art off (`ui.title_art`) it never shows the logo.
 struct TVDecodedLogoTitle<Fallback: View>: View {
     let logoUrl: String?
     let accessibilityLabel: String
@@ -560,8 +561,11 @@ struct TVDecodedLogoTitle<Fallback: View>: View {
         .accessibilityLabel(accessibilityLabel)
     }
 
+    /// Nil while the profile has title art off on this device, which keeps
+    /// the text title up for good.
     private var normalizedLogoURL: URL? {
-        guard let normalized = logoUrl?.trimmingCharacters(in: .whitespacesAndNewlines),
+        guard TitleArtPreferences.shared.showsTitleArt,
+              let normalized = logoUrl?.trimmingCharacters(in: .whitespacesAndNewlines),
               !normalized.isEmpty else {
             return nil
         }

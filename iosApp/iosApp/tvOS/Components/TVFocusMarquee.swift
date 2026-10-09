@@ -1242,11 +1242,18 @@ private struct TVMarqueeBlock: View {
         // A prefetched logo should be on the block's very first frame —
         // waiting for onAppear paints one frame of text title first, which
         // reads as a flash on cold entry. Synchronous memory-cache lookup.
-        if let logoUrl = content.logoUrl, !logoUrl.isEmpty,
+        if TitleArtPreferences.shared.showsTitleArt,
+           let logoUrl = content.logoUrl, !logoUrl.isEmpty,
            let url = URL(string: logoUrl),
            let cached = ImagePipeline.shared.cache[ImageRequest(url: url)] {
             _logoImage = State(initialValue: cached.image)
         }
+    }
+
+    /// The logo actually on screen: none while the profile has title art off
+    /// on this device (`ui.title_art`), whatever is cached.
+    private var shownLogo: UIImage? {
+        TitleArtPreferences.shared.showsTitleArt ? logoImage : nil
     }
 
     var body: some View {
@@ -1271,7 +1278,9 @@ private struct TVMarqueeBlock: View {
             badgeLine
         }
         .frame(maxWidth: SiloTheme.Skyline.marqueeContentWidth, alignment: .leading)
-        .task { await loadLogo() }
+        // Re-run when the profile turns title art back on; turning it off
+        // cancels a fetch in flight, and `shownLogo` hides any cached art.
+        .task(id: TitleArtPreferences.shared.showsTitleArt) { await loadLogo() }
     }
 
     @ViewBuilder
@@ -1302,7 +1311,7 @@ private struct TVMarqueeBlock: View {
         case .home: cap = 3
         case .library: cap = 2
         }
-        return (titleWrapsTwoLines || logoImage != nil) ? min(cap, 2) : cap
+        return (titleWrapsTwoLines || shownLogo != nil) ? min(cap, 2) : cap
     }
 
     /// Air date + top-billed cast (§9 backfill). For any item that can
@@ -1334,7 +1343,7 @@ private struct TVMarqueeBlock: View {
 
     @ViewBuilder
     private var titleSlot: some View {
-        if let logoImage {
+        if let logoImage = shownLogo {
             Image(uiImage: logoImage)
                 .resizable()
                 .aspectRatio(contentMode: .fit)
@@ -1470,9 +1479,11 @@ private struct TVMarqueeBlock: View {
     /// `init` already applied a memory-cached logo. Otherwise fetch at normal
     /// priority and swap in whenever it lands: this is the focused title, so
     /// it should not sit behind speculative poster/backdrop work in the
-    /// pipeline. The text title is never delayed.
+    /// pipeline. The text title is never delayed, and nothing is fetched
+    /// while the profile has title art off.
     private func loadLogo() async {
-        guard logoImage == nil,
+        guard TitleArtPreferences.shared.showsTitleArt,
+              logoImage == nil,
               let logoUrl = content.logoUrl, !logoUrl.isEmpty,
               let url = URL(string: logoUrl) else {
             return

@@ -7,6 +7,7 @@ import SwiftUI
 /// `docs/tvos-focus.md`.
 struct TVGeneralSettingsPane: View {
     @State private var preferences = UICustomizationPreferences.shared
+    @State private var titleArt = TitleArtPreferences.shared
     @State private var launchPreferences = ProfileLaunchPreferences.shared
     @State private var navPrefs = AppNavPreferences.shared
     @State private var activePicker: PickerKind?
@@ -63,6 +64,10 @@ struct TVGeneralSettingsPane: View {
             .focused(detailFocus, equals: .generalHomeSections)
 
             TVSettingsFooter("Choose which Home rows are visible and edit the order in which they appear on this Apple TV.")
+
+            if titleArt.isOffered {
+                titleArtGroup
+            }
 
             if let message = preferences.capabilityMessage {
                 TVSettingsSectionHeader("SERVER SUPPORT")
@@ -187,8 +192,9 @@ struct TVGeneralSettingsPane: View {
         }
         .task {
             async let preferencesRefresh: Void = preferences.refresh()
+            async let titleArtRefresh: Void = titleArt.refresh()
             async let advisoryRefresh: Void = advisoryAgePreference.refresh()
-            _ = await (preferencesRefresh, advisoryRefresh)
+            _ = await (preferencesRefresh, titleArtRefresh, advisoryRefresh)
         }
         .task(id: currentLibraryAuthority) {
             await refreshLibraries(for: currentLibraryAuthority)
@@ -198,9 +204,44 @@ struct TVGeneralSettingsPane: View {
             let authority = currentLibraryAuthority
             Task {
                 async let preferencesRefresh: Void = preferences.refresh()
+                async let titleArtRefresh: Void = titleArt.refresh()
                 async let librariesRefresh: Void = refreshLibraries(for: authority)
-                _ = await (preferencesRefresh, librariesRefresh)
+                _ = await (preferencesRefresh, titleArtRefresh, librariesRefresh)
             }
+        }
+    }
+
+    /// Title art (`ui.title_art`) and its "Apply to All Devices" companion.
+    /// See `TitleArtPreferences` for the scopes each row writes.
+    @ViewBuilder
+    private var titleArtGroup: some View {
+        TVSettingsSectionHeader("TITLE PAGES")
+
+        TVSettingsToggleRow(
+            title: "Show Title Art",
+            isOn: titleArt.showsTitleArt
+        ) {
+            titleArt.setShowTitleArt(!titleArt.showsTitleArt)
+        }
+        .accessibilityHint("Use logo artwork as the title when available.")
+        .disabled(!titleArt.allowsEditing)
+
+        TVSettingsToggleRow(
+            title: "Apply to All Devices",
+            isOn: titleArt.appliesToAllDevices
+        ) {
+            titleArt.setAppliesToAllDevices(!titleArt.appliesToAllDevices)
+        }
+        .accessibilityHint("Use this choice everywhere on this profile.")
+        .disabled(!titleArt.allowsEditing)
+
+        if titleArt.appliesToAllDevices {
+            TVSettingsFooter("Title art is \(titleArt.showsTitleArt ? "on" : "off") on every device signed into this profile. Changing it here changes it everywhere. Turn off Apply to All Devices to choose for this Apple TV only.")
+        } else {
+            TVSettingsFooter("Use logo artwork as the title when available. Only affects this Apple TV. Your other devices keep their own setting.")
+        }
+        if let message = titleArt.errorMessage ?? titleArt.readErrorMessage {
+            TVSettingsFooter(message)
         }
     }
 
