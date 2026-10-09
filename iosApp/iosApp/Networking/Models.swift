@@ -840,6 +840,7 @@ struct FileVersion: Codable, Identifiable, Hashable {
     let chapters: [VersionChapter]?
     let intro: TimeRange?
     let credits: TimeRange?
+    let recap: TimeRange?
     let presentationKind: String?
     let presentationGroupKey: String?
     let presentationPartIndex: Int?
@@ -874,6 +875,7 @@ struct FileVersion: Codable, Identifiable, Hashable {
         chapters: [VersionChapter]?,
         intro: TimeRange? = nil,
         credits: TimeRange? = nil,
+        recap: TimeRange? = nil,
         presentationKind: String? = nil,
         presentationGroupKey: String? = nil,
         presentationPartIndex: Int? = nil,
@@ -899,6 +901,7 @@ struct FileVersion: Codable, Identifiable, Hashable {
         self.chapters = chapters
         self.intro = intro
         self.credits = credits
+        self.recap = recap
         self.presentationKind = presentationKind
         self.presentationGroupKey = presentationGroupKey
         self.presentationPartIndex = presentationPartIndex
@@ -1177,6 +1180,7 @@ struct WatchDetail {
     let subtitles: [SubtitleInfoBasic]?
     let intro: TimeRange?
     let credits: TimeRange?
+    var recap: TimeRange? = nil
     let userData: LeafItemUserData?
     let seriesId: String?
     let seriesTitle: String?

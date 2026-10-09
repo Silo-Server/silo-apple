@@ -21,10 +21,9 @@ actor PlaybackRealtimeClient {
     private let ownerIsCurrent: OwnerCheck
     private let encoder = JSONEncoder()
     private let reconnectDelaysNanos: [UInt64]
-    /// After this many consecutive connection failures, stop reconnecting and
-    /// flip `isRealtimeUnavailable` so consumers can surface a non-fatal
-    /// "realtime control unavailable" notice. Local playback continues; only
-    /// remote command/event delivery is degraded.
+    private let reconnectCooldownNanos: UInt64
+    /// After repeated failures, surface degraded control and retry at a slower
+    /// cadence. A temporary outage must not permanently strand a live session.
     private static let consecutiveFailureCircuitBreakerThreshold = 8
 
     private var boundSessionId: String?
@@ -66,6 +65,7 @@ actor PlaybackRealtimeClient {
         },
         ownerIsCurrent: @escaping OwnerCheck = PlaybackRealtimeClient.isCurrentOwner,
         reconnectDelaysNanos: [UInt64] = [500_000_000, 1_000_000_000, 2_000_000_000, 5_000_000_000],
+        reconnectCooldownNanos: UInt64 = 30_000_000_000,
         commandHandler: @escaping CommandHandler,
         eventHandler: EventHandler? = nil
     ) {
@@ -73,6 +73,7 @@ actor PlaybackRealtimeClient {
         self.handshake = handshake
         self.ownerIsCurrent = ownerIsCurrent
         self.reconnectDelaysNanos = reconnectDelaysNanos
+        self.reconnectCooldownNanos = reconnectCooldownNanos
         self.commandHandler = commandHandler
         self.eventHandler = eventHandler
     }
@@ -177,10 +178,11 @@ actor PlaybackRealtimeClient {
 
             if consecutiveFailures >= Self.consecutiveFailureCircuitBreakerThreshold {
                 Self.logger.error(
-                    "Realtime websocket circuit breaker tripped after \(consecutiveFailures) consecutive failures for session \(sessionId, privacy: .public); pausing reconnect attempts"
+                    "Realtime websocket unavailable after \(consecutiveFailures) consecutive failures for session \(sessionId, privacy: .public); retrying after cooldown"
                 )
                 setRealtimeUnavailable(true)
-                break
+                try? await Task.sleep(nanoseconds: reconnectCooldownNanos)
+                continue
             }
 
             let delay = reconnectDelaysNanos[min(attempt, reconnectDelaysNanos.count - 1)]

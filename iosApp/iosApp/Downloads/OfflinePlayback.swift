@@ -230,7 +230,8 @@ enum OfflinePlaybackBuilder {
             subtitleTracks: nil,
             chapters: manifest.chapters,
             intro: manifest.intro,
-            credits: manifest.credits
+            credits: manifest.credits,
+            recap: manifest.recap
         )
 
         let watchDetail = WatchDetail(
@@ -277,6 +278,7 @@ extension WatchDetail {
         subtitles = nil
         intro = manifest.intro
         credits = manifest.credits
+        recap = manifest.recap
         userData = nil
         seriesId = manifest.seriesId
         seriesTitle = manifest.seriesTitle

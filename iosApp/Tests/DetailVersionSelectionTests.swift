@@ -827,7 +827,8 @@ final class DetailVersionSelectionTests: XCTestCase {
             "session_id": "session-1",
             "file_id": 42,
             "intro": { "start": 12.0, "end": 75.0 },
-            "credits": null
+            "credits": null,
+            "recap": { "start": 80.0, "end": 92.0 }
           }
         }
         """
@@ -851,11 +852,15 @@ final class DetailVersionSelectionTests: XCTestCase {
         XCTAssertTrue(payload.credits == nil)
         XCTAssertTrue(payload.introUpdate == .set(TimeRange(start: 12.0, end: 75.0)))
         XCTAssertTrue(payload.creditsUpdate == .clear)
+        XCTAssertEqual(payload.recapUpdate, .set(TimeRange(start: 80, end: 92)))
 
         let missingMarkersPayload = PlaybackRealtimeMarkersUpdatedPayload(
             payload: ["file_id": .number(42)]
         )
         XCTAssertTrue(missingMarkersPayload?.introUpdate == .unchanged)
         XCTAssertTrue(missingMarkersPayload?.creditsUpdate == .unchanged)
+        XCTAssertEqual(missingMarkersPayload?.recapUpdate, .unchanged)
+        let clearRecap = PlaybackRealtimeMarkersUpdatedPayload(payload: ["file_id": .number(42), "recap": .null])
+        XCTAssertEqual(clearRecap?.recapUpdate, .clear)
     }
 }

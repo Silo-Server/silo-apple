@@ -218,7 +218,6 @@ class PlayerViewModel {
     /// loads have no picture and reach it when the audio route starts playing.
     /// Both funnel through one epoch-scoped latch so a load can never take the
     /// milestone twice.
-    @ObservationIgnored
     private var startedAetherLoadEpoch: AetherPlaybackController.LoadEpoch?
     /// A user track change that arrived while a replan was already in flight.
     /// Re-issued when the in-flight replan settles so the local selection the
@@ -338,6 +337,9 @@ class PlayerViewModel {
     private var subtitleOrderingLanguage: String?
     var chapters: [PlayerChapterInfo] = []
     var introRange: TimeRange?
+    var recapRange: TimeRange? {
+        didSet { updateCreditsWindow() }
+    }
     var creditsRange: TimeRange? {
         didSet { updateCreditsWindow() }
     }
@@ -345,6 +347,7 @@ class PlayerViewModel {
     /// `showCreditsSkip` change only on entering or leaving the credits, not
     /// on every clock tick.
     private(set) var isInCreditsWindow = false
+    private(set) var isInRecapWindow = false
     /// The intro-skip pill — `ask`'s "Skip Intro" offer or `always`'s undo.
     /// See IntroSkipPrompt.swift and the server's intro-skip-mode spec.
     let introSkipPrompt = IntroSkipPrompt()
@@ -460,12 +463,33 @@ class PlayerViewModel {
         introSkipPrompt.isVisible
     }
 
+    private var markerPlaybackHasStarted: Bool {
+        guard let epoch = activeAetherLoadEpoch else { return false }
+        return startedAetherLoadEpoch == epoch
+    }
+
     var showCreditsSkip: Bool {
         // A party member who may not seek has nothing to press.
-        isInCreditsWindow && canRequestSeek
+        markerPlaybackHasStarted && !isLoading && isInCreditsWindow && canRequestSeek
+    }
+
+    var showRecapSkip: Bool {
+        markerPlaybackHasStarted && !isLoading && isInRecapWindow && canRequestSeek
+    }
+    var showSegmentSkip: Bool { showRecapSkip || showCreditsSkip }
+    var segmentSkipLabel: String { showRecapSkip ? "Skip Recap" : "Skip Credits" }
+
+    func skipCurrentSegment() {
+        if showRecapSkip, let recapRange {
+            seekTo(seconds: recapRange.end)
+        } else if showCreditsSkip {
+            skipCredits()
+        }
     }
 
     private func updateCreditsWindow() {
+        let inRecap = recapRange.map { currentTime >= $0.start && currentTime < $0.end } ?? false
+        if isInRecapWindow != inRecap { isInRecapWindow = inRecap }
         let inWindow = creditsRange.map { currentTime >= $0.start && currentTime < $0.end } ?? false
         if isInCreditsWindow != inWindow { isInCreditsWindow = inWindow }
     }
@@ -676,9 +700,17 @@ class PlayerViewModel {
     /// A marker update can finish after the playback session starts but before
     /// the realtime websocket has connected. Reconcile once after the socket
     /// is live so that event-delivery race cannot hide intro/credits prompts
-    /// for the current Aether load.
-    private var markerReconciledSessionId: String?
+    /// for the current Aether load. A `markers_updated` event that lands
+    /// while a reconcile read is in flight replaces that read with a fresh
+    /// one, so the event is never overwritten by an older snapshot and the
+    /// marker kinds it omits still get reconciled.
+    private var markerReconcileRequestId: UUID?
     private var markerReconcileTask: Task<Void, Never>?
+    /// Reads the file-specific markers for a reconcile. Tests replace it.
+    @ObservationIgnored
+    var markerDetailLoader: @MainActor (_ contentId: String, _ libraryId: Int?) async throws -> WatchDetail = {
+        try await SiloAPI.shared.watchDetail(contentId: $0, libraryId: $1)
+    }
 
     /// Whether the realtime websocket can currently receive live AI-subtitle
     /// cues. The preparing/pause flow starts on submit for both live and
@@ -1690,6 +1722,7 @@ class PlayerViewModel {
         } else {
             startProgressReporting()
         }
+        syncIntroSkipPrompt()
         refreshPlaybackStats(force: true)
     }
 
@@ -4549,9 +4582,10 @@ class PlayerViewModel {
         chapters = []
         introRange = nil
         creditsRange = nil
+        recapRange = nil
         markerReconcileTask?.cancel()
         markerReconcileTask = nil
-        markerReconciledSessionId = nil
+        markerReconcileRequestId = nil
         qualityOptions = [ApplePlaybackQuality.auto]
         activeQualityId = ApplePlaybackQuality.autoId
         isQualitySwitching = false
@@ -5034,8 +5068,9 @@ class PlayerViewModel {
                 self.duration = session.durationSeconds ?? prepared.selectedVersion.duration ?? 0
                 self.currentTime = self.movieTime(for: session)
                 self.applyMarkerRanges(
-                    intro: prepared.selectedVersion.intro ?? prepared.watchDetail.intro,
-                    credits: prepared.selectedVersion.credits ?? prepared.watchDetail.credits
+                    intro: prepared.selectedVersion.intro,
+                    credits: prepared.selectedVersion.credits,
+                    recap: prepared.selectedVersion.recap
                 )
 
                 guard let streamRequest = await self.makeStreamRequest(
@@ -6312,9 +6347,10 @@ class PlayerViewModel {
         scheduleHideControls()
     }
 
-    private func applyMarkerRanges(intro: TimeRange?, credits: TimeRange?) {
+    private func applyMarkerRanges(intro: TimeRange?, credits: TimeRange?, recap: TimeRange?) {
         introRange = validTimeRange(intro)
         creditsRange = validTimeRange(credits)
+        recapRange = validTimeRange(recap)
         if let introRange {
             Self.logger.info(
                 "[CMP-MARKERS] intro range active start=\(introRange.start, privacy: .public) end=\(introRange.end, privacy: .public)"
@@ -6329,43 +6365,53 @@ class PlayerViewModel {
         autoSkipCreditsIfNeeded(at: currentTime)
     }
 
-    private func reconcileMarkersAfterRealtimeConnect() {
+    /// Test seam: the playback identity a marker reconcile is fenced on.
+    func bindMarkerReconciliationForTesting(sessionId: String, detail: WatchDetail, version: FileVersion) {
+        activePlaybackSessionId = sessionId
+        currentWatchDetail = detail
+        currentSelectedVersion = version
+    }
+
+    func reconcileMarkersAfterRealtimeConnect() {
         guard offlinePlaybackContext == nil,
-              introRange == nil || creditsRange == nil,
               let sessionId = activePlaybackSessionId,
-              markerReconciledSessionId != sessionId,
               let contentId = currentWatchDetail?.contentId,
               let fileId = currentSelectedVersion?.fileId else {
             return
         }
 
-        markerReconciledSessionId = sessionId
+        let requestId = UUID()
+        let libraryId = self.libraryId
+        markerReconcileRequestId = requestId
         markerReconcileTask?.cancel()
         markerReconcileTask = Task { @MainActor [weak self] in
             guard let self else { return }
             defer {
-                if self.markerReconciledSessionId == sessionId {
+                if self.markerReconcileRequestId == requestId {
                     self.markerReconcileTask = nil
+                    self.markerReconcileRequestId = nil
                 }
             }
             do {
-                let detail = try await SiloAPI.shared.watchDetail(contentId: contentId, libraryId: libraryId)
+                // The read is owner-fenced: it is sent for the owner captured
+                // at dispatch and refused if that owner changed in flight.
+                let detail = try await self.markerDetailLoader(contentId, libraryId)
                 guard !Task.isCancelled,
+                      self.markerReconcileRequestId == requestId,
                       self.activePlaybackSessionId == sessionId,
                       self.currentSelectedVersion?.fileId == fileId,
                       let version = detail.versions.first(where: { $0.fileId == fileId }) else {
                     return
                 }
-                let refreshedIntro = version.intro ?? detail.intro
-                let refreshedCredits = version.credits ?? detail.credits
+                let refreshedIntro = version.intro
+                let refreshedCredits = version.credits
                 self.applyMarkerRanges(
-                    intro: self.introRange ?? refreshedIntro,
-                    credits: self.creditsRange ?? refreshedCredits
+                    intro: refreshedIntro,
+                    credits: refreshedCredits,
+                    recap: version.recap
                 )
             } catch {
-                if self.activePlaybackSessionId == sessionId {
-                    self.markerReconciledSessionId = nil
-                }
+                guard !Task.isCancelled, self.markerReconcileRequestId == requestId else { return }
                 Self.logger.warning(
                     "[CMP-MARKERS] realtime marker reconciliation failed: \(String(describing: error), privacy: .public)"
                 )
@@ -6390,7 +6436,10 @@ class PlayerViewModel {
     /// the play/pause, loading and buffering state. The pill's own timer runs
     /// in between. The one seek it can ask for is `always`'s immediate skip.
     private func syncIntroSkipPrompt() {
-        let range = introRange
+        // Do not offer or resolve a skip while the engine has yet to present
+        // this load. Seeking and pausing before its first frame can prevent
+        // the startup milestone and its session progress reporting.
+        let range = markerPlaybackHasStarted ? introRange : nil
         let target = introSkipPrompt.update(
             IntroSkipPrompt.Inputs(
                 position: currentTime,
@@ -7562,9 +7611,10 @@ class PlayerViewModel {
         clearPlaybackStats()
         introRange = nil
         creditsRange = nil
+        recapRange = nil
         markerReconcileTask?.cancel()
         markerReconcileTask = nil
-        markerReconciledSessionId = nil
+        markerReconcileRequestId = nil
         introSkipPrompt.reset()
         autoSkippedCreditsKey = nil
         knownExternalSubtitles = []
@@ -7738,7 +7788,7 @@ class PlayerViewModel {
         await realtimeClient.bind(sessionId: sessionId, authority: authority)
     }
 
-    private func handleRealtimeEvent(_ event: PlaybackRealtimeEventEnvelope) async {
+    func handleRealtimeEvent(_ event: PlaybackRealtimeEventEnvelope) async {
         guard event.sessionId == activePlaybackSessionId else { return }
         switch event.name {
         case .markersUpdated:
@@ -7754,8 +7804,15 @@ class PlayerViewModel {
             }
             applyMarkerRanges(
                 intro: payload.introUpdate.resolving(current: introRange),
-                credits: payload.creditsUpdate.resolving(current: creditsRange)
+                credits: payload.creditsUpdate.resolving(current: creditsRange),
+                recap: payload.recapUpdate.resolving(current: recapRange)
             )
+            // An in-flight reconcile snapshot may predate this event. Replace
+            // it rather than drop it: the event can omit a kind whose update
+            // was missed while the socket was down.
+            if markerReconcileRequestId != nil {
+                reconcileMarkersAfterRealtimeConnect()
+            }
         case .chapterThumbnailReady:
             break
         case .subtitleTimingChanged:

@@ -238,6 +238,7 @@ enum APIv2CatalogRead {
         let codecVideo: String
         let container: String
         let credits: Marker?
+        let recap: Marker?
         let duration: Int64
         let editionKey: String?
         let editionRaw: String?
@@ -270,6 +271,7 @@ enum APIv2CatalogRead {
         let codecVideo: String
         let container: String
         let credits: WatchMarker?
+        let recap: WatchMarker?
         let durationSeconds: Int64
         var duration: Int64 { durationSeconds }
         let editionKey: String?
@@ -300,6 +302,7 @@ enum APIv2CatalogRead {
         let subtitles: [SubtitleInfo]
         let intro: WatchMarker?
         let credits: WatchMarker?
+        let recap: WatchMarker?
         let userData: WatchRollup?
         let seriesId: String?
         let seriesTitle: String?

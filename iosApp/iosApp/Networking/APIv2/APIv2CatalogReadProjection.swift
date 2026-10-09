@@ -215,6 +215,7 @@ extension FileVersion {
         self.chapters = try value.chapters.map { try $0.map { try VersionChapter(catalog: $0) } }
         self.intro = value.intro.map { TimeRange(catalog: $0) }
         self.credits = value.credits.map { TimeRange(catalog: $0) }
+        self.recap = value.recap.map { TimeRange(catalog: $0) }
         self.presentationKind = value.presentationKind
         self.presentationGroupKey = value.presentationGroupKey
         self.presentationPartIndex = try value.presentationPartIndex.map { try catalogLegacyInt($0) }
@@ -244,6 +245,7 @@ extension FileVersion {
         self.chapters = try value.chapters.map { try $0.map { try VersionChapter(catalog: $0) } }
         self.intro = value.intro.map { TimeRange(watch: $0) }
         self.credits = value.credits.map { TimeRange(watch: $0) }
+        self.recap = value.recap.map { TimeRange(watch: $0) }
         self.presentationKind = value.presentationKind
         self.presentationGroupKey = value.presentationGroupKey
         self.presentationPartIndex = try value.presentationPartIndex.map { try catalogLegacyInt($0) }
@@ -266,6 +268,7 @@ extension WatchDetail {
         subtitles = value.subtitles.map { SubtitleInfoBasic(catalog: $0) }
         intro = value.intro.map { TimeRange(watch: $0) }
         credits = value.credits.map { TimeRange(watch: $0) }
+        recap = value.recap.map { TimeRange(watch: $0) }
         userData = try value.userData.map { try LeafItemUserData(catalog: $0) }
         seriesId = value.seriesId
         seriesTitle = value.seriesTitle

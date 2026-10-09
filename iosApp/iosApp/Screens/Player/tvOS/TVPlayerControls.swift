@@ -76,7 +76,7 @@ struct TVPlayerControls: View {
     @FocusState private var focusedTransportButton: TVPlayerTransportCluster.FocusTarget?
     @FocusState private var focusedHUDTab: TVPlayerInfoHUD.Tab?
     @FocusState private var isIntroSkipFocused: Bool
-    @FocusState private var isCreditsSkipFocused: Bool
+    @FocusState private var isSegmentSkipFocused: Bool
 
     private var isHUDPresented: Bool { viewModel.isHUDPresented }
 
@@ -96,8 +96,8 @@ struct TVPlayerControls: View {
             }
             introSkipLayer
                 .transition(.opacity)
-            if viewModel.showCreditsSkip {
-                creditsSkipLayer
+            if viewModel.showSegmentSkip {
+                segmentSkipLayer
                     .transition(.opacity)
             }
             if isHUDPresented {
@@ -174,16 +174,19 @@ struct TVPlayerControls: View {
                 }
             }
         }
-        .onChange(of: viewModel.showCreditsSkip) { _, visible in
+        .onChange(of: viewModel.showSegmentSkip) { _, visible in
             if visible {
                 // Like the intro pill, never take focus from an active scrub:
                 // losing focus cancels the scrub preview.
                 if !isHUDPresented && !isTimelineScrubbing && !viewModel.isScrubbing {
-                    isCreditsSkipFocused = true
+                    isSegmentSkipFocused = true
                 }
             } else {
-                isCreditsSkipFocused = false
-                if viewModel.showControls && !isHUDPresented {
+                isSegmentSkipFocused = false
+                // A recap ends where the intro pill often appears. Keep the
+                // viewer on the intro pill or a transport button they moved to.
+                if viewModel.showControls && !isHUDPresented &&
+                    focusedTransportButton == nil && !isIntroSkipFocused {
                     isScrubberFocused = true
                 }
             }
@@ -240,8 +243,8 @@ struct TVPlayerControls: View {
             // on them would land nowhere; the scrubber owns focus then.
             if viewModel.showIntroSkip && !isTimelineScrubbing && !isIntroSkipFocused {
                 isIntroSkipFocused = true
-            } else if viewModel.showCreditsSkip && !isTimelineScrubbing && !isCreditsSkipFocused {
-                isCreditsSkipFocused = true
+            } else if viewModel.showSegmentSkip && !isTimelineScrubbing && !isSegmentSkipFocused {
+                isSegmentSkipFocused = true
             } else if focusedTransportButton == nil && !isScrubberFocused {
                 isScrubberFocused = true
             }
@@ -293,9 +296,9 @@ struct TVPlayerControls: View {
             } else if viewModel.showIntroSkip {
                 isScrubberFocused = false
                 isIntroSkipFocused = true
-            } else if viewModel.showCreditsSkip {
+            } else if viewModel.showSegmentSkip {
                 isScrubberFocused = false
-                isCreditsSkipFocused = true
+                isSegmentSkipFocused = true
             } else {
                 isScrubberFocused = true
             }
@@ -372,11 +375,11 @@ struct TVPlayerControls: View {
         }
     }
 
-    private var creditsSkipLayer: some View {
+    private var segmentSkipLayer: some View {
         Button {
-            viewModel.skipCredits()
+            viewModel.skipCurrentSegment()
         } label: {
-            Label("Skip Credits", systemImage: "forward.end.fill")
+            Label(viewModel.segmentSkipLabel, systemImage: "forward.end.fill")
                 .font(.system(size: 26, weight: .semibold))
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
@@ -384,8 +387,8 @@ struct TVPlayerControls: View {
         }
         .buttonStyle(TVPillButtonStyle(kind: .primary, focusTreatment: .compact))
         .disabled(isTimelineScrubbing)
-        .focused($isCreditsSkipFocused)
-        .accessibilityLabel("Skip Credits")
+        .focused($isSegmentSkipFocused)
+        .accessibilityLabel(viewModel.segmentSkipLabel)
         .padding(.horizontal, 80)
         .padding(.bottom, viewModel.showControls && !isHUDPresented ? 156 : 96)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)

@@ -90,8 +90,8 @@ struct MobilePlayerControls: View {
                 .transition(.opacity)
             }
             introSkipPill
-            if viewModel.showCreditsSkip {
-                creditsSkipPill
+            if viewModel.showSegmentSkip {
+                segmentSkipPill
             }
             if showsStats {
                 MobilePlaybackStatsOverlay(stats: viewModel.playbackStats)
@@ -600,22 +600,22 @@ struct MobilePlayerControls: View {
         }
     }
 
-    private var creditsSkipPill: some View {
+    private var segmentSkipPill: some View {
         VStack {
             Spacer()
             HStack {
                 Spacer()
                 Button {
-                    viewModel.skipCredits()
+                    viewModel.skipCurrentSegment()
                 } label: {
-                    Label("Skip Credits", systemImage: "forward.end.fill")
+                    Label(viewModel.segmentSkipLabel, systemImage: "forward.end.fill")
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(.black.opacity(0.85))
                         .padding(.horizontal, 16)
                         .frame(height: SiloTheme.topBarIconHitSize)
                 }
                 .buttonStyle(MobilePlayerGlassButtonStyle(tint: .white.opacity(0.9)))
-                .accessibilityLabel("Skip Credits")
+                .accessibilityLabel(viewModel.segmentSkipLabel)
             }
             .padding(.horizontal, 24)
             .padding(.bottom, viewModel.showControls ? 88 : 24)

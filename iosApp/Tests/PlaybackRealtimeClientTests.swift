@@ -70,6 +70,34 @@ final class PlaybackRealtimeClientTests: XCTestCase {
         await client.unbind()
     }
 
+    func testTemporaryOutageKeepsMintingTicketsAfterTheFailureThreshold() async {
+        let recorder = Recorder()
+        let retried = expectation(description: "reconnect after degraded-control cooldown")
+        let client = PlaybackRealtimeClient(
+            handshake: { sessionId, authority in
+                await recorder.record(sessionId, authority)
+                if await recorder.mints.count <= 8 { throw URLError(.networkConnectionLost) }
+                retried.fulfill()
+                try await Task.sleep(nanoseconds: 60_000_000_000)
+                throw CancellationError()
+            },
+            ownerIsCurrent: { _ in true },
+            reconnectDelaysNanos: [1_000_000],
+            reconnectCooldownNanos: 1_000_000,
+            commandHandler: { _ in }
+        )
+        await client.bind(sessionId: Self.sessionId, authority: Self.authority)
+        await fulfillment(of: [retried], timeout: 5)
+
+        let mints = await recorder.mints
+        XCTAssertEqual(mints.count, 9)
+        XCTAssertTrue(mints.allSatisfy { $0.sessionId == Self.sessionId
+            && $0.installationID == Self.authority.installationID })
+        let unavailable = await client.isRealtimeUnavailable
+        XCTAssertTrue(unavailable)
+        await client.unbind()
+    }
+
     /// The HTTP client refuses requests while any identity transition holds
     /// its dispatch gate, even one that keeps this owner. That refusal must
     /// not end remote control for the session.
