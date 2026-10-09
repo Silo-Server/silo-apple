@@ -51,7 +51,7 @@ struct AsyncImageView: View {
         let resolved = resolveArtwork(drawnAt: pointSize)
         if let cached = resolved.cached, cached.isSufficient {
             artworkImage(cached.image, frame: frame)
-        } else if URL(string: url) == nil {
+        } else if url.isEmpty || URL(string: url) == nil {
             // Nothing to load, so draw what stands in for the artwork on the
             // first frame rather than after an empty request fails.
             missingPlaceholder(frame: frame)
@@ -191,10 +191,10 @@ enum ArtworkPlaceholderSymbol {
     static func forMediaType(_ type: String?) -> String {
         guard let type else { return fallback }
         if SiloMediaType.isAudiobook(type) { return audiobook }
-        if SiloMediaType.isSeries(type) { return television }
+        if SiloMediaType.isSeries(type) || SiloMediaType.isEpisode(type) { return television }
         switch type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         // "season_premiere" is a calendar event type.
-        case "season", "episode", "season_premiere":
+        case "season", "season_premiere":
             return television
         case "podcast", "podcasts":
             return audiobook

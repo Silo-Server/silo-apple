@@ -7,6 +7,7 @@ final class ArtworkPlaceholderSymbolTests: XCTestCase {
         XCTAssertEqual(ArtworkPlaceholderSymbol.forMediaType("Series"), "tv")
         XCTAssertEqual(ArtworkPlaceholderSymbol.forMediaType("season"), "tv")
         XCTAssertEqual(ArtworkPlaceholderSymbol.forMediaType("episode"), "tv")
+        XCTAssertEqual(ArtworkPlaceholderSymbol.forMediaType("Episodes"), "tv")
         XCTAssertEqual(ArtworkPlaceholderSymbol.forMediaType("season_premiere"), "tv")
     }
 
