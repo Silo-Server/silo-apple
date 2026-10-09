@@ -110,23 +110,20 @@ struct MarqueeTVSetupSteps: View {
     }
 }
 
-/// The Silo app icon: the three-bar mark on black.
+/// The Silo app icon: the mark on the deep blue field.
 private struct SetupAppIcon: View {
     var body: some View {
-        VStack(spacing: 3) {
-            ForEach([Color.siloBrandBlue, .siloBrandRed, .siloBrandOrange], id: \.self) { color in
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                    .fill(color)
-                    .modifier(SkewY(angle: .degrees(-18)))
-            }
-        }
-        .frame(width: 26, height: 56)
-        .frame(width: 92, height: 92)
-        .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(.black))
-        .overlay(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
-        )
+        // The icon draws the mark at 84% of its height.
+        Image("SiloMark")
+            .resizable()
+            .scaledToFit()
+            .frame(height: 77)
+            .frame(width: 92, height: 92)
+            .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(Color.siloIconField))
+            .overlay(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
+            )
     }
 }
 
@@ -165,16 +162,6 @@ private struct SetupDonePicture: View {
             .frame(width: 96, height: 96)
             .background(Circle().fill(Color.siloSuccess.opacity(0.16)))
             .overlay(Circle().strokeBorder(Color.siloSuccess, lineWidth: 3))
-    }
-}
-
-/// Slants a view vertically about its center, like CSS `skewY`.
-private struct SkewY: GeometryEffect {
-    var angle: Angle
-
-    func effectValue(size: CGSize) -> ProjectionTransform {
-        let slope = CGFloat(tan(angle.radians))
-        return ProjectionTransform(CGAffineTransform(a: 1, b: slope, c: 0, d: 1, tx: 0, ty: -size.width / 2 * slope))
     }
 }
 

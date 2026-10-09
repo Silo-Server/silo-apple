@@ -43,6 +43,9 @@ extension Color {
     /// Red sampled from the Silo wordmark.
     static let siloBrandRed = Color(hex: "#F50B4F")
 
+    /// Deep blue field behind the mark on the app icon.
+    static let siloIconField = Color(hex: "#010D9F")
+
     /// Muted/secondary text — primary at 60% opacity (#99EDEDED)
     static let siloSecondaryText = Color(hex: "#99EDEDED")
 
