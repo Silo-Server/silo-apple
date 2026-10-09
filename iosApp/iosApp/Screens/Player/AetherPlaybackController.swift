@@ -93,6 +93,13 @@ final class AetherPlaybackController {
 
     private(set) var activeSpec: AetherLoadSpec?
     private(set) var activeLoadEpoch: LoadEpoch?
+    /// The last `[CMP-AUDIO]` line's load and pipeline.
+    private struct LoggedAudioPipeline: Equatable {
+        let epoch: LoadEpoch?
+        let decoder: String?
+        let delivery: AudioDelivery
+    }
+    private var lastLoggedAudioPipeline: LoggedAudioPipeline?
 
     /// Whether a transport call can reach anything. `play()`, `pause()` and
     /// `seek` all bail without a load, so a system-media surface that reports
@@ -846,6 +853,22 @@ final class AetherPlaybackController {
             publish(.inventoryChanged)
         }
         .store(in: &subscriptions)
+
+        // The audio pipeline the engine built, once it settles: TrueHD Atmos
+        // rendered for its heights reads "… Atmos → APAC 7.1.4", the channel
+        // bridge names its codec. Essential tier, like the decision line.
+        // Deduplicated per load, so the next item on the same pipeline still
+        // gets its line.
+        engine.$activeAudioDecoder.combineLatest(engine.$audioDelivery)
+            .debounce(for: .milliseconds(500), scheduler: DispatchQueue.main)
+            .sink { [weak self] decoder, delivery in
+                guard let self, delivery != .none else { return }
+                let logged = LoggedAudioPipeline(epoch: activeLoadEpoch, decoder: decoder, delivery: delivery)
+                guard logged != lastLoggedAudioPipeline else { return }
+                lastLoggedAudioPipeline = logged
+                cmpLog("[CMP-AUDIO] pipeline=\"\(decoder ?? "none")\" delivery=\(delivery.rawValue)")
+            }
+            .store(in: &subscriptions)
 
         engine.diagnostics.$liveTelemetry
             .sink { [weak self] _ in self?.publish(.telemetryChanged) }

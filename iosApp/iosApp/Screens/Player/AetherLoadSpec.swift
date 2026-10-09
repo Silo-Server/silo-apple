@@ -590,6 +590,14 @@ enum AetherObjectAudioPolicy {
         return .apac(layout)
     }
 
+    /// `apac 7.1.4` or `off`, for the diagnostics line.
+    static func diagnosticName(_ rendering: ObjectAudioRendering) -> String {
+        switch rendering {
+        case .off: return "off"
+        case .apac(let layout): return "apac \(layout.rawValue)"
+        }
+    }
+
     #if os(tvOS)
     /// Apple TV's HDMI output as tvOS reports it. The Atmos route to a receiver
     /// or soundbar is Dolby MAT, which tvOS reports as `.dolbyAtmos`.
@@ -598,6 +606,20 @@ enum AetherObjectAudioPolicy {
         case .dolbyAtmos, .spatialAudio: return .atmos
         case .monoStereo, .surround, .dolbyAudio: return .channelsOnly
         default: return .unknown
+        }
+    }
+
+    /// The mode's own name for the diagnostics line, so a report shows what
+    /// tvOS said rather than only what Silo made of it.
+    static func renderingModeName(_ mode: AVAudioSession.RenderingMode) -> String {
+        switch mode {
+        case .notApplicable: return "notApplicable"
+        case .monoStereo: return "monoStereo"
+        case .surround: return "surround"
+        case .spatialAudio: return "spatialAudio"
+        case .dolbyAudio: return "dolbyAudio"
+        case .dolbyAtmos: return "dolbyAtmos"
+        @unknown default: return "raw\(mode.rawValue)"
         }
     }
     #endif

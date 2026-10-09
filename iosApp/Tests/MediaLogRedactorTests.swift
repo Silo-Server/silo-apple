@@ -173,7 +173,7 @@ final class MediaLogRedactorTests: XCTestCase {
         let source = "[AetherEngine] load url=https://private.example/items/movie.mkv?st=signed-secret "
             + #"headers=["X-Profile-Token": "profile-secret"]"#
         var captured: String?
-        let handler = AetherDiagnosticsBridge.makeHandler { captured = $0() }
+        let handler = AetherDiagnosticsBridge.makeHandler { _, _, line in captured = line() }
 
         handler(source)
         let redacted = try XCTUnwrap(captured)
@@ -191,7 +191,7 @@ final class MediaLogRedactorTests: XCTestCase {
     func testAetherDiagnosticsHandlerHandsTheSinkADeferredProvider() {
         var invocations = 0
         var redacted: String?
-        let handler = AetherDiagnosticsBridge.makeHandler { provider in
+        let handler = AetherDiagnosticsBridge.makeHandler { _, _, provider in
             invocations += 1
             // A gated sink simply never calls `provider`; no regex sweep runs.
             redacted = provider()
@@ -202,6 +202,77 @@ final class MediaLogRedactorTests: XCTestCase {
         XCTAssertEqual(invocations, 1)
         XCTAssertEqual(redacted?.contains("private.example"), false)
         XCTAssertEqual(redacted?.contains("movie.mkv"), false)
+    }
+
+    /// The lines that place missing TrueHD Atmos heights or LFE reach a report
+    /// without Debug Logging; the rest of the engine's chatter still waits for
+    /// it. The samples are lines AetherEngine wrote: `aetherctl serve` on a
+    /// TrueHD Atmos title, and the route line on the tvOS 27 simulator.
+    func testAtmosAndAudioRouteLinesAreEssentialAndTheRestVerbose() {
+        let essential = [
+            "[SpatialAudioBridge] init: layout=7.1.4 bitRate=3840 kbps codecs=apac.31.03 priming=2048 frames",
+            "[SpatialAudioBridge] bed levels 7.1.4 at 5.0 s over 30.0 s, rms/peak dBFS: L -50.4/-22.4, R -46.9/-20.0, "
+                + "C -39.0/-13.0, LFE -30.3/-11.8, Ls -42.6/-24.1, Rs -41.8/-24.1, Rls -40.8/-23.1, "
+                + "Rrs -39.6/-23.9, Vhl -35.3/-16.9, Vhr -35.4/-16.8, Ltr -31.8/-11.4, Rtr -31.6/-11.5; "
+                + "objects: up to 15 active, 12 elevated",
+            "[HLSVideoEngine] TrueHD Atmos: objects rendered into 7.1.4, delivered as apac.31.03 "
+                + "(lossy; the lossless 7.1 channel presentation is not used)",
+            "[HLSVideoEngine] TrueHD Atmos with objectAudioRendering off; the channel bridge carries the 7.1 "
+                + "presentation, with the objects mixed into the floor channels",
+            #"[HLSVideoEngine] master audio: codecs="avc1.640029,apac.31.03" audioRendition=no channels=none"#,
+            "[NativeAVPlayerHost] #3 audioRoute output=2 preferred=2 max=2 rendering=notApplicable "
+                + "multichannelContent=false ports=[Speaker[Speaker, ch=-1]] latency=0ms io=10.0ms (settled)",
+            "[AetherEngine] audioRoute rendering mode changed output=8 preferred=8 max=8 rendering=surround",
+            "[SoftwarePlaybackHost] audioRoute output=2 preferred=2 max=2 (session start, live=false)",
+            "[NativeAVPlayerHost] #3 item.audioTrack codec='apac' enabled=true sr=48000 ch=12 (readyToPlay)",
+            "[NativeAVPlayerHost] #3 item.allowedAudioSpatializationFormats=monoStereoAndMultichannel (readyToPlay)",
+            "[NativeAVPlayerHost] #3 WARNING: FLAC bridge produced 8-channel LPCM but active audio route "
+                + "carries only 2 LPCM channels, tvOS will downmix",
+            "[NativeAVPlayerHost] #3 WARNING: ec-3 6-channel track playing into a 2-channel route.",
+        ]
+        for line in essential {
+            XCTAssertEqual(AetherDiagnosticsBridge.verbosity(for: line), .essential, line)
+        }
+        let verbose = [
+            "[HLSVideoEngine] prepared: codec=avc1.640029,mp4a.40.2 resolution=1920x1080",
+            "[NativeAVPlayerHost] #3 item.videoTrack codec='avc1' enabled=true (readyToPlay)",
+            "[SegmentCache] evicted seg12 TrueHD APAC audioRoute",
+        ]
+        for line in verbose {
+            XCTAssertEqual(AetherDiagnosticsBridge.verbosity(for: line), .verbose, line)
+        }
+    }
+
+    /// An essential engine error or warning stays one in the report.
+    func testEssentialEngineLinesKeepTheirSeverity() {
+        let error = "[HLSVideoEngine] ERROR: TrueHD Atmos rendering unavailable (x); keeping the channel bridge"
+        XCTAssertEqual(AetherDiagnosticsBridge.level(for: error, verbosity: .essential), .error)
+        let warning = "[NativeAVPlayerHost] #3 WARNING: ec-3 6-channel track playing into a 2-channel route."
+        XCTAssertEqual(AetherDiagnosticsBridge.level(for: warning, verbosity: .essential), .warning)
+        XCTAssertEqual(AetherDiagnosticsBridge.level(for: error, verbosity: .verbose), .debug)
+    }
+
+    /// A port name is whatever the user called the device, so a route line
+    /// keeps the port's type and channels and loses its name, brackets in the
+    /// name included. An HDMI sink's EDID name stays: AVR or TV matters.
+    func testAudioRouteLinesLoseUserChosenPortNames() {
+        let line = "[NativeAVPlayerHost] #3 audioRoute output=2 preferred=2 max=2 rendering=spatialAudio "
+            + "multichannelContent=true ports=[Alex’s [work] AirPods], Pro[BluetoothA2DPOutput, ch=2, labels=L R, "
+            + "heights=0, spatial], SONY HT-ST5000[HDMIOutput, ch=8, labels=L R C LFE Ls Rs Rls Rrs, heights=0]] "
+            + "latency=160ms io=10.0ms (settled)"
+        XCTAssertEqual(
+            AetherDiagnosticsBridge.withoutPortNames(line),
+            "[NativeAVPlayerHost] #3 audioRoute output=2 preferred=2 max=2 rendering=spatialAudio "
+                + "multichannelContent=true ports=[port[BluetoothA2DPOutput, ch=2, labels=L R, heights=0, spatial], "
+                + "SONY HT-ST5000[HDMIOutput, ch=8, labels=L R C LFE Ls Rs Rls Rrs, heights=0]] "
+                + "latency=160ms io=10.0ms (settled)"
+        )
+        let simulator = "[NativeAVPlayerHost] #3 audioRoute output=2 preferred=2 max=2 rendering=notApplicable "
+            + "multichannelContent=false ports=[Speaker[Speaker, ch=-1]] latency=0ms io=10.0ms (settled)"
+        XCTAssertEqual(AetherDiagnosticsBridge.withoutPortNames(simulator),
+                       simulator.replacingOccurrences(of: "ports=[Speaker[", with: "ports=[port["))
+        XCTAssertEqual(AetherDiagnosticsBridge.withoutPortNames("no route here"), "no route here")
+        XCTAssertEqual(AetherDiagnosticsBridge.withoutPortNames("ports=[] latency=0ms"), "ports=[] latency=0ms")
     }
 
     func testBoundsUntrustedErrorText() {
