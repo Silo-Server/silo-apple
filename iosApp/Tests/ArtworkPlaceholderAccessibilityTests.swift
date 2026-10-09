@@ -13,7 +13,12 @@ final class ArtworkPlaceholderAccessibilityTests: XCTestCase {
     func testMissingImagePlaceholdersAreNotAccessibilityElements() async throws {
         let view = VStack {
             Text("Marker")
-            AsyncImageView(url: "", targetSize: CGSize(width: 120, height: 180), placeholderStyle: .artwork)
+            AsyncImageView(
+                url: "",
+                targetSize: CGSize(width: 120, height: 180),
+                placeholderStyle: .artwork,
+                placeholderSymbol: ArtworkPlaceholderSymbol.television
+            )
                 .frame(width: 120, height: 180)
             AsyncImageView(url: "", targetSize: CGSize(width: 120, height: 180))
                 .frame(width: 120, height: 180)
@@ -26,6 +31,7 @@ final class ArtworkPlaceholderAccessibilityTests: XCTestCase {
         let card = MediaCard(
             title: "Placeholder Show",
             posterUrl: "",
+            mediaType: "series",
             year: 2008,
             action: {}
         )

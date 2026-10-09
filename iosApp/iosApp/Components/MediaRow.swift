@@ -441,6 +441,7 @@ struct MediaRow: View {
                 title: posterTitle(for: item),
                 posterUrl: item.posterUrl ?? "",
                 thumbhash: item.posterThumbhash,
+                mediaType: item.type,
                 year: item.year,
                 subtitle: EpisodeCardCaption.line(for: item),
                 progress: progressValue(for: item),

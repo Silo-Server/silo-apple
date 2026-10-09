@@ -130,7 +130,8 @@ struct TVAudiobookDetailView: View {
             thumbhash: detail.posterThumbhash,
             targetSize: CGSize(width: 460, height: 460),
             contentMode: .fill,
-            placeholderStyle: .artwork
+            placeholderStyle: .artwork,
+            placeholderSymbol: ArtworkPlaceholderSymbol.audiobook
         )
         .frame(width: 460, height: 460)
         .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius, style: .continuous))

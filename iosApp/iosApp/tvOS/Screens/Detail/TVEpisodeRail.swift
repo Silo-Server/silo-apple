@@ -791,7 +791,8 @@ private struct EpisodeCardLabel: View {
                 thumbhash: episode.stillThumbhash,
                 targetSize: CGSize(width: cardWidth, height: stillHeight),
                 contentMode: .fill,
-                placeholderStyle: .artwork
+                placeholderStyle: .artwork,
+                placeholderSymbol: ArtworkPlaceholderSymbol.television
             )
             .frame(width: cardWidth, height: stillHeight)
 

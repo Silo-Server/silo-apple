@@ -77,7 +77,8 @@ struct CalendarEventCard: View {
                 thumbhash: event.posterThumbhash,
                 targetSize: CGSize(width: cardWidth, height: cardHeight),
                 contentMode: .fill,
-                placeholderStyle: .artwork
+                placeholderStyle: .artwork,
+                placeholderSymbol: ArtworkPlaceholderSymbol.forMediaType(event.type)
             )
             .frame(width: cardWidth, height: cardHeight)
 

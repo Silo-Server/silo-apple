@@ -8,6 +8,8 @@ struct TVMediaCard: View {
     let title: String
     let posterUrl: String
     var posterThumbhash: String? = nil
+    /// Catalog type; picks the mark shown when the poster is missing.
+    var mediaType: String? = nil
     var year: Int? = nil
     /// Optional second caption line rendered in place of the year (same
     /// type treatment) — e.g. "Book 3" on audiobook series rails.
@@ -166,7 +168,8 @@ struct TVMediaCard: View {
                 thumbhash: posterThumbhash,
                 targetSize: CGSize(width: resolvedCardWidth, height: cardHeight),
                 contentMode: .fill,
-                placeholderStyle: .artwork
+                placeholderStyle: .artwork,
+                placeholderSymbol: ArtworkPlaceholderSymbol.forMediaType(mediaType)
             )
             .frame(width: resolvedCardWidth, height: cardHeight)
             .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))

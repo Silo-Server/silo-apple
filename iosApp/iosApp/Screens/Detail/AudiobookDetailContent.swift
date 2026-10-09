@@ -87,7 +87,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
             enablesArtworkParallax: true,
             artworkStyle: hasBackdrop
                 ? .backdrop
-                : .cover(aspectRatio: kind.coverAspectRatio),
+                : .cover(aspectRatio: kind.coverAspectRatio, placeholderSymbol: kind.placeholderSymbol),
             actions: { actionStack(presentation) },
             belowOverview: { belowOverview() }
         )
@@ -229,6 +229,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
             title: title,
             items: items.map(SimilarPosterItem.init(audiobook:)),
             aspectRatio: kind.coverAspectRatio,
+            placeholderSymbol: kind.placeholderSymbol,
             onSelect: onNavigateToItem
         )
     }

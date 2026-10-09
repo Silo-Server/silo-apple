@@ -17,6 +17,11 @@ struct AsyncImageView: View {
     var targetSize: CGSize? = nil
     var contentMode: ContentMode = .fill
     var placeholderStyle: ImagePlaceholderStyle = .surface
+    /// Mark drawn when the artwork is missing. Pass the item's type through
+    /// `ArtworkPlaceholderSymbol` so a series without artwork does not show a
+    /// film reel. Nil draws no mark, for cards that centre a play button over
+    /// the artwork.
+    var placeholderSymbol: String? = ArtworkPlaceholderSymbol.fallback
     var onImageLoaded: (() -> Void)? = nil
 
     @Environment(\.displayScale) private var displayScale
@@ -141,9 +146,13 @@ struct AsyncImageView: View {
             placeholder(frame: frame)
         case .glyph:
             placeholder(frame: frame)
-                .overlay { ArtworkPlaceholderGlyph() }
+                .overlay {
+                    if let placeholderSymbol {
+                        ArtworkPlaceholderGlyph(symbol: placeholderSymbol)
+                    }
+                }
         case .defaultArtwork:
-            DefaultArtwork()
+            DefaultArtwork(symbol: placeholderSymbol)
                 .framed(frame)
                 .clipped()
         }
@@ -171,17 +180,45 @@ extension EnvironmentValues {
 }
 #endif
 
+/// The mark a missing poster shows, chosen by the item's catalog type.
+enum ArtworkPlaceholderSymbol {
+    /// Used when the type is unknown, and for movies.
+    static let fallback = "film"
+    static let television = "tv"
+    static let audiobook = "headphones"
+    static let book = "book.closed"
+
+    static func forMediaType(_ type: String?) -> String {
+        guard let type else { return fallback }
+        if SiloMediaType.isAudiobook(type) { return audiobook }
+        if SiloMediaType.isSeries(type) { return television }
+        switch type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        // "season_premiere" is a calendar event type.
+        case "season", "episode", "season_premiere":
+            return television
+        case "podcast", "podcasts":
+            return audiobook
+        case "ebook", "ebooks", "manga", "comic", "comics":
+            return book
+        default:
+            return fallback
+        }
+    }
+}
+
 /// The faint glyph drawn over missing images that are not media artwork.
 ///
 /// It is decoration: the enclosing view's label already names the item, and
-/// the symbol's own label ("Movie") would misstate it. An `Image` with
+/// the symbol's own label ("Movie", "Tv") would misstate it. An `Image` with
 /// `accessibilityHidden` is gone for VoiceOver but still listed in the
 /// UI-automation tree that XCUITest and Maestro read, so the symbol is drawn
 /// into a canvas, which exposes no element for it.
 private struct ArtworkPlaceholderGlyph: View {
+    let symbol: String
+
     var body: some View {
         Canvas { context, size in
-            var glyph = context.resolve(Image(systemName: "film"))
+            var glyph = context.resolve(Image(systemName: symbol))
             glyph.shading = .color(Color.siloOnSurface.opacity(0.3))
             context.draw(glyph, at: CGPoint(x: size.width / 2, y: size.height / 2))
         }
@@ -201,7 +238,7 @@ enum ImagePlaceholderStyle {
     enum Missing: Equatable {
         /// The loading placeholder stays: the ThumbHash, the surface, or nothing.
         case placeholder
-        /// The loading placeholder with the faint film glyph over it.
+        /// The loading placeholder with the faint type glyph over it.
         case glyph
         case defaultArtwork
     }

@@ -293,7 +293,9 @@ private struct PhoneEpisodeCard: View {
                 thumbhash: episode.stillThumbhash,
                 targetSize: CGSize(width: cardWidth, height: stillHeight),
                 contentMode: .fill,
-                placeholderStyle: .artwork
+                placeholderStyle: .artwork,
+                // The play button sits where the mark would.
+                placeholderSymbol: onPlay == nil ? ArtworkPlaceholderSymbol.television : nil
             )
             .frame(width: cardWidth, height: stillHeight)
             .clipped()

@@ -346,7 +346,8 @@ struct HomePosterCard: View {
             thumbhash: item.posterThumbhash,
             targetSize: CGSize(width: width, height: height),
             contentMode: .fill,
-            placeholderStyle: .artwork
+            placeholderStyle: .artwork,
+            placeholderSymbol: ArtworkPlaceholderSymbol.forMediaType(item.type)
         )
         .frame(width: width, height: height)
         .clipped()
@@ -508,7 +509,9 @@ struct HomeStillCard: View {
                 thumbhash: art.thumbhash,
                 targetSize: CGSize(width: width, height: height),
                 contentMode: .fill,
-                placeholderStyle: .artwork
+                placeholderStyle: .artwork,
+                // The play badge sits where the mark would.
+                placeholderSymbol: onTap == nil ? nil : ArtworkPlaceholderSymbol.forMediaType(item.type)
             )
             .frame(width: width, height: height)
             .clipped()
