@@ -6,23 +6,23 @@ texts are bundled beside this file and are available from Settings > About >
 Acknowledgements.
 
 AetherEngine
-  Revision: b1e4879e6a41477ebef3b68e8d9f65239d1ba80b (upstream release
-  7.13.0 plus Silo patches for subtitle renditions,
+  Revision: ef0d2c7f2aa564c03b789c40f8f5c5351fc1d084 (upstream release
+  7.28.3, through upstream commit dd1d5f88, plus Silo patches for subtitle renditions,
   source timing, primary ASS routing with normalized secondary/PiP text,
   refreshable authorization for native HLS, sidecar subtitles and fonts,
-  TrueHD Atmos object rendering to Apple Positional Audio, and
-  paused-item recovery)
+  TrueHD Atmos object rendering to Apple Positional Audio with its
+  diagnostics, and playback recovery)
   License: GNU LGPL version 3 with the upstream Apple Store / DRM exception
-  Source (modified, as built): https://github.com/Silo-Server/AetherEngine/tree/b1e4879e6a41477ebef3b68e8d9f65239d1ba80b
-  Upstream base: https://github.com/superuser404notfound/AetherEngine/tree/7.13.0
+  Source (modified, as built): https://github.com/Silo-Server/AetherEngine/tree/ef0d2c7f2aa564c03b789c40f8f5c5351fc1d084
+  Upstream base: https://github.com/superuser404notfound/AetherEngine/tree/dd1d5f885cd5da65a6641e42f5cd6ba341c6a05c
   Rebuild: the Package.swift and source tree at that revision
 
 FFmpegBuild and embedded media frameworks
-  Revision: 9ee46ba4fb533e35efa6492eb1a903ca4f8058fc (release 3.4.0)
-  Source and rebuild script: https://github.com/superuser404notfound/FFmpegBuild/tree/9ee46ba4fb533e35efa6492eb1a903ca4f8058fc
+  Revision: fda08325455bc12c112b5b82d014b98fa0fee0be (release 3.6.0)
+  Source and rebuild script: https://github.com/superuser404notfound/FFmpegBuild/tree/fda08325455bc12c112b5b82d014b98fa0fee0be
 
   Components built by that revision:
-  - FFmpeg n8.1.2, currently 38b88335f99e76ed89ff3c93f877fdefce736c13:
+  - FFmpeg n8.1.3, currently 1041abdc962f4cc4f394aa8de9dc5236c0c3b9e7:
     LGPL-2.1-or-later
   - dav1d 1.5.4, currently 54706fc6bc0cdecab7e9593974a4039cc038fca7:
     BSD-2-Clause
@@ -41,7 +41,8 @@ FFmpegBuild and embedded media frameworks
   AetherLibswresample, AetherLibswscale, AetherLibavfilter, AetherLibdav1d,
   AetherLibzimg, and AetherLibzvbi.
 
-  "Currently" records the tags' dereferenced values observed on 2026-09-04.
+  "Currently" records the tags' dereferenced values observed on 2026-09-04
+  (FFmpeg n8.1.3 on 2026-10-09).
   FFmpegBuild's script records tag names rather than immutable upstream
   commit IDs; the dereferenced commits recorded here pin the exact sources if
   those tags ever move.

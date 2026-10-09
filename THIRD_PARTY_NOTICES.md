@@ -17,8 +17,8 @@ The authoritative dependency lock is
 
 | Component | Exact revision | Shipped form | License |
 | --- | --- | --- | --- |
-| AetherEngine 7.13.0 + Silo subtitle, HLS authorization, TrueHD Atmos and playback recovery patches | `b1e4879e6a41477ebef3b68e8d9f65239d1ba80b` | Swift package target linked into each host app | LGPL-3.0-only with AetherEngine's Apple Store / DRM exception |
-| FFmpegBuild 3.4.0 | `9ee46ba4fb533e35efa6492eb1a903ca4f8058fc` | Nine separately embedded dynamic frameworks | See the component table below |
+| AetherEngine 7.28.3 + Silo subtitle, HLS authorization, TrueHD Atmos and playback recovery patches | `ef0d2c7f2aa564c03b789c40f8f5c5351fc1d084` | Swift package target linked into each host app | LGPL-3.0-only with AetherEngine's Apple Store / DRM exception |
+| FFmpegBuild 3.6.0 | `fda08325455bc12c112b5b82d014b98fa0fee0be` | Nine separately embedded dynamic frameworks | See the component table below |
 | SiloObjectAudio 1.0.0 | `645b91c072fafb60146151fd5127f8ff0ca38b6f` | Static `SiloObjectAudio.xcframework` linked through AetherEngine | Apache-2.0; embedded `truehd` and `oamd` crates are Apache-2.0 |
 | LibDovi 2.1.0 | `0d7cce1d6836a30d13a3a2326e50a153af53f014` | Static `Dovi.xcframework` linked through AetherEngine | MIT packaging; embedded libdovi is MIT |
 | Nuke and NukeUI 13.2.0 | `30f7a7e72e0607d304fbf69c799474bd5fb6d1ce` | Swift package targets linked into each host app | MIT |
@@ -35,10 +35,10 @@ Copyright (C) 2026 Vincent Herbst.
 
 AetherEngine is licensed under GNU LGPL version 3 with its upstream Apple
 Store / DRM exception. Silo builds a published fork revision: upstream release
-`7.13.0` plus Silo patches for complete native subtitle renditions, source
+`7.28.3`, through upstream commit `dd1d5f88`, plus Silo patches for complete native subtitle renditions, source
 timing after a media reanchor, ASS subtitle routing, and refreshable authorization
 for native HLS, sidecar subtitles and font bundles, and TrueHD Atmos object
-rendering to Apple Positional Audio. Raw ASS events stay on the
+rendering to Apple Positional Audio with its session diagnostics. Raw ASS events stay on the
 primary local overlay; secondary subtitles and software PiP receive normalized
 text, and packaged HLS retains
 its native text rendition for PiP and AirPlay. These modifications are
@@ -46,10 +46,12 @@ published under the LGPL at the exact source revision below. The bundled
 acknowledgements include AetherEngine's complete license and exception plus
 the GNU GPL version 3 text incorporated by LGPLv3.
 
-- Exact source: <https://github.com/Silo-Server/AetherEngine/tree/b1e4879e6a41477ebef3b68e8d9f65239d1ba80b>
+- Exact source: <https://github.com/Silo-Server/AetherEngine/tree/ef0d2c7f2aa564c03b789c40f8f5c5351fc1d084>
   (engine pull requests: <https://github.com/Silo-Server/AetherEngine/pull/2>,
-  <https://github.com/Silo-Server/AetherEngine/pull/6>)
-- Upstream base: <https://github.com/superuser404notfound/AetherEngine/tree/7.13.0>
+  <https://github.com/Silo-Server/AetherEngine/pull/6>,
+  <https://github.com/Silo-Server/AetherEngine/pull/16>,
+  <https://github.com/Silo-Server/AetherEngine/pull/17>)
+- Upstream base: <https://github.com/superuser404notfound/AetherEngine/tree/dd1d5f885cd5da65a6641e42f5cd6ba341c6a05c>
 - Rebuild input: `Package.swift` and the source tree at that revision
 - Bundled texts: `AetherEngine-LGPL-3.0-App-Store-Exception.txt`,
   `GPL-3.0.txt`
@@ -69,7 +71,7 @@ dynamic frameworks:
 
 | Frameworks | Upstream input | License |
 | --- | --- | --- |
-| AetherLibavcodec, AetherLibavformat, AetherLibavutil, AetherLibswresample, AetherLibswscale, AetherLibavfilter | FFmpeg `n8.1.2` (currently `38b88335f99e76ed89ff3c93f877fdefce736c13`) | LGPL-2.1-or-later |
+| AetherLibavcodec, AetherLibavformat, AetherLibavutil, AetherLibswresample, AetherLibswscale, AetherLibavfilter | FFmpeg `n8.1.3` (currently `1041abdc962f4cc4f394aa8de9dc5236c0c3b9e7`) | LGPL-2.1-or-later |
 | AetherLibdav1d | dav1d `1.5.4` (currently `54706fc6bc0cdecab7e9593974a4039cc038fca7`) | BSD-2-Clause |
 | AetherLibzimg | zimg `release-3.0.6` (currently `f819b14e8f39d1282400b0d9543e8ef73c1b2bbd`) | WTFPL-2.0 |
 | AetherLibzvbi | libzvbi `v0.2.45` (currently `d3a5ee9f2b047bf16cd1ee5ccf6ec05ee75409d0`) | LGPL-2.0-or-later, conveyed under LGPL-2.1; `src/ure.c` is MIT |
@@ -77,9 +79,12 @@ dynamic frameworks:
 FFmpegBuild 3.0.0 renamed every target, framework bundle, and install name
 with an `Aether` prefix so the build can coexist with another FFmpeg in the
 same app. Earlier releases added WMV/ASF and legacy Flash support, the VC-1
-parser repair for seeking, and dSYMs for crash symbolication. The pinned 3.4.0
-release adds FFmpeg support for the `dav1` (Dolby Vision AV1) MP4 sample entry.
-The exact FFmpegBuild 3.4.0 `build.sh` is the rebuild recipe and patch record:
+parser repair for seeking, and dSYMs for crash symbolication. 3.4.0 added FFmpeg
+support for the `dav1` (Dolby Vision AV1) MP4 sample entry. 3.5.0 moved to FFmpeg
+`n8.1.3`, and the pinned 3.6.0 release enables the `dts`, `truehd` and `loas` raw
+demuxers and adds one local patch that probes the payload of an MPEG-TS audio PID
+labelled MPEG-1 audio. The exact FFmpegBuild 3.6.0 `build.sh` is the rebuild
+recipe and patch record:
 
 - it builds FFmpeg with dynamic linkage and does not enable GPL, version-3,
   or nonfree FFmpeg components;
@@ -92,7 +97,7 @@ The exact FFmpegBuild 3.4.0 `build.sh` is the rebuild recipe and patch record:
 libzvbi 0.2.45 is the GHSA-86rm-g7qf-j2fh security update (out-of-bounds
 read, out-of-bounds write, integer underflow reachable through the teletext
 decoder). The commit IDs in the table are the tags' dereferenced values
-observed on 2026-09-04. FFmpegBuild's script records tag names rather than immutable
+observed on 2026-09-04 (FFmpeg `n8.1.3` on 2026-10-09). FFmpegBuild's script records tag names rather than immutable
 upstream commit IDs; recording the dereferenced commits here pins them if the
 tags ever move. Forking the pinned FFmpegBuild revision is cheap,
 commit-immutable insurance if stronger provenance is ever wanted, but the
@@ -104,13 +109,13 @@ in the table under `SiloTV.app/Frameworks/`. Its `AetherLibavcodec` configure
 string contained `--enable-shared` without `--enable-gpl`, `--enable-version3`, or
 nonfree enablement, and the app binary exported no `avcodec_`/`avformat_`
 symbols of its own. These observations describe that older debug artifact;
-they are not a binary inventory of the current 3.4.0 dependency. Repeat this
+they are not a binary inventory of the current 3.6.0 dependency. Repeat this
 inventory against each release archive; debug evidence is not a release substitute.
 
 - Exact packaging source and rebuild script:
-  <https://github.com/superuser404notfound/FFmpegBuild/tree/9ee46ba4fb533e35efa6492eb1a903ca4f8058fc>
+  <https://github.com/superuser404notfound/FFmpegBuild/tree/fda08325455bc12c112b5b82d014b98fa0fee0be>
 - Current upstream tag resolutions:
-  [FFmpeg](https://github.com/FFmpeg/FFmpeg/tree/38b88335f99e76ed89ff3c93f877fdefce736c13),
+  [FFmpeg](https://github.com/FFmpeg/FFmpeg/tree/1041abdc962f4cc4f394aa8de9dc5236c0c3b9e7),
   [dav1d](https://code.videolan.org/videolan/dav1d/-/tree/54706fc6bc0cdecab7e9593974a4039cc038fca7),
   [zimg](https://github.com/sekrit-twc/zimg/tree/f819b14e8f39d1282400b0d9543e8ef73c1b2bbd),
   and [libzvbi](https://github.com/zapping-vbi/zvbi/tree/d3a5ee9f2b047bf16cd1ee5ccf6ec05ee75409d0)
