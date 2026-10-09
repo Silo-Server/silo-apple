@@ -125,24 +125,13 @@ struct TVAudiobookDetailView: View {
     }
 
     private var cover: some View {
-        Group {
-            if let url = detail.posterUrl, !url.isEmpty {
-                AsyncImageView(
-                    url: url,
-                    thumbhash: detail.posterThumbhash,
-                    targetSize: CGSize(width: 460, height: 460),
-                    contentMode: .fill
-                )
-            } else {
-                RoundedRectangle(cornerRadius: SiloTheme.cornerRadius, style: .continuous)
-                    .fill(Color.siloSurfaceElevated)
-                    .overlay {
-                        Image(systemName: "book.closed")
-                            .font(.system(size: 460 * 0.22, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                    }
-            }
-        }
+        AsyncImageView(
+            url: detail.posterUrl ?? "",
+            thumbhash: detail.posterThumbhash,
+            targetSize: CGSize(width: 460, height: 460),
+            contentMode: .fill,
+            placeholderStyle: .artwork
+        )
         .frame(width: 460, height: 460)
         .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius, style: .continuous))
         .overlay(

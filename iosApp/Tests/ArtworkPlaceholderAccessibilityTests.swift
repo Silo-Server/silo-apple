@@ -5,37 +5,37 @@ import UIKit
 import XCTest
 @testable import Silo
 
-/// A missing poster's glyph is decoration: neither VoiceOver nor UI
-/// automation (XCUITest, Maestro) may see it as an element labelled
-/// "Movie" or "Tv" next to the card's title.
+/// What a missing image shows is decoration: neither VoiceOver nor UI
+/// automation (XCUITest, Maestro) may see it as an element, such as a glyph
+/// labelled "Movie", next to the card's title.
 @MainActor
 final class ArtworkPlaceholderAccessibilityTests: XCTestCase {
-    func testPlaceholderGlyphIsNotAnAccessibilityElement() async throws {
+    func testMissingImagePlaceholdersAreNotAccessibilityElements() async throws {
         let view = VStack {
             Text("Marker")
-            AsyncImageView(
-                url: "",
-                targetSize: CGSize(width: 120, height: 180),
-                placeholderSymbol: ArtworkPlaceholderSymbol.forMediaType("series")
-            )
-            .frame(width: 120, height: 180)
+            AsyncImageView(url: "", targetSize: CGSize(width: 120, height: 180), placeholderStyle: .artwork)
+                .frame(width: 120, height: 180)
+            AsyncImageView(url: "", targetSize: CGSize(width: 120, height: 180))
+                .frame(width: 120, height: 180)
         }
         let labels = try await accessibilityLabels(of: view, waitingFor: "Marker")
-        XCTAssertFalse(labels.contains { $0.caseInsensitiveCompare("tv") == .orderedSame }, "\(labels)")
+        XCTAssertTrue(labels.allSatisfy { $0 == "Marker" }, "\(labels)")
     }
 
     func testLibraryCardExposesOnlyItsOwnLabel() async throws {
         let card = MediaCard(
             title: "Placeholder Show",
             posterUrl: "",
-            mediaType: "series",
             year: 2008,
             action: {}
         )
         .environment(AppRouter())
         .environmentObject(OverlayPrefsStore())
         let labels = try await accessibilityLabels(of: card, waitingFor: "Placeholder Show")
-        XCTAssertFalse(labels.contains { $0.caseInsensitiveCompare("tv") == .orderedSame }, "\(labels)")
+        let glyphLabels = ["tv", "film", "movie"]
+        XCTAssertFalse(labels.contains { label in
+            glyphLabels.contains { label.caseInsensitiveCompare($0) == .orderedSame }
+        }, "\(labels)")
     }
 
     // MARK: - Helpers
@@ -71,8 +71,7 @@ final class ArtworkPlaceholderAccessibilityTests: XCTestCase {
         defer { window.isHidden = true; window.rootViewController = nil }
 
         var labels: [String] = []
-        // The glyph appears once the empty request has failed; give the
-        // render a few passes after the marker shows up.
+        // Give the render a few passes after the marker shows up.
         var passesAfterMarker = 0
         for _ in 0..<40 {
             window.layoutIfNeeded()

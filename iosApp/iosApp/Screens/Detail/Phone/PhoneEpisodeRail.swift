@@ -293,7 +293,7 @@ private struct PhoneEpisodeCard: View {
                 thumbhash: episode.stillThumbhash,
                 targetSize: CGSize(width: cardWidth, height: stillHeight),
                 contentMode: .fill,
-                placeholderSymbol: ArtworkPlaceholderSymbol.forMediaType("episode")
+                placeholderStyle: .artwork
             )
             .frame(width: cardWidth, height: stillHeight)
             .clipped()

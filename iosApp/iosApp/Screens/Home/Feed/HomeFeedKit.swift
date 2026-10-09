@@ -346,7 +346,7 @@ struct HomePosterCard: View {
             thumbhash: item.posterThumbhash,
             targetSize: CGSize(width: width, height: height),
             contentMode: .fill,
-            placeholderSymbol: ArtworkPlaceholderSymbol.forMediaType(item.type)
+            placeholderStyle: .artwork
         )
         .frame(width: width, height: height)
         .clipped()
@@ -508,7 +508,7 @@ struct HomeStillCard: View {
                 thumbhash: art.thumbhash,
                 targetSize: CGSize(width: width, height: height),
                 contentMode: .fill,
-                placeholderSymbol: ArtworkPlaceholderSymbol.forMediaType(item.type)
+                placeholderStyle: .artwork
             )
             .frame(width: width, height: height)
             .clipped()

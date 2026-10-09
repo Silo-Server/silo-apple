@@ -17,10 +17,6 @@ struct AsyncImageView: View {
     var targetSize: CGSize? = nil
     var contentMode: ContentMode = .fill
     var placeholderStyle: ImagePlaceholderStyle = .surface
-    /// Glyph drawn when the artwork cannot load. Pass the item's type
-    /// through `ArtworkPlaceholderSymbol` so a series without artwork does
-    /// not show a film reel.
-    var placeholderSymbol: String = ArtworkPlaceholderSymbol.fallback
     var onImageLoaded: (() -> Void)? = nil
 
     @Environment(\.displayScale) private var displayScale
@@ -50,6 +46,10 @@ struct AsyncImageView: View {
         let resolved = resolveArtwork(drawnAt: pointSize)
         if let cached = resolved.cached, cached.isSufficient {
             artworkImage(cached.image, frame: frame)
+        } else if URL(string: url) == nil {
+            // Nothing to load, so draw what stands in for the artwork on the
+            // first frame rather than after an empty request fails.
+            missingPlaceholder(frame: frame)
         } else {
             LazyImage(
                 request: artworkLoadingEnabled ? resolved.request : nil,
@@ -69,13 +69,8 @@ struct AsyncImageView: View {
                         .onAppear(perform: notifyImageLoaded)
                 } else if let cached = resolved.cached {
                     artworkImage(cached.image, frame: frame)
-                } else if state.error != nil && artworkLoadingEnabled {
-                    placeholder(frame: frame)
-                        .overlay {
-                            if placeholderStyle.showsErrorIcon {
-                                ArtworkPlaceholderGlyph(symbol: placeholderSymbol)
-                            }
-                        }
+                } else if let error = state.error, !Self.isUnstartedRequest(error) {
+                    missingPlaceholder(frame: frame)
                 } else {
                     placeholder(frame: frame)
                 }
@@ -84,6 +79,14 @@ struct AsyncImageView: View {
             .priority(.high)
             .onDisappear(.cancel)
         }
+    }
+
+    /// No request was made: a tvOS row loading offscreen, or no size yet. The
+    /// artwork is not known to be missing, and the error lingers for a frame
+    /// after the request arrives.
+    private static func isUnstartedRequest(_ error: Error) -> Bool {
+        if case .imageRequestMissing = error as? ImagePipeline.Error { return true }
+        return false
     }
 
     private struct ResolvedArtwork {
@@ -118,7 +121,7 @@ struct AsyncImageView: View {
     private func placeholder(frame: CGSize?) -> some View {
         Group {
             switch placeholderStyle {
-            case .surface:
+            case .surface, .artwork:
                 ThumbhashImage(thumbhash: thumbhash)
             case .clear:
                 Color.clear
@@ -126,6 +129,24 @@ struct AsyncImageView: View {
         }
         .framed(frame)
         .clipped()
+    }
+
+    /// Shown once the artwork is known to be missing: there is no URL, or
+    /// it failed to load.
+    @ViewBuilder
+    private func missingPlaceholder(frame: CGSize?) -> some View {
+        let hasThumbhash = ThumbHashImageCache.shared.image(for: thumbhash) != nil
+        switch placeholderStyle.whenMissing(hasThumbhash: hasThumbhash) {
+        case .placeholder:
+            placeholder(frame: frame)
+        case .glyph:
+            placeholder(frame: frame)
+                .overlay { ArtworkPlaceholderGlyph() }
+        case .defaultArtwork:
+            DefaultArtwork()
+                .framed(frame)
+                .clipped()
+        }
     }
 }
 
@@ -150,37 +171,17 @@ extension EnvironmentValues {
 }
 #endif
 
-/// The glyph a missing poster shows, chosen by the item's catalog type.
-enum ArtworkPlaceholderSymbol {
-    /// Used when the type is unknown, and for movies.
-    static let fallback = "film"
-
-    static func forMediaType(_ type: String?) -> String {
-        guard let type else { return fallback }
-        if SiloMediaType.isAudiobook(type) { return "headphones" }
-        if SiloMediaType.isSeries(type) { return "tv" }
-        switch type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "season", "episode":
-            return "tv"
-        default:
-            return fallback
-        }
-    }
-}
-
-/// The faint glyph drawn over missing artwork.
+/// The faint glyph drawn over missing images that are not media artwork.
 ///
-/// It is decoration: the enclosing card's label already names the item, and
-/// the symbol's own label ("Movie", "Tv") would misstate it. An `Image` with
+/// It is decoration: the enclosing view's label already names the item, and
+/// the symbol's own label ("Movie") would misstate it. An `Image` with
 /// `accessibilityHidden` is gone for VoiceOver but still listed in the
 /// UI-automation tree that XCUITest and Maestro read, so the symbol is drawn
 /// into a canvas, which exposes no element for it.
-struct ArtworkPlaceholderGlyph: View {
-    let symbol: String
-
+private struct ArtworkPlaceholderGlyph: View {
     var body: some View {
         Canvas { context, size in
-            var glyph = context.resolve(Image(systemName: symbol))
+            var glyph = context.resolve(Image(systemName: "film"))
             glyph.shading = .color(Color.siloOnSurface.opacity(0.3))
             context.draw(glyph, at: CGPoint(x: size.width / 2, y: size.height / 2))
         }
@@ -192,8 +193,25 @@ struct ArtworkPlaceholderGlyph: View {
 enum ImagePlaceholderStyle {
     case surface
     case clear
+    /// Posters, covers and stills: a missing image shows `DefaultArtwork`
+    /// instead of a glyph.
+    case artwork
 
-    var showsErrorIcon: Bool {
-        self == .surface
+    /// What fills the slot once the image is known to be missing.
+    enum Missing: Equatable {
+        /// The loading placeholder stays: the ThumbHash, the surface, or nothing.
+        case placeholder
+        /// The loading placeholder with the faint film glyph over it.
+        case glyph
+        case defaultArtwork
+    }
+
+    func whenMissing(hasThumbhash: Bool) -> Missing {
+        switch self {
+        case .surface: .glyph
+        case .clear: .placeholder
+        // A ThumbHash already shows the real artwork's colours.
+        case .artwork: hasThumbhash ? .placeholder : .defaultArtwork
+        }
     }
 }
