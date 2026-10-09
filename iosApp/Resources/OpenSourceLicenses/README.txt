@@ -6,14 +6,14 @@ texts are bundled beside this file and are available from Settings > About >
 Acknowledgements.
 
 AetherEngine
-  Revision: ef0d2c7f2aa564c03b789c40f8f5c5351fc1d084 (upstream release
+  Revision: ae677a57f238381d948dec87ddb0829c393511a5 (upstream release
   7.28.3, through upstream commit dd1d5f88, plus Silo patches for subtitle renditions,
   source timing, primary ASS routing with normalized secondary/PiP text,
   refreshable authorization for native HLS, sidecar subtitles and fonts,
   TrueHD Atmos object rendering to Apple Positional Audio with its
   diagnostics, and playback recovery)
   License: GNU LGPL version 3 with the upstream Apple Store / DRM exception
-  Source (modified, as built): https://github.com/Silo-Server/AetherEngine/tree/ef0d2c7f2aa564c03b789c40f8f5c5351fc1d084
+  Source (modified, as built): https://github.com/Silo-Server/AetherEngine/tree/ae677a57f238381d948dec87ddb0829c393511a5
   Upstream base: https://github.com/superuser404notfound/AetherEngine/tree/dd1d5f885cd5da65a6641e42f5cd6ba341c6a05c
   Rebuild: the Package.swift and source tree at that revision
 
