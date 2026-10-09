@@ -303,18 +303,24 @@ struct APIv2Client: Sendable {
 
     private func householdRequest<T: Decodable>(_ method: String, path: String, query: [String: String] = [:],
                                                 body: Data? = nil, status: Int) async throws -> T {
+        let response = try await householdResponse(method, path: path, query: query, body: body)
+        guard response.statusCode == status else { throw APIv2Error.httpStatus(response.statusCode) }
+        return try HTTPClient.makeJSONDecoder(artworkServerURL: response.url).decode(T.self, from: response.data)
+    }
+
+    private func householdResponse(_ method: String, path: String, query: [String: String] = [:], body: Data? = nil,
+                                   acceptedStatuses: Set<Int> = []) async throws -> HTTPRawResponse {
         try await gate()
         guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
         let identity = auth.profileId.map { Self.requestIdentity(auth, profile: $0) }
-        let response = try await tokenStore.withOwnerFence(auth) {
+        return try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {
                 try await http.requestData(method: method, path: path, query: query, body: body,
                     headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:],
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+                    requestIdentity: identity, acceptedStatuses: acceptedStatuses,
+                    expectedAccount: auth.account, expectedAuth: auth)
             }
         }
-        guard response.statusCode == status else { throw APIv2Error.httpStatus(response.statusCode) }
-        return try HTTPClient.makeJSONDecoder(artworkServerURL: response.url).decode(T.self, from: response.data)
     }
 
     func householdProfiles() async throws -> [UserProfile] {
@@ -338,7 +344,15 @@ struct APIv2Client: Sendable {
     func verifyHouseholdPIN(id: String, pin: String) async throws -> VerifyPinResponse {
         let segment = try catalogPathSegment(id)
         let data = try JSONEncoder().encode(VerifyPinRequest(pin: pin))
-        return try await householdRequest("POST", path: "/api/v2/profiles/\(segment)/verify-pin", body: data, status: 200)
+        let response = try await householdResponse("POST", path: "/api/v2/profiles/\(segment)/verify-pin", body: data,
+            acceptedStatuses: [429])
+        // 429 is the lockout after repeated wrong PINs; `Retry-After` (seconds)
+        // says how long it lasts.
+        if response.statusCode == 429 {
+            throw ProfileTransitionError.pinLockedOut(retryAfter: response.header("retry-after").flatMap(TimeInterval.init))
+        }
+        guard response.statusCode == 200 else { throw APIv2Error.httpStatus(response.statusCode) }
+        return try HTTPClient.makeJSONDecoder().decode(VerifyPinResponse.self, from: response.data)
     }
 
     /// `getOnboardingState`, then `getOnboardingFlow` when `surface` is set,

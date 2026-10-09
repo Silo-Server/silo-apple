@@ -75,7 +75,7 @@ struct PINEntryView: View {
             pinDots(dotSize: 14, spacing: 16)
                 .padding(.top, compact ? 14 : 22)
             statusLine
-                .frame(height: 22)
+                .frame(minHeight: 22)
                 .padding(.top, compact ? 10 : 14)
 
             numberPad(verticalSpacing: compact ? 10 : padVSpacing)
@@ -103,7 +103,7 @@ struct PINEntryView: View {
             pinDots(dotSize: 26, spacing: 28)
                 .padding(.top, 34)
             statusLine
-                .frame(height: 34)
+                .frame(minHeight: 34)
                 .padding(.top, 18)
             numberPad(verticalSpacing: padVSpacing)
                 .padding(.top, 30)
@@ -150,6 +150,10 @@ struct PINEntryView: View {
             Text(errorMessage)
                 .font(.system(size: statusFont))
                 .foregroundStyle(Color(hex: "#FF6961"))
+                .multilineTextAlignment(.center)
+                // The lockout message can wrap; the status line grows for it.
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 24)
                 .transition(.opacity)
         } else if isVerifying {
             ProgressView()

@@ -6,6 +6,9 @@ enum ProfileTransitionError: LocalizedError {
     case missingPINProof
     /// The server checked the PIN and it did not match.
     case incorrectPIN
+    /// The server locked the profile after repeated wrong PINs (429), for
+    /// `retryAfter` seconds when it said how long.
+    case pinLockedOut(retryAfter: TimeInterval?)
     case noActiveServer
     case identityChanged
     case accountEpochUnavailable
@@ -20,6 +23,15 @@ enum ProfileTransitionError: LocalizedError {
             return "Silo couldn't verify that profile's PIN. Please try again."
         case .incorrectPIN:
             return "That PIN is incorrect. Try again."
+        case .pinLockedOut(let retryAfter):
+            // The header is server input: "inf" and "1e300" parse as numbers
+            // and would trap in the Int conversion. A day is far past any
+            // real lockout.
+            guard let retryAfter, retryAfter > 0, retryAfter <= 86_400 else {
+                return "Too many incorrect PINs. Try again later."
+            }
+            let minutes = Int((retryAfter / 60).rounded(.up))
+            return "Too many incorrect PINs. Try again in \(minutes) \(minutes == 1 ? "minute" : "minutes")."
         case .noActiveServer:
             return "Choose a server before selecting a profile."
         case .identityChanged:
