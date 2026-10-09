@@ -807,18 +807,20 @@ private struct VideoPane: View {
             HStack(alignment: .top, spacing: 48) {
                 PaneColumn("Playback") {
                     VStack(spacing: 2) {
-                        HUDSettingRow(label: "Quality", value: qualityValue) {
-                            presentPicker(
-                                for: .quality,
-                                HUDPickerPresentation(
-                                    title: "Quality",
-                                    options: qualityOptions,
-                                    selection: viewModel.activeQualityId,
-                                    onSelect: { viewModel.switchQuality($0) }
+                        if viewModel.hasQualityChoice {
+                            HUDSettingRow(label: "Quality", value: qualityValue) {
+                                presentPicker(
+                                    for: .quality,
+                                    HUDPickerPresentation(
+                                        title: "Quality",
+                                        options: qualityOptions,
+                                        selection: viewModel.activeQualityId,
+                                        onSelect: { viewModel.switchQuality($0) }
+                                    )
                                 )
-                            )
+                            }
+                            .focused($focusedField, equals: .quality)
                         }
-                        .focused($focusedField, equals: .quality)
 
                         if !viewModel.isWatchPartyPlayback {
                             HUDSettingRow(label: "Speed", value: speedLabel(viewModel.settings.playbackSpeed)) {

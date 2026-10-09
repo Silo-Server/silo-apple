@@ -358,6 +358,9 @@ class PlayerViewModel {
     var selectedSecondarySubtitleId: Int64?
     var qualityOptions: [ApplePlaybackQualityOption] = [ApplePlaybackQuality.auto]
     var activeQualityId: String = ApplePlaybackQuality.autoId
+    /// False when the plan offers a single quality; the in-player quality
+    /// controls are hidden then. The saved preference is left alone.
+    var hasQualityChoice: Bool { ApplePlaybackQuality.hasChoice(among: qualityOptions) }
     var isQualitySwitching = false
     var qualitySwitchError: String?
     var isScrubbing = false
@@ -9106,7 +9109,7 @@ extension PlayerViewModel {
             subtitleTracks: subtitleTracks.map(makeSiloControlTrack),
             selectedAudioTrackId: selectedAudioId,
             selectedSubtitleTrackId: selectedSubtitleId,
-            qualityOptions: qualityOptions.map(makeSiloControlOption),
+            qualityOptions: hasQualityChoice ? qualityOptions.map(makeSiloControlOption) : [],
             activeQualityId: activeQualityId,
             isQualitySwitching: isQualitySwitching,
             playbackSpeed: effectivePlaybackSpeed,

@@ -2382,6 +2382,19 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertFalse(original.audioDecodeCodecs.contains("vorbis"))
     }
 
+    func testASingleServerQualityIsNoChoiceEvenWithAutoAdded() {
+        func quality(_ label: String, height: Int?, original: Bool = false) -> PlaybackV3AvailableQuality {
+            PlaybackV3AvailableQuality(label: label, displayName: nil, height: height, bitrateKbps: 8000,
+                                       preservesSource: original)
+        }
+        let originalOnly = ApplePlaybackQuality.playbackOptions(serverQualities: [quality("original", height: nil, original: true)])
+        XCTAssertEqual(originalOnly.count, 2, "Auto is still prepended")
+        XCTAssertFalse(ApplePlaybackQuality.hasChoice(among: originalOnly))
+        XCTAssertFalse(ApplePlaybackQuality.hasChoice(among: ApplePlaybackQuality.playbackOptions(serverQualities: [])))
+        XCTAssertTrue(ApplePlaybackQuality.hasChoice(among: ApplePlaybackQuality.playbackOptions(
+            serverQualities: [quality("original", height: nil, original: true), quality("1080p", height: 1080)])))
+    }
+
     func testAudioOnlyAndUnknownServerQualityRungsRemainUsable() {
         let options = ApplePlaybackQuality.playbackOptions(
             serverQualities: [

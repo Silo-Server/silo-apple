@@ -389,7 +389,9 @@ struct MobilePlayerControls: View {
             && !viewModel.subtitleSearchVisible
             && !aiSubtitlesAvailable
         return HStack(spacing: 8) {
-            qualityMenu(compact: style != .full)
+            if viewModel.hasQualityChoice {
+                qualityMenu(compact: style != .full)
+            }
 
             trackSelectionButton(style: style)
                 .disabled(noTracks)
