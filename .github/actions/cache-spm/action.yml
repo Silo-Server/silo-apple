@@ -1,0 +1,172 @@
+name: Cache Apple packages and optional compilation state
+description: Restore or save package sources; compilation caching requires an explicit experiment.
+inputs:
+  operation:
+    description: restore or save
+    default: restore
+  root:
+    description: Checkout directory relative to the workspace
+    default: source
+  mode:
+    description: off, dependencies, or derived_data
+    default: dependencies
+  namespace:
+    description: Cache namespace for isolating controlled comparisons
+    default: production
+  toolchain-key:
+    description: Xcode, SDK, and architecture fingerprint
+    required: true
+  lock-key:
+    description: Package.resolved SHA-256
+    required: true
+  project-key:
+    description: Project configuration SHA-256 for compilation cache compatibility
+    required: true
+  source-sha:
+    description: Immutable checked-out app commit
+    required: true
+  source-dirty:
+    description: Verified tracked source state from build metadata
+    default: 'true'
+  scheme:
+    description: Scheme whose compilation state can be restored
+    required: true
+  derived-profile:
+    description: standard or the isolated compilation-cache-v1 experiment
+    default: standard
+  spm-profile:
+    description: scheme or the measured shared_qualified package graph
+    default: scheme
+  project-spec-key:
+    description: Project.yml SHA-256 used to qualify the shared package graph
+    default: ''
+  save-cache:
+    description: Whether the caller is a trusted run allowed to save caches
+    default: 'false'
+  save-dependencies:
+    description: Allow this platform job to populate its complete package cache
+    default: 'false'
+  spm-cache-hit:
+    description: Exact package restore hit from the earlier restore invocation
+    default: 'false'
+  derived-cache-hit:
+    description: Exact compilation restore hit from the earlier restore invocation
+    default: 'false'
+outputs:
+  spm-cache-profile:
+    description: Actual package cache profile selected after qualification
+    value: ${{ steps.scope.outputs.spm-profile }}
+  spm-cache-scope:
+    description: Scheme or qualified shared graph scope selected for package caches
+    value: ${{ steps.scope.outputs.spm-scope }}
+  spm-cache-hit:
+    description: Whether an exact package key was restored
+    value: ${{ steps.spm.outputs.cache-hit }}
+  derived-cache-hit:
+    description: Whether an exact compilation key was restored
+    value: ${{ steps.derived.outputs.cache-hit }}
+  derived-cache-restored:
+    description: Whether compilation state was restored by an exact or compatible prefix key
+    value: ${{ steps.derived.outputs.cache-matched-key != '' }}
+  derived-cache-key:
+    description: Actual key of the compilation state restored
+    value: ${{ steps.derived.outputs.cache-matched-key }}
+runs:
+  using: composite
+  steps:
+    - name: Validate cache scope
+      id: scope
+      shell: bash
+      env:
+        CACHE_OPERATION: ${{ inputs.operation }}
+        CACHE_MODE: ${{ inputs.mode }}
+        CACHE_NAMESPACE: ${{ inputs.namespace }}
+        DERIVED_PROFILE: ${{ inputs.derived-profile }}
+        SPM_PROFILE: ${{ inputs.spm-profile }}
+        CACHE_SCHEME: ${{ inputs.scheme }}
+        CACHE_TOOLCHAIN_KEY: ${{ inputs.toolchain-key }}
+        LOCK_KEY: ${{ inputs.lock-key }}
+        PROJECT_SPEC_KEY: ${{ inputs.project-spec-key }}
+        CACHE_SOURCE_SHA: ${{ inputs.source-sha }}
+        CACHE_SOURCE_DIRTY: ${{ inputs.source-dirty }}
+      run: |
+        set -euo pipefail
+        [[ "$CACHE_OPERATION" == restore || "$CACHE_OPERATION" == save ]] || { echo "::error::Unknown cache operation"; exit 1; }
+        [[ "$CACHE_MODE" == off || "$CACHE_MODE" == dependencies || "$CACHE_MODE" == derived_data ]] || { echo "::error::Unknown cache mode"; exit 1; }
+        [[ "$CACHE_NAMESPACE" =~ ^[a-z0-9_-]{1,32}$ ]] || { echo "::error::Invalid cache namespace"; exit 1; }
+        if [[ "$SPM_PROFILE" != scheme && "$SPM_PROFILE" != shared_qualified ]]; then
+          echo "::error::Unknown package cache profile"
+          exit 1
+        fi
+        spm_prefix=silo-spm-v2
+        spm_scope="$CACHE_SCHEME"
+        spm_scope_label="$CACHE_SCHEME"
+        spm_profile=scheme
+        trusted_event=false
+        if [[ "${GITHUB_EVENT_NAME:-}" == workflow_dispatch ||
+              ( "${GITHUB_EVENT_NAME:-}" == pull_request && "${SILO_PULL_REQUEST_HEAD_REPOSITORY:-}" == Silo-Server/silo-apple ) ||
+              ( "${GITHUB_EVENT_NAME:-}" == push && ( "${GITHUB_REF:-}" == refs/heads/main ||
+                ( "${SILO_RELEASE_GATE:-false}" == true && "${GITHUB_REF:-}" == refs/tags/* ) ) ) ]]; then
+          trusted_event=true
+        fi
+        if [[ "$SPM_PROFILE" == shared_qualified && "${GITHUB_REPOSITORY:-}" == Silo-Server/silo-apple &&
+              "$trusted_event" == true && "${SILO_BENCH_VARIANT:-}" == optimized &&
+              "$CACHE_SOURCE_SHA" =~ ^[0-9a-f]{40}$ && "$CACHE_SOURCE_SHA" != 0000000000000000000000000000000000000000 &&
+              "$CACHE_SOURCE_DIRTY" == false &&
+              ( "$CACHE_MODE" == dependencies || "$CACHE_MODE" == derived_data ) &&
+              ( "$CACHE_SCHEME" == Silo || "$CACHE_SCHEME" == SiloTV || "$CACHE_SCHEME" == SiloMac ) &&
+              "$CACHE_TOOLCHAIN_KEY" == 5e23d2022187a1fa502ad4a6 &&
+              "$LOCK_KEY" == 40e3e0fbe264adac749a1f7db3f91a311e67f6419eeecad6bd4d88c07efd9410 &&
+              "$PROJECT_SPEC_KEY" == b698ee86dc410c8ada9251778a655f5428b2ea663ccfc8ba1291f180aa472eca ]]; then
+          spm_prefix=silo-spm-shared-qualified-v1
+          spm_scope="$PROJECT_SPEC_KEY"
+          spm_scope_label=shared-qualified-v1
+          spm_profile=shared_qualified
+        fi
+        echo "spm-key=$spm_prefix-$CACHE_NAMESPACE-$CACHE_TOOLCHAIN_KEY-$spm_scope-$LOCK_KEY" >> "$GITHUB_OUTPUT"
+        echo "spm-profile=$spm_profile" >> "$GITHUB_OUTPUT"
+        echo "spm-scope=$spm_scope_label" >> "$GITHUB_OUTPUT"
+        case "$DERIVED_PROFILE" in
+          standard) echo "derived-prefix=silo-derived-v1" >> "$GITHUB_OUTPUT" ;;
+          compilation-cache-v1)
+            if [ "$CACHE_MODE" != derived_data ]; then
+              echo "::error::Compilation cache profile requires derived_data mode"
+              exit 1
+            fi
+            echo "derived-prefix=silo-derived-compilation-cache-v1" >> "$GITHUB_OUTPUT"
+            ;;
+          *) echo "::error::Unknown compilation cache profile"; exit 1 ;;
+        esac
+    - name: Restore package sources and binary artifacts
+      if: inputs.operation == 'restore' && inputs.mode != 'off'
+      id: spm
+      uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      with:
+        path: ${{ github.workspace }}/${{ inputs.root }}/.ci-cache/packages
+        key: ${{ steps.scope.outputs.spm-key }}
+    - name: Restore compilation state (experiment)
+      if: inputs.operation == 'restore' && inputs.mode == 'derived_data'
+      id: derived
+      uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      with:
+        path: ${{ github.workspace }}/${{ inputs.root }}/.ci-cache/derived/${{ inputs.scheme }}
+        key: ${{ steps.scope.outputs.derived-prefix }}-${{ inputs.namespace }}-${{ inputs.toolchain-key }}-${{ inputs.scheme }}-Debug-${{ inputs.project-key }}-${{ inputs.lock-key }}-${{ inputs.source-sha }}
+        restore-keys: |
+          ${{ steps.scope.outputs.derived-prefix }}-${{ inputs.namespace }}-${{ inputs.toolchain-key }}-${{ inputs.scheme }}-Debug-${{ inputs.project-key }}-${{ inputs.lock-key }}-
+    - name: Save package sources and binary artifacts
+      if: >-
+        inputs.operation == 'save' && inputs.mode != 'off' &&
+        inputs.save-cache == 'true' && inputs.save-dependencies == 'true' &&
+        inputs.spm-cache-hit != 'true'
+      uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      with:
+        path: ${{ github.workspace }}/${{ inputs.root }}/.ci-cache/packages
+        key: ${{ steps.scope.outputs.spm-key }}
+    - name: Save compilation state (experiment)
+      if: >-
+        inputs.operation == 'save' && inputs.mode == 'derived_data' &&
+        inputs.save-cache == 'true' && inputs.derived-cache-hit != 'true'
+      uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      with:
+        path: ${{ github.workspace }}/${{ inputs.root }}/.ci-cache/derived/${{ inputs.scheme }}
+        key: ${{ steps.scope.outputs.derived-prefix }}-${{ inputs.namespace }}-${{ inputs.toolchain-key }}-${{ inputs.scheme }}-Debug-${{ inputs.project-key }}-${{ inputs.lock-key }}-${{ inputs.source-sha }}

@@ -563,9 +563,12 @@ final class PlayerSettingsFlushTests: XCTestCase {
         let transport = FakeSettingsTransport()
         // One 500, then success.
         transport.failNextWrites(1, with: .server(status: 503, code: "unavailable", message: nil))
+        // Let the failure return, but hold its automatic retry until the
+        // pending-state assertion runs, even if the main actor resumes late.
+        await transport.writeGate.block(afterUnblockedEntries: 1)
         let flusher = PlayerSettingsFlusher(
             transport: transport,
-            debounce: .milliseconds(20),
+            debounce: .seconds(30),
             retryPolicy: .init(maximumAutomaticRetries: 3, base: .milliseconds(30), maximum: .milliseconds(60))
         )
 
@@ -575,6 +578,10 @@ final class PlayerSettingsFlushTests: XCTestCase {
         // The op survived its failure rather than being dropped.
         XCTAssertTrue(flusher.hasPendingWrites, "a 5xx must not discard the user's setting")
 
+        try await waitUntil("the automatic retry reaches the transport") {
+            await transport.writeGate.hasBlockedEntry
+        }
+        await transport.writeGate.release()
         try await waitUntil("the automatic retry lands") { transport.writes().count == 2 }
         let writes = transport.writes()
         XCTAssertEqual(writes[1].value, .bool(false))
@@ -634,7 +641,8 @@ final class PlayerSettingsFlushTests: XCTestCase {
         flusher.enqueue(.playerSubtitleSyncMs, value: .int(-250))
         await flusher.flushNow()
         try await waitUntil("both automatic retries run") { transport.writes().count == 3 }
-        try await waitUntil("the key is held") { flusher.heldKeys == [.playerSubtitleSyncMs] }
+        // The fake records an attempt before the drain settles its held state.
+        try await waitUntil("the key is held", timeout: .seconds(10)) { flusher.heldKeys == [.playerSubtitleSyncMs] }
 
         // Budget spent: the change is kept, on disk too, and nothing sends it
         // on its own — not even an explicit flush.
@@ -1489,6 +1497,30 @@ final class PlayerSettingsFlushTests: XCTestCase {
             harness.transport.writesByKey()[.playbackSubtitleAppearance]?.value,
             try SettingJSONValue.encoding(appearance.sanitized())
         )
+    }
+
+    /// The Playback screen's HDR switch, through the binding the screen uses:
+    /// the local value flips at once — the capability snapshot reads it at
+    /// the next playback start — and exactly one write of the device-only key
+    /// goes to the server. Dolby Vision reads Off while HDR is off, because
+    /// it is not offered then, and comes back with HDR.
+    func testTheHDRSwitchStoresADeviceOverrideOfTheHDRKey() async throws {
+        let harness = try PlayerSettingsHarness()
+        let viewModel = SettingsViewModel(playerSettings: harness.settings)
+        XCTAssertTrue(viewModel.hdrEnabled, "precondition: the contract default is on")
+        XCTAssertTrue(viewModel.dolbyVisionEnabled)
+
+        viewModel.hdrEnabled = false
+        XCTAssertFalse(harness.settings.hdrEnabled)
+        XCTAssertFalse(viewModel.dolbyVisionEnabled, "Dolby Vision is not offered while HDR is off")
+        await harness.settings.flushPendingDeviceSettings()
+
+        XCTAssertEqual(harness.transport.writes().map(\.key), [.playerHdrEnabled])
+        XCTAssertEqual(harness.transport.writes().first?.value, .bool(false))
+        XCTAssertTrue(harness.transport.deletes().isEmpty)
+
+        viewModel.hdrEnabled = true
+        XCTAssertTrue(viewModel.dolbyVisionEnabled, "the stored Dolby Vision choice is kept")
     }
 
     func testNoAudioLanguagePreferenceClearsTheDeviceValueInsteadOfStoringNull() async throws {
@@ -2497,12 +2529,16 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
 
 actor SettingsWriteGate {
     private var isBlocked = false
+    private var remainingUnblockedEntries = 0
+    private(set) var hasBlockedEntry = false
     private var hasEntered = false
     private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
     private var entryWaiters: [CheckedContinuation<Void, Never>] = []
 
-    func block() {
+    func block(afterUnblockedEntries: Int = 0) {
         isBlocked = true
+        remainingUnblockedEntries = afterUnblockedEntries
+        hasBlockedEntry = false
     }
 
     func waitIfBlocked() async {
@@ -2513,6 +2549,11 @@ actor SettingsWriteGate {
             observer.resume()
         }
         guard isBlocked else { return }
+        if remainingUnblockedEntries > 0 {
+            remainingUnblockedEntries -= 1
+            return
+        }
+        hasBlockedEntry = true
         await withCheckedContinuation { continuation in
             releaseWaiters.append(continuation)
         }

@@ -757,7 +757,7 @@ final class AuthDeviceV2Tests: XCTestCase {
     func testQRNearbyWaitersFollowApprovalDenialRenewalAndStop() async throws {
         func scenario(start: [APIv2TestStub.Reply], polls: [APIv2TestStub.Reply],
                       holdFirstPoll: Bool = false) async throws -> QRLoginViewModel {
-            stub.reset()
+            stub = APIv2TestStub()
             let (model, _) = try await qrViewModel()
             stub.reply(path: Self.capabilityPath, 200, Self.get_device_login_capability_ok)
             stub.sequence(path: Self.startPath, start)

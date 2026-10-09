@@ -1084,6 +1084,9 @@ struct ContentView: View {
         #endif
         #if !os(tvOS)
         Task { await DownloadManager.shared.onAppActive() }
+        // Libraries hidden or shown again on another device. tvOS reloads
+        // its library tabs on its own return from background.
+        Task { _ = try? await StartupContentPrefetcher.fetchUserLibraries(reusingRecent: false) }
         #endif
     }
 

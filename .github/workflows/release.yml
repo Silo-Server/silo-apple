@@ -35,31 +35,95 @@ permissions:
 env:
   TESTFLIGHT_DISTRIBUTION: external
   TESTFLIGHT_NOTIFY_EXTERNAL_TESTERS: "true"
+  SILO_CACHE_NAMESPACE: production
 
 jobs:
-  # Run the full Apple regression suite on this commit first. Nothing with side
-  # effects (source release, build-number reservation, uploads) runs until it passes.
+  # A trusted complete main run can gate this exact commit. Toolchain or source
+  # uncertainty selects the full suite; an error in preflight blocks the release.
+  preflight:
+    runs-on: xcode-27
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      reusable: ${{ steps.proof.outputs.reusable }}
+      regression_run_url: ${{ steps.proof.outputs.run_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '27.0'
+      - name: Record release source and toolchain
+        id: metadata
+        run: python3 scripts/ci/apple-build-metadata.py --root . --outputs
+      - name: Find matching main regression proof
+        id: proof
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+          TARGET_SHA: ${{ github.sha }}
+          EXPECTED_FINGERPRINT: ${{ steps.metadata.outputs.fingerprint }}
+          EXPECTED_LOCK_SHA256: ${{ steps.metadata.outputs.lock_sha256 }}
+          EXPECTED_TOOLCHAIN_JSON: ${{ steps.metadata.outputs.toolchain_json }}
+        run: python3 scripts/ci/find-regression-proof.py
+
   tests:
+    needs: preflight
+    if: ${{ !cancelled() && needs.preflight.result == 'success' && needs.preflight.outputs.reusable != 'true' }}
     permissions:
       contents: read
     uses: ./.github/workflows/player-regression.yml
     with:
       release_gate: true
 
+  regression-gate:
+    needs: [preflight, tests]
+    if: ${{ always() && !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require trusted regression success
+        env:
+          PREFLIGHT_RESULT: ${{ needs.preflight.result }}
+          REUSABLE: ${{ needs.preflight.outputs.reusable }}
+          TEST_RESULT: ${{ needs.tests.result }}
+          REGRESSION_RUN_URL: ${{ needs.preflight.outputs.regression_run_url }}
+        run: |
+          set -euo pipefail
+          if [ "$PREFLIGHT_RESULT" != success ]; then
+            echo "::error::Release preflight did not succeed"
+            exit 1
+          fi
+          if [ "$REUSABLE" = true ] && [ "$TEST_RESULT" = skipped ]; then
+            echo "Reusing complete regression proof: $REGRESSION_RUN_URL"
+          elif [ "$REUSABLE" != true ] && [ "$TEST_RESULT" = success ]; then
+            echo "The full release regression suite passed"
+          else
+            echo "::error::Release requires matching proof or a successful full regression suite"
+            exit 1
+          fi
+
   source:
-    needs: tests
+    needs: [regression-gate, setup]
+    if: ${{ !cancelled() && needs.regression-gate.result == 'success' && needs.setup.result == 'success' }}
     permissions:
       contents: write
+      actions: read
     uses: ./.github/workflows/release-source.yml
     with:
       release_tag: ${{ github.event_name == 'push' && github.ref_name || format('source-{0}', github.sha) }}
 
-  # Resolve the target platform from either the dispatch input or the tag's
-  # +ios / +tvos build-metadata suffix, so both trigger paths share one gate.
+  # Resolve release inputs once so archive and distribution select identical
+  # versions, build numbers, and release notes for each platform.
   setup:
     runs-on: ubuntu-latest
     outputs:
       platform: ${{ steps.p.outputs.platform }}
+      version: ${{ steps.ver.outputs.value }}
+      changelog: ${{ steps.changelog.outputs.value }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -74,14 +138,37 @@ jobs:
                 "$GH_EVENT_NAME" "$GH_REF_NAME" "$INPUT_PLATFORM")"
           echo "platform=$P" >> "$GITHUB_OUTPUT"
           echo "Release platform: $P"
+      - name: Resolve marketing version
+        id: ver
+        env:
+          GH_EVENT_NAME: ${{ github.event_name }}
+          GH_REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          V="$(scripts/ci/resolve-marketing-version.sh \
+                "$GH_EVENT_NAME" "$GH_REF_NAME" "$INPUT_VERSION")"
+          echo "value=$V" >> "$GITHUB_OUTPUT"
+          echo "Resolved marketing version: $V"
+      - name: Capture release changelog
+        id: changelog
+        run: |
+          python3 - <<'PY_CHANGELOG'
+          import os
+          import subprocess
+          import uuid
+          changelog = subprocess.check_output(
+              ['git', 'log', '-1', '--pretty=format:%s'], text=True).strip()
+          delimiter = 'silo_changelog_' + uuid.uuid4().hex
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'value<<{delimiter}\n{changelog}\n{delimiter}\n')
+          PY_CHANGELOG
 
-  # Reserve the next build number per platform ONCE, before the platform builds
-  # fan out. The ios/tvos jobs then consume these fixed values instead of each
-  # querying latest_testflight_build_number concurrently — which lets them run in
-  # parallel with no build-number race. Query-only, so it runs on Linux with just
-  # the ASC API key (no signing/match/team secrets).
+  # Reserve each build number once, before the platform archives fan out.
+  # The workflow release lock remains held through Linux distribution.
   build-numbers:
-    needs: [setup, tests]
+    needs: [setup, regression-gate]
+    if: ${{ !cancelled() && needs.setup.result == 'success' && needs.regression-gate.result == 'success' }}
     runs-on: ubuntu-latest
     outputs:
       ios_build: ${{ steps.bn.outputs.ios_build }}
@@ -100,26 +187,29 @@ jobs:
           APP_STORE_CONNECT_API_KEY_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ISSUER_ID }}
           APP_STORE_CONNECT_API_KEY_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY_KEY }}
         run: |
-          # The lane appends ios_build=/tvos_build= lines to BUILD_NUMBERS_FILE.
           BUILD_NUMBERS_FILE="$GITHUB_OUTPUT" bundle exec fastlane ios reserve_build_numbers
 
   ios:
-    needs: [tests, setup, build-numbers, source]
-    # Skip only when the selection is tvOS-only. 'both' and 'ios' both run iOS.
-    # No status function in the if -> implicit success() gate on needs, so a
-    # failed tests or build-numbers job skips this build.
-    if: ${{ needs.setup.outputs.platform != 'tvos' }}
-    # GitHub's Xcode 27 image (in preview). Building with the iOS 27 SDK keeps
-    # iPhone Duo out of the letterboxed compatibility mode older SDKs get.
+    needs: [regression-gate, setup, build-numbers, source]
+    if: >-
+      !cancelled() && needs.regression-gate.result == 'success' &&
+      needs.setup.result == 'success' && needs.build-numbers.result == 'success' &&
+      needs.source.result == 'success' && needs.setup.outputs.platform != 'tvos'
     runs-on: xcode-27
+    env:
+      SILO_SOURCE_PACKAGES_PATH: ${{ github.workspace }}/.ci-cache/packages
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # tags + history for changelog fallback
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Select Xcode 27
         run: sudo xcode-select -s /Applications/Xcode_27.0.app
+
+      - name: Record archive cache inputs
+        id: metadata
+        run: python3 scripts/ci/apple-build-metadata.py --root . --device-scheme Silo-device --outputs
 
       - name: Install XcodeGen (pinned, checksum-verified)
         uses: ./.github/actions/install-xcodegen
@@ -128,27 +218,28 @@ jobs:
         with:
           bundler-cache: true
 
-      - name: Resolve marketing version
-        id: ver
-        env:
-          GH_EVENT_NAME: ${{ github.event_name }}
-          GH_REF_NAME: ${{ github.ref_name }}
-          INPUT_VERSION: ${{ inputs.version }}
-        run: |
-          V="$(scripts/ci/resolve-marketing-version.sh \
-                "$GH_EVENT_NAME" "$GH_REF_NAME" "$INPUT_VERSION")"
-          {
-            echo "value<<EOF"
-            echo "$V"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-          echo "Resolved marketing version: $V"
+      - name: Restore release packages
+        id: cache
+        continue-on-error: true
+        uses: ./.github/actions/cache-spm
+        with:
+          operation: restore
+          root: '.'
+          mode: dependencies
+          namespace: ${{ env.SILO_CACHE_NAMESPACE }}
+          toolchain-key: ${{ steps.metadata.outputs.toolchain_key }}
+          lock-key: ${{ steps.metadata.outputs.lock_sha256 }}
+          project-key: ${{ steps.metadata.outputs.build_config_sha256 }}-xcodegen2.43.0
+          source-sha: ${{ steps.metadata.outputs.source_sha }}
+          scheme: Silo-device
 
-      - name: Build & upload iOS to TestFlight
+      - name: Build and upload iOS to TestFlight
         run: bundle exec fastlane ios beta_ios
         env:
-          MARKETING_VERSION: ${{ steps.ver.outputs.value }}
+          MARKETING_VERSION: ${{ needs.setup.outputs.version }}
           BUILD_NUMBER: ${{ needs.build-numbers.outputs.ios_build }}
+          TESTFLIGHT_CHANGELOG: ${{ needs.setup.outputs.changelog }}
+          SILO_DEFER_TESTFLIGHT_DISTRIBUTION: 'true'
           TEAM_ID: ${{ secrets.TEAM_ID }}
           MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
           MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
@@ -159,17 +250,42 @@ jobs:
           TESTFLIGHT_EXTERNAL_GROUPS: ${{ secrets.TESTFLIGHT_EXTERNAL_GROUPS }}
           SILO_RELEASE_SOURCE_URL: ${{ needs.source.outputs.source_url }}
 
+      - name: Report archive package cache size
+        continue-on-error: true
+        run: |
+          if [ -d "$SILO_SOURCE_PACKAGES_PATH" ]; then
+            size_kib=$(du -sk "$SILO_SOURCE_PACKAGES_PATH" | cut -f1)
+            echo "Package cache: $size_kib KiB" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No package cache directory was produced" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Save release packages after successful upload
+        continue-on-error: true
+        uses: ./.github/actions/cache-spm
+        with:
+          operation: save
+          root: '.'
+          mode: dependencies
+          namespace: ${{ env.SILO_CACHE_NAMESPACE }}
+          toolchain-key: ${{ steps.metadata.outputs.toolchain_key }}
+          lock-key: ${{ steps.metadata.outputs.lock_sha256 }}
+          project-key: ${{ steps.metadata.outputs.build_config_sha256 }}-xcodegen2.43.0
+          source-sha: ${{ steps.metadata.outputs.source_sha }}
+          scheme: Silo-device
+          save-cache: 'true'
+          save-dependencies: 'true'
+          spm-cache-hit: ${{ steps.cache.outputs.spm-cache-hit }}
+
   tvos:
-    # No longer needs: ios — build numbers are reserved up front, so tvOS runs in
-    # parallel with iOS rather than after it. (Trade-off: on a both run, tvOS now
-    # releases even if iOS fails; the platforms' build-number sequences are
-    # independent, so a gap is harmless.)
-    needs: [tests, setup, build-numbers, source]
-    # Skip only when the selection is iOS-only. Implicit success() gate on needs.
-    if: ${{ needs.setup.outputs.platform != 'ios' }}
-    # GitHub's Xcode 27 image (in preview). Building with the iOS 27 SDK keeps
-    # iPhone Duo out of the letterboxed compatibility mode older SDKs get.
+    needs: [regression-gate, setup, build-numbers, source]
+    if: >-
+      !cancelled() && needs.regression-gate.result == 'success' &&
+      needs.setup.result == 'success' && needs.build-numbers.result == 'success' &&
+      needs.source.result == 'success' && needs.setup.outputs.platform != 'ios'
     runs-on: xcode-27
+    env:
+      SILO_SOURCE_PACKAGES_PATH: ${{ github.workspace }}/.ci-cache/packages
     steps:
       - uses: actions/checkout@v4
         with:
@@ -179,6 +295,10 @@ jobs:
       - name: Select Xcode 27
         run: sudo xcode-select -s /Applications/Xcode_27.0.app
 
+      - name: Record archive cache inputs
+        id: metadata
+        run: python3 scripts/ci/apple-build-metadata.py --root . --device-scheme SiloTV-device --outputs
+
       - name: Install XcodeGen (pinned, checksum-verified)
         uses: ./.github/actions/install-xcodegen
 
@@ -186,31 +306,113 @@ jobs:
         with:
           bundler-cache: true
 
-      - name: Resolve marketing version
-        id: ver
-        env:
-          GH_EVENT_NAME: ${{ github.event_name }}
-          GH_REF_NAME: ${{ github.ref_name }}
-          INPUT_VERSION: ${{ inputs.version }}
-        run: |
-          V="$(scripts/ci/resolve-marketing-version.sh \
-                "$GH_EVENT_NAME" "$GH_REF_NAME" "$INPUT_VERSION")"
-          {
-            echo "value<<EOF"
-            echo "$V"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-          echo "Resolved marketing version: $V"
+      - name: Restore release packages
+        id: cache
+        continue-on-error: true
+        uses: ./.github/actions/cache-spm
+        with:
+          operation: restore
+          root: '.'
+          mode: dependencies
+          namespace: ${{ env.SILO_CACHE_NAMESPACE }}
+          toolchain-key: ${{ steps.metadata.outputs.toolchain_key }}
+          lock-key: ${{ steps.metadata.outputs.lock_sha256 }}
+          project-key: ${{ steps.metadata.outputs.build_config_sha256 }}-xcodegen2.43.0
+          source-sha: ${{ steps.metadata.outputs.source_sha }}
+          scheme: SiloTV-device
 
-      - name: Build & upload tvOS to TestFlight
+      - name: Build and upload tvOS to TestFlight
         run: bundle exec fastlane ios beta_tvos
         env:
-          MARKETING_VERSION: ${{ steps.ver.outputs.value }}
+          MARKETING_VERSION: ${{ needs.setup.outputs.version }}
           BUILD_NUMBER: ${{ needs.build-numbers.outputs.tvos_build }}
+          TESTFLIGHT_CHANGELOG: ${{ needs.setup.outputs.changelog }}
+          SILO_DEFER_TESTFLIGHT_DISTRIBUTION: 'true'
           TEAM_ID: ${{ secrets.TEAM_ID }}
           MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
           MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
           MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
+          APP_STORE_CONNECT_API_KEY_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_KEY_ID }}
+          APP_STORE_CONNECT_API_KEY_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY_KEY }}
+          TESTFLIGHT_EXTERNAL_GROUPS: ${{ secrets.TESTFLIGHT_EXTERNAL_GROUPS }}
+          SILO_RELEASE_SOURCE_URL: ${{ needs.source.outputs.source_url }}
+
+      - name: Report archive package cache size
+        continue-on-error: true
+        run: |
+          if [ -d "$SILO_SOURCE_PACKAGES_PATH" ]; then
+            size_kib=$(du -sk "$SILO_SOURCE_PACKAGES_PATH" | cut -f1)
+            echo "Package cache: $size_kib KiB" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No package cache directory was produced" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Save release packages after successful upload
+        continue-on-error: true
+        uses: ./.github/actions/cache-spm
+        with:
+          operation: save
+          root: '.'
+          mode: dependencies
+          namespace: ${{ env.SILO_CACHE_NAMESPACE }}
+          toolchain-key: ${{ steps.metadata.outputs.toolchain_key }}
+          lock-key: ${{ steps.metadata.outputs.lock_sha256 }}
+          project-key: ${{ steps.metadata.outputs.build_config_sha256 }}-xcodegen2.43.0
+          source-sha: ${{ steps.metadata.outputs.source_sha }}
+          scheme: SiloTV-device
+          save-cache: 'true'
+          save-dependencies: 'true'
+          spm-cache-hit: ${{ steps.cache.outputs.spm-cache-hit }}
+
+  ios-distribution:
+    needs: [ios, setup, build-numbers, source, regression-gate]
+    if: >-
+      !cancelled() && needs.ios.result == 'success' &&
+      needs.regression-gate.result == 'success' && needs.setup.result == 'success' &&
+      needs.build-numbers.result == 'success' && needs.source.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@v1
+        with:
+          bundler-cache: true
+      - name: Wait for and distribute the uploaded iOS build
+        run: bundle exec fastlane ios distribute_ios
+        env:
+          MARKETING_VERSION: ${{ needs.setup.outputs.version }}
+          BUILD_NUMBER: ${{ needs.build-numbers.outputs.ios_build }}
+          TESTFLIGHT_CHANGELOG: ${{ needs.setup.outputs.changelog }}
+          APP_STORE_CONNECT_API_KEY_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_KEY_ID }}
+          APP_STORE_CONNECT_API_KEY_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY_KEY }}
+          TESTFLIGHT_EXTERNAL_GROUPS: ${{ secrets.TESTFLIGHT_EXTERNAL_GROUPS }}
+          SILO_RELEASE_SOURCE_URL: ${{ needs.source.outputs.source_url }}
+
+  tvos-distribution:
+    needs: [tvos, setup, build-numbers, source, regression-gate]
+    if: >-
+      !cancelled() && needs.tvos.result == 'success' &&
+      needs.regression-gate.result == 'success' && needs.setup.result == 'success' &&
+      needs.build-numbers.result == 'success' && needs.source.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@v1
+        with:
+          bundler-cache: true
+      - name: Wait for and distribute the uploaded tvOS build
+        run: bundle exec fastlane ios distribute_tvos
+        env:
+          MARKETING_VERSION: ${{ needs.setup.outputs.version }}
+          BUILD_NUMBER: ${{ needs.build-numbers.outputs.tvos_build }}
+          TESTFLIGHT_CHANGELOG: ${{ needs.setup.outputs.changelog }}
           APP_STORE_CONNECT_API_KEY_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_KEY_ID }}
           APP_STORE_CONNECT_API_KEY_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ISSUER_ID }}
           APP_STORE_CONNECT_API_KEY_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY_KEY }}

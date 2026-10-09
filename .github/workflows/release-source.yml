@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: release-source-${{ inputs.release_tag }}
@@ -19,9 +20,14 @@ concurrency:
 
 jobs:
   source:
+    name: Publish release source
     runs-on: ubuntu-latest
     outputs:
-      source_url: ${{ steps.publish.outputs.source_url }}
+      source_url: ${{ steps.reuse.outcome == 'success' && steps.reuse.outputs.reusable == 'true' && steps.reuse.outputs.source_url != '' && steps.reuse.outputs.source_url || steps.publish.outputs.source_url }}
+    env:
+      GIT_NO_REPLACE_OBJECTS: '1'
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -29,13 +35,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Find published source proof
+        id: reuse
+        continue-on-error: true
+        run: timeout --signal=TERM --kill-after=2s 20s python3 scripts/ci/release-source-proof.py find
       - name: Package exact app and library sources
+        if: ${{ !(steps.reuse.outcome == 'success' && steps.reuse.outputs.reusable == 'true' && steps.reuse.outputs.source_url != '') }}
         run: python3 scripts/ci/package-release-source.py "$RUNNER_TEMP/release-source"
       - name: Publish source before distributing binaries
+        if: ${{ !(steps.reuse.outcome == 'success' && steps.reuse.outputs.reusable == 'true' && steps.reuse.outputs.source_url != '') }}
         id: publish
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
@@ -58,3 +67,18 @@ jobs:
           SOURCE_URL="$(gh release view "$RELEASE_TAG" --json assets --jq ".assets[] | select(.name == \"$ASSET\") | .url")"
           test -n "$SOURCE_URL"
           echo "source_url=$SOURCE_URL" >> "$GITHUB_OUTPUT"
+      - name: Record published source proof
+        if: ${{ !(steps.reuse.outcome == 'success' && steps.reuse.outputs.reusable == 'true' && steps.reuse.outputs.source_url != '') }}
+        id: proof
+        continue-on-error: true
+        run: timeout --signal=TERM --kill-after=2s 20s python3 scripts/ci/release-source-proof.py record "$RUNNER_TEMP/release-source"
+      - name: Upload published source proof
+        if: ${{ steps.proof.outcome == 'success' && steps.proof.outputs.created == 'true' && steps.proof.outputs.artifact_name != '' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.proof.outputs.artifact_name }}
+          path: ${{ runner.temp }}/release-source-proof/release-source-proof.json
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true

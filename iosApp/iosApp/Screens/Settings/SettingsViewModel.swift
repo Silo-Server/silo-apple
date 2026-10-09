@@ -68,9 +68,41 @@ final class SettingsViewModel {
         set { PlayerSettings.shared.setAutoSkipCredits(newValue) }
     }
 
+    /// The player settings the HDR rows edit. Injectable so a test can drive
+    /// the screen's bindings against an isolated instance.
+    let playerSettings: PlayerSettings
+
+    init(playerSettings: PlayerSettings = .shared) {
+        self.playerSettings = playerSettings
+    }
+
+    var hdrEnabled: Bool {
+        get { playerSettings.hdrEnabled }
+        set { playerSettings.setHDREnabled(newValue) }
+    }
+
+    /// What turning HDR off does, stated as narrowly as it is true. The
+    /// setting only changes what this device tells the server its screen can
+    /// show: a video the server converts is then sent as SDR, but an original
+    /// file the player opens itself still plays in its own dynamic range, and
+    /// on Apple TV the pinned engine still switches the TV to HDR for it when
+    /// Match Content is on (it reads the system flag, not this setting).
+    /// Dolby Vision is never offered to the server while HDR is off.
+    static var hdrFooterText: String {
+        #if os(tvOS)
+        let original = " Videos that play from the original file can still play in HDR, and the TV can still switch to HDR for them."
+        #else
+        let original = " Videos that play from the original file can still play in HDR."
+        #endif
+        return "With HDR off, videos the server converts for this device are sent in SDR, without Dolby Vision."
+            + original
+    }
+
+    /// Dolby Vision is only offered while HDR is on, so its row reads Off and
+    /// cannot be changed while HDR is off. The stored choice is kept.
     var dolbyVisionEnabled: Bool {
-        get { PlayerSettings.shared.dolbyVisionEnabled }
-        set { PlayerSettings.shared.setDolbyVisionEnabled(newValue) }
+        get { playerSettings.hdrEnabled && playerSettings.dolbyVisionEnabled }
+        set { playerSettings.setDolbyVisionEnabled(newValue) }
     }
 
     var seekCacheEnabled: Bool {

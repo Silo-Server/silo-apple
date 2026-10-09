@@ -247,8 +247,10 @@ enum CacheKey {
         "collection:\(collectionId):catalog:v2"
     }
     static func similar(_ contentId: String) -> String { "\(itemDetail(contentId)):similar" }
-    static func calendarWeek(_ weekStart: String, filter: String) -> String {
-        "calendar:\(weekStart):\(filter)"
+    /// The timezone is part of the key: the server groups events by local
+    /// day, so the same week read in another zone is a different response.
+    static func calendarWeek(_ weekStart: String, filter: String, timeZone: String) -> String {
+        "calendar:\(weekStart):\(filter):\(timeZone)"
     }
 
     /// Per-profile data that must be dropped on profile switch.

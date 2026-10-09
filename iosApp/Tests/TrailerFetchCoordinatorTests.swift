@@ -53,7 +53,8 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         _ script: Script,
         settledPollCount: Int = 3,
         windowSeconds: TimeInterval = 5,
-        minimumObservationSeconds: TimeInterval = 0
+        minimumObservationSeconds: TimeInterval = 0,
+        now: (@MainActor () -> Date)? = nil
     ) -> TrailerFetchCoordinator {
         TrailerFetchCoordinator(
             request: {
@@ -73,7 +74,8 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
             pollInterval: Duration.milliseconds(5),
             windowSeconds: windowSeconds,
             settledPollCount: settledPollCount,
-            minimumObservationSeconds: minimumObservationSeconds
+            minimumObservationSeconds: minimumObservationSeconds,
+            now: now
         )
     }
 
@@ -539,15 +541,24 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         // while, then lands the trailer. With the bare counter this reported
         // "No trailers found" ~18s in and the payload was never published.
         let script = Script()
+        let observationFloor: TimeInterval = 0.5
+        let clockStart = Date(timeIntervalSince1970: 0)
+        var currentTime = clockStart
+        var polledPastCounterBeforeFloor = false
         script.details = { index in
-            index >= 12 ? trailerTestDetail(videoKeys: ["late"]) : trailerTestDetail()
+            currentTime = clockStart.addingTimeInterval(Double(index + 1) * 0.025)
+            if index == 3 {
+                polledPastCounterBeforeFloor = currentTime.timeIntervalSince(clockStart) < observationFloor
+            }
+            return index >= 12 ? trailerTestDetail(videoKeys: ["late"]) : trailerTestDetail()
         }
 
         let coordinator = makeCoordinator(
             script,
             settledPollCount: 2,
             windowSeconds: 5,
-            minimumObservationSeconds: 0.5
+            minimumObservationSeconds: observationFloor,
+            now: { currentTime }
         )
         coordinator.start(baseline: trailerTestDetail()) { found in
             script.foundCallbackCount += 1
@@ -557,6 +568,8 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         let reached = await eventually { coordinator.phase == .found }
         XCTAssertTrue(reached, "expected .found, got \(coordinator.phase)")
         XCTAssertEqual(script.foundCallbackCount, 1)
+        XCTAssertTrue(polledPastCounterBeforeFloor, "polling must continue past the bare counter before the floor")
+        XCTAssertGreaterThanOrEqual(script.detailFetchCount, 13, "the scripted late result must still be fetched")
     }
 
     func testAnEarlyResultStillEndsTheRunImmediately() async {

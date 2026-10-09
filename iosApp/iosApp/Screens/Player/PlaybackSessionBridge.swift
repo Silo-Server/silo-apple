@@ -995,7 +995,8 @@ actor PlaybackSessionBridge {
             disableWhenNoLanguageMatch: disableWhenNoLanguageMatch,
             trackSignature: trackSignature,
             availableSubtitles: candidates,
-            currentAudioLanguage: currentAudioLanguage
+            currentAudioLanguage: currentAudioLanguage,
+            sourceContainer: version.container
         ))
         let selected: PlayerTrack?
         switch resolution {

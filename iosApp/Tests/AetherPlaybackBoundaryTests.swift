@@ -1233,6 +1233,26 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         controller.play()
         let player = controller.engine.currentAVPlayer
         let item = controller.engine.currentAVPlayerItem
+
+        // The initial packet harvest must finish before the switch checks start.
+        controller.selectSubtitleTrack(id: firstID)
+        XCTAssertFalse(controller.engine.isLoadingSubtitles, "Embedded startup must not start a file download")
+        try await waitUntil("the fixture's initial embedded cues are ready", timeout: .seconds(10)) {
+            controller.engine.subtitleCues.contains { $0.text?.contains("pos(20,30)") == true }
+        }
+        XCTAssertEqual(controller.engine.activeSubtitleTrackIndex, 2)
+        XCTAssertEqual(controller.activeLoadEpoch, epoch)
+        XCTAssertTrue(controller.engine.currentAVPlayer === player)
+        XCTAssertTrue(controller.engine.currentAVPlayerItem === item)
+
+        controller.selectSubtitleTrack(id: nil)
+        XCTAssertNil(controller.engine.activeSubtitleTrackIndex)
+        XCTAssertTrue(controller.engine.subtitleCues.isEmpty, "Startup cues must clear before switching")
+        XCTAssertFalse(controller.engine.isLoadingSubtitles)
+        XCTAssertEqual(controller.activeLoadEpoch, epoch)
+        XCTAssertTrue(controller.engine.currentAVPlayer === player)
+        XCTAssertTrue(controller.engine.currentAVPlayerItem === item)
+
         for (appID, streamIndex, marker) in [(firstID, 2, "pos(20,30)"), (secondID, 3, "pos(220,90)"),
                                             (firstID, 2, "pos(20,30)")] {
             let position = controller.engine.clock.currentTime

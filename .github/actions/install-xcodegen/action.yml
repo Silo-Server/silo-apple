@@ -1,26 +1,68 @@
 name: Install XcodeGen
 description: >-
-  Download the pinned XcodeGen release, verify its SHA-256 before unpacking it,
-  and put it on PATH for later steps. Runs without sudo.
+  Restore or download the pinned XcodeGen archive, verify its SHA-256 before
+  unpacking it, and put it on PATH for later steps. Runs without sudo.
+inputs:
+  cache:
+    description: Restore and save the verified release archive
+    default: 'true'
+  namespace:
+    description: Isolate archives for controlled cache comparisons
+    default: production
+  save-cache:
+    description: Allow a trusted caller to save the verified release archive
+    default: 'true'
+outputs:
+  cache-hit:
+    description: Whether the exact pinned archive was restored
+    value: ${{ steps.restore.outputs.cache-hit }}
 runs:
   using: composite
   steps:
+    - name: Define pinned XcodeGen archive
+      id: archive
+      shell: bash
+      env:
+        CACHE_NAMESPACE: ${{ inputs.namespace }}
+      run: |
+        set -euo pipefail
+        [[ "$CACHE_NAMESPACE" =~ ^[a-z0-9_-]{1,32}$ ]] || { echo "::error::Invalid cache namespace"; exit 1; }
+        echo "path=$RUNNER_TEMP/xcodegen-2.43.0.zip" >> "$GITHUB_OUTPUT"
+    - name: Restore pinned XcodeGen archive
+      if: inputs.cache == 'true'
+      id: restore
+      uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      with:
+        path: ${{ steps.archive.outputs.path }}
+        key: xcodegen-${{ inputs.namespace }}-${{ runner.os }}-${{ runner.arch }}-2.43.0-a4847ed77d3341a4d24049bc4424a3babca4c94ff1dcaaee923eaca2b32c678f
     - name: Install XcodeGen (pinned, checksum-verified)
       shell: bash
       env:
-        # player-regression.yml pins the same release inline; keep the two in step.
         XCODEGEN_VERSION: "2.43.0"
         XCODEGEN_SHA256: a4847ed77d3341a4d24049bc4424a3babca4c94ff1dcaaee923eaca2b32c678f
+        XCODEGEN_ARCHIVE: ${{ steps.archive.outputs.path }}
       run: |
         set -euo pipefail
         dist="$RUNNER_TEMP/xcodegen-$XCODEGEN_VERSION"
-        zip="$dist.zip"
-        curl -fsSL -o "$zip" \
-          "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
-        # Check the archive before unpacking or running anything from it.
-        echo "$XCODEGEN_SHA256  $zip" | shasum -a 256 -c -
+        if [ ! -f "$XCODEGEN_ARCHIVE" ]; then
+          curl -fsSL -o "$XCODEGEN_ARCHIVE" \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+        fi
+        # Verify every restored archive before unpacking or executing its contents.
+        echo "$XCODEGEN_SHA256  $XCODEGEN_ARCHIVE" | shasum -a 256 -c -
         rm -rf "$dist"
-        unzip -q "$zip" -d "$dist"
+        unzip -q "$XCODEGEN_ARCHIVE" -d "$dist"
         # XcodeGen finds its SettingPresets next to the binary, so it runs in place.
         echo "$dist/xcodegen/bin" >> "$GITHUB_PATH"
         "$dist/xcodegen/bin/xcodegen" --version
+    - name: Save verified XcodeGen archive
+      if: >-
+        inputs.cache == 'true' && inputs.save-cache == 'true' &&
+        steps.restore.outputs.cache-hit != 'true' &&
+        (github.event_name == 'workflow_dispatch' ||
+         (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) ||
+         (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))
+      uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      with:
+        path: ${{ steps.archive.outputs.path }}
+        key: xcodegen-${{ inputs.namespace }}-${{ runner.os }}-${{ runner.arch }}-2.43.0-a4847ed77d3341a4d24049bc4424a3babca4c94ff1dcaaee923eaca2b32c678f

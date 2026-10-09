@@ -2,6 +2,7 @@
 """Archive a release's tracked app and pinned SwiftLibass rebuild sources."""
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
 from pathlib import Path
@@ -22,13 +23,17 @@ def git(repo, *args):
     return subprocess.check_output(["git", "-C", str(repo), *args])
 
 
-def download_source(repository, revision, destination):
+def source_url(repository, revision):
     parsed = urlparse(repository.removesuffix(".git"))
     if (parsed.scheme != "https" or parsed.netloc != "github.com"
             or not re.fullmatch(r"/[\w.-]+/[\w.-]+", parsed.path)
             or not re.fullmatch(r"[0-9a-f]{40}", revision)):
         raise ValueError(f"Expected a GitHub repository and immutable revision: {repository}")
-    url = f"https://codeload.github.com{parsed.path}/tar.gz/{revision}"
+    return f"https://codeload.github.com{parsed.path}/tar.gz/{revision}"
+
+
+def download_source(repository, revision, destination):
+    url = source_url(repository, revision)
     with tempfile.TemporaryDirectory() as scratch:
         archive = Path(scratch) / "source.tar.gz"
         with urlopen(url, timeout=120) as response, archive.open("wb") as output:
@@ -43,6 +48,34 @@ def download_source(repository, revision, destination):
             raise ValueError(f"Unexpected source archive layout: {url}")
         shutil.move(str(roots[0]), destination)
     return {"repository": repository, "revision": revision, "archive_sha256": digest}
+
+
+def download_sources(sources):
+    names = set()
+    destinations = set()
+    for name, repository, revision, destination in sources:
+        if not re.fullmatch(r"[\w.-]+", name) or name in (".", ".."):
+            raise ValueError(f"Invalid source identity: {name}")
+        if name in names or destination.resolve() in destinations:
+            raise ValueError(f"Duplicate source destination: {name}")
+        names.add(name)
+        destinations.add(destination.resolve())
+        source_url(repository, revision)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = {}
+        try:
+            for name, repository, revision, destination in sources:
+                print(f"Archiving {name} at {revision}", flush=True)
+                futures[executor.submit(download_source, repository, revision, destination)] = name
+            results = {}
+            for future in as_completed(futures):
+                results[futures[future]] = future.result()
+        except BaseException:
+            for future in futures:
+                future.cancel()
+            raise
+    return {name: results[name] for name, _, _, _ in sources}
 
 
 def package_sources(repo, output_directory):
@@ -65,13 +98,10 @@ def package_sources(repo, output_directory):
         packages = tree / "packages"
         packages.mkdir()
         manifest = {"app_revision": revision, "packages": {}, "subtitle_libraries": {}}
-        for pin in pins:
-            name = pin["identity"]
-            if not re.fullmatch(r"[\w.-]+", name):
-                raise ValueError(f"Invalid package identity: {name}")
-            print(f"Archiving {name} at {pin['state']['revision']}", flush=True)
-            manifest["packages"][name] = download_source(
-                pin["location"], pin["state"]["revision"], packages / name)
+        manifest["packages"] = download_sources([
+            (pin["identity"], pin["location"], pin["state"]["revision"], packages / pin["identity"])
+            for pin in pins
+        ])
 
         libass_path = packages / "swift-libass"
         builder = (libass_path / "build-libraries.sh").read_text()
@@ -84,15 +114,16 @@ def package_sources(repo, output_directory):
         source_map = (build_path / "scripts/source.sh").read_text()
         source_directory = build_path / "src"
         source_directory.mkdir(exist_ok=True)
+        library_sources = []
         for library in source_pins["libraries"]:
             block = re.search(r"^  " + re.escape(library["name"]) + r"\)\n(.*?)^    ;;",
                               source_map, re.MULTILINE | re.DOTALL)
             if (block is None or f'SOURCE_ID="{library["tag"]}"' not in block[1]
                     or f'SOURCE_REPO_URL="{library["repository"]}"' not in block[1]):
                 raise ValueError(f"Subtitle builder no longer matches source pin: {library['name']}")
-            print(f"Archiving {library['name']} at {library['revision']}", flush=True)
-            manifest["subtitle_libraries"][library["name"]] = download_source(
-                library["repository"], library["revision"], source_directory / library["name"])
+            library_sources.append((library["name"], library["repository"], library["revision"],
+                                    source_directory / library["name"]))
+        manifest["subtitle_libraries"] = download_sources(library_sources)
 
         # The upstream entry point deletes .source before cloning its builder.
         # Preserve the pinned builder and editable native trees included here.
@@ -100,7 +131,7 @@ def package_sources(repo, output_directory):
             "\n".join(line for line in builder.splitlines() if line != "checkout") + "\n")
         (tree / "revisions.json").write_text(json.dumps(manifest, indent=2) + "\n")
         shutil.copyfile(ROOT / "scripts/ci/REBUILD-SOURCE.md", tree / "REBUILD.md")
-        with tarfile.open(output, "w:gz") as archive:
+        with tarfile.open(output, "w:gz", compresslevel=6) as archive:
             archive.add(tree, arcname=tree.name)
     return output
 

@@ -579,11 +579,7 @@ private struct PhonePersonDetailContent: View {
                 metadataWrap
 
                 if let bio = clean(person.bio) {
-                    Text(bio)
-                        .font(.siloBody)
-                        .foregroundColor(.siloSecondaryText)
-                        .lineLimit(8)
-                        .fixedSize(horizontal: false, vertical: true)
+                    PersonBiography(text: bio)
                 }
             }
         }
@@ -635,6 +631,56 @@ private struct PhonePersonDetailContent: View {
             }
             .padding(.horizontal, SiloTheme.padding)
         }
+    }
+}
+#endif
+
+#if !os(tvOS)
+/// The biography, clipped to eight lines. When that cuts text off, a More
+/// control (or a tap on the text) shows all of it; a short biography shows
+/// no control.
+private struct PersonBiography: View {
+    let text: String
+
+    @State private var isExpanded = false
+    @State private var clippedHeight: CGFloat = 0
+    @State private var fullHeight: CGFloat = 0
+
+    private var isClipped: Bool { fullHeight > clippedHeight + 1 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(text)
+                .font(.siloBody)
+                .foregroundColor(.siloSecondaryText)
+                .lineLimit(isExpanded ? nil : 8)
+                .fixedSize(horizontal: false, vertical: true)
+                .onGeometryChange(for: CGFloat.self, of: \.size.height) { height in
+                    if !isExpanded { clippedHeight = height }
+                }
+                // The same text at the same width with no line limit, to
+                // learn whether eight lines cut anything off.
+                .background(alignment: .top) {
+                    Text(text)
+                        .font(.siloBody)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .hidden()
+                        .onGeometryChange(for: CGFloat.self, of: \.size.height) { fullHeight = $0 }
+                }
+                .contentShape(Rectangle())
+                .onTapGesture { if isClipped { toggle() } }
+
+            if isClipped {
+                Button(isExpanded ? "Less" : "More", action: toggle)
+                    .buttonStyle(.plain)
+                    .font(.siloBody.weight(.semibold))
+                    .foregroundColor(.siloOnSurface)
+            }
+        }
+    }
+
+    private func toggle() {
+        withAnimation(.easeInOut(duration: SiloTheme.normalDuration)) { isExpanded.toggle() }
     }
 }
 #endif

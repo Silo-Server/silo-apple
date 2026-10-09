@@ -30,6 +30,10 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
     let isSelected: Bool
     let ffIndex: Int?
     let srcId: Int?
+    /// A subtitle the server downloaded for this file (the V3 inventory's
+    /// `downloaded` source), as opposed to a sidecar next to the media. Such a
+    /// track is also `isExternal`.
+    var isDownloaded = false
 
     var id: String { "\(kind.rawValue)-\(trackId)" }
 
