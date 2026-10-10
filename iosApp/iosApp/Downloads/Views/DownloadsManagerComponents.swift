@@ -330,14 +330,21 @@ struct DownloadArtworkImage: View {
     let fileURL: URL?
 
     var body: some View {
-        ZStack {
-            ThumbhashImage(thumbhash: thumbhash)
+        Group {
             if let fileURL {
-                AsyncImage(url: fileURL) { image in
-                    image.resizable().scaledToFill()
-                } placeholder: {
-                    Color.clear
-                }
+                // Routes local on-disk artwork through the same Nuke
+                // pipeline as every online card, so it decodes straight to
+                // this tile's render size instead of stock AsyncImage's
+                // full-resolution decode (blurry when the saved poster is
+                // larger than the tile).
+                CachedAsyncImage(
+                    url: fileURL.absoluteString,
+                    targetSize: CGSize(width: width, height: width * 1.5),
+                    thumbhash: thumbhash,
+                    contentMode: .fill
+                )
+            } else {
+                ThumbhashImage(thumbhash: thumbhash)
             }
         }
     }
