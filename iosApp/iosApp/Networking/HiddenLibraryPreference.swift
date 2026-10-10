@@ -1,7 +1,8 @@
 import Foundation
 
 /// The active profile's `ui.disabled_library_ids`: libraries the profile hid
-/// from its own navigation in the web app's library settings.
+/// from its own navigation, here (Libraries, or Settings > Interface >
+/// Libraries) or in the web app's library settings.
 ///
 /// The server's catalog reads already leave a hidden library's titles out, but
 /// `GET /api/v2/user/libraries` still lists the library for a profile without
@@ -47,6 +48,52 @@ enum HiddenLibraryPreference {
                 return cacheKey.flatMap { cachedIds(for: $0, defaults: defaults) } ?? []
             }
         }
+    }
+
+    /// Hides or shows one library for the active profile and returns the
+    /// profile's hidden IDs afterwards. The list is read fresh rather than
+    /// from the cache, so a library hidden on another device since the last
+    /// read stays hidden. A failed read or write throws and changes nothing.
+    static func setHidden(
+        _ isHidden: Bool,
+        libraryId: Int,
+        defaults: SharedDefaults = .shared,
+        requestIdentity: @MainActor () -> HTTPRequestIdentity? = SeekIntervalPreferences.activeRequestIdentity,
+        read: (HTTPRequestIdentity?) async throws -> EffectiveSettingValuesResponse = {
+            try await SiloAPI.shared.getEffectiveValues(
+                keys: [.uiDisabledLibraryIds],
+                requestIdentity: $0
+            )
+        },
+        write: (Set<Int>, HTTPRequestIdentity?) async throws -> Void = { ids, identity in
+            try await SiloAPI.shared.putValue(
+                key: .uiDisabledLibraryIds,
+                scope: .profile,
+                value: .array(ids.sorted().map { .int($0) }),
+                requestIdentity: identity
+            )
+        }
+    ) async throws -> Set<Int> {
+        let identity = requestIdentity()
+        let response = try await read(identity)
+        let current = libraryIds(from: response.value(for: .uiDisabledLibraryIds)?.value ?? .null)
+        let updated = isHidden ? current.union([libraryId]) : current.subtracting([libraryId])
+        if updated != current {
+            try await write(updated, identity)
+        }
+        if let cacheKey = identity.map(Self.cacheKey(for:)),
+           let data = try? JSONEncoder().encode(updated.sorted()) {
+            defaults.set(data, forKey: cacheKey)
+        }
+        return updated
+    }
+
+    /// Re-reads the library list so the tab bar, Libraries and every library
+    /// picker drop or regain a library, then reloads Home, whose rows the
+    /// server filters by the same setting.
+    static func publishChange() async {
+        _ = try? await StartupContentPrefetcher.fetchUserLibraries(reusingRecent: false)
+        NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil)
     }
 
     static func visibleLibraries(_ libraries: [Library], hiding hidden: Set<Int>) -> [Library] {

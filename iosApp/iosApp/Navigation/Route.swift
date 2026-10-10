@@ -8,6 +8,9 @@ enum Route: Hashable {
 
     // Main tabs
     case search
+    /// Watch tab grid: one library, or every library of `kind` when `nil`.
+    case mediaBrowse(kind: MediaKind, libraryId: Int?)
+    case libraryCollections(libraryId: Int, title: String?)
     case libraryCollection(libraryId: Int, collectionId: String, title: String?, kind: LibraryCollectionKind?, mediaScope: LibraryVideoScope? = nil)
     case itemDetail(
         contentId: String,
@@ -43,6 +46,10 @@ enum Route: Hashable {
     case collectionDetail(collectionId: String)
     case settings
     case serverList
+    /// The Downloads manager as a page, opened from the iOS profile menu.
+    case downloads
+    /// Calendar as a page, for when it isn't in the iOS tab bar.
+    case calendar
 
     /// The active party or the create/join hub.
     case watchParty
@@ -77,6 +84,10 @@ enum Route: Hashable {
 
     /// Every series this device auto-downloads, reached from the Downloads tab.
     case autoDownloads
+
+    /// A switch for every library the profile can open, reached from the
+    /// hidden-libraries row on Libraries and from Settings > Interface.
+    case libraryVisibility
 }
 
 /// Card metadata that lets tvOS paint a branded detail frame before the

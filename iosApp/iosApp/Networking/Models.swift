@@ -1247,9 +1247,14 @@ struct Library: Codable, Identifiable, Hashable {
 /// `APIv2UserLibrary`.
 struct LibrariesResponse: Codable {
     let libraries: [Library]
+    /// Libraries the profile can open but hid (`ui.disabled_library_ids`),
+    /// in server order. `StartupContentPrefetcher.fetchUserLibraries` moves
+    /// them out of `libraries`; `nil` before that split.
+    let hiddenLibraries: [Library]?
 
-    init(libraries: [Library]) {
+    init(libraries: [Library], hiddenLibraries: [Library]? = nil) {
         self.libraries = libraries.filter(\.isSupportedLibrary)
+        self.hiddenLibraries = hiddenLibraries?.filter(\.isSupportedLibrary)
     }
 }
 

@@ -7,6 +7,8 @@ struct BrowseView: View {
     var showsSearchShortcut = true
     var libraryType: String? = nil
     var mediaScope: LibraryVideoScope? = nil
+    /// Cross-library media scope; see `BrowseViewModel.configure`.
+    var crossLibraryType: BrowseMediaType? = nil
 
     @State private var viewModel = BrowseViewModel()
     @State private var showFilters = false
@@ -50,8 +52,18 @@ struct BrowseView: View {
         .sheet(isPresented: $showFilters) {
             FilterView(viewModel: viewModel)
         }
-        .task(id: BrowseConfigurationID(libraryId: libraryId, libraryType: libraryType, mediaScope: mediaScope)) {
-            guard await viewModel.configure(libraryId: libraryId, libraryType: libraryType, mediaScope: mediaScope) else { return }
+        .task(id: BrowseConfigurationID(
+            libraryId: libraryId,
+            libraryType: libraryType,
+            mediaScope: mediaScope,
+            crossLibraryType: crossLibraryType
+        )) {
+            guard await viewModel.configure(
+                libraryId: libraryId,
+                libraryType: libraryType,
+                mediaScope: mediaScope,
+                crossLibraryType: crossLibraryType
+            ) else { return }
             await viewModel.loadItems(reset: true)
             await viewModel.loadFacetsIfNeeded()
         }
@@ -134,7 +146,7 @@ struct BrowseView: View {
                     items: viewModel.items,
                     isLoading: viewModel.isLoading || !viewModel.hasLoaded,
                     hasMore: viewModel.hasMore,
-                    forcesThreeColumnsOnPhone: libraryId != nil,
+                    forcesThreeColumnsOnPhone: libraryId != nil || crossLibraryType != nil,
                     onItemTap: { router.navigate(to: .itemDetail(browseItem: $0, libraryId: libraryId)) },
                     onLoadMore: {
                         Task { await viewModel.loadItems() }
@@ -322,6 +334,7 @@ private struct BrowseConfigurationID: Hashable {
     let libraryId: Int?
     let libraryType: String?
     let mediaScope: LibraryVideoScope?
+    let crossLibraryType: BrowseMediaType?
 }
 
 enum LibraryPageTab: String, CaseIterable, Identifiable {

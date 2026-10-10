@@ -347,8 +347,10 @@ enum StartupContentPrefetcher {
         let task = userLibraries.join {
             async let hidden = HiddenLibraryPreference.hiddenLibraryIds()
             let response = try await SiloAPI.shared.libraries()
+            let hiddenIds = await hidden
             return LibrariesResponse(
-                libraries: HiddenLibraryPreference.visibleLibraries(response.libraries, hiding: await hidden)
+                libraries: HiddenLibraryPreference.visibleLibraries(response.libraries, hiding: hiddenIds),
+                hiddenLibraries: response.libraries.filter { hiddenIds.contains($0.id) }
             )
         }
         let writeToken = userLibraries.writeToken
@@ -522,10 +524,16 @@ enum StartupContentPrefetcher {
     static func fetchBrowseFirstPage(
         libraryId: Int?,
         state: CatalogFilterState = .none,
-        mediaScope: LibraryVideoScope? = nil
+        mediaScope: LibraryVideoScope? = nil,
+        crossLibraryType: BrowseMediaType? = nil
     ) async throws -> CatalogListPage {
         let generation = profileScopedGeneration
-        let key = CacheKey.browse(libraryId: libraryId, filterKey: state.cacheKeyFragment, mediaScope: mediaScope?.rawValue)
+        let key = CacheKey.browse(
+            libraryId: libraryId,
+            filterKey: state.cacheKeyFragment,
+            mediaScope: mediaScope?.rawValue,
+            crossLibraryType: crossLibraryType?.crossLibraryTypeParam
+        )
         let flight = browseFirstPages[key] ?? {
             let flight = SharedFetch<CatalogListPage>()
             browseFirstPages[key] = flight
@@ -543,16 +551,20 @@ enum StartupContentPrefetcher {
         let task = flight.join {
             // iOS omits `type` (library_id already scopes the page), except a
             // mixed library's Movies/Series navigation scope, which is
-            // independent of optional filter groups. Later pages follow this
-            // page's continuation, which retains it.
-            let query = CatalogQueryBuilder.build(
+            // independent of optional filter groups, and the iOS hubs'
+            // cross-library "All" grids, which have no library to scope them.
+            // Later pages follow this page's continuation, which retains it.
+            var query = CatalogQueryBuilder.build(
                 state,
                 libraryId: libraryId,
-                mediaType: .movie,
+                mediaType: crossLibraryType ?? .movie,
                 limit: browsePageSize,
-                includeType: false,
+                includeType: crossLibraryType != nil,
                 enforcedScope: mediaScope
             )
+            // Browse grids page by cursor and never show a count; the exact
+            // total is the slowest part of the query.
+            query.skipTotal = true
             return try await SiloAPI.shared.catalogPage(query)
         }
         let writeToken = flight.writeToken

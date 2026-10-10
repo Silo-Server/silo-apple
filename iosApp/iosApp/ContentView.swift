@@ -879,11 +879,17 @@ struct ContentView: View {
             // download notification tapped after a profile/capability
             // change must not select a tab that never renders.
             guard DownloadManager.shared.downloadsEnabled else { return }
+            #if os(iOS)
+            // iOS has no Downloads tab; Downloads is a page. Replacing the
+            // stack keeps a repeat link to a single Downloads screen.
+            router.showOnly(.downloads)
+            #else
             // Select the tab rather than pushing the route — a push stacks
             // a duplicate Downloads screen when that tab is already showing,
             // and hides the tab context from anywhere else.
             router.popToRoot()
             router.switchTab(to: .downloads)
+            #endif
             return
         }
 
@@ -2037,6 +2043,10 @@ enum MainTabDestinationID: Hashable {
     case app(AppTab)
     case libraryCategory(PrimaryMenuBuiltin)
     case library(Int)
+    /// iOS-only hubs (`MediaHubView`): every movie and series library, and
+    /// every audiobook library.
+    case watch
+    case listen
 }
 
 struct MainTabDestination: Identifiable, Equatable {
@@ -2205,7 +2215,7 @@ func resolvedRequestedMainTabDestination(
        !visibleDestinations.contains(where: { $0.id == .app(.libraries) }),
        let authoredLibraryRoot = visibleDestinations.first(where: {
            switch $0.id {
-           case .libraryCategory, .library:
+           case .libraryCategory, .library, .watch, .listen:
                return true
            case .app:
                return false
@@ -2369,7 +2379,11 @@ struct MainTabView: View {
                   // selected while this task was waiting.
                   selectedDestinationID == .app(.home), router.requestedTab == nil
             else { return }
-            selectedDestinationID = .app(.downloads)
+            if visibleDestinations.contains(where: { $0.id == .app(.downloads) }) {
+                selectedDestinationID = .app(.downloads)
+            } else {
+                router.navigate(to: .downloads)
+            }
         }
         #endif
         #if os(iOS)
@@ -2384,17 +2398,46 @@ struct MainTabView: View {
         #endif
         .onChange(of: router.requestedTab) { _, tab in
             guard let tab else { return }
+            router.requestedTab = nil
+            // Downloads and Calendar are off the iOS bar; open them as pages
+            // instead of silently landing on Home.
+            if !visibleDestinations.contains(where: { $0.id == .app(tab) }) {
+                switch tab {
+                case .downloads:
+                    router.navigate(to: .downloads)
+                    return
+                case .calendar:
+                    router.navigate(to: .calendar)
+                    return
+                default:
+                    break
+                }
+            }
             selectedDestinationID = resolvedRequestedMainTabDestination(
                 tab,
                 visibleDestinations: visibleDestinations
             )
-            router.requestedTab = nil
+        }
+        .onChange(of: DownloadManager.shared.downloadsEnabled) { _, _ in
+            selectedDestinationID = resolvedVisibleMainTabDestination(
+                selectedDestinationID,
+                visibleDestinations: visibleDestinations
+            )
         }
         #if os(iOS)
         .onChange(of: router.requestedSearch) { _, _ in
             openRequestedSearch()
         }
         .task { openRequestedSearch() }
+        .onChange(of: router.requestedHubLibraryId) { _, libraryId in
+            guard let libraryId else { return }
+            router.requestedHubLibraryId = nil
+            let library = librarySnapshot.availableLibraries(for: currentLibraryAuthority)
+                .first { $0.id == libraryId }
+            if let library, let host = hubDestination(hosting: library, in: visibleDestinations) {
+                selectedDestinationID = host
+            }
+        }
         #endif
         .onChange(of: uiCustomization.primaryMenu) { _, _ in
             selectedDestinationID = resolvedVisibleMainTabDestination(
@@ -2570,6 +2613,14 @@ struct MainTabView: View {
     #endif
 
     private var projectedDestinations: [MainTabDestination] {
+        #if os(iOS)
+        // iOS derives its bar from the profile's libraries; the synced
+        // primary menu drives other clients.
+        return appleFixedTabDestinations(
+            libraries: librarySnapshot.availableLibraries(for: currentLibraryAuthority),
+            showAudiobooks: navPrefs.showAudiobooks
+        )
+        #else
         var destinations = projectedMainTabDestinations(
             primaryMenu: uiCustomization.primaryMenu,
             availableLibraries: librarySnapshot.availableLibraries(
@@ -2582,6 +2633,7 @@ struct MainTabView: View {
             destinations.append(.app(.downloads))
         }
         return destinations
+        #endif
     }
 
     private var currentLibraryAuthority: MainTabLibraryAuthority? {
@@ -2958,17 +3010,37 @@ struct MainTabView: View {
         case .app(let tab):
             tabContent(for: tab)
         case .libraryCategory(let category):
+            #if os(iOS)
+            if let hub = MediaHub(destination: .libraryCategory(category)) {
+                MediaHubView(
+                    hub: hub,
+                    libraryAuthority: currentLibraryAuthority,
+                    onLibrariesLoaded: acceptLoadedLibraries
+                )
+            }
+            #else
             LibrariesTabView(
                 category: category,
                 libraryAuthority: currentLibraryAuthority,
                 onLibrariesLoaded: acceptLoadedLibraries
             )
+            #endif
         case .library(let libraryId):
             LibrariesTabView(
                 fixedLibraryId: libraryId,
                 libraryAuthority: currentLibraryAuthority,
                 onLibrariesLoaded: acceptLoadedLibraries
             )
+        case .watch, .listen:
+            #if os(iOS)
+            MediaHubView(
+                hub: destination.id == .listen ? .listen : .watch,
+                libraryAuthority: currentLibraryAuthority,
+                onLibrariesLoaded: acceptLoadedLibraries
+            )
+            #else
+            EmptyView()
+            #endif
         }
     }
 
@@ -2987,10 +3059,17 @@ struct MainTabView: View {
             HomeView()
 
         case .libraries:
+            #if os(iOS)
+            LibrariesHubView(
+                libraryAuthority: currentLibraryAuthority,
+                onLibrariesLoaded: acceptLoadedLibraries
+            )
+            #else
             LibrariesTabView(
                 libraryAuthority: currentLibraryAuthority,
                 onLibrariesLoaded: acceptLoadedLibraries
             )
+            #endif
 
         case .search:
             #if os(iOS)
@@ -3083,6 +3162,17 @@ struct MainTabView: View {
             CollectionsView()
         case .collectionDetail(let id):
             CollectionDetailView(collectionId: id)
+        case .mediaBrowse(let kind, let libraryId):
+            #if os(iOS)
+            MediaBrowseView(kind: kind, initialLibraryId: libraryId)
+            #else
+            EmptyView()
+            #endif
+        case .libraryCollections(let libraryId, let title):
+            LibraryCollectionsView(libraryId: libraryId)
+                .navigationTitle(title ?? "Collections")
+                .siloNavigationTitleDisplayMode(.large)
+                .siloPageBackground()
         case .watchParty:
             #if os(iOS)
             WatchPartyHubView(session: .shared)
@@ -3107,6 +3197,10 @@ struct MainTabView: View {
             SettingsView()
         case .serverList:
             ServerListView()
+        case .downloads:
+            DownloadsView()
+        case .calendar:
+            CalendarView()
         case .offlinePlayer(let downloadId, let contentId, let startFromBeginning, let resumePosition):
             #if os(macOS)
             PlayerView(
@@ -3126,6 +3220,10 @@ struct MainTabView: View {
             OfflineDownloadDetailView(downloadId: downloadId)
         case .autoDownloads:
             AutoDownloadsView()
+        #if !os(tvOS)
+        case .libraryVisibility:
+            LibraryVisibilitySettingsView()
+        #endif
         default:
             EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
                 .siloPageBackground()

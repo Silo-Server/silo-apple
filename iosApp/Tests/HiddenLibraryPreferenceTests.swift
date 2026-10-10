@@ -80,7 +80,80 @@ final class HiddenLibraryPreferenceTests: XCTestCase {
         XCTAssertEqual(otherProfile, [])
     }
 
+    func testHidingKeepsLibrariesHiddenElsewhereSinceTheLastRead() async throws {
+        _ = await read(returning: .array([.int(3)]))
+        var written: [Set<Int>] = []
+
+        // Another device hid 9 after this one last read [3].
+        let updated = try await setHidden(true, libraryId: 5, serverValue: .array([.int(9), .int(3)])) {
+            written.append($0)
+        }
+
+        XCTAssertEqual(updated, [3, 5, 9])
+        XCTAssertEqual(written, [[3, 5, 9]])
+        let afterDrop = await read(throwing: SettingsAPIError.transport(description: "offline"))
+        XCTAssertEqual(afterDrop, [3, 5, 9])
+    }
+
+    func testShowingRemovesOnlyThatLibraryAndSkipsANoOpWrite() async throws {
+        var written: [Set<Int>] = []
+
+        let shown = try await setHidden(false, libraryId: 3, serverValue: .array([.int(3), .int(4)])) {
+            written.append($0)
+        }
+        let unchanged = try await setHidden(false, libraryId: 3, serverValue: .array([.int(4)])) {
+            written.append($0)
+        }
+
+        XCTAssertEqual(shown, [4])
+        XCTAssertEqual(unchanged, [4])
+        XCTAssertEqual(written, [[4]])
+    }
+
+    func testFailedWriteThrowsAndKeepsTheLastAnswer() async {
+        _ = await read(returning: .array([.int(3)]))
+
+        do {
+            _ = try await setHidden(true, libraryId: 5, serverValue: .array([.int(3)])) { _ in
+                throw SettingsAPIError.transport(description: "offline")
+            }
+            XCTFail("A failed write must throw")
+        } catch {}
+
+        let afterDrop = await read(throwing: SettingsAPIError.transport(description: "offline"))
+        XCTAssertEqual(afterDrop, [3])
+    }
+
+    /// The Libraries page counts hidden libraries from the cached list, and a
+    /// list cached before the split has none.
+    func testCachedLibraryListKeepsItsHiddenLibraries() throws {
+        let split = LibrariesResponse(libraries: [library(1)], hiddenLibraries: [library(2)])
+        let unsplit = LibrariesResponse(libraries: [library(1)])
+
+        let decodedSplit = try JSONDecoder().decode(LibrariesResponse.self, from: JSONEncoder().encode(split))
+        let decodedUnsplit = try JSONDecoder().decode(LibrariesResponse.self, from: JSONEncoder().encode(unsplit))
+
+        XCTAssertEqual(decodedSplit.hiddenLibraries?.map(\.id), [2])
+        XCTAssertNil(decodedUnsplit.hiddenLibraries)
+    }
+
     // MARK: Helpers
+
+    private func setHidden(
+        _ isHidden: Bool,
+        libraryId: Int,
+        serverValue: SettingJSONValue,
+        write: @escaping (Set<Int>) throws -> Void
+    ) async throws -> Set<Int> {
+        try await HiddenLibraryPreference.setHidden(
+            isHidden,
+            libraryId: libraryId,
+            defaults: defaults,
+            requestIdentity: { Self.profileA },
+            read: { _ in try Self.response(serverValue) },
+            write: { ids, _ in try write(ids) }
+        )
+    }
 
     private func read(returning value: SettingJSONValue) async -> Set<Int> {
         await HiddenLibraryPreference.hiddenLibraryIds(
