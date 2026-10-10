@@ -1,6 +1,8 @@
+#if os(iOS)
 import XCTest
 @testable import Silo
 
+/// Headers fold only on iPhone and iPad.
 @MainActor
 final class PageChromeScrollStateTests: XCTestCase {
     /// Folding shortens the header by about 30 pt, which lowers the measured
@@ -51,3 +53,4 @@ final class PageChromeScrollStateTests: XCTestCase {
         XCTAssertFalse(state.isCompact)
     }
 }
+#endif
