@@ -10,7 +10,9 @@ enum Route: Hashable {
     case search
     /// Watch tab grid: one library, or every library of `kind` when `nil`.
     case mediaBrowse(kind: MediaKind, libraryId: Int?)
-    case libraryCollections(libraryId: Int, title: String?)
+    /// A library's collections; a mixed library's are limited to the half
+    /// the hub shows.
+    case libraryCollections(libraryId: Int, title: String?, mediaScope: LibraryVideoScope? = nil)
     case libraryCollection(libraryId: Int, collectionId: String, title: String?, kind: LibraryCollectionKind?, mediaScope: LibraryVideoScope? = nil)
     case itemDetail(
         contentId: String,
