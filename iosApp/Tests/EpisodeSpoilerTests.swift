@@ -42,6 +42,14 @@ final class EpisodeWatchStateTests: XCTestCase {
 // MARK: - Settings helpers
 
 extension EpisodeWatchStateTests {
+    func testBrowseRowsBuiltFromSectionRowsKeepProvenance() throws {
+        let row = try HTTPClient.makeJSONDecoder().decode(SectionItem.self, from: Data(
+            #"{"content_id":"e1","type":"episode","title":"Pilot","poster_is_episode_still":false,"backdrop_is_episode_still":true}"#.utf8))
+        let browse = BrowseItem(sectionItem: row)
+        XCTAssertEqual(browse.posterIsEpisodeStill, false)
+        XCTAssertEqual(browse.backdropIsEpisodeStill, true)
+    }
+
     func testBrowseRowsWithAResumePositionAreStarted() throws {
         let decoder = HTTPClient.makeJSONDecoder()
         let untouched = try decoder.decode(BrowseItem.self, from: Data(#"{"content_id":"e1","type":"episode","title":"Pilot"}"#.utf8))
@@ -471,10 +479,19 @@ final class TopShelfSpoilerTests: XCTestCase {
         let untouched = try item(#"{"content_id":"e1","type":"episode","title":"Pilot","poster_url":"https://example.invalid/still.jpg"}"#)
         let started = try item(#"{"content_id":"e2","type":"episode","title":"Two","position_seconds":30,"poster_url":"https://example.invalid/still2.jpg"}"#)
         let movie = try item(#"{"content_id":"m1","type":"movie","title":"Film","poster_url":"https://example.invalid/poster.jpg"}"#)
+        let alias = try item(#"{"content_id":"e3","type":" Episodes ","title":"Three","poster_url":"https://example.invalid/still3.jpg"}"#)
         XCTAssertNil(untouched.fallbackPosterUrl(hidingEpisodeStills: true))
+        XCTAssertNil(alias.fallbackPosterUrl(hidingEpisodeStills: true))
         XCTAssertEqual(untouched.fallbackPosterUrl(hidingEpisodeStills: false), "https://example.invalid/still.jpg")
         XCTAssertEqual(started.fallbackPosterUrl(hidingEpisodeStills: true), "https://example.invalid/still2.jpg")
         XCTAssertEqual(movie.fallbackPosterUrl(hidingEpisodeStills: true), "https://example.invalid/poster.jpg")
+    }
+
+    func testFallbackKeepsWatchedEpisodesAndSeriesArtwork() throws {
+        let watched = try item(#"{"content_id":"e1","type":"episode","title":"Pilot","user_state":{"played":true},"poster_url":"https://example.invalid/still.jpg"}"#)
+        let seriesArt = try item(#"{"content_id":"e2","type":"episode","title":"Two","poster_is_episode_still":false,"poster_url":"https://example.invalid/series.jpg"}"#)
+        XCTAssertEqual(watched.fallbackPosterUrl(hidingEpisodeStills: true), "https://example.invalid/still.jpg")
+        XCTAssertEqual(seriesArt.fallbackPosterUrl(hidingEpisodeStills: true), "https://example.invalid/series.jpg")
     }
 }
 

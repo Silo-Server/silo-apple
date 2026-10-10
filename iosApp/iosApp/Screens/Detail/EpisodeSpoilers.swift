@@ -87,21 +87,11 @@ struct EpisodeSpoilerSettings: Codable, Hashable, Sendable {
 }
 
 extension BrowseItem {
-    var isEpisodeItem: Bool {
-        switch type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "episode", "episodes": return true
-        default: return false
-        }
-    }
+    var isEpisodeItem: Bool { SiloMediaType.isEpisode(type) }
 }
 
 extension SectionItem {
-    var isEpisodeItem: Bool {
-        switch type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "episode", "episodes": return true
-        default: return false
-        }
-    }
+    var isEpisodeItem: Bool { SiloMediaType.isEpisode(type) }
 }
 
 /// How strongly a hidden still is blurred. Web blurs with a 24px standard

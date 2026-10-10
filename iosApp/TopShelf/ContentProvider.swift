@@ -38,6 +38,13 @@ final class ContentProvider: TVTopShelfContentProvider {
             )
             return nil
         }
+        // The profile's last confirmed spoiler answer, cached by the app. Read
+        // with the credentials, before any request suspends.
+        let hidesEpisodeStills = EpisodeSpoilerCache.hidesImages(
+            serverId: defaults.string(forKey: SharedStorage.activeServerIdKey),
+            profileId: defaults.string(forKey: SharedStorage.profileIdKey),
+            in: defaults
+        )
         let response: TopShelfSectionsResponse
         let imageSizeQuery = await http.fetchImageSizeQuery()
         do {
@@ -58,12 +65,6 @@ final class ContentProvider: TVTopShelfContentProvider {
             imageSizeQuery: imageSizeQuery
         )
 
-        // The profile's last confirmed spoiler answer, cached by the app.
-        let hidesEpisodeStills = EpisodeSpoilerCache.hidesImages(
-            serverId: defaults.string(forKey: SharedStorage.activeServerIdKey),
-            profileId: defaults.string(forKey: SharedStorage.profileIdKey),
-            in: defaults
-        )
         let continueWatching = collection(
             title: "Continue Watching",
             items: cwItems,

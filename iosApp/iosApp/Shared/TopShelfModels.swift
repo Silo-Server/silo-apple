@@ -35,12 +35,17 @@ struct TopShelfItem: Decodable {
     let progressUpdatedAt: String?
     @ArtworkURL var posterUrl: String?
     @ArtworkURL var backdropUrl: String?
+    let posterIsEpisodeStill: Bool?
+    let userState: TopShelfUserState?
 
-    /// The tile's last-resort artwork: the item's own poster, which for an
-    /// episode is its still. An untouched episode shows none when the profile
-    /// hides unwatched episode images.
+    /// The tile's last-resort artwork: the item's own poster, usually an
+    /// episode's still. An untouched episode shows none when the profile
+    /// hides unwatched episode images, unless the server marks the poster as
+    /// series or season artwork.
     func fallbackPosterUrl(hidingEpisodeStills: Bool) -> String? {
-        if hidingEpisodeStills, type == "episode", (positionSeconds ?? 0) <= 0 { return nil }
+        let isEpisode = ["episode", "episodes"].contains(type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        let isUntouched = userState?.played != true && (positionSeconds ?? 0) <= 0
+        if hidingEpisodeStills, isEpisode, isUntouched, posterIsEpisodeStill != false { return nil }
         return posterUrl
     }
 
@@ -51,6 +56,10 @@ struct TopShelfItem: Decodable {
               duration > 0 else { return nil }
         return max(0, min(1, position / duration))
     }
+}
+
+struct TopShelfUserState: Decodable {
+    let played: Bool
 }
 
 /// Subset of `/api/v2/catalog/series/{id}/seasons` we need. The main app

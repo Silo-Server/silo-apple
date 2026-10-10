@@ -54,6 +54,16 @@ final class WatchPartySpoilerTests: XCTestCase {
         XCTAssertEqual(item.visibleOverview(with: enabled), "Episode description")
     }
 
+    func testEpisodeSuggestionPostersFollowTheImageSwitch() {
+        func suggestion(_ type: String) -> WatchPartySuggestion {
+            WatchPartySuggestion(id: type, roomId: "room", suggesterUserId: "1", suggesterProfileId: "p",
+                                 contentId: type, contentType: type, title: "Pick", createdAt: Date())
+        }
+        XCTAssertTrue(suggestion("episode").hidesPoster(with: enabled))
+        XCTAssertFalse(suggestion("episode").hidesPoster(with: .off))
+        XCTAssertFalse(suggestion("movie").hidesPoster(with: enabled))
+    }
+
     func testNonEpisodeCatalogItemStaysVisible() throws {
         let item = WatchPartySelectedItem(try catalog(extra: ["type": "movie"]))
         XCTAssertFalse(item.hidesPoster(with: enabled))

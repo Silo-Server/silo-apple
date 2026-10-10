@@ -314,6 +314,8 @@ extension BrowseItem {
             networks: item.networks,
             showStatus: item.showStatus,
             overview: item.overview,
+            posterIsEpisodeStill: item.posterIsEpisodeStill,
+            backdropIsEpisodeStill: item.backdropIsEpisodeStill,
             posterUrl: item.posterUrl,
             posterThumbhash: item.posterThumbhash,
             backdropUrl: item.backdropUrl,

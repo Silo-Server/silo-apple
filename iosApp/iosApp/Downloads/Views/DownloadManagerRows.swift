@@ -528,6 +528,14 @@ struct DownloadEpisodeRow: View {
     let watched: Bool
     var onPlay: () -> Void = {}
 
+    /// An episode's saved poster is its still. Only this device's progress is
+    /// known offline, so an episode without any reads as untouched.
+    private var hidesStill: Bool {
+        let progress = DownloadManager.shared.localProgress(forMediaItemId: record.leafMediaItemId)
+        let state = EpisodeWatchState(played: watched, positionSeconds: progress?.position)
+        return EpisodeSpoilerPreferences.shared.settings.hidesImage(for: state)
+    }
+
     var body: some View {
         Button(action: onPlay) {
             HStack(spacing: 11) {
@@ -535,6 +543,7 @@ struct DownloadEpisodeRow: View {
                     thumbhash: record.posterThumbhash,
                     fileURL: DownloadManager.shared.posterImageURL(for: record)
                 )
+                    .episodeSpoilerBlur(hidesStill)
                     .frame(width: 54, height: 32)
                     .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
                     .overlay(

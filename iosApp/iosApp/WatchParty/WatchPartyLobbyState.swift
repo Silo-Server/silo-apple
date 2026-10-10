@@ -41,7 +41,7 @@ struct WatchPartySelectedItem: Equatable, Sendable {
         backdropUrl = item.backdropUrl
         backdropThumbhash = item.backdropThumbhash
         backdropIsEpisodeStill = item.backdropIsEpisodeStill
-        episodeWatchState = Self.isEpisode(item.type) ? EpisodeWatchState(
+        episodeWatchState = SiloMediaType.isEpisode(item.type) ? EpisodeWatchState(
             played: item.userData?.played ?? item.userState?.played ?? false,
             isInProgress: item.userData?.isInProgress,
             positionSeconds: item.userData?.positionSeconds
@@ -77,7 +77,7 @@ struct WatchPartySelectedItem: Equatable, Sendable {
         self.backdropUrl = backdropUrl
         self.backdropThumbhash = backdropThumbhash
         self.backdropIsEpisodeStill = backdropIsEpisodeStill
-        self.episodeWatchState = Self.isEpisode(type) ? (episodeWatchState ?? EpisodeWatchState(played: false)) : nil
+        self.episodeWatchState = SiloMediaType.isEpisode(type) ? (episodeWatchState ?? EpisodeWatchState(played: false)) : nil
         self.year = year
         self.runtimeMinutes = runtimeMinutes
         contentRating = nil
@@ -106,9 +106,6 @@ struct WatchPartySelectedItem: Equatable, Sendable {
         episodeWatchState = state
     }
 
-    private static func isEpisode(_ type: String) -> Bool {
-        ["episode", "episodes"].contains(type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
-    }
 
     /// "2024 · 2h 46m" style facts for the hero.
     var factsLine: [String] {
@@ -290,5 +287,13 @@ enum WatchPartyLobbyPolicy {
             return .ready(isReady: member.lobbyReady)
         }
         return .none
+    }
+}
+
+extension WatchPartySuggestion {
+    /// Suggestions carry no watch state or artwork provenance, so an
+    /// episode's poster is treated as an untouched episode's still.
+    func hidesPoster(with spoilers: EpisodeSpoilerSettings) -> Bool {
+        SiloMediaType.isEpisode(contentType) && spoilers.hidesImage(for: EpisodeWatchState(played: false))
     }
 }
