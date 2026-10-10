@@ -179,6 +179,9 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
 
     let detail: ItemDetail
     let isFavorite: Bool
+    /// The viewer's own rating, 1 to 5 stars, or nil when unrated.
+    let userRating: Int?
+    let onRate: (Int?) -> Void
     let inWatchlist: Bool
     /// Whole-series state for More's series entry.
     let isSeriesWatched: Bool
@@ -221,6 +224,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     let onPlayEpisode: (_ contentId: String, _ fileId: Int?, _ startFromBeginning: Bool) -> Void
     let onSetEpisodeWatched: (_ contentId: String, _ played: Bool) async -> PersonalStateOutcome
     let onSetEpisodeFavorite: (_ contentId: String, _ isFavorite: Bool) async -> PersonalStateOutcome
+    let onSetEpisodeRating: (_ contentId: String, _ stars: Int?) async -> PersonalStateOutcome
     let onSetEpisodeWatchlist: (_ contentId: String, _ inWatchlist: Bool) async -> PersonalStateOutcome
     let onSelectNextUpVersion: (Int?) -> Void
     let onSelectNextUpAudioTrack: (Int?) -> Void
@@ -490,6 +494,8 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             isPlaybackLoading: isLoadingEpisodes && playbackEpisode == nil,
             allowsInitialPlayFocus: !userNavigated,
             tracksInitialFocusNavigation: true,
+            userRating: userRating,
+            onRate: onRate,
             playbackSelectors: {
                 // Keep all three triggers mounted while a newly focused
                 // episode's playback detail loads. They disable themselves
@@ -709,6 +715,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         onActivateEpisode(nil)
     }
 
+
     private func setSeasonWatched(_ season: Season) {
         guard !isUpdatingSeasonWatched else { return }
         let played = !(season.userData?.played ?? false)
@@ -791,6 +798,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 onFocusedEpisodeChange: focusEpisode,
                 onSetWatched: onSetEpisodeWatched,
                 onSetFavorite: onSetEpisodeFavorite,
+                onSetRating: onSetEpisodeRating,
                 onSetWatchlist: onSetEpisodeWatchlist,
                 currentContentId: displayedEpisode?.contentId,
                 favoriteStates: episodeFavoriteStates,
@@ -1160,10 +1168,12 @@ struct TVSeriesModeTab: View {
 
     var body: some View {
         Button(action: action) {
-            Text(title)
-                .font(.system(size: 22, weight: isSelected ? .semibold : .medium))
-                .padding(.horizontal, 24)
-                .frame(height: 52)
+            HStack(spacing: 10) {
+                Text(title)
+                    .font(.system(size: 22, weight: isSelected ? .semibold : .medium))
+            }
+            .padding(.horizontal, 24)
+            .frame(height: 52)
         }
         .buttonStyle(
             TVSeriesModeTabStyle(

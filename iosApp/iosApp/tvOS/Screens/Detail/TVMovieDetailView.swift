@@ -7,6 +7,9 @@ import SwiftUI
 struct TVMovieDetailView<BelowSynopsis: View>: View {
     let detail: ItemDetail
     let isFavorite: Bool
+    /// The viewer's own rating, 1 to 5 stars, or nil when unrated.
+    let userRating: Int?
+    let onRate: (Int?) -> Void
     let inWatchlist: Bool
     let isWatched: Bool
     let selectedVersionFileId: Int?
@@ -156,6 +159,8 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
             rowFocused: $actionRowFocused,
             stabilizesFocusMotion: true,
             primaryButtonWidth: 340,
+            userRating: userRating,
+            onRate: onRate,
             playbackSelectors: {
                 TVPlaybackActionSelectors(
                     versions: availableVersions,

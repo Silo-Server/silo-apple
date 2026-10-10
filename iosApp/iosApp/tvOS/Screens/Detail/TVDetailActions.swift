@@ -301,6 +301,120 @@ struct TVCircleActionButton: View {
     }
 }
 
+/// The viewer's own 1-to-5 star rating, shown to the right of More.
+///
+/// One composite focus control, not five buttons: the whole field takes focus
+/// as a unit, Select opens it, and only then does left/right choose a rating.
+/// Collapsed it owns no axis, so the action row's own left/right movement is
+/// untouched; `docs/tvos-focus.md` describes this pattern and `TVCascadeSelector`
+/// is the local example it points at.
+struct TVStarRatingControl: View {
+    static let maximumStars = 5
+
+    let rating: Int?
+    /// nil clears the rating.
+    let onRate: (Int?) -> Void
+
+    /// Open state lives with the row: while the control owns left and right,
+    /// the row disables its other actions so the focus engine has nowhere to
+    /// move and the move command reaches this control instead.
+    @Binding var isEditing: Bool
+
+    @FocusState private var isFocused: Bool
+    @State private var pending = 0
+
+    /// Stars shown filled: the pending choice while open, the saved rating
+    /// otherwise.
+    private var shown: Int { isEditing ? pending : (rating ?? 0) }
+
+    var body: some View {
+        HStack(spacing: isEditing ? 10 : 6) {
+            ForEach(1...Self.maximumStars, id: \.self) { star in
+                Image(systemName: star <= shown ? "star.fill" : "star")
+                    .font(.system(size: isEditing ? 40 : 26, weight: .semibold))
+                    .foregroundStyle(star <= shown
+                        ? AnyShapeStyle(.yellow)
+                        : AnyShapeStyle(.white.opacity(0.45)))
+                    .scaleEffect(isEditing && star == pending ? 1.18 : 1)
+            }
+        }
+        .padding(.horizontal, isEditing ? 26 : 16)
+        .padding(.vertical, isEditing ? 14 : 9)
+        .background {
+            Capsule().fill(.white.opacity(isFocused ? 0.22 : 0.08))
+        }
+        .overlay {
+            // While open the control owns left/right, so it says so plainly.
+            Capsule().strokeBorder(.yellow.opacity(isEditing ? 0.9 : 0), lineWidth: 3)
+        }
+        .scaleEffect(isEditing ? 1 : (isFocused ? 1.06 : 1))
+        .animation(.spring(response: 0.3, dampingFraction: 0.75), value: isFocused)
+        .animation(.spring(response: 0.3, dampingFraction: 0.75), value: isEditing)
+        .animation(.easeOut(duration: 0.12), value: pending)
+        .contentShape(Capsule())
+        .focusable()
+        .focused($isFocused)
+        .onTapGesture(perform: activate)
+        .onMoveCommand(perform: move)
+        .onExitCommand(perform: isEditing ? cancel : nil)
+        .onChange(of: isFocused) { _, focused in
+            // Focus left the control, so an open editor has no owner. Close it
+            // without writing: the viewer moved on rather than chose.
+            if !focused { isEditing = false }
+        }
+        .accessibilityElement()
+        .accessibilityLabel("Your rating")
+        .accessibilityValue(accessibilityValue)
+        .accessibilityHint(isEditing
+            ? "Left and right choose a rating. Select to save."
+            : "Select to rate this title.")
+        .accessibilityAddTraits(.isButton)
+    }
+
+    private var accessibilityValue: String {
+        if isEditing {
+            return pending == 0 ? "No rating" : "\(pending) of \(Self.maximumStars) stars"
+        }
+        guard let rating else { return "Not rated" }
+        return "\(rating) of \(Self.maximumStars) stars"
+    }
+
+    /// Select opens the control, then commits the pending choice.
+    private func activate() {
+        if isEditing {
+            onRate(pending == 0 ? nil : pending)
+            isEditing = false
+            return
+        }
+        pending = rating ?? 0
+        isEditing = true
+    }
+
+    /// Left and right choose a rating while open. Zero is the "no rating"
+    /// position, which is how an existing rating is cleared without a second
+    /// control. Up and down are left to the focus engine so the viewer can
+    /// still leave the row.
+    private func move(_ direction: MoveCommandDirection) {
+        guard isEditing else { return }
+        switch direction {
+        case .left:
+            pending = max(0, pending - 1)
+        case .right:
+            pending = min(Self.maximumStars, pending + 1)
+        default:
+            break
+        }
+    }
+
+    /// Menu closes the editor and keeps the saved rating. The handler is only
+    /// installed while the editor is open, because an installed handler
+    /// consumes Menu whether or not it acts on it: a closed control that kept
+    /// one would swallow the press and strand the viewer on the screen.
+    private func cancel() {
+        isEditing = false
+    }
+}
+
 /// The visible pill for `TVCircleMenuButton` / `TVCircleActionButton`.
 /// Icon-only circle at rest; while focused the title fades in beside the
 /// icon and the capsule widens to fit, reflowing the row with it.
@@ -454,6 +568,11 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
     var isPlaybackLoading = false
     var allowsInitialPlayFocus = true
     var tracksInitialFocusNavigation = false
+    /// The viewer's own rating, 1 to 5 stars, or nil when unrated. The stars
+    /// render only when `onRate` is supplied, so a screen that cannot rate
+    /// shows the row exactly as before.
+    var userRating: Int? = nil
+    var onRate: ((Int?) -> Void)? = nil
     @ViewBuilder let playbackSelectors: () -> PlaybackSelectors
     @ViewBuilder let moreMenu: () -> MoreMenu
 
@@ -463,9 +582,15 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
     @State private var initialPlayFocusTask: Task<Void, Never>?
     @FocusState private var focusedAction: ActionID?
     @FocusState private var playbackSelectorsFocused: Bool
+    @State private var isRatingEditing = false
 
     var body: some View {
         HStack(spacing: stabilizesFocusMotion ? 18 : 36) {
+            // Disabled views are not focusable, so while the rating editor is
+            // open Left has nowhere to go and reaches its move handler. The
+            // focus engine resolves a move before any handler runs, so simply
+            // consuming the command in the control is not enough.
+            Group {
             if playTitle != nil || stabilizesFocusMotion {
                 TVPrimaryPillButton(
                     icon: "play.fill",
@@ -518,6 +643,16 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
 
             moreMenu()
                 .focused($focusedAction, equals: .more)
+            }
+            .disabled(isRatingEditing)
+
+            if let onRate {
+                TVStarRatingControl(
+                    rating: userRating,
+                    onRate: onRate,
+                    isEditing: $isRatingEditing
+                )
+            }
         }
         .focused(rowFocused)
         .frame(maxWidth: .infinity, alignment: .leading)

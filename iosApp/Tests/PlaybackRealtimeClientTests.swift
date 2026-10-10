@@ -43,7 +43,10 @@ final class PlaybackRealtimeClientTests: XCTestCase {
         await client.observeUnavailability { value in
             if value { unavailable.fulfill() }
         }
-        await fulfillment(of: [unavailable], timeout: 5)
+        // The circuit breaker needs eight attempts, each hopping to the main
+        // actor to notify observers. A loaded CI simulator can stall that walk
+        // for seconds, so this wait is given more room than the suite's others.
+        await fulfillment(of: [unavailable], timeout: 20)
     }
 
     func testEveryReconnectMintsAFreshTicketUntilTheCircuitBreakerTrips() async {

@@ -65,6 +65,7 @@ enum APIv2CatalogRead {
         let tvdbId: String?
         let `type`: String
         let userData: WatchRollup?
+        let userRating: Int64?
         let userState: CatalogItemUserState?
         let versions: [FileVersion]
         let videos: [ItemVideoInfo]?
@@ -99,6 +100,7 @@ enum APIv2CatalogRead {
         let tmdbId: String?
         let tvdbId: String?
         let userData: WatchRollup?
+        let userRating: Int64?
     }
 
     struct Person: Decodable {

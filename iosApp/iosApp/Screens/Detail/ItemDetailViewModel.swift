@@ -272,6 +272,7 @@ class ItemDetailViewModel {
 
         do {
             let userStateGeneration = userStateMutationGeneration
+            let ratingGeneration = ratingRevision
             personalStateOwner = await TokenStore.shared.captureOrdinaryRequestAuth()
 
             let item: ItemDetail
@@ -312,6 +313,15 @@ class ItemDetailViewModel {
             // A Watched tap made while this request was in flight wins.
             if userStateMutationGeneration == userStateGeneration {
                 isWatched = enriched.userData?.played ?? false
+                // The optimistic rating only had to bridge its own write, and
+                // a kept override would hide a rating changed on another
+                // client for as long as this model lives — tvOS keeps one
+                // across visits. Released only when this read spanned no
+                // rating write and none is open, so its payload is known to be
+                // newer than the rating it would replace.
+                if pendingRatingWrites == 0, ratingRevision == ratingGeneration {
+                    ratingOverride = nil
+                }
             }
 
             #if os(tvOS)
@@ -647,6 +657,7 @@ class ItemDetailViewModel {
                 airDate: item.airDate,
                 isSpecials: item.isSpecials,
                 userData: item.userData,
+                userRating: item.userRating,
                 versions: watchDetail.versions,
                 playbackVariants: item.playbackVariants,
                 subtitles: watchDetail.subtitles,
@@ -1468,6 +1479,78 @@ class ItemDetailViewModel {
         }
     }
 
+    /// The acting profile's own rating, 1 to 5 stars, or nil when unrated.
+    ///
+    /// Reads through to the loaded detail unless a write is in flight, so a
+    /// detail refresh that lands mid-write cannot revert what the viewer just
+    /// pressed. The outer optional means "no override"; the inner one carries
+    /// "unrated".
+    private var ratingOverride: Int??
+    /// Ownership token for rating writes. Separate from
+    /// `userStateMutationGeneration`, which the favorite, watchlist and watched
+    /// toggles also bump: sharing it meant an unrelated toggle during a rating
+    /// write made the rating's own completion look superseded, so a failed
+    /// write never took its override back down.
+    private var ratingMutationGeneration = 0
+    /// Advances when a rating write starts and again when it finishes.
+    private var ratingRevision = 0
+    /// Rating writes still waiting for an answer.
+    ///
+    /// Both are needed, because they cover different windows. The revision
+    /// catches a write that began or ended while a detail read was in flight.
+    /// The count catches a write that began before that read captured the
+    /// revision and is still open: the captured value already includes its
+    /// start, so equality holds for the whole read. Together they say the read
+    /// spanned no rating write and none is open, which is the only state in
+    /// which its payload is known to be newer than the override.
+    private var pendingRatingWrites = 0
+    var userRating: Int? {
+        if case .some(let pending) = ratingOverride { return pending }
+        return detail?.userRating
+    }
+
+    /// Record the viewer's rating, or clear it when `stars` is nil.
+    ///
+    /// The control carries its own "no rating" position, so this sets exactly
+    /// what it was given rather than toggling: a viewer who picks the rating
+    /// they already have means to keep it, not to remove it.
+    func setRating(_ stars: Int?) async {
+        guard let contentId = detail?.contentId else { return }
+        ratingMutationGeneration += 1
+        let generation = ratingMutationGeneration
+        ratingRevision += 1
+        pendingRatingWrites += 1
+        defer {
+            pendingRatingWrites -= 1
+            ratingRevision += 1
+        }
+        let requested = stars
+        ratingOverride = .some(requested)
+        let owner = await currentPersonalStateOwner()
+        let outcome = await PersonalStateSync.outcome {
+            guard let owner else { throw HTTPError.requestIdentityChanged }
+            let api = SiloAPI.shared.apiV2Client
+            if let requested {
+                try await api.setRating(id: contentId, stars: requested, auth: owner)
+            } else {
+                try await api.clearRating(id: contentId, auth: owner)
+            }
+        }
+        if outcome == .applied {
+            invalidateRelatedCaches(contentId: contentId)
+        } else {
+            // Drop the override so the control falls back to the server's last
+            // known rating rather than showing a write that never landed — but
+            // only while this write still owns the control. A later rating made
+            // during this request wins, and clearing its override here would
+            // show the older value for a write that did land.
+            if ratingMutationGeneration == generation {
+                ratingOverride = nil
+            }
+            personalStateNotice = PersonalStateNotice(outcome)
+        }
+    }
+
     func toggleFavorite() async {
         guard let contentId = detail?.contentId else { return }
         userStateMutationGeneration += 1
@@ -1660,6 +1743,28 @@ class ItemDetailViewModel {
                 coalescesMetadataRequest: false
             )
         }
+    }
+
+    /// Rate a single episode, or clear its rating with `stars == nil`.
+    ///
+    /// Episodes are rated independently of their series: the server keys
+    /// ratings by item id, so an episode's stars never stand in for the
+    /// show's and the show's never stand in for an episode's.
+    func setEpisodeRating(contentId: String, stars: Int?) async -> PersonalStateOutcome {
+        let owner = await currentPersonalStateOwner()
+        let outcome = await PersonalStateSync.outcome {
+            guard let owner else { throw HTTPError.requestIdentityChanged }
+            let api = SiloAPI.shared.apiV2Client
+            if let stars {
+                try await api.setRating(id: contentId, stars: stars, auth: owner)
+            } else {
+                try await api.clearRating(id: contentId, auth: owner)
+            }
+        }
+        if outcome == .applied {
+            invalidateRelatedCaches(contentId: contentId)
+        }
+        return outcome
     }
 
     func setEpisodeFavorite(contentId: String, isFavorite: Bool) async -> PersonalStateOutcome {

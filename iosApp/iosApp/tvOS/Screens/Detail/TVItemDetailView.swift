@@ -273,6 +273,8 @@ struct TVItemDetailView: View {
             TVSeriesDetailView(
                 detail: detail,
                 isFavorite: viewModel.isFavorite,
+                userRating: viewModel.userRating,
+                onRate: { stars in Task { await viewModel.setRating(stars) } },
                 inWatchlist: viewModel.inWatchlist,
                 isSeriesWatched: viewModel.isWatched,
                 isSeasonWatched: viewModel.selectedSeason?.userData?.played ?? false,
@@ -377,6 +379,9 @@ struct TVItemDetailView: View {
                 onSetEpisodeFavorite: { id, isFavorite in
                     await viewModel.setEpisodeFavorite(contentId: id, isFavorite: isFavorite)
                 },
+                onSetEpisodeRating: { id, stars in
+                    await viewModel.setEpisodeRating(contentId: id, stars: stars)
+                },
                 onSetEpisodeWatchlist: { id, inWatchlist in
                     await viewModel.setEpisodeWatchlist(contentId: id, inWatchlist: inWatchlist)
                 },
@@ -456,6 +461,8 @@ struct TVItemDetailView: View {
             TVMovieDetailView(
                 detail: detail,
                 isFavorite: viewModel.isFavorite,
+                userRating: viewModel.userRating,
+                onRate: { stars in Task { await viewModel.setRating(stars) } },
                 inWatchlist: viewModel.inWatchlist,
                 isWatched: viewModel.isWatched,
                 selectedVersionFileId: preferredVersionFileId,
@@ -1044,6 +1051,7 @@ struct TVItemDetailView: View {
             airDate: item.airDate,
             isSpecials: item.isSpecials,
             userData: item.userData,
+            userRating: item.userRating,
             versions: watchDetail.versions,
             playbackVariants: item.playbackVariants,
             subtitles: watchDetail.subtitles,

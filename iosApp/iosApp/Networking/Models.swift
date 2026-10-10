@@ -467,6 +467,8 @@ struct ItemDetail: Codable {
     let airDate: String?
     let isSpecials: Bool?
     let userData: LeafItemUserData?
+    /// The acting profile's own rating, 1 to 5 stars, or nil when unrated.
+    let userRating: Int?
     let versions: [FileVersion]?
     var playbackVariants: [PlaybackVariant]? = nil
     let subtitles: [SubtitleInfoBasic]?
@@ -809,6 +811,9 @@ struct EpisodeListItem: Codable, Identifiable, Hashable {
     @ArtworkURL var stillUrl: String? = nil
     let stillThumbhash: String?
     let userData: LeafItemUserData?
+    /// The acting profile's own rating of this episode, 1 to 5 stars, or nil
+    /// when unrated. Episodes are rated independently of their series.
+    let userRating: Int?
     let files: [EpisodeFile]?
     var id: String { contentId }
 }

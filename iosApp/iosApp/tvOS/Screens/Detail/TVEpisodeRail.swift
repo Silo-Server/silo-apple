@@ -22,6 +22,9 @@ struct TVEpisodeRail: View {
     var onFocusedEpisodeChange: ((String?) -> Void)? = nil
     var onSetWatched: ((_ contentId: String, _ played: Bool) async -> PersonalStateOutcome)? = nil
     var onSetFavorite: ((_ contentId: String, _ isFavorite: Bool) async -> PersonalStateOutcome)? = nil
+    /// Rate the episode, or clear its rating with `stars == nil`. Episodes
+    /// are rated independently of their series.
+    var onSetRating: ((_ contentId: String, _ stars: Int?) async -> PersonalStateOutcome)? = nil
     var onSetWatchlist: ((_ contentId: String, _ inWatchlist: Bool) async -> PersonalStateOutcome)? = nil
     /// When non-nil, the matching card is visually highlighted and anchored
     /// at first appearance.
@@ -213,6 +216,7 @@ struct TVEpisodeRail: View {
             onSetWatched: onSetWatched,
             initialIsFavorite: favoriteStates[episode.contentId] ?? false,
             onSetFavorite: onSetFavorite,
+            onSetRating: onSetRating,
             onSetWatchlist: onSetWatchlist,
             initialInWatchlist: watchlistStates[episode.contentId] ?? false,
             cardHeightRatio: cardHeightRatio,
@@ -550,6 +554,9 @@ struct TVEpisodeCard: View {
     var onSetWatched: ((_ contentId: String, _ played: Bool) async -> PersonalStateOutcome)? = nil
     var initialIsFavorite = false
     var onSetFavorite: ((_ contentId: String, _ isFavorite: Bool) async -> PersonalStateOutcome)? = nil
+    /// Rate the episode, or clear its rating with `stars == nil`. Episodes
+    /// are rated independently of their series.
+    var onSetRating: ((_ contentId: String, _ stars: Int?) async -> PersonalStateOutcome)? = nil
     var onSetWatchlist: ((_ contentId: String, _ inWatchlist: Bool) async -> PersonalStateOutcome)? = nil
 
     var initialInWatchlist = false
@@ -562,6 +569,8 @@ struct TVEpisodeCard: View {
     @State private var playedOverride: Bool?
     @State private var favoriteOverride: Bool?
     @State private var watchlistOverride: Bool?
+    /// Outer nil means "no override"; the inner one carries "unrated".
+    @State private var ratingOverride: Int??
 
     private var cardWidth: CGFloat { baseCardWidth * posterSize.scale }
     private var stillHeight: CGFloat { cardWidth * cardHeightRatio }
@@ -571,6 +580,7 @@ struct TVEpisodeCard: View {
         let button = Button(action: onSelect) {
             EpisodeCardLabel(
                 episode: episode,
+                rating: rating,
                 isPlayed: isPlayed,
                 isCurrent: isCurrent,
                 cardWidth: cardWidth,
@@ -585,7 +595,7 @@ struct TVEpisodeCard: View {
         .accessibilityLabel(accessibilityDescription)
 
         Group {
-            if onPlay != nil || onSetWatched != nil || onSetFavorite != nil || onSetWatchlist != nil {
+            if onPlay != nil || onSetWatched != nil || onSetFavorite != nil || onSetWatchlist != nil || onSetRating != nil {
                 button.contextMenu { contextActions }
             } else {
                 button
@@ -595,6 +605,13 @@ struct TVEpisodeCard: View {
         .onChange(of: episode.userData?.played) { _, refreshedValue in
             guard let playedOverride, refreshedValue == playedOverride else { return }
             self.playedOverride = nil
+        }
+        .onChange(of: episode.userRating) { _, refreshedValue in
+            // Released once the payload agrees, like the overrides above. Held
+            // forever it would hide a rating changed elsewhere, because tvOS
+            // keeps these cards across visits.
+            guard case .some(let pending) = ratingOverride, refreshedValue == pending else { return }
+            self.ratingOverride = nil
         }
         .onChange(of: initialIsFavorite) { _, refreshedValue in
             guard let favoriteOverride, refreshedValue == favoriteOverride else { return }
@@ -608,6 +625,11 @@ struct TVEpisodeCard: View {
 
     private var inWatchlist: Bool {
         watchlistOverride ?? initialInWatchlist
+    }
+
+    private var rating: Int? {
+        if case .some(let pending) = ratingOverride { return pending }
+        return episode.userRating
     }
 
     private var isPlayed: Bool {
@@ -699,11 +721,80 @@ struct TVEpisodeCard: View {
                 }
             }
         )
+
+        if let onSetRating {
+            // A second pick while a write is open would capture a stale
+            // `previous` in `apply`, so the rating menu takes the same
+            // in-flight guard the watched and favorite items use above.
+            Menu {
+                ForEach((1...5).reversed(), id: \.self) { stars in
+                    Button {
+                        apply(rating: rating == stars ? nil : stars, through: onSetRating)
+                    } label: {
+                        Label(
+                            stars == 1 ? "1 Star" : "\(stars) Stars",
+                            systemImage: (rating ?? 0) >= stars ? "star.fill" : "star"
+                        )
+                    }
+                    .disabled(actionFeedback.isUpdating)
+                }
+                if rating != nil {
+                    Button(role: .destructive) {
+                        apply(rating: nil, through: onSetRating)
+                    } label: {
+                        Label("Clear Rating", systemImage: "star.slash")
+                    }
+                    .disabled(actionFeedback.isUpdating)
+                }
+            } label: {
+                Label(
+                    rating.map { "Your Rating: \($0)" } ?? "Rate Episode",
+                    systemImage: rating == nil ? "star" : "star.fill"
+                )
+            }
+        }
+    }
+
+    /// Shows the new rating straight away and puts the old one back when the
+    /// write does not land, matching the watched/favorite toggles above.
+    private func apply(
+        rating value: Int?,
+        through update: @escaping (String, Int?) async -> PersonalStateOutcome
+    ) {
+        let previous = ratingOverride
+        actionFeedback.perform {
+            ratingOverride = .some(value)
+            let outcome = await update(episode.contentId, value)
+            if outcome != .applied { ratingOverride = previous }
+            return outcome
+        }
+    }
+}
+
+/// A compact, non-interactive readout of the viewer's rating on an episode
+/// card. Passive on purpose: the card is one focus target in a rail, and
+/// `docs/tvos-focus.md` rules out putting focusable stars inside it.
+private struct EpisodeRatingStars: View {
+    let rating: Int
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(1...5, id: \.self) { star in
+                Image(systemName: star <= rating ? "star.fill" : "star")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(star <= rating ? AnyShapeStyle(.yellow) : AnyShapeStyle(Color.siloSecondaryText))
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Your rating: \(rating) of 5 stars")
     }
 }
 
 private struct EpisodeCardLabel: View {
     let episode: EpisodeListItem
+    /// The viewer's own rating, shown only once given. Unrated episodes stay
+    /// clean; the context menu is the affordance for rating one.
+    let rating: Int?
     let isPlayed: Bool
     let isCurrent: Bool
     let cardWidth: CGFloat
@@ -748,6 +839,9 @@ private struct EpisodeCardLabel: View {
                                 .foregroundStyle(titleColor)
                                 .lineLimit(1)
                             Spacer(minLength: 8)
+                            if captionStyle.showsMetadata, let rating {
+                                EpisodeRatingStars(rating: rating)
+                            }
                             if captionStyle.showsMetadata,
                                let runtime = MediaTextFormatting.runtime(minutes: episode.runtime) {
                                 Text(runtime)
@@ -810,6 +904,20 @@ private struct EpisodeCardLabel: View {
                 .frame(width: cardWidth, height: stillHeight)
             }
 
+            // Opposite corner to the watched badge so a rated, watched episode
+            // shows both. Absent on an unrated episode, which is what makes a
+            // season scannable for what still needs rating.
+            if let rating {
+                VStack {
+                    HStack {
+                        ratingBadge(rating).padding(12)
+                        Spacer()
+                    }
+                    Spacer()
+                }
+                .frame(width: cardWidth, height: stillHeight)
+            }
+
             if let progress = progressFraction {
                 progressBar(fraction: progress)
             }
@@ -837,6 +945,25 @@ private struct EpisodeCardLabel: View {
             reduceMotion: reduceMotion,
             cornerRadius: stillCornerRadius
         )
+    }
+
+    /// The viewer's rating as a single glanceable mark: a filled star with the
+    /// number of stars inside it, rather than five small ones that would not
+    /// read at card size.
+    private func ratingBadge(_ rating: Int) -> some View {
+        ZStack {
+            Image(systemName: "star.fill")
+                .font(.system(size: 40, weight: .semibold))
+                .foregroundStyle(.yellow)
+                .shadow(color: .black.opacity(0.45), radius: 3)
+            Text("\(rating)")
+                .font(.system(size: 17, weight: .heavy))
+                .foregroundStyle(.black)
+                // The glyph's visual centre sits above its layout centre.
+                .offset(y: 1)
+        }
+        .accessibilityElement()
+        .accessibilityLabel("Your rating: \(rating) of 5 stars")
     }
 
     private var watchedBadge: some View {

@@ -176,6 +176,8 @@ enum APIv2MutationCatalog {
         .init("DELETE", "/api/v2/watchlist/{item_id}", .nonRetryable),
         .init("PUT", "/api/v2/favorites/{item_id}", .nonRetryable),
         .init("DELETE", "/api/v2/favorites/{item_id}", .nonRetryable),
+        .init("PUT", "/api/v2/ratings/{item_id}", .nonRetryable),
+        .init("DELETE", "/api/v2/ratings/{item_id}", .nonRetryable),
         .init("POST", "/api/v2/watched/{id}", .nonRetryable),
         .init("DELETE", "/api/v2/watched/{id}", .nonRetryable),
         // Downloads
