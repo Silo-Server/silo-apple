@@ -77,7 +77,7 @@ struct RecommendationsView: View {
             SidebarToggleButton()
 
             Text("Recommendations")
-                .font(.siloTitle)
+                .font(chromeScrollState.isCompact ? .title3.bold() : .siloTitle)
                 .foregroundColor(.siloOnSurface)
 
             Spacer(minLength: 8)
@@ -96,6 +96,7 @@ struct RecommendationsView: View {
         .padding(.horizontal, SiloTheme.padding)
         .padding(.top, SiloTheme.smallPadding)
         .padding(.bottom, SiloTheme.smallPadding)
+        .animation(.snappy(duration: 0.25), value: chromeScrollState.isCompact)
     }
     #endif
 

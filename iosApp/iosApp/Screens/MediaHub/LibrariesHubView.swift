@@ -95,7 +95,7 @@ struct LibrariesHubView: View {
         HStack(spacing: 12) {
             SidebarToggleButton()
             Text("Libraries")
-                .font(.title.bold())
+                .font(chromeScrollState.isCompact ? .title3.bold() : .title.bold())
                 .foregroundStyle(Color.siloOnSurface)
                 .lineLimit(1)
                 .accessibilityAddTraits(.isHeader)
@@ -111,7 +111,8 @@ struct LibrariesHubView: View {
         }
         .padding(.horizontal, SiloTheme.padding)
         .padding(.top, SiloTheme.smallPadding)
-        .padding(.bottom, SiloTheme.padding)
+        .padding(.bottom, chromeScrollState.isCompact ? SiloTheme.smallPadding : SiloTheme.padding)
+        .animation(.snappy(duration: 0.25), value: chromeScrollState.isCompact)
     }
 
     private var grid: some View {

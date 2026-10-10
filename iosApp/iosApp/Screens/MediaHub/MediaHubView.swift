@@ -117,7 +117,8 @@ struct MediaHubView: View {
                             title: "\(library.name) Collections"
                         ))
                     }
-                }
+                },
+                isCompact: chromeScrollState.isCompact
             )
             Spacer(minLength: 8)
             TabTopBarActions(
@@ -131,7 +132,8 @@ struct MediaHubView: View {
         }
         .padding(.horizontal, SiloTheme.padding)
         .padding(.top, SiloTheme.smallPadding)
-        .padding(.bottom, SiloTheme.padding)
+        .padding(.bottom, chromeScrollState.isCompact ? SiloTheme.smallPadding : SiloTheme.padding)
+        .animation(.snappy(duration: 0.25), value: chromeScrollState.isCompact)
     }
 
     private var landingContent: some View {
@@ -298,6 +300,8 @@ struct MediaScopeTitleMenu: View {
     let onSelect: (MediaScopeSelection) -> Void
     var onBrowse: (() -> Void)? = nil
     var onCollections: (() -> Void)? = nil
+    /// Scrolled: one smaller line, no subtitle.
+    var isCompact = false
 
     @State private var isPresented = false
 
@@ -321,12 +325,15 @@ struct MediaScopeTitleMenu: View {
                     .accessibilityAddTraits(.isHeader)
                     .alignmentGuide(.mediaTitleRow) { $0[VerticalAlignment.center] }
             }
-            // Always laid out so the header height never changes.
-            Text(header.subtitle ?? " ")
-                .font(.footnote)
-                .foregroundStyle(Color.siloSecondaryText)
-                .lineLimit(1)
-                .accessibilityHidden(true)
+            // Laid out even when empty, so only folding changes the
+            // header's height.
+            if !isCompact {
+                Text(header.subtitle ?? " ")
+                    .font(.footnote)
+                    .foregroundStyle(Color.siloSecondaryText)
+                    .lineLimit(1)
+                    .accessibilityHidden(true)
+            }
         }
         // Anchored to the title and subtitle together so the panel opens
         // below the subtitle instead of over it.
@@ -362,14 +369,14 @@ struct MediaScopeTitleMenu: View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             // Exact library names run long; shrink before truncating.
             Text(header.title)
-                .font(.title.bold())
+                .font(isCompact ? .title3.bold() : .title.bold())
                 .foregroundStyle(Color.siloOnSurface)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
                 .contentTransition(.opacity)
             if showsChevron {
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 15, weight: .bold))
+                    .font(.system(size: isCompact ? 12 : 15, weight: .bold))
                     .foregroundStyle(Color.siloSecondaryText)
                     .rotationEffect(.degrees(isPresented ? 180 : 0))
                     .animation(.snappy(duration: 0.25), value: isPresented)
@@ -546,26 +553,19 @@ private struct MediaScopeFooterButtonStyle: ButtonStyle {
 // MARK: - Top bar
 
 extension View {
-    /// Pins `bar` above a scrolling page. iOS 26 uses a native safe-area bar,
-    /// so content passes under the glass controls with the system's soft
-    /// scroll-edge blur; iOS 18 keeps the fading glass strip.
-    @ViewBuilder
+    /// Pins `bar` above a scrolling page with the shared strip behind it,
+    /// as Home and For You do. The system's hard scroll edge ended in a
+    /// visible line and its soft edge alone let posters show through the
+    /// title; a native `safeAreaBar` doesn't draw a background placed behind
+    /// its content, so this is a plain inset.
     func mediaHubTopBar<Bar: View>(
         scrollState: PageChromeScrollState,
         @ViewBuilder _ bar: () -> Bar
     ) -> some View {
-        if #available(iOS 26.0, macOS 26.0, *) {
-            // The hard edge keeps the large title and subtitle legible over
-            // posters scrolling underneath; the soft edge let them show
-            // through.
-            self
-                .safeAreaBar(edge: .top, spacing: 0) { bar() }
-                .scrollEdgeEffectStyle(.hard, for: .top)
-        } else {
-            self.safeAreaInset(edge: .top, spacing: 0) {
-                bar().background { PageChromeGlass(scrollState: scrollState) }
-            }
+        safeAreaInset(edge: .top, spacing: 0) {
+            bar().background { PageChromeGlass(scrollState: scrollState) }
         }
+        .siloScrollEdgeEffect()
     }
 }
 
