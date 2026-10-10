@@ -75,6 +75,11 @@ struct LibrariesHubView: View {
             await loadLibraries()
         }
         .onAppear(perform: readMemory)
+        .onChange(of: sections.isEmpty) { _, isEmpty in
+            // The grid was the page's only scroll view; its replacement
+            // can't scroll, so the header must not stay folded.
+            if isEmpty { chromeScrollState.reset() }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .userLibrariesDidRefresh)) { notification in
             guard let response = notification.object as? LibrariesResponse else { return }
             accept(response, isFresh: true)
@@ -95,7 +100,7 @@ struct LibrariesHubView: View {
         HStack(spacing: 12) {
             SidebarToggleButton()
             Text("Libraries")
-                .font(.title.bold())
+                .font(chromeScrollState.isCompact ? .title3.bold() : .title.bold())
                 .foregroundStyle(Color.siloOnSurface)
                 .lineLimit(1)
                 .accessibilityAddTraits(.isHeader)
@@ -111,7 +116,8 @@ struct LibrariesHubView: View {
         }
         .padding(.horizontal, SiloTheme.padding)
         .padding(.top, SiloTheme.smallPadding)
-        .padding(.bottom, SiloTheme.padding)
+        .padding(.bottom, chromeScrollState.isCompact ? SiloTheme.smallPadding : SiloTheme.padding)
+        .animatesPageChromeFold(chromeScrollState)
     }
 
     private var grid: some View {
