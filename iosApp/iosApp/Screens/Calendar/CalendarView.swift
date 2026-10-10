@@ -35,6 +35,10 @@ struct CalendarView: View {
             .onReceive(NotificationCenter.default.publisher(for: .NSSystemTimeZoneDidChange)) { _ in
                 Task { await viewModel.load() }
             }
+            // Watched state or hidden libraries changed what the week shows.
+            .onReceive(NotificationCenter.default.publisher(for: .homeSectionsShouldRefresh)) { _ in
+                Task { await viewModel.refresh() }
+            }
         #if !os(tvOS)
             .refreshable {
                 await viewModel.load()
