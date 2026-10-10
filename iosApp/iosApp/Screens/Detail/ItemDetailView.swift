@@ -402,6 +402,7 @@ private struct ItemDetailPhoneContent: View {
         #endif
         .siloNavigationTitleDisplayMode(.inline)
         .siloNavigationBarBackgroundHidden()
+        .descriptionTranslation(viewModel)
         .task(id: contentId) {
             // Returning from the player restarts this task. Keep the episode
             // and season the page was showing instead of the entry context.
@@ -1178,7 +1179,7 @@ private struct ItemDetailPhoneContent: View {
     }
 
     private func translationView(for detail: ItemDetail) -> DescriptionTranslationView {
-        DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
+        DescriptionTranslationView(viewModel: viewModel)
     }
 
     private func presentPlayerFromDetail(

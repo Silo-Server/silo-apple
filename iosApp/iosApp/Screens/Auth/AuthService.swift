@@ -750,6 +750,8 @@ final class AuthService: @unchecked Sendable {
         // Server-wide AI capability + per-user ASR quota are reset on every
         // profile switch; `selectProfile` re-fetches after the switch lands.
         AICapabilities.shared.reset()
+        // Hero cards' landed translations belong to this profile's language.
+        CardDescriptionTranslation.shared.reset()
         ImageSizeCapability.shared.reset()
         WatchPartySession.shared.leave(forgetRecent: forgetWatchPartyRecent)
         RequestsFeatureStore.shared.reset()

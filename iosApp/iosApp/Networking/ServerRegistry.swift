@@ -463,6 +463,7 @@ final class ServerRegistry {
         // foreground refresh observes one consistent server context.
         await MainActor.run {
             AICapabilities.shared.reset()
+            CardDescriptionTranslation.shared.reset()
             ImageSizeCapability.shared.reset()
             WatchPartySession.shared.leave(forgetRecent: true)
             RequestsFeatureStore.shared.reset()

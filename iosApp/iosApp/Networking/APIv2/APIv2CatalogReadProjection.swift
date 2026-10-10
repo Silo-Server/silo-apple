@@ -75,6 +75,7 @@ extension ItemDetail {
         self.overlaySummary = value.overlaySummary.map { OverlaySummary(catalog: $0) }
         self.audiobook = try value.audiobook.map { try AudiobookDetail(catalog: $0) }
         self.pendingTranslationLanguage = value.pendingTranslationLanguage
+        self.machineTranslatedFields = value.machineTranslatedFields
         self.videos = value.videos.map { $0.map { ItemVideo(catalog: $0) } }
         self.extras = try value.extras.map { try $0.map { try ItemExtra(catalog: $0) } }
         self.userState = value.userState.map {
@@ -121,6 +122,7 @@ extension Season {
         self.posterThumbhash = value.posterThumbhash
         self.userData = try value.userData.map { try SeasonUserData(catalog: $0) }
         self.posterUrl = value.posterUrl
+        self.machineTranslatedFields = value.machineTranslatedFields
     }
 }
 
@@ -140,6 +142,8 @@ extension EpisodeListItem {
         self.userData = try value.userData.map { try LeafItemUserData(catalog: $0) }
         self.files = try value.files.map { try $0.map { try EpisodeFile(catalog: $0) } }
         self.stillUrl = value.stillUrl
+        self.machineTranslatedFields = value.machineTranslatedFields
+        self.pendingTranslationLanguage = value.pendingTranslationLanguage
     }
 }
 

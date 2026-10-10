@@ -72,6 +72,8 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     var overlayData: OverlayData? = nil
     /// Short description shown in the hero. Clamped to 3 lines.
     let overview: String?
+    /// On-view translation status drawn inside the synopsis block.
+    var synopsisStatus: DescriptionTranslationStatus? = nil
     /// Inline facts row shown above the action buttons. Mixes plain text
     /// (year / runtime / maturity) and outlined quality chips
     /// (4K / HDR / ATMOS / CC).
@@ -309,13 +311,13 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
         if synopsisReservedHeight > 0 {
             Group {
                 if let overview, !overview.isEmpty {
-                    TVHeroSynopsis(overview: overview)
+                    TVHeroSynopsis(overview: overview, status: synopsisStatus)
                 }
             }
             .frame(height: synopsisReservedHeight, alignment: .topLeading)
             .clipped()
         } else if let overview, !overview.isEmpty {
-            TVHeroSynopsis(overview: overview)
+            TVHeroSynopsis(overview: overview, status: synopsisStatus)
         }
     }
 

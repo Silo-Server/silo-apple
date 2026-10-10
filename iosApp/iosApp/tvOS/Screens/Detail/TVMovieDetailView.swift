@@ -4,7 +4,7 @@ import SwiftUI
 /// Movie detail for tvOS: a full-width hero with Play, the version/audio/
 /// subtitle selectors and More, then cast, trailers, recommendations and
 /// details rails.
-struct TVMovieDetailView<BelowSynopsis: View>: View {
+struct TVMovieDetailView: View {
     let detail: ItemDetail
     let isFavorite: Bool
     let inWatchlist: Bool
@@ -39,9 +39,12 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
     let onToggleWatched: () -> Void
     let onPersonTap: (String) -> Void
     let onNavigateToItem: (String) -> Void
-    /// On-view description-translation affordance, built at the detail call
-    /// site (which owns the view model) and rendered under the synopsis.
-    @ViewBuilder let belowSynopsis: () -> BelowSynopsis
+    /// On-view description translation status, drawn inside the synopsis.
+    var synopsisStatus: DescriptionTranslationStatus? = nil
+    /// Translate Description in the More menu; nil hides it. A More-menu
+    /// item keeps the action reachable without adding a focus stop to the
+    /// hero, whose synopsis is deliberately not focusable.
+    var onTranslateDescription: (() -> Void)? = nil
 
     @Namespace private var detailFocusNamespace
     @FocusState private var playFocused: Bool
@@ -51,8 +54,6 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
     /// Whole recommendation rail focus, used only to keep its heading and
     /// focused poster comfortably framed during native vertical reveal.
     @FocusState private var similarRailFocused: Bool
-    // Plain constants (not `static`) — the generic BelowSynopsis parameter
-    // forbids static stored properties on this type.
     private let heroScrollId = "detail-hero"
     private let similarSectionScrollId = "detail-similar-section"
     @ObservedObject private var profilePrefsStore = ProfilePrefsStore.shared
@@ -72,6 +73,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                             ratingChip: TVHeroMetadata.contentRatingChip(from: detail),
                             overlayData: OverlayData.from(detail),
                             overview: detail.overview,
+                            synopsisStatus: synopsisStatus,
                             factsLine: TVHeroMetadata.movieFactsLine(from: detail, version: currentVersion),
                             ratings: detail.displayRatings,
                             starringText: TVHeroMetadata.starringText(from: detail),
@@ -90,7 +92,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                                 showForcedSubtitles: detail.effectiveShowForcedSubtitles ?? false
                             ),
                             actions: { actionColumn },
-                            belowSynopsis: belowSynopsis
+                            belowSynopsis: { EmptyView() }
                         )
                         .id(heroScrollId)
 
@@ -183,7 +185,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
     // MARK: - More menu
 
     private enum MoreAction: String {
-        case watchParty, favorite, watched, trailers
+        case watchParty, favorite, watched, trailers, translate
     }
 
     @Environment(AppRouter.self) private var partyRouter
@@ -214,6 +216,13 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                         systemImage: "film.stack"
                     ))
                 }
+                if onTranslateDescription != nil {
+                    items.append(TVActionPopoverItem(
+                        id: MoreAction.translate.rawValue,
+                        title: "Translate Description",
+                        systemImage: MachineTranslation.symbol
+                    ))
+                }
                 if WatchPartyEntry.isAvailable {
                     items.append(TVActionPopoverItem(id: MoreAction.watchParty.rawValue,
                         title: WatchPartyEntry.actionTitle, systemImage: "person.3"))
@@ -232,6 +241,8 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                     onToggleWatched()
                 case .trailers:
                     onFindTrailers()
+                case .translate:
+                    onTranslateDescription?()
                 case .none:
                     break
                 }

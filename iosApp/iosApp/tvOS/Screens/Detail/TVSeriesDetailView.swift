@@ -5,7 +5,7 @@ import UIKit
 /// Single-page Series experience. Episode focus updates the hero details and
 /// selectors in place; Select quick-plays without pushing a second page.
 /// More > Show Series Info restores the series overview.
-struct TVSeriesDetailView<BelowSynopsis: View>: View {
+struct TVSeriesDetailView: View {
     private enum PrimaryFocusRegion {
         case outside
         case mode
@@ -231,7 +231,15 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     let onToggleSeasonWatched: () -> Void
     let onPersonTap: (String) -> Void
     let onNavigateToItem: (String) -> Void
-    @ViewBuilder let belowSynopsis: () -> BelowSynopsis
+    /// On-view translation status of the series overview, drawn inside the
+    /// synopsis while the show overview is on screen.
+    var synopsisStatus: DescriptionTranslationStatus? = nil
+    /// True while the selected season's episode descriptions are translating.
+    var isTranslatingEpisodes = false
+    /// Translate Description in the More menu; nil hides it. A More-menu
+    /// item keeps the action reachable without adding a focus stop to the
+    /// hero, whose synopsis is deliberately not focusable.
+    var onTranslateDescription: (() -> Void)? = nil
 
     @Namespace private var detailFocusNamespace
     @Namespace private var modeFocusNamespace
@@ -361,6 +369,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             ratingChip: TVHeroMetadata.contentRatingChip(from: detail),
             overlayData: OverlayData.from(detail),
             overview: heroOverview,
+            synopsisStatus: heroSynopsisStatus,
             factsLine: heroFactsLine,
             ratings: heroRatings,
             // Series cast is intentionally painted once across Show, Season,
@@ -400,11 +409,29 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             actions: {
                 showActionRow
             },
-            belowSynopsis: {
-                if isShowingSeriesOverview {
-                    belowSynopsis()
-                }
-            }
+            belowSynopsis: { EmptyView() }
+        )
+    }
+
+    /// The episode text the hero shows. The season's episode rows are what
+    /// an on-view translation refreshes, so they win over the focused
+    /// episode's playback detail, which is read once per focus.
+    private var heroEpisodeOverview: (text: String, machineTranslatedFields: [String]?)? {
+        if let episode = displayedEpisode, let overview = episode.overview, !overview.isEmpty {
+            return (overview, episode.machineTranslatedFields)
+        }
+        if let detail = matchingPlaybackDetail, let overview = detail.overview, !overview.isEmpty {
+            return (overview, detail.machineTranslatedFields)
+        }
+        return nil
+    }
+
+    private var heroSynopsisStatus: DescriptionTranslationStatus? {
+        guard !isShowingSeriesOverview else { return synopsisStatus }
+        guard let overview = heroEpisodeOverview else { return nil }
+        return .resolve(
+            translating: isTranslatingEpisodes && displayedEpisode?.pendingTranslationLanguage?.isEmpty == false,
+            machineTranslatedFields: overview.machineTranslatedFields
         )
     }
 
@@ -413,7 +440,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         let episodeTitle = matchingPlaybackDetail?.title
             ?? displayedEpisode?.title
             ?? displayedEpisode.map { "Episode \($0.episodeNumber)" }
-        let overview = matchingPlaybackDetail?.overview ?? displayedEpisode?.overview
+        let overview = heroEpisodeOverview?.text
         switch (episodeTitle, overview) {
         case let (.some(title), .some(line)) where !title.isEmpty && !line.isEmpty:
             return "\(title) · \(line)"
@@ -879,7 +906,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     }
 
     private enum MoreAction: String {
-        case shuffleSeason, shuffleSeries, watchParty, overview, favorite, seriesWatched, watched, trailers
+        case shuffleSeason, shuffleSeries, watchParty, overview, favorite, seriesWatched, watched, trailers, translate
     }
 
     private var canShuffleSeries: Bool {
@@ -955,6 +982,13 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                         systemImage: "film.stack"
                     ))
                 }
+                if onTranslateDescription != nil {
+                    items.append(TVActionPopoverItem(
+                        id: MoreAction.translate.rawValue,
+                        title: "Translate Description",
+                        systemImage: MachineTranslation.symbol
+                    ))
+                }
                 if WatchPartyEntry.isAvailable && displayedEpisode != nil {
                     items.append(TVActionPopoverItem(id: MoreAction.watchParty.rawValue,
                         title: WatchPartyEntry.actionTitle, systemImage: "person.3"))
@@ -984,6 +1018,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 case .seriesWatched: onToggleSeriesWatched()
                 case .watched: onToggleSeasonWatched()
                 case .trailers: onFindTrailers()
+                case .translate: onTranslateDescription?()
                 case .none: break
                 }
             }

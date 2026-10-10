@@ -787,6 +787,13 @@ final class ProfilePrefsEditor {
             #if os(tvOS)
             ItemDetailCache.shared.clearAll()
             #endif
+            // Section cards, library and collection grids carry localized
+            // titles and descriptions too: drop their caches and have a
+            // mounted Home re-read its rows, so no screen keeps the previous
+            // language's text. Hero translations landed for that language
+            // no longer apply either.
+            PersonalStateSync.invalidateDerivedLists()
+            CardDescriptionTranslation.shared.reset()
             // A newer edit landed while this was in flight; let its own pass
             // report, or this one would announce a value already superseded.
             guard Self.outboundLanguage(preferredMetadataLanguage) == write.language,

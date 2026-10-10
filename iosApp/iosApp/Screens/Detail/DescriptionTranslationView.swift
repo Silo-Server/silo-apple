@@ -1,121 +1,49 @@
 import SwiftUI
 
-/// On-view "translate this description" affordance, hosted just under the
-/// synopsis on item detail (iOS + tvOS).
+/// The on-view description translation's line under the synopsis on iOS,
+/// iPadOS and macOS item detail.
 ///
-/// Renders nothing unless the server reports a description that exists but
-/// isn't yet in the viewer's resolved metadata language — i.e. the item's
-/// `pendingTranslationLanguage` is non-nil — and the server's `on_view`
-/// mode allows it:
-/// - `.off`   → nothing.
-/// - `.button`→ a "Translate" button; tapping runs the translation.
-/// - `.auto`  → fires once automatically on appear, showing only the
-///              in-progress spinner.
+/// Shows, from the page's ``ItemDetailViewModel``:
+/// - "Translating…" while a translation for the page runs;
+/// - "Translated by AI" when the description shown was machine-translated;
+/// - a Translate button in the server's `button` on-view mode, or after a
+///   run failed, while something on the page is missing in the profile's
+///   metadata language.
 ///
-/// The target language is the item's own `pendingTranslationLanguage` (the
-/// server already resolved request param → profile pref → library default
-/// to produce it). Completion is observed by the coordinator re-fetching
-/// the detail until the pending flag clears.
+/// Renders nothing otherwise. Automatic runs are started by the page's
+/// ``DescriptionTranslationTrigger``, not by this view, so they keep going
+/// when the line scrolls away. tvOS draws the status inside the hero's
+/// synopsis and offers the action from the More menu instead.
 struct DescriptionTranslationView: View {
-    /// The detail view model that owns `detail`; refreshed payloads are
-    /// written straight back so the overview re-renders in place.
     let viewModel: ItemDetailViewModel
-    let contentId: String
-
-    @State private var coordinator = DescriptionTranslationCoordinator()
-    /// Per-item/language latch for `.auto` mode. The auto branch fires from
-    /// `onAppear`, which re-runs every time the row re-appears (scrolling,
-    /// re-layout) while `pendingTranslationLanguage` is still set. Without
-    /// this, each re-appear would re-kick the translation. Keying on the target
-    /// language too lets a changed metadata preference translate the same item
-    /// again.
-    @State private var autoFiredFor: AutoFireKey?
-
-    private struct AutoFireKey: Equatable {
-        let contentId: String
-        let targetLanguage: String
-    }
-
-    private var pendingLanguage: String? {
-        viewModel.detail?.pendingTranslationLanguage
-    }
-
-    private var onViewMode: MetadataAIStatus.OnViewMode {
-        AICapabilities.shared.metadataOnView
-    }
 
     var body: some View {
-        Group {
-            if onViewMode != .off, let target = pendingLanguage, !target.isEmpty {
-                content(targetLanguage: target)
-            }
-        }
-        .onDisappear { coordinator.cancel() }
-    }
-
-    @ViewBuilder
-    private func content(targetLanguage: String) -> some View {
-        switch coordinator.phase {
-        case .translating:
-            HStack(spacing: 8) {
-                ProgressView()
-                    #if os(tvOS)
-                    .scaleEffect(0.7)
-                    #endif
-                Text("Translating…")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-        case .failed:
-            Button {
-                startTranslation(targetLanguage: targetLanguage)
-            } label: {
-                translateLabel
-            }
-            .buttonStyle(.plain)
-        case .idle:
-            if onViewMode == .button {
-                Button {
-                    startTranslation(targetLanguage: targetLanguage)
-                } label: {
-                    translateLabel
+        let status = viewModel.descriptionTranslationStatus
+        let offersTranslation = viewModel.offersDescriptionTranslation
+        if status != nil || offersTranslation {
+            HStack(spacing: 12) {
+                if let status {
+                    DescriptionTranslationStatusLabel(status: status)
                 }
-                .buttonStyle(.plain)
-            } else {
-                // .auto — fire once per item when the row appears. The latch
-                // prevents a re-appear from re-kicking while the pending flag
-                // is still set.
-                Color.clear
-                    .frame(height: 0)
-                    .onAppear {
-                        let key = AutoFireKey(contentId: contentId, targetLanguage: targetLanguage)
-                        guard autoFiredFor != key else { return }
-                        autoFiredFor = key
-                        startTranslation(targetLanguage: targetLanguage)
+                if offersTranslation {
+                    Button {
+                        viewModel.translateDescriptions()
+                    } label: {
+                        translateLabel
                     }
+                    .buttonStyle(.plain)
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
     private var translateLabel: some View {
         HStack(spacing: 6) {
-            Image(systemName: "character.bubble")
+            Image(systemName: MachineTranslation.symbol)
             Text("Translate")
         }
         .font(.subheadline.weight(.semibold))
         .foregroundStyle(Color.siloPrimary)
-    }
-
-    private func startTranslation(targetLanguage: String) {
-        coordinator.translate(
-            contentId: contentId,
-            libraryId: viewModel.libraryId,
-            targetLanguage: targetLanguage
-        ) { refreshed in
-            // Through the view model's generation gate, so a detail load
-            // still suspended in enrichment can't land its pre-translation
-            // copy on top of this one.
-            viewModel.publishRefetchedDetail(refreshed, contentId: contentId)
-        }
     }
 }

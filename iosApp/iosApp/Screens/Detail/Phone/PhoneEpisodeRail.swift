@@ -243,11 +243,18 @@ private struct PhoneEpisodeCard: View {
 
             if captionStyle.showsMetadata {
                 if let metadataLine = PhoneEpisodeFormatting.metadataLine(for: episode) {
-                    Text(metadataLine)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(Color.siloSecondaryText)
-                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
-                        .multilineTextAlignment(.leading)
+                    HStack(spacing: 6) {
+                        Text(metadataLine)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(Color.siloSecondaryText)
+                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                            .multilineTextAlignment(.leading)
+                        if showsMachineTranslationMarker {
+                            MachineTranslatedLabel(compact: true)
+                        }
+                    }
+                } else if showsMachineTranslationMarker {
+                    MachineTranslatedLabel(compact: true)
                 }
 
                 if let overview = episode.overview, !overview.isEmpty {
@@ -266,6 +273,11 @@ private struct PhoneEpisodeCard: View {
         }
         .frame(width: cardWidth, alignment: .leading)
         .contentShape(Rectangle())
+    }
+
+    /// The description shown under the title was machine-translated by AI.
+    private var showsMachineTranslationMarker: Bool {
+        episode.overview?.isEmpty == false && MachineTranslation.isOverviewMarked(episode.machineTranslatedFields)
     }
 
     private var titleColor: Color {
