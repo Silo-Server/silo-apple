@@ -162,7 +162,10 @@ struct MediaHubView: View {
                     if HomeFeed.isResume(section)
                         || section.sectionType.lowercased().contains("next") {
                         // Home's own row: resume rows keep Home's 16:9 stills.
+                        // A selected library scopes the detail and playback
+                        // its cards open, as the rows below do.
                         HomeFeedRow(section: section)
+                            .environment(\.browseLibraryId, selectedLibraryId)
                     } else {
                         sectionRow(section)
                     }
@@ -196,7 +199,9 @@ struct MediaHubView: View {
             return { select(.init(kind: kind, libraryId: libraryId)) }
         }
         if section.id == MediaLandingViewModel.recentlyAddedID {
-            return { router.navigate(to: .mediaBrowse(kind: kind, libraryId: nil)) }
+            // Every library of the kind, or the selected library whose
+            // sections fell back to this row.
+            return { router.navigate(to: .mediaBrowse(kind: kind, libraryId: selectedLibraryId)) }
         }
         return nil
     }

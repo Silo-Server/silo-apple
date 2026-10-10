@@ -125,10 +125,12 @@ struct ProfileAvatarMenu: View {
             #if os(iOS)
             // The iOS tab bar holds only content destinations
             // (`appleFixedTabDestinations`); these open as pages.
+            // Replacing the stack keeps a repeat pick, from the page's own
+            // menu, to one page.
             if DownloadManager.shared.downloadsEnabled {
-                Button("Downloads", systemImage: "arrow.down.circle") { router.navigate(to: .downloads) }
+                Button("Downloads", systemImage: "arrow.down.circle") { router.showOnly(.downloads) }
             }
-            Button("Calendar", systemImage: "calendar") { router.navigate(to: .calendar) }
+            Button("Calendar", systemImage: "calendar") { router.showOnly(.calendar) }
 
             Divider()
             #endif

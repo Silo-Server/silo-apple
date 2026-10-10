@@ -31,7 +31,8 @@ enum HiddenLibraryPreference {
         }
     ) async -> Set<Int> {
         let identity = requestIdentity()
-        let cacheKey = identity.map(Self.cacheKey(for:))
+        let account = AuthService.shared.accountID
+        let cacheKey = identity.map { Self.cacheKey(for: $0, account: account) }
         do {
             let response = try await read(identity)
             let ids = libraryIds(from: response.value(for: .uiDisabledLibraryIds)?.value ?? .null)
@@ -87,6 +88,7 @@ enum HiddenLibraryPreference {
         }
     ) async throws -> Set<Int> {
         guard let identity = requestIdentity() else { throw CancellationError() }
+        let account = AuthService.shared.accountID
         let previous = lastSave
         let save = Task { @MainActor in
             await previous?.value
@@ -102,7 +104,7 @@ enum HiddenLibraryPreference {
                 try await write(updated, identity)
             }
             if let data = try? JSONEncoder().encode(updated.sorted()) {
-                defaults.set(data, forKey: cacheKey(for: identity))
+                defaults.set(data, forKey: cacheKey(for: identity, account: account))
             }
             return updated
         }
@@ -150,6 +152,9 @@ enum HiddenLibraryPreference {
             NotificationCenter.default.post(name: .userLibrariesDidRefresh, object: response)
         }
         guard requestIdentity() == identity else { return }
+        // Calendar leaves hidden libraries out too; an open Calendar
+        // reloads on the refresh this posts.
+        ResponseCache.shared.removeAll(withPrefix: "calendar:")
         PersonalStateSync.invalidateDerivedLists()
     }
 
@@ -181,7 +186,9 @@ enum HiddenLibraryPreference {
             .map(Set.init)
     }
 
-    private static func cacheKey(for identity: HTTPRequestIdentity) -> String {
-        "silo.hiddenLibraryIds.\(identity.serverId).\(identity.profileId)"
+    /// Profile IDs are unique only within an account (`SessionOwner`), so
+    /// the account scopes the cache too.
+    private static func cacheKey(for identity: HTTPRequestIdentity, account: String?) -> String {
+        "silo.hiddenLibraryIds.\(identity.serverId).\(account ?? "-").\(identity.profileId)"
     }
 }
