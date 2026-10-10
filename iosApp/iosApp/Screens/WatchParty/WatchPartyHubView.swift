@@ -439,8 +439,7 @@ struct WatchPartyLobbyView: View {
                     url: displayedItem?.backdropUrl ?? displayedItem?.posterUrl ?? leadingSuggestionPoster,
                     thumbhash: displayedItem?.backdropUrl != nil ? displayedItem?.backdropThumbhash : displayedItem?.posterThumbhash,
                     isPoster: displayedItem?.backdropUrl == nil,
-                    hidesStill: displayedItem.map { $0.hidesBackdrop(with: EpisodeSpoilerPreferences.shared.settings) }
-                        ?? leadingSuggestion?.hidesPoster(with: EpisodeSpoilerPreferences.shared.settings) ?? false)
+                    hidesStill: backdropHidesStill)
                 #if os(tvOS)
                 // The options overlay is the only focus owner while it is up;
                 // closing it returns focus to the Options button that opened it.
@@ -476,6 +475,16 @@ struct WatchPartyLobbyView: View {
         if let item = session.selectedItem { return item }
         guard let preview = session.selectionPreview, preview.contentId == displayRoom?.selectedContentId else { return nil }
         return preview
+    }
+
+    /// Protection for whichever artwork the backdrop shows: the displayed
+    /// item's own, or the leading suggestion's poster when it has none.
+    private var backdropHidesStill: Bool {
+        let spoilers = EpisodeSpoilerPreferences.shared.settings
+        if let item = displayedItem, item.backdropUrl != nil || item.posterUrl != nil {
+            return item.hidesBackdrop(with: spoilers)
+        }
+        return leadingSuggestion?.hidesPoster(with: spoilers) ?? false
     }
 
     private var leadingSuggestion: WatchPartySuggestion? {
