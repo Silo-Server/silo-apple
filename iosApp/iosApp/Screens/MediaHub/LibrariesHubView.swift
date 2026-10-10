@@ -112,7 +112,7 @@ struct LibrariesHubView: View {
         .padding(.horizontal, SiloTheme.padding)
         .padding(.top, SiloTheme.smallPadding)
         .padding(.bottom, chromeScrollState.isCompact ? SiloTheme.smallPadding : SiloTheme.padding)
-        .animation(.snappy(duration: 0.25), value: chromeScrollState.isCompact)
+        .animatesPageChromeFold(chromeScrollState)
     }
 
     private var grid: some View {

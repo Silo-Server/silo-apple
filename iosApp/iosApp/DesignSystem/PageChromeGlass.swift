@@ -8,25 +8,51 @@ import SwiftUI
 @MainActor
 final class PageChromeScrollState {
     private(set) var offset: CGFloat = 0
-    /// True once the page has scrolled far enough for a pinned header to
-    /// fold to one line. Folding shortens the header, which changes the
-    /// measured offset by about the height it lost, so the header folds and
-    /// unfolds at points further apart than that and can't flip back.
+    /// True on iPhone and iPad once the page has scrolled far enough for a
+    /// pinned header to fold to one line. Folding shortens the header, which
+    /// lowers the measured offset by the height it lost without the page
+    /// moving, so the header folds and unfolds at points further apart than
+    /// that and can't flip back.
     private(set) var isCompact = false
 
     static let compactAt: CGFloat = 44
     static let expandAt: CGFloat = 4
+    /// How far past the fold point the reported offset runs, so a header
+    /// that loses more than the usual gap can still fold later.
+    static let foldRange: CGFloat = 200
 
-    func update(_ rawOffset: CGFloat) {
+    /// The header's top inset while unfolded, and how much it has been seen
+    /// to lose by folding. At large text sizes the loss can exceed the gap
+    /// between `compactAt` and `expandAt`; the fold point then moves past it.
+    @ObservationIgnored private var unfoldedInset: CGFloat?
+    @ObservationIgnored private var foldLoss: CGFloat = 0
+
+    /// Far enough down that the folded header's offset stays clear of
+    /// `expandAt`, with some room to spare.
+    private var foldAt: CGFloat {
+        max(Self.compactAt, foldLoss + Self.expandAt + 8)
+    }
+
+    func update(_ rawOffset: CGFloat, topInset: CGFloat = 0) {
+        let scrolled = max(0, rawOffset)
+        #if os(iOS)
+        if isCompact {
+            if let unfoldedInset {
+                foldLoss = max(foldLoss, unfoldedInset - topInset)
+            }
+        } else {
+            unfoldedInset = topInset
+        }
+        if !isCompact, scrolled >= foldAt {
+            isCompact = true
+        } else if isCompact, scrolled <= Self.expandAt {
+            isCompact = false
+        }
+        #endif
         // The strip is fully opaque past `fadeEnd`; folding larger offsets
         // onto that endpoint avoids invalidating the chrome while scrolling
         // deep into the page.
-        let clamped = min(max(0, rawOffset), PageChromeGlass.fadeEnd)
-        if !isCompact, clamped >= Self.compactAt {
-            isCompact = true
-        } else if isCompact, clamped <= Self.expandAt {
-            isCompact = false
-        }
+        let clamped = min(scrolled, PageChromeGlass.fadeEnd)
         guard abs(clamped - offset) >= 0.5 else { return }
         offset = clamped
     }
@@ -55,16 +81,14 @@ struct PageChromeGlass: View {
         #if os(tvOS)
         EmptyView()
         #elseif os(iOS)
-        LinearGradient(
-            stops: [
-                .init(color: Color.siloPageCanvas.opacity(0.97), location: 0),
-                .init(color: Color.siloPageCanvas.opacity(0.93), location: 0.72),
-                .init(color: Color.siloPageCanvas.opacity(0), location: 1),
-            ],
-            startPoint: .top,
-            endPoint: .bottom
-        )
-        .padding(.bottom, -Self.fadeTail)
+        Group {
+            if reduceTransparency {
+                // A solid strip: nothing shows through the header.
+                Color.siloPageCanvas
+            } else {
+                fade.padding(.bottom, -Self.fadeTail)
+            }
+        }
         .opacity(pageChromeSmoothProgress(scrollState.offset, from: Self.fadeStart, to: Self.fadeEnd))
         .ignoresSafeArea(edges: .top)
         .allowsHitTesting(false)
@@ -105,6 +129,20 @@ struct PageChromeGlass: View {
             .accessibilityHidden(true)
         #endif
     }
+
+    #if os(iOS)
+    private var fade: some View {
+        LinearGradient(
+            stops: [
+                .init(color: Color.siloPageCanvas.opacity(0.97), location: 0),
+                .init(color: Color.siloPageCanvas.opacity(0.93), location: 0.72),
+                .init(color: Color.siloPageCanvas.opacity(0), location: 1),
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+    }
+    #endif
 }
 
 private struct PageChromeStaticGlass: View, Equatable {
@@ -138,11 +176,14 @@ extension View {
         #if os(tvOS)
         self
         #else
-        self.onScrollGeometryChange(for: CGFloat.self) { geometry in
+        self.onScrollGeometryChange(for: PageChromeScrollGeometry.self) { geometry in
             let offset = max(0, geometry.contentOffset.y + geometry.contentInsets.top)
-            return min(offset, PageChromeGlass.fadeEnd)
-        } action: { _, offset in
-            state.update(offset)
+            return PageChromeScrollGeometry(
+                offset: min(offset, PageChromeScrollState.foldRange),
+                topInset: geometry.contentInsets.top
+            )
+        } action: { _, geometry in
+            state.update(geometry.offset, topInset: geometry.topInset)
         }
         #endif
     }
@@ -153,6 +194,28 @@ extension View {
     /// Library tab's chrome without knowing about it.
     func reportsPageChromeScroll() -> some View {
         modifier(EnvironmentPageChromeScrollReporter())
+    }
+}
+
+private struct PageChromeScrollGeometry: Equatable {
+    let offset: CGFloat
+    let topInset: CGFloat
+}
+
+extension View {
+    /// Animates a pinned header folding or unfolding, unless Reduce Motion
+    /// is on.
+    func animatesPageChromeFold(_ scrollState: PageChromeScrollState) -> some View {
+        modifier(PageChromeFoldAnimation(isCompact: scrollState.isCompact))
+    }
+}
+
+private struct PageChromeFoldAnimation: ViewModifier {
+    let isCompact: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content.animation(reduceMotion ? nil : .snappy(duration: 0.25), value: isCompact)
     }
 }
 

@@ -96,7 +96,7 @@ struct RecommendationsView: View {
         .padding(.horizontal, SiloTheme.padding)
         .padding(.top, SiloTheme.smallPadding)
         .padding(.bottom, SiloTheme.smallPadding)
-        .animation(.snappy(duration: 0.25), value: chromeScrollState.isCompact)
+        .animatesPageChromeFold(chromeScrollState)
     }
     #endif
 
