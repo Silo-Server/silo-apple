@@ -146,12 +146,57 @@ final class HiddenLibraryPreferenceTests: XCTestCase {
                 libraryId: 5,
                 defaults: defaults,
                 requestIdentity: { identities.count > 1 ? identities.removeFirst() : identities[0] },
+                capabilities: { _ in .available(Self.contract) },
                 read: { _ in try Self.response(.array([.int(3)])) },
                 write: { ids, _ in written.append(ids) }
             )
             XCTFail("A save for a profile that is no longer active must not write")
         } catch {
             XCTAssertTrue(error is CancellationError)
+        }
+        XCTAssertEqual(written, [])
+    }
+
+    /// A read without the key would look like an empty list, and writing
+    /// from it would show every library hidden elsewhere.
+    func testReadWithoutTheSettingRefusesToSave() async throws {
+        var written: [Set<Int>] = []
+        let missing = try SettingsWireCoding.makeDecoder().decode(
+            EffectiveSettingValuesResponse.self,
+            from: JSONSerialization.data(withJSONObject: ["items": [], "revision": SettingKey.revision])
+        )
+
+        do {
+            _ = try await HiddenLibraryPreference.setHidden(
+                true,
+                libraryId: 5,
+                defaults: defaults,
+                requestIdentity: { Self.profileA },
+                capabilities: { _ in .available(Self.contract) },
+                read: { _ in missing },
+                write: { ids, _ in written.append(ids) }
+            )
+            XCTFail("A read without the setting must not lead to a write")
+        } catch {}
+        XCTAssertEqual(written, [])
+    }
+
+    func testServerWhoseContractLacksTheSettingIsNeverWritten() async {
+        var written: [Set<Int>] = []
+
+        do {
+            _ = try await HiddenLibraryPreference.setHidden(
+                true,
+                libraryId: 5,
+                defaults: defaults,
+                requestIdentity: { Self.profileA },
+                capabilities: { _ in .serverUpgradeRequired },
+                read: { _ in try Self.response(.array([])) },
+                write: { ids, _ in written.append(ids) }
+            )
+            XCTFail("An unsupported server must not be written")
+        } catch {
+            XCTAssertEqual(SettingsAPIError.from(error), .serverUpgradeRequired)
         }
         XCTAssertEqual(written, [])
     }
@@ -184,6 +229,7 @@ final class HiddenLibraryPreferenceTests: XCTestCase {
             libraryId: libraryId,
             defaults: defaults,
             requestIdentity: { Self.profileA },
+            capabilities: { _ in .available(Self.contract) },
             read: { _ in
                 let ids = server.hidden
                 await Task.yield()
@@ -207,6 +253,7 @@ final class HiddenLibraryPreferenceTests: XCTestCase {
             libraryId: libraryId,
             defaults: defaults,
             requestIdentity: { Self.profileA },
+            capabilities: { _ in .available(Self.contract) },
             read: { _ in try Self.response(serverValue) },
             write: { ids, _ in try write(ids) }
         )
@@ -227,6 +274,16 @@ final class HiddenLibraryPreferenceTests: XCTestCase {
             read: { _ in throw error }
         )
     }
+
+    private static let contract = APIv2SettingsContractCapabilities(
+        revision: "capabilities",
+        state: "available",
+        allowed: true,
+        manifestRevision: SettingKey.revision,
+        clientFamilies: ["ios"],
+        supportsBatchedEffective: true,
+        supportsAtomicShortcuts: true
+    )
 
     private static func response(_ value: SettingJSONValue) throws -> EffectiveSettingValuesResponse {
         let row: [String: Any] = [
