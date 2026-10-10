@@ -2369,22 +2369,7 @@ struct MainTabView: View {
         // Then mirror Android's offline start-destination: launching with no
         // network but playable local downloads lands on Downloads instead of
         // a Home screen that can't load anything.
-        .task {
-            _ = await DownloadManager.shared.activateScopeIfNeeded()
-            await ConnectionMonitor.shared.waitForInitialPath()
-            guard !ConnectionMonitor.shared.isDeviceOnline,
-                  DownloadManager.shared.downloadsEnabled,
-                  DownloadManager.shared.records.contains(where: { $0.isPlayableOffline }),
-                  // Don't clobber a tab the user (or a deep link) already
-                  // selected while this task was waiting.
-                  selectedDestinationID == .app(.home), router.requestedTab == nil
-            else { return }
-            if visibleDestinations.contains(where: { $0.id == .app(.downloads) }) {
-                selectedDestinationID = .app(.downloads)
-            } else {
-                router.navigate(to: .downloads)
-            }
-        }
+        .task { await openDownloadsIfStartingOffline() }
         #endif
         #if os(iOS)
         // Cold-launch path for silent remote-control resume: scenePhase may
@@ -2399,24 +2384,7 @@ struct MainTabView: View {
         .onChange(of: router.requestedTab) { _, tab in
             guard let tab else { return }
             router.requestedTab = nil
-            // Downloads and Calendar are off the iOS bar; open them as pages
-            // instead of silently landing on Home.
-            if !visibleDestinations.contains(where: { $0.id == .app(tab) }) {
-                switch tab {
-                case .downloads:
-                    router.navigate(to: .downloads)
-                    return
-                case .calendar:
-                    router.navigate(to: .calendar)
-                    return
-                default:
-                    break
-                }
-            }
-            selectedDestinationID = resolvedRequestedMainTabDestination(
-                tab,
-                visibleDestinations: visibleDestinations
-            )
+            openRequestedTab(tab)
         }
         .onChange(of: DownloadManager.shared.downloadsEnabled) { _, _ in
             selectedDestinationID = resolvedVisibleMainTabDestination(
@@ -2611,6 +2579,57 @@ struct MainTabView: View {
         )
     }
     #endif
+
+    #if !os(tvOS)
+    private func openDownloadsIfStartingOffline() async {
+        _ = await DownloadManager.shared.activateScopeIfNeeded()
+        await ConnectionMonitor.shared.waitForInitialPath()
+        guard !ConnectionMonitor.shared.isDeviceOnline,
+              DownloadManager.shared.downloadsEnabled,
+              DownloadManager.shared.records.contains(where: { $0.isPlayableOffline }),
+              // Don't clobber a tab the user (or a deep link) already
+              // selected while this task was waiting.
+              selectedDestinationID == .app(.home), router.requestedTab == nil
+        else { return }
+        if visibleDestinations.contains(where: { $0.id == .app(.downloads) }) {
+            selectedDestinationID = .app(.downloads)
+            return
+        }
+        // Downloads is a page here: open it only over the tab's root, not
+        // over a page a deep link opened meanwhile.
+        guard router.path.isEmpty else { return }
+        #if os(iOS)
+        guard router.presentedItemDetail == nil else { return }
+        #endif
+        router.navigate(to: .downloads)
+    }
+    #endif
+
+    private func openRequestedTab(_ tab: AppTab) {
+        // Downloads and Calendar are off the iOS bar; open them as pages
+        // instead of silently landing on Home.
+        if !visibleDestinations.contains(where: { $0.id == .app(tab) }) {
+            switch tab {
+            case .downloads:
+                router.navigate(to: .downloads)
+                return
+            case .calendar:
+                router.navigate(to: .calendar)
+                return
+            default:
+                break
+            }
+        }
+        #if os(iOS)
+        // The stack sits above the tab bar, and Downloads and Calendar
+        // are pages on it: a tab chosen from one must show.
+        router.popToRoot()
+        #endif
+        selectedDestinationID = resolvedRequestedMainTabDestination(
+            tab,
+            visibleDestinations: visibleDestinations
+        )
+    }
 
     private var projectedDestinations: [MainTabDestination] {
         #if os(iOS)

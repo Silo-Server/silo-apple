@@ -50,22 +50,27 @@ enum HiddenLibraryPreference {
         }
     }
 
+    /// The save in flight. Each save reads the whole list and writes it back,
+    /// so the next one waits for it; two at once could undo each other.
+    private static var lastSave: Task<Void, Never>?
+
     /// Hides or shows one library for the active profile and returns the
     /// profile's hidden IDs afterwards. The list is read fresh rather than
     /// from the cache, so a library hidden on another device since the last
-    /// read stays hidden. A failed read or write throws and changes nothing.
+    /// read stays hidden. A failed read or write throws and changes nothing,
+    /// and a profile switch before the write cancels it.
     static func setHidden(
         _ isHidden: Bool,
         libraryId: Int,
         defaults: SharedDefaults = .shared,
-        requestIdentity: @MainActor () -> HTTPRequestIdentity? = SeekIntervalPreferences.activeRequestIdentity,
-        read: (HTTPRequestIdentity?) async throws -> EffectiveSettingValuesResponse = {
+        requestIdentity: @escaping @MainActor () -> HTTPRequestIdentity? = SeekIntervalPreferences.activeRequestIdentity,
+        read: @escaping (HTTPRequestIdentity?) async throws -> EffectiveSettingValuesResponse = {
             try await SiloAPI.shared.getEffectiveValues(
                 keys: [.uiDisabledLibraryIds],
                 requestIdentity: $0
             )
         },
-        write: (Set<Int>, HTTPRequestIdentity?) async throws -> Void = { ids, identity in
+        write: @escaping (Set<Int>, HTTPRequestIdentity?) async throws -> Void = { ids, identity in
             try await SiloAPI.shared.putValue(
                 key: .uiDisabledLibraryIds,
                 scope: .profile,
@@ -74,26 +79,54 @@ enum HiddenLibraryPreference {
             )
         }
     ) async throws -> Set<Int> {
-        let identity = requestIdentity()
-        let response = try await read(identity)
-        let current = libraryIds(from: response.value(for: .uiDisabledLibraryIds)?.value ?? .null)
-        let updated = isHidden ? current.union([libraryId]) : current.subtracting([libraryId])
-        if updated != current {
-            try await write(updated, identity)
+        guard let identity = requestIdentity() else { throw CancellationError() }
+        let previous = lastSave
+        let save = Task { @MainActor in
+            await previous?.value
+            let response = try await read(identity)
+            let current = libraryIds(from: response.value(for: .uiDisabledLibraryIds)?.value ?? .null)
+            let updated = isHidden ? current.union([libraryId]) : current.subtracting([libraryId])
+            if updated != current {
+                guard requestIdentity() == identity else { throw CancellationError() }
+                try await write(updated, identity)
+            }
+            if let data = try? JSONEncoder().encode(updated.sorted()) {
+                defaults.set(data, forKey: cacheKey(for: identity))
+            }
+            return updated
         }
-        if let cacheKey = identity.map(Self.cacheKey(for:)),
-           let data = try? JSONEncoder().encode(updated.sorted()) {
-            defaults.set(data, forKey: cacheKey)
-        }
-        return updated
+        lastSave = Task { _ = try? await save.value }
+        return try await save.value
     }
 
     /// Re-reads the library list so the tab bar, Libraries and every library
-    /// picker drop or regain a library, then reloads Home, whose rows the
-    /// server filters by the same setting.
-    static func publishChange() async {
-        _ = try? await StartupContentPrefetcher.fetchUserLibraries(reusingRecent: false)
-        NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil)
+    /// picker drop or regain a library, then drops the lists the server
+    /// filters by the same setting (Home, For You, library pages) and
+    /// reloads Home. `hiddenIds` is what the save returned: if the re-read
+    /// fails, the last list is split by it so navigation still matches the
+    /// saved setting.
+    static func publishChange(
+        hiddenIds: Set<Int>,
+        requestIdentity: @MainActor () -> HTTPRequestIdentity? = SeekIntervalPreferences.activeRequestIdentity
+    ) async {
+        let identity = requestIdentity()
+        let cached: LibrariesResponse? = ResponseCache.shared.get(CacheKey.userLibraries)
+        // A read that started before the save carries the old list.
+        StartupContentPrefetcher.invalidateUserLibrariesInFlight()
+        do {
+            _ = try await StartupContentPrefetcher.fetchUserLibraries(reusingRecent: false)
+        } catch {
+            guard requestIdentity() == identity, let cached else { return }
+            let all = cached.libraries + (cached.hiddenLibraries ?? [])
+            let response = LibrariesResponse(
+                libraries: visibleLibraries(all, hiding: hiddenIds),
+                hiddenLibraries: all.filter { hiddenIds.contains($0.id) }
+            )
+            ResponseCache.shared.set(response, for: CacheKey.userLibraries)
+            NotificationCenter.default.post(name: .userLibrariesDidRefresh, object: response)
+        }
+        guard requestIdentity() == identity else { return }
+        PersonalStateSync.invalidateDerivedLists()
     }
 
     static func visibleLibraries(_ libraries: [Library], hiding hidden: Set<Int>) -> [Library] {

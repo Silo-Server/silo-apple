@@ -431,24 +431,7 @@ private class LibraryRecommendedViewModel {
             let loaded: [ResolvedSection]
             let incomplete: Bool
             if let mediaScope {
-                let scoped = try await mediaScope.refillSections(rows) { (row: ResolvedSection, cursor: APIv2CatalogContinuation?) in
-                    guard await SiloAPI.shared.isCurrentOwner(read.auth) else { throw HTTPError.requestIdentityChanged }
-                    let page: CatalogListPage
-                    if let cursor {
-                        page = try await SiloAPI.shared.nextCatalogPage(cursor)
-                    } else {
-                        var query = APIv2CatalogQuery()
-                        query.source = "section"
-                        query.scope = "library"
-                        query.libraryId = String(libraryId)
-                        query.sectionId = row.id
-                        query.limit = 100
-                        page = try await SiloAPI.shared.catalogPage(query)
-                    }
-                    guard await SiloAPI.shared.isCurrentOwner(read.auth) else { throw HTTPError.requestIdentityChanged }
-                    return LibraryScopedPage(items: page.response.items.map { SectionItem(browseItem: $0) },
-                                             next: page.continuation, startsOver: page.startsOver)
-                }
+                let scoped = try await mediaScope.refillLibrarySections(rows, libraryId: libraryId, auth: read.auth)
                 loaded = scoped.map(\.section)
                 incomplete = scoped.contains { $0.incomplete }
             } else {
