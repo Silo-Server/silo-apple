@@ -33,6 +33,13 @@ final class PageChromeScrollState {
         max(Self.compactAt, foldLoss + Self.expandAt + 8)
     }
 
+    /// Back to the top of the page, for a page whose scroll view went away.
+    /// What the header was seen to lose by folding still holds.
+    func reset() {
+        isCompact = false
+        offset = 0
+    }
+
     func update(_ rawOffset: CGFloat, topInset: CGFloat = 0) {
         let scrolled = max(0, rawOffset)
         #if os(iOS)

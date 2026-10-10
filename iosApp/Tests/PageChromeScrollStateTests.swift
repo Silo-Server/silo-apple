@@ -52,5 +52,20 @@ final class PageChromeScrollStateTests: XCTestCase {
         state.update(2, topInset: 60)
         XCTAssertFalse(state.isCompact)
     }
+
+    func testResetUnfoldsAndKeepsWhatFoldingCosts() {
+        let state = PageChromeScrollState()
+        state.update(44, topInset: 120)
+        state.update(0, topInset: 60)
+        state.update(72, topInset: 120)
+        XCTAssertTrue(state.isCompact)
+
+        state.reset()
+
+        XCTAssertFalse(state.isCompact)
+        XCTAssertEqual(state.offset, 0)
+        state.update(60, topInset: 120)
+        XCTAssertFalse(state.isCompact)
+    }
 }
 #endif

@@ -75,6 +75,11 @@ struct LibrariesHubView: View {
             await loadLibraries()
         }
         .onAppear(perform: readMemory)
+        .onChange(of: sections.isEmpty) { _, isEmpty in
+            // The grid was the page's only scroll view; its replacement
+            // can't scroll, so the header must not stay folded.
+            if isEmpty { chromeScrollState.reset() }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .userLibrariesDidRefresh)) { notification in
             guard let response = notification.object as? LibrariesResponse else { return }
             accept(response, isFresh: true)
