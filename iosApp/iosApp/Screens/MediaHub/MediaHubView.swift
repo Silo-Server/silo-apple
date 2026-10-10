@@ -4,8 +4,9 @@ import SwiftUI
 /// The iOS Watch, Listen and single-type tabs: one root for every library of
 /// a hub.
 ///
-/// The large title is a menu (`MediaScopeTitleMenu`) that scopes the page to
-/// one kind or one library, and holds Browse and Collections. A single
+/// Chips under the title (`MediaScopeChips`) scope the page to one library
+/// and open Browse and Collections; the title switches kinds, and once the
+/// header folds it offers everything the chips did. A single
 /// library shows its server-built rows, led by Home's resume row when the
 /// library has none. A whole kind composes resume rows from Home, a
 /// cross-library Recently Added row, and one row per library.
@@ -99,47 +100,69 @@ struct MediaHubView: View {
         )
     }
 
-    private var topChrome: some View {
-        HStack(alignment: .mediaTitleRow, spacing: 12) {
-            SidebarToggleButton()
-            MediaScopeTitleMenu(
-                header: header,
-                menu: MediaHubScope.menu(for: hub, kind: kind, in: libraries),
-                kind: kind,
-                selection: MediaHubScope.currentSelection(
-                    kind: kind,
-                    libraryId: selectedLibraryId,
-                    kindLibraries: kindLibraries
-                ),
-                onSelectKind: { select(.init(kind: $0, libraryId: memory.libraryId(for: $0))) },
-                onSelect: select,
-                onBrowse: {
-                    router.navigate(to: .mediaBrowse(kind: kind, libraryId: selectedLibraryId))
-                },
-                onCollections: selectedLibrary.map { library in
-                    {
-                        router.navigate(to: .libraryCollections(
-                            libraryId: library.id,
-                            title: "\(library.name) Collections",
-                            mediaScope: library.isMixedLibrary ? kind.videoScope : nil
-                        ))
-                    }
-                },
-                isCompact: chromeScrollState.isCompact
-            )
-            Spacer(minLength: 8)
-            TabTopBarActions(
-                onSearch: { router.navigate(to: .search) },
-                onOpenSettings: { router.navigate(to: .settings) },
-                onOpenRequests: { router.navigate(to: .requestsHub) },
-                onSwitchProfile: { router.switchProfile() },
-                onSwitchServer: { router.navigate(to: .serverList) },
-                onSignOut: { router.signOutAndReset() }
-            )
+    private var menu: MediaScopeMenu {
+        MediaHubScope.menu(for: hub, kind: kind, in: libraries)
+    }
+
+    private var selection: MediaScopeSelection {
+        MediaHubScope.currentSelection(kind: kind, libraryId: selectedLibraryId, kindLibraries: kindLibraries)
+    }
+
+    private func browse() {
+        router.navigate(to: .mediaBrowse(kind: kind, libraryId: selectedLibraryId))
+    }
+
+    private var openCollections: (() -> Void)? {
+        selectedLibrary.map { library in
+            {
+                router.navigate(to: .libraryCollections(
+                    libraryId: library.id,
+                    title: "\(library.name) Collections",
+                    mediaScope: library.isMixedLibrary ? kind.videoScope : nil
+                ))
+            }
         }
-        .padding(.horizontal, SiloTheme.padding)
+    }
+
+    private var topChrome: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .mediaTitleRow, spacing: 12) {
+                SidebarToggleButton()
+                MediaScopeTitleMenu(
+                    header: header,
+                    menu: menu,
+                    kind: kind,
+                    selection: selection,
+                    onSelectKind: { select(.init(kind: $0, libraryId: memory.libraryId(for: $0))) },
+                    onSelect: select,
+                    onBrowse: browse,
+                    onCollections: openCollections,
+                    isCompact: chromeScrollState.isCompact
+                )
+                Spacer(minLength: 8)
+                TabTopBarActions(
+                    onSearch: { router.navigate(to: .search) },
+                    onOpenSettings: { router.navigate(to: .settings) },
+                    onOpenRequests: { router.navigate(to: .requestsHub) },
+                    onSwitchProfile: { router.switchProfile() },
+                    onSwitchServer: { router.navigate(to: .serverList) },
+                    onSignOut: { router.signOutAndReset() }
+                )
+            }
+            .padding(.horizontal, SiloTheme.padding)
+            if !chromeScrollState.isCompact {
+                MediaScopeChips(
+                    options: menu.showsChips ? menu.options : [],
+                    selection: selection,
+                    onSelect: select,
+                    onBrowse: browse,
+                    onCollections: openCollections
+                )
+                .transition(.opacity)
+            }
+        }
         .padding(.top, SiloTheme.smallPadding)
-        .padding(.bottom, chromeScrollState.isCompact ? SiloTheme.smallPadding : SiloTheme.padding)
+        .padding(.bottom, SiloTheme.smallPadding)
         .animatesPageChromeFold(chromeScrollState)
     }
 
@@ -298,89 +321,91 @@ extension VerticalAlignment {
     static let mediaTitleRow = VerticalAlignment(MediaTitleRow.self)
 }
 
-/// The hub's large title doubles as its scope picker, the pattern Photos and
-/// Files use. The panel is custom content in a native popover: the system
-/// supplies the glass, animation and dismissal.
+/// The hub's large title. Unfolded, the chips pick a library, so the title
+/// is a menu only when there are kinds to switch between. Folded, the chips
+/// are gone and the title's menu offers everything they did.
 struct MediaScopeTitleMenu: View {
     let header: MediaScopeHeader
     let menu: MediaScopeMenu
     let kind: MediaKind
     let selection: MediaScopeSelection
-    /// Switches the page to another kind and leaves the panel open, so a
-    /// library can be picked next.
     let onSelectKind: (MediaKind) -> Void
     let onSelect: (MediaScopeSelection) -> Void
     var onBrowse: (() -> Void)? = nil
     var onCollections: (() -> Void)? = nil
-    /// Scrolled: one smaller line, no subtitle.
+    /// Scrolled: one smaller line, no subtitle, no chips.
     var isCompact = false
 
-    @State private var isPresented = false
-
-    private var hasMenu: Bool {
-        !menu.isEmpty || onBrowse != nil || onCollections != nil
+    private var showsMenu: Bool {
+        guard isCompact else { return !menu.kinds.isEmpty }
+        return !menu.isEmpty || onBrowse != nil || onCollections != nil
     }
+
+    private var title: String { isCompact ? header.foldedTitle : header.title }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
-            if hasMenu {
-                Button { isPresented = true } label: {
-                    titleLine(showsChevron: true)
+            Group {
+                if showsMenu {
+                    Menu { menuContent } label: { titleLine(showsChevron: true) }
+                        .menuStyle(.button)
+                        .buttonStyle(.plain)
+                        .menuIndicator(.hidden)
+                        .accessibilityLabel([title, header.subtitle].compactMap { $0 }.joined(separator: ", "))
+                        .accessibilityHint("Choose what this page shows")
+                } else {
+                    titleLine(showsChevron: false)
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel([header.title, header.subtitle].compactMap { $0 }.joined(separator: ", "))
-                .accessibilityHint("Choose what this page shows")
-                .accessibilityAddTraits(.isHeader)
-                .alignmentGuide(.mediaTitleRow) { $0[VerticalAlignment.center] }
-            } else {
-                titleLine(showsChevron: false)
-                    .accessibilityAddTraits(.isHeader)
-                    .alignmentGuide(.mediaTitleRow) { $0[VerticalAlignment.center] }
             }
-            // Laid out even when empty, so only folding changes the
-            // header's height.
-            if !isCompact {
-                Text(header.subtitle ?? " ")
+            .accessibilityAddTraits(.isHeader)
+            .alignmentGuide(.mediaTitleRow) { $0[VerticalAlignment.center] }
+            if !isCompact, let subtitle = header.subtitle {
+                Text(subtitle)
                     .font(.footnote)
                     .foregroundStyle(Color.siloSecondaryText)
                     .lineLimit(1)
                     .accessibilityHidden(true)
             }
         }
-        // Anchored to the title and subtitle together so the panel opens
-        // below the subtitle instead of over it.
-        .popover(isPresented: $isPresented, attachmentAnchor: .rect(.bounds), arrowEdge: .top) {
-            MediaScopePanel(
-                menu: menu,
-                kind: kind,
-                selection: selection,
-                onSelectKind: onSelectKind,
-                onSelect: { choice in
-                    isPresented = false
-                    onSelect(choice)
-                },
-                onBrowse: onBrowse.map { action in { closeThen(action) } },
-                onCollections: onCollections.map { action in { closeThen(action) } }
-            )
-            .presentationCompactAdaptation(.popover)
-        }
         .animation(.easeInOut(duration: SiloTheme.normalDuration), value: header)
     }
 
-    /// Pushing while the popover animates out can drop the push, so
-    /// navigation waits for it to close.
-    private func closeThen(_ action: @escaping () -> Void) {
-        isPresented = false
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(350))
-            action()
+    @ViewBuilder
+    private var menuContent: some View {
+        if !menu.kinds.isEmpty {
+            Picker("Show", selection: Binding(get: { kind }, set: onSelectKind)) {
+                ForEach(menu.kinds, id: \.self) { segment in
+                    Text(segment.title).tag(segment)
+                }
+            }
+            .pickerStyle(.inline)
+        }
+        if isCompact {
+            if menu.showsChips {
+                Section {
+                    ForEach(menu.options) { option in
+                        Toggle(option.title, isOn: Binding(
+                            get: { option.selection == selection },
+                            set: { if $0 { onSelect(option.selection) } }
+                        ))
+                    }
+                }
+            }
+            Section {
+                if let onBrowse {
+                    Button("Browse A–Z", systemImage: "square.grid.2x2", action: onBrowse)
+                }
+                if let onCollections {
+                    Button("Collections", systemImage: "rectangle.stack", action: onCollections)
+                }
+            }
         }
     }
 
     private func titleLine(showsChevron: Bool) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             // Exact library names run long; shrink before truncating.
-            Text(header.title)
+            Text(title)
                 .font(isCompact ? .title3.bold() : .title.bold())
                 .foregroundStyle(Color.siloOnSurface)
                 .lineLimit(1)
@@ -390,175 +415,97 @@ struct MediaScopeTitleMenu: View {
                 Image(systemName: "chevron.down")
                     .font(.system(size: isCompact ? 12 : 15, weight: .bold))
                     .foregroundStyle(Color.siloSecondaryText)
-                    .rotationEffect(.degrees(isPresented ? 180 : 0))
-                    .animation(.snappy(duration: 0.25), value: isPresented)
             }
         }
         .contentShape(Rectangle())
     }
 }
 
-/// The popover's content, top to bottom: a segmented kind switch, the
-/// current kind's libraries with a trailing checkmark, and Browse and
-/// Collections as a footer. Each control makes one decision, so the list
-/// never has to show a hierarchy.
-private struct MediaScopePanel: View {
-    let menu: MediaScopeMenu
-    let kind: MediaKind
+/// One row of chips under the title: Browse A–Z, then the kind's libraries
+/// ("All" first), then the selected library's collections. The libraries
+/// sit between the two actions so picking one never moves the others.
+private struct MediaScopeChips: View {
+    let options: [MediaScopeMenu.Option]
     let selection: MediaScopeSelection
-    let onSelectKind: (MediaKind) -> Void
     let onSelect: (MediaScopeSelection) -> Void
-    let onBrowse: (() -> Void)?
+    let onBrowse: () -> Void
     let onCollections: (() -> Void)?
 
-    @State private var contentHeight: CGFloat = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private static let width: CGFloat = 296
-    private static let maxHeight: CGFloat = 540
-    static let inset: CGFloat = 10
-    static let textInset: CGFloat = 16
-
-    /// Natural size when it fits, so the popover wraps the content with its
-    /// own insets; a scrolling list only past `maxHeight`.
     var body: some View {
-        Group {
-            if contentHeight > Self.maxHeight {
-                ScrollView { measuredContent }
-                    .scrollIndicators(.hidden)
-                    .frame(height: Self.maxHeight)
-            } else {
-                measuredContent
-            }
-        }
-        .frame(width: Self.width)
-    }
-
-    private var measuredContent: some View {
-        content
-            .fixedSize(horizontal: false, vertical: true)
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
-    }
-
-    private var content: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if !menu.kinds.isEmpty {
-                Picker("Show", selection: Binding(get: { kind }, set: onSelectKind)) {
-                    ForEach(menu.kinds, id: \.self) { segment in
-                        Text(segment.title).tag(segment)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal, Self.inset)
-                .padding(.bottom, 6)
-            }
-            ForEach(menu.options) { option in
-                MediaScopeRow(title: option.title, isSelected: option.selection == selection) {
-                    onSelect(option.selection)
-                }
-            }
-            if onBrowse != nil || onCollections != nil {
-                if !menu.isEmpty {
-                    Divider()
-                        .padding(.horizontal, Self.textInset)
-                        .padding(.vertical, 6)
-                }
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
-                    if let onBrowse {
-                        MediaScopeFooterButton(title: "Browse A–Z", systemImage: "square.grid.2x2", action: onBrowse)
+                    MediaScopeChip(title: "A–Z", systemImage: "square.grid.2x2", action: onBrowse)
+                        .accessibilityLabel("Browse A to Z")
+                    if !options.isEmpty {
+                        Divider()
+                            .frame(height: 20)
+                            .padding(.horizontal, 2)
+                        ForEach(options) { option in
+                            MediaScopeChip(title: option.chipTitle, isSelected: option.selection == selection) {
+                                onSelect(option.selection)
+                            }
+                            .accessibilityLabel(option.title)
+                            .id(option.selection)
+                        }
                     }
                     if let onCollections {
-                        MediaScopeFooterButton(title: "Collections", systemImage: "rectangle.stack", action: onCollections)
+                        MediaScopeChip(title: "Collections", systemImage: "rectangle.stack", action: onCollections)
                     }
                 }
-                .padding(.horizontal, Self.inset)
+                .padding(.horizontal, SiloTheme.padding)
+            }
+            .onAppear { proxy.scrollTo(selection, anchor: .center) }
+            .onChange(of: selection) { _, newValue in
+                withAnimation(reduceMotion ? nil : .easeOut(duration: SiloTheme.normalDuration)) {
+                    proxy.scrollTo(newValue, anchor: .center)
+                }
             }
         }
-        .padding(.vertical, Self.inset)
     }
 }
 
-private struct MediaScopeRow: View {
+/// The season chips' look: a filled white capsule when selected, an
+/// outlined one otherwise, inside a 44-point touch target.
+private struct MediaScopeChip: View {
     let title: String
-    let isSelected: Bool
+    var systemImage: String? = nil
+    var isSelected = false
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 12) {
-                // Exact library names, so wrap rather than truncate.
+            HStack(spacing: 6) {
+                if let systemImage {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 13, weight: .semibold))
+                        .accessibilityHidden(true)
+                }
                 Text(title)
-                    .font(isSelected ? .body.weight(.semibold) : .body)
-                    .foregroundStyle(Color.siloOnSurface)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                Spacer(minLength: 0)
-                Image(systemName: "checkmark")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Color.siloOnSurface)
-                    .opacity(isSelected ? 1 : 0)
-                    .accessibilityHidden(true)
-            }
-            .padding(.horizontal, MediaScopePanel.textInset)
-            .padding(.vertical, 10)
-            .frame(minHeight: 44)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(MediaScopeRowStyle(isSelected: isSelected))
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
-    }
-}
-
-/// Selected rows keep a soft highlight; pressed rows brighten it.
-private struct MediaScopeRowStyle: ButtonStyle {
-    let isSelected: Bool
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .background {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color.white.opacity(highlightOpacity(isPressed: configuration.isPressed)))
-                    .padding(.horizontal, 6)
-            }
-    }
-
-    private func highlightOpacity(isPressed: Bool) -> Double {
-        if isPressed { return 0.16 }
-        return isSelected ? 0.1 : 0
-    }
-}
-
-private struct MediaScopeFooterButton: View {
-    let title: String
-    let systemImage: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 7) {
-                // Fixed glyph box: symbols differ in width, and the labels
-                // must sit at the same offset in both buttons.
-                Image(systemName: systemImage)
-                    .font(.system(size: 14, weight: .semibold))
-                    .frame(width: 18)
-                Text(title)
-                    .font(.subheadline.weight(.semibold))
+                    .font(.subheadline.weight(isSelected ? .semibold : .medium))
                     .lineLimit(1)
             }
-            .foregroundStyle(Color.siloOnSurface)
-            .frame(maxWidth: .infinity, minHeight: 44)
-            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .foregroundStyle(isSelected ? Color.black : Color.white)
+            .padding(.horizontal, 14)
+            .frame(minHeight: 44)
+            .background {
+                Group {
+                    if isSelected {
+                        Capsule().fill(Color.white)
+                    } else {
+                        Capsule()
+                            .fill(Color.white.opacity(0.06))
+                            .overlay(Capsule().stroke(Color.white.opacity(0.25), lineWidth: 1))
+                    }
+                }
+                .padding(.vertical, 6)
+            }
+            .contentShape(Capsule())
         }
-        .buttonStyle(MediaScopeFooterButtonStyle())
-    }
-}
-
-private struct MediaScopeFooterButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color.white.opacity(configuration.isPressed ? 0.16 : 0.08))
-            )
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 

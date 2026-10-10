@@ -187,44 +187,58 @@ struct MediaScopeSelection: Hashable {
     let libraryId: Int?
 }
 
-/// The title panel's content for the current kind: a segment per kind, and
-/// the rows that pick a library within it.
+/// The header's choices for the current kind: a kind switch, and the
+/// options that pick a library within it. The chips under the title show
+/// the options; the folded title's menu shows both.
 struct MediaScopeMenu: Equatable {
     struct Option: Identifiable, Equatable {
         let selection: MediaScopeSelection
+        /// Exact, for the menu and VoiceOver.
         let title: String
+        /// Short, for a chip.
+        let chipTitle: String
         var id: MediaScopeSelection { selection }
     }
 
-    /// Segments, in order; empty when the hub has only one kind.
+    /// Kinds to switch between, in order; empty when the hub has only one.
     let kinds: [MediaKind]
-    /// The current kind's rows: the whole kind ("All Movies") first, then
-    /// each library by its exact name.
+    /// The current kind's options: the whole kind ("All Movies") first,
+    /// then each library.
     let options: [Option]
 
     var isEmpty: Bool { kinds.isEmpty && options.isEmpty }
+    /// Chips only help when there is a library to switch to.
+    var showsChips: Bool { options.count > 1 }
 }
 
 struct MediaScopeHeader: Equatable {
     let title: String
     let subtitle: String?
+    /// The one-line title once the page scrolls and the chips fold away.
+    let foldedTitle: String
 }
 
 extension MediaHubScope {
-    /// The title panel for `kind`. The segments pick a kind; the rows pick
-    /// a library within it, so the list never mixes kinds. A kind with one
-    /// library lists just that library, and only when there are segments to
-    /// place it in context.
+    /// The header's choices for `kind`. The kinds switch the page; the
+    /// options pick a library within the current kind, so a list never
+    /// mixes kinds. A kind with one library lists just that library, and
+    /// only when there are kinds to place it in context.
     static func menu(for hub: MediaHub, kind: MediaKind, in libraries: [Library]) -> MediaScopeMenu {
         let kinds = availableKinds(for: hub, in: libraries)
         let segments = kinds.count > 1 ? kinds : []
         let kindLibraries = self.libraries(for: kind, in: libraries)
         let options: [MediaScopeMenu.Option]
         if kindLibraries.count > 1 {
-            options = [.init(selection: .init(kind: kind, libraryId: nil), title: kind.browseAllTitle)]
-                + kindLibraries.map { .init(selection: .init(kind: kind, libraryId: $0.id), title: $0.name) }
+            options = [.init(selection: .init(kind: kind, libraryId: nil), title: kind.browseAllTitle, chipTitle: "All")]
+                + kindLibraries.map {
+                    .init(
+                        selection: .init(kind: kind, libraryId: $0.id),
+                        title: $0.name,
+                        chipTitle: chipTitle(for: $0.name, kind: kind)
+                    )
+                }
         } else if let only = kindLibraries.first, !segments.isEmpty {
-            options = [.init(selection: .init(kind: kind, libraryId: nil), title: only.name)]
+            options = [.init(selection: .init(kind: kind, libraryId: nil), title: only.name, chipTitle: only.name)]
         } else {
             options = []
         }
@@ -242,21 +256,34 @@ extension MediaHubScope {
         return .init(kind: kind, libraryId: libraryId)
     }
 
-    /// Large title and subtitle for the current scope. The title names what
-    /// is on screen; the subtitle names what it belongs to. No title counts:
-    /// an exact total is the slowest part of a catalog query.
+    /// A library's chip label. The page already names the kind, so a name
+    /// that starts with it ("Movies - Anime") drops that prefix ("Anime").
+    /// A name that is only the kind, or doesn't separate the prefix from
+    /// the rest, stays as it is.
+    static func chipTitle(for name: String, kind: MediaKind) -> String {
+        guard name.count > kind.title.count,
+              name.lowercased().hasPrefix(kind.title.lowercased())
+        else { return name }
+        let rest = name.dropFirst(kind.title.count)
+        let separators = CharacterSet(charactersIn: " -–—:·|/")
+        guard let first = rest.unicodeScalars.first, separators.contains(first) else { return name }
+        let short = String(rest).trimmingCharacters(in: separators)
+        return short.isEmpty ? name : short
+    }
+
+    /// Large title and subtitle for the current scope. The title names the
+    /// kind. With chips, they show the library; with one library, the
+    /// subtitle names it. No title counts: an exact total is the slowest
+    /// part of a catalog query.
     static func header(
         kind: MediaKind,
         library: Library?,
         kindLibraries: [Library]
     ) -> MediaScopeHeader {
         guard kindLibraries.count > 1 else {
-            return .init(title: kind.title, subtitle: kindLibraries.first?.name)
+            return .init(title: kind.title, subtitle: kindLibraries.first?.name, foldedTitle: kind.title)
         }
-        if let library {
-            return .init(title: library.name, subtitle: "\(kind.title) library")
-        }
-        return .init(title: kind.title, subtitle: "All libraries")
+        return .init(title: kind.title, subtitle: nil, foldedTitle: library?.name ?? kind.title)
     }
 }
 

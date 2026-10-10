@@ -126,12 +126,15 @@ final class MediaHubScopeTests: XCTestCase {
         XCTAssertEqual(movies.kinds, [.movies, .series])
         XCTAssertEqual(movies.kinds.map(\.title), ["Movies", "Series"])
         XCTAssertEqual(movies.options.map(\.title), ["All Movies", "Movies", "Movies - Anime"])
+        XCTAssertEqual(movies.options.map(\.chipTitle), ["All", "Movies", "Anime"])
+        XCTAssertTrue(movies.showsChips)
         XCTAssertEqual(movies.options[0].selection, .init(kind: .movies, libraryId: nil))
         XCTAssertEqual(movies.options[2].selection, .init(kind: .movies, libraryId: 2))
 
         let series = MediaHubScope.menu(for: .watch, kind: .series, in: libraries)
         XCTAssertEqual(series.options.map(\.title), ["TV Shows"], "a one-library kind names its library")
         XCTAssertEqual(series.options[0].selection, .init(kind: .series, libraryId: nil))
+        XCTAssertFalse(series.showsChips, "one library leaves nothing to switch to")
 
         let moviesTab = MediaHubScope.menu(for: .movies, kind: .movies, in: libraries)
         XCTAssertTrue(moviesTab.kinds.isEmpty, "a single-type tab has no segments")
@@ -147,23 +150,32 @@ final class MediaHubScopeTests: XCTestCase {
         XCTAssertEqual(listen.options.map(\.title), ["All Audiobooks", "Books", "Kids"])
     }
 
-    func testHeaderNamesTheScopeAndWhatItBelongsToWithoutCounts() {
+    func testHeaderNamesTheKindAndFoldsToTheLibraryWithoutCounts() {
         let movies = [library(1, "movies", "Movies"), library(2, "movies", "Movies - Anime")]
         let books = [library(4, "audiobooks", "Audiobooks English")]
 
         XCTAssertEqual(
             MediaHubScope.header(kind: .movies, library: nil, kindLibraries: movies),
-            .init(title: "Movies", subtitle: "All libraries")
+            .init(title: "Movies", subtitle: nil, foldedTitle: "Movies")
         )
         XCTAssertEqual(
             MediaHubScope.header(kind: .movies, library: movies[1], kindLibraries: movies),
-            .init(title: "Movies - Anime", subtitle: "Movies library"),
-            "library names are shown exactly as the server has them"
+            .init(title: "Movies", subtitle: nil, foldedTitle: "Movies - Anime"),
+            "the chips name the library until the header folds"
         )
         XCTAssertEqual(
             MediaHubScope.header(kind: .audiobooks, library: books[0], kindLibraries: books),
-            .init(title: "Audiobooks", subtitle: "Audiobooks English")
+            .init(title: "Audiobooks", subtitle: "Audiobooks English", foldedTitle: "Audiobooks")
         )
+    }
+
+    func testChipTitleDropsOnlyASeparatedKindPrefix() {
+        XCTAssertEqual(MediaHubScope.chipTitle(for: "Movies - International", kind: .movies), "International")
+        XCTAssertEqual(MediaHubScope.chipTitle(for: "movies: 4K", kind: .movies), "4K")
+        XCTAssertEqual(MediaHubScope.chipTitle(for: "Movies", kind: .movies), "Movies")
+        XCTAssertEqual(MediaHubScope.chipTitle(for: "Moviestar Picks", kind: .movies), "Moviestar Picks")
+        XCTAssertEqual(MediaHubScope.chipTitle(for: "Movies - ", kind: .movies), "Movies - ")
+        XCTAssertEqual(MediaHubScope.chipTitle(for: "TV Shows - Anime", kind: .series), "TV Shows - Anime")
     }
 
     func testMenuCheckmarkFoldsASingleLibraryIntoItsKind() {
