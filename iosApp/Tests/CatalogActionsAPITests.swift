@@ -89,6 +89,22 @@ final class CatalogActionsAPITests: XCTestCase {
         XCTAssertEqual(facets.subtitleLanguages, ["en"])
     }
 
+    /// "All Movies" offers only movie filter values.
+    func testCrossLibraryFiltersSendTheMediaType() async throws {
+        let stub = APIv2TestStub()
+        let (api, _) = try await client(stub: stub)
+        stub.reply(200, #"{"genres":["Drama"],"studios":[],"networks":[],"countries":[],"content_ratings":[],"original_languages":[],"authors":[],"narrators":[],"series":[]}"#)
+
+        _ = try await api.catalogFilters(libraryId: nil, type: "movie")
+
+        XCTAssertEqual(try XCTUnwrap(stub.requests.first).query, ["type": "movie"])
+        XCTAssertNotEqual(
+            CacheKey.catalogFilters(libraryId: nil, type: "movie"),
+            CacheKey.catalogFilters(libraryId: nil, type: "series")
+        )
+        XCTAssertEqual(CacheKey.catalogFilters(libraryId: nil), "catalogFilters:all:technical")
+    }
+
     func testFiltersWithoutTechnicalFacetsSkipThemOnTheWire() async throws {
         let stub = APIv2TestStub()
         let (api, _) = try await client(stub: stub)

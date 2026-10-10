@@ -77,7 +77,7 @@ class BrowseViewModel {
             if mediaScope != nil { filterState.mediaScope = nil }
         }
 
-        facets = FacetLoader.shared.cachedFacets(libraryId: libraryId)
+        facets = FacetLoader.shared.cachedFacets(libraryId: libraryId, type: facetType)
         // Hydrate the page-1 snapshot the next reset will write back into.
         hydratePage1FromCache()
         return true
@@ -200,7 +200,7 @@ class BrowseViewModel {
     func loadFacetsIfNeeded() async {
         if facets != nil { return }
         let configuration = configurationGeneration
-        let loaded = try? await FacetLoader.shared.facets(libraryId: libraryId)
+        let loaded = try? await FacetLoader.shared.facets(libraryId: libraryId, type: facetType)
         guard configuration == configurationGeneration, !Task.isCancelled else { return }
         facets = loaded
     }
@@ -212,6 +212,11 @@ class BrowseViewModel {
     /// Cross-library grids (All Movies, All Audiobooks) keep their own
     /// saved filters.
     private var prefsCrossLibraryType: String? { crossLibraryType?.crossLibraryTypeParam }
+
+    /// A cross-library grid offers only the filter values of its media type.
+    private var facetType: String? {
+        libraryId == nil ? crossLibraryType?.crossLibraryTypeParam : nil
+    }
 
     var preserveEnabled: Bool { BrowsePrefsStore.shared.preserveEnabled(libraryId: libraryId, mediaScope: mediaScope?.rawValue, crossLibraryType: prefsCrossLibraryType) }
 

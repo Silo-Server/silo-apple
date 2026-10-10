@@ -87,26 +87,28 @@ final class FacetLoader {
 
     private var inFlight: [String: Task<APIv2CatalogFilters, Error>] = [:]
 
-    func facets(libraryId: Int?, includeTechnical: Bool = true) async throws -> CatalogFacets {
-        let key = CacheKey.catalogFilters(libraryId: libraryId, includeTechnical: includeTechnical)
+    /// `type` scopes a cross-library vocabulary (`libraryId == nil`) to one
+    /// media type.
+    func facets(libraryId: Int?, type: String? = nil, includeTechnical: Bool = true) async throws -> CatalogFacets {
+        let key = CacheKey.catalogFilters(libraryId: libraryId, type: type, includeTechnical: includeTechnical)
         if let cached: APIv2CatalogFilters = ResponseCache.shared.get(key) {
             return CatalogFacets(cached)
         }
-        return CatalogFacets(try await fetch(libraryId: libraryId, includeTechnical: includeTechnical, key: key))
+        return CatalogFacets(try await fetch(libraryId: libraryId, type: type, includeTechnical: includeTechnical, key: key))
     }
 
     /// Returns a cached facet set synchronously if present (for instant
     /// sheet/panel open), else `nil`.
-    func cachedFacets(libraryId: Int?, includeTechnical: Bool = true) -> CatalogFacets? {
-        let key = CacheKey.catalogFilters(libraryId: libraryId, includeTechnical: includeTechnical)
+    func cachedFacets(libraryId: Int?, type: String? = nil, includeTechnical: Bool = true) -> CatalogFacets? {
+        let key = CacheKey.catalogFilters(libraryId: libraryId, type: type, includeTechnical: includeTechnical)
         guard let cached: APIv2CatalogFilters = ResponseCache.shared.get(key) else { return nil }
         return CatalogFacets(cached)
     }
 
-    private func fetch(libraryId: Int?, includeTechnical: Bool, key: String) async throws -> APIv2CatalogFilters {
+    private func fetch(libraryId: Int?, type: String?, includeTechnical: Bool, key: String) async throws -> APIv2CatalogFilters {
         if let existing = inFlight[key] { return try await existing.value }
         let task = Task {
-            try await SiloAPI.shared.catalogFilters(libraryId: libraryId, includeTechnical: includeTechnical)
+            try await SiloAPI.shared.catalogFilters(libraryId: libraryId, type: type, includeTechnical: includeTechnical)
         }
         inFlight[key] = task
         do {

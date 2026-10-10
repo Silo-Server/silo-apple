@@ -251,10 +251,12 @@ actor SiloAPI {
     /// `includeTechnical` the server skips the file-derived resolution /
     /// audio / subtitle facets. Facets follow the profile's library access,
     /// so the read is refused if the owner changed while it was in flight.
-    func catalogFilters(libraryId: Int?, includeTechnical: Bool = true) async throws -> APIv2CatalogFilters {
+    /// `type` scopes a cross-library vocabulary to one media type, as the
+    /// grid's `type` does.
+    func catalogFilters(libraryId: Int?, type: String? = nil, includeTechnical: Bool = true) async throws -> APIv2CatalogFilters {
         let auth = try await detailReadAuth()
         let filters = try await apiV2Client.catalogFilters(
-            libraryId: libraryId.map(String.init), includeTechnical: includeTechnical, auth: auth
+            libraryId: libraryId.map(String.init), type: type, includeTechnical: includeTechnical, auth: auth
         )
         try await requireCurrentOwner(auth)
         return filters
