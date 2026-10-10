@@ -60,11 +60,14 @@ struct BrowsePrefsStore {
 
     /// `crossLibraryType` is a cross-library type ("movie", "series",
     /// "audiobook"), so All Movies and All Audiobooks keep separate filters.
-    /// It is ignored when a library already scopes the grid.
+    /// It is ignored when a library already scopes the grid. Those keys also
+    /// carry the account, since profile IDs are unique only within one; the
+    /// older per-library keys keep their existing form.
     private func base(libraryId: Int?, mediaScope: String? = nil, crossLibraryType: String? = nil) -> String? {
         guard let profileId = AuthService.shared.profileId, !profileId.isEmpty else { return nil }
         let serverId = ServerRegistry.shared.activeServerId ?? "default"
-        let lib = libraryId.map(String.init) ?? crossLibraryType.map { "all-\($0)" } ?? "all"
+        let account = AuthService.shared.accountID ?? "-"
+        let lib = libraryId.map(String.init) ?? crossLibraryType.map { "all-\($0).\(account)" } ?? "all"
         return "\(Self.platformPrefix).\(serverId).\(profileId).\(lib)" + (mediaScope.map { ".type-\($0)" } ?? "")
     }
 

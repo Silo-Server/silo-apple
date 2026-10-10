@@ -150,7 +150,7 @@ enum HiddenLibraryPreference {
             _ = try await StartupContentPrefetcher.fetchUserLibraries(reusingRecent: false)
         } catch {
             guard requestIdentity() == identity, accountID() == account, let cached else { return }
-            let all = cached.libraries + (cached.hiddenLibraries ?? [])
+            let all = inServerOrder(cached.libraries + (cached.hiddenLibraries ?? []))
             let response = LibrariesResponse(
                 libraries: visibleLibraries(all, hiding: hiddenIds),
                 hiddenLibraries: all.filter { hiddenIds.contains($0.id) }
@@ -159,10 +159,22 @@ enum HiddenLibraryPreference {
             NotificationCenter.default.post(name: .userLibrariesDidRefresh, object: response)
         }
         guard requestIdentity() == identity, accountID() == account else { return }
-        // Calendar leaves hidden libraries out too; an open Calendar
-        // reloads on the refresh this posts.
+        dropListsFilteredByHiddenLibraries()
+    }
+
+    /// Drops what the server filtered by the old hidden set: Calendar,
+    /// filter vocabularies, and the lists `invalidateDerivedLists` covers.
+    /// The refresh that posts reloads Home, the hubs and an open Calendar.
+    static func dropListsFilteredByHiddenLibraries() {
         ResponseCache.shared.removeAll(withPrefix: "calendar:")
+        FacetLoader.shared.invalidateAll()
         PersonalStateSync.invalidateDerivedLists()
+    }
+
+    /// The server lists libraries by `sort_order`, then ID; the visible and
+    /// hidden halves merge back in that order.
+    static func inServerOrder(_ libraries: [Library]) -> [Library] {
+        libraries.sorted { ($0.sortOrder ?? .max, $0.id) < ($1.sortOrder ?? .max, $1.id) }
     }
 
     static func visibleLibraries(_ libraries: [Library], hiding hidden: Set<Int>) -> [Library] {

@@ -225,6 +225,13 @@ final class HiddenLibraryPreferenceTests: XCTestCase {
         XCTAssertEqual(written, [])
     }
 
+    /// The fallback after a failed re-read rejoins the visible and hidden
+    /// lists; showing B again must put it back between A and C.
+    func testSplitListsRejoinInServerOrder() {
+        let merged = HiddenLibraryPreference.inServerOrder([library(1), library(3), library(2)])
+        XCTAssertEqual(merged.map(\.id), [1, 2, 3])
+    }
+
     /// The Libraries page counts hidden libraries from the cached list, and a
     /// list cached before the split has none.
     func testCachedLibraryListKeepsItsHiddenLibraries() throws {

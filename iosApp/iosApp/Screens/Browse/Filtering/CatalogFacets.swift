@@ -105,19 +105,27 @@ final class FacetLoader {
         return CatalogFacets(cached)
     }
 
+    /// Drops every cached and in-flight vocabulary. Hiding or showing a
+    /// library changes what `/catalog/filters` returns.
+    func invalidateAll() {
+        inFlight.removeAll()
+        ResponseCache.shared.removeAll(withPrefix: "catalogFilters:")
+    }
+
     private func fetch(libraryId: Int?, type: String?, includeTechnical: Bool, key: String) async throws -> APIv2CatalogFilters {
         if let existing = inFlight[key] { return try await existing.value }
+        let writeToken = ResponseCache.shared.writeToken
         let task = Task {
             try await SiloAPI.shared.catalogFilters(libraryId: libraryId, type: type, includeTechnical: includeTechnical)
         }
         inFlight[key] = task
         do {
             let result = try await task.value
-            inFlight[key] = nil
-            ResponseCache.shared.set(result, for: key)
+            if inFlight[key] == task { inFlight[key] = nil }
+            ResponseCache.shared.set(result, for: key, fetchedAt: writeToken)
             return result
         } catch {
-            inFlight[key] = nil
+            if inFlight[key] == task { inFlight[key] = nil }
             throw error
         }
     }

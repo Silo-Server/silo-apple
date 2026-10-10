@@ -392,8 +392,7 @@ enum StartupContentPrefetcher {
                 // change made here does (`HiddenLibraryPreference.publishChange`).
                 if let previous, previous.hiddenLibraries != nil,
                    Set((previous.hiddenLibraries ?? []).map(\.id)) != Set((response.hiddenLibraries ?? []).map(\.id)) {
-                    ResponseCache.shared.removeAll(withPrefix: "calendar:")
-                    PersonalStateSync.invalidateDerivedLists()
+                    HiddenLibraryPreference.dropListsFilteredByHiddenLibraries()
                 }
                 NotificationCenter.default.post(name: .userLibrariesDidRefresh, object: response)
             }
