@@ -108,6 +108,14 @@ enum StartupContentPrefetcher {
         homeSections.reset()
     }
 
+    /// A change to which libraries the profile hides makes a list read that
+    /// is already in flight stale: the next caller starts a fresh one, and
+    /// the old one can no longer write the cache or announce its list.
+    static func invalidateUserLibrariesInFlight() {
+        userLibraries.detach()
+        ResponseCache.shared.remove(CacheKey.userLibraries)
+    }
+
     /// A personal-state change (watched, favorite, watchlist) alters these
     /// lists: requests already in flight carry the old rows, so callers that
     /// join after the change must start a fresh one.
@@ -860,6 +868,12 @@ final class SharedFetch<Value> {
 
     func reset() {
         task?.cancel()
+        task = nil
+        landed = nil
+    }
+
+    /// Like `reset()`, but callers already waiting keep their request.
+    func detach() {
         task = nil
         landed = nil
     }

@@ -110,6 +110,15 @@ enum MediaKind: String, CaseIterable, Hashable, Codable {
         }
     }
 
+    /// The half of a mixed library this kind shows.
+    var videoScope: LibraryVideoScope? {
+        switch self {
+        case .movies: return .movie
+        case .series: return .series
+        case .audiobooks: return nil
+        }
+    }
+
     /// The catalog `type` scope for cross-library queries.
     var catalogType: String {
         switch self {
@@ -135,10 +144,8 @@ enum MediaKind: String, CaseIterable, Hashable, Codable {
         case .movies:
             return SiloMediaType.isMovieLibrary(itemType)
         case .series:
-            let normalized = itemType.lowercased()
-            return SiloMediaType.isSeries(itemType)
-                || normalized == "episode"
-                || normalized == "season"
+            return LibraryVideoScope.series.contains(itemType)
+                || itemType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "season"
         case .audiobooks:
             return SiloMediaType.isAudiobook(itemType)
         }

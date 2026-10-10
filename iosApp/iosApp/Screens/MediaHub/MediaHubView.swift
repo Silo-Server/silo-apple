@@ -66,6 +66,12 @@ struct MediaHubView: View {
             guard let response = notification.object as? LibrariesResponse else { return }
             accept(response.libraries)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .homeSectionsShouldRefresh)) { _ in
+            // Watched state, progress or hidden libraries changed, and the
+            // resume and library rows still show the old answer.
+            guard hasResolvedSelection else { return }
+            Task { await reloadLanding() }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .mediaHubSelectionDidChange)) { _ in
             // The Libraries page chose a library for this hub's capability.
             guard hasResolvedSelection else { return }
@@ -594,13 +600,6 @@ struct MediaBrowseView: View {
         selectedLibraryId.flatMap { id in kindLibraries.first { $0.id == id } }
     }
 
-    /// "All" and mixed libraries need the kind's media scope; a single-type
-    /// library already scopes the grid.
-    private var browseScope: BrowseMediaType? {
-        if let selectedLibrary, !selectedLibrary.isMixedLibrary { return nil }
-        return kind.browseMediaType
-    }
-
     private var title: String {
         selectedLibrary?.name ?? kind.browseAllTitle
     }
@@ -611,7 +610,11 @@ struct MediaBrowseView: View {
             title: nil,
             showsSearchShortcut: false,
             libraryType: selectedLibrary?.type,
-            crossLibraryType: browseScope
+            // A mixed library shows the kind's half, with its own cache and
+            // saved filters; "All" scopes the cross-library query. A
+            // single-type library already scopes the grid.
+            mediaScope: selectedLibrary?.isMixedLibrary == true ? kind.videoScope : nil,
+            crossLibraryType: selectedLibraryId == nil ? kind.browseMediaType : nil
         )
         .id(selectedLibraryId)
         .navigationTitle(title)
@@ -698,7 +701,12 @@ final class MediaLandingViewModel {
         do {
             let result: [ResolvedSection]
             if let library {
-                result = try await Self.librarySections(kind: kind, library: library, fresh: force)
+                result = try await Self.librarySections(
+                    kind: kind,
+                    library: library,
+                    borrowsResume: kindLibraries.count == 1,
+                    fresh: force
+                )
             } else {
                 result = try await Self.mergedSections(kind: kind, libraries: kindLibraries, fresh: force)
             }
@@ -713,16 +721,19 @@ final class MediaLandingViewModel {
     }
 
     /// One library: its server-built rows. A mixed library keeps only the
-    /// half that matches the selected kind.
+    /// half that matches the selected kind. Home's resume rows can't tell
+    /// libraries apart, so a library borrows them only when it is the kind's
+    /// only library.
     private static func librarySections(
         kind: MediaKind,
         library: Library,
+        borrowsResume: Bool,
         fresh: Bool
     ) async throws -> [ResolvedSection] {
-        async let resume = resumeSections(kind: kind, fresh: fresh)
-        let response: SectionsResponse
+        async let resume = borrowsResume ? resumeSections(kind: kind, fresh: fresh) : []
+        let read: APIv2LibrarySectionsRead
         do {
-            response = try await StartupContentPrefetcher.fetchLibrarySections(libraryId: library.id)
+            read = try await StartupContentPrefetcher.fetchLibrarySectionsRead(libraryId: library.id)
         } catch {
             // The server builds every library row in one response, so one
             // slow row fails the page. Fall back to rows from endpoints that
@@ -737,13 +748,21 @@ final class MediaLandingViewModel {
             guard !fallback.isEmpty else { throw error }
             return fallback
         }
-        var sections = response.sections.filter { !$0.isFeatured && !$0.items.isEmpty }
-        if library.isMixedLibrary {
-            sections = sections.compactMap { filtered($0, to: kind) }
+        var sections = read.sections.filter { !$0.isFeatured }
+        if library.isMixedLibrary, let scope = kind.videoScope {
+            // A shelf's inline items can all be the other half; page each
+            // shelf's source for this one, as the library page does.
+            let refilled = try? await scope.refillLibrarySections(sections, libraryId: library.id, auth: read.auth)
+            sections = refilled?.map(\.section) ?? sections.compactMap { filtered($0, to: kind) }
         }
-        // Audiobook libraries have no server resume row; borrow Home's.
+        sections.removeAll { $0.items.isEmpty }
+        // Audiobook libraries have no server resume row; borrow Home's,
+        // without repeating a Next Up row the library already has.
         if !sections.contains(where: \.isContinueWatchingSection) {
-            sections.insert(contentsOf: await resume, at: 0)
+            let borrowed = await resume.filter { row in
+                row.isContinueWatchingSection || !sections.contains { $0.sectionType == row.sectionType }
+            }
+            sections.insert(contentsOf: borrowed, at: 0)
         }
         return sections
     }

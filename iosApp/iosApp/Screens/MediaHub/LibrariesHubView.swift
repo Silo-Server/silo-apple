@@ -211,19 +211,27 @@ struct LibrariesHubView: View {
 
     /// Takes the library off the page at once, then saves. The library list
     /// refresh that follows updates the tab bar; a failed save puts the card
-    /// back.
+    /// back. Saves run in order (`HiddenLibraryPreference.setHidden`), so
+    /// hiding a second library before the first lands keeps both hidden.
     private func hide(_ library: Library) async {
-        let before = (libraries, hiddenLibraries)
+        let authority = libraryAuthority
+        let index = libraries.firstIndex { $0.id == library.id }
         withAnimation(.easeInOut(duration: SiloTheme.normalDuration)) {
             libraries.removeAll { $0.id == library.id }
             hiddenLibraries.append(library)
         }
         do {
-            _ = try await HiddenLibraryPreference.setHidden(true, libraryId: library.id)
-            await HiddenLibraryPreference.publishChange()
+            let hiddenIds = try await HiddenLibraryPreference.setHidden(true, libraryId: library.id)
+            await HiddenLibraryPreference.publishChange(hiddenIds: hiddenIds)
         } catch {
+            // A profile switch cancelled the save, or another profile's
+            // libraries have replaced this one's.
+            guard libraryAuthority == authority, !(error is CancellationError) else { return }
             withAnimation(.easeInOut(duration: SiloTheme.normalDuration)) {
-                (libraries, hiddenLibraries) = before
+                hiddenLibraries.removeAll { $0.id == library.id }
+                if !libraries.contains(where: { $0.id == library.id }) {
+                    libraries.insert(library, at: min(index ?? .max, libraries.count))
+                }
             }
             hideError = LibraryVisibilitySettingsView.saveFailureMessage(
                 for: error,

@@ -126,8 +126,10 @@ struct LibraryVisibilitySettingsView: View {
         do {
             // Also picks up libraries hidden on another device meanwhile.
             hiddenIds = try await HiddenLibraryPreference.setHidden(!isVisible, libraryId: library.id)
-            await HiddenLibraryPreference.publishChange()
+            await HiddenLibraryPreference.publishChange(hiddenIds: hiddenIds)
         } catch {
+            // The profile changed before the write; this page is leaving.
+            guard !(error is CancellationError) else { return }
             setLocally(!isVisible, library.id)
             saveError = Self.saveFailureMessage(for: error, library: library, isVisible: isVisible)
         }

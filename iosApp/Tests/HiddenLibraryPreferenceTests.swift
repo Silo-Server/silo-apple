@@ -124,6 +124,38 @@ final class HiddenLibraryPreferenceTests: XCTestCase {
         XCTAssertEqual(afterDrop, [3])
     }
 
+    /// Each save reads the whole list and writes it back, so two hides at
+    /// once must not undo each other.
+    func testHidesStartedTogetherBothLand() async throws {
+        let server = ServerState(hidden: [3])
+
+        let first = Task { try await self.hide(5, on: server) }
+        let second = Task { try await self.hide(7, on: server) }
+        _ = try await (first.value, second.value)
+
+        XCTAssertEqual(server.hidden, [3, 5, 7])
+    }
+
+    func testProfileSwitchBeforeTheWriteCancelsIt() async {
+        var identities = [Self.profileA, Self.profileB]
+        var written: [Set<Int>] = []
+
+        do {
+            _ = try await HiddenLibraryPreference.setHidden(
+                true,
+                libraryId: 5,
+                defaults: defaults,
+                requestIdentity: { identities.count > 1 ? identities.removeFirst() : identities[0] },
+                read: { _ in try Self.response(.array([.int(3)])) },
+                write: { ids, _ in written.append(ids) }
+            )
+            XCTFail("A save for a profile that is no longer active must not write")
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+        }
+        XCTAssertEqual(written, [])
+    }
+
     /// The Libraries page counts hidden libraries from the cached list, and a
     /// list cached before the split has none.
     func testCachedLibraryListKeepsItsHiddenLibraries() throws {
@@ -138,6 +170,31 @@ final class HiddenLibraryPreferenceTests: XCTestCase {
     }
 
     // MARK: Helpers
+
+    private final class ServerState {
+        var hidden: Set<Int>
+        init(hidden: Set<Int>) { self.hidden = hidden }
+    }
+
+    /// A server whose read and write each suspend, so two saves overlap
+    /// unless the second waits.
+    private func hide(_ libraryId: Int, on server: ServerState) async throws -> Set<Int> {
+        try await HiddenLibraryPreference.setHidden(
+            true,
+            libraryId: libraryId,
+            defaults: defaults,
+            requestIdentity: { Self.profileA },
+            read: { _ in
+                let ids = server.hidden
+                await Task.yield()
+                return try Self.response(.array(ids.sorted().map { .int($0) }))
+            },
+            write: { ids, _ in
+                await Task.yield()
+                server.hidden = ids
+            }
+        )
+    }
 
     private func setHidden(
         _ isHidden: Bool,
