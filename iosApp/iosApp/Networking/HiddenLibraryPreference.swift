@@ -57,13 +57,20 @@ enum HiddenLibraryPreference {
     /// Hides or shows one library for the active profile and returns the
     /// profile's hidden IDs afterwards. The list is read fresh rather than
     /// from the cache, so a library hidden on another device since the last
-    /// read stays hidden. A failed read or write throws and changes nothing,
-    /// and a profile switch before the write cancels it.
+    /// read stays hidden. The save goes ahead only when the server's
+    /// settings contract supports the key and the read returns its value; a
+    /// read without it would otherwise turn into an empty list and the write
+    /// would show every other hidden library. A failed check, read or write
+    /// throws and changes nothing, and a profile switch before the write
+    /// cancels it.
     static func setHidden(
         _ isHidden: Bool,
         libraryId: Int,
         defaults: SharedDefaults = .shared,
         requestIdentity: @escaping @MainActor () -> HTTPRequestIdentity? = SeekIntervalPreferences.activeRequestIdentity,
+        capabilities: @escaping (HTTPRequestIdentity) async -> SettingsCapabilitiesResult = {
+            await SiloAPI.shared.getContractCapabilities(requestIdentity: $0)
+        },
         read: @escaping (HTTPRequestIdentity?) async throws -> EffectiveSettingValuesResponse = {
             try await SiloAPI.shared.getEffectiveValues(
                 keys: [.uiDisabledLibraryIds],
@@ -83,8 +90,12 @@ enum HiddenLibraryPreference {
         let previous = lastSave
         let save = Task { @MainActor in
             await previous?.value
+            try requireSupport(await capabilities(identity))
             let response = try await read(identity)
-            let current = libraryIds(from: response.value(for: .uiDisabledLibraryIds)?.value ?? .null)
+            guard let stored = response.value(for: .uiDisabledLibraryIds) else {
+                throw SettingsAPIError.unknownSetting(key: SettingKey.uiDisabledLibraryIds.rawValue)
+            }
+            let current = libraryIds(from: stored.value)
             let updated = isHidden ? current.union([libraryId]) : current.subtracting([libraryId])
             if updated != current {
                 guard requestIdentity() == identity else { throw CancellationError() }
@@ -97,6 +108,19 @@ enum HiddenLibraryPreference {
         }
         lastSave = Task { _ = try? await save.value }
         return try await save.value
+    }
+
+    private static func requireSupport(_ result: SettingsCapabilitiesResult) throws {
+        switch result {
+        case .available(let contract) where contract.supports(.uiDisabledLibraryIds):
+            return
+        case .available, .unavailable:
+            throw SettingsAPIError.unknownSetting(key: SettingKey.uiDisabledLibraryIds.rawValue)
+        case .serverUpgradeRequired:
+            throw SettingsAPIError.serverUpgradeRequired
+        case .failed(let error):
+            throw error
+        }
     }
 
     /// Re-reads the library list so the tab bar, Libraries and every library
