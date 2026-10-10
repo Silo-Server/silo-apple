@@ -120,7 +120,8 @@ struct MediaHubView: View {
                     {
                         router.navigate(to: .libraryCollections(
                             libraryId: library.id,
-                            title: "\(library.name) Collections"
+                            title: "\(library.name) Collections",
+                            mediaScope: library.isMixedLibrary ? kind.videoScope : nil
                         ))
                     }
                 }
@@ -628,6 +629,11 @@ struct MediaBrowseView: View {
         .task {
             if let response = try? await StartupContentPrefetcher.fetchUserLibraries() {
                 libraries = response.libraries
+                // The library was hidden, removed or retyped since the
+                // cached list: browse every library of the kind instead.
+                if let id = selectedLibraryId, !kindLibraries.contains(where: { $0.id == id }) {
+                    selectedLibraryId = nil
+                }
             }
         }
     }
@@ -781,28 +787,42 @@ final class MediaLandingViewModel {
             kind: kind,
             library: nil
         )
-        let libraryRows = await withTaskGroup(of: (Int, ResolvedSection?).self) { group in
+        let libraryRows = await withTaskGroup(of: (Int, Result<ResolvedSection, Error>).self) { group in
             for (index, library) in libraries.enumerated() {
                 group.addTask {
-                    let row = try? await catalogRow(
-                        id: "\(libraryRowPrefix)\(library.id)",
-                        title: library.name,
-                        kind: kind,
-                        library: library
-                    )
-                    return (index, row)
+                    do {
+                        let row = try await catalogRow(
+                            id: "\(libraryRowPrefix)\(library.id)",
+                            title: library.name,
+                            kind: kind,
+                            library: library
+                        )
+                        return (index, .success(row))
+                    } catch {
+                        return (index, .failure(error))
+                    }
                 }
             }
-            var rows: [(Int, ResolvedSection?)] = []
+            var rows: [(Int, Result<ResolvedSection, Error>)] = []
             for await row in group { rows.append(row) }
-            return rows.sorted { $0.0 < $1.0 }.compactMap(\.1)
+            return rows.sorted { $0.0 < $1.0 }.map(\.1)
+        }
+        let recentRow: Result<ResolvedSection, Error>
+        do {
+            recentRow = .success(try await recent)
+        } catch {
+            recentRow = .failure(error)
         }
 
-        // One failed row drops out rather than failing the page.
-        let recentRow = try? await recent
+        // One failed row drops out rather than failing the page. When every
+        // row fails and there is nothing to resume, the page shows the error
+        // and Retry rather than claiming the libraries are empty.
         var sections = await resume
-        if let recentRow, !recentRow.items.isEmpty { sections.append(recentRow) }
-        sections.append(contentsOf: libraryRows.filter { !$0.items.isEmpty })
+        let loaded = ([recentRow] + libraryRows).compactMap { try? $0.get() }
+        if loaded.isEmpty, sections.isEmpty, case .failure(let error) = recentRow {
+            throw error
+        }
+        sections.append(contentsOf: loaded.filter { !$0.items.isEmpty })
         return sections
     }
 

@@ -286,7 +286,6 @@ final class MediaHubScopeTests: XCTestCase {
         XCTAssertTrue(MediaKind.series.includes(itemType: "episode"))
         XCTAssertTrue(MediaKind.series.includes(itemType: "episodes"))
         XCTAssertTrue(MediaKind.series.includes(itemType: " Episode "))
-        XCTAssertTrue(MediaKind.series.includes(itemType: "season"))
         XCTAssertTrue(MediaKind.series.includes(itemType: "series"))
         XCTAssertFalse(MediaKind.series.includes(itemType: "audiobook"))
         XCTAssertTrue(MediaKind.audiobooks.includes(itemType: "audiobook"))

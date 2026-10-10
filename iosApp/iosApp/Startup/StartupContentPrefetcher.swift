@@ -38,6 +38,9 @@ enum StartupContentPrefetcher {
     private static var tvSeriesLandingTasks: [Int: Task<Void, Never>] = [:]
     #endif
     private static var profileScopedGeneration = 0
+    /// Advances when the hidden libraries change; see
+    /// `invalidateUserLibrariesInFlight()`.
+    private static var userLibrariesGeneration = 0
     private static var homeSectionsGeneration = 0
     private static var profilesGeneration = 0
 
@@ -110,8 +113,9 @@ enum StartupContentPrefetcher {
 
     /// A change to which libraries the profile hides makes a list read that
     /// is already in flight stale: the next caller starts a fresh one, and
-    /// the old one can no longer write the cache or announce its list.
+    /// callers waiting on the old one move to it rather than get the old list.
     static func invalidateUserLibrariesInFlight() {
+        userLibrariesGeneration += 1
         userLibraries.detach()
         ResponseCache.shared.remove(CacheKey.userLibraries)
     }
@@ -349,6 +353,7 @@ enum StartupContentPrefetcher {
     static func fetchUserLibraries(reusingRecent: Bool = true) async throws -> LibrariesResponse {
         if reusingRecent, let recent = userLibraries.recentValue() { return recent }
         let generation = profileScopedGeneration
+        let librariesGeneration = userLibrariesGeneration
         #if os(iOS) || os(tvOS)
         let probe = PrefetchProbe.begin("user_libraries", isOriginator: !userLibraries.isInFlight)
         #endif
@@ -365,6 +370,14 @@ enum StartupContentPrefetcher {
         do {
             let response = try await task.value
             try validateProfileScopedGeneration(generation)
+            guard librariesGeneration == userLibrariesGeneration else {
+                // A hide or show landed while this read ran: join the read
+                // that started after it.
+                #if os(iOS) || os(tvOS)
+                probe.finish(error: nil)
+                #endif
+                return try await fetchUserLibraries()
+            }
             // Only the first caller to resume announces the refresh; waiters
             // that joined the same request would repeat it.
             let isFirstToLand = userLibraries.finish(task, value: response)

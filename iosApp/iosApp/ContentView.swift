@@ -3187,8 +3187,8 @@ struct MainTabView: View {
             #else
             EmptyView()
             #endif
-        case .libraryCollections(let libraryId, let title):
-            LibraryCollectionsView(libraryId: libraryId)
+        case .libraryCollections(let libraryId, let title, let mediaScope):
+            LibraryCollectionsView(libraryId: libraryId, mediaScope: mediaScope)
                 .navigationTitle(title ?? "Collections")
                 .siloNavigationTitleDisplayMode(.large)
                 .siloPageBackground()

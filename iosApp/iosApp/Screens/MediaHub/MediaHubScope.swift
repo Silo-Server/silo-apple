@@ -138,14 +138,14 @@ enum MediaKind: String, CaseIterable, Hashable, Codable {
     }
 
     /// Whether a section card belongs on this side. Series accept episodes
-    /// and seasons so resume and Next Up rows keep their episode cards.
+    /// so resume and Next Up rows keep their episode cards. (Section rows
+    /// never carry seasons: `SectionsResponse` drops them on decode.)
     func includes(itemType: String) -> Bool {
         switch self {
         case .movies:
             return SiloMediaType.isMovieLibrary(itemType)
         case .series:
             return LibraryVideoScope.series.contains(itemType)
-                || itemType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "season"
         case .audiobooks:
             return SiloMediaType.isAudiobook(itemType)
         }
