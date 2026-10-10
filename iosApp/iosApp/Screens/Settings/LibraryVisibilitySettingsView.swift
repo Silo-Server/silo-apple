@@ -19,6 +19,9 @@ struct LibraryVisibilitySettingsView: View {
     /// One save at a time: each save rewrites the whole list, so two at once
     /// could undo each other.
     @State private var isSaving = false
+    /// Advances with each load and each save, so only the newest load
+    /// applies, and never over a save that started after it.
+    @State private var loadGeneration = 0
     @State private var saveError: String?
     @State private var navPrefs = AppNavPreferences.shared
 
@@ -109,16 +112,22 @@ struct LibraryVisibilitySettingsView: View {
     }
 
     private func load() async {
+        loadGeneration += 1
+        let generation = loadGeneration
+        // A save can supersede the only load in flight.
+        defer { isLoading = false }
         async let hidden = HiddenLibraryPreference.hiddenLibraryIds()
         do {
             let response = try await SiloAPI.shared.libraries()
+            let hiddenIds = await hidden
+            guard generation == loadGeneration else { return }
             libraries = response.libraries
-            hiddenIds = await hidden
+            self.hiddenIds = hiddenIds
             loadError = nil
         } catch {
+            guard generation == loadGeneration else { return }
             if libraries.isEmpty { loadError = ErrorState(error) }
         }
-        isLoading = false
     }
 
     /// Shows the choice at once, then saves it. A failed save puts the
@@ -127,6 +136,8 @@ struct LibraryVisibilitySettingsView: View {
         guard !isSaving else { return }
         isSaving = true
         defer { isSaving = false }
+        // A load already running read the setting before this save.
+        loadGeneration += 1
         setLocally(isVisible, library.id)
         do {
             // Also picks up libraries hidden on another device meanwhile.
