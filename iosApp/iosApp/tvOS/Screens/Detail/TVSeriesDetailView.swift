@@ -413,7 +413,16 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         let episodeTitle = matchingPlaybackDetail?.title
             ?? displayedEpisode?.title
             ?? displayedEpisode.map { "Episode \($0.episodeNumber)" }
-        let overview = matchingPlaybackDetail?.overview ?? displayedEpisode?.overview
+        // Spoiler protection keeps the episode title and drops its
+        // description. The Series overview is never hidden.
+        // The playback detail may be a cached copy; the refreshed episode list
+        // can know the episode has started, so either source can reveal it.
+        let spoilers = EpisodeSpoilerPreferences.shared.settings
+        let hidesOverview = [matchingPlaybackDetail?.userData, displayedEpisode?.userData]
+            .allSatisfy { spoilers.hidesOverview(for: EpisodeWatchState($0)) }
+        let overview = hidesOverview
+            ? nil
+            : matchingPlaybackDetail?.overview ?? displayedEpisode?.overview
         switch (episodeTitle, overview) {
         case let (.some(title), .some(line)) where !title.isEmpty && !line.isEmpty:
             return "\(title) · \(line)"

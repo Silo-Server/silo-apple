@@ -72,6 +72,7 @@ struct MacFeaturedHero: View {
                     thumbhash: backdropURL == nil ? item.posterThumbhash : item.backdropThumbhash,
                     contentMode: .fill
                 )
+                .episodeSpoilerBlur(EpisodeSpoilerPreferences.shared.settings.hidesImage(for: item))
             } else {
                 Color.siloSurfaceElevated
             }
@@ -127,7 +128,8 @@ struct MacFeaturedHero: View {
                     .lineLimit(1)
             }
 
-            if let overview = item.overview, !overview.isEmpty {
+            if !EpisodeSpoilerPreferences.shared.settings.hidesOverview(for: item),
+               let overview = item.overview, !overview.isEmpty {
                 Text(overview)
                     .font(.siloBody)
                     .foregroundStyle(Color.siloSecondaryText)
@@ -243,6 +245,9 @@ struct MacFeaturedHero: View {
                     targetSize: Self.thumbnailSize,
                     contentMode: .fill
                 )
+                .episodeSpoilerBlur(entry.isEpisodeItem && EpisodeSpoilerPreferences.shared.settings.hidesImage(
+                    for: EpisodeWatchState(sectionItem: entry), isEpisodeStill: entry.posterIsEpisodeStill
+                ))
             } else {
                 Color.siloSurfaceElevated
                     .overlay {

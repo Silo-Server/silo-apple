@@ -250,7 +250,10 @@ private struct PhoneEpisodeCard: View {
                         .multilineTextAlignment(.leading)
                 }
 
-                if let overview = episode.overview, !overview.isEmpty {
+                // A hidden description is left out; the title and metadata
+                // stay so the card still identifies the episode.
+                if !spoilers.hidesOverview(for: watchState),
+                   let overview = episode.overview, !overview.isEmpty {
                     let description = Text(overview)
                         .font(.caption)
                         .foregroundStyle(Color.siloSecondaryText)
@@ -286,6 +289,14 @@ private struct PhoneEpisodeCard: View {
         PhoneEpisodeFormatting.accessibilityDescription(for: episode, isCurrent: isCurrent)
     }
 
+    private var spoilers: EpisodeSpoilerSettings {
+        EpisodeSpoilerPreferences.shared.settings
+    }
+
+    private var watchState: EpisodeWatchState {
+        EpisodeWatchState(episode.userData)
+    }
+
     private var still: some View {
         ZStack(alignment: .bottom) {
             AsyncImageView(
@@ -298,6 +309,7 @@ private struct PhoneEpisodeCard: View {
                 placeholderSymbol: onPlay == nil ? ArtworkPlaceholderSymbol.television : nil
             )
             .frame(width: cardWidth, height: stillHeight)
+            .episodeSpoilerBlur(spoilers.hidesImage(for: watchState, isEpisodeStill: episode.stillIsEpisodeStill))
             .clipped()
 
             if episode.userData?.played == true {

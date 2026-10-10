@@ -38,6 +38,13 @@ final class ContentProvider: TVTopShelfContentProvider {
             )
             return nil
         }
+        // The profile's last confirmed spoiler answer, cached by the app. Read
+        // with the credentials, before any request suspends.
+        let hidesEpisodeStills = EpisodeSpoilerCache.hidesImages(
+            serverId: defaults.string(forKey: SharedStorage.activeServerIdKey),
+            profileId: defaults.string(forKey: SharedStorage.profileIdKey),
+            in: defaults
+        )
         let response: TopShelfSectionsResponse
         let imageSizeQuery = await http.fetchImageSizeQuery()
         do {
@@ -61,12 +68,14 @@ final class ContentProvider: TVTopShelfContentProvider {
         let continueWatching = collection(
             title: "Continue Watching",
             items: cwItems,
-            seriesPosters: seriesPosters
+            seriesPosters: seriesPosters,
+            hidesEpisodeStills: hidesEpisodeStills
         )
         let nextUp = collection(
             title: "Next Up",
             items: nuItems,
-            seriesPosters: seriesPosters
+            seriesPosters: seriesPosters,
+            hidesEpisodeStills: hidesEpisodeStills
         )
 
         let collections = [continueWatching, nextUp].compactMap { $0 }
@@ -218,10 +227,13 @@ final class ContentProvider: TVTopShelfContentProvider {
     private func collection(
         title: String,
         items: [TopShelfItem],
-        seriesPosters: EpisodePosters
+        seriesPosters: EpisodePosters,
+        hidesEpisodeStills: Bool
     ) -> TVTopShelfItemCollection<TVTopShelfSectionedItem>? {
         guard !items.isEmpty else { return nil }
-        let shelfItems = items.map { sectionedItem(from: $0, seriesPosters: seriesPosters) }
+        let shelfItems = items.map {
+            sectionedItem(from: $0, seriesPosters: seriesPosters, hidesEpisodeStills: hidesEpisodeStills)
+        }
         let collection = TVTopShelfItemCollection(items: shelfItems)
         collection.title = title
         return collection
@@ -229,7 +241,8 @@ final class ContentProvider: TVTopShelfContentProvider {
 
     private func sectionedItem(
         from item: TopShelfItem,
-        seriesPosters: EpisodePosters
+        seriesPosters: EpisodePosters,
+        hidesEpisodeStills: Bool
     ) -> TVTopShelfSectionedItem {
         let shelfItem = TVTopShelfSectionedItem(identifier: item.contentId)
         shelfItem.title = displayTitle(for: item)
@@ -237,7 +250,11 @@ final class ContentProvider: TVTopShelfContentProvider {
         if let progress = item.playbackProgress {
             shelfItem.playbackProgress = progress
         }
-        let posterString = posterURLString(for: item, seriesPosters: seriesPosters)
+        let posterString = posterURLString(
+            for: item,
+            seriesPosters: seriesPosters,
+            hidesEpisodeStills: hidesEpisodeStills
+        )
         if let posterString, let url = URL(string: posterString) {
             shelfItem.setImageURL(url, for: .screenScale1x)
             shelfItem.setImageURL(url, for: .screenScale2x)
@@ -254,10 +271,12 @@ final class ContentProvider: TVTopShelfContentProvider {
     /// For episodes, prefer the season poster; fall back to the series
     /// poster; only use the item's own `posterUrl` as a last resort,
     /// because for episodes the server emits a 16:9 still which looks
-    /// bad in a 2:3 poster tile. Movies use their own poster directly.
+    /// bad in a 2:3 poster tile, and which the profile may hide. Movies
+    /// use their own poster directly.
     private func posterURLString(
         for item: TopShelfItem,
-        seriesPosters: EpisodePosters
+        seriesPosters: EpisodePosters,
+        hidesEpisodeStills: Bool
     ) -> String? {
         if item.type == "episode",
            let poster = seriesPosters.lookup(
@@ -266,7 +285,7 @@ final class ContentProvider: TVTopShelfContentProvider {
            ) {
             return poster
         }
-        return item.posterUrl
+        return item.fallbackPosterUrl(hidingEpisodeStills: hidesEpisodeStills)
     }
 
     /// Episodes benefit from a "Series Name · S1E3" label instead of

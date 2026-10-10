@@ -1030,6 +1030,8 @@ struct TVItemDetailView: View {
             releaseDate: item.releaseDate,
             firstAirDate: item.firstAirDate,
             lastAirDate: item.lastAirDate,
+            posterIsEpisodeStill: item.posterIsEpisodeStill,
+            backdropIsEpisodeStill: item.backdropIsEpisodeStill,
             posterUrl: item.posterUrl,
             posterThumbhash: item.posterThumbhash,
             backdropUrl: item.backdropUrl,

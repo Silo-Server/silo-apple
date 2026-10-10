@@ -95,6 +95,10 @@ struct TVItemDetailRouteSeed: Hashable {
     let posterThumbhash: String?
     let backdropUrl: String?
     let backdropThumbhash: String?
+    /// Identifies whether the loading frame's backdrop is an episode still.
+    let backdropIsEpisodeStill: Bool?
+    /// Set only for episode seeds.
+    let episodeWatchState: EpisodeWatchState?
 
     init(_ item: SectionItem) {
         mediaType = item.type
@@ -109,6 +113,8 @@ struct TVItemDetailRouteSeed: Hashable {
         posterThumbhash = item.posterThumbhash
         backdropUrl = item.backdropUrl
         backdropThumbhash = item.backdropThumbhash
+        backdropIsEpisodeStill = item.backdropIsEpisodeStill
+        episodeWatchState = item.isEpisodeItem ? EpisodeWatchState(sectionItem: item) : nil
     }
 
     init(_ item: BrowseItem) {
@@ -124,6 +130,8 @@ struct TVItemDetailRouteSeed: Hashable {
         posterThumbhash = item.posterThumbhash
         backdropUrl = item.backdropUrl
         backdropThumbhash = item.backdropThumbhash
+        backdropIsEpisodeStill = item.backdropIsEpisodeStill
+        episodeWatchState = item.isEpisodeItem ? EpisodeWatchState(browseItem: item) : nil
     }
 
     /// Continue Watching episodes open their parent Series. Keep the immediate
@@ -143,6 +151,8 @@ struct TVItemDetailRouteSeed: Hashable {
         posterThumbhash = episode.posterThumbhash
         backdropUrl = nil
         backdropThumbhash = nil
+        backdropIsEpisodeStill = nil
+        episodeWatchState = nil
     }
 }
 

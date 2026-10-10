@@ -21,7 +21,8 @@ struct WatchPartyHubView: View {
                 ZStack {
                     WatchPartyBackdrop(url: preview.backdropUrl ?? preview.posterUrl,
                                        thumbhash: preview.backdropUrl != nil ? preview.backdropThumbhash : preview.posterThumbhash,
-                                       isPoster: preview.backdropUrl == nil)
+                                       isPoster: preview.backdropUrl == nil,
+                                       hidesStill: preview.hidesBackdrop(with: EpisodeSpoilerPreferences.shared.settings))
                     #if os(tvOS)
                     // Nothing else here can hold focus while the party starts;
                     // without an owner Menu cannot leave a slow request.
@@ -437,7 +438,8 @@ struct WatchPartyLobbyView: View {
                 WatchPartyBackdrop(
                     url: displayedItem?.backdropUrl ?? displayedItem?.posterUrl ?? leadingSuggestionPoster,
                     thumbhash: displayedItem?.backdropUrl != nil ? displayedItem?.backdropThumbhash : displayedItem?.posterThumbhash,
-                    isPoster: displayedItem?.backdropUrl == nil)
+                    isPoster: displayedItem?.backdropUrl == nil,
+                    hidesStill: backdropHidesStill)
                 #if os(tvOS)
                 // The options overlay is the only focus owner while it is up;
                 // closing it returns focus to the Options button that opened it.
@@ -475,9 +477,23 @@ struct WatchPartyLobbyView: View {
         return preview
     }
 
-    private var leadingSuggestionPoster: String? {
+    /// Protection for whichever artwork the backdrop shows: the displayed
+    /// item's own, or the leading suggestion's poster when it has none.
+    private var backdropHidesStill: Bool {
+        let spoilers = EpisodeSpoilerPreferences.shared.settings
+        if let item = displayedItem, item.backdropUrl != nil || item.posterUrl != nil {
+            return item.hidesBackdrop(with: spoilers)
+        }
+        return leadingSuggestion?.hidesPoster(with: spoilers) ?? false
+    }
+
+    private var leadingSuggestion: WatchPartySuggestion? {
         guard session.room?.selectionMode == .vote else { return nil }
-        let poster = (session.voteWinner ?? session.votes.rows.first)?.posterUrl
+        return session.voteWinner ?? session.votes.rows.first
+    }
+
+    private var leadingSuggestionPoster: String? {
+        let poster = leadingSuggestion?.posterUrl
         return poster?.isEmpty == false ? poster : nil
     }
 
@@ -765,7 +781,8 @@ struct WatchPartyLobbyView: View {
         let showsPoster = !(room.selectedContentId?.isEmpty ?? true) && !(room.selectionMode == .vote && room.phase == .lobby)
         return HStack(alignment: .bottom, spacing: 14) {
             if showsPoster {
-                WatchPartyPoster(url: displayedItem?.posterUrl, thumbhash: displayedItem?.posterThumbhash, width: 112)
+                WatchPartyPoster(url: displayedItem?.posterUrl, thumbhash: displayedItem?.posterThumbhash, width: 112,
+                                 hidesStill: displayedItem?.hidesPoster(with: EpisodeSpoilerPreferences.shared.settings) ?? false)
                     .shadow(color: .black.opacity(0.6), radius: 16, y: 10)
             }
             heroText(room, titleSize: WatchPartyMetrics.heroTitle)
@@ -875,7 +892,7 @@ struct WatchPartyLobbyView: View {
                 HStack(alignment: .top, spacing: 40) {
                     VStack(alignment: .leading, spacing: 30) {
                         heroText(room, titleSize: WatchPartyMetrics.heroTitle)
-                        if let overview = displayedItem?.overview, !overview.isEmpty {
+                        if let overview = displayedItem?.visibleOverview(with: EpisodeSpoilerPreferences.shared.settings), !overview.isEmpty {
                             Text(overview)
                                 .font(.system(size: 24))
                                 .lineSpacing(6)
@@ -1000,7 +1017,8 @@ private struct WatchPartySuggestionRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            WatchPartyPoster(url: suggestion.posterUrl, width: WatchPartyMetrics.ballotPoster.width, cornerRadius: 6)
+            WatchPartyPoster(url: suggestion.posterUrl, width: WatchPartyMetrics.ballotPoster.width, cornerRadius: 6,
+                             hidesStill: suggestion.hidesPoster(with: EpisodeSpoilerPreferences.shared.settings))
             VStack(alignment: .leading, spacing: 3) {
                 Text(suggestion.title).font(.system(size: 15, weight: .semibold)).lineLimit(1)
                     .foregroundStyle(Color.siloOnSurface)
@@ -1056,7 +1074,8 @@ private struct WatchPartySuggestionCard: View {
             Button {
                 if canQueue { onQueue(suggestion) }
             } label: {
-                WatchPartyPoster(url: suggestion.posterUrl, width: Self.poster.width, cornerRadius: 10)
+                WatchPartyPoster(url: suggestion.posterUrl, width: Self.poster.width, cornerRadius: 10,
+                             hidesStill: suggestion.hidesPoster(with: EpisodeSpoilerPreferences.shared.settings))
                     .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .stroke(isFocused ? Color.siloOnSurface : Color.siloChromeRestingBorder, lineWidth: isFocused ? 5 : 1)
                         .padding(isFocused ? -8 : 0))
@@ -1165,7 +1184,8 @@ private struct WatchPartyCandidateRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            WatchPartyPoster(url: suggestion.posterUrl, width: WatchPartyMetrics.ballotPoster.width, cornerRadius: 6)
+            WatchPartyPoster(url: suggestion.posterUrl, width: WatchPartyMetrics.ballotPoster.width, cornerRadius: 6,
+                             hidesStill: suggestion.hidesPoster(with: EpisodeSpoilerPreferences.shared.settings))
             VStack(alignment: .leading, spacing: 3) {
                 Text(suggestion.title).font(.system(size: 15, weight: .semibold)).lineLimit(1)
                     .foregroundStyle(Color.siloOnSurface)
@@ -1237,7 +1257,8 @@ private struct WatchPartyCandidateCard: View {
                 Task { await session.setVote(suggestionId: suggestion.id, voted: personalVote == false) }
             } label: {
                 ZStack(alignment: .topLeading) {
-                    WatchPartyPoster(url: suggestion.posterUrl, width: WatchPartyMetrics.ballotPoster.width, cornerRadius: 12)
+                    WatchPartyPoster(url: suggestion.posterUrl, width: WatchPartyMetrics.ballotPoster.width, cornerRadius: 12,
+                             hidesStill: suggestion.hidesPoster(with: EpisodeSpoilerPreferences.shared.settings))
                     WatchPartyVoteBadge(count: suggestion.voteCount, isLeader: isLeader)
                         .padding(16)
                     if personalVote == true {

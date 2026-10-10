@@ -24,6 +24,18 @@ struct TVItemDetailLoadingView: View {
 
     // MARK: - Movie / series / episode
 
+    /// An episode seed's backdrop is the episode still; spoiler protection
+    /// applies to it and to the episode description.
+    private var hidesEpisodeStill: Bool {
+        guard let state = seed?.episodeWatchState else { return false }
+        return EpisodeSpoilerPreferences.shared.settings.hidesImage(for: state, isEpisodeStill: seed?.backdropIsEpisodeStill)
+    }
+
+    private var hidesEpisodeOverview: Bool {
+        guard let state = seed?.episodeWatchState else { return false }
+        return EpisodeSpoilerPreferences.shared.settings.hidesOverview(for: state)
+    }
+
     private var cinematicLayout: some View {
         TVDetailPageSurface(backdropURL: seed?.backdropUrl) {
             VStack(alignment: .leading, spacing: 0) {
@@ -54,6 +66,7 @@ struct TVItemDetailLoadingView: View {
                         targetSize: artworkSize,
                         contentMode: .fill
                     )
+                    .episodeSpoilerBlur(hidesEpisodeStill)
                 } else {
                     Rectangle()
                         .fill(Color.white.opacity(0.035))
@@ -133,7 +146,7 @@ struct TVItemDetailLoadingView: View {
 
     @ViewBuilder
     private var loadingSynopsis: some View {
-        if let overview = nonEmpty(seed?.overview) {
+        if !hidesEpisodeOverview, let overview = nonEmpty(seed?.overview) {
             Text(overview)
                 .font(.system(size: 26))
                 .foregroundStyle(Color.white.opacity(0.72))

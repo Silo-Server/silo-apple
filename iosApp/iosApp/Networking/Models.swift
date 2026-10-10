@@ -36,6 +36,8 @@ struct BrowseItem: Codable, Identifiable, Hashable {
     let networks: [String]?
     let showStatus: String?
     let overview: String?
+    var posterIsEpisodeStill: Bool? = nil
+    var backdropIsEpisodeStill: Bool? = nil
     @ArtworkURL var posterUrl: String? = nil
     let posterThumbhash: String?
     @ArtworkURL var backdropUrl: String? = nil
@@ -136,6 +138,8 @@ struct SectionItem: Codable, Identifiable, Hashable {
     let positionSeconds: Double?
     let durationSeconds: Double?
     let progressUpdatedAt: String?
+    var posterIsEpisodeStill: Bool? = nil
+    var backdropIsEpisodeStill: Bool? = nil
     @ArtworkURL var posterUrl: String? = nil
     let posterThumbhash: String?
     @ArtworkURL var backdropUrl: String? = nil
@@ -175,6 +179,8 @@ struct SectionItem: Codable, Identifiable, Hashable {
         self.positionSeconds = positionSeconds ?? item.positionSeconds
         self.durationSeconds = durationSeconds ?? item.durationSeconds
         progressUpdatedAt = item.progressUpdatedAt
+        posterIsEpisodeStill = item.posterIsEpisodeStill
+        backdropIsEpisodeStill = item.backdropIsEpisodeStill
         posterUrl = item.posterUrl
         posterThumbhash = item.posterThumbhash
         backdropUrl = item.backdropUrl
@@ -308,6 +314,8 @@ extension BrowseItem {
             networks: item.networks,
             showStatus: item.showStatus,
             overview: item.overview,
+            posterIsEpisodeStill: item.posterIsEpisodeStill,
+            backdropIsEpisodeStill: item.backdropIsEpisodeStill,
             posterUrl: item.posterUrl,
             posterThumbhash: item.posterThumbhash,
             backdropUrl: item.backdropUrl,
@@ -453,6 +461,8 @@ struct ItemDetail: Codable {
     let releaseDate: String?
     let firstAirDate: String?
     let lastAirDate: String?
+    var posterIsEpisodeStill: Bool? = nil
+    var backdropIsEpisodeStill: Bool? = nil
     @ArtworkURL var posterUrl: String? = nil
     let posterThumbhash: String?
     @ArtworkURL var backdropUrl: String? = nil
@@ -806,6 +816,7 @@ struct EpisodeListItem: Codable, Identifiable, Hashable {
     let imdbId: String?
     let tmdbId: String?
     let tvdbId: String?
+    var stillIsEpisodeStill: Bool? = nil
     @ArtworkURL var stillUrl: String? = nil
     let stillThumbhash: String?
     let userData: LeafItemUserData?

@@ -326,7 +326,7 @@ struct IOSSettingsOverview: View {
     }
 
     private var matchesPlayback: Bool {
-        matches("playback", "quality", "audio", "dolby vision", "episodes", "skipping", "skip interval", "rewind", "fast forward", "audiobooks")
+        matches("playback", "quality", "audio", "dolby vision", "episodes", "skipping", "skip interval", "rewind", "fast forward", "audiobooks", "spoilers", "blur", "thumbnails", "descriptions")
     }
 
     private var matchesInterface: Bool {

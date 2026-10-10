@@ -1135,7 +1135,9 @@ struct PlayerNextUpScreen: View {
                     .foregroundStyle(.white.opacity(0.46))
             }
 
-            if !compact, let overview = episode.overview, !overview.isEmpty {
+            if !compact,
+               !(episode.isEpisode && EpisodeSpoilerPreferences.shared.settings.hidesOverview(for: episode.watchState)),
+               let overview = episode.overview, !overview.isEmpty {
                 Text(overview)
                     .font(.system(size: bodySize))
                     .lineLimit(isTV ? 3 : 2)

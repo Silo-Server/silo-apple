@@ -524,6 +524,7 @@ struct TVRequestsPage: View {
             progressUpdatedAt: nil,
             prefersLastUsedPlaybackMetadata: false,
             isEpisode: false,
+            protectsEpisodeImages: false,
             seriesContextId: nil,
             seriesContextSeasonNumber: nil,
             requestProgress: progress,

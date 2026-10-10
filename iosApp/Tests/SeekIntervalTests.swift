@@ -570,7 +570,7 @@ private func effectiveResponse(_ values: [String: Int], revision: Int = 9) throw
 }
 
 @MainActor
-private final class FakeSeekIntervalTransport: SeekIntervalTransport, @unchecked Sendable {
+private final class FakeSeekIntervalTransport: ProfileScopedSettingTransport, @unchecked Sendable {
     struct Write: Equatable {
         let key: SettingKey
         let value: SettingJSONValue

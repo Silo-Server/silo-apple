@@ -7,6 +7,8 @@ enum APIv2CatalogRead {
     struct CatalogItemDetail: Decodable {
         let advisoryAge: Int64?
         let advisorySource: String?
+        let posterIsEpisodeStill: Bool?
+        let backdropIsEpisodeStill: Bool?
         let airDate: String?
         let audiobook: AudiobookDetailExtension?
         let backdropThumbhash: String?
@@ -85,6 +87,7 @@ enum APIv2CatalogRead {
     }
 
     struct Episode: Decodable {
+        let stillIsEpisodeStill: Bool?
         let airDate: String?
         let contentId: String
         let episodeNumber: Int64

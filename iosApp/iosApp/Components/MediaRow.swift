@@ -441,6 +441,8 @@ struct MediaRow: View {
                 title: posterTitle(for: item),
                 posterUrl: item.posterUrl ?? "",
                 thumbhash: item.posterThumbhash,
+                episodeWatchState: item.isEpisodeItem ? EpisodeWatchState(sectionItem: item) : nil,
+                imageIsEpisodeStill: item.posterIsEpisodeStill,
                 mediaType: item.type,
                 year: item.year,
                 subtitle: EpisodeCardCaption.line(for: item),

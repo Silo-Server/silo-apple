@@ -59,6 +59,8 @@ struct MediaCard: View {
     let title: String
     let posterUrl: String
     var thumbhash: String? = nil
+    var episodeWatchState: EpisodeWatchState? = nil
+    var imageIsEpisodeStill: Bool? = nil
     /// Catalog type ("movie", "series", "episode", …). Picks the mark shown
     /// when the poster is missing.
     var mediaType: String? = nil
@@ -305,6 +307,12 @@ struct MediaCard: View {
 
     // MARK: - Subviews
 
+    private var hidesEpisodeStill: Bool {
+        guard var state = episodeWatchState else { return false }
+        state.played = isPlayed
+        return EpisodeSpoilerPreferences.shared.settings.hidesImage(for: state, isEpisodeStill: imageIsEpisodeStill)
+    }
+
     private var posterImage: some View {
         ZStack(alignment: .bottom) {
             AsyncImageView(
@@ -315,6 +323,7 @@ struct MediaCard: View {
                 placeholderStyle: .artwork,
                 placeholderSymbol: ArtworkPlaceholderSymbol.forMediaType(mediaType)
             )
+                .episodeSpoilerBlur(hidesEpisodeStill)
                 .frame(width: cardWidth, height: cardHeight)
 
             // Server / user-customized overlays (resolution, HDR, ratings, …)

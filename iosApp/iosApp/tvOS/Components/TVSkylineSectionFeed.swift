@@ -45,6 +45,10 @@ struct TVSkylineSectionFeed: View {
     /// The row that owns card focus or its context-menu dismissal flow. Unlike
     /// the marquee preview, this is cleared when focus moves into chrome.
     @State private var focusRestorationOwnerSectionId: String?
+    /// The card the marquee content was last built from, kept so a spoiler
+    /// settings change can rebuild it. The settings load after sign-in and
+    /// can land after Home has already seeded the marquee.
+    @State private var marqueeSource: (item: SectionItem, section: ResolvedSection)?
 
     init(
         sections: [ResolvedSection],
@@ -104,6 +108,22 @@ struct TVSkylineSectionFeed: View {
         .onChange(of: sections.map(\.id)) { _, _ in
             seedMarqueeFromFirstItem()
             if let pending = pendingFocusRequest { requestEntryFocus(pending) }
+        }
+        .onChange(of: sections.map(\.items)) { _, _ in
+            guard let source = marqueeSource,
+                  let section = sections.first(where: { $0.id == source.section.id }),
+                  let item = section.items.first(where: { $0.contentId == source.item.contentId }) else {
+                marqueeSource = nil
+                marqueeModel.clearSelection()
+                seedMarqueeFromFirstItem()
+                return
+            }
+            marqueeSource = (item, section)
+            marqueeModel.replaceContent(marqueeContent(for: item, in: section))
+        }
+        .onChange(of: EpisodeSpoilerPreferences.shared.settings) { _, _ in
+            guard let source = marqueeSource else { return }
+            marqueeModel.replaceContent(marqueeContent(for: source.item, in: source.section))
         }
     }
 
@@ -254,14 +274,20 @@ struct TVSkylineSectionFeed: View {
     }
 
     private func previewFocusedItem(_ item: SectionItem, in section: ResolvedSection) {
+        marqueeSource = (item, section)
         marqueeModel.preview(
-            TVMarqueeContent(
-                item: item,
-                rowId: section.id,
-                rowTitle: section.title,
-                isContinueWatching: section.isContinueWatchingSection
-            ),
+            marqueeContent(for: item, in: section),
             neighborBackdropURLs: neighborBackdropURLs(around: item, in: section)
+        )
+    }
+
+    private func marqueeContent(for item: SectionItem, in section: ResolvedSection) -> TVMarqueeContent {
+        TVMarqueeContent(
+            item: item,
+            rowId: section.id,
+            rowTitle: section.title,
+            isContinueWatching: section.isContinueWatchingSection,
+            spoilers: EpisodeSpoilerPreferences.shared.settings
         )
     }
 
@@ -293,14 +319,8 @@ struct TVSkylineSectionFeed: View {
         guard marqueeModel.content == nil,
               let section = sections.first,
               let item = section.items.first else { return }
-        marqueeModel.seed(
-            TVMarqueeContent(
-                item: item,
-                rowId: section.id,
-                rowTitle: section.title,
-                isContinueWatching: section.isContinueWatchingSection
-            )
-        )
+        marqueeSource = (item, section)
+        marqueeModel.seed(marqueeContent(for: item, in: section))
     }
 
 }

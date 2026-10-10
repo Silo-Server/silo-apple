@@ -421,6 +421,7 @@ struct ContentView: View {
             if router.authState == .authenticated {
                 await uiCustomization.refresh()
                 await SeekIntervalPreferences.shared.refresh()
+                await EpisodeSpoilerPreferences.shared.refresh()
                 // The one hydration whose outcome is never optional: `clear()`
                 // above guarantees a real fetch, so the wrapper's
                 // short-circuit case cannot apply here and a failure leaves
@@ -439,6 +440,7 @@ struct ContentView: View {
             if router.authState == .authenticated {
                 await uiCustomization.refresh()
                 await SeekIntervalPreferences.shared.refresh()
+                await EpisodeSpoilerPreferences.shared.refresh()
                 #if os(iOS) || os(tvOS)
                 await diagnosticsModel.handleForeground()
                 #endif
@@ -553,7 +555,8 @@ struct ContentView: View {
         async let profile: Void = CurrentProfileStore.shared.refresh()
         async let customization: Void = uiCustomization.refresh()
         async let seek: Void = SeekIntervalPreferences.shared.refresh()
-        _ = await (overlay, ai, imageSize, requests, shuffle, subtitles, profile, customization, seek)
+        async let spoilers: Void = EpisodeSpoilerPreferences.shared.refresh()
+        _ = await (overlay, ai, imageSize, requests, shuffle, subtitles, profile, customization, seek, spoilers)
     }
 
     @MainActor

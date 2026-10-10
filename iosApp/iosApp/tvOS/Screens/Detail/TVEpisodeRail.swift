@@ -572,6 +572,9 @@ struct TVEpisodeCard: View {
             EpisodeCardLabel(
                 episode: episode,
                 isPlayed: isPlayed,
+                hidesStill: EpisodeSpoilerPreferences.shared.settings.hidesImage(
+                    for: EpisodeWatchState(episode.userData, playedOverride: playedOverride), isEpisodeStill: episode.stillIsEpisodeStill
+                ),
                 isCurrent: isCurrent,
                 cardWidth: cardWidth,
                 stillHeight: stillHeight,
@@ -705,6 +708,9 @@ struct TVEpisodeCard: View {
 private struct EpisodeCardLabel: View {
     let episode: EpisodeListItem
     let isPlayed: Bool
+    /// Spoiler protection: blur the still of an episode the profile has not
+    /// started.
+    var hidesStill = false
     let isCurrent: Bool
     let cardWidth: CGFloat
     let stillHeight: CGFloat
@@ -795,6 +801,7 @@ private struct EpisodeCardLabel: View {
                 placeholderSymbol: ArtworkPlaceholderSymbol.television
             )
             .frame(width: cardWidth, height: stillHeight)
+            .episodeSpoilerBlur(hidesStill)
 
             if isPlayed {
                 Color.black.opacity(0.35)
