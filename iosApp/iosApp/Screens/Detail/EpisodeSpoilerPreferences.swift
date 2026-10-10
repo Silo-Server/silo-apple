@@ -153,8 +153,12 @@ final class EpisodeSpoilerPreferences {
     /// server switch, and until a refresh adopts the new identity, use that
     /// identity's cached answer, never the previous profile's.
     private func currentValues() -> EpisodeSpoilerSettings? {
+        // Read `values` on every path so a view that renders before a refresh
+        // adopts the new identity still observes the store and redraws when
+        // the server's answer arrives.
+        let loaded = values
         let key = requestIdentity().map(Self.cacheKey(for:))
-        guard key != loadedCacheKey else { return values }
+        guard key != loadedCacheKey else { return loaded }
         return key.flatMap(cachedValues(for:))
     }
 
@@ -291,8 +295,19 @@ final class EpisodeSpoilerPreferences {
                 value: .bool(isOn),
                 requestIdentity: context.requestIdentity
             )
-            guard isCurrent(context) else { return }
+            // The server now holds this value for the profile it was made on,
+            // even if the app has moved to another profile since.
+            guard loadedCacheKey == context.cacheKey else {
+                persistConfirmed(setting, isOn, inCacheFor: context.cacheKey)
+                return
+            }
             confirmed[key] = isOn
+            // A return to this profile reloaded its cache, which predates the
+            // write; without a newer change pending, show what was saved.
+            if latestWriteGeneration[key] == nil, var shown = values {
+                shown[setting] = isOn
+                values = shown
+            }
             persistConfirmed(cacheKey: context.cacheKey)
             if latestWriteGeneration[key] == generation {
                 writeErrors[key] = nil
@@ -317,7 +332,18 @@ final class EpisodeSpoilerPreferences {
                 cached[setting] = value
             }
         }
-        if let data = try? JSONEncoder().encode(Cache(values: cached)) {
+        writeCache(cached, cacheKey: cacheKey)
+    }
+
+    /// Records one confirmed switch for a profile that is no longer loaded.
+    private func persistConfirmed(_ setting: EpisodeSpoilerSetting, _ isOn: Bool, inCacheFor cacheKey: String) {
+        guard var cached = cachedValues(for: cacheKey) else { return }
+        cached[setting] = isOn
+        writeCache(cached, cacheKey: cacheKey)
+    }
+
+    private func writeCache(_ values: EpisodeSpoilerSettings, cacheKey: String) {
+        if let data = try? JSONEncoder().encode(Cache(values: values)) {
             defaults.set(data, forKey: cacheKey)
         }
     }
@@ -371,6 +397,6 @@ final class EpisodeSpoilerPreferences {
     }
 
     static func cacheKey(for identity: HTTPRequestIdentity) -> String {
-        "silo.episodeSpoilers.\(identity.serverId).\(identity.profileId)"
+        EpisodeSpoilerCache.key(serverId: identity.serverId, profileId: identity.profileId)
     }
 }

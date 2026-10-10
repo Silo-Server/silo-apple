@@ -36,6 +36,14 @@ struct TopShelfItem: Decodable {
     @ArtworkURL var posterUrl: String?
     @ArtworkURL var backdropUrl: String?
 
+    /// The tile's last-resort artwork: the item's own poster, which for an
+    /// episode is its still. An untouched episode shows none when the profile
+    /// hides unwatched episode images.
+    func fallbackPosterUrl(hidingEpisodeStills: Bool) -> String? {
+        if hidingEpisodeStills, type == "episode", (positionSeconds ?? 0) <= 0 { return nil }
+        return posterUrl
+    }
+
     /// 0.0...1.0 or nil when we don't have both position and duration.
     var playbackProgress: Double? {
         guard let position = positionSeconds,

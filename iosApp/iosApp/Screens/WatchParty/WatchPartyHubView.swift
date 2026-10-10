@@ -767,8 +767,8 @@ struct WatchPartyLobbyView: View {
         let showsPoster = !(room.selectedContentId?.isEmpty ?? true) && !(room.selectionMode == .vote && room.phase == .lobby)
         return HStack(alignment: .bottom, spacing: 14) {
             if showsPoster {
-                WatchPartyPoster(url: displayedItem?.posterUrl, thumbhash: displayedItem?.posterThumbhash, width: 112)
-                    .episodeSpoilerBlur(displayedItem?.hidesPoster(with: EpisodeSpoilerPreferences.shared.settings) ?? false)
+                WatchPartyPoster(url: displayedItem?.posterUrl, thumbhash: displayedItem?.posterThumbhash, width: 112,
+                                 hidesStill: displayedItem?.hidesPoster(with: EpisodeSpoilerPreferences.shared.settings) ?? false)
                     .shadow(color: .black.opacity(0.6), radius: 16, y: 10)
             }
             heroText(room, titleSize: WatchPartyMetrics.heroTitle)

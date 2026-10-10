@@ -41,6 +41,16 @@ final class EpisodeWatchStateTests: XCTestCase {
 
 // MARK: - Settings helpers
 
+extension EpisodeWatchStateTests {
+    func testBrowseRowsWithAResumePositionAreStarted() throws {
+        let decoder = HTTPClient.makeJSONDecoder()
+        let untouched = try decoder.decode(BrowseItem.self, from: Data(#"{"content_id":"e1","type":"episode","title":"Pilot"}"#.utf8))
+        let started = try decoder.decode(BrowseItem.self, from: Data(#"{"content_id":"e1","type":"episode","title":"Pilot","position_seconds":12}"#.utf8))
+        XCTAssertTrue(EpisodeWatchState(browseItem: untouched).isUnwatched)
+        XCTAssertFalse(EpisodeWatchState(browseItem: started).isUnwatched)
+    }
+}
+
 final class EpisodeSpoilerSettingsTests: XCTestCase {
     private let unwatched = EpisodeWatchState(played: false)
     private let started = EpisodeWatchState(played: false, isInProgress: true, positionSeconds: 60)
@@ -326,6 +336,66 @@ final class EpisodeSpoilerPreferencesTests: XCTestCase {
         XCTAssertEqual(store.settings, EpisodeSpoilerSettings(hidesImages: true, hidesOverviews: false))
     }
 
+    func testAWriteThatFinishesAfterASwitchIsCachedForItsProfile() async {
+        let store = makeStore()
+        await store.refresh()
+        let gate = WriteGate()
+        transport.beforeWrite = { await gate.wait() }
+        store.set(.images, to: true)
+
+        identity = Self.profileB
+        await store.refresh()
+        await gate.open()
+        await store.waitForPendingWrites()
+
+        // Back on A with the server unreachable, the cache must hold A's save.
+        identity = Self.profileA
+        transport.capabilities = .failed(.transport(description: "offline"))
+        await store.refresh()
+        XCTAssertTrue(store.settings.hidesImages)
+    }
+
+    func testReturningToAProfileMidWriteShowsTheSavedValue() async {
+        let store = makeStore()
+        await store.refresh()
+        let gate = WriteGate()
+        transport.beforeWrite = { await gate.wait() }
+        store.set(.images, to: true)
+
+        identity = Self.profileB
+        await store.refresh()
+        identity = Self.profileA
+        // Reloads A's cache, which predates the write; the read is skipped
+        // while the write is in flight.
+        await store.refresh()
+        XCTAssertFalse(store.settings.hidesImages)
+
+        await gate.open()
+        await store.waitForPendingWrites()
+        XCTAssertTrue(store.settings.hidesImages)
+    }
+
+    func testAViewReadingANewProfileBeforeItsRefreshRedrawsWithTheAnswer() async {
+        let store = makeStore()
+        await store.refresh()
+        identity = Self.profileB
+        let redraw = ObservationFlag()
+        withObservationTracking { _ = store.settings } onChange: { redraw.fired = true }
+
+        transport.effective = ["catalog.hide_unwatched_episode_images": true]
+        await store.refresh()
+        XCTAssertTrue(redraw.fired)
+        XCTAssertTrue(store.settings.hidesImages)
+    }
+
+    func testTopShelfReadsTheImageSwitchTheStoreCached() async {
+        transport.effective = ["catalog.hide_unwatched_episode_images": true]
+        await makeStore().refresh()
+        XCTAssertTrue(EpisodeSpoilerCache.hidesImages(serverId: "server-1", profileId: "profile-a", in: suite))
+        XCTAssertFalse(EpisodeSpoilerCache.hidesImages(serverId: "server-1", profileId: "profile-b", in: suite))
+        XCTAssertFalse(EpisodeSpoilerCache.hidesImages(serverId: "server-1", profileId: nil, in: suite))
+    }
+
     func testProbeFailureKeepsTheCachedAnswer() async {
         transport.effective = ["catalog.hide_unwatched_episode_images": true]
         await makeStore().refresh()
@@ -390,6 +460,24 @@ final class EpisodeSpoilerPreferencesTests: XCTestCase {
 // MARK: - tvOS marquee
 
 #if os(tvOS)
+final class TopShelfSpoilerTests: XCTestCase {
+    private func item(_ json: String) throws -> TopShelfItem {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(TopShelfItem.self, from: Data(json.utf8))
+    }
+
+    func testFallbackLeavesOutAnUntouchedEpisodesStillOnlyWhenHidden() throws {
+        let untouched = try item(#"{"content_id":"e1","type":"episode","title":"Pilot","poster_url":"https://example.invalid/still.jpg"}"#)
+        let started = try item(#"{"content_id":"e2","type":"episode","title":"Two","position_seconds":30,"poster_url":"https://example.invalid/still2.jpg"}"#)
+        let movie = try item(#"{"content_id":"m1","type":"movie","title":"Film","poster_url":"https://example.invalid/poster.jpg"}"#)
+        XCTAssertNil(untouched.fallbackPosterUrl(hidingEpisodeStills: true))
+        XCTAssertEqual(untouched.fallbackPosterUrl(hidingEpisodeStills: false), "https://example.invalid/still.jpg")
+        XCTAssertEqual(started.fallbackPosterUrl(hidingEpisodeStills: true), "https://example.invalid/still2.jpg")
+        XCTAssertEqual(movie.fallbackPosterUrl(hidingEpisodeStills: true), "https://example.invalid/poster.jpg")
+    }
+}
+
 final class EpisodeSpoilerMarqueeTests: XCTestCase {
     func testProvenancePreservesSeriesArtworkInEitherSlot() throws {
         var item = try episodeItem(
@@ -607,6 +695,27 @@ private func spoilerResponse(_ values: [String: Any], revision: Int = 16) throws
     return try SettingsWireCoding.makeDecoder().decode(EffectiveSettingValuesResponse.self, from: data)
 }
 
+/// Holds writes in flight until a test opens it.
+private actor WriteGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        waiters.forEach { $0.resume() }
+        waiters = []
+    }
+}
+
+private final class ObservationFlag: @unchecked Sendable {
+    var fired = false
+}
+
 @MainActor
 private final class FakeEpisodeSpoilerTransport: ProfileScopedSettingTransport, @unchecked Sendable {
     struct Write: Equatable {
@@ -619,6 +728,7 @@ private final class FakeEpisodeSpoilerTransport: ProfileScopedSettingTransport, 
     var effective: [String: Any] = [:]
     var effectiveError: Error?
     var failingKeys: Set<SettingKey> = []
+    var beforeWrite: (@MainActor () async -> Void)?
 
     private(set) var capabilityProbes = 0
     private(set) var effectiveReads = 0
@@ -653,6 +763,9 @@ private final class FakeEpisodeSpoilerTransport: ProfileScopedSettingTransport, 
         value: SettingJSONValue,
         requestIdentity: HTTPRequestIdentity
     ) async throws {
+        if let hook = await MainActor.run(body: { beforeWrite }) {
+            await hook()
+        }
         try await MainActor.run {
             writes.append(Write(key: key, value: value, identity: requestIdentity))
             if failingKeys.contains(key) {

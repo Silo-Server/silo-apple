@@ -104,9 +104,15 @@ private struct WatchPartyMediaChoice: Hashable {
         lobbyTitle = item.title
         seasonNumber = item.seasonNumber
         if let seriesId = item.seriesId, !seriesId.isEmpty {
+            // The series page and its episodes reuse this artwork, so leave
+            // out anything the server marks as this episode's still.
+            let posterIsStill = item.posterIsEpisodeStill == true
+            let backdropIsStill = item.backdropIsEpisodeStill == true
             seriesLink = BrowseItem(seriesId: seriesId, title: item.seriesTitle ?? item.title,
-                                    posterUrl: item.posterUrl, posterThumbhash: item.posterThumbhash,
-                                    backdropUrl: item.backdropUrl, backdropThumbhash: item.backdropThumbhash)
+                                    posterUrl: posterIsStill ? nil : item.posterUrl,
+                                    posterThumbhash: posterIsStill ? nil : item.posterThumbhash,
+                                    backdropUrl: backdropIsStill ? nil : item.backdropUrl,
+                                    backdropThumbhash: backdropIsStill ? nil : item.backdropThumbhash)
         }
         if let seriesTitle = item.seriesTitle, let season = item.seasonNumber, let episode = item.episodeNumber {
             lobbySubtitle = "\(seriesTitle) · S\(season):E\(episode)"
@@ -126,6 +132,7 @@ private struct WatchPartyMediaChoice: Hashable {
         posterThumbhash = series.posterThumbhash
         backdropURL = series.backdropUrl
         backdropThumbhash = series.backdropThumbhash
+        backdropIsEpisodeStill = false
         lobbyTitle = nextUp.title ?? "Episode \(nextUp.episodeNumber)"
         lobbySubtitle = "\(series.title) · S\(nextUp.seasonNumber):E\(nextUp.episodeNumber)"
         seriesLink = series
@@ -1108,8 +1115,8 @@ private struct WatchPartyMediaChoiceView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: WatchPartyMetrics.body * 1.4) {
                     HStack(alignment: .bottom, spacing: WatchPartyMetrics.body) {
-                        WatchPartyPoster(url: choice.posterURL, thumbhash: choice.posterThumbhash, width: posterWidth)
-                            .episodeSpoilerBlur(choice.episodeWatchState.map { spoilers.hidesImage(for: $0, isEpisodeStill: choice.posterIsEpisodeStill) } ?? false)
+                        WatchPartyPoster(url: choice.posterURL, thumbhash: choice.posterThumbhash, width: posterWidth,
+                                         hidesStill: choice.episodeWatchState.map { spoilers.hidesImage(for: $0, isEpisodeStill: choice.posterIsEpisodeStill) } ?? false)
                             .shadow(color: .black.opacity(0.6), radius: 16, y: 10)
                         VStack(alignment: .leading, spacing: 8) {
                             WatchPartyEyebrow(text: purpose == .suggest ? "Suggest to the party" : "Watch together")

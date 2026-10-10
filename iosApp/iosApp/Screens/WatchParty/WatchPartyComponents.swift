@@ -488,11 +488,14 @@ struct WatchPartyPoster: View {
     var thumbhash: String? = nil
     let width: CGFloat
     var cornerRadius: CGFloat = 8
+    /// Spoiler protection for an unwatched episode's still.
+    var hidesStill = false
 
     var body: some View {
         Group {
             if let url, !url.isEmpty {
                 AsyncImageView(url: url, thumbhash: thumbhash, targetSize: CGSize(width: width, height: width * 1.5), contentMode: .fill)
+                    .episodeSpoilerBlur(hidesStill)
             } else {
                 Rectangle().fill(Color.siloSurfaceElevated)
                     .overlay { Image(systemName: "film").foregroundStyle(Color.siloSecondaryText) }

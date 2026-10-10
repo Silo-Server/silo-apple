@@ -14,7 +14,8 @@ struct WatchPartyInviteView: View {
         ZStack {
             #if os(tvOS)
             WatchPartyBackdrop(url: session.selectedItem?.backdropUrl,
-                               thumbhash: session.selectedItem?.backdropThumbhash)
+                               thumbhash: session.selectedItem?.backdropThumbhash,
+                               hidesStill: session.selectedItem?.hidesBackdrop(with: EpisodeSpoilerPreferences.shared.settings) ?? false)
                 .ignoresSafeArea()
             tvLayout
             #else

@@ -78,6 +78,8 @@ struct CatalogGrid: View {
                     title: EpisodeCardCaption.cardTitle(for: item),
                     posterUrl: item.posterUrl ?? "",
                     thumbhash: item.posterThumbhash,
+                    episodeWatchState: item.isEpisodeItem ? EpisodeWatchState(browseItem: item) : nil,
+                    imageIsEpisodeStill: item.posterIsEpisodeStill,
                     mediaType: item.type,
                     year: item.year,
                     subtitle: EpisodeCardCaption.line(for: item),

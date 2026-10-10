@@ -46,8 +46,10 @@ struct EpisodeWatchState: Hashable, Sendable {
         )
     }
 
+    /// Browse rows carry `user_state.played`, and a resume position only on
+    /// section-sourced pages.
     init(browseItem item: BrowseItem) {
-        self.init(played: item.userState?.played ?? false)
+        self.init(played: item.userState?.played ?? false, positionSeconds: item.positionSeconds)
     }
 
     var isUnwatched: Bool {
