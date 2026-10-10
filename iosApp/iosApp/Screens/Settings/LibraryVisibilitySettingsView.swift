@@ -71,6 +71,11 @@ struct LibraryVisibilitySettingsView: View {
         }
         .navigationTitle("Libraries")
         .task { await load() }
+        // A foreground refresh can bring a change made on another device.
+        .onReceive(NotificationCenter.default.publisher(for: .userLibrariesDidRefresh)) { _ in
+            guard !isSaving else { return }
+            Task { await load() }
+        }
         .alert(
             "Couldn’t Update Libraries",
             isPresented: Binding(get: { saveError != nil }, set: { if !$0 { saveError = nil } })

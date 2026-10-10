@@ -205,6 +205,21 @@ final class MediaHubScopeTests: XCTestCase {
         XCTAssertNil(alice.libraryId(for: .movies), "clearing returns to every library of the kind")
     }
 
+    /// Profile IDs are unique only within an account.
+    func testSelectionMemoryIsScopedPerAccount() throws {
+        let (defaults, cleanup) = try makeDefaults()
+        defer { cleanup() }
+        let authority = MainTabLibraryAuthority(serverId: "s", profileId: "p")
+
+        let first = MediaHubMemory(authority: authority, defaults: defaults, account: "account-a")
+        let second = MediaHubMemory(authority: authority, defaults: defaults, account: "account-b")
+        first.setKind(.series, for: .watch)
+        first.setPinnedLibraryIds([4])
+
+        XCTAssertNil(second.kind(for: .watch))
+        XCTAssertEqual(second.pinnedLibraryIds(), [])
+    }
+
     func testOpeningALibraryFromLibrariesBecomesItsCapabilitysSelection() throws {
         let (defaults, cleanup) = try makeDefaults()
         defer { cleanup() }

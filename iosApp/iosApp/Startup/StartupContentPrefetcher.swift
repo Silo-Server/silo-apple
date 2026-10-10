@@ -354,6 +354,7 @@ enum StartupContentPrefetcher {
         if reusingRecent, let recent = userLibraries.recentValue() { return recent }
         let generation = profileScopedGeneration
         let librariesGeneration = userLibrariesGeneration
+        let previous: LibrariesResponse? = ResponseCache.shared.get(CacheKey.userLibraries)
         #if os(iOS) || os(tvOS)
         let probe = PrefetchProbe.begin("user_libraries", isOriginator: !userLibraries.isInFlight)
         #endif
@@ -386,6 +387,14 @@ enum StartupContentPrefetcher {
             #endif
             ResponseCache.shared.set(response, for: CacheKey.userLibraries, fetchedAt: writeToken)
             if isFirstToLand {
+                // Another device hid or showed a library since the last
+                // read: drop what the server filtered by the old set, as a
+                // change made here does (`HiddenLibraryPreference.publishChange`).
+                if let previous, previous.hiddenLibraries != nil,
+                   Set((previous.hiddenLibraries ?? []).map(\.id)) != Set((response.hiddenLibraries ?? []).map(\.id)) {
+                    ResponseCache.shared.removeAll(withPrefix: "calendar:")
+                    PersonalStateSync.invalidateDerivedLists()
+                }
                 NotificationCenter.default.post(name: .userLibrariesDidRefresh, object: response)
             }
             return response

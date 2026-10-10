@@ -303,15 +303,17 @@ extension Notification.Name {
     static let mediaHubSelectionDidChange = Notification.Name("mediaHubSelectionDidChange")
 }
 
-/// Device-local navigation memory, scoped by server and profile the same way
-/// the existing library selector is: each hub's kind, each kind's library,
-/// the last library used in each capability, and Libraries page pins.
+/// Device-local navigation memory, scoped by server, account and profile
+/// (profile IDs are unique only within an account): each hub's kind, each
+/// kind's library, the last library used in each capability, and Libraries
+/// page pins.
 struct MediaHubMemory {
     let authority: MainTabLibraryAuthority?
     var defaults: UserDefaults = .standard
+    var account: String? = AuthService.shared.accountID
 
     private var scope: String? {
-        authority.map { "\($0.serverId).\($0.profileId)" }
+        authority.map { "\($0.serverId).\(account ?? "-").\($0.profileId)" }
     }
 
     private func key(_ name: String) -> String? {
