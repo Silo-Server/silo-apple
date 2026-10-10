@@ -248,6 +248,38 @@ final class RequestsV2Tests: XCTestCase {
         }
     }
 
+    func testCreate401IsNotRefreshedOrReplayed() async throws {
+        let (api, tokens) = try await client()
+        try await assertSentOnceAfter401(tokens, path: "/api/v2/requests") {
+            _ = try await api.createRequest(self.heatInput())
+        }
+    }
+
+    func testCancel401IsNotRefreshedOrReplayed() async throws {
+        let (api, tokens) = try await client()
+        try await assertSentOnceAfter401(tokens, path: "/api/v2/requests/request-one/cancel") {
+            _ = try await api.cancelRequest(id: "request-one", reason: nil)
+        }
+    }
+
+    /// Every request except a token refresh gets a 401, and the refresh would
+    /// succeed, so only the transport's retry-safety allowlist can stop the
+    /// refresh and the second dispatch of a `non_retryable` mutation.
+    private func assertSentOnceAfter401(_ tokens: TokenStore, path: String,
+                                        _ call: () async throws -> Void) async throws {
+        _ = await tokens.saveTokens(accessToken: "old-access", refreshToken: "old-refresh")
+        stub.reply(path: "/api/v2/auth/refresh", 200,
+                   #"{"access_token":"new-access","refresh_token":"new-refresh","expires_in":900}"#)
+        stub.reply(401, "{}")
+        do {
+            try await call()
+            XCTFail("the 401 is the answer")
+        } catch {}
+        XCTAssertEqual(stub.requestedPaths, [path], "no token refresh and no second dispatch")
+        let accessToken = await tokens.getAccessToken()
+        XCTAssertEqual(accessToken, "old-access")
+    }
+
     /// Once create or cancel has captured its owner, an owner change cannot
     /// prove the server never acted: the transport raises the same error just
     /// before sending and after the response. Both mutations report it as an
@@ -323,9 +355,10 @@ final class RequestsV2Tests: XCTestCase {
     func testUncertainCreateHoldsTheActionUntilAFreshRead() async throws {
         let tokens = try await tokens()
         let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
-        let model = RequestDetailViewModel(mediaType: .movie, tmdbId: 949, api: api)
+        let model = RequestDetailViewModel(mediaType: .movie, tmdbId: 949, api: api, cache: RequestDetailCache())
         stub.sequence([
             .json(200, Self.detail),
+            .json(200, #"{"items":[]}"#),
             .failure(URLError(.networkConnectionLost)),
             .failure(URLError(.notConnectedToInternet)),
         ])
@@ -350,7 +383,7 @@ final class RequestsV2Tests: XCTestCase {
     func testDetailOpensTheLibraryOnlyWithoutAnActiveRequest() async throws {
         let tokens = try await tokens()
         let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
-        let model = RequestDetailViewModel(mediaType: .series, tmdbId: 1399, api: api)
+        let model = RequestDetailViewModel(mediaType: .series, tmdbId: 1399, api: api, cache: RequestDetailCache())
         // A title in the library, with the given request state.
         func inLibrary(_ request: String) -> String {
             Self.detail
@@ -379,10 +412,114 @@ final class RequestsV2Tests: XCTestCase {
     }
 
     @MainActor
+    func testFinishedDownloadTheTitleAnnotationMissedIsNotRequestableAgain() async throws {
+        let tokens = try await tokens()
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        let model = RequestDetailViewModel(mediaType: .movie, tmdbId: 949, api: api, cache: RequestDetailCache())
+        // The title reads as requestable, but the user's own request has
+        // finished downloading and waits on the library.
+        let downloaded = Self.record
+            .replacingOccurrences(of: #""status":"pending""#, with: #""status":"completed","state":"processing""#)
+        stub.sequence([
+            .json(200, Self.detail),
+            .json(200, #"{"items":[\#(downloaded)]}"#),
+        ])
+        await model.load()
+        XCTAssertEqual(model.primaryAction, .status(.onTheWay))
+        XCTAssertEqual(model.progress?.shortLabel, "Adding to library")
+        XCTAssertFalse(model.canCancel)
+    }
+
+    @MainActor
+    func testAFailedRequestIsTheStatusAndTheActionReadsRequestAgain() async throws {
+        let tokens = try await tokens()
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        let model = RequestDetailViewModel(mediaType: .movie, tmdbId: 949, api: api, cache: RequestDetailCache())
+        // The server calls the title requestable again: the user's request
+        // failed, so it no longer blocks a new one.
+        let failed = Self.record
+            .replacingOccurrences(of: #""outcome":"active""#, with: #""outcome":"failed","state":"failed""#)
+        stub.sequence([
+            .json(200, Self.detail),
+            .json(200, #"{"items":[\#(failed)]}"#),
+        ])
+        await model.load()
+        XCTAssertEqual(model.primaryAction, .request)
+        XCTAssertEqual(model.endedRequest?.id, "request-one")
+        XCTAssertEqual(model.progress?.display, .needsAttention(.failed, reason: nil))
+    }
+
+    @MainActor
+    func testUncertainCancelOnTheDetailPageIsNeverResent() async throws {
+        let tokens = try await tokens()
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        let model = RequestDetailViewModel(mediaType: .movie, tmdbId: 949, api: api, cache: RequestDetailCache())
+        let pendingDetail = Self.detail.replacingOccurrences(of: #""request":{"requestable":true}"#,
+            with: #""request":{"requestable":false,"status":"pending","reason":"already_requested","request_id":"request-one"}"#)
+        stub.sequence([
+            .json(200, pendingDetail),
+            .json(200, #"{"items":[\#(Self.record)]}"#),
+            .failure(URLError(.networkConnectionLost)),
+            // The refresh after the uncertain cancel fails too.
+            .failure(URLError(.notConnectedToInternet)),
+        ])
+        await model.load()
+        XCTAssertTrue(model.canCancel)
+
+        await model.cancel()
+        XCTAssertFalse(model.canCancel, "an unconfirmed cancel holds until a fresh read")
+        XCTAssertEqual(model.actionErrorMessage, RequestErrorCopy.unconfirmedCancelMessage)
+        await model.cancel()
+        XCTAssertEqual(stub.requests.filter { $0.method == "POST" }.count, 1, "held cancel is never resent")
+    }
+
+    @MainActor
+    func testAnApprovalPinOpensOneModerationPageOnly() async throws {
+        let tokens = try await tokens()
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        let cache = RequestDetailCache()
+        let queued = try HTTPClient.makeJSONDecoder().decode(MediaRequest.self, from: Data(Self.record.utf8))
+        cache.pinModeration(queued)
+        stub.reply(200, Self.detail)
+
+        let fromQueue = RequestDetailViewModel(mediaType: .movie, tmdbId: 949, api: api, cache: cache)
+        XCTAssertTrue(fromQueue.openedForModeration)
+        await fromQueue.load()
+
+        // Backing out and reopening the title from anywhere else is an
+        // ordinary page, not a moderation page for someone else's request.
+        let later = RequestDetailViewModel(mediaType: .movie, tmdbId: 949, api: api, cache: cache)
+        XCTAssertFalse(later.openedForModeration)
+    }
+
+    @MainActor
+    func testALostApprovalUnlocksWhenItsHoldRunsOutWithoutAnotherRead() async throws {
+        let tokens = try await tokens()
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        let model = RequestApprovalsViewModel(api: api, holdLifetime: .milliseconds(250))
+        addTeardownBlock { @MainActor in RequestDetailCache.shared.clear() }
+        stub.reply(path: "/api/v2/admin/requests", 200, #"{"items":[\#(Self.record)],"page":{"has_more":false}}"#)
+        // The approve (and every other read) is lost.
+        stub.fail()
+        await model.load()
+        let request = try XCTUnwrap(model.awaitingApproval.first)
+
+        await model.perform(.approve, on: request)
+        XCTAssertFalse(model.canAct(on: request), "a read showing the request unchanged keeps the hold")
+
+        for _ in 0..<500 where !model.canAct(on: request) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(model.canAct(on: request), "the hold ends on time with no read to settle it")
+        XCTAssertNil(model.actionErrorMessage)
+        XCTAssertEqual(stub.requests.filter { $0.method == "POST" }.count, 1, "releasing the hold never resends")
+    }
+
+    @MainActor
     func testCreateInterruptedByAnOwnerChangeHoldsWithoutReReading() async throws {
         let tokens = try await tokens()
         let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
-        let model = RequestDetailViewModel(mediaType: .movie, tmdbId: 949, api: api)
+        let model = RequestDetailViewModel(mediaType: .movie, tmdbId: 949, api: api, cache: RequestDetailCache())
         stub.reply(200, Self.detail)
         await model.load()
         XCTAssertEqual(model.primaryAction, .request)
@@ -397,8 +534,82 @@ final class RequestsV2Tests: XCTestCase {
 
         XCTAssertEqual(model.primaryAction, .status(.unavailable(reason: RequestErrorCopy.unconfirmedToken)))
         XCTAssertEqual(model.actionErrorMessage, RequestErrorCopy.unconfirmedSubmitMessage)
-        XCTAssertEqual(stub.requests.map(\.method), ["GET", "POST"], "no re-read under the replaced owner")
+        // The title read, then the user's own requests; nothing after the POST.
+        XCTAssertEqual(stub.requests.map(\.method), ["GET", "GET", "POST"], "no re-read under the replaced owner")
         await model.submitRequest()
         XCTAssertEqual(stub.requests.filter { $0.method == "POST" }.count, 1, "held create is never resent")
+    }
+
+    // MARK: Which request speaks for a title
+
+    private static func record(_ id: String, outcome: String, createdAt: String, status: String = "pending") -> String {
+        Self.record
+            .replacingOccurrences(of: #""id":"request-one""#, with: #""id":"\#(id)""#)
+            .replacingOccurrences(of: #""status":"pending""#, with: #""status":"\#(status)""#)
+            .replacingOccurrences(of: #""outcome":"active""#, with: #""outcome":"\#(outcome)""#)
+            .replacingOccurrences(of: #""created_at":"2026-01-02T03:04:05.000Z""#, with: #""created_at":"\#(createdAt)""#)
+    }
+
+    @MainActor
+    func testCancellingANewerRequestDoesNotBringBackAnOlderDecline() async throws {
+        let tokens = try await tokens()
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        let cache = RequestDetailCache()
+        let model = RequestDetailViewModel(mediaType: .movie, tmdbId: 949, api: api, cache: cache)
+        // Declined, requested again, then that second request cancelled.
+        let declined = Self.record("declined", outcome: "declined", createdAt: "2026-01-02T03:04:05.000Z")
+        let cancelled = Self.record("cancelled", outcome: "cancelled", createdAt: "2026-02-02T03:04:05.000Z")
+        stub.sequence([
+            .json(200, Self.detail),
+            .json(200, #"{"items":[\#(declined),\#(cancelled)]}"#),
+        ])
+        await model.load()
+        XCTAssertNil(model.record)
+        XCTAssertNil(model.endedRequest)
+        XCTAssertEqual(model.primaryAction, .request)
+        XCTAssertNil(cache.ownRecord(.init(mediaType: .movie, tmdbId: 949)), "the next first frame agrees")
+    }
+
+    @MainActor
+    func testAnOldFailureDoesNotOverrideATitleNowInTheLibrary() async throws {
+        let tokens = try await tokens()
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        let model = RequestDetailViewModel(mediaType: .movie, tmdbId: 949, api: api, cache: RequestDetailCache())
+        let inLibrary = Self.detail
+            .replacingOccurrences(of: #""availability":"missing""#,
+                with: #""availability":"available","library_content_id":"movie-1""#)
+            .replacingOccurrences(of: #""request":{"requestable":true}"#,
+                with: #""request":{"requestable":false,"reason":"already_available"}"#)
+        let failed = Self.record("failed", outcome: "failed", createdAt: "2026-01-02T03:04:05.000Z")
+        stub.sequence([
+            .json(200, inLibrary),
+            .json(200, #"{"items":[\#(failed)]}"#),
+        ])
+        await model.load()
+        XCTAssertEqual(model.primaryAction, .openInLibrary(contentId: "movie-1"))
+        XCTAssertNil(model.endedRequest)
+        XCTAssertEqual(model.progress?.display, .inLibrary)
+    }
+
+    @MainActor
+    func testApprovalCacheKeepsThePendingRequestOverAFailedOne() throws {
+        let decoder = HTTPClient.makeJSONDecoder()
+        let pending = try decoder.decode(MediaRequest.self, from: Data(Self.record("pending", outcome: "active",
+            createdAt: "2026-02-02T03:04:05.000Z").utf8))
+        let failed = try decoder.decode(MediaRequest.self, from: Data(Self.record("failed", outcome: "failed",
+            createdAt: "2026-01-02T03:04:05.000Z").utf8))
+        let cache = RequestDetailCache()
+        // Approvals stores its queue as `awaitingApproval + failed`.
+        cache.storeModerationRecords([pending, failed])
+        XCTAssertEqual(cache.moderationRecord(.init(mediaType: .movie, tmdbId: 949))?.id, "pending")
+    }
+
+    func testAdminReadForOneTitleFiltersOnTheServer() async throws {
+        let (client, _) = try await client()
+        stub.reply(200, #"{"items":[],"page":{"has_more":false}}"#)
+        _ = try await client.adminRequests(status: .pending, outcome: .active, mediaType: .movie, tmdbId: 949)
+        XCTAssertEqual(stub.requests.first?.path, "/api/v2/admin/requests")
+        XCTAssertEqual(stub.requests.first?.query,
+            ["limit": "50", "status": "pending", "outcome": "active", "media_type": "movie", "q": "949"])
     }
 }

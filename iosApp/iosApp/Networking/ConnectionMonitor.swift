@@ -1,6 +1,7 @@
 import Foundation
 import Network
 import OSLog
+import Synchronization
 
 /// App-wide connection state: device connectivity (via `NWPathMonitor`) plus
 /// server reachability learned passively from every `HTTPClient` request
@@ -27,7 +28,7 @@ final class ConnectionMonitor {
 
     /// What the v2 contract probe (`APIv2Probe`) learned about the active
     /// server. Orthogonal to reachability: an `.updateRequired` server is
-    /// reachable and still serves v1, but every v2 pilot operation is refused.
+    /// reachable and still serves v1, but every v2 operation is refused.
     enum ServerContractStatus: Equatable {
         case unknown
         /// The server serves API v2.
@@ -43,7 +44,12 @@ final class ConnectionMonitor {
     /// path it can describe where the user is, so it's never logged.
     private(set) var isOnWiFiOrWired = true
     private(set) var serverStatus: ServerStatus = .unknown
-    private(set) var contractStatus: ServerContractStatus = .unknown
+    private(set) var contractStatus: ServerContractStatus = .unknown {
+        didSet {
+            let updateRequired = contractStatus == .updateRequired
+            Self.requestPathSnapshot.withLock { $0.hasUpdateRequiredVerdict = updateRequired }
+        }
+    }
     /// Registry id of the server `contractStatus` describes. A verdict is
     /// only meaningful while that server is the active one: a candidate
     /// probed during setup, or a server the user has since switched away
@@ -75,6 +81,30 @@ final class ConnectionMonitor {
     /// the recorded verdict belongs to a server other than the active one.
     var isServerUpdateRequired: Bool {
         contractStatus == .updateRequired && contractServerId == activeServerIdProvider()
+    }
+
+    /// Lock-protected mirror of the state every request consults, so the
+    /// request path can skip a main-actor hop in the common case. Written
+    /// from the `didSet` above.
+    private struct RequestPathSnapshot {
+        var hasUpdateRequiredVerdict = false
+    }
+
+    private nonisolated static let requestPathSnapshot = Mutex(RequestPathSnapshot())
+
+    /// Whether any `.updateRequired` verdict is recorded. While false,
+    /// `isServerUpdateRequired` is false too; while true, read that property
+    /// on the main actor, because it also checks that the verdict's server is
+    /// the active one.
+    nonisolated static var hasUpdateRequiredVerdict: Bool {
+        requestPathSnapshot.withLock { $0.hasUpdateRequiredVerdict }
+    }
+
+    /// `isServerUpdateRequired` for callers off the main actor. Hops only
+    /// while an update-required verdict is recorded.
+    nonisolated static func readServerUpdateRequired() async -> Bool {
+        guard hasUpdateRequiredVerdict else { return false }
+        return await MainActor.run { ConnectionMonitor.shared.isServerUpdateRequired }
     }
 
     /// Record the probe outcome for `serverId`. The result is dropped when
@@ -130,7 +160,7 @@ final class ConnectionMonitor {
         }
     }
 
-    /// Forget the contract verdict, e.g. when the active server changes.
+    /// Test reset for the shared monitor.
     func resetContractStatus() {
         contractStatus = .unknown
         contractServerId = nil
@@ -176,25 +206,23 @@ final class ConnectionMonitor {
     /// Any HTTP response arrived — the server is alive regardless of status
     /// code.
     func noteServerResponded() {
-        // Called from every successful request, so the transition check is not
-        // an optimization — it is what keeps this out of the diagnostics ring
-        // on the hot path. Only the edge is evidence; the steady state is
-        // implied by the absence of a later transition.
-        if serverStatus != .reachable {
-            Self.logger.info("Server marked reachable")
-            #if os(iOS) || os(tvOS)
-            // Essential: recovery is half the story in an "it won't connect"
-            // report. Without it, a bundle shows the failures and gives no way
-            // to tell an outage that ended from one that is still happening.
-            DiagTrace.log(
-                .essential,
-                category: .network,
-                tag: "Reach",
-                message: "server reachable",
-                attrs: ["outcome": .string("reachable")]
-            )
-            #endif
-        }
+        // Only the edge is evidence; the steady state is implied by the
+        // absence of a later transition. This also keeps the hot path out of
+        // the diagnostics ring.
+        guard serverStatus != .reachable else { return }
+        Self.logger.info("Server marked reachable")
+        #if os(iOS) || os(tvOS)
+        // Essential: recovery is half the story in an "it won't connect"
+        // report. Without it, a bundle shows the failures and gives no way
+        // to tell an outage that ended from one that is still happening.
+        DiagTrace.log(
+            .essential,
+            category: .network,
+            tag: "Reach",
+            message: "server reachable",
+            attrs: ["outcome": .string(HTTPDiagnosticsOutcome.reachable)]
+        )
+        #endif
         // Only the unreachable -> reachable edge is upgrade evidence; the
         // initial `.unknown` -> `.reachable` step is the first request after
         // launch, which `refreshActiveServerName` already covers.
@@ -216,18 +244,15 @@ final class ConnectionMonitor {
         // Essential, and the single most important line in a connectivity
         // report: it is the moment the app decided the server was down, which
         // is what every "offline" banner and blocked playback entry point
-        // downstream is reacting to.
-        //
-        // The guard above means this fires once per transition, not once per
-        // failed request — a server that stays down during a 15s reprobe loop
-        // contributes one line, not one every 15 seconds.
+        // downstream is reacting to. Logged once per transition, not per
+        // failed request.
         DiagTrace.log(
             .essential,
             level: .warning,
             category: .network,
             tag: "Reach",
             message: "server unreachable",
-            attrs: ["outcome": .string("unreachable")]
+            attrs: ["outcome": .string(HTTPDiagnosticsOutcome.unreachable)]
         )
         #endif
         serverStatus = .unreachable
@@ -260,7 +285,7 @@ final class ConnectionMonitor {
     func waitForInitialPath(timeout: TimeInterval = 1.0) async {
         let deadline = ContinuousClock.now + .seconds(timeout)
         while !hasInitialPath, ContinuousClock.now < deadline {
-            try? await Task.sleep(nanoseconds: 50_000_000)
+            try? await Task.sleep(for: .milliseconds(50))
         }
     }
 
@@ -268,10 +293,8 @@ final class ConnectionMonitor {
 
     private func applyPathUpdate(online: Bool) {
         hasInitialPath = true
-        // `NWPathMonitor` re-delivers a path on interface churn that does not
-        // change usability (Wi-Fi roaming, a VPN reconfiguring). The equality
-        // guard is what makes this a transition rather than a stream, and it
-        // already existed for correctness; diagnostics inherits it.
+        // `NWPathMonitor` re-delivers paths on churn that doesn't change
+        // usability; only real transitions proceed.
         guard online != isDeviceOnline else { return }
         isDeviceOnline = online
         Self.logger.info("Device network path: \(online ? "online" : "offline", privacy: .public)")
@@ -290,7 +313,7 @@ final class ConnectionMonitor {
             category: .network,
             tag: "Reach",
             message: "device network path changed",
-            attrs: ["outcome": .string(online ? "online" : "offline")]
+            attrs: ["outcome": .string(online ? HTTPDiagnosticsOutcome.online : HTTPDiagnosticsOutcome.offline)]
         )
         #endif
         if online {
@@ -310,29 +333,20 @@ final class ConnectionMonitor {
     private func startReprobeLoop() {
         guard reprobeTask == nil, isDeviceOnline else { return }
         #if os(iOS) || os(tvOS)
-        // The loop's *arming* is a state change and is logged here, once. Its
-        // ticks are not: a 15s poll during a long outage would add four lines
-        // a minute of "still down", each identical, and the 4000-line ring
-        // would be nothing but this by the time the user filed the report.
-        //
-        // Nothing is lost by staying silent per tick. Each probe is a real
-        // request through HTTPClient, so a tick that fails is already covered
-        // by the transport-failure line in `perform`, and the tick that
-        // finally succeeds is covered by `noteServerResponded`'s transition.
-        // The interval is a compile-time constant, so the tick count between
-        // this line and the recovery is recoverable from their timestamps.
+        // Arming is logged once; ticks are not (failed probes are logged by
+        // HTTPClient, recovery by `noteServerResponded`).
         DiagTrace.log(
             .essential,
             category: .network,
             tag: "Reach",
             message: "reprobe loop armed",
-            attrs: ["outcome": .string("unreachable")]
+            attrs: ["outcome": .string(HTTPDiagnosticsOutcome.unreachable)]
         )
         #endif
         reprobeTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                try? await Task.sleep(nanoseconds: UInt64(self.reprobeInterval * 1_000_000_000))
+                try? await Task.sleep(for: .seconds(self.reprobeInterval))
                 guard !Task.isCancelled else { return }
                 guard self.serverStatus == .unreachable, self.isDeviceOnline else { return }
                 await self.probeServer()

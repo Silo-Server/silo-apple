@@ -3,24 +3,32 @@ import Foundation
 /// Native Swift facade over the Silo REST API.
 ///
 /// All HTTP goes through ``HTTPClient/shared``; session state lives in
-/// ``TokenStore/shared``. Refer to [HTTPClient](x-source-tag://HTTPClient)
-/// for auth header injection and 401 refresh semantics.
+/// ``TokenStore/shared``. See ``HTTPClient`` for auth header injection and
+/// 401 refresh semantics.
 actor SiloAPI {
     static let shared = SiloAPI()
 
-    /// Non-private so endpoint methods declared in extensions (e.g. the
-    /// downloads API) can reuse the same injected transport.
+    /// Non-private so playback can build media requests on the same transport.
     let http: HTTPClient
     private let tokenStore: TokenStore
     /// The one v2 client for this facade, built from the same injected
     /// transport and token store. `nonisolated` so callers outside the
     /// actor can use `SiloAPI.shared.apiV2Client` without a hop.
     nonisolated let apiV2Client: APIv2Client
+    /// Test seam: runs inside ``requireCurrentOwner(_:)`` after a read
+    /// finishes and before its owner is rechecked, so a test can switch the
+    /// profile after the round trip. Production leaves it `nil`.
+    private let ownerRecheckBarrier: (@Sendable () async -> Void)?
 
-    init(http: HTTPClient = .shared, tokenStore: TokenStore = .shared) {
+    init(
+        http: HTTPClient = .shared,
+        tokenStore: TokenStore = .shared,
+        ownerRecheckBarrier: (@Sendable () async -> Void)? = nil
+    ) {
         self.http = http
         self.tokenStore = tokenStore
         self.apiV2Client = APIv2Client(http: http, tokenStore: tokenStore)
+        self.ownerRecheckBarrier = ownerRecheckBarrier
     }
 
     // MARK: - Session state accessors
@@ -45,16 +53,10 @@ actor SiloAPI {
     ///
     /// One place decides this for every image-bearing endpoint; call sites
     /// pass `imageSizeQuery["image_size"]` to the `APIv2Client` method.
-    /// Empty off tvOS, and empty until (or unless) the capability probe in
-    /// ``ImageSizeCapability`` lands — which makes iOS and macOS requests
-    /// byte-identical to before.
+    /// Always empty off tvOS.
     private var imageSizeQuery: [String: String] {
         get async {
-            // Gate only the artwork request, never launch/profile navigation.
-            // Concurrent startup prefetches join one probe, and older or
-            // unreachable servers fall back to an empty query.
-            await ImageSizeCapability.shared.refresh(retryFailed: false)
-            return ImageSizeCapability.shared.requestQuery
+            await ImageSizeCapability.shared.requestQueryForImageRequest()
         }
     }
 
@@ -123,19 +125,17 @@ actor SiloAPI {
     }
 
     /// Cards the recommendation engine considers similar to `contentId`,
-    /// in ranked order. The client's owner fence throws `authorityChanged`
-    /// when the acting owner changed while the read was in flight; the
-    /// re-check here covers a switch during decoding. Either way a rail
-    /// never shows another profile's picks.
+    /// in ranked order. Owner-scoped; see ``requireCurrentOwner(_:)``.
     func recommendationsSimilar(contentId: String, limit: Int = 12) async throws -> [BrowseItem] {
         let auth = try await detailReadAuth()
         let cards = try await apiV2Client.similarCards(id: contentId, limit: limit, auth: auth)
-        guard await isCurrentOwner(auth) else { throw HTTPError.requestIdentityChanged }
+        try await requireCurrentOwner(auth)
         return cards
     }
 
     func recommendationsDiscover() async throws -> SectionsResponse {
-        let rows = try await apiV2Client.discover(auth: try await detailReadAuth())
+        let auth = try await detailReadAuth()
+        let rows = try await apiV2Client.discover(auth: auth)
         let resolved = rows.enumerated().map { index, row -> ResolvedSection in
             ResolvedSection(
                 id: "discover_\(index)_\(row.type)",
@@ -149,7 +149,9 @@ actor SiloAPI {
                 items: row.items
             )
         }
-        return SectionsResponse(sections: resolved)
+        let response = SectionsResponse(sections: resolved)
+        try await requireCurrentOwner(auth)
+        return response
     }
 
     // --- Calendar ---
@@ -169,7 +171,7 @@ actor SiloAPI {
             start: start, end: end, filter: filter, timezone: timezone, auth: auth
         )
         // The week is cached per profile; never hand one profile's week to the next.
-        guard await isCurrentOwner(auth) else { throw HTTPError.requestIdentityChanged }
+        try await requireCurrentOwner(auth)
         return response
     }
 
@@ -185,9 +187,11 @@ actor SiloAPI {
         var query = query
         if query.imageSize == nil { query.imageSize = await imageSizeQuery["image_size"] }
         let auth = try await detailReadAuth()
-        return CatalogListPage(try await apiV2Client.catalogPage(
+        let page = CatalogListPage(try await apiV2Client.catalogPage(
             query: query, operation: query.preferredOperation, auth: auth
         ))
+        try await requireCurrentOwner(auth)
+        return page
     }
 
     /// The page after `continuation`, read for the owner and query of the
@@ -196,13 +200,16 @@ actor SiloAPI {
     /// reads a fresh first page for the same owner and query instead, marked
     /// `startsOver`, so the caller never resends a dead cursor.
     func nextCatalogPage(_ continuation: APIv2CatalogContinuation) async throws -> CatalogListPage {
+        let page: CatalogListPage
         do {
-            return CatalogListPage(try await apiV2Client.nextCatalogPage(continuation))
+            page = CatalogListPage(try await apiV2Client.nextCatalogPage(continuation))
         } catch where APIv2Error.isCatalogRestart(error) {
-            return CatalogListPage(try await apiV2Client.catalogPage(
+            page = CatalogListPage(try await apiV2Client.catalogPage(
                 query: continuation.query, operation: continuation.operation, auth: continuation.auth
             ), startsOver: true)
         }
+        try await requireCurrentOwner(continuation.auth)
+        return page
     }
 
     func itemDetail(contentId: String, libraryId: Int? = nil) async throws -> ItemDetail {
@@ -211,7 +218,9 @@ actor SiloAPI {
             id: contentId, libraryId: libraryId.map(String.init),
             imageSize: await imageSizeQuery["image_size"], auth: auth
         )
-        return try ItemDetail(catalog: item)
+        let detail = try ItemDetail(catalog: item)
+        try await requireCurrentOwner(auth)
+        return detail
     }
 
     /// The owner a write is sent for. Without one nothing is sent, which the
@@ -230,6 +239,14 @@ actor SiloAPI {
         return auth
     }
 
+    /// Refuses a read's result once its owner is no longer the acting one.
+    /// The client's owner fence covers the round trip; this covers decoding,
+    /// projection and the hop back to this actor.
+    private func requireCurrentOwner(_ auth: CapturedOrdinaryRequestAuth) async throws {
+        await ownerRecheckBarrier?()
+        guard await isCurrentOwner(auth) else { throw HTTPError.requestIdentityChanged }
+    }
+
     /// Facet vocabulary for one library (or all of them). Without
     /// `includeTechnical` the server skips the file-derived resolution /
     /// audio / subtitle facets. Facets follow the profile's library access,
@@ -239,7 +256,7 @@ actor SiloAPI {
         let filters = try await apiV2Client.catalogFilters(
             libraryId: libraryId.map(String.init), includeTechnical: includeTechnical, auth: auth
         )
-        guard await isCurrentOwner(auth) else { throw HTTPError.requestIdentityChanged }
+        try await requireCurrentOwner(auth)
         return filters
     }
 
@@ -254,7 +271,9 @@ actor SiloAPI {
             seriesId: seriesId, libraryId: libraryId.map(String.init),
             imageSize: await imageSizeQuery["image_size"], includeArtwork: includeArtwork, auth: auth
         )
-        return SeasonsResponse(seasons: try seasons.map { try Season(catalog: $0) })
+        let response = SeasonsResponse(seasons: try seasons.map { try Season(catalog: $0) })
+        try await requireCurrentOwner(auth)
+        return response
     }
 
     func episodes(seriesId: String, seasonNumber: Int, libraryId: Int? = nil) async throws -> EpisodesResponse {
@@ -263,28 +282,43 @@ actor SiloAPI {
             seriesId: seriesId, seasonNumber: seasonNumber, libraryId: libraryId.map(String.init),
             imageSize: await imageSizeQuery["image_size"], auth: auth
         )
-        return EpisodesResponse(episodes: try episodes.map { try EpisodeListItem(catalog: $0) })
+        let response = EpisodesResponse(episodes: try episodes.map { try EpisodeListItem(catalog: $0) })
+        try await requireCurrentOwner(auth)
+        return response
     }
 
     func watchDetail(contentId: String, libraryId: Int? = nil) async throws -> WatchDetail {
         let auth = try await detailReadAuth()
-        return try await apiV2Client.watchDetail(
+        let detail = try await apiV2Client.watchDetail(
             id: contentId, libraryId: libraryId.map(String.init),
             imageSize: await imageSizeQuery["image_size"], auth: auth
         )
+        try await requireCurrentOwner(auth)
+        return detail
     }
 
     func person(id: String) async throws -> Person {
         let auth = try await detailReadAuth()
-        return try Person(catalog: try await apiV2Client.catalogPerson(id: id, auth: auth))
+        let person = try Person(catalog: try await apiV2Client.catalogPerson(id: id, auth: auth))
+        try await requireCurrentOwner(auth)
+        return person
     }
 
-    /// Whether the server can search people by media scope. The same
-    /// capability guarantees results only carry credits the profile can see,
-    /// so without it search offers no people at all.
-    func peopleSearchSupported() async throws -> Bool {
+    /// The search features this server offers; see ``CatalogSearchFeatures``.
+    /// A server without the capabilities read (v1-only, or answering 404)
+    /// offers none. Any other failure throws: a server that timed out or
+    /// refused the credentials has not said what it supports.
+    func catalogSearchFeatures() async throws -> CatalogSearchFeatures {
         let auth = try await detailReadAuth()
-        return try await apiV2Client.catalogSearchCapabilities(auth: auth).peopleMediaScope == true
+        do {
+            return CatalogSearchFeatures(try await apiV2Client.catalogSearchCapabilities(auth: auth))
+        } catch let error as APIv2Error {
+            switch error {
+            case .serverUpdateRequired, .httpStatus(404): return CatalogSearchFeatures()
+            case .problem(let problem) where problem.status == 404: return CatalogSearchFeatures()
+            default: throw error
+            }
+        }
     }
 
     /// People matching `query` for the acting profile, exact names first.
@@ -335,8 +369,9 @@ actor SiloAPI {
     func libraryCollections(libraryId: Int) async throws -> LibraryCollectionsResponse {
         let auth = try await detailReadAuth()
         let tab = try await apiV2Client.libraryCollectionTab(libraryId: String(libraryId), auth: auth)
-        guard await isCurrentOwner(auth) else { throw HTTPError.requestIdentityChanged }
-        return LibraryCollectionsResponse(tab)
+        let response = LibraryCollectionsResponse(tab)
+        try await requireCurrentOwner(auth)
+        return response
     }
 
     // --- Personal data ---
@@ -344,16 +379,22 @@ actor SiloAPI {
     /// The acting profile's whole favorites list, read page by page from
     /// `/api/v2/favorites`. The screens filter it locally by media type.
     func favorites() async throws -> CatalogResponse {
-        try await apiV2Client.personalListItems(
-            kind: .favorites, imageSize: await imageSizeQuery["image_size"], auth: try await detailReadAuth()
+        let auth = try await detailReadAuth()
+        let list = try await apiV2Client.personalListItems(
+            kind: .favorites, imageSize: await imageSizeQuery["image_size"], auth: auth
         )
+        try await requireCurrentOwner(auth)
+        return list
     }
 
     /// The acting profile's whole watchlist from `/api/v2/watchlist`.
     func watchlist() async throws -> CatalogResponse {
-        try await apiV2Client.personalListItems(
-            kind: .watchlist, imageSize: await imageSizeQuery["image_size"], auth: try await detailReadAuth()
+        let auth = try await detailReadAuth()
+        let list = try await apiV2Client.personalListItems(
+            kind: .watchlist, imageSize: await imageSizeQuery["image_size"], auth: auth
         )
+        try await requireCurrentOwner(auth)
+        return list
     }
 
     // --- Collections (personal) ---
@@ -363,13 +404,17 @@ actor SiloAPI {
     func collections() async throws -> CollectionsResponse {
         let auth = try await detailReadAuth()
         let list = try await apiV2Client.personalCollections(auth: auth)
-        guard await isCurrentOwner(auth) else { throw HTTPError.requestIdentityChanged }
-        return CollectionsResponse(collections: list.items, groups: list.groups)
+        let response = CollectionsResponse(collections: list.items, groups: list.groups)
+        try await requireCurrentOwner(auth)
+        return response
     }
 
     /// Whether the acting account's store supports collection groups.
     func collectionCapabilities() async throws -> APIv2CollectionCapabilities {
-        try await apiV2Client.collectionCapabilities(auth: try await detailReadAuth())
+        let auth = try await detailReadAuth()
+        let capabilities = try await apiV2Client.collectionCapabilities(auth: auth)
+        try await requireCurrentOwner(auth)
+        return capabilities
     }
 
     /// Every display card in a personal collection, read as catalog pages.
@@ -378,7 +423,7 @@ actor SiloAPI {
         let cards = try await apiV2Client.personalCollectionCards(
             id: collectionId, imageSize: await imageSizeQuery["image_size"], auth: auth
         )
-        guard await isCurrentOwner(auth) else { throw HTTPError.requestIdentityChanged }
+        try await requireCurrentOwner(auth)
         return cards
     }
 
@@ -390,7 +435,10 @@ actor SiloAPI {
 
     /// The canonical collection and the version an edit of it must send.
     func collectionEditor(id: String) async throws -> CollectionEditor<UserCollection> {
-        try await apiV2Client.collectionEditor(id: id, auth: try await detailReadAuth())
+        let auth = try await detailReadAuth()
+        let editor = try await apiV2Client.collectionEditor(id: id, auth: auth)
+        try await requireCurrentOwner(auth)
+        return editor
     }
 
     func deleteCollection(_ version: CollectionEditVersion) async throws {
@@ -403,6 +451,59 @@ actor SiloAPI {
         try await apiV2Client.moveCollection(version, toGroupId: groupId)
     }
 
+    // --- Shuffle ---
+
+    func shuffleCapability() async throws -> APIv2ShuffleCapability {
+        try await apiV2Client.shuffleCapability(auth: try await detailReadAuth())
+    }
+
+    /// `non_retryable`: dispatched once. A lost answer leaves an unused
+    /// shuffle that the server deletes with other abandoned ones.
+    ///
+    /// Shuffle answers are owner-scoped like other reads; see
+    /// ``requireCurrentOwner(_:)``. One that arrives after a server or
+    /// profile switch is refused, so it never opens a player or replaces a
+    /// pick for the new owner.
+    func createShuffle(scope: ShuffleScopeRequest) async throws -> APIv2Shuffle {
+        let auth = try await mutationAuth()
+        let shuffle = try await apiV2Client.createShuffle(
+            scope: scope, imageSize: await imageSizeQuery["image_size"], auth: auth
+        )
+        try await requireCurrentOwner(auth)
+        return shuffle
+    }
+
+    func shuffle(id: String) async throws -> APIv2Shuffle {
+        let auth = try await detailReadAuth()
+        let shuffle = try await apiV2Client.shuffle(id: id, imageSize: await imageSizeQuery["image_size"], auth: auth)
+        try await requireCurrentOwner(auth)
+        return shuffle
+    }
+
+    func advanceShuffle(id: String, fromContentId: String) async throws -> APIv2Shuffle {
+        let auth = try await mutationAuth()
+        let shuffle = try await apiV2Client.advanceShuffle(
+            id: id, fromContentId: fromContentId,
+            imageSize: await imageSizeQuery["image_size"], auth: auth
+        )
+        try await requireCurrentOwner(auth)
+        return shuffle
+    }
+
+    func skipShuffleItem(id: String, nextContentId: String) async throws -> APIv2Shuffle {
+        let auth = try await mutationAuth()
+        let shuffle = try await apiV2Client.skipShuffleItem(
+            id: id, nextContentId: nextContentId,
+            imageSize: await imageSizeQuery["image_size"], auth: auth
+        )
+        try await requireCurrentOwner(auth)
+        return shuffle
+    }
+
+    func deleteShuffle(id: String) async throws {
+        try await apiV2Client.deleteShuffle(id: id, auth: try await mutationAuth())
+    }
+
     // --- Collection groups (personal) ---
 
     /// `non_retryable`, like ``createCollection(name:)``.
@@ -411,7 +512,10 @@ actor SiloAPI {
     }
 
     func collectionGroupEditor(id: String) async throws -> CollectionEditor<CollectionGroup> {
-        try await apiV2Client.collectionGroupEditor(id: id, auth: try await detailReadAuth())
+        let auth = try await detailReadAuth()
+        let editor = try await apiV2Client.collectionGroupEditor(id: id, auth: auth)
+        try await requireCurrentOwner(auth)
+        return editor
     }
 
     func renameCollectionGroup(_ version: CollectionEditVersion, name: String) async throws -> CollectionGroup {
@@ -433,10 +537,8 @@ actor SiloAPI {
     /// commit profile ID and proof together behind HTTPClient's transition
     /// barrier.
     func verifyProfileSelection(profileId: String, pin: String?) async throws -> String? {
-        // Profiles without a PIN: just record the selection locally; there's
-        // nothing to verify and the server's /verify-pin rejects empty PINs
-        // with 422. Mirrors `ProfileSelectionViewModel.onProfileTapped` on
-        // Android, which skips the verify call when `hasPin` is false.
+        // No PIN: nothing to verify, and `/verify-pin` rejects an empty PIN
+        // with 422.
         if let pin, !pin.isEmpty {
             // A wrong PIN is a 200 with `valid: false`, not an error status.
             let response = try await apiV2Client.verifyHouseholdPIN(id: profileId, pin: pin)

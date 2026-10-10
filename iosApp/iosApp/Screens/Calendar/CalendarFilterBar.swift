@@ -3,9 +3,9 @@ import SwiftUI
 /// Following / Trending / All scope control.
 ///
 /// - iOS / macOS: a contained segmented control — a visible track holding a
-///   single near-white pill that slides between segments. The track is what
-///   keeps the control from reading as loose, clipped text against the black
-///   background (the previous glass capsule was invisible there).
+///   single near-white pill that slides between segments. The track keeps
+///   the control from reading as loose, clipped text against the black
+///   background.
 /// - tvOS: capsule glass segments that draw their own focus chrome (the app
 ///   suppresses the system focus slab).
 struct CalendarFilterBar: View {

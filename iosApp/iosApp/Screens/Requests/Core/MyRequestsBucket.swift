@@ -1,19 +1,28 @@
 import Foundation
 
-/// The three My Requests sections, derived purely from
+/// The three My Requests sections (and filters), derived purely from
 /// `RequestDisplayState` so bucketing and chip color can never disagree.
+/// Requests that need the user sit above finished ones.
 /// Cancelled requests (`.unavailable`) drop off the list entirely —
 /// cancelling is a terminal user action, not a state worth surfacing.
 enum MyRequestsBucket: CaseIterable {
     case inMotion
-    case landed
     case needsAttention
+    case landed
 
     var title: String {
         switch self {
-        case .inMotion: "In motion"
-        case .landed: "Landed in your library"
-        case .needsAttention: "Needs attention"
+        case .inMotion: "In progress"
+        case .needsAttention: "Needs you"
+        case .landed: "Available"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .inMotion: "arrow.down.circle"
+        case .needsAttention: "exclamationmark.circle"
+        case .landed: "checkmark.circle"
         }
     }
 

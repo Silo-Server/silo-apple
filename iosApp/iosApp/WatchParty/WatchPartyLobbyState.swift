@@ -44,7 +44,7 @@ struct WatchPartySelectedItem: Equatable, Sendable {
         episodeWatchState = Self.isEpisode(item.type) ? EpisodeWatchState(
             played: item.userData?.played ?? item.userState?.played ?? false,
             isInProgress: item.userData?.isInProgress,
-            positionSeconds: item.userData?.positionSeconds ?? item.positionSeconds
+            positionSeconds: item.userData?.positionSeconds
         ) : nil
         year = item.year.flatMap { Int(exactly: $0) }
         runtimeMinutes = item.runtime.flatMap { Int(exactly: $0) }
@@ -114,9 +114,7 @@ struct WatchPartySelectedItem: Equatable, Sendable {
     var factsLine: [String] {
         var facts: [String] = []
         if let year, year > 0 { facts.append(String(year)) }
-        if let runtimeMinutes, runtimeMinutes > 0 {
-            facts.append(runtimeMinutes >= 60 ? "\(runtimeMinutes / 60)h \(runtimeMinutes % 60)m" : "\(runtimeMinutes)m")
-        }
+        if let runtime = MediaTextFormatting.runtime(minutes: runtimeMinutes) { facts.append(runtime) }
         return facts
     }
 }
@@ -193,6 +191,13 @@ enum WatchPartyLobbyPolicy {
         return "\(scheme)://\(host):\(port)/\(path)"
     }
 
+    /// A server's path prefix in `/a/b` form (empty at the root), ready for
+    /// an API or web path to be appended.
+    static func basePath(_ percentEncodedPath: String) -> String {
+        percentEncodedPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            .split(separator: "/").reduce("") { $0 + "/" + $1 }
+    }
+
     static func inviteURL(path: String, serverURL: String) -> URL? {
         guard var invitation = URLComponents(string: path) else { return nil }
         if invitation.scheme == nil && invitation.host == nil {
@@ -200,8 +205,7 @@ enum WatchPartyLobbyPolicy {
             invitation.scheme = server.scheme
             invitation.host = server.host
             invitation.port = server.port
-            invitation.percentEncodedPath = server.percentEncodedPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-                .split(separator: "/").reduce("") { $0 + "/" + $1 } + "/rooms/join"
+            invitation.percentEncodedPath = basePath(server.percentEncodedPath) + "/rooms/join"
         }
         guard let url = invitation.url, let parsed = WatchPartyInvitation(url: url),
               sameServer(parsed.serverURL, serverURL) else { return nil }

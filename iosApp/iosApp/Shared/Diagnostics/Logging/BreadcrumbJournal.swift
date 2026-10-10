@@ -4,33 +4,29 @@ import Foundation
 
 final class BreadcrumbJournal {
     static let defaultSegmentByteLimit = 128 * 1024
-    static let defaultSegmentCount = 2
+    /// Breadcrumb journal v1 uses exactly two segments.
+    private static let segmentCount = 2
 
     private let directory: URL
     private let isEnabled: () -> Bool
     private let fileManager: FileManager
     private let segmentByteLimit: Int
-    private let segmentCount: Int
     private var activeIndex: Int
     private let lock = NSLock()
 
     init(
         directory: URL? = nil,
         segmentByteLimit: Int = BreadcrumbJournal.defaultSegmentByteLimit,
-        segmentCount: Int = BreadcrumbJournal.defaultSegmentCount,
         fileManager: FileManager = .default,
         isEnabled: @escaping () -> Bool
     ) {
         precondition(segmentByteLimit > 0, "Breadcrumb segment size must be positive")
-        precondition(segmentCount == 2, "Breadcrumb journal v1 uses exactly two segments")
         self.directory = directory ?? BreadcrumbJournal.defaultDirectory(fileManager: fileManager)
         self.segmentByteLimit = segmentByteLimit
-        self.segmentCount = segmentCount
         self.fileManager = fileManager
         self.isEnabled = isEnabled
         self.activeIndex = BreadcrumbJournal.initialActiveIndex(
             directory: self.directory,
-            segmentCount: segmentCount,
             segmentByteLimit: segmentByteLimit,
             fileManager: fileManager
         )
@@ -159,7 +155,7 @@ final class BreadcrumbJournal {
     }
 
     private func rotateSegment() {
-        activeIndex = (activeIndex + 1) % segmentCount
+        activeIndex = (activeIndex + 1) % Self.segmentCount
         let next = segmentURL(index: activeIndex)
         try? fileManager.removeItem(at: next)
     }
@@ -174,7 +170,7 @@ final class BreadcrumbJournal {
     }
 
     private func orderedSegmentURLs() -> [URL] {
-        (0..<segmentCount)
+        (0..<Self.segmentCount)
             .map { index in
                 let url = segmentURL(index: index)
                 let attributes = try? fileManager.attributesOfItem(atPath: url.path)
@@ -236,11 +232,10 @@ final class BreadcrumbJournal {
 
     private static func initialActiveIndex(
         directory: URL,
-        segmentCount: Int,
         segmentByteLimit: Int,
         fileManager: FileManager
     ) -> Int {
-        let candidates = (0..<segmentCount).compactMap { index -> (Int, Date, Int)? in
+        let candidates = (0..<Self.segmentCount).compactMap { index -> (Int, Date, Int)? in
             let url = directory.appendingPathComponent("breadcrumbs-\(index).jsonl", isDirectory: false)
             guard let attributes = try? fileManager.attributesOfItem(atPath: url.path) else {
                 return nil

@@ -21,8 +21,7 @@ struct DownloadsView: View {
     /// costly to re-fetch, so a stray tap must not remove them outright.
     @State private var pendingDeletion: PendingDeletion?
 
-    private struct PendingDeletion: Identifiable {
-        let id = UUID()
+    private struct PendingDeletion {
         /// Finished downloads.
         let ids: [String]
         /// Downloads in progress, cancelled only if they still are when the
@@ -43,13 +42,17 @@ struct DownloadsView: View {
                     title: "Downloads Unavailable",
                     subtitle: "Downloads aren't enabled for this profile."
                 )
-            } else if manager.records.isEmpty && manager.subscriptions.isEmpty {
+            } else if !manager.hasRecords && manager.subscriptions.isEmpty {
                 noDownloadsState
             } else {
                 content
             }
         }
+        #if os(macOS)
+        .siloPageBackground()
+        #else
         .background(Color.siloBackground.ignoresSafeArea())
+        #endif
         .navigationTitle(isSelecting ? "\(selectedCount) Selected" : "Downloads")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.large)
@@ -57,6 +60,7 @@ struct DownloadsView: View {
         .toolbar { toolbarContent }
         .safeAreaInset(edge: .bottom) { bottomBar }
         .sheet(isPresented: $showReclaim) { DownloadReclaimSheet() }
+        .task { await AutoDownloadSchedule.shared.refresh() }
         // An alert, not a confirmation dialog: on iPhone the dialog anchors
         // to this whole page and appears at its top, far from the row or
         // bottom bar that asked for it.
@@ -74,7 +78,7 @@ struct DownloadsView: View {
                 role: .destructive
             ) {
                 // One that finished while the dialog was open keeps its file.
-                let stillActive = Set(manager.activeRecords.map(\.id))
+                let stillActive = manager.activeRecordIds
                 manager.deleteDownloads(ids: pending.ids + pending.activeIds.filter(stillActive.contains))
                 if pending.endsSelection { exitSelectMode() }
             }
@@ -92,6 +96,18 @@ struct DownloadsView: View {
     /// Mirrors `EmptyStateView` but adds a route into content: an empty
     /// Downloads tab is most often a brand-new user, so hand them the
     /// browse entry point rather than a dead end.
+    /// Points to monitoring too, since its list is reached from here only
+    /// once something is downloaded or monitored.
+    private var noDownloadsHint: String {
+        let base = "Downloaded movies and episodes appear here for offline viewing."
+        guard manager.canMonitorSeries else { return base }
+        #if os(macOS)
+        return base + " To get new episodes automatically, open a series, click Download, and choose Monitor."
+        #else
+        return base + " To get new episodes automatically, open a series, tap Download, and choose Monitor."
+        #endif
+    }
+
     private var noDownloadsState: some View {
         VStack(spacing: 12) {
             Image(systemName: "arrow.down.circle")
@@ -100,7 +116,7 @@ struct DownloadsView: View {
             Text("No Downloads")
                 .font(.siloSubheadline)
                 .foregroundColor(.siloOnSurface)
-            Text("Downloaded movies and episodes appear here for offline viewing.")
+            Text(noDownloadsHint)
                 .font(.siloCaption)
                 .foregroundColor(.siloSecondaryText)
                 .multilineTextAlignment(.center)
@@ -125,12 +141,17 @@ struct DownloadsView: View {
     }
 
     private var content: some View {
-        ScrollView {
+        // Each manager accessor walks every record, and this body re-runs on
+        // every progress publish, so read each list once.
+        let inProgress = manager.inProgressRecords
+        let failed = manager.failedRecords
+        let items = listItems
+        return ScrollView {
             LazyVStack(spacing: 0) {
                 DownloadsStorageHeader(
                     used: manager.totalBytesUsed,
                     breakdown: manager.storageBreakdown,
-                    activeCount: manager.activeRecords.count
+                    activeCount: inProgress.count
                 )
                 .downloadGroupedRow(showReclaimBanner ? .first : .only)
                 .padding(.top, 6)
@@ -143,12 +164,23 @@ struct DownloadsView: View {
                     .downloadGroupedRow(.last, separatorInset: 16)
                 }
 
-                if !manager.activeRecords.isEmpty {
-                    DownloadSectionHeader(title: "Downloading", count: manager.activeRecords.count)
+                if showsAutoDownloads {
+                    AutoDownloadsEntryRow(
+                        count: manager.subscriptions.count,
+                        nextEpisodeDay: nextAutoDownloadDay
+                    ) {
+                        router.navigate(to: .autoDownloads)
+                    }
+                    .downloadGroupedRow(.only)
+                    .padding(.top, 12)
+                }
+
+                if !inProgress.isEmpty {
+                    DownloadSectionHeader(title: "Downloading", count: inProgress.count)
                     if isSelecting {
                         Button(allActiveSelected ? "Clear In Progress" : "Select All In Progress") {
                             if allActiveSelected { activeSelection.removeAll() }
-                            else { activeSelection = Set(manager.activeRecords.map(\.id)) }
+                            else { activeSelection = Set(inProgress.map(\.id)) }
                         }
                         .font(.subheadline.weight(.semibold))
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -173,12 +205,13 @@ struct DownloadsView: View {
                         .padding(.bottom, 10)
                     }
                     #endif
-                    let inProgress = manager.inProgressRecords
                     ForEach(Array(inProgress.enumerated()), id: \.element.id) { index, record in
                         // Re-reads the rate each second: a stalled transfer
                         // sends no progress that would otherwise redraw the
-                        // row and clear its last speed.
-                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                        // row and clear its last speed. Only transferring rows
+                        // show a rate, so the others tick hourly; one view type
+                        // keeps the row's identity when its status changes.
+                        TimelineView(.periodic(from: .now, by: record.localStatus == .downloading ? 1 : 3600)) { context in
                             DownloadActiveRow(
                                 record: record,
                                 bytesPerSecond: manager.transferRate(id: record.id, at: context.date),
@@ -208,7 +241,6 @@ struct DownloadsView: View {
                     #endif
                 }
 
-                let failed = manager.records.filter { $0.localStatus == .failed }
                 if !failed.isEmpty {
                     DownloadSectionHeader(title: "Needs attention", count: failed.count)
                     ForEach(Array(failed.enumerated()), id: \.element.id) { index, record in
@@ -221,7 +253,6 @@ struct DownloadsView: View {
                     }
                 }
 
-                let items = listItems
                 if !items.isEmpty {
                     DownloadSortControl(option: $settings.sortOption, itemCount: items.count)
                 }
@@ -230,8 +261,6 @@ struct DownloadsView: View {
                     row(for: item, position: DownloadGroupPosition(index: index, count: items.count))
                         .downloadGroupInset()
                 }
-
-                monitoredOnlySection
 
                 Color.clear.frame(height: 24)
             }
@@ -252,8 +281,8 @@ struct DownloadsView: View {
                 selected: selection.contains(item.id),
                 isWatched: { manager.isWatched($0) },
                 onSelectToggle: { toggle(item.id) },
-                onOpenSeries: isSelecting ? nil : { router.navigate(to: .offlineSeriesBrowse(seriesId: group.seriesId)) },
-                onPlayEpisode: { play($0) },
+                onOpenSeries: { router.navigate(to: .offlineSeriesBrowse(seriesId: group.seriesId)) },
+                onPlayEpisode: { router.playOffline($0) },
                 onDeleteEpisode: { manager.deleteDownload(id: $0.id) }
             )
             .downloadGroupSlice(position)
@@ -293,50 +322,30 @@ struct DownloadsView: View {
         }
     }
 
-    /// Monitored series that have no on-device episodes yet, so an active
-    /// subscription is still visible (and stoppable) before its first download.
-    @ViewBuilder
-    private var monitoredOnlySection: some View {
-        let groupedSeriesIds = Set(manager.seriesGroups.map(\.seriesId))
-        let pending = manager.subscriptions.filter { !groupedSeriesIds.contains($0.seriesId) }
-        if !pending.isEmpty {
-            DownloadSectionHeader(title: "Monitoring", count: pending.count)
-            ForEach(Array(pending.enumerated()), id: \.element.id) { index, subscription in
-                monitoredRow(subscription, position: DownloadGroupPosition(index: index, count: pending.count))
-                    .downloadGroupInset()
-            }
-        }
+    /// The Auto-Downloads row shows wherever monitoring is offered, and
+    /// whenever monitors exist, so they stay reachable.
+    private var showsAutoDownloads: Bool {
+        !isSelecting && (manager.canMonitorSeries || !manager.subscriptions.isEmpty)
     }
 
-    private func monitoredRow(
-        _ subscription: DownloadSubscription,
-        position: DownloadGroupPosition
-    ) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: "antenna.radiowaves.left.and.right")
-                .font(.system(size: 17))
-                .foregroundColor(.siloOnSurface)
-                .frame(width: 40, height: 40)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(subscription.seriesTitle ?? subscription.seriesId)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(.siloOnSurface)
-                    .lineLimit(1)
-                Text(SubscriptionMode(rawValue: subscription.mode)?.displayName ?? subscription.mode)
-                    .font(.subheadline)
-                    .foregroundColor(.siloSecondaryText)
+    /// When the soonest episode an active monitor covers airs, e.g. "Thursday".
+    private var nextAutoDownloadDay: String? {
+        let schedule = AutoDownloadSchedule.shared
+        let next = manager.subscriptions
+            .filter(\.active)
+            .compactMap { subscription -> UpcomingEpisode? in
+                guard let mode = SubscriptionMode(rawValue: subscription.mode) else { return nil }
+                return AutoDownloadRules.nextEpisode(
+                    mode: mode,
+                    targetSeason: subscription.targetSeason,
+                    seasonNumbers: subscription.seasonNumbers,
+                    upcoming: schedule.upcoming(forSeriesId: subscription.seriesId),
+                    excluding: manager.knownEpisodeIds(forSeriesId: subscription.seriesId)
+                )
             }
-            Spacer(minLength: 8)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .downloadGroupSlice(position)
-        .contextMenu {
-            Button(role: .destructive) {
-                Task { await manager.deleteSubscription(id: subscription.id) }
-            } label: {
-                Label("Stop Monitoring", systemImage: "xmark.circle")
-            }
+            .min { $0.airDate < $1.airDate }
+        return next.map {
+            AutoDownloadRules.relativeDay($0.airDate, now: Date(), calendar: .current, preposition: false)
         }
     }
 
@@ -357,7 +366,7 @@ struct DownloadsView: View {
             ToolbarItem(placement: .primaryAction) {
                 Button("Done") { exitSelectMode() }
             }
-        } else if !listItems.isEmpty || !manager.activeRecords.isEmpty {
+        } else if manager.hasRecord(where: { $0.isOnDevice || $0.localStatus.isActive }) {
             ToolbarItem(placement: .primaryAction) {
                 Button("Select") { isSelecting = true }
             }
@@ -400,8 +409,10 @@ struct DownloadsView: View {
     }
 
     private var allSelected: Bool {
-        guard !listItems.isEmpty || !manager.activeRecords.isEmpty else { return false }
-        return Set(listItems.map(\.id)).isSubset(of: selection) && allActiveSelected
+        let items = listItems
+        let activeIds = manager.activeRecordIds
+        guard !items.isEmpty || !activeIds.isEmpty else { return false }
+        return Set(items.map(\.id)).isSubset(of: selection) && activeIds.isSubset(of: activeSelection)
     }
 
     private var selectedCount: Int {
@@ -412,20 +423,19 @@ struct DownloadsView: View {
     /// failed after it was selected drops out, so cancelling never deletes a
     /// finished file.
     private var liveActiveSelection: Set<String> {
-        activeSelection.intersection(manager.activeRecords.map(\.id))
+        activeSelection.intersection(manager.activeRecordIds)
     }
 
     private var allActiveSelected: Bool {
-        Set(manager.activeRecords.map(\.id)).isSubset(of: activeSelection)
+        manager.activeRecordIds.isSubset(of: activeSelection)
     }
 
     private var bottomBarTitle: String {
         if selection.isEmpty {
             return selectedCount == 1 ? "Cancel 1 Download" : "Cancel \(selectedCount) Downloads"
         }
-        let partialBytes = manager.activeRecords
-            .filter { activeSelection.contains($0.id) }
-            .reduce(Int64(0)) { $0 + $1.bytesDownloaded }
+        let partialBytes = liveActiveSelection
+            .reduce(Int64(0)) { $0 + (manager.record(id: $1)?.bytesDownloaded ?? 0) }
         return "Delete \(selectedCount) · Free \(DownloadFormatting.bytes(selectedBytes + partialBytes))"
     }
 
@@ -455,7 +465,7 @@ struct DownloadsView: View {
             activeSelection.removeAll()
         } else {
             selection = Set(listItems.map(\.id))
-            activeSelection = Set(manager.activeRecords.map(\.id))
+            activeSelection = manager.activeRecordIds
         }
     }
 
@@ -463,18 +473,6 @@ struct DownloadsView: View {
         isSelecting = false
         selection.removeAll()
         activeSelection.removeAll()
-    }
-
-    // MARK: - Playback
-
-    private func play(_ record: DownloadRecord) {
-        guard record.isPlayableOffline else { return }
-        let leafId = record.leafMediaItemId
-        router.presentOfflinePlayer(
-            downloadId: record.id,
-            contentId: leafId,
-            resumePosition: manager.localProgress(forMediaItemId: leafId)?.position
-        )
     }
 }
 

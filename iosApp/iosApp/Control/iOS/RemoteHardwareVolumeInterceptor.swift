@@ -12,7 +12,9 @@ import SwiftUI
 final class RemoteHardwareVolumeInterceptor {
     var onVolumeStep: ((Int) -> Void)?
 
-    let volumeView = MPVolumeView(frame: CGRect(x: 0, y: 0, width: 1, height: 1))
+    /// Lazy: SwiftUI builds a throwaway interceptor on every view init and
+    /// keeps only the first, so only the kept one should create the view.
+    private(set) lazy var volumeView = MPVolumeView(frame: CGRect(x: 0, y: 0, width: 1, height: 1))
 
     private(set) var isActive = false
     private var originalSystemVolume: Float?
@@ -79,21 +81,20 @@ final class RemoteHardwareVolumeInterceptor {
         // even after SwiftUI has released this interceptor with the dismissed
         // sheet.
         let volumeView = volumeView
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-            MainActor.assumeIsolated {
-                guard let slider = volumeView.subviews.compactMap({ $0 as? UISlider }).first
-                else { return }
-                // Claim the value as ours only here, immediately before a write
-                // that will actually move the volume. Claiming it at schedule
-                // time would swallow a real press that lands on the same value
-                // first — an up press followed by a down press inside the delay
-                // returns to the baseline — and claiming a no-op write would
-                // swallow the next genuine press at that value.
-                if abs(AVAudioSession.sharedInstance().outputVolume - value) >= 0.001 {
-                    self?.pendingProgrammaticVolume = value
-                }
-                slider.value = value
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(100))
+            guard let slider = volumeView.subviews.compactMap({ $0 as? UISlider }).first
+            else { return }
+            // Claim the value as ours only here, immediately before a write
+            // that will actually move the volume. Claiming it at schedule
+            // time would swallow a real press that lands on the same value
+            // first — an up press followed by a down press inside the delay
+            // returns to the baseline — and claiming a no-op write would
+            // swallow the next genuine press at that value.
+            if abs(AVAudioSession.sharedInstance().outputVolume - value) >= 0.001 {
+                self?.pendingProgrammaticVolume = value
             }
+            slider.value = value
         }
     }
 
@@ -110,19 +111,18 @@ final class RemoteHardwareVolumeInterceptor {
 
         if let claim {
             self.claim = nil
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                Task { @MainActor in
-                    // Ownership can change during the delay (playback starting,
-                    // this remote reopening), so decide at execution time. The
-                    // captured claim stays registered until this runs, but its
-                    // probe reports inactive, so it blocks no one else.
-                    guard AetherAudioSessionOwnership.canReleaseSharedSession(excluding: claim)
-                    else { return }
-                    try? AVAudioSession.sharedInstance().setActive(
-                        false,
-                        options: .notifyOthersOnDeactivation
-                    )
-                }
+            Task {
+                try? await Task.sleep(for: .milliseconds(300))
+                // Ownership can change during the delay (playback starting,
+                // this remote reopening), so decide at execution time. The
+                // captured claim stays registered until this runs, but its
+                // probe reports inactive, so it blocks no one else.
+                guard AetherAudioSessionOwnership.canReleaseSharedSession(excluding: claim)
+                else { return }
+                try? AVAudioSession.sharedInstance().setActive(
+                    false,
+                    options: .notifyOthersOnDeactivation
+                )
             }
         }
     }

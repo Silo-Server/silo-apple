@@ -18,40 +18,13 @@ struct ItemDetailBrowseSource: Equatable {
     }
 }
 
-private struct BrowseLibraryIDKey: EnvironmentKey {
-    static let defaultValue: Int? = nil
-}
-
 extension EnvironmentValues {
     /// Set only by library browse surfaces; detail destinations carry a copy in their route.
-    var browseLibraryId: Int? {
-        get { self[BrowseLibraryIDKey.self] }
-        set { self[BrowseLibraryIDKey.self] = newValue }
-    }
-}
-
-private struct AllowsDirectPlaybackKey: EnvironmentKey {
-    static let defaultValue = true
-}
-
-extension EnvironmentValues {
+    @Entry var browseLibraryId: Int? = nil
     /// False where picking a title must not start solo playback (the Watch
     /// Party picker). Cards keep Select but drop their Play/Pause action.
-    var allowsDirectPlayback: Bool {
-        get { self[AllowsDirectPlaybackKey.self] }
-        set { self[AllowsDirectPlaybackKey.self] = newValue }
-    }
-}
-
-private struct ItemDetailBrowseSourceKey: EnvironmentKey {
-    static let defaultValue: ItemDetailBrowseSource? = nil
-}
-
-extension EnvironmentValues {
-    var itemDetailBrowseSource: ItemDetailBrowseSource? {
-        get { self[ItemDetailBrowseSourceKey.self] }
-        set { self[ItemDetailBrowseSourceKey.self] = newValue }
-    }
+    @Entry var allowsDirectPlayback = true
+    @Entry var itemDetailBrowseSource: ItemDetailBrowseSource? = nil
 }
 
 extension Notification.Name {
@@ -68,14 +41,22 @@ extension Notification.Name {
     static let siloProfileSelectionRequired = Notification.Name(
         "siloProfileSelectionRequired"
     )
+    /// Posted by `HTTPClient` when the server answers 403
+    /// `profile_verification_required` to a request that carried the active
+    /// profile's current proof. The object is a
+    /// ``ProfileVerificationRequiredEvent``. `ContentView` hands it to
+    /// `AuthService`, which runs the invalid-profile recovery and then posts
+    /// ``siloProfileSelectionRequired``.
+    static let siloProfileVerificationRequired = Notification.Name(
+        "siloProfileVerificationRequired"
+    )
 }
 
-/// Central navigation controller for the Silo iOS app.
-///
-/// Manages the authentication state machine and the navigation stack.
-/// Observed by ContentView to decide which screen tree to present.
+/// Auth state machine and navigation state for every Apple platform.
+/// Main-actor isolated because SwiftUI observes all of its state.
+@MainActor
 @Observable
-class AppRouter {
+final class AppRouter {
 
     // MARK: - Auth State Machine
 
@@ -110,6 +91,14 @@ class AppRouter {
             case .authenticated: return "authenticated"
             }
         }
+
+        /// The first-run screens draw over the shared brand-light backdrop.
+        var showsMarqueeBackdrop: Bool {
+            switch self {
+            case .needsServerSetup, .needsLogin, .serverRecovery, .needsProfile: true
+            case .loading, .authenticated: false
+            }
+        }
     }
 
     /// Every auth-state transition funnels through this one property, whether
@@ -125,6 +114,9 @@ class AppRouter {
             // leave a stale reason to be misattributed to the next transition.
             let reason = pendingAuthStateReason ?? "external"
             pendingAuthStateReason = nil
+            // Re-read even when the state is unchanged: a server switch can
+            // commit `.authenticated` over `.authenticated` under a new owner.
+            authenticatedOwner = authState == .authenticated ? sessionOwner() : nil
             guard oldValue != authState else { return }
             recordAuthStateBreadcrumb(from: oldValue, to: authState, reason: reason)
             // Leaving the authenticated state is an identity boundary: a video
@@ -147,20 +139,43 @@ class AppRouter {
     /// `external`; the destination state still tells the story.
     @ObservationIgnored private var pendingAuthStateReason: String?
 
+    // MARK: - Return After Re-Authentication
+
+    /// Who the app is signed in as while it shows the main screens. Read once
+    /// on entering `.authenticated`, because by the time a session expires
+    /// its account and profile have already been cleared.
+    @ObservationIgnored private var authenticatedOwner: SessionOwner?
+    /// Where the person was when their session expired. Consumed by the next
+    /// `resetToHome()`.
+    @ObservationIgnored private var sessionReturnPoint: SessionReturnPoint?
+    /// The signed-in server, account and profile. Tests replace it.
+    @ObservationIgnored var sessionOwner: () -> SessionOwner? = { SessionOwner.current() }
+
     // MARK: - Navigation Stack
 
-    /// Navigation path for push/pop within the current flow.
-    private(set) var isSigningOut = false
+    @ObservationIgnored private var isSigningOut = false
     var accountActionError: String?
 
+    /// Navigation path for push/pop within the current flow.
     var path = NavigationPath()
 
-    /// Zoom-transition source id of the most recently tapped card, handed to
-    /// the item-detail destination so the iOS 26 poster→detail zoom animates
-    /// from the exact card tapped. A bare `contentId` collides when the same
-    /// item is visible in two rows; each card uses a unique per-instance id and
-    /// records it here on tap. Transient hand-off, not observable UI state.
-    @ObservationIgnored var pendingZoomSourceID: String?
+    #if os(macOS)
+    /// Routes pushed through the router, mirrored because `NavigationPath` is
+    /// opaque. Entries past `path.count` are stale (the system Back button
+    /// pops the path directly), so read `visiblePushedRoutes` instead.
+    @ObservationIgnored private var pushedRoutes: [Route] = []
+
+    /// The routes currently on the stack, oldest first. The Mac sidebar reads
+    /// this to highlight the row that matches the page in view.
+    var visiblePushedRoutes: [Route] {
+        Array(pushedRoutes.prefix(path.count))
+    }
+
+    private func recordPush(_ route: Route, replacingTop: Bool = false) {
+        let kept = max(0, path.count - (replacingTop ? 1 : 0))
+        pushedRoutes = Array(pushedRoutes.prefix(kept)) + [route]
+    }
+    #endif
 
     // MARK: - Item Detail Presentation
 
@@ -174,6 +189,19 @@ class AppRouter {
         let browseSource: ItemDetailBrowseSource?
         let libraryId: Int?
         let resumeContext: SeriesDetailContext?
+        /// Set when the card opens on a request detail (a TMDB title) rather
+        /// than a catalog item; `contentId` is then only a page identity.
+        let request: RequestRoot?
+        /// Presented as a full-window cover instead of a sheet. Fixed when
+        /// the detail opens (see `presentsItemDetailFullWindow`), so folding
+        /// or rotating never swaps the presentation, and the player above it,
+        /// out from under the user.
+        var fillsWindow = false
+
+        struct RequestRoot: Equatable {
+            let mediaType: RequestMediaType
+            let tmdbId: Int
+        }
 
         init(contentId: String, libraryId: Int? = nil, browseSource: ItemDetailBrowseSource? = nil,
              resumeContext: SeriesDetailContext? = nil) {
@@ -181,19 +209,42 @@ class AppRouter {
             self.browseSource = browseSource
             self.libraryId = libraryId
             self.resumeContext = resumeContext
+            self.request = nil
+        }
+
+        init(request: RequestRoot) {
+            self.contentId = "request:\(request.mediaType.rawValue):\(request.tmdbId)"
+            self.browseSource = nil
+            self.libraryId = nil
+            self.resumeContext = nil
+            self.request = request
         }
     }
 
     #if os(iOS)
     var presentedItemDetail: ItemDetailPresentation?
     var itemDetailPath = NavigationPath()
+    /// Kept current by the tab view: true while its phone window would split
+    /// a detail page (see `PhoneDetailHeroLayout.usesSplitLayout`), as on the
+    /// iPhone Duo's open display held in landscape. A sheet there is capped at
+    /// a centered card about two-thirds of the width, so details opened then
+    /// cover the window.
+    var presentsItemDetailFullWindow = false
+
+    /// Opens or restores the detail card in the presentation the window calls
+    /// for now. Request details stay sheets: their page has no split layout.
+    private func openItemDetail(_ presentation: ItemDetailPresentation?) {
+        presentedItemDetail = presentation.map { presentation in
+            var presentation = presentation
+            presentation.fillsWindow = presentsItemDetailFullWindow && presentation.request == nil
+            return presentation
+        }
+    }
     #endif
 
     // MARK: - Player Presentation
 
-    /// Identifiable payload for presenting the player as a full-screen cover.
-    /// Used on iOS/iPadOS where pushing into the detail pane would box video
-    /// into split-view navigation chrome.
+    /// Payload for the full-screen player cover (iOS, iPadOS, tvOS).
     struct PlayerPresentation: Identifiable, Equatable {
         var libraryId: Int? = nil
         let id = UUID()
@@ -216,6 +267,8 @@ class AppRouter {
         /// attaching competing covers to the root and the sheet.
         var detailPresentationID: UUID? = nil
         var watchPartyContext: WatchPartyPlaybackContext? = nil
+        /// The shuffle this playback starts; its `current` is `contentId`.
+        var shuffle: APIv2Shuffle? = nil
         /// Hints supplied by the originating screen (e.g. the detail page,
         /// which has just loaded the catalog item) so the player's now-
         /// playing widget can publish artwork without re-fetching the
@@ -225,19 +278,26 @@ class AppRouter {
     }
 
     var presentedPlayer: PlayerPresentation?
+
+    /// The iOS detail sheet that owns a newly presented player; nil elsewhere.
+    private var currentDetailPresentationID: UUID? {
+        #if os(iOS)
+        presentedItemDetail?.id
+        #else
+        nil
+        #endif
+    }
+
     @ObservationIgnored private var watchPartySheetPresented = false
     @ObservationIgnored private var pendingWatchPartyPresentation: WatchPartyPlaybackContext?
 
-    @MainActor
     func watchPartySheetWillPresent() { watchPartySheetPresented = true }
 
-    @MainActor
     func watchPartySheetDidDismiss() {
         watchPartySheetPresented = false
         if let context = pendingWatchPartyPresentation { presentWatchParty(context) }
     }
 
-    @MainActor
     func presentWatchParty(_ context: WatchPartyPlaybackContext?) {
         pendingWatchPartyPresentation = context
         guard let context else {
@@ -252,18 +312,15 @@ class AppRouter {
         if watchPartySheetPresented, presentedPlayer?.watchPartyContext == nil { return }
         pendingWatchPartyPresentation = nil
         guard presentedPlayer?.watchPartyContext != context else { return }
-        var presentation = PlayerPresentation(libraryId: context.libraryId,
+        // Reuse the active presenter's cover, including a detail-owned player.
+        // Replacing its content avoids racing a dismissal with a new cover.
+        presentedPlayer = PlayerPresentation(libraryId: context.libraryId,
             contentId: context.contentId, fileId: context.fileId,
             audioTrackIndex: nil, subtitleTrackIndex: nil,
             startFromBeginning: false, resumePosition: context.startPosition,
             prefersLastUsedVersion: false, returnToContentId: nil,
+            detailPresentationID: presentedPlayer?.detailPresentationID ?? currentDetailPresentationID,
             watchPartyContext: context, posterURL: nil, backdropURL: nil)
-        #if os(iOS)
-        // Reuse the active presenter's cover, including a detail-owned player.
-        // Replacing its content avoids racing a dismissal with a new cover.
-        presentation.detailPresentationID = presentedPlayer?.detailPresentationID ?? presentedItemDetail?.id
-        #endif
-        presentedPlayer = presentation
     }
 
     #if os(iOS)
@@ -279,7 +336,7 @@ class AppRouter {
 
     /// True while the interceptor is deciding; a second Play in that window
     /// must not slip past it and open the local player.
-    private var isRoutingRemotePlayback = false
+    private(set) var isRoutingRemotePlayback = false
 
     /// An offline play requested while a TV is engaged. A download can only
     /// play on the phone, so instead of silently starting a second player the
@@ -311,7 +368,7 @@ class AppRouter {
         guard let choice = pendingReplaceRemotePlayback else { return }
         pendingReplaceRemotePlayback = nil
         guard let remotePlaybackInterceptor else { return }
-        Task { @MainActor in _ = await remotePlaybackInterceptor(choice.request) }
+        Task { _ = await remotePlaybackInterceptor(choice.request) }
     }
 
     /// User chose the phone for a pending offline play.
@@ -327,7 +384,7 @@ class AppRouter {
         guard let choice = pendingOfflinePlayChoice else { return }
         pendingOfflinePlayChoice = nil
         guard let remotePlaybackInterceptor else { return }
-        Task { @MainActor in _ = await remotePlaybackInterceptor(choice.request) }
+        Task { _ = await remotePlaybackInterceptor(choice.request) }
     }
     #endif
 
@@ -339,9 +396,10 @@ class AppRouter {
     /// without threading a selection binding through the tree.
     var requestedTab: AppTab?
 
-    /// Optional copy for an alternate three-step profile journey. Cleared at
-    /// every auth-state reset so a later normal login uses the default labels.
-    var profileJourneyLabels: [String]?
+    /// Set by a completed sign-in, including setup from a nearby phone: a
+    /// household with exactly one profile and no PIN goes straight to Home
+    /// instead of a one-person picker.
+    var skipsSingleProfilePicker = false
 
     func switchTab(to tab: AppTab) {
         requestedTab = tab
@@ -412,7 +470,7 @@ class AppRouter {
             ))
         }
         #else
-        var presentation = PlayerPresentation(
+        let presentation = PlayerPresentation(
             libraryId: libraryId,
             contentId: contentId,
             fileId: fileId,
@@ -422,11 +480,11 @@ class AppRouter {
             resumePosition: resumePosition,
             prefersLastUsedVersion: prefersLastUsedVersion,
             returnToContentId: returnToContentId,
+            detailPresentationID: currentDetailPresentationID,
             posterURL: posterURL,
             backdropURL: backdropURL
         )
         #if os(iOS)
-        presentation.detailPresentationID = presentedItemDetail?.id
         if let remotePlaybackInterceptor {
             // Decide the destination before touching `presentedPlayer`, so
             // an engaged TV never sees the local cover flash. The request
@@ -452,7 +510,7 @@ class AppRouter {
                 return
             }
             isRoutingRemotePlayback = true
-            Task { @MainActor in
+            Task {
                 defer { isRoutingRemotePlayback = false }
                 if await remotePlaybackInterceptor(request) { return }
                 presentedPlayer = presentation
@@ -460,6 +518,35 @@ class AppRouter {
             return
         }
         #endif
+        presentedPlayer = presentation
+        #endif
+    }
+
+    /// Play a new shuffle's first pick from its beginning. The up-next screen
+    /// then offers the shuffle's picks until the viewer stops. A shuffle
+    /// always plays here: an engaged TV would play the first pick alone.
+    func presentShuffle(_ shuffle: APIv2Shuffle) {
+        #if os(iOS) || os(tvOS)
+        DiagnosticsCoordinator.recordBreadcrumb(
+            category: .focus,
+            tag: "Navigation",
+            message: "player presented",
+            attrs: ["target": .string("player"), "action": .string("shuffle")]
+        )
+        var presentation = PlayerPresentation(
+            contentId: shuffle.current.contentId,
+            fileId: nil,
+            audioTrackIndex: nil,
+            subtitleTrackIndex: nil,
+            startFromBeginning: true,
+            resumePosition: nil,
+            prefersLastUsedVersion: false,
+            returnToContentId: nil,
+            detailPresentationID: currentDetailPresentationID,
+            posterURL: shuffle.current.posterUrl,
+            backdropURL: shuffle.current.backdropUrl
+        )
+        presentation.shuffle = shuffle
         presentedPlayer = presentation
         #endif
     }
@@ -488,7 +575,7 @@ class AppRouter {
             resumePosition: resumePosition
         ))
         #else
-        var presentation = PlayerPresentation(
+        let presentation = PlayerPresentation(
             contentId: contentId,
             fileId: nil,
             audioTrackIndex: nil,
@@ -498,12 +585,10 @@ class AppRouter {
             prefersLastUsedVersion: false,
             returnToContentId: nil,
             offlineDownloadId: downloadId,
+            detailPresentationID: currentDetailPresentationID,
             posterURL: nil,
             backdropURL: nil
         )
-        #if os(iOS)
-        presentation.detailPresentationID = presentedItemDetail?.id
-        #endif
         #if os(iOS)
         if isRemotePlaybackEngaged?() == true {
             pendingOfflinePlayChoice = OfflinePlayChoice(
@@ -560,6 +645,20 @@ class AppRouter {
             presentItemDetail(contentId: contentId, libraryId: libraryId, resumeContext: context)
             return
         }
+        // Request detail opens in the same bottom card as a library title,
+        // with its pull-down dismissal and nested navigation.
+        if case .requestDetail(let mediaType, let tmdbId) = route {
+            recordScreenBreadcrumb(target: route.diagnosticsTarget, action: "present")
+            if presentedItemDetail == nil {
+                itemDetailPath = NavigationPath()
+                openItemDetail(ItemDetailPresentation(
+                    request: .init(mediaType: mediaType, tmdbId: tmdbId)
+                ))
+            } else {
+                itemDetailPath.append(route)
+            }
+            return
+        }
         #endif
 
         recordScreenBreadcrumb(target: route.diagnosticsTarget, action: "navigate")
@@ -576,13 +675,14 @@ class AppRouter {
         }
         #endif
 
+        #if os(macOS)
+        recordPush(route)
+        #endif
         path.append(route)
     }
 
-    /// Open an item from an ordered card source. Existing callers can keep
-    /// using `navigate(to: .itemDetail(...))`; rows and grids that provide a
-    /// browse source opt into sideways paging without changing deep links or
-    /// nested recommendations reached from inside an already-open detail.
+    /// Opens item detail. On iOS a browse source that contains `contentId`
+    /// enables sideways paging.
     func presentItemDetail(
         contentId: String,
         libraryId: Int? = nil,
@@ -596,12 +696,12 @@ class AppRouter {
                 source.contentIDs.contains(contentId) ? source : nil
             }
             itemDetailPath = NavigationPath()
-            presentedItemDetail = ItemDetailPresentation(
+            openItemDetail(ItemDetailPresentation(
                 contentId: contentId,
                 libraryId: libraryId,
                 browseSource: source,
                 resumeContext: resumeContext
-            )
+            ))
         } else {
             itemDetailPath.append(Route.itemDetail(contentId: contentId, libraryId: libraryId, seriesContext: resumeContext))
         }
@@ -648,6 +748,9 @@ class AppRouter {
     /// stack up — Back exits the chain in one step.
     func replaceCurrent(with route: Route) {
         recordScreenBreadcrumb(target: route.diagnosticsTarget, action: "replace")
+        #if os(macOS)
+        recordPush(route, replacingTop: true)
+        #endif
         if !path.isEmpty {
             path.removeLast()
         }
@@ -667,63 +770,101 @@ class AppRouter {
         path = NavigationPath()
     }
 
+    /// Why the sign-in screen is showing, when it isn't the user's own
+    /// choice. The sign-in screen explains an expired session instead of
+    /// just appearing. Cleared once the user signs in or leaves sign-in.
+    enum LoginNotice: Equatable {
+        case sessionExpired
+
+        /// The line the sign-in screen shows for this notice.
+        func message(serverName: String) -> String {
+            switch self {
+            case .sessionExpired: "You were signed out of \(serverName). Sign in again."
+            }
+        }
+    }
+
+    private(set) var loginNotice: LoginNotice?
+
+    /// An address to fill in on the next server-setup screen (adding the
+    /// server a TV sign-in link names). Read once.
+    private var serverSetupPrefill: String?
+
+    func prefillServerSetup(with url: String) { serverSetupPrefill = url }
+
+    func consumeServerSetupPrefill() -> String? {
+        defer { serverSetupPrefill = nil }
+        return serverSetupPrefill
+    }
+
     /// Return to the login screen (e.g., on sign-out).
     func resetToLogin() {
+        loginNotice = nil
+        sessionReturnPoint = nil
         recordScreenBreadcrumb(target: "login", action: "reset")
         path = NavigationPath()
-        profileJourneyLabels = nil
         setAuthState(.needsLogin, reason: "resetToLogin")
     }
 
     /// Transition to profile selection after successful login.
-    func showProfileSelection(journeyLabels: [String]? = nil) {
+    func showProfileSelection() {
+        loginNotice = nil
         recordScreenBreadcrumb(target: "profileSelection", action: "reset")
         path = NavigationPath()
-        profileJourneyLabels = journeyLabels
         setAuthState(.needsProfile, reason: "showProfileSelection")
     }
 
     /// User-initiated profile switching has one persistence and cache
     /// boundary regardless of which menu or settings surface initiated it.
     func switchProfile() {
-        Task {
+        Task { @MainActor in
             guard await completeRequestedProfileSwitch() else {
                 // A refusal here leaves the user on the current screen with no
                 // visible change, which reads as "the app ignored me".
                 Self.recordAuthActionBreadcrumb(reason: "switchProfile", outcome: "refused")
                 return
             }
-            await MainActor.run {
-                self.showProfileSelection()
-            }
+            showProfileSelection()
         }
     }
 
-    /// Transition to the authenticated home screen.
+    /// Transition to the authenticated home screen. After a session expiry,
+    /// the same profile of the same account returns to the screens it was on.
     func resetToHome() {
         recordScreenBreadcrumb(target: "home", action: "reset")
+        let returnPoint = sessionReturnPoint
+        sessionReturnPoint = nil
         path = NavigationPath()
-        profileJourneyLabels = nil
         setAuthState(.authenticated, reason: "resetToHome")
+        guard let returnPoint, returnPoint.restores(for: authenticatedOwner) else { return }
+        recordScreenBreadcrumb(target: "previous", action: "restoreAfterSessionExpired")
+        path = returnPoint.path
+        #if os(iOS)
+        itemDetailPath = returnPoint.itemDetailPath
+        openItemDetail(returnPoint.itemDetail)
+        #endif
     }
 
     /// Return to server setup (e.g., to change servers).
     func resetToServerSetup() {
+        loginNotice = nil
+        sessionReturnPoint = nil
         recordScreenBreadcrumb(target: "serverSetup", action: "reset")
         path = NavigationPath()
-        profileJourneyLabels = nil
+        skipsSingleProfilePicker = false
         setAuthState(.needsServerSetup, reason: "resetToServerSetup")
     }
 
     /// Commit an auth state produced after validating a server selection.
     /// Every previous screen belongs to the old server/session boundary.
     func resetAfterServerResolution(to state: AuthState) {
+        loginNotice = nil
+        sessionReturnPoint = nil
         recordScreenBreadcrumb(target: state.diagnosticsState, action: "reset")
         PlayerIdentityBoundary.endEngagedVideoPictureInPicture()
         presentedPlayer = nil
         dismissItemDetail()
         path = NavigationPath()
-        profileJourneyLabels = nil
         setAuthState(state, reason: "serverResolution")
     }
 
@@ -731,17 +872,71 @@ class AppRouter {
         requestSignOut(removingServer: false)
     }
 
+    /// "Sign In Again" after the session expired. Not an explicit sign-out:
+    /// the next browser sign-in does not ask the provider for an account
+    /// choice, so the same person is signed straight back in.
+    func signOutAfterSessionExpired() {
+        requestSignOut(removingServer: false, asksForAccountChoice: false)
+    }
+
     func signOutRemoveServerAndReset() {
         requestSignOut(removingServer: true)
     }
 
+    #if os(iOS)
+    /// A TV approval to show again once the person has signed back in after
+    /// "Not you? Switch account". ContentView takes it (`takePendingDeviceApproval`).
+    private(set) var pendingDeviceApproval: DeviceApprovalLink?
+
+    func takePendingDeviceApproval() -> DeviceApprovalLink? {
+        defer { pendingDeviceApproval = nil }
+        return pendingDeviceApproval
+    }
+
+    /// A TV approval link named a saved server this device is signed out
+    /// of: make it the active server and show its login screen. The TV's code
+    /// returns to the approval card after that sign-in.
+    func signIn(forTVApproval link: DeviceApprovalLink, on server: ServerEntry) {
+        guard !isSigningOut else { return }
+        pendingDeviceApproval = link
+        Task { @MainActor in
+            if ServerRegistry.shared.activeServerId != server.id {
+                guard await ServerRegistry.shared.switchTo(serverId: server.id, resolveDestinationProfile: true) else {
+                    pendingDeviceApproval = nil
+                    accountActionError = "Couldn't switch to that server. Try again."
+                    return
+                }
+            }
+            resetAfterServerResolution(to: await RestoredSessionAuthResolver.resolveValidated())
+        }
+    }
+
+    /// "Not you?" on a TV approval for `server`: make it the active server
+    /// and sign out of it in Silo only (the provider's own session is left
+    /// alone). When the server advertises `select_account`
+    /// (`choosingAccount`), the provider sign-in that follows starts by
+    /// itself with `prompt=select_account`, so the provider lets the person
+    /// pick another account; otherwise the login screen waits. The TV's code
+    /// returns to the approval card after that sign-in.
+    func switchAccount(forTVApproval link: DeviceApprovalLink, on server: ServerEntry, choosingAccount: Bool) {
+        guard !isSigningOut else { return }
+        pendingDeviceApproval = link
+        requestSignOut(removingServer: false, switchingTo: server.id, startsSignIn: choosingAccount)
+    }
+    #endif
+
     /// One operation owns the button action through cleanup and navigation.
     /// Repeated taps cannot queue another logout behind a subsequent login.
-    private func requestSignOut(removingServer: Bool) {
+    /// `switchingTo` makes that saved server active first; `startsSignIn`
+    /// asks its login screen to open the provider sign-in by itself.
+    /// `asksForAccountChoice` is false only when the session ended rather
+    /// than the person signing out.
+    private func requestSignOut(removingServer: Bool, switchingTo targetServerID: String? = nil,
+                                startsSignIn: Bool = false, asksForAccountChoice: Bool = true) {
         guard !isSigningOut else { return }
         isSigningOut = true
         accountActionError = nil
-        Task { @MainActor in
+        Task {
             defer { isSigningOut = false }
             #if os(tvOS)
             if await TokenStore.shared.hasTemporaryScope() {
@@ -751,12 +946,35 @@ class AppRouter {
                 }
             }
             #endif
+            if let targetServerID, ServerRegistry.shared.activeServerId != targetServerID {
+                guard await ServerRegistry.shared.switchTo(serverId: targetServerID) else {
+                    accountActionError = "Couldn't switch to that server. Try again."
+                    #if os(iOS)
+                    pendingDeviceApproval = nil
+                    #endif
+                    return
+                }
+            }
             let serverID = ServerRegistry.shared.activeServerId
             let outcome = await AuthService.shared.signOutWithOutcome()
             guard outcome != .refused else {
                 accountActionError = "The active session changed. Try signing out again."
+                if targetServerID != nil {
+                    #if os(iOS)
+                    pendingDeviceApproval = nil
+                    #endif
+                    // The switch above may have changed the active server.
+                    resetAfterServerResolution(to: await RestoredSessionAuthResolver.resolveValidated())
+                }
                 return
             }
+            #if !os(tvOS)
+            // The provider still has the person signed in in the system
+            // browser; the next browser sign-in asks it for an account choice.
+            if !removingServer, asksForAccountChoice, let serverID {
+                SelectAccountPrompt.shared.request(serverId: serverID, autoStart: startsSignIn)
+            }
+            #endif
             var durable = outcome != .localOnly
             if outcome == .diagnosticsCleanupFailed {
                 accountActionError = "You're signed out, but Silo couldn't erase local diagnostics. Remove this server from the server list to retry cleanup."
@@ -803,14 +1021,30 @@ class AppRouter {
     /// login screen so the user can re-enter credentials. If no server
     /// is active at all (e.g. all removed), fall back to server setup.
     func expiredSession() {
+        sessionReturnPoint = currentReturnPoint()
         path = NavigationPath()
         if ServerRegistry.shared.hasActiveServer {
             recordScreenBreadcrumb(target: "login", action: "sessionExpired")
+            loginNotice = .sessionExpired
             setAuthState(.needsLogin, reason: "sessionExpired")
         } else {
             recordScreenBreadcrumb(target: "serverSetup", action: "sessionExpired")
             setAuthState(.needsServerSetup, reason: "sessionExpiredNoServer")
         }
+    }
+
+    /// The open screens, if there is anything beyond Home to return to.
+    /// Captured before the auth-state change closes the detail card.
+    private func currentReturnPoint() -> SessionReturnPoint? {
+        guard authState == .authenticated, let authenticatedOwner else { return nil }
+        #if os(iOS)
+        guard !path.isEmpty || presentedItemDetail != nil else { return nil }
+        return SessionReturnPoint(owner: authenticatedOwner, path: path,
+                                  itemDetail: presentedItemDetail, itemDetailPath: itemDetailPath)
+        #else
+        guard !path.isEmpty else { return nil }
+        return SessionReturnPoint(owner: authenticatedOwner, path: path)
+        #endif
     }
 
     private func recordScreenBreadcrumb(target: String, action: String) {
@@ -827,22 +1061,10 @@ class AppRouter {
         #endif
     }
 
-    /// The auth-state timeline. Essential tier: without these lines a session
-    /// report can show that the user ended up at the login screen but never
-    /// why. Only the two state tokens and the router action that caused the
-    /// move are recorded — no account, profile, server, or credential detail
-    /// is available at this layer, and none is looked up.
-    ///
-    /// `state` carries the state the app is in *now*, and nothing else. The
-    /// origin state goes in the free-text message rather than `phase`: the
-    /// registry defines `phase` as a startup/lifecycle phase identifier
-    /// (`launch`, `prefetch`, …), so filing a previous auth state under it
-    /// would make `phase` mean two different things depending on which
-    /// subsystem emitted the line, and a query grouping lifecycle lines by
-    /// phase would silently mix them. There is no registered key for "previous
-    /// state" and inventing one rejects the whole bundle, so the transition is
-    /// spelled out in `msg`, where both tokens stay legible and neither is
-    /// account, profile, or server identity.
+    /// The auth-state timeline (essential tier): the new state and the router
+    /// action that caused it, with no account, profile, or server identity.
+    /// The previous state goes in the message: `phase` is registered for
+    /// startup phases, and an unregistered key would reject the bundle.
     private func recordAuthStateBreadcrumb(from: AuthState, to: AuthState, reason: String) {
         #if os(iOS) || os(tvOS)
         DiagTrace.breadcrumb(
@@ -858,20 +1080,14 @@ class AppRouter {
         #endif
     }
 
-    /// Stage the cause of the `authState` assignment on the next line. Kept as
-    /// a helper (rather than an inline assignment) so the pairing with the
-    /// `didSet` observer stays greppable and every router action reads the
-    /// same way.
+    /// Records why the next `authState` assignment happens.
     private func setAuthState(_ state: AuthState, reason: String) {
         pendingAuthStateReason = reason
         authState = state
     }
 
-    /// Report the outcome of an async router action that can refuse before it
-    /// ever reaches an `authState` assignment — a refused sign-out or profile
-    /// switch is exactly the "it won't let me in" case with no other trace.
-    /// Static because its call sites are inside detached `Task`s, where an
-    /// instance method would mean capturing the router just to log.
+    /// Records an async router action that refused before reaching an
+    /// `authState` change (a refused sign-out or profile switch).
     private static func recordAuthActionBreadcrumb(reason: String, outcome: String) {
         #if os(iOS) || os(tvOS)
         DiagTrace.breadcrumb(
@@ -888,27 +1104,51 @@ class AppRouter {
     }
 }
 
+/// The server, verified account and profile the app is signed in as.
+/// Profile ids are unique only within an account, so all three must match.
+struct SessionOwner: Equatable {
+    let serverID: String
+    let accountID: String
+    let profileID: String
+
+    /// Nil for a legacy session that never recorded its account, so it never
+    /// restores another session's screens.
+    static func current() -> SessionOwner? {
+        guard let serverID = ServerRegistry.shared.activeServerId,
+              let accountID = AuthService.shared.accountID,
+              let profileID = AuthService.shared.profileId,
+              !serverID.isEmpty, !profileID.isEmpty else { return nil }
+        return SessionOwner(serverID: serverID, accountID: accountID, profileID: profileID)
+    }
+}
+
+/// The screens open when a session expired, kept in memory until the next
+/// sign-in reaches Home.
+struct SessionReturnPoint {
+    let owner: SessionOwner
+    let path: NavigationPath
+    #if os(iOS)
+    let itemDetail: AppRouter.ItemDetailPresentation?
+    let itemDetailPath: NavigationPath
+    #endif
+
+    /// Only the same profile of the same account on the same server goes
+    /// back. Anyone else starts at Home, so one profile's pages never open
+    /// for another.
+    func restores(for owner: SessionOwner?) -> Bool {
+        owner == self.owner
+    }
+}
+
 private extension Route {
     var diagnosticsTarget: String {
         switch self {
         case .serverSetup:
             return "serverSetup"
-        case .login:
-            return "login"
         case .serverNeedsSetup:
             return "serverNeedsSetup"
-        case .onboardingTour:
-            return "onboardingTour"
-        case .profileSelection:
-            return "profileSelection"
-        case .home:
-            return "home"
         case .search:
             return "search"
-        case .browse:
-            return "browse"
-        case .library:
-            return "library"
         case .libraryCollection:
             return "libraryCollection"
         case .itemDetail:
@@ -931,12 +1171,8 @@ private extension Route {
             return "collectionDetail"
         case .settings:
             return "settings"
-        case .recommendations:
-            return "recommendations"
         case .serverList:
             return "serverList"
-        case .downloads:
-            return "downloads"
         case .watchParty:
             return "watchParty"
         case .requestsHub:
@@ -945,14 +1181,16 @@ private extension Route {
             return "requestDetail"
         case .myRequests:
             return "myRequests"
+        case .requestApprovals:
+            return "requestApprovals"
         case .offlinePlayer:
             return "offlinePlayer"
         case .offlineSeriesBrowse:
             return "offlineSeriesBrowse"
         case .offlineDownloadDetail:
             return "offlineDownloadDetail"
-        case .tvLibraryGrid:
-            return "tvLibraryGrid"
+        case .autoDownloads:
+            return "autoDownloads"
         }
     }
 }

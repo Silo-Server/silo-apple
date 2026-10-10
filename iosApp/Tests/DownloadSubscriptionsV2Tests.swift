@@ -79,6 +79,31 @@ final class DownloadSubscriptionsV2Tests: XCTestCase {
         XCTAssertEqual(body["series_id"] as? String, "series-1")
         XCTAssertEqual(body["delete_watched"] as? Bool, true)
         XCTAssertNil(body["season_numbers"])
+        XCTAssertNil(body["quality"], "a monitor create without a quality leaves the field out")
+        XCTAssertNil(created.quality, "a server without monitor quality sends none")
+    }
+
+    func testMonitorQualityIsSentAndRead() async throws {
+        let (api, auth) = try await client()
+        let withQuality = monitor().replacingOccurrences(of: #""active":"#, with: #""quality":"10mbps","active":"#)
+        stub.reply(200, withQuality)
+        let request = CreateSubscriptionRequest(seriesId: "series-1", mode: "future", seasonNumbers: nil,
+            deleteWatched: false, maxStorageBytes: 0, quality: "10mbps")
+
+        let created = try await api.createDownloadSubscription(request, auth: auth)
+
+        XCTAssertEqual(created.quality, "10mbps")
+        XCTAssertEqual(DownloadSubscription(from: created, seriesTitle: nil).quality, "10mbps")
+        XCTAssertEqual(try json(XCTUnwrap(stub.requests.first))["quality"] as? String, "10mbps")
+
+        stub.reset()
+        stub.reply(200, withQuality)
+        let patch = UpdateSubscriptionRequest(mode: nil, seasonNumbers: nil, deleteWatched: nil,
+            maxStorageBytes: nil, active: nil, quality: "2mbps")
+        _ = try await api.updateDownloadSubscription(id: "m1", etag: #""e1""#, patch: patch, auth: auth)
+        let sent = try json(XCTUnwrap(stub.requests.first))
+        XCTAssertEqual(sent["quality"] as? String, "2mbps")
+        XCTAssertEqual(sent.count, 1, "only the changed field is sent")
     }
 
     func testCreateIsNeverSentTwice() async throws {
@@ -501,6 +526,14 @@ final class DownloadSubscriptionsV2Tests: XCTestCase {
         XCTAssertFalse(DownloadManager.monitorMatches(existing, request("specific_seasons", seasons: [2])))
         XCTAssertFalse(DownloadManager.monitorMatches(existing, request("all")))
         XCTAssertFalse(DownloadManager.monitorMatches(existing, request("specific_seasons", seasons: [], deleteWatched: true)))
+
+        // A monitor without a stored quality downloads originals; a request
+        // without one (a server without monitor quality) matches any.
+        var quality = request("specific_seasons", seasons: [])
+        quality.quality = "original"
+        XCTAssertTrue(DownloadManager.monitorMatches(existing, quality))
+        quality.quality = "5mbps"
+        XCTAssertFalse(DownloadManager.monitorMatches(existing, quality))
     }
 
     func testMonitorsStoredWithoutAValidatorStillDecode() throws {

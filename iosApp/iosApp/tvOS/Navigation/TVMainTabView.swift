@@ -47,11 +47,14 @@ struct TVMainTabView: View {
         return cached.first(where: { $0.id == profileId })
     }()
     @State private var showSignOutConfirm = false
+    @State private var librariesStaleSinceBackground = false
     @State private var registry = ServerRegistry.shared
-    /// Local, per-profile tab-visibility prefs (e.g. whether the Audiobooks
-    /// tab is opted in). Observed so the bar re-derives `visibleRoots` the
-    /// instant a toggle flips in Settings.
-    @State private var navPrefs = TVNavPreferences.shared
+    /// Local, per-profile legacy Audiobooks opt-in. It only seeds the app
+    /// default menu (`resolvedPrimaryMenuItems()` reads the observed
+    /// singleton while `body` evaluates `visibleRoots`, so the bar still
+    /// re-derives when the toggle flips). Kept here so `.task` can
+    /// `refresh()` it for the now-known profile.
+    @State private var navPrefs = AppNavPreferences.shared
     @State private var uiCustomization = UICustomizationPreferences.shared
     /// Visible libraries for the active profile; drives which type tabs
     /// exist and which library each type tab scopes to. Seeded from the
@@ -126,6 +129,9 @@ struct TVMainTabView: View {
     @Environment(AudioPlaybackStore.self) private var audioStore
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The shell builds under the startup splash with input disabled, so its
+    /// first-appear focus claim lands on nothing; it claims again at reveal.
+    @Environment(\.isStartupSplashVisible) private var isStartupSplashVisible
 
     private static let panelFocusExitCloseDelayNanoseconds: UInt64 = 80_000_000
 
@@ -200,7 +206,12 @@ struct TVMainTabView: View {
         )) {
             AudioFullPlayerView()
         }
-        .fullScreenCover(item: $router.presentedPlayer) { payload in
+        // A phone's Play on TV can arrive under the startup splash; the
+        // player waits for it to lift instead of covering it.
+        .fullScreenCover(item: Binding(
+            get: { isStartupSplashVisible ? nil : router.presentedPlayer },
+            set: { router.presentedPlayer = $0 }
+        )) { payload in
             PlayerView(
                 contentId: payload.contentId,
                 libraryId: payload.libraryId,
@@ -213,6 +224,7 @@ struct TVMainTabView: View {
                 posterURLHint: payload.posterURL,
                 backdropURLHint: payload.backdropURL,
                 watchPartyContext: payload.watchPartyContext,
+                shuffle: payload.shuffle,
                 onPlaybackStarted: {
                     guard let returnToContentId = payload.returnToContentId,
                           router.presentedPlayer?.id == payload.id else { return }
@@ -266,6 +278,9 @@ struct TVMainTabView: View {
                 }
             }
         }
+        .onChange(of: isStartupSplashVisible) { _, isVisible in
+            if !isVisible { contentFocusRequest += 1 }
+        }
         .onChange(of: router.requestedTab) { _, requestedTab in
             guard let requestedTab else { return }
             router.requestedTab = nil
@@ -296,11 +311,15 @@ struct TVMainTabView: View {
             // Returning from a suspension can leave the Bonjour listener dead
             // (its state handler nils it out); restart so phones can still
             // find this TV. No-op when the listener is healthy.
-            if newPhase == .active {
-                controlReceiver.start(router: router)
-                let authority = currentLibraryAuthority
-                Task { await loadLibraries(for: authority) }
-            }
+            if newPhase == .background { librariesStaleSinceBackground = true }
+            guard newPhase == .active else { return }
+            controlReceiver.start(router: router)
+            // Libraries refresh only on a real return from background, not on
+            // an `.inactive` blip such as the TV button's Control Center.
+            guard librariesStaleSinceBackground else { return }
+            librariesStaleSinceBackground = false
+            let authority = currentLibraryAuthority
+            Task { await loadLibraries(for: authority) }
         }
         .tvFocusWatchdog(
             isActive: focusWatchdogIsActive,
@@ -314,6 +333,7 @@ struct TVMainTabView: View {
     /// focused item by definition.
     private var focusWatchdogIsActive: Bool {
         scenePhase == .active
+            && !isStartupSplashVisible
             && router.presentedPlayer == nil
             && !audioStore.isShowingFullPlayer
             && !showSignOutConfirm
@@ -421,7 +441,6 @@ struct TVMainTabView: View {
             let active = activeLibrary(for: type)
             TVLibraryTypeTabView(
                 type: type,
-                libraries: libraries(of: type),
                 activeLibrary: active,
                 selectedPill: pillSelection(for: type),
                 focusRequest: contentFocusRequest,
@@ -437,9 +456,11 @@ struct TVMainTabView: View {
                let type = tabType(for: library) {
                 TVLibraryTypeTabView(
                     type: type,
-                    libraries: [library],
                     activeLibrary: library,
                     selectedPill: shortcutPillSelection(for: libraryId, categoryType: type),
+                    // `type` only picks the pill vocabulary here; a shortcut
+                    // shows the whole library, so a mixed one stays unscoped.
+                    scopesMixedLibraries: false,
                     focusRequest: contentFocusRequest,
                     isTopMenuFocused: menuOwnsFocus,
                     onTopMenuFocusRequest: { focusTopMenuIfVisible() }
@@ -461,6 +482,13 @@ struct TVMainTabView: View {
             }
         case .calendar:
             CalendarView(
+                focusRequest: contentFocusRequest,
+                isTopMenuFocused: menuOwnsFocus,
+                onTopMenuFocusRequest: { focusTopMenuIfVisible() }
+            )
+        case .requests:
+            TVRequestsPage(
+                mode: .hub,
                 focusRequest: contentFocusRequest,
                 isTopMenuFocused: menuOwnsFocus,
                 onTopMenuFocusRequest: { focusTopMenuIfVisible() }
@@ -531,7 +559,7 @@ struct TVMainTabView: View {
             switch root {
             case .libraryType, .libraryShortcut, .recommendations:
                 return .root(root)
-            case .home, .calendar:
+            case .home, .calendar, .requests:
                 return nil
             }
         }
@@ -657,7 +685,7 @@ struct TVMainTabView: View {
                 )
             case .recommendations:
                 forYouPanel(isActive: isActive)
-            case .home, .calendar:
+            case .home, .calendar, .requests:
                 EmptyView()
             }
         case .profile:
@@ -731,7 +759,6 @@ struct TVMainTabView: View {
             onWatchlist: { closePanel(then: { navigateFromBar(.watchlist) }) },
             onFavorites: { closePanel(then: { navigateFromBar(.favorites) }) },
             onHistory: { closePanel(then: { navigateFromBar(.history) }) },
-            onRequests: { closePanel(then: { navigateFromBar(.requestsHub) }) },
             onWatchParty: { closePanel(then: { navigateFromBar(.watchParty) }) },
             onSettings: { closePanel(then: { navigateFromBar(.settings) }) },
             onSwitchServer: { closePanel(then: { navigateFromBar(.serverList) }) },
@@ -990,38 +1017,14 @@ struct TVMainTabView: View {
     /// fixed outside this list, which keeps their focus anchors stable while
     /// the user rearranges content tabs.
     private var visibleRoots: [TVRootDestination] {
-        var roots: [TVRootDestination] = []
-        for item in uiCustomization.resolvedPrimaryMenuItems(availableLibraries: libraries) {
-            let root: TVRootDestination?
-            switch item {
-            case .builtin(.home): root = .home
-            case .builtin(.movies): root = availableRoot(for: .movies)
-            case .builtin(.series): root = availableRoot(for: .series)
-            case .builtin(.music): root = availableRoot(for: .music)
-            case .builtin(.audiobooks):
-                root = navPrefs.showAudiobooks ? availableRoot(for: .audiobooks) : nil
-            case .builtin(.forYou): root = .recommendations
-            case .builtin(.calendar): root = .calendar
-            case .library(let libraryId, let label):
-                root = libraries.contains(where: {
-                    $0.id == libraryId && (navPrefs.showAudiobooks || !$0.isAudiobookLibrary)
-                })
-                    ? .libraryShortcut(libraryId: libraryId, label: label)
-                    : nil
-            case .section, .collection:
-                // The contract can carry these for web and future clients.
-                // Apple TV currently has a stable root route only for whole
-                // libraries, so unsupported shortcuts stay stored but hidden.
-                root = nil
-            }
-            if let root, !roots.contains(root) { roots.append(root) }
-        }
-        if !roots.contains(.home) { roots.insert(.home, at: 0) }
+        var roots = TVPrimaryMenuProjection.roots(
+            for: uiCustomization.resolvedPrimaryMenuItems(),
+            libraries: libraries
+        )
+        // Requests is a server capability, not a customizable menu item: it
+        // trails the content tabs whenever the server has it enabled.
+        if RequestsFeatureStore.shared.isEnabled { roots.append(.requests) }
         return roots
-    }
-
-    private func availableRoot(for type: TVLibraryTabType) -> TVRootDestination? {
-        libraries.contains(where: { type.matches($0) }) ? .libraryType(type) : nil
     }
 
     private func tabType(for library: Library) -> TVLibraryTabType? {
@@ -1366,14 +1369,13 @@ struct TVMainTabView: View {
     @ViewBuilder
     private func routeContent(for route: Route) -> some View {
         switch route {
-        case .library(let libraryId, let title):
-            LibraryDetailView(libraryId: libraryId, initialTitle: title)
-        case .libraryCollection(let libraryId, let collectionId, let title, let kind):
+        case .libraryCollection(let libraryId, let collectionId, let title, let kind, let mediaScope):
             LibraryCollectionDetailView(
                 libraryId: libraryId,
                 collectionId: collectionId,
                 title: title,
-                kind: kind
+                kind: kind,
+                mediaScope: mediaScope
             )
         case .itemDetail(let contentId, let tvSeed, let libraryId, let context):
             ItemDetailView(contentId: contentId, libraryId: libraryId, tvSeed: tvSeed, resumeContext: context)
@@ -1407,8 +1409,6 @@ struct TVMainTabView: View {
             CollectionsView()
         case .collectionDetail(let id):
             CollectionDetailView(collectionId: id)
-        case .browse(let libraryId):
-            BrowseView(libraryId: libraryId)
         case .watchParty:
             #if os(iOS) || os(tvOS)
             WatchPartyHubView(session: .shared)
@@ -1421,12 +1421,12 @@ struct TVMainTabView: View {
             RequestDetailView(mediaType: mediaType, tmdbId: tmdbId)
         case .myRequests:
             MyRequestsView()
+        case .requestApprovals:
+            MyRequestsView(initialScope: .everyone)
         case .search:
             SearchView(usesTVTopMenuInset: false, seededQuery: $siriSearchRequest)
         case .settings:
             TVSettingsView()
-        case .recommendations:
-            RecommendationsView()
         case .serverList:
             ServerListView()
         case .serverSetup:
@@ -1436,14 +1436,6 @@ struct TVMainTabView: View {
             // tree entirely. Successful `connect()` flips authState to
             // `.needsLogin` and replaces this view tree.
             TVServerSetupView(router: router)
-        case .tvLibraryGrid(let libraryId, let libraryName, let libraryType, let payload, let subtitle):
-            TVLibraryGridView(
-                libraryId: libraryId,
-                libraryName: libraryName,
-                libraryType: libraryType,
-                initialFilter: payload.toFilterState(),
-                subtitle: subtitle
-            )
         default:
             EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
                 .siloBackground()

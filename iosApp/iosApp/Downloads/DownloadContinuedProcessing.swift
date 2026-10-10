@@ -3,6 +3,7 @@ import BackgroundTasks
 import Foundation
 import Observation
 import OSLog
+import Synchronization
 
 /// On iOS 26 and later, keeps Silo running while downloads the user started
 /// are in progress, through a continued processing task. iOS draws its own
@@ -22,10 +23,7 @@ final class DownloadContinuedProcessing {
     static let shared = DownloadContinuedProcessing()
     private init() {}
 
-    private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
-        category: "Downloads"
-    )
+    private static let logger = Logger.downloads
 
     /// Each request needs a unique identifier under the wildcard listed in
     /// `BGTaskSchedulerPermittedIdentifiers` (iosApp/Info.plist).
@@ -132,10 +130,8 @@ final class DownloadContinuedProcessing {
             DispatchQueue.global(qos: .userInitiated).async {
                 BGTaskScheduler.shared.submitTaskRequest(request) { error in
                     guard let error else { return }
-                    DispatchQueue.main.async {
-                        MainActor.assumeIsolated {
-                            DownloadContinuedProcessing.shared.submitFailed(identifier: identifier, error: error)
-                        }
+                    Task { @MainActor in
+                        DownloadContinuedProcessing.shared.submitFailed(identifier: identifier, error: error)
                     }
                 }
             }
@@ -145,9 +141,9 @@ final class DownloadContinuedProcessing {
         #else
         if !submit(request, identifier: identifier) { return }
         #endif
-        Task { @MainActor [weak self] in
+        Task {
             try? await Task.sleep(for: Self.startDeadline)
-            self?.abandonIfNotStarted(identifier: identifier)
+            self.abandonIfNotStarted(identifier: identifier)
         }
     }
 
@@ -227,17 +223,15 @@ final class DownloadContinuedProcessing {
             if Thread.isMainThread {
                 MainActor.assumeIsolated { DownloadContinuedProcessing.shared.expired(identifier: identifier) }
             } else {
-                DispatchQueue.main.async {
-                    MainActor.assumeIsolated { DownloadContinuedProcessing.shared.expired(identifier: identifier) }
-                }
+                Task { @MainActor in DownloadContinuedProcessing.shared.expired(identifier: identifier) }
             }
         }
         if let latest { apply(latest, headline: latestHeadline, to: task) }
         stallWatch?.cancel()
-        stallWatch = Task { @MainActor [weak self] in
+        stallWatch = Task {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(5))
-                self?.endIfStalled()
+                self.endIfStalled()
             }
         }
     }
@@ -267,14 +261,14 @@ final class DownloadContinuedProcessing {
         completion?(success: true)
         endRun()
         // Silo's own Live Activity takes over while the app is in front.
-        DownloadManager.shared.refreshLiveProgress()
+        DownloadManager.shared.syncLiveActivity()
     }
 
     private func submitFailed(identifier: String, error: Error) {
         guard case .submitted(let submitted) = state, submitted == identifier else { return }
         Self.logger.notice("Continued processing not started: \(String(describing: error), privacy: .public)")
         state = .idle
-        DownloadManager.shared.refreshLiveProgress()
+        DownloadManager.shared.syncLiveActivity()
     }
 
     /// Submits on the main thread. Returns false when iOS refuses the request.
@@ -294,7 +288,7 @@ final class DownloadContinuedProcessing {
         Self.logger.notice("Continued processing request never started")
         BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: identifier)
         state = .idle
-        DownloadManager.shared.refreshLiveProgress()
+        DownloadManager.shared.syncLiveActivity()
     }
 
     /// Silo is on screen, where its own Live Activity can show the queue.
@@ -411,8 +405,7 @@ final class DownloadContinuedProcessing {
 /// Completes a continued processing task at most once, whichever of the
 /// expiration handler (any thread) and Silo (main actor) gets there first.
 private final class TaskCompletion: @unchecked Sendable {
-    private let lock = NSLock()
-    private var done = false
+    private let done = Atomic<Bool>(false)
     private let complete: (Bool) -> Void
 
     init(_ complete: @escaping (Bool) -> Void) {
@@ -420,11 +413,7 @@ private final class TaskCompletion: @unchecked Sendable {
     }
 
     func callAsFunction(success: Bool) {
-        lock.lock()
-        let first = !done
-        done = true
-        lock.unlock()
-        if first { complete(success) }
+        if !done.exchange(true, ordering: .acquiringAndReleasing) { complete(success) }
     }
 }
 #endif

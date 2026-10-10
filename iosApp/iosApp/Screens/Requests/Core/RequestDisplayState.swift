@@ -126,8 +126,8 @@ extension RequestDisplayState {
             self = .onTheWay
         case .partiallyAvailable:
             // Some requested seasons are in, the rest are still coming.
-            // `.inLibrary` would file the request under "Landed in your
-            // library" before it has landed, the mistake `state` exists to
+            // `.inLibrary` would file the request under Available before
+            // every season has landed, the mistake `state` exists to
             // prevent; the web keeps it with the requests on their way too.
             self = .onTheWay
         case .available:

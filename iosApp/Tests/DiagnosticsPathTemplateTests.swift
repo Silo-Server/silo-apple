@@ -151,9 +151,8 @@ final class DiagnosticsPathTemplateTests: XCTestCase {
             DiagnosticsPathTemplate.template("/api/v1/settings/subtitle_appearance/effective"),
             "/api/v1/settings/subtitle_appearance/effective"
         )
-        // …but a 20+ char segment still hits the historical OPAQUE rule, so the
-        // static `library-playback-prefs` route was already collapsing to {id}
-        // on the hosted path before this change.
+        // …but a segment of 20 or more characters still hits the opaque-id
+        // rule, so the static `library-playback-prefs` route collapses to {id}.
         XCTAssertEqual(
             DiagnosticsPathTemplate.template("/api/v1/library-playback-prefs"),
             "/api/v1/{id}"

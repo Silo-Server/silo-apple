@@ -483,7 +483,6 @@ final class UICustomizationPreferences {
     private var storedCardPresentation: CardPresentationPreference = .standard
     private var storedPrimaryMenuSource: SettingSource?
     private var storedCardPresentationSource: SettingSource?
-    private(set) var isRefreshing = false
     private(set) var isSaving = false
     private(set) var syncErrorMessage: String?
     private(set) var capabilityState: UICustomizationCapabilityState = .checking
@@ -498,10 +497,10 @@ final class UICustomizationPreferences {
     var cardPresentation: CardPresentationPreference {
         supportProjection.projectsCachedValues ? storedCardPresentation : .standard
     }
-    var primaryMenuSource: SettingSource? {
+    private var primaryMenuSource: SettingSource? {
         supportProjection.projectsCachedValues ? storedPrimaryMenuSource : nil
     }
-    var cardPresentationSource: SettingSource? {
+    private var cardPresentationSource: SettingSource? {
         supportProjection.projectsCachedValues ? storedCardPresentationSource : nil
     }
 
@@ -527,20 +526,36 @@ final class UICustomizationPreferences {
     @ObservationIgnored private var nextShortcutOperationSequence: UInt64 = 0
     @ObservationIgnored private let writeRetryPolicy: SettingWriteRetryPolicy
     @ObservationIgnored private var outboxRetryTask: Task<Void, Never>?
+    @ObservationIgnored private var inFlightRefresh: InFlightRefresh?
 
-    /// True while a change ran out of automatic retries and waits for
-    /// "Try Again" or "Discard Held Change" (owner decision D4).
+    /// True while a change is out of automatic retries and waits for
+    /// "Try Again" or "Discard Held Change".
     private(set) var hasHeldChanges = false
+
+    /// Resolves once every queued save has finished, including saves that a
+    /// finishing save enqueues. For tests.
+    func waitForPendingSaves() async {
+        while let tail = saveTail {
+            await tail.value
+            if saveTail == tail { return }
+        }
+    }
+
+    /// Whether a backoff timer will resend failed writes. Read by tests.
+    var hasArmedOutboxRetry: Bool { outboxRetryTask != nil }
+
+    private struct InFlightRefresh {
+        let cacheKey: String?
+        let mutationRevision: Int
+        let task: Task<Void, Never>
+    }
 
     private struct OperationContext {
         let cacheKey: String
         let requestIdentity: HTTPRequestIdentity
     }
 
-    /// Outbox bookkeeping shared by every pending write (owner decision D4).
-    /// The operation id is local: it tells a late response apart from a newer
-    /// edit of the same key and never leaves the device. Caches written by
-    /// earlier builds stored it as `mutationId`.
+    /// Retry bookkeeping for one outbox entry.
     private struct OutboxRetryState: Codable, Equatable {
         /// Failed sends of this exact operation that a retry could fix.
         var failedAttempts = 0
@@ -763,19 +778,38 @@ final class UICustomizationPreferences {
     /// Repaint from the active identity's cache, then reconcile from the
     /// server. Transiently unknown servers retain the last compatible cache;
     /// explicitly older servers project the legacy/default presentation.
-    func refresh() async {
+    ///
+    /// Calls for the same identity and local revision share one pass. `force`
+    /// starts a new pass, for outbox changes that don't advance the revision
+    /// (device-row deletes, rejected shortcuts, discarded held changes).
+    func refresh(force: Bool = false) async {
+        let targetCacheKey = cacheKey()
+        if !force,
+           let inFlight = inFlightRefresh,
+           inFlight.cacheKey == targetCacheKey,
+           inFlight.mutationRevision == localMutationRevision {
+            await inFlight.task.value
+            return
+        }
+        let task = Task { await self.performRefresh() }
+        inFlightRefresh = InFlightRefresh(
+            cacheKey: targetCacheKey,
+            mutationRevision: localMutationRevision,
+            task: task
+        )
+        await task.value
+        if inFlightRefresh?.task == task {
+            inFlightRefresh = nil
+        }
+    }
+
+    private func performRefresh() async {
         AppNavPreferences.shared.refresh()
         let targetCacheKey = cacheKey()
         loadCache(for: targetCacheKey)
         refreshSequence += 1
         let sequence = refreshSequence
         let mutationRevision = localMutationRevision
-        isRefreshing = true
-        defer {
-            if refreshSequence == sequence {
-                isRefreshing = false
-            }
-        }
 
         guard let identity = capturedIdentity(for: targetCacheKey) else {
             capabilityState = .unavailable
@@ -790,10 +824,7 @@ final class UICustomizationPreferences {
         refreshSyncErrorMessage = nil
         updateSyncErrorMessage()
         let capabilities = await transport.contractCapabilities(requestIdentity: identity)
-        guard refreshSequence == sequence,
-              localMutationRevision == mutationRevision,
-              cacheKey() == targetCacheKey,
-              capturedIdentity(for: targetCacheKey) == identity else { return }
+        guard refreshIsCurrent(sequence, mutationRevision, targetCacheKey, identity) else { return }
 
         switch capabilities {
         case .available(let capabilities)
@@ -826,10 +857,7 @@ final class UICustomizationPreferences {
                 keys: Self.keys,
                 requestIdentity: identity
             )
-            guard refreshSequence == sequence,
-                  localMutationRevision == mutationRevision,
-                  cacheKey() == targetCacheKey,
-                  capturedIdentity(for: targetCacheKey) == identity else { return }
+            guard refreshIsCurrent(sequence, mutationRevision, targetCacheKey, identity) else { return }
             let values = response.byKey
             var decodedEveryValue = true
             let heldKeys = heldOutboxKeys
@@ -851,10 +879,7 @@ final class UICustomizationPreferences {
             }
             saveCache(for: targetCacheKey)
         } catch {
-            guard refreshSequence == sequence,
-                  localMutationRevision == mutationRevision,
-                  cacheKey() == targetCacheKey,
-                  capturedIdentity(for: targetCacheKey) == identity else { return }
+            guard refreshIsCurrent(sequence, mutationRevision, targetCacheKey, identity) else { return }
             refreshSyncErrorMessage = Self.message(for: error)
             updateSyncErrorMessage()
         }
@@ -1024,8 +1049,9 @@ final class UICustomizationPreferences {
     /// audiobook opt-in remains part of that default until the user authors a
     /// new menu. Profile-wide shortcuts stay available to every family, but
     /// only an explicit family menu places them in that family's navigation.
-    func resolvedPrimaryMenuItems(availableLibraries _: [Library] = []) -> [PrimaryMenuItem] {
-        if let primaryMenu, primaryMenu.isValid {
+    func resolvedPrimaryMenuItems() -> [PrimaryMenuItem] {
+        // Every write path validates the stored menu.
+        if let primaryMenu {
             return primaryMenu.items
         }
 
@@ -1035,21 +1061,13 @@ final class UICustomizationPreferences {
             .builtin(.series),
             .builtin(.music),
         ]
-        #if os(tvOS)
-        // TVNavPreferences is the semantic owner used by the legacy tvOS
-        // settings row (currently a typealias of AppNavPreferences).
-        let legacyShowsAudiobooks = TVNavPreferences.shared.showAudiobooks
-        #else
-        let legacyShowsAudiobooks = AppNavPreferences.shared.showAudiobooks
-        #endif
-        if legacyShowsAudiobooks {
+        if AppNavPreferences.shared.showAudiobooks {
             items.append(.builtin(.audiobooks))
         }
         items.append(contentsOf: [.builtin(.forYou), .builtin(.calendar)])
         return Array(Self.deduplicated(items).prefix(Self.maximumPrimaryMenuCount))
     }
 
-    var hasExplicitPrimaryMenu: Bool { primaryMenu != nil }
     var primaryMenuUsesDeviceOverride: Bool {
         primaryMenuSource == .scope(.profileDevice)
     }
@@ -1087,7 +1105,7 @@ final class UICustomizationPreferences {
             guard let self,
                   self.contextIsCurrent(context),
                   self.syncErrorsByKey.isEmpty else { return }
-            await self.refresh()
+            await self.refresh(force: true)
         }
     }
 
@@ -1110,7 +1128,7 @@ final class UICustomizationPreferences {
             guard let self,
                   self.contextIsCurrent(context),
                   self.syncErrorsByKey[SettingKey.uiCardPresentation.rawValue] == nil else { return }
-            await self.refresh()
+            await self.refresh(force: true)
         }
     }
 
@@ -1262,7 +1280,7 @@ final class UICustomizationPreferences {
                     saveCache(for: context.cacheKey)
                     Task { @MainActor [weak self] in
                         guard let self, self.contextIsCurrent(context) else { return }
-                        await self.refresh()
+                        await self.refresh(force: true)
                     }
                 }
                 updateSyncErrorMessage()
@@ -1341,10 +1359,7 @@ final class UICustomizationPreferences {
     /// time, so retries and definitive rejections cannot leak sibling intent.
     private func projectedPrimaryMenuItems() -> [PrimaryMenuItem] {
         var items = resolvedPrimaryMenuItems()
-        let operations = pendingShortcutOperations.values.sorted {
-            if $0.sequence == $1.sequence { return $0.item.id < $1.item.id }
-            return $0.sequence < $1.sequence
-        }
+        let operations = pendingShortcutOperations.values.sorted(by: Self.authoredOrder)
         for operation in operations where operation.updatesPrimaryMenu {
             items.removeAll { $0.id == operation.item.id }
             guard operation.present else { continue }
@@ -1546,17 +1561,14 @@ final class UICustomizationPreferences {
         mutationRevision: Int
     ) async -> Bool {
         await saveTail?.value
-        guard refreshSequence == sequence,
-              localMutationRevision == mutationRevision,
-              cacheKey() == targetCacheKey,
-              capturedIdentity(for: targetCacheKey) == requestIdentity else { return false }
+        guard refreshIsCurrent(sequence, mutationRevision, targetCacheKey, requestIdentity) else { return false }
 
         guard let targetCacheKey else { return false }
         let context = OperationContext(
             cacheKey: targetCacheKey,
             requestIdentity: requestIdentity
         )
-        // Held changes are not sent again on their own (owner decision D4).
+        // Held changes are sent only by retryHeldChanges().
         guard enqueueOutbox(context: context, where: { _, retry in !retry.isHeld }) else { return true }
         let replayTail = saveTail
         await replayTail?.value
@@ -1564,10 +1576,7 @@ final class UICustomizationPreferences {
         // Capture the new tail after the shortcut completes so refresh does
         // not return early with half of the compound pin still pending.
         await saveTail?.value
-        guard refreshSequence == sequence,
-              localMutationRevision == mutationRevision,
-              cacheKey() == targetCacheKey,
-              capturedIdentity(for: targetCacheKey) == requestIdentity else { return false }
+        guard refreshIsCurrent(sequence, mutationRevision, targetCacheKey, requestIdentity) else { return false }
         return pendingSyncWrites.values.allSatisfy(\.retry.isHeld)
             && pendingShortcutOperations.values.allSatisfy(\.retry.isHeld)
             && pendingDeletes.values.allSatisfy(\.retry.isHeld)
@@ -1594,10 +1603,7 @@ final class UICustomizationPreferences {
         let pendingShortcuts = pendingShortcutOperations
             .filter { include(.shortcut($0.key), $0.value.retry) }
             .values
-            .sorted {
-                if $0.sequence == $1.sequence { return $0.item.id < $1.item.id }
-                return $0.sequence < $1.sequence
-            }
+            .sorted(by: Self.authoredOrder)
         let pending = Self.keys.compactMap { key -> (SettingKey, SettingScopeIdentity, PendingSyncWrite)? in
             guard let write = pendingSyncWrites[key.rawValue], include(.value(key.rawValue), write.retry),
                   let scope = Self.writeScope(for: key) else { return nil }
@@ -1715,7 +1721,7 @@ final class UICustomizationPreferences {
         reconcilePendingShortcutPlacementError()
         saveCache(for: targetCacheKey)
         updateSyncErrorMessage()
-        await refresh()
+        await refresh(force: true)
     }
 
     /// Keys whose effective value a refresh must not paint over, because a
@@ -1748,41 +1754,35 @@ final class UICustomizationPreferences {
             loadedCacheKey = key
             clearSyncErrors()
         }
-        storedPrimaryMenu = nil
-        storedShortcuts = .empty
-        storedCardPresentation = .standard
-        storedPrimaryMenuSource = nil
-        storedCardPresentationSource = nil
-        supportProjection = .unknown
-        pendingSyncWrites = [:]
-        pendingShortcutOperations = [:]
-        pendingShortcutPlacementBlockedIds = []
-        pendingDeletes = [:]
-        nextShortcutOperationSequence = 0
-        guard let key,
-              let data = defaults.data(forKey: key),
-              let cached = try? SettingsWireCoding.makeDecoder().decode(Cache.self, from: data)
-        else { return }
-        storedPrimaryMenu = cached.primaryMenu?.isValid == true ? cached.primaryMenu : nil
-        storedShortcuts = Self.sanitizedShortcuts(cached.shortcuts)
-        storedCardPresentation = cached.cardPresentation
-        storedPrimaryMenuSource = cached.primaryMenuSource
-        storedCardPresentationSource = cached.cardPresentationSource
-        supportProjection = cached.supportProjection ?? .unknown
-        pendingSyncWrites = cached.pendingSyncWrites ?? [:]
+        // Decode first and assign each observed value once. Resetting to the
+        // defaults and then restoring would invalidate every view reading
+        // them (every card reads `cardPresentation`) on each refresh.
+        let cached = key
+            .flatMap { defaults.data(forKey: $0) }
+            .flatMap { try? SettingsWireCoding.makeDecoder().decode(Cache.self, from: $0) }
+        let cachedPrimaryMenu = cached?.primaryMenu
+        storedPrimaryMenu = cachedPrimaryMenu?.isValid == true ? cachedPrimaryMenu : nil
+        storedShortcuts = cached.map { Self.sanitizedShortcuts($0.shortcuts) } ?? .empty
+        storedCardPresentation = cached?.cardPresentation ?? .standard
+        storedPrimaryMenuSource = cached?.primaryMenuSource
+        storedCardPresentationSource = cached?.cardPresentationSource
+        supportProjection = cached?.supportProjection ?? .unknown
+        var cachedSyncWrites = cached?.pendingSyncWrites ?? [:]
         // Whole-document shortcut retries predate the atomic endpoint and
         // cannot be safely replayed without reintroducing lost updates.
-        pendingSyncWrites.removeValue(forKey: SettingKey.navShortcuts.rawValue)
+        cachedSyncWrites.removeValue(forKey: SettingKey.navShortcuts.rawValue)
+        pendingSyncWrites = cachedSyncWrites
         pendingShortcutOperations = Self.validPendingShortcutOperations(
-            cached.pendingShortcutOperations ?? [:]
+            cached?.pendingShortcutOperations ?? [:]
         )
         pendingShortcutPlacementBlockedIds = Set(
-            cached.pendingShortcutPlacementBlockedIds ?? []
+            cached?.pendingShortcutPlacementBlockedIds ?? []
         )
-        pendingDeletes = Self.validPendingDeletes(cached.pendingDeletes ?? [:])
+        pendingDeletes = Self.validPendingDeletes(cached?.pendingDeletes ?? [:])
         nextShortcutOperationSequence = pendingShortcutOperations.values
             .map(\.sequence)
             .max() ?? 0
+        guard cached != nil else { return }
         reconcilePendingShortcutPlacementError()
     }
 
@@ -1868,6 +1868,20 @@ final class UICustomizationPreferences {
     private func contextIsCurrent(_ context: OperationContext) -> Bool {
         cacheKey() == context.cacheKey
             && capturedIdentity(for: context.cacheKey) == context.requestIdentity
+    }
+
+    /// A refresh pass may still apply results: no newer pass started, no
+    /// local edit landed, and the identity it captured is still active.
+    private func refreshIsCurrent(
+        _ sequence: Int,
+        _ mutationRevision: Int,
+        _ targetCacheKey: String?,
+        _ identity: HTTPRequestIdentity
+    ) -> Bool {
+        refreshSequence == sequence
+            && localMutationRevision == mutationRevision
+            && cacheKey() == targetCacheKey
+            && capturedIdentity(for: targetCacheKey) == identity
     }
 
     private func capturedIdentity(for targetCacheKey: String?) -> HTTPRequestIdentity? {
@@ -1957,12 +1971,20 @@ final class UICustomizationPreferences {
         return migrated
     }
 
+    /// User intent order across identities; ties break on item identity.
+    nonisolated private static func authoredOrder(
+        _ lhs: PendingShortcutOperation,
+        _ rhs: PendingShortcutOperation
+    ) -> Bool {
+        if lhs.sequence == rhs.sequence { return lhs.item.id < rhs.item.id }
+        return lhs.sequence < rhs.sequence
+    }
+
     private static func validPendingDeletes(
         _ deletes: [String: PendingDelete]
     ) -> [String: PendingDelete] {
         deletes.filter { identity, delete in
-            guard let keyRaw = identity.split(separator: "|", maxSplits: 1).first,
-                  let key = SettingKey(rawValue: String(keyRaw)),
+            guard let key = deleteKey(identity),
                   let scope = delete.scopeIdentity,
                   !delete.operationId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             else { return false }

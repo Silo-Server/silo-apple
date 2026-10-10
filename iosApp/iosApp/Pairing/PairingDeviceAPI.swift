@@ -8,6 +8,22 @@ protocol PairingDeviceAuthorizing: Sendable {
     func poll(serverURL: String, deviceCode: String) async throws -> APIv2DevicePoll
     func lookup(serverURL: String, bearer: String, userCode: String) async throws -> DeviceLookupResponse
     func approve(serverURL: String, bearer: String, userCode: String) async throws
+    /// Withdraw a request the TV abandoned (`cancelDeviceLogin`). Callers
+    /// go through `withdraw(serverURL:deviceCode:capability:)`.
+    func cancel(serverURL: String, deviceCode: String) async throws
+    /// The public device sign-in capability document.
+    func capability(serverURL: String) async throws -> APIv2DeviceCapability
+}
+
+extension PairingDeviceAuthorizing {
+    /// The one withdraw policy for a device request a TV abandoned: send
+    /// `cancelDeviceLogin` only when the server's capability says it exists,
+    /// best effort, ignoring the answer. `capability` is nil when unknown or
+    /// unreadable, which reads as no cancel route.
+    func withdraw(serverURL: String, deviceCode: String, capability: APIv2DeviceCapability?) async {
+        guard capability?.supportsCancel == true else { return }
+        try? await cancel(serverURL: serverURL, deviceCode: deviceCode)
+    }
 }
 
 /// Device-authorization calls issued against an EXPLICIT server base URL,
@@ -34,11 +50,18 @@ struct PairingDeviceAPI: PairingDeviceAuthorizing {
 
     // MARK: Receiver (unauthenticated)
 
-    /// `POST /api/v2/auth/device/start` (`non_retryable`, 201).
     func start(serverURL: String, deviceName: String, devicePlatform: String) async throws -> DeviceLoginStartResponse {
+        try await start(
+            serverURL: serverURL,
+            request: DeviceLoginStartRequest(deviceName: deviceName, devicePlatform: devicePlatform)
+        )
+    }
+
+    /// `POST /api/v2/auth/device/start` (`non_retryable`, 201).
+    private func start(serverURL: String, request: DeviceLoginStartRequest) async throws -> DeviceLoginStartResponse {
         let value: APIv2DeviceStart = try await post(
             serverURL, "/api/v2/auth/device/start", bearer: nil, expectedStatus: 201,
-            body: Self.encode(DeviceLoginStartRequest(deviceName: deviceName, devicePlatform: devicePlatform))
+            body: Self.encode(request)
         )
         return value.presentation
     }
@@ -54,7 +77,17 @@ struct PairingDeviceAPI: PairingDeviceAuthorizing {
         return try value.validated()
     }
 
-    func remotePlaybackCapability(serverURL: String) async throws -> APIv2DeviceCapability {
+    /// `POST /api/v2/auth/device/cancel`, public and sent once. Servers that
+    /// predate it answer 404, which the caller ignores.
+    func cancel(serverURL: String, deviceCode: String) async throws {
+        let _: APIv2DeviceCancel = try await post(
+            serverURL, "/api/v2/auth/device/cancel", bearer: nil, expectedStatus: 200,
+            body: JSONSerialization.data(withJSONObject: ["device_code": deviceCode])
+        )
+    }
+
+    /// `GET /api/v2/auth/device/capability`, read without credentials.
+    func capability(serverURL: String) async throws -> APIv2DeviceCapability {
         try await get(serverURL, "/api/v2/auth/device/capability", query: [:], bearer: nil)
     }
 
@@ -63,19 +96,12 @@ struct PairingDeviceAPI: PairingDeviceAuthorizing {
         deviceName: String,
         devicePlatform: String
     ) async throws -> DeviceLoginStartResponse {
-        let value: APIv2DeviceStart = try await post(
-            serverURL,
-            "/api/v2/auth/device/start",
-            bearer: nil,
-            expectedStatus: 201,
-            body: Self.encode(DeviceLoginStartRequest(
-                deviceName: deviceName,
-                devicePlatform: devicePlatform,
-                clientPurpose: "remote_playback",
-                temporary: true
-            ))
-        )
-        return value.presentation
+        try await start(serverURL: serverURL, request: DeviceLoginStartRequest(
+            deviceName: deviceName,
+            devicePlatform: devicePlatform,
+            clientPurpose: "remote_playback",
+            temporary: true
+        ))
     }
 
     // MARK: Companion (authenticated with the chosen server's token)
@@ -94,6 +120,15 @@ struct PairingDeviceAPI: PairingDeviceAuthorizing {
             body: JSONSerialization.data(withJSONObject: ["code": userCode])
         )
         guard value.status == "approved" else { throw APIv2Error.incompleteAuthResponse }
+    }
+
+    /// `POST /api/v2/auth/device/deny` ("Not now" on the approval card).
+    func deny(serverURL: String, bearer: String, userCode: String) async throws {
+        let value: APIv2DeviceDecision = try await post(
+            serverURL, "/api/v2/auth/device/deny", bearer: bearer, expectedStatus: 200,
+            body: JSONSerialization.data(withJSONObject: ["code": userCode])
+        )
+        guard value.status == "denied" else { throw APIv2Error.incompleteAuthResponse }
     }
 
     // MARK: Transport

@@ -5,11 +5,6 @@ import SwiftUI
 /// layouts stay structural rather than incidental.
 struct HomeFeedRow: View {
     let section: ResolvedSection
-    var headerStyle: HomeSectionHeader.Style = .standard
-    var posterWidth: CGFloat = HomeFeedMetrics.posterWidth
-    var cardSpacing: CGFloat = HomeFeedMetrics.cardSpacing
-    /// Forces poster shape even for episode-bearing rows.
-    var forcesPosters: Bool = false
     /// Long-press actions, forwarded to every card in the row.
     var onRemoveFromContinueWatching: ((SectionItem) -> Void)? = nil
     var onSetWatched: ((SectionItem, Bool) async -> Bool)? = nil
@@ -18,10 +13,8 @@ struct HomeFeedRow: View {
     @Environment(AppRouter.self) private var router
 
     private var isResume: Bool { HomeFeed.isResume(section) }
-
-    private var hasEpisodes: Bool {
-        section.items.contains { $0.type.lowercased() == "episode" }
-    }
+    private var usesStills: Bool { Self.usesStills(section) }
+    private var isAudiobookRow: Bool { Self.isAudiobookRow(section) }
 
     /// Resume rows render as 16:9 stills — showing where you are inside a
     /// runtime is the entire job of the row, and a 2:3 poster can't do it.
@@ -29,22 +22,43 @@ struct HomeFeedRow: View {
     /// the exception: their art is square with no backdrop, so a still would
     /// crop the cover — they keep the square poster card, which carries its
     /// own progress rail on resume rows.
-    private var usesStills: Bool {
-        guard !forcesPosters, !isAudiobookRow else { return false }
-        if isResume { return true }
-        return section.sectionType.lowercased().contains("next") && hasEpisodes
+    private static func usesStills(_ section: ResolvedSection) -> Bool {
+        guard !isAudiobookRow(section) else { return false }
+        if HomeFeed.isResume(section) { return true }
+        return section.sectionType.lowercased().contains("next")
+            && section.items.contains { $0.type.lowercased() == "episode" }
     }
 
-    private var isAudiobookRow: Bool {
+    private static func isAudiobookRow(_ section: ResolvedSection) -> Bool {
         !section.items.isEmpty && section.items.allSatisfy(\.isAudiobook)
+    }
+
+    private static var stillWidth: CGFloat {
+        HomeFeedMetrics.stillWidth * UICustomizationPreferences.shared.cardPresentation.posterSize.scale
+    }
+
+    /// Width of a poster card in a row, after the Poster Size setting.
+    static var posterWidth: CGFloat {
+        HomeFeedMetrics.posterWidth * UICustomizationPreferences.shared.cardPresentation.posterSize.scale
+    }
+
+    /// The artwork a card in `section`'s row draws, and its size.
+    static func cardArtwork(for item: SectionItem, in section: ResolvedSection) -> CardArtwork? {
+        if usesStills(section) {
+            return CardArtwork(url: HomeStillCard.art(for: item).url, pointSize: HomeStillCard.artworkSize(width: stillWidth))
+        }
+        guard let url = item.posterUrl else { return nil }
+        return CardArtwork(
+            url: url,
+            pointSize: HomePosterCard.artworkSize(width: posterWidth, aspect: isAudiobookRow(section) ? .square : .poster)
+        )
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: HomeFeedMetrics.headerGap) {
             HomeSectionHeader(
                 title: section.title,
-                icon: isResume ? "play.circle.fill" : nil,
-                style: headerStyle
+                icon: isResume ? "play.circle.fill" : nil
             )
 
             rowScroller
@@ -54,7 +68,7 @@ struct HomeFeedRow: View {
     @ViewBuilder
     private var rowScroller: some View {
         cardsScroll
-            .scrollTargetBehavior(HorizontalMediaRailLayout.targetBehavior)
+            .mediaRailScrolling()
             .scrollPosition(id: $visibleItemId, anchor: HorizontalMediaRailLayout.scrollAnchor)
             .environment(\.itemDetailBrowseSource, detailBrowseSource)
             .onAppear {
@@ -89,14 +103,13 @@ struct HomeFeedRow: View {
 
     private var cardsScroll: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(alignment: HorizontalMediaRailLayout.cardAlignment, spacing: cardSpacing) {
+            LazyHStack(alignment: HorizontalMediaRailLayout.cardAlignment, spacing: HomeFeedMetrics.cardSpacing) {
                 ForEach(section.items) { item in
                     Group {
                         if usesStills {
                             HomeStillCard(
                                 item: item,
-                                width: HomeFeedMetrics.stillWidth
-                                    * uiCustomization.cardPresentation.posterSize.scale,
+                                width: Self.stillWidth,
                                 showsCaption: uiCustomization.cardPresentation.caption.showsTitle,
                                 showsMetadata: uiCustomization.cardPresentation.caption.showsMetadata,
                                 opensResumeContext: isResume,
@@ -106,7 +119,7 @@ struct HomeFeedRow: View {
                         } else {
                             HomePosterCard(
                                 item: item,
-                                width: posterWidth * uiCustomization.cardPresentation.posterSize.scale,
+                                width: Self.posterWidth,
                                 showsCaption: uiCustomization.cardPresentation.caption.showsTitle,
                                 showsMetadata: uiCustomization.cardPresentation.caption.showsMetadata,
                                 showsProgress: isResume,
@@ -119,6 +132,7 @@ struct HomeFeedRow: View {
                         }
                     }
                     .id(item.contentId)
+                    .onAppear { warmCards(after: item) }
                 }
             }
             .scrollTargetLayout()
@@ -126,6 +140,12 @@ struct HomeFeedRow: View {
         }
         .contentMargins(.horizontal, HomeFeedMetrics.gutter, for: .scrollContent)
         .scrollClipDisabled()
+    }
+
+    /// Decode the next cards before a swipe brings them into view.
+    private func warmCards(after item: SectionItem) {
+        guard let index = section.items.firstIndex(where: { $0.id == item.id }) else { return }
+        ArtworkLookahead.warmCards(after: index, in: section.items) { Self.cardArtwork(for: $0, in: section) }
     }
 
     private var detailBrowseSource: ItemDetailBrowseSource {

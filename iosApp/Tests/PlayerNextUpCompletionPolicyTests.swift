@@ -83,6 +83,32 @@ final class PlayerNextUpCompletionPolicyTests: XCTestCase {
         XCTAssertEqual(position, 3_600)
     }
 
+    func testSkippedCreditsFinalizeAtDurationWhileCreditsStillPlay() {
+        let position = PlayerNextUpCompletionPolicy.progressPosition(
+            isNextUpPresented: true,
+            hasReachedEndOfFile: false,
+            currentTime: 3_300,
+            duration: 3_600,
+            promptSeconds: 30,
+            skippedCredits: true
+        )
+
+        XCTAssertEqual(position, 3_600)
+    }
+
+    func testKeepWatchingAfterSkippedCreditsStillFinalizes() {
+        XCTAssertTrue(
+            PlayerNextUpCompletionPolicy.shouldFinalizeAsCompleted(
+                isNextUpPresented: false,
+                hasReachedEndOfFile: false,
+                currentTime: 3_300,
+                duration: 3_600,
+                promptSeconds: 30,
+                skippedCredits: true
+            )
+        )
+    }
+
     func testHiddenNextUpDoesNotFinalizeInsidePromptWindow() {
         XCTAssertFalse(
             PlayerNextUpCompletionPolicy.shouldFinalizeAsCompleted(

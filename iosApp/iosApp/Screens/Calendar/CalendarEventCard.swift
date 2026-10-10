@@ -76,10 +76,11 @@ struct CalendarEventCard: View {
                 url: event.posterUrl ?? "",
                 thumbhash: event.posterThumbhash,
                 targetSize: CGSize(width: cardWidth, height: cardHeight),
-                contentMode: .fill
+                contentMode: .fill,
+                placeholderStyle: .artwork,
+                placeholderSymbol: ArtworkPlaceholderSymbol.forMediaType(event.type)
             )
             .frame(width: cardWidth, height: cardHeight)
-            .clipped()
 
             // Badge pills (top-leading) and watched check (top-trailing)
             // share the top edge; the server never sends more than two
@@ -251,13 +252,13 @@ private struct CalendarCardCaption: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(event.title)
-                .font(.siloSubheadline)
+                .font(.siloCardTitle)
                 .foregroundColor(isFocused ? .siloOnSurface : .siloOnSurface.opacity(0.85))
                 .lineLimit(2, reservesSpace: true)
 
             if showsMetadata, let subtitle {
                 Text(subtitle)
-                    .font(.siloCaption)
+                    .font(.siloCardMetadata)
                     .foregroundColor(.siloSecondaryText)
                     .lineLimit(1)
             }

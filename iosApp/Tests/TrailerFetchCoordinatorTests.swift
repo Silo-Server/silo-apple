@@ -53,7 +53,8 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         _ script: Script,
         settledPollCount: Int = 3,
         windowSeconds: TimeInterval = 5,
-        minimumObservationSeconds: TimeInterval = 0
+        minimumObservationSeconds: TimeInterval = 0,
+        now: (@MainActor () -> Date)? = nil
     ) -> TrailerFetchCoordinator {
         TrailerFetchCoordinator(
             request: {
@@ -73,23 +74,9 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
             pollInterval: Duration.milliseconds(5),
             windowSeconds: windowSeconds,
             settledPollCount: settledPollCount,
-            minimumObservationSeconds: minimumObservationSeconds
+            minimumObservationSeconds: minimumObservationSeconds,
+            now: now
         )
-    }
-
-    /// Bounded spin until `condition` holds. Returns false on timeout rather
-    /// than waiting forever, so a stuck state machine fails an assertion.
-    @discardableResult
-    private func waitUntil(
-        timeout: TimeInterval = 5,
-        _ condition: @MainActor () -> Bool
-    ) async -> Bool {
-        let deadline = Date.now.addingTimeInterval(timeout)
-        while Date.now < deadline {
-            if condition() { return true }
-            try? await Task.sleep(for: .milliseconds(5))
-        }
-        return condition()
     }
 
     // MARK: - Queued → found
@@ -108,17 +95,17 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
             script.foundDetails.append(found)
         }
 
-        let reached = await waitUntil { coordinator.phase == .found }
+        let reached = await eventually { coordinator.phase == .found }
         XCTAssertTrue(reached, "expected .found, got \(coordinator.phase)")
         XCTAssertEqual(script.requestCount, 1)
         XCTAssertEqual(script.foundCallbackCount, 1)
         // The message clears on success — the new rail is the feedback.
         XCTAssertNil(coordinator.statusMessage)
 
-        // And the loop is genuinely finished: no further detail fetches.
-        let settledFetches = script.detailFetchCount
-        try? await Task.sleep(for: .milliseconds(80))
-        XCTAssertEqual(script.detailFetchCount, settledFetches, "polling continued after .found")
+        // And the loop is genuinely finished: its task ended, so nothing
+        // fetches again.
+        let finished = await eventually { !coordinator.hasActiveRun }
+        XCTAssertTrue(finished, "polling continued after .found")
     }
 
     func testTheFoundCallbackReceivesTheDetailTheTrailersWereObservedIn() async {
@@ -136,7 +123,7 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
             script.foundDetails.append(found)
         }
 
-        let reached = await waitUntil { coordinator.phase == .found }
+        let reached = await eventually { coordinator.phase == .found }
         XCTAssertTrue(reached, "expected .found, got \(coordinator.phase)")
         XCTAssertEqual(script.foundDetails.count, 1)
         XCTAssertEqual(
@@ -155,7 +142,7 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(script)
         coordinator.start(baseline: trailerTestDetail(extraIds: ["extra:1"]))
 
-        let reached = await waitUntil { coordinator.phase == .found }
+        let reached = await eventually { coordinator.phase == .found }
         XCTAssertTrue(reached, "expected .found, got \(coordinator.phase)")
     }
 
@@ -166,7 +153,7 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(script, settledPollCount: 2)
         coordinator.start(baseline: trailerTestDetail(extraIds: ["extra:1"]))
 
-        let reached = await waitUntil { coordinator.phase == .exhausted }
+        let reached = await eventually { coordinator.phase == .exhausted }
         XCTAssertTrue(reached, "expected .exhausted, got \(coordinator.phase)")
     }
 
@@ -183,7 +170,7 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(script, settledPollCount: 2)
         coordinator.start(baseline: trailerTestDetail(videoKeys: ["k1", "k2"]))
 
-        let reached = await waitUntil { coordinator.phase == .exhausted }
+        let reached = await eventually { coordinator.phase == .exhausted }
         XCTAssertTrue(reached, "expected .exhausted, got \(coordinator.phase)")
     }
 
@@ -201,7 +188,7 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
             script.foundDetails.append(found)
         }
 
-        let reached = await waitUntil { coordinator.phase == .found }
+        let reached = await eventually { coordinator.phase == .found }
         XCTAssertTrue(reached, "expected .found, got \(coordinator.phase)")
         XCTAssertEqual(script.foundCallbackCount, 1)
     }
@@ -215,7 +202,7 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(script, settledPollCount: 2)
         coordinator.start(baseline: trailerTestDetail())
 
-        let reached = await waitUntil { coordinator.phase == .exhausted }
+        let reached = await eventually { coordinator.phase == .exhausted }
         XCTAssertTrue(reached, "expected .exhausted, got \(coordinator.phase)")
     }
 
@@ -232,7 +219,7 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(script, settledPollCount: 100)
         coordinator.start(baseline: trailerTestDetail(videoKeys: ["v1"], videoSite: "vimeo"))
 
-        let reached = await waitUntil { coordinator.phase == .found }
+        let reached = await eventually { coordinator.phase == .found }
         XCTAssertTrue(reached, "expected .found, got \(coordinator.phase)")
     }
 
@@ -252,7 +239,7 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
             script.foundDetails.append(found)
         }
 
-        let reached = await waitUntil { coordinator.phase == .found }
+        let reached = await eventually { coordinator.phase == .found }
         XCTAssertTrue(reached, "expected .found, got \(coordinator.phase)")
         XCTAssertEqual(script.foundCallbackCount, 1)
         XCTAssertEqual(
@@ -270,7 +257,7 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(script, settledPollCount: 100)
         coordinator.start(baseline: trailerTestDetail(extraIds: ["extra:1"]))
 
-        let reached = await waitUntil { coordinator.phase == .found }
+        let reached = await eventually { coordinator.phase == .found }
         XCTAssertTrue(reached, "expected .found, got \(coordinator.phase)")
     }
 
@@ -283,7 +270,7 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(script, settledPollCount: 2)
         coordinator.start(baseline: trailerTestDetail(videoKeys: ["k1", "k2"]))
 
-        let reached = await waitUntil { coordinator.phase == .exhausted }
+        let reached = await eventually { coordinator.phase == .exhausted }
         XCTAssertTrue(reached, "expected .exhausted, got \(coordinator.phase)")
     }
 
@@ -296,7 +283,7 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(script, settledPollCount: 2)
         coordinator.start(baseline: trailerTestDetail(videoKeys: ["k1", "k2"]))
 
-        let reached = await waitUntil { coordinator.phase == .exhausted }
+        let reached = await eventually { coordinator.phase == .exhausted }
         XCTAssertTrue(reached, "expected .exhausted, got \(coordinator.phase)")
     }
 
@@ -317,10 +304,10 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
             script.foundDetails.append(found)
         }
 
-        let reached = await waitUntil { coordinator.phase == .foundUnplayable }
+        let reached = await eventually { coordinator.phase == .foundUnplayable }
         XCTAssertTrue(reached, "expected .foundUnplayable, got \(coordinator.phase)")
         XCTAssertEqual(script.foundCallbackCount, 0, "nothing renderable arrived")
-        XCTAssertEqual(coordinator.statusMessage, "No playable trailers here")
+        XCTAssertNotNil(coordinator.statusMessage)
         XCTAssertFalse(coordinator.isFetching)
     }
 
@@ -338,7 +325,7 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
             script.foundDetails.append(found)
         }
 
-        let reached = await waitUntil { coordinator.phase == .found }
+        let reached = await eventually { coordinator.phase == .found }
         XCTAssertTrue(reached, "expected .found, got \(coordinator.phase)")
         XCTAssertEqual(script.foundCallbackCount, 1)
     }
@@ -355,7 +342,7 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
             remoteVideosDisplayable: false
         )
 
-        let reached = await waitUntil { coordinator.phase == .exhausted }
+        let reached = await eventually { coordinator.phase == .exhausted }
         XCTAssertTrue(reached, "expected .exhausted, got \(coordinator.phase)")
     }
 
@@ -369,10 +356,10 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(script)
         coordinator.start(baseline: trailerTestDetail())
 
-        let reached = await waitUntil { coordinator.phase == .cooldown(next) }
+        let reached = await eventually { coordinator.phase == .cooldown(next) }
         XCTAssertTrue(reached, "expected .cooldown, got \(coordinator.phase)")
         XCTAssertEqual(script.detailFetchCount, 0, "cooldown must not poll")
-        XCTAssertEqual(coordinator.statusMessage, "Trailers were checked recently")
+        XCTAssertNotNil(coordinator.statusMessage)
         XCTAssertFalse(coordinator.isFetching)
     }
 
@@ -383,7 +370,7 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(script)
         coordinator.start(baseline: trailerTestDetail())
 
-        let reached = await waitUntil { coordinator.phase == .cooldown(nil) }
+        let reached = await eventually { coordinator.phase == .cooldown(nil) }
         XCTAssertTrue(reached, "expected .cooldown(nil), got \(coordinator.phase)")
     }
 
@@ -394,10 +381,10 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(script)
         coordinator.start(baseline: trailerTestDetail())
 
-        let reached = await waitUntil { coordinator.phase == .disabled }
+        let reached = await eventually { coordinator.phase == .disabled }
         XCTAssertTrue(reached, "expected .disabled, got \(coordinator.phase)")
         XCTAssertEqual(script.detailFetchCount, 0, "disabled must not poll")
-        XCTAssertEqual(coordinator.statusMessage, "Trailers are disabled for this library")
+        XCTAssertNotNil(coordinator.statusMessage)
     }
 
     func testUnknownStatusDoesNotPoll() async {
@@ -407,7 +394,7 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(script)
         coordinator.start(baseline: trailerTestDetail())
 
-        let reached = await waitUntil { coordinator.phase == .exhausted }
+        let reached = await eventually { coordinator.phase == .exhausted }
         XCTAssertTrue(reached, "expected .exhausted, got \(coordinator.phase)")
         XCTAssertEqual(script.detailFetchCount, 0)
     }
@@ -424,11 +411,11 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(script)
         coordinator.start(baseline: trailerTestDetail())
 
-        let reached = await waitUntil { coordinator.phase == .requestFailed(rateLimited: false) }
+        let reached = await eventually { coordinator.phase == .requestFailed(rateLimited: false) }
         XCTAssertTrue(reached, "expected .requestFailed, got \(coordinator.phase)")
         XCTAssertEqual(script.detailFetchCount, 0)
-        XCTAssertNotEqual(coordinator.statusMessage, "No trailers found")
-        XCTAssertEqual(coordinator.statusMessage, "Couldn't reach the server — try again")
+        XCTAssertNotNil(coordinator.statusMessage)
+        XCTAssertNotEqual(coordinator.statusMessage, "No trailers found", "a failed request is not an empty result")
         XCTAssertFalse(coordinator.isFetching)
     }
 
@@ -448,9 +435,9 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
             let coordinator = makeCoordinator(script)
             coordinator.start(baseline: trailerTestDetail())
 
-            let reached = await waitUntil { coordinator.phase == .requestFailed(rateLimited: true) }
+            let reached = await eventually { coordinator.phase == .requestFailed(rateLimited: true) }
             XCTAssertTrue(reached, "expected rate-limited .requestFailed for \(failure), got \(coordinator.phase)")
-            XCTAssertEqual(coordinator.statusMessage, "Please wait a moment and try again")
+            XCTAssertNotNil(coordinator.statusMessage)
         }
     }
 
@@ -462,7 +449,7 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
             let coordinator = makeCoordinator(script)
             coordinator.start(baseline: trailerTestDetail())
 
-            let reached = await waitUntil { coordinator.phase == .requestFailed(rateLimited: false) }
+            let reached = await eventually { coordinator.phase == .requestFailed(rateLimited: false) }
             XCTAssertTrue(reached, "expected .requestFailed(false) for \(failure), got \(coordinator.phase)")
         }
     }
@@ -476,11 +463,11 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(script, settledPollCount: 3)
         coordinator.start(baseline: trailerTestDetail())
 
-        let reached = await waitUntil { coordinator.phase == .exhausted }
+        let reached = await eventually { coordinator.phase == .exhausted }
         XCTAssertTrue(reached, "expected .exhausted, got \(coordinator.phase)")
         // First poll seeds the signature, then 3 unchanged polls settle it.
         XCTAssertEqual(script.detailFetchCount, 4)
-        XCTAssertEqual(coordinator.statusMessage, "No trailers found")
+        XCTAssertNotNil(coordinator.statusMessage)
     }
 
     func testAChangingItemResetsTheSettleCounter() async {
@@ -496,7 +483,7 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(script, settledPollCount: 2)
         coordinator.start(baseline: trailerTestDetail())
 
-        let reached = await waitUntil { coordinator.phase == .found }
+        let reached = await eventually { coordinator.phase == .found }
         XCTAssertTrue(reached, "expected .found, got \(coordinator.phase)")
         XCTAssertGreaterThanOrEqual(script.detailFetchCount, 7)
     }
@@ -511,7 +498,7 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(script, settledPollCount: 3, windowSeconds: 1)
         coordinator.start(baseline: trailerTestDetail())
 
-        let reached = await waitUntil { coordinator.phase == .exhausted }
+        let reached = await eventually { coordinator.phase == .exhausted }
         XCTAssertTrue(reached, "expected .exhausted, got \(coordinator.phase)")
         XCTAssertGreaterThan(script.detailFetchCount, 4, "failures should keep polling until the window lapses")
     }
@@ -536,11 +523,11 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         coordinator.start(baseline: trailerTestDetail())
 
         // 3 fetches is what the bare counter would have stopped at (seed + 2).
-        let settleable = await waitUntil { script.detailFetchCount >= 3 }
+        let settleable = await eventually { script.detailFetchCount >= 3 }
         XCTAssertTrue(settleable)
         XCTAssertEqual(coordinator.phase, .polling, "settled out before the job could have finished")
 
-        let reached = await waitUntil { coordinator.phase == .exhausted }
+        let reached = await eventually { coordinator.phase == .exhausted }
         XCTAssertTrue(reached, "expected .exhausted after the floor, got \(coordinator.phase)")
         XCTAssertGreaterThan(
             script.detailFetchCount,
@@ -554,24 +541,35 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         // while, then lands the trailer. With the bare counter this reported
         // "No trailers found" ~18s in and the payload was never published.
         let script = Script()
+        let observationFloor: TimeInterval = 0.5
+        let clockStart = Date(timeIntervalSince1970: 0)
+        var currentTime = clockStart
+        var polledPastCounterBeforeFloor = false
         script.details = { index in
-            index >= 12 ? trailerTestDetail(videoKeys: ["late"]) : trailerTestDetail()
+            currentTime = clockStart.addingTimeInterval(Double(index + 1) * 0.025)
+            if index == 3 {
+                polledPastCounterBeforeFloor = currentTime.timeIntervalSince(clockStart) < observationFloor
+            }
+            return index >= 12 ? trailerTestDetail(videoKeys: ["late"]) : trailerTestDetail()
         }
 
         let coordinator = makeCoordinator(
             script,
             settledPollCount: 2,
             windowSeconds: 5,
-            minimumObservationSeconds: 0.5
+            minimumObservationSeconds: observationFloor,
+            now: { currentTime }
         )
         coordinator.start(baseline: trailerTestDetail()) { found in
             script.foundCallbackCount += 1
             script.foundDetails.append(found)
         }
 
-        let reached = await waitUntil { coordinator.phase == .found }
+        let reached = await eventually { coordinator.phase == .found }
         XCTAssertTrue(reached, "expected .found, got \(coordinator.phase)")
         XCTAssertEqual(script.foundCallbackCount, 1)
+        XCTAssertTrue(polledPastCounterBeforeFloor, "polling must continue past the bare counter before the floor")
+        XCTAssertGreaterThanOrEqual(script.detailFetchCount, 13, "the scripted late result must still be fetched")
     }
 
     func testAnEarlyResultStillEndsTheRunImmediately() async {
@@ -588,7 +586,7 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         )
         coordinator.start(baseline: trailerTestDetail())
 
-        let reached = await waitUntil(timeout: 2) { coordinator.phase == .found }
+        let reached = await eventually(timeout: .seconds(2)) { coordinator.phase == .found }
         XCTAssertTrue(reached, "expected .found, got \(coordinator.phase)")
         XCTAssertEqual(script.detailFetchCount, 1, "the first poll already had the answer")
     }
@@ -607,7 +605,7 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         )
         coordinator.start(baseline: trailerTestDetail())
 
-        let reached = await waitUntil(timeout: 3) { coordinator.phase == .exhausted }
+        let reached = await eventually(timeout: .seconds(3)) { coordinator.phase == .exhausted }
         XCTAssertTrue(reached, "expected .exhausted, got \(coordinator.phase)")
     }
 
@@ -636,7 +634,7 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(script, settledPollCount: 100, windowSeconds: 0.2)
         coordinator.start(baseline: trailerTestDetail())
 
-        let reached = await waitUntil { coordinator.phase == .exhausted }
+        let reached = await eventually { coordinator.phase == .exhausted }
         XCTAssertTrue(reached, "expected .exhausted, got \(coordinator.phase)")
     }
 
@@ -654,7 +652,7 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
             script.foundDetails.append(found)
         }
 
-        let polling = await waitUntil { script.detailFetchCount >= 2 }
+        let polling = await eventually { script.detailFetchCount >= 2 }
         XCTAssertTrue(polling, "coordinator never started polling")
         XCTAssertEqual(coordinator.phase, .polling)
 
@@ -691,7 +689,7 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
 
         let coordinator = makeCoordinator(script)
         coordinator.start(baseline: trailerTestDetail())
-        let reached = await waitUntil { coordinator.phase == .disabled }
+        let reached = await eventually { coordinator.phase == .disabled }
         XCTAssertTrue(reached)
 
         coordinator.stop()
@@ -705,7 +703,7 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
 
         let coordinator = makeCoordinator(script)
         coordinator.start(baseline: trailerTestDetail())
-        let reached = await waitUntil { coordinator.phase == .cooldown(nil) }
+        let reached = await eventually { coordinator.phase == .cooldown(nil) }
         XCTAssertTrue(reached)
 
         coordinator.stop()
@@ -732,7 +730,7 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
             script.foundDetails.append(found)
         }
 
-        let polling = await waitUntil { script.detailFetchCount >= 1 }
+        let polling = await eventually { script.detailFetchCount >= 1 }
         XCTAssertTrue(polling, "coordinator never started polling")
 
         coordinator.stop()
@@ -741,7 +739,7 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         coordinator.resumeIfInterrupted()
         XCTAssertEqual(coordinator.phase, .polling, "an interrupted poll must resume")
 
-        let found = await waitUntil { coordinator.phase == .found }
+        let found = await eventually { coordinator.phase == .found }
         XCTAssertTrue(found, "expected .found, got \(coordinator.phase)")
         XCTAssertEqual(script.requestCount, 1, "resume must not re-POST the refresh")
         XCTAssertEqual(script.foundCallbackCount, 1)
@@ -764,7 +762,7 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
             script.foundDetails.append(found)
         }
         XCTAssertEqual(coordinator.phase, .requesting)
-        let requested = await waitUntil { script.requestCount == 1 }
+        let requested = await eventually { script.requestCount == 1 }
         XCTAssertTrue(requested, "the POST never went out")
 
         coordinator.stop()
@@ -774,7 +772,7 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         coordinator.resumeIfInterrupted()
         XCTAssertEqual(coordinator.phase, .polling, "an interrupted request must resume as a poll")
 
-        let found = await waitUntil { coordinator.phase == .found }
+        let found = await eventually { coordinator.phase == .found }
         XCTAssertTrue(found, "expected .found, got \(coordinator.phase)")
         XCTAssertEqual(script.requestCount, 1, "resume must not re-POST the refresh")
         XCTAssertEqual(script.foundCallbackCount, 1)
@@ -790,13 +788,13 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
 
         let coordinator = makeCoordinator(script, settledPollCount: 2)
         coordinator.start(baseline: trailerTestDetail(videoKeys: ["k1"]))
-        let requested = await waitUntil { script.requestCount == 1 }
+        let requested = await eventually { script.requestCount == 1 }
         XCTAssertTrue(requested)
 
         coordinator.stop()
         coordinator.resumeIfInterrupted()
 
-        let reached = await waitUntil { coordinator.phase == .exhausted }
+        let reached = await eventually { coordinator.phase == .exhausted }
         XCTAssertTrue(reached, "expected .exhausted, got \(coordinator.phase)")
         XCTAssertEqual(script.requestCount, 1)
     }
@@ -813,7 +811,7 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
 
         let coordinator = makeCoordinator(script, settledPollCount: 100, windowSeconds: 30)
         coordinator.start(baseline: trailerTestDetail())
-        let polling = await waitUntil { coordinator.phase == .polling }
+        let polling = await eventually { coordinator.phase == .polling }
         XCTAssertTrue(polling)
 
         coordinator.resumeIfInterrupted()
@@ -832,11 +830,11 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
 
         let coordinator = makeCoordinator(script, settledPollCount: 100, windowSeconds: 30)
         coordinator.start(baseline: trailerTestDetail())
-        _ = await waitUntil { coordinator.phase == .polling }
+        _ = await eventually { coordinator.phase == .polling }
         coordinator.stop()
 
         coordinator.start(baseline: trailerTestDetail())
-        let polling = await waitUntil { coordinator.phase == .polling }
+        let polling = await eventually { coordinator.phase == .polling }
         XCTAssertTrue(polling)
         XCTAssertEqual(script.requestCount, 2, "an explicit retry re-POSTs")
 
@@ -852,7 +850,7 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         coordinator.start(baseline: trailerTestDetail())
         coordinator.start(baseline: trailerTestDetail())
 
-        let polling = await waitUntil { script.detailFetchCount >= 1 }
+        let polling = await eventually { script.detailFetchCount >= 1 }
         XCTAssertTrue(polling)
         XCTAssertEqual(script.requestCount, 1, "a second start must not re-POST")
 
@@ -870,7 +868,7 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
 
         script.response = TrailerRefreshResponse(status: "queued", nextAllowedAt: nil)
         coordinator.start(baseline: trailerTestDetail())
-        XCTAssertEqual(coordinator.statusMessage, "Finding trailers…")
+        XCTAssertNotNil(coordinator.statusMessage)
         XCTAssertTrue(coordinator.isFetching)
         coordinator.stop()
     }

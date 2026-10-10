@@ -100,7 +100,6 @@ enum AetherAuthenticationRecoveryPolicy {
 struct AetherLoadSpec {
     enum ValidationError: Error, Equatable {
         case invalidStreamURL(String)
-        case unsupportedDelivery(String)
         case invalidAudioTrackIndex(Int)
         case invalidSubtitleArtifactURL(String)
         case unsupportedSubtitleTimingOrigin(origin: Double, timelineOffset: Double)
@@ -140,14 +139,9 @@ struct AetherLoadSpec {
     /// but resolves directly to its container stream, without an external slot.
     let embeddedSubtitleAlias: (appTrackID: Int64, streamIndex: Int)?
 
-    /// The bridge this app assumes for codecs Aether cannot stream-copy, when
-    /// a caller does not name one.
-    ///
-    /// Deliberately not Aether's own `.surroundCompat` default: the engine this
-    /// player replaced always bridged TrueHD and DTS-HD MA losslessly, so
-    /// inheriting the lossy default would quietly downgrade shipped behavior —
-    /// which is exactly what happened before this parameter existed. The user
-    /// setting overrides it; see `PlayerSettings.losslessAudioEnabled`.
+    /// The bridge for codecs Aether cannot stream-copy, when a caller does not
+    /// name one. Lossless rather than Aether's `.surroundCompat` default;
+    /// `PlayerSettings.losslessAudioEnabled` overrides it.
     static let defaultAudioBridgeMode: AudioBridgeMode = .lossless
 
     /// The deinterlacer used when a caller does not name one.
@@ -435,7 +429,17 @@ struct AetherLoadSpec {
         self.delivery = plan.delivery
         self.sourceURL = sourceURL
         self.timeline = timeline
-        if let resumeSourcePosition, resumeSourcePosition.isFinite {
+        if plan.delivery == PlaybackProtocolV3.PlanDelivery.remuxProgressive {
+            // A progressive remux is one chunked response the reader cannot
+            // rewind. Aether answers a non-zero start by seeking and flushing
+            // what it probed, then fails re-reading the first sample, so the
+            // stream never plays. Starting at byte zero replays the copied
+            // pre-roll (the keyframe before the requested position) instead;
+            // the timeline offset still maps the clock to the source position.
+            // Remove once Aether skips that seek on a forward-only source
+            // (docs/aether-forward-only-resume.md).
+            aetherStartPosition = 0
+        } else if let resumeSourcePosition, resumeSourcePosition.isFinite {
             aetherStartPosition = timeline.playerPosition(
                 forSourceTime: max(0, resumeSourcePosition)
             )
@@ -472,7 +476,7 @@ struct AetherLoadSpec {
             PlaybackProtocolV3.PlanDelivery.remuxHLS,
             PlaybackProtocolV3.PlanDelivery.transcodeHLS,
         ].contains(plan.delivery)
-        options = LoadOptions(
+        var loadOptions = LoadOptions(
             httpHeaders: effectiveHeaders,
             httpRequestAuthorization: isServerHLS && plan.effectiveRecipe.videoCodec != nil
                 ? requestAuthorization : nil,
@@ -497,6 +501,17 @@ struct AetherLoadSpec {
             deinterlaceMode: deinterlaceMode,
             deinterlaceFieldRate: deinterlaceFieldRate
         )
+        if plan.delivery == PlaybackProtocolV3.PlanDelivery.remuxProgressive,
+           let sourceDuration = plan.source.durationSeconds,
+           sourceDuration > timeline.timelineOffsetSeconds {
+            // A progressive remux is fragmented, so the container reports
+            // only its first fragment (a few seconds). Aether then treats the
+            // session as parked at end of media, and the next play() rewinds
+            // to zero: a seek this stream cannot serve, which ends playback.
+            // Declare what remains of the runtime on the engine's axis.
+            loadOptions.declaredDurationSeconds = sourceDuration - timeline.timelineOffsetSeconds
+        }
+        options = loadOptions
     }
 
     private static func resolveSidecarURL(_ value: String, relativeTo mediaURL: URL) -> URL? {
@@ -575,6 +590,14 @@ enum AetherObjectAudioPolicy {
         return .apac(layout)
     }
 
+    /// `apac 7.1.4` or `off`, for the diagnostics line.
+    static func diagnosticName(_ rendering: ObjectAudioRendering) -> String {
+        switch rendering {
+        case .off: return "off"
+        case .apac(let layout): return "apac \(layout.rawValue)"
+        }
+    }
+
     #if os(tvOS)
     /// Apple TV's HDMI output as tvOS reports it. The Atmos route to a receiver
     /// or soundbar is Dolby MAT, which tvOS reports as `.dolbyAtmos`.
@@ -583,6 +606,20 @@ enum AetherObjectAudioPolicy {
         case .dolbyAtmos, .spatialAudio: return .atmos
         case .monoStereo, .surround, .dolbyAudio: return .channelsOnly
         default: return .unknown
+        }
+    }
+
+    /// The mode's own name for the diagnostics line, so a report shows what
+    /// tvOS said rather than only what Silo made of it.
+    static func renderingModeName(_ mode: AVAudioSession.RenderingMode) -> String {
+        switch mode {
+        case .notApplicable: return "notApplicable"
+        case .monoStereo: return "monoStereo"
+        case .surround: return "surround"
+        case .spatialAudio: return "spatialAudio"
+        case .dolbyAudio: return "dolbyAudio"
+        case .dolbyAtmos: return "dolbyAtmos"
+        @unknown default: return "raw\(mode.rawValue)"
         }
     }
     #endif

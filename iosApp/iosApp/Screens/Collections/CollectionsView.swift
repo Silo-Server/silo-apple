@@ -1,6 +1,6 @@
 import SwiftUI
 
-func libraryCollectionAccessibilityLabel(_ collection: LibraryCollection) -> String {
+func libraryCollectionAccessibilityLabel(_ collection: LibraryCollection, showItemCount: Bool = true) -> String {
     let type = collection.kind == .userCollections
         ? "User collection"
         : collection.collectionType?.capitalized ?? "Collection"
@@ -9,7 +9,7 @@ func libraryCollectionAccessibilityLabel(_ collection: LibraryCollection) -> Str
     } else {
         "Smart"
     }
-    return [collection.name, type, count].joined(separator: ", ")
+    return (showItemCount ? [collection.name, type, count] : [collection.name, type]).joined(separator: ", ")
 }
 
 /// List of user-created collections, grouped into named buckets +
@@ -104,7 +104,7 @@ struct CollectionsView: View {
             ForEach(viewModel.sections) { section in
                 Section {
                     if section.collections.isEmpty {
-                        Text("Drop collections here to add them to this group.")
+                        Text(emptyGroupHint)
                             .font(.siloSmall)
                             .foregroundColor(.siloSecondaryText)
                             .listRowBackground(Color.siloSurface)
@@ -142,6 +142,15 @@ struct CollectionsView: View {
         .listStyle(.insetGrouped)
         #endif
         .siloScrollContentBackgroundHidden()
+    }
+
+    /// tvOS has no Move action, so it only notes the group is empty.
+    private var emptyGroupHint: String {
+        #if os(tvOS)
+        "No collections in this group yet."
+        #else
+        "Use Move on a collection to add it to this group."
+        #endif
     }
 
     @ViewBuilder
@@ -442,12 +451,12 @@ private struct GroupActionSheet: View {
         switch action {
         case .create:
             await viewModel.createGroup(name: name)
-        case .rename(let group):
-            await viewModel.renameGroup(id: group.id, name: name)
+        case .rename:
+            await viewModel.renameGroup(name: name)
         case .delete(let group):
             await viewModel.deleteGroup(id: group.id)
-        case .move(let collection):
-            await viewModel.moveCollection(id: collection.id, toGroupId: pendingMoveTarget)
+        case .move:
+            await viewModel.moveCollection(toGroupId: pendingMoveTarget)
         case .deleteCollection(let collection):
             await viewModel.deleteCollection(id: collection.id)
         }
@@ -503,13 +512,18 @@ private class LibraryCollectionsViewModel {
 
 struct LibraryCollectionsView: View {
     let libraryId: Int
+    var mediaScope: LibraryVideoScope? = nil
 
     @State private var viewModel = LibraryCollectionsViewModel()
     @State private var uiCustomization = UICustomizationPreferences.shared
     @State private var gridWidth: CGFloat = 0
     @Environment(\.horizontalSizeClass) private var hSize
+    @Environment(\.verticalSizeClass) private var vSize
 
     private var columns: [GridItem] {
+        if let fit = widePhonePosterFit {
+            return fit.columns
+        }
         if usesThreeColumnPhoneLayout {
             return Array(
                 repeating: GridItem(.flexible(), spacing: 12),
@@ -571,18 +585,20 @@ struct LibraryCollectionsView: View {
                             libraryId: libraryId,
                             collectionId: collection.id,
                             title: collection.name,
-                            kind: collection.kind
+                            kind: collection.kind,
+                            mediaScope: mediaScope
                         )
                     ) {
                         LibraryCollectionCard(
                             collection: collection,
-                            cardWidthOverride: libraryCollectionCardWidthOverride
+                            cardWidthOverride: libraryCollectionCardWidthOverride,
+                            showItemCount: mediaScope == nil
                         )
                     }
                     .buttonStyle(.plain)
                     .frame(maxWidth: .infinity)
                     .accessibilityElement(children: .ignore)
-                    .accessibilityLabel(libraryCollectionAccessibilityLabel(collection))
+                    .accessibilityLabel(libraryCollectionAccessibilityLabel(collection, showItemCount: mediaScope == nil))
                 }
             }
             #if os(iOS)
@@ -604,7 +620,19 @@ struct LibraryCollectionsView: View {
         #endif
     }
 
+    /// A phone window too wide for three-up cards (the iPhone Duo's inner
+    /// display) fills the row with more columns.
+    private var widePhonePosterFit: AdaptiveColumns.PosterGridFit? {
+        guard usesThreeColumnPhoneLayout else { return nil }
+        return AdaptiveColumns.widePhonePosterFit(
+            containerWidth: gridWidth,
+            posterSize: uiCustomization.cardPresentation.posterSize,
+            verticalSizeClass: vSize
+        )
+    }
+
     private var libraryCollectionCardWidthOverride: CGFloat? {
+        if let fit = widePhonePosterFit { return fit.cardWidth }
         guard usesThreeColumnPhoneLayout else { return nil }
         return AdaptiveColumns.fittedPosterWidth(
             containerWidth: gridWidth,
@@ -617,6 +645,7 @@ struct LibraryCollectionsView: View {
 private struct LibraryCollectionCard: View {
     let collection: LibraryCollection
     let cardWidthOverride: CGFloat?
+    var showItemCount = true
     @State private var uiCustomization = UICustomizationPreferences.shared
 
     private var cardWidth: CGFloat {
@@ -632,14 +661,16 @@ private struct LibraryCollectionCard: View {
             ZStack(alignment: .bottomTrailing) {
                 poster
 
-                Text(countLabel)
-                    .font(.siloSmall)
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
-                    .background(Color.black.opacity(0.65))
-                    .clipShape(Capsule())
-                    .padding(8)
+                if showItemCount {
+                    Text(countLabel)
+                        .font(.siloSmall)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(Color.black.opacity(0.65))
+                        .clipShape(Capsule())
+                        .padding(8)
+                }
             }
             .frame(width: cardWidth, height: cardHeight)
             .clipShape(RoundedRectangle(cornerRadius: SiloTheme.smallCornerRadius))
@@ -671,7 +702,6 @@ private struct LibraryCollectionCard: View {
                 contentMode: .fill
             )
             .frame(width: cardWidth, height: cardHeight)
-            .clipped()
         } else {
             ZStack {
                 Color.siloSurfaceVariant
@@ -703,27 +733,29 @@ struct LibraryCollectionDetailView: View {
     let collectionId: String
     let title: String?
     let kind: LibraryCollectionKind?
+    var mediaScope: LibraryVideoScope? = nil
 
-    @State private var items: [BrowseItem] = []
-    @State private var isLoading = false
-    @State private var error: ErrorState?
-    @State private var hasMore = true
-    @State private var totalItems: Int?
-    /// Where the next page starts; `nil` before the live first page and
-    /// after the last one. A cached first page has no continuation.
-    @State private var continuation: APIv2CatalogContinuation?
-
+    @State private var viewModel = LibraryCollectionDetailViewModel()
+    @State private var shuffleLauncher = ShuffleLauncher()
     @Environment(AppRouter.self) private var router
 
-    private let pageSize = 60
+    private var shuffleKind: ShuffleScopeKind {
+        (kind ?? .regular).shuffleScopeKind
+    }
+
+    /// A shuffle scope has no media type, so a Movies or Series view of a
+    /// mixed library's collection would shuffle titles of both types.
+    private var offersShuffle: Bool {
+        mediaScope == nil && ShuffleFeatureStore.shared.supports(shuffleKind)
+    }
 
     var body: some View {
         Group {
-            if !items.isEmpty {
+            if !viewModel.items.isEmpty {
                 content
-            } else if let error {
+            } else if let error = viewModel.error {
                 ErrorView(state: error, onRetry: { Task { await loadItems(reset: true) } })
-            } else if isLoading {
+            } else if viewModel.isLoading {
                 Color.clear
             } else {
                 EmptyStateView(
@@ -734,12 +766,16 @@ struct LibraryCollectionDetailView: View {
             }
         }
         .siloPageBackground()
-        .environment(\.browseLibraryId, libraryId)
+        // Collection items can live in other libraries, and a library-scoped
+        // item read 404s for those. Keep cards and play actions unscoped, like
+        // the web client.
+        .environment(\.browseLibraryId, nil)
         .navigationTitle(title ?? "Collection")
         .siloNavigationTitleDisplayMode(.large)
-        .task(id: "\(libraryId)-\(collectionId)") {
+        .task(id: "\(libraryId)-\(collectionId)-\(mediaScope?.rawValue ?? "all")-\(kind?.rawValue ?? "regular")") {
             await loadItems(reset: true)
         }
+        .shuffleFailureAlert(shuffleLauncher)
         .refreshable {
             await loadItems(reset: true)
         }
@@ -748,17 +784,28 @@ struct LibraryCollectionDetailView: View {
     private var content: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: SiloTheme.padding) {
-                Text(countLabel)
-                    .font(.siloCaption)
-                    .foregroundColor(.siloSecondaryText)
+                HStack(spacing: SiloTheme.padding) {
+                    if offersShuffle {
+                        ShuffleButton(isStarting: shuffleLauncher.isStarting) {
+                            shuffleLauncher.start(ShuffleScopeRequest(kind: shuffleKind, id: collectionId), router: router)
+                        }
+                    }
+                    Text(countLabel)
+                        .font(.siloCaption)
+                        .foregroundColor(.siloSecondaryText)
+                }
+                #if os(tvOS)
+                // Up from any grid column reaches the Shuffle button.
+                .focusSection()
+                #endif
 
                 CatalogGrid(
-                    items: items,
-                    isLoading: isLoading,
-                    hasMore: hasMore,
+                    items: viewModel.items,
+                    isLoading: viewModel.isLoading,
+                    hasMore: viewModel.hasMore,
                     forcesThreeColumnsOnPhone: true,
                     onItemTap: { item in
-                        router.navigate(to: .itemDetail(browseItem: item, libraryId: libraryId))
+                        router.navigate(to: .itemDetail(browseItem: item))
                     },
                     onLoadMore: {
                         Task { await loadMoreIfNeeded() }
@@ -772,67 +819,20 @@ struct LibraryCollectionDetailView: View {
     }
 
     private var countLabel: String {
-        if let totalItems, !hasMore {
+        if let totalItems = viewModel.totalItems, !viewModel.hasMore {
             return "\(totalItems) item\(totalItems == 1 ? "" : "s")"
         }
-        let suffix = hasMore ? "+" : ""
-        return "\(items.count)\(suffix) item\(items.count == 1 && !hasMore ? "" : "s")"
+        let suffix = viewModel.hasMore ? "+" : ""
+        return "\(viewModel.items.count)\(suffix) item\(viewModel.items.count == 1 && !viewModel.hasMore ? "" : "s")"
     }
 
     private func loadMoreIfNeeded() async {
-        guard hasMore, !isLoading else { return }
+        guard viewModel.hasMore, !viewModel.isLoading else { return }
         await loadItems(reset: false)
     }
 
     private func loadItems(reset: Bool) async {
-        guard !isLoading else { return }
-        let cacheKey = CacheKey.catalogCollectionItems(collectionId)
-        if reset {
-            // Surface the cached first page instantly so the grid doesn't
-            // blank out while the network call runs.
-            if items.isEmpty,
-               let cached: CatalogResponse = ResponseCache.shared.get(cacheKey) {
-                items = cached.items
-                hasMore = cached.hasMore ?? false
-                totalItems = cached.totalExact == false ? nil : cached.total
-            } else if items.isEmpty {
-                hasMore = true
-                totalItems = nil
-            }
-        }
-        guard reset || hasMore else { return }
-
-        isLoading = true
-        error = nil
-
-        // A reset, or a load-more over a cached first page, starts over from
-        // the first page and replaces the grid instead of appending to it.
-        let nextPage = reset ? nil : continuation
-
-        do {
-            let page: CatalogListPage
-            if let nextPage {
-                page = try await SiloAPI.shared.nextCatalogPage(nextPage)
-            } else {
-                page = try await SiloAPI.shared.catalogPage(.collectionItems(
-                    kind: kind ?? .regular, collectionId: collectionId, limit: pageSize
-                ))
-            }
-            if nextPage != nil, !page.startsOver {
-                items.append(contentsOf: page.response.items)
-            } else {
-                items = page.response.items
-                ResponseCache.shared.set(page.response, for: cacheKey)
-            }
-            totalItems = page.response.totalExact == false ? nil : page.response.total
-            continuation = page.continuation
-            hasMore = page.continuation != nil
-        } catch let err {
-            if items.isEmpty {
-                error = ErrorState(err)
-            }
-        }
-
-        isLoading = false
+        await viewModel.load(libraryId: libraryId, collectionId: collectionId,
+                             kind: kind ?? .regular, mediaScope: mediaScope, reset: reset)
     }
 }

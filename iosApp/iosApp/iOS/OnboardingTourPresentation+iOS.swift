@@ -4,13 +4,18 @@ import SwiftUI
 private struct OnboardingTourGateModifier: ViewModifier {
     var router: AppRouter
     @State private var model = OnboardingTourGateModel()
+    @Environment(\.isStartupSplashVisible) private var isStartupSplashVisible
 
     func body(content: Content) -> some View {
         content
             .task(id: AuthService.shared.profileId) {
                 await model.check(profileId: AuthService.shared.profileId)
             }
-            .fullScreenCover(isPresented: $model.showTour) {
+            .fullScreenCover(isPresented: Binding(
+                // The tour opens once the startup splash has lifted.
+                get: { model.showTour && !isStartupSplashVisible },
+                set: { model.showTour = $0 }
+            )) {
                 OnboardingTourView(
                     router: router,
                     resumeStepId: model.resumeStepId,

@@ -14,8 +14,8 @@ enum MediaRowLayout {
     case square
 }
 
-/// A horizontal scrolling row of media cards with a title header.
-/// Plezy style: section title with optional icon, safe-area leading padding.
+/// A horizontal scrolling row of media cards with a title header (optional
+/// icon) and safe-area leading padding.
 struct MediaRow: View {
     let title: String
     let items: [SectionItem]
@@ -34,7 +34,7 @@ struct MediaRow: View {
     /// default focus target — on initial appearance AND on user-driven
     /// d-pad entry into the row's focus section. Implemented via
     /// `.defaultFocus($focusedItemId, firstId, priority: .userInitiated)`;
-    /// see CLAUDE.md's "tvOS default focus on d-pad entry" pattern.
+    /// see docs/tvos-focus.md (default focus with `.userInitiated`).
     var prefersDefaultFocusOnFirstItem: Bool = false
     /// Priority for the first-item default focus. `.userInitiated` (the
     /// default) also snaps d-pad entry into the row onto the first card;
@@ -74,6 +74,9 @@ struct MediaRow: View {
     /// Optional width for poster/square cards — Skyline's dense landing
     /// rows (§5.6) pass a compact width. Episode thumbs are unaffected.
     var cardWidth: CGFloat? = nil
+    /// Optional unscaled width for episode thumbs; nil keeps
+    /// `SiloTheme.thumbnailCardWidth`.
+    var thumbnailCardWidth: CGFloat? = nil
     /// Optional tvOS-only vertical padding override for the card strip.
     /// Standard rows keep the default breathing room for focus lift.
     var cardVerticalPadding: CGFloat? = nil
@@ -99,7 +102,6 @@ struct MediaRow: View {
     @State private var lastFocusedItemId: String?
     @State private var focusRestorationGeneration = 0
     @State private var lastAppliedDetailReturnFocusRequest = 0
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private static let focusLogger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "TVFocus"
@@ -116,10 +118,12 @@ struct MediaRow: View {
         .focusSection()
         .modifier(TVRowMoveHandler(onMoveUp: onMoveUp, onMoveDown: onMoveDown))
         .modifier(TVRowFocusObserver(focusedItemId: $focusedItemId) { newValue in
-            guard let item = items.first(where: { $0.contentId == newValue }) else { return }
+            guard let index = items.firstIndex(where: { $0.contentId == newValue }) else { return }
+            let item = items[index]
             lastFocusedItemId = newValue
             Self.focusLogger.debug("mediaRow.focus changed")
             onItemFocus?(item)
+            warmCards(after: index)
         })
         .onChange(of: items.map(\.contentId)) { oldIds, newIds in
             restoreFocusAfterItemRemoval(from: oldIds, to: newIds)
@@ -352,15 +356,27 @@ struct MediaRow: View {
             LazyHStack(alignment: HorizontalMediaRailLayout.cardAlignment, spacing: cardSpacing) {
                 ForEach(items) { item in
                     mediaCard(for: item)
+                        #if !os(tvOS)
+                        .onAppear {
+                            if let index = items.firstIndex(where: { $0.id == item.id }) {
+                                warmCards(after: index)
+                            }
+                        }
+                        #endif
                 }
             }
             #if !os(tvOS)
-            .padding(.horizontal, SiloTheme.safePadding)
+            .scrollTargetLayout()
             #endif
             .padding(.vertical, verticalCardPadding)
             .phoneMediaRailBounds()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        #if !os(tvOS)
+        // A content margin, not padding, so settled cards keep the gutter.
+        .contentMargins(.horizontal, SiloTheme.safePadding, for: .scrollContent)
+        .mediaRailScrolling()
+        #endif
         #if os(tvOS)
         // Keep the gutter outside the scroll view. With content margins,
         // tvOS adds the gutter to the resting offset again when focus leaves
@@ -390,6 +406,33 @@ struct MediaRow: View {
         #endif
     }
 
+    /// Decode the cards past `index` before they scroll into view: on tvOS
+    /// from the focused card, elsewhere from each card that appears.
+    private func warmCards(after index: Int) {
+        ArtworkLookahead.warmCards(after: index, in: items) { item in
+            Self.cardArtwork(for: item, layout: layout, cardWidth: cardWidth, thumbnailCardWidth: thumbnailCardWidth)
+        }
+    }
+
+    /// The artwork a card in a row of `layout` draws, and its size.
+    static func cardArtwork(
+        for item: SectionItem,
+        layout: MediaRowLayout,
+        cardWidth: CGFloat?,
+        thumbnailCardWidth: CGFloat? = nil
+    ) -> CardArtwork? {
+        switch layout {
+        case .poster, .square:
+            guard let url = item.posterUrl else { return nil }
+            return CardArtwork(
+                url: url,
+                pointSize: MediaCard.artworkSize(cardWidthOverride: cardWidth, aspect: layout == .square ? .square : .poster)
+            )
+        case .thumbnail:
+            return CardArtwork(url: EpisodeThumbCard.imageURL(for: item), pointSize: EpisodeThumbCard.artworkSize(baseWidth: thumbnailCardWidth))
+        }
+    }
+
     @ViewBuilder
     private func mediaCard(for item: SectionItem) -> some View {
         switch layout {
@@ -400,6 +443,7 @@ struct MediaRow: View {
                 thumbhash: item.posterThumbhash,
                 episodeWatchState: item.isEpisodeItem ? EpisodeWatchState(sectionItem: item) : nil,
                 imageIsEpisodeStill: item.posterIsEpisodeStill,
+                mediaType: item.type,
                 year: item.year,
                 subtitle: EpisodeCardCaption.line(for: item),
                 progress: progressValue(for: item),
@@ -430,7 +474,8 @@ struct MediaRow: View {
                 contextDetailTitle: contextDetailTitle(for: item),
                 onOpenContextDetail: contextDetailAction(for: item),
                 onRemoveFromContinueWatching: continueWatchingRemovalAction(for: item),
-                onSetWatched: watchedToggleAction(for: item)
+                onSetWatched: watchedToggleAction(for: item),
+                baseCardWidth: thumbnailCardWidth
             )
         }
     }
@@ -562,10 +607,10 @@ struct MediaRow: View {
     }
     #endif
 
-    /// Caption for a poster card. Episodes are captioned with the series name
-    /// — the bare `title` is the episode title (often "TBA" when unannounced).
+    /// Caption for a poster card. Episodes are captioned with the series name;
+    /// see `EpisodeCardCaption.cardTitle(for:)`.
     private func posterTitle(for item: SectionItem) -> String {
-        item.type.lowercased() == "episode" ? (item.seriesTitle ?? item.title) : item.title
+        EpisodeCardCaption.cardTitle(for: item)
     }
 
     /// Episode context for accessibility when a poster is captioned with its
@@ -665,8 +710,8 @@ private extension View {
     /// Routes both initial and user-initiated (d-pad) focus into the
     /// row's first card. The `.userInitiated` priority is the bit that
     /// `prefersDefaultFocus(_:in:)` lacks — it makes default focus win
-    /// over geometric proximity on d-pad entry. See CLAUDE.md's "tvOS
-    /// default focus on d-pad entry" pattern.
+    /// over geometric proximity on d-pad entry. See docs/tvos-focus.md
+    /// (default focus with `.userInitiated`).
     @ViewBuilder
     func applyDefaultFirstItemFocus(
         enabled: Bool,

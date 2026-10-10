@@ -38,8 +38,8 @@ final class PlayerSettingsFlushTests: XCTestCase {
         let flusher = PlayerSettingsFlusher(transport: transport, debounce: .milliseconds(150))
 
         flusher.enqueue(.playerHdrEnabled, value: .bool(false))
-        // Well inside the window: nothing may have been sent yet.
-        try await Task.sleep(for: .milliseconds(30))
+        // Well inside the window: the timer is armed and nothing has been sent.
+        XCTAssertTrue(flusher.hasArmedDebounce)
         XCTAssertTrue(transport.writes().isEmpty, "a write must not leave before the debounce elapses")
 
         try await waitUntil("the debounced write lands") { transport.writes().count == 1 }
@@ -86,13 +86,10 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
     /// The debounced write must not run inside a task it has cancelled.
     ///
-    /// The timer used to call `flushNow()` directly, and `flushNow()` opens by
-    /// cancelling `debounceTask` — which on that path *is* the executing task.
-    /// Everything after ran with `Task.isCancelled == true`, and `URLSession`
-    /// reports its enclosing task's cancellation as `NSURLErrorCancelled`, so
-    /// every debounced write burned an attempt the request never survived and
-    /// only landed on the first backoff retry a second later. The fake fails a
-    /// cancelled send for exactly this reason.
+    /// The debounce timer drains through a path that doesn't cancel its own
+    /// task; a cancelled task makes `URLSession` fail the write with
+    /// `NSURLErrorCancelled`, so the write would only land on a backoff retry.
+    /// The fake fails a cancelled send the same way.
     func testTheDebouncedWriteDoesNotRunUnderACancelledTask() async throws {
         let transport = FakeSettingsTransport()
         let flusher = PlayerSettingsFlusher(
@@ -133,16 +130,19 @@ final class PlayerSettingsFlushTests: XCTestCase {
     /// runs — the fix must not turn a re-armed window into two drains.
     func testReArmingTheWindowStillCollapsesToOneWrite() async throws {
         let transport = FakeSettingsTransport()
-        let flusher = PlayerSettingsFlusher(transport: transport, debounce: .milliseconds(60))
+        let flusher = PlayerSettingsFlusher(transport: transport, debounce: .milliseconds(100))
 
         flusher.enqueue(.playerAudioSyncMs, value: .int(100))
-        try await Task.sleep(for: .milliseconds(20))
+        // Let the first timer start sleeping, well inside its window.
+        try await Task.sleep(for: .milliseconds(10))
         flusher.enqueue(.playerAudioSyncMs, value: .int(200))
 
-        try await waitUntil("the debounced write lands") { transport.writes().count == 1 }
-        try await Task.sleep(for: .milliseconds(120))
-        XCTAssertEqual(transport.writes().map(\.value), [.int(200)],
-                       "the superseded timer must not fire a second drain")
+        try await waitUntil("the debounced drain finishes") {
+            transport.writes().count == 1 && !flusher.hasPendingWrites
+        }
+        XCTAssertFalse(flusher.hasArmedDebounce, "no timer is left to fire a second drain")
+        XCTAssertFalse(flusher.hasArmedRetry)
+        XCTAssertEqual(transport.writes().map(\.value), [.int(200)])
         XCTAssertEqual(transport.cancelledAttemptCount(), 0)
     }
 
@@ -563,9 +563,12 @@ final class PlayerSettingsFlushTests: XCTestCase {
         let transport = FakeSettingsTransport()
         // One 500, then success.
         transport.failNextWrites(1, with: .server(status: 503, code: "unavailable", message: nil))
+        // Let the failure return, but hold its automatic retry until the
+        // pending-state assertion runs, even if the main actor resumes late.
+        await transport.writeGate.block(afterUnblockedEntries: 1)
         let flusher = PlayerSettingsFlusher(
             transport: transport,
-            debounce: .milliseconds(20),
+            debounce: .seconds(30),
             retryPolicy: .init(maximumAutomaticRetries: 3, base: .milliseconds(30), maximum: .milliseconds(60))
         )
 
@@ -575,6 +578,10 @@ final class PlayerSettingsFlushTests: XCTestCase {
         // The op survived its failure rather than being dropped.
         XCTAssertTrue(flusher.hasPendingWrites, "a 5xx must not discard the user's setting")
 
+        try await waitUntil("the automatic retry reaches the transport") {
+            await transport.writeGate.hasBlockedEntry
+        }
+        await transport.writeGate.release()
         try await waitUntil("the automatic retry lands") { transport.writes().count == 2 }
         let writes = transport.writes()
         XCTAssertEqual(writes[1].value, .bool(false))
@@ -597,8 +604,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
         XCTAssertFalse(flusher.hasPendingWrites,
                        "a value the contract refuses would fail identically forever")
-        // And no timer was armed to keep hammering it.
-        try await Task.sleep(for: .milliseconds(120))
+        XCTAssertFalse(flusher.hasArmedRetry, "no timer may keep hammering it")
         XCTAssertEqual(transport.writes().count, 1)
     }
 
@@ -617,9 +623,8 @@ final class PlayerSettingsFlushTests: XCTestCase {
         // Held: only picking a profile fixes this, and dropping it would lose a
         // choice the user already made.
         XCTAssertTrue(flusher.hasPendingWrites)
-        try await Task.sleep(for: .milliseconds(120))
-        XCTAssertEqual(transport.writes().count, 1,
-                       "a precondition failure must not arm a backoff timer")
+        XCTAssertFalse(flusher.hasArmedRetry, "a precondition failure must not arm a backoff timer")
+        XCTAssertEqual(transport.writes().count, 1)
     }
 
     func testExhaustingAutomaticRetriesHoldsTheKey() async throws {
@@ -636,11 +641,12 @@ final class PlayerSettingsFlushTests: XCTestCase {
         flusher.enqueue(.playerSubtitleSyncMs, value: .int(-250))
         await flusher.flushNow()
         try await waitUntil("both automatic retries run") { transport.writes().count == 3 }
-        try await waitUntil("the key is held") { flusher.heldKeys == [.playerSubtitleSyncMs] }
+        // The fake records an attempt before the drain settles its held state.
+        try await waitUntil("the key is held", timeout: .seconds(10)) { flusher.heldKeys == [.playerSubtitleSyncMs] }
 
         // Budget spent: the change is kept, on disk too, and nothing sends it
         // on its own — not even an explicit flush.
-        try await Task.sleep(for: .milliseconds(120))
+        XCTAssertFalse(flusher.hasArmedRetry)
         await flusher.flushNow()
         XCTAssertEqual(transport.writes().count, 3, "a held change must not be replayed on its own")
         XCTAssertTrue(flusher.hasPendingWrites, "an exhausted budget must not drop the write")
@@ -737,9 +743,9 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
         flusher.enqueue(.playerHdrEnabled, value: .bool(false))
         await flusher.flushNow()
-        try await Task.sleep(for: .milliseconds(120))
 
-        XCTAssertEqual(transport.writes().count, 1, "an owner change must not arm a backoff timer")
+        XCTAssertFalse(flusher.hasArmedRetry, "an owner change must not arm a backoff timer")
+        XCTAssertEqual(transport.writes().count, 1)
         XCTAssertTrue(flusher.hasPendingWrites, "the change still belongs to this partition")
         XCTAssertTrue(flusher.heldKeys.isEmpty)
     }
@@ -1046,10 +1052,24 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
     func testLegacySnapshotCoversEverySyncedDeviceSetting() throws {
         let harness = try PlayerSettingsHarness()
-        harness.settings.setDolbyVisionEnabled(false)
-        harness.settings.setSeekCacheEnabled(false)
+        let settings = harness.settings
+        // Store every synced key the way this device would have.
+        settings.setQualityPreset(try XCTUnwrap(SiloQualityPresets.preset(id: "1080p-high")))
+        settings.setAudioLanguage("ja")
+        settings.setIntroSkipMode(.never)
+        settings.setAutoSkipCredits(true)
+        settings.setAutoPlayNextEpisode(false)
+        settings.setNextUpPromptSeconds(45)
+        settings.setHDREnabled(false)
+        settings.setDolbyVisionEnabled(false)
+        settings.setSeekCacheEnabled(false)
+        settings.setPlaybackSpeed(1.5)
+        settings.setSubtitleSyncMs(-350)
+        settings.setVideoGravity(.fill)
+        settings.setPlayerOrientationMode(.rotateFreely)
+        settings.stageSubtitleAppearance(.default)
 
-        let snapshot = harness.settings.legacySnapshot()
+        let snapshot = settings.legacySnapshot()
 
         XCTAssertEqual(Set(snapshot.keys), Set(SettingKey.playerDeviceSettings))
         XCTAssertEqual(snapshot[.playerDolbyVisionEnabled], .bool(false))
@@ -1060,8 +1080,129 @@ final class PlayerSettingsFlushTests: XCTestCase {
         )
     }
 
+    // MARK: - Legacy import only carries stored values
+
+    /// A profile that chose 720p and English, and contract defaults for the
+    /// rest, as the server resolves them for a device with no overrides.
+    private func profileEffectiveValues() -> [EffectiveSettingValue] {
+        let profileValues: [SettingKey: SettingJSONValue] = [
+            .playbackPreferredQuality: .string("720p"),
+            .playbackAudioLanguage: .string("en"),
+        ]
+        let contractDefaults: [SettingKey: SettingJSONValue] = [
+            .playbackMaxBitrateKbps: .null,
+            .playbackIntroSkipMode: .string("ask"),
+            .playbackAutoSkipCredits: .bool(false),
+            .playbackAutoPlayNext: .bool(true),
+            .playbackNextUpPromptSeconds: .int(30),
+            .playbackSubtitleAppearance: .null,
+            .playerHdrEnabled: .bool(true),
+            .playerDolbyVisionEnabled: .bool(true),
+            .playerSeekCacheEnabled: .bool(true),
+            .playerPlaybackSpeed: .double(1.0),
+            .playerSubtitleSyncMs: .int(0),
+            .playerVideoGravity: .string("fit"),
+            .playerOrientationMode: .string("landscape_locked"),
+        ]
+        return SettingKey.playerDeviceSettings.map { key in
+            if let value = profileValues[key] {
+                return .init(key: key.rawValue, value: value, source: .scope(.profile), scope: .profile)
+            }
+            return .init(key: key.rawValue, value: contractDefaults[key] ?? .null, source: .contractDefault)
+        }
+    }
+
+    private func byKey(_ values: [EffectiveSettingValue]) -> [SettingKey: EffectiveSettingValue] {
+        var map: [SettingKey: EffectiveSettingValue] = [:]
+        for value in values {
+            if let key = value.settingKey { map[key] = value }
+        }
+        return map
+    }
+
+    func testAFreshInstallImportsNoDeviceSettings() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.effective = profileEffectiveValues()
+
+        // Production captures the snapshot at the top of the refresh.
+        let snapshot = harness.settings.legacySnapshot()
+        XCTAssertTrue(snapshot.isEmpty, "a fresh install has no legacy values: \(snapshot)")
+        await harness.settings.refreshFromServer()
+
+        let imported = await harness.settings.importLegacySettingsIfNeeded(
+            scopeID: "fresh-install-test",
+            legacySnapshot: snapshot,
+            effectiveByKey: byKey(harness.transport.effective)
+        )
+
+        XCTAssertFalse(imported)
+        XCTAssertTrue(harness.transport.writes().isEmpty, "\(harness.transport.writes())")
+        XCTAssertEqual(harness.settings.preferredQualityResolution, "720p")
+        XCTAssertEqual(harness.settings.audioLanguage, "en")
+    }
+
+    /// Loading the cache assigns each missing key its default. A first refresh
+    /// that cannot reach the server must not leave those defaults behind for
+    /// the next refresh to mistake for legacy values.
+    func testAFailedFirstRefreshLeavesNothingForTheImport() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.effectiveError = .transport(description: "offline")
+        await harness.settings.refreshFromServer()
+
+        XCTAssertTrue(harness.settings.legacySnapshot().isEmpty, "\(harness.settings.legacySnapshot())")
+    }
+
+    func testOnlyTheLegacyKeysThatWereStoredAreImported() async throws {
+        let harness = try PlayerSettingsHarness()
+        let settings = harness.settings
+        // A pre-contract build's unscoped audio key, and one value set through
+        // the player. Quality and everything else were never stored.
+        harness.defaults.set("fr", forKey: "preferredAudioLanguage")
+        settings.setHDREnabled(false)
+        await settings.flushPendingDeviceSettings()
+        harness.transport.reset()
+
+        let snapshot = settings.legacySnapshot()
+        XCTAssertEqual(Set(snapshot.keys), [.playbackAudioLanguage, .playerHdrEnabled])
+
+        let imported = await settings.importLegacySettingsIfNeeded(
+            scopeID: "partial-legacy-test",
+            legacySnapshot: snapshot,
+            effectiveByKey: byKey(profileEffectiveValues())
+        )
+
+        XCTAssertTrue(imported)
+        let writes = harness.transport.writesByKey()
+        XCTAssertEqual(Set(writes.keys), [.playbackAudioLanguage, .playerHdrEnabled])
+        XCTAssertEqual(writes[.playbackAudioLanguage]?.value, .string("fr"))
+        XCTAssertEqual(writes[.playerHdrEnabled]?.value, .bool(false))
+        XCTAssertEqual(settings.preferredQualityResolution, "720p", "the profile's quality stays in effect")
+    }
+
+    func testAStoredLegacyQualityStillImports() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.defaults.set("1080p-high", forKey: "preferredQuality")
+
+        let snapshot = harness.settings.legacySnapshot()
+        let imported = await harness.settings.importLegacySettingsIfNeeded(
+            scopeID: "stored-legacy-quality-test",
+            legacySnapshot: snapshot,
+            effectiveByKey: byKey(profileEffectiveValues())
+        )
+
+        XCTAssertTrue(imported)
+        let writes = harness.transport.writesByKey()
+        XCTAssertEqual(Set(writes.keys), [.playbackPreferredQuality, .playbackMaxBitrateKbps])
+        XCTAssertEqual(writes[.playbackPreferredQuality]?.value, .string("1080p"))
+        XCTAssertEqual(writes[.playbackMaxBitrateKbps]?.value, .int(20_000))
+        XCTAssertEqual(harness.settings.preferredQualityResolution, "1080p")
+    }
+
     func testLegacyAppleSubtitleDefaultIsMigratedWithoutACustomOverride() async throws {
         let harness = try PlayerSettingsHarness()
+        // What a pre-contract build kept for a device that never customized
+        // its subtitles: Apple's shipped appearance, under the unscoped key.
+        harness.defaults.set(SubtitleAppearance.default.jsonString, forKey: "player.subtitleAppearance")
         // Production imports only after a read has reported the server's
         // revision, which the subtitle-appearance write waits for.
         await harness.settings.refreshFromServer()
@@ -1102,7 +1243,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
         // manifest revision instead of being sent.
         await harness.settings.refreshFromServer()
 
-        harness.settings.setPreferredQuality("1080p-medium")
+        harness.settings.setQualityPreset(try XCTUnwrap(SiloQualityPresets.preset(id: "1080p-high")))
         harness.settings.setAudioLanguage("ja")
         harness.settings.setIntroSkipMode(.never)
         harness.settings.setAutoSkipCredits(true)
@@ -1126,7 +1267,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
         // validated nothing. The contract types these, and a string here fails
         // the schema.
         XCTAssertEqual(byKey[.playbackPreferredQuality]?.value, .string("1080p"))
-        XCTAssertEqual(byKey[.playbackMaxBitrateKbps]?.value, .int(12_000))
+        XCTAssertEqual(byKey[.playbackMaxBitrateKbps]?.value, .int(10_000))
         XCTAssertEqual(byKey[.playbackAudioLanguage]?.value, .string("ja"))
         XCTAssertEqual(byKey[.playbackIntroSkipMode]?.value, .string("never"))
         XCTAssertEqual(byKey[.playbackAutoSkipCredits]?.value, .bool(true))
@@ -1267,6 +1408,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
         let harness = try PlayerSettingsHarness()
         let olderRevision = SettingKey.subtitleTextOpacityRevision - 1
         harness.transport.revision = olderRevision
+        harness.defaults.set(SubtitleAppearance.default.jsonString, forKey: "player.subtitleAppearance")
         await harness.settings.refreshFromServer()
         harness.transport.reset()
 
@@ -1310,56 +1452,331 @@ final class PlayerSettingsFlushTests: XCTestCase {
         XCTAssertEqual(fields["fontSize"], .string("xxlarge"))
     }
 
-    func testNoAudioLanguagePreferenceIsSentAsJSONNull() async throws {
+    func testAdoptingAProfileWriteUpdatesTheLocalValueWithoutQueueingADeviceOverride() async throws {
         let harness = try PlayerSettingsHarness()
 
-        harness.settings.setAudioLanguage("")
+        // The onboarding tour already wrote these at profile scope. Sending
+        // them again would create a `profile_device` row that shadows it.
+        harness.settings.adoptProfileQuality(resolution: "720p", bitrateKbps: 3_000)
+        harness.settings.adoptProfileIntroSkipMode(.always)
+        harness.settings.adoptProfileAutoSkipCredits(true)
+
+        XCTAssertEqual(harness.settings.preferredQualityResolution, "720p")
+        XCTAssertEqual(harness.settings.maxBitrateKbps, 3_000)
+        XCTAssertEqual(harness.settings.introSkipMode, .always)
+        XCTAssertTrue(harness.settings.autoSkipCredits)
+
+        await harness.settings.flushPendingDeviceSettings()
+        XCTAssertTrue(
+            harness.transport.writes().isEmpty,
+            "adopting a profile value must not queue a device-scope write"
+        )
+    }
+
+    func testStagingASubtitleAppearanceAppliesItAtOnceAndSendsItOnFlush() async throws {
+        let harness = try PlayerSettingsHarness()
+        // A subtitle appearance write waits until the server's revision is known.
+        await harness.settings.refreshFromServer()
+        harness.transport.reset()
+        harness.settings.setSubtitleMatchesSystemAppearance(true)
+        var appearance = SubtitleAppearance.default
+        appearance.position = .top
+
+        harness.settings.stageSubtitleAppearance(appearance)
+
+        // Silo Control's position command is synchronous: the edit, the
+        // override and handing control back from the system captions all
+        // apply before anything suspends.
+        XCTAssertEqual(harness.settings.subtitleAppearance.position, .top)
+        XCTAssertTrue(harness.settings.subtitleUsesDeviceAppearanceOverride)
+        XCTAssertFalse(harness.settings.subtitleMatchesSystemAppearance)
+        XCTAssertEqual(harness.settings.effectiveSubtitleAppearance.position, .top)
+
+        await harness.settings.flushPendingDeviceSettings()
+        XCTAssertEqual(
+            harness.transport.writesByKey()[.playbackSubtitleAppearance]?.value,
+            try SettingJSONValue.encoding(appearance.sanitized())
+        )
+    }
+
+    /// The Playback screen's HDR switch, through the binding the screen uses:
+    /// the local value flips at once — the capability snapshot reads it at
+    /// the next playback start — and exactly one write of the device-only key
+    /// goes to the server. Dolby Vision reads Off while HDR is off, because
+    /// it is not offered then, and comes back with HDR.
+    func testTheHDRSwitchStoresADeviceOverrideOfTheHDRKey() async throws {
+        let harness = try PlayerSettingsHarness()
+        let viewModel = SettingsViewModel(playerSettings: harness.settings)
+        XCTAssertTrue(viewModel.hdrEnabled, "precondition: the contract default is on")
+        XCTAssertTrue(viewModel.dolbyVisionEnabled)
+
+        viewModel.hdrEnabled = false
+        XCTAssertFalse(harness.settings.hdrEnabled)
+        XCTAssertFalse(viewModel.dolbyVisionEnabled, "Dolby Vision is not offered while HDR is off")
         await harness.settings.flushPendingDeviceSettings()
 
-        // The contract's language_tag validator rejects "": the absence of a
-        // preference is null, and sending the empty string would be a permanent
-        // invalid_value.
-        XCTAssertEqual(harness.transport.writesByKey()[.playbackAudioLanguage]?.value, .null)
+        XCTAssertEqual(harness.transport.writes().map(\.key), [.playerHdrEnabled])
+        XCTAssertEqual(harness.transport.writes().first?.value, .bool(false))
+        XCTAssertTrue(harness.transport.deletes().isEmpty)
 
-        harness.transport.reset()
+        viewModel.hdrEnabled = true
+        XCTAssertTrue(viewModel.dolbyVisionEnabled, "the stored Dolby Vision choice is kept")
+    }
+
+    func testNoAudioLanguagePreferenceClearsTheDeviceValueInsteadOfStoringNull() async throws {
+        let harness = try PlayerSettingsHarness()
         harness.settings.setAudioLanguage("ja")
         await harness.settings.flushPendingDeviceSettings()
         XCTAssertEqual(harness.transport.writesByKey()[.playbackAudioLanguage]?.value, .string("ja"))
-    }
+        XCTAssertTrue(harness.settings.hasDeviceOverride(.audioLanguage))
 
-    func testCompoundQualityIsStoredAsTheContractsTwoAxes() async throws {
-        let harness = try PlayerSettingsHarness()
-
-        harness.settings.setPreferredQuality("1080p-medium")
+        harness.transport.reset()
+        harness.settings.setAudioLanguage("")
         await harness.settings.flushPendingDeviceSettings()
 
-        let byKey = harness.transport.writesByKey()
-        // "1080p-medium" is not a member of the contract's enum; sending it
-        // verbatim is a permanent invalid_value, which is why the tier splits.
-        XCTAssertEqual(byKey[.playbackPreferredQuality]?.value, .string("1080p"))
-        XCTAssertEqual(byKey[.playbackMaxBitrateKbps]?.value, .int(12_000))
-        // The stored pair is what the client holds; the in-player ladder id
-        // is derived from it, so playback's call sites are unaffected.
-        XCTAssertEqual(harness.settings.preferredQualityResolution, "1080p")
-        XCTAssertEqual(harness.settings.maxBitrateKbps, 12_000)
-        XCTAssertEqual(harness.settings.preferredQuality, "1080p-medium")
+        // A stored JSON null would pin "no preference" on this device and
+        // hide the profile's language; the device's own row is removed.
+        XCTAssertTrue(harness.transport.writes().isEmpty, "no preference must not be written as a value")
+        XCTAssertEqual(harness.transport.deletes(), [.playbackAudioLanguage])
+        XCTAssertFalse(harness.settings.hasDeviceOverride(.audioLanguage))
     }
 
-    func testWideningTheQualityTierClearsTheOldBitrateCap() async throws {
+    func testUsingTheProfileSettingClearsTheDeviceValueAndAdoptsTheProfiles() async throws {
         let harness = try PlayerSettingsHarness()
+        harness.settings.setIntroSkipMode(.never)
+        await harness.settings.flushPendingDeviceSettings()
+        XCTAssertTrue(harness.settings.hasDeviceOverride(.introSkipMode))
+        harness.transport.reset()
+        harness.transport.effective = [
+            .init(
+                key: SettingKey.playbackIntroSkipMode.rawValue,
+                value: .string("always"),
+                source: .scope(.profile),
+                scope: .profile
+            ),
+        ]
 
-        harness.settings.setPreferredQuality("720p")
+        await harness.settings.useProfileSetting(.introSkipMode)
+
+        XCTAssertEqual(harness.transport.deletes(), [.playbackIntroSkipMode])
+        XCTAssertTrue(harness.transport.writes().isEmpty)
+        XCTAssertFalse(harness.settings.hasDeviceOverride(.introSkipMode))
+        XCTAssertEqual(harness.settings.introSkipMode, .always, "the profile's value applies again")
+    }
+
+    func testUsingTheProfileQualityClearsBothAxesTogether() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.settings.setQualityPreset(try XCTUnwrap(SiloQualityPresets.preset(id: "720p")))
         await harness.settings.flushPendingDeviceSettings()
         harness.transport.reset()
 
-        harness.settings.setPreferredQuality("auto")
-        await harness.settings.flushPendingDeviceSettings()
+        await harness.settings.useProfileSetting(.quality)
 
-        let byKey = harness.transport.writesByKey()
-        XCTAssertEqual(byKey[.playbackPreferredQuality]?.value, .string("auto"))
-        // Null, not omitted: leaving the 2 Mbps cap in place would keep
-        // throttling a preference the user just widened to Auto.
-        XCTAssertEqual(byKey[.playbackMaxBitrateKbps]?.value, .null)
+        XCTAssertEqual(
+            Set(harness.transport.deletes()),
+            [.playbackPreferredQuality, .playbackMaxBitrateKbps],
+            "clearing one axis alone would pair the profile's cap with this device's resolution"
+        )
+        XCTAssertFalse(harness.settings.hasDeviceOverride(.quality))
+    }
+
+    /// Offline, the clear waits in the (server, profile, device) partition it
+    /// was made in, like any other edit, and lands with the next flush there.
+    func testUsingTheProfileSettingOfflineQueuesTheClearInItsScope() async throws {
+        let suiteName = "settings-use-profile-offline-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { UserDefaults().removePersistentDomain(forName: suiteName) }
+        let scopeID = "server-a|profile-1|device"
+        let scope = LockedScopeValue(scopeID)
+        let profile = LockedScopeValue("profile-1")
+        let journal = UserDefaultsSettingsWriteJournal(
+            defaults: defaults,
+            profileProvider: { profile.value },
+            scopeProvider: { scope.value }
+        )
+        let transport = FakeSettingsTransport()
+        let settings = PlayerSettings(
+            defaults: defaults,
+            flusher: PlayerSettingsFlusher(
+                transport: transport,
+                debounce: .milliseconds(10),
+                journal: journal
+            )
+        )
+        settings.setAutoSkipCredits(true)
+        await settings.flushPendingDeviceSettings()
+        transport.reset()
+        transport.failNextDeletes(100, with: .transport(description: "offline"))
+        transport.effectiveError = .transport(description: "offline")
+
+        await settings.useProfileSetting(.autoSkipCredits)
+
+        XCTAssertFalse(settings.hasDeviceOverride(.autoSkipCredits), "the row follows the profile at once")
+        let queued = try XCTUnwrap(journal.load()[.playbackAutoSkipCredits])
+        XCTAssertEqual(queued.operation, .delete)
+        XCTAssertEqual(queued.scopeIdentifier, scopeID)
+        XCTAssertEqual(queued.profileId, "profile-1")
+
+        // Back online but on another profile: the clear belongs to profile 1
+        // and must not be sent as profile 2's.
+        transport.reset()
+        transport.succeedFromNowOn()
+        scope.value = "server-a|profile-2|device"
+        profile.value = "profile-2"
+        await settings.flushPendingDeviceSettings()
+        XCTAssertTrue(transport.deletes().isEmpty, "no DELETE may go out under the other profile")
+        XCTAssertTrue(journal.load().isEmpty, "profile 2's queue does not inherit the clear")
+
+        scope.value = scopeID
+        profile.value = "profile-1"
+        transport.failNextDeletes(100, with: .transport(description: "offline"))
+
+        // The server still holds the device value until the clear lands; a
+        // refresh that reads it must not count it as this device's own again.
+        transport.effectiveError = nil
+        transport.effective = [
+            .init(
+                key: SettingKey.playbackAutoSkipCredits.rawValue,
+                value: .bool(true),
+                source: .scope(.profileDevice),
+                scope: .profileDevice
+            ),
+        ]
+        await settings.refreshFromServer()
+        XCTAssertFalse(settings.hasDeviceOverride(.autoSkipCredits))
+
+        transport.succeedFromNowOn()
+        transport.effective = [
+            .init(
+                key: SettingKey.playbackAutoSkipCredits.rawValue,
+                value: .bool(false),
+                source: .scope(.profile),
+                scope: .profile
+            ),
+        ]
+        await settings.refreshFromServer()
+        XCTAssertTrue(transport.deletes().contains(.playbackAutoSkipCredits))
+        XCTAssertNil(journal.load()[.playbackAutoSkipCredits], "the landed clear leaves the queue")
+        XCTAssertFalse(settings.autoSkipCredits)
+        XCTAssertFalse(settings.hasDeviceOverride(.autoSkipCredits))
+    }
+
+    /// Going back to the profile's value before the one-time import has run
+    /// retires only the keys cleared; the rest of the scope still imports.
+    func testUsingTheProfileSettingRetiresOnlyThoseKeysFromThePendingImport() async throws {
+        let harness = try PlayerSettingsHarness()
+        let scopeID = "server-a|profile-1|device"
+        harness.settings.retireMigration(of: ProfileBackedPlaybackSetting.quality.keys, for: scopeID)
+
+        let imported = await harness.settings.importLegacySettingsIfNeeded(
+            scopeID: scopeID,
+            legacySnapshot: [
+                .playbackPreferredQuality: .string("720p"),
+                .playbackMaxBitrateKbps: .int(2_000),
+                .playerHdrEnabled: .bool(false),
+            ],
+            effectiveByKey: [
+                .playbackPreferredQuality: .init(
+                    key: SettingKey.playbackPreferredQuality.rawValue,
+                    value: .string("1080p"),
+                    source: .scope(.profile),
+                    scope: .profile
+                ),
+                .playbackMaxBitrateKbps: .init(
+                    key: SettingKey.playbackMaxBitrateKbps.rawValue,
+                    value: .null,
+                    source: .contractDefault
+                ),
+                .playerHdrEnabled: .init(
+                    key: SettingKey.playerHdrEnabled.rawValue,
+                    value: .bool(true),
+                    source: .contractDefault
+                ),
+            ]
+        )
+
+        XCTAssertTrue(imported)
+        XCTAssertEqual(harness.transport.writes().map(\.key), [.playerHdrEnabled])
+    }
+
+    func testALegacyNoAudioLanguagePreferenceIsNotImportedAsADeviceValue() async throws {
+        let harness = try PlayerSettingsHarness()
+
+        let imported = await harness.settings.importLegacySettingsIfNeeded(
+            scopeID: "server-a|profile-1|device",
+            legacySnapshot: [.playbackAudioLanguage: .null],
+            effectiveByKey: [
+                .playbackAudioLanguage: .init(
+                    key: SettingKey.playbackAudioLanguage.rawValue,
+                    value: .string("ja"),
+                    source: .scope(.profile),
+                    scope: .profile
+                ),
+            ]
+        )
+
+        XCTAssertFalse(imported)
+        XCTAssertTrue(harness.transport.writes().isEmpty, "the profile's language must stay in charge")
+        XCTAssertFalse(harness.settings.hasDeviceOverride(.audioLanguage))
+    }
+
+    func testAResolvedRowsScopeSaysWhetherTheDeviceHasItsOwnValue() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.effective = [
+            .init(
+                key: SettingKey.playbackAudioLanguage.rawValue,
+                value: .string("ja"),
+                source: .scope(.profileDevice),
+                scope: .profileDevice
+            ),
+            .init(
+                key: SettingKey.playbackAutoPlayNext.rawValue,
+                value: .bool(false),
+                source: .scope(.profile),
+                scope: .profile
+            ),
+        ]
+
+        await harness.settings.refreshFromServer()
+
+        XCTAssertTrue(harness.settings.hasDeviceOverride(.audioLanguage))
+        XCTAssertFalse(harness.settings.hasDeviceOverride(.autoPlayNext))
+        XCTAssertEqual(harness.settings.deviceChangedSettingCount, 1)
+    }
+
+    /// A build from before the override record synced this scope without
+    /// saying which values are the device's own. Until the next refresh,
+    /// every synced row counts as the device's own, so Use Profile Setting
+    /// stays available rather than looking already chosen.
+    func testAnUpgradedScopeWithoutAnOverrideRecordCountsEverySyncedKeyAsTheDevices() throws {
+        let suiteName = "settings-upgraded-scope-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { UserDefaults().removePersistentDomain(forName: suiteName) }
+        let scopeID = "server-a|profile-1|device"
+
+        XCTAssertEqual(PlayerSettings.cachedOverriddenKeys(defaults, scopeID: scopeID), [], "a scope never synced holds nothing")
+
+        defaults.set(true, forKey: "player.serverDeviceSettingsMigration.\(scopeID)")
+        XCTAssertEqual(
+            PlayerSettings.cachedOverriddenKeys(defaults, scopeID: scopeID),
+            Set(SettingKey.playerDeviceSettings)
+        )
+
+        defaults.set(
+            [SettingKey.playbackAudioLanguage.rawValue],
+            forKey: "player.serverDeviceSettings.\(scopeID).player.deviceOverriddenKeys"
+        )
+        XCTAssertEqual(
+            PlayerSettings.cachedOverriddenKeys(defaults, scopeID: scopeID),
+            [.playbackAudioLanguage],
+            "a recorded answer wins"
+        )
+    }
+
+    func testAFreshCacheStartsWithNoDeviceValues() throws {
+        let harness = try PlayerSettingsHarness()
+        XCTAssertFalse(harness.settings.hasDeviceOverride(.audioLanguage))
+        XCTAssertEqual(harness.settings.deviceChangedSettingCount, 0)
     }
 
     func testSubtitleAppearanceIsSentAsAnObjectWithItsCamelCaseKeys() async throws {
@@ -1597,7 +2014,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
     func testAnOldServerResetAppliesContractDefaultsAndDoesNotQueueDeletes() async throws {
         let harness = try PlayerSettingsHarness()
-        harness.settings.setPreferredQuality("720p-medium")
+        harness.settings.setQualityPreset(try XCTUnwrap(SiloQualityPresets.preset(id: "720p")))
         harness.settings.setIntroSkipMode(.always)
         harness.settings.setHDREnabled(false)
         var appearance = SubtitleAppearance.default
@@ -1631,7 +2048,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
     func testAnUnavailableRefreshKeepsCachedValues() async throws {
         let harness = try PlayerSettingsHarness()
-        harness.settings.setPreferredQuality("720p-medium")
+        harness.settings.setQualityPreset(try XCTUnwrap(SiloQualityPresets.preset(id: "720p")))
         harness.settings.setIntroSkipMode(.always)
         harness.transport.effectiveError = .transport(description: "offline")
 
@@ -1639,7 +2056,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
         XCTAssertEqual(result, .unavailable)
         XCTAssertEqual(harness.settings.preferredQualityResolution, "720p")
-        XCTAssertEqual(harness.settings.maxBitrateKbps, 3_000)
+        XCTAssertEqual(harness.settings.maxBitrateKbps, 2_000)
         XCTAssertEqual(harness.settings.introSkipMode, .always)
     }
 
@@ -1768,8 +2185,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
         }
     }
 
-    /// The specific regression: the two most common shared presets used to
-    /// resolve to 720p rungs here while the other clients kept 1080p.
+    /// The web's two 1080p presets map to 1080p rungs, as on the other clients.
     func testTheWebs1080pPresetsStay1080p() throws {
         XCTAssertEqual(AppleQualityAxes.join(resolution: "1080p", bitrateKbps: 6_000), "1080p-8")
         XCTAssertEqual(AppleQualityAxes.join(resolution: "1080p", bitrateKbps: 3_000), "1080p-8")
@@ -1930,23 +2346,6 @@ final class PlayerSettingsFlushTests: XCTestCase {
             subtitleTracks: nil,
             chapters: nil
         )
-    }
-
-    /// Poll until `condition` holds, so a test never depends on a fixed sleep
-    /// being long enough on a loaded machine.
-    private func waitUntil(
-        _ description: String,
-        timeout: Duration = .seconds(5),
-        _ condition: @escaping () -> Bool,
-        file: StaticString = #filePath,
-        line: UInt = #line
-    ) async throws {
-        let deadline = ContinuousClock.now + timeout
-        while ContinuousClock.now < deadline {
-            if condition() { return }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        XCTFail("timed out waiting for \(description)", file: file, line: line)
     }
 }
 
@@ -2130,12 +2529,16 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
 
 actor SettingsWriteGate {
     private var isBlocked = false
+    private var remainingUnblockedEntries = 0
+    private(set) var hasBlockedEntry = false
     private var hasEntered = false
     private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
     private var entryWaiters: [CheckedContinuation<Void, Never>] = []
 
-    func block() {
+    func block(afterUnblockedEntries: Int = 0) {
         isBlocked = true
+        remainingUnblockedEntries = afterUnblockedEntries
+        hasBlockedEntry = false
     }
 
     func waitIfBlocked() async {
@@ -2146,6 +2549,11 @@ actor SettingsWriteGate {
             observer.resume()
         }
         guard isBlocked else { return }
+        if remainingUnblockedEntries > 0 {
+            remainingUnblockedEntries -= 1
+            return
+        }
+        hasBlockedEntry = true
         await withCheckedContinuation { continuation in
             releaseWaiters.append(continuation)
         }

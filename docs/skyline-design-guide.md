@@ -284,7 +284,7 @@ and always previews the item whose card is focused in the rows below.
   `marquee.tick` dash; title 84 px text (or cached server logo art capped at
   880×200 — never block the crossfade on a logo fetch; fall back to text);
   meta line (badges `4K · DOLBY VISION · ATMOS`, then year/genre/runtime — or
-  `S2 E7 · episode title · 23 min left` for episodic items); 2-line synopsis.
+  `S2 E7 · episode title · 23m left` for episodic items); 2-line synopsis.
 - No actions, no carousel, no position dots. Pressing the focused card opens
   it (resume for continue-watching); long-press keeps the context menu.
 - While focus is in chrome (top bar, pills, dropdowns) the marquee **retains**

@@ -1,12 +1,19 @@
 #if os(iOS)
 import SwiftUI
 
-/// App-wide overlay: when a blank Apple TV is discovered on the LAN, present the
-/// native-style pairing card (`CompanionPairingCard`) rising from the bottom.
-/// Owns discovery (`TVPairingBrowser`) and per-session "Not Now" dismissal.
+/// App-wide overlay: when a TV on the LAN is waiting for setup (`st=setup`)
+/// or for sign-in (`st=login`), present the native-style pairing card
+/// (`CompanionPairingCard`) rising from the bottom. Owns discovery
+/// (`TVPairingBrowser`) and per-session "Not Now" dismissal.
 ///
-/// The card is only offered when this device has a signed-in server to hand
-/// off, and browsing pauses while the app is backgrounded.
+/// A setup TV is offered when this device has any signed-in server to hand
+/// off. A sign-in TV is offered only when this device holds a signed-in
+/// server whose verified identity is the TV's `srv`; that server alone is
+/// pushed. Both the candidate and the latch read the same cached list of
+/// signed-in servers (`CompanionPairingOffer.make`), refreshed when auth
+/// changes or the app returns to the foreground, so a TV this device can't
+/// help never blocks one it can. Browsing pauses while the app is
+/// backgrounded.
 struct CompanionPairingCardModifier: ViewModifier {
     /// While false, discovery still runs but the card is withheld — used to
     /// keep the pairing offer from popping over the startup splash animation.
@@ -17,12 +24,37 @@ struct CompanionPairingCardModifier: ViewModifier {
     var authState: AppRouter.AuthState
     @State private var browser = TVPairingBrowser()
     @State private var dismissed: Set<String> = []
-    @State private var active: DiscoveredTV?
+    @State private var active: CompanionPairingOffer?
+    /// Saved servers holding a token, in preference order.
+    @State private var signedIn: [ServerEntry] = []
+    /// True once the active offer's TV no longer advertises that offer.
+    @State private var offerWithdrawn = false
     @Environment(\.scenePhase) private var scenePhase
+
+    /// When the signed-in servers are re-read: auth changes, a return to the
+    /// foreground, and a TV starting to advertise. A newer key cancels the
+    /// older read, so a slow read never overwrites a newer one.
+    private struct SignedInRefreshKey: Equatable {
+        let authState: AppRouter.AuthState
+        let isActive: Bool
+        let hasAdverts: Bool
+    }
 
     func body(content: Content) -> some View {
         content
             .task { browser.start() }
+            .task(id: SignedInRefreshKey(
+                authState: authState,
+                isActive: scenePhase == .active,
+                hasAdverts: !browser.found.isEmpty
+            )) {
+                // The candidate may have been discovered while signed out;
+                // a new token changes `candidate`, which latches it. With no
+                // TV advertising there is nothing to offer, so skip the
+                // keychain reads.
+                guard scenePhase == .active, !browser.found.isEmpty else { return }
+                await refreshSignedIn()
+            }
             .onChange(of: scenePhase) { _, phase in
                 switch phase {
                 case .active: browser.start()
@@ -40,47 +72,107 @@ struct CompanionPairingCardModifier: ViewModifier {
                 // Splash just finished: offer any TV discovered in the meantime.
                 if isEnabled, let tv = candidate { latch(tv) }
             }
-            .onChange(of: authState) { _, _ in
-                // The candidate may have been discovered while signed out. Its
-                // Bonjour identity does not change when login succeeds, so the
-                // candidate onChange above will not fire a second time.
-                if let tv = candidate { latch(tv) }
+            .task(id: offerSignature) {
+                // A TV that changed state or session is withdrawn at once; one
+                // that vanished gets a short grace period for Bonjour flaps.
+                guard let offer = active else { offerWithdrawn = false; return }
+                // Reassessed once discovery resumes in the foreground.
+                guard browser.isBrowsing else { return }
+                switch Self.advertStatus(of: offer.tv, in: browser.found) {
+                case .same:
+                    offerWithdrawn = false
+                case .changed:
+                    offerWithdrawn = true
+                case .gone:
+                    try? await Task.sleep(for: .seconds(5))
+                    if !Task.isCancelled { offerWithdrawn = true }
+                }
             }
             .onChange(of: active) { old, new in
+                offerWithdrawn = false
                 // A card just closed (its TV is now in `dismissed`); offer the
                 // next undismissed TV, if any.
                 if old != nil, new == nil, let tv = candidate { latch(tv) }
             }
             .overlay {
-                if let tv = active {
-                    CompanionPairingCard(tv: tv) {
+                if let offer = active {
+                    let tv = offer.tv
+                    CompanionPairingCard(tv: tv, server: offer.server, onDismiss: {
                         // Every exit dismisses for the TV's current setup
                         // session (`sid`): predictable, and retry lives inside
                         // the card. A new session on the TV re-offers the card.
                         dismissed.insert(CompanionPairingDismissal.key(id: tv.id, sid: tv.sid))
                         active = nil
-                    }
+                    }, offerWithdrawn: offerWithdrawn)
                 }
             }
     }
 
-    /// First discovered TV awaiting setup whose session hasn't been dismissed.
+    /// Changes whenever the active offer or any advert's state or session
+    /// changes. `DiscoveredTV` equality is id-only, so `found` alone won't do.
+    private var offerSignature: String {
+        let offer = active.map { "\($0.tv.id)|\($0.tv.state.rawValue)|\($0.tv.sid ?? "")" } ?? ""
+        let adverts = browser.found.map { "\($0.id)|\($0.state.rawValue)|\($0.sid ?? "")" }
+        return ([browser.isBrowsing ? "browsing" : "paused", offer] + adverts).joined(separator: ",")
+    }
+
+    enum AdvertStatus: Equatable { case same, changed, gone }
+
+    /// Whether `tv` (as offered) is still advertised unchanged.
+    static func advertStatus(of tv: DiscoveredTV, in found: [DiscoveredTV]) -> AdvertStatus {
+        guard let current = found.first(where: { $0.id == tv.id }) else { return .gone }
+        return current.state == tv.state && current.sid == tv.sid ? .same : .changed
+    }
+
+    /// First discovered TV this device could help whose session hasn't been
+    /// dismissed.
     private var candidate: DiscoveredTV? {
-        browser.found.first {
-            $0.state == .setup
-                && !dismissed.contains(CompanionPairingDismissal.key(id: $0.id, sid: $0.sid))
+        browser.found.first { tv in
+            guard !dismissed.contains(CompanionPairingDismissal.key(id: tv.id, sid: tv.sid)) else { return false }
+            return CompanionPairingOffer.make(for: tv, signedIn: signedIn) != nil
         }
     }
 
-    /// Show the card for `tv` — but only if this device actually has a
-    /// signed-in server to offer; a signed-out phone gets no dead-end prompt.
+    /// Show the card for `tv`, by the same rule that made it the candidate:
+    /// a signed-out phone gets no dead-end prompt.
     private func latch(_ tv: DiscoveredTV) {
-        guard enabled, active == nil else { return }
-        Task { @MainActor in
-            guard await CompanionPairingCoordinator.hasServerWithToken() else { return }
-            guard active == nil else { return }
-            active = tv
+        guard enabled, active == nil, let offer = CompanionPairingOffer.make(for: tv, signedIn: signedIn) else { return }
+        active = offer
+    }
+
+    private func refreshSignedIn() async {
+        let servers = await CompanionPairingCoordinator.serversWithTokens()
+        guard !Task.isCancelled else { return }
+        if servers != signedIn { signedIn = servers }
+    }
+}
+
+/// One TV the card is offering to help, and for a sign-in TV the one saved
+/// server it asked for.
+struct CompanionPairingOffer: Equatable {
+    let tv: DiscoveredTV
+    let server: ServerEntry?
+
+    /// What this device can offer `tv`: any signed-in server for a setup
+    /// TV (the user chooses), the TV's own server for a sign-in TV. Nil when
+    /// there is nothing to offer. `signedIn` holds the saved servers with a
+    /// token, in preference order.
+    static func make(for tv: DiscoveredTV, signedIn: [ServerEntry]) -> CompanionPairingOffer? {
+        switch tv.state {
+        case .setup:
+            return signedIn.isEmpty ? nil : CompanionPairingOffer(tv: tv, server: nil)
+        case .login:
+            return server(for: tv, among: signedIn).map { CompanionPairingOffer(tv: tv, server: $0) }
         }
+    }
+
+    /// The saved server a sign-in TV asked for: the one whose verified
+    /// identity is the TV's `srv`. Identity, not URL spelling, since one
+    /// server has several addresses. `servers` is in preference order
+    /// (active first). Nil for a setup TV or a server this device lacks.
+    static func server(for tv: DiscoveredTV, among servers: [ServerEntry]) -> ServerEntry? {
+        guard tv.state == .login, let identity = ServerIdentity.usable(tv.serverIdentity) else { return nil }
+        return servers.first { $0.verifiedServerId == identity }
     }
 }
 

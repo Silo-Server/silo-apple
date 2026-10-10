@@ -10,10 +10,8 @@ import Foundation
 /// manifest, and a key that is not in the manifest cannot be named because
 /// ``SettingKey`` is generated from it.
 ///
-/// Everything here codes through ``SettingsWireCoding`` rather than the shared
-/// `HTTPClient` coders, so a setting value's own object keys never come near a
-/// key strategy. See the header of SettingValueModels.swift for the reasoning;
-/// the models decode identically under either coder either way.
+/// Coding lives in `APIv2Client+Settings.swift`; setting values decode through
+/// ``SettingsWireCoding`` so their object keys survive verbatim.
 extension SiloAPI {
 
     // MARK: Contract
@@ -54,7 +52,7 @@ extension SiloAPI {
 
     // MARK: Read
 
-    /// The server-wide card overlay config: the admin kill switch and the
+    /// The server-wide card overlay config: the overlay on/off default and the
     /// optional baseline document for profiles that have not customized.
     /// Needs no profile; the server caches it for 60s.
     func overlayConfig() async throws -> APIv2OverlayConfig {

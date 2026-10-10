@@ -49,7 +49,7 @@ struct APIv2PlaybackStartBody: Encodable {
     }
 }
 
-struct APIv2PlaybackSource: Codable {
+struct APIv2PlaybackSource: Decodable {
     let mediaFileId: String
     let durationSeconds: Double?
     let container: String?
@@ -98,7 +98,7 @@ struct APIv2PlaybackSource: Codable {
     }
 }
 
-struct APIv2PlaybackPlan: Codable {
+struct APIv2PlaybackPlan: Decodable {
     let protocolVersion: Int
     let planId: String
     let sessionId: String?
@@ -149,7 +149,7 @@ struct APIv2PlaybackPlan: Codable {
     }
 }
 
-struct APIv2PlaybackDecision: Codable {
+struct APIv2PlaybackDecision: Decodable {
     let protocolVersion: Int?
     let serverFeatures: [String]
     let outcome: String?
@@ -188,7 +188,6 @@ struct APIv2PlaybackCapabilities: Decodable {
     let allowed: Bool
     let protocolVersions: [Int]
     let features: [String]
-    let deliveries: [String]
 
     static let notConfigured = PlaybackV3TerminalFailure(reason: "playback_not_configured",
         message: "API v2 playback is not configured on this server. Ask the server administrator to finish playback setup.",
@@ -348,7 +347,6 @@ struct APIv2PlaybackMutation: Decodable, Equatable {
     let outcome: String
     let accepted: Accepted?
     let stopId: String?
-    let historyId: String?
 
     /// Progress: a newer or equal-and-identical sample was recorded, or the
     /// server already holds a newer one. Stop: this request's stop won, or an

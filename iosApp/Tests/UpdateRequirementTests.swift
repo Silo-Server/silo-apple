@@ -183,7 +183,13 @@ final class UpdateRequirementTests: XCTestCase {
             try await client.setupStatus(serverURL: url)
         })
         viewModel.host = "silo.example"
-        await viewModel.connect(router: AppRouter())
+        let router = AppRouter()
+        await viewModel.connect(router: router)
+        // Auto mode asks before falling back to plain HTTP; agree, as a
+        // person would when the server only answers there.
+        if viewModel.insecurePrompt != nil {
+            await viewModel.confirmInsecure(router: router)
+        }
         return viewModel.error?.message
     }
 

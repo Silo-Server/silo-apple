@@ -260,8 +260,9 @@ persistent-artifact constraints:
 - Apple TV HD stays on the bounded `platform_attested` policy because it has
   materially less software-decode headroom and Aether does not yet emit a
   typed decoder-underperforming signal;
-- simulators, iOS, and macOS also retain `platform_attested` until their rollout
-  policy is changed explicitly;
+- iPhone and iPad use the same declared policy as Apple TV 4K; macOS retains
+  `platform_attested` until its rollout policy is changed explicitly;
+- a simulator follows the policy of the device model it simulates;
 - downloads retain the bounded attestation because an offline artifact cannot
   ask the server for a different plan.
 
@@ -440,8 +441,13 @@ server fallback.
 - Mirror `EngineLog` only through Silo's redaction and bounded capture path.
 - Upstream Aether's unified-log output is treated as device-local support
   data and is never harvested into a Silo diagnostics bundle. On iOS and tvOS,
-  its optional host callback is mirrored only into Silo's consent-gated,
-  Debug Logging ring after media URL, filename, path, and credential redaction.
+  its optional host callback is mirrored only into Silo's consent-gated log
+  ring after media URL, filename, path, and credential redaction. Most lines
+  need Debug Logging; the few that place missing TrueHD Atmos heights or LFE
+  (the audio path, bed levels, the master's audio attributes, the audio route
+  and its channel-count warnings) are essential tier (`AetherDiagnosticsBridge`).
+  Aether's route lines name output ports by type, never by the user's name for
+  the device.
 - Project semantic metrics rather than fabricating removed PlayerCore/loopback
   counters.
 - Audit Aether's clear temporary fMP4 cache, data protection, stale-directory

@@ -67,14 +67,6 @@ struct ServerEndpoint: Codable, Hashable, Sendable {
         )
     }
 
-    func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(url, forKey: .url)
-        try c.encode(kind, forKey: .kind)
-        try c.encodeIfPresent(provider, forKey: .provider)
-        try c.encodeIfPresent(displayName, forKey: .displayName)
-    }
-
     /// Help text for a device that cannot reach this address. Provider names
     /// come from the manifest display name; nothing is inferred from the host.
     /// The wording never claims the provider app is missing: a failed request
@@ -103,7 +95,6 @@ struct ServerConnectionsDocument: Decodable, Hashable, Sendable {
         let url: String?
         let provider: String?
         let displayName: String?
-        let state: String?
 
         /// Only a connected provider carries a URL; a public endpoint always
         /// does. Anything without one cannot be offered to another device.
@@ -120,7 +111,6 @@ struct ServerConnectionsDocument: Decodable, Hashable, Sendable {
         }
     }
 
-    let revision: String?
     let state: String?
     let allowed: Bool?
     let serverId: String
@@ -162,11 +152,12 @@ struct ServerIdentityResolver {
     /// nil, which leaves the previously stored name unchanged. A v1-only
     /// server has no v2 branding; it is update-required anyway, so there is
     /// no fallback to another endpoint.
-    func fetchServerName(serverURL: String) async -> String? {
+    func fetchServerName(serverURL: String, timeout: TimeInterval? = nil) async -> String? {
         guard let branding: ServerBrandingStatus = try? await httpClient.getUnauthenticated(
             serverURL: serverURL,
             path: ServerIdentity.brandingPath,
-            quietStatuses: [404]
+            quietStatuses: [404],
+            timeout: timeout
         ) else {
             return nil
         }

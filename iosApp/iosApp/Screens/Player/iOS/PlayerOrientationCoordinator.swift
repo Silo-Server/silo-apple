@@ -78,6 +78,7 @@ struct PlayerRotationState {
 /// Centralized orientation policy for the iOS app and player shell. Playback code
 /// should stay unaware of this; the coordinator only manages UIKit masks and
 /// scene geometry updates while the full-screen player is visible.
+@MainActor
 @Observable
 final class PlayerOrientationCoordinator {
     static let shared = PlayerOrientationCoordinator()
@@ -102,13 +103,15 @@ final class PlayerOrientationCoordinator {
                              lockedOrientation: rotationState.lockedOrientation)
     }
 
+    /// `browsingOrientations` defaults to `appDefaultOrientations`, resolved
+    /// in the body: a default argument is evaluated outside the main actor.
     static func orientationMask(
         isPlayerActive: Bool, lockedOrientation: UIInterfaceOrientationMask? = nil,
-        browsingOrientations: UIInterfaceOrientationMask = appDefaultOrientations
+        browsingOrientations: UIInterfaceOrientationMask? = nil
     ) -> UIInterfaceOrientationMask {
         // Info.plist must continue advertising landscape so video can use it.
         // The delegate restricts iPhone non-player pages to portrait at runtime.
-        guard isPlayerActive else { return browsingOrientations }
+        guard isPlayerActive else { return browsingOrientations ?? appDefaultOrientations }
         // Only the separate lock button restricts device-driven rotation.
         return lockedOrientation ?? .allButUpsideDown
     }
@@ -116,7 +119,7 @@ final class PlayerOrientationCoordinator {
     static func geometryMask(
         isPlayerActive: Bool, preferredOrientation: UIInterfaceOrientationMask?,
         lockedOrientation: UIInterfaceOrientationMask? = nil,
-        browsingOrientations: UIInterfaceOrientationMask = appDefaultOrientations
+        browsingOrientations: UIInterfaceOrientationMask? = nil
     ) -> UIInterfaceOrientationMask {
         let allowed = orientationMask(isPlayerActive: isPlayerActive, lockedOrientation: lockedOrientation,
                                       browsingOrientations: browsingOrientations)
@@ -135,12 +138,12 @@ final class PlayerOrientationCoordinator {
         let persistedLock: UIInterfaceOrientationMask? =
             PlayerSettings.shared.playerOrientationMode.isLandscapeLocked ? preferredLandscapeMask() : nil
         rotationState.activate(lockedOrientation: persistedLock)
-        applyCurrentPolicy(preferredOrientation: persistedLock ?? deviceOrientationMask())
+        updateOrientationPolicy(preferredOrientation: persistedLock ?? deviceOrientationMask())
     }
 
     func deactivatePlayer() {
         rotationState.deactivate()
-        applyCurrentPolicy(preferredOrientation: Self.appDefaultOrientations.contains(.portrait)
+        updateOrientationPolicy(preferredOrientation: Self.appDefaultOrientations.contains(.portrait)
             ? .portrait : Self.appDefaultOrientations)
     }
 
@@ -148,7 +151,7 @@ final class PlayerOrientationCoordinator {
     /// Keep its rotation lock so returning to video restores the same policy.
     func setPlayerCovered(_ covered: Bool) {
         rotationState.setPlayerCovered(covered)
-        applyCurrentPolicy(preferredOrientation: isPlayerActive
+        updateOrientationPolicy(preferredOrientation: isPlayerActive
             ? rotationState.lockedOrientation ?? deviceOrientationMask()
             : Self.appDefaultOrientations)
     }
@@ -180,7 +183,7 @@ final class PlayerOrientationCoordinator {
         let mask: UIInterfaceOrientationMask = target == .landscape ? preferredLandscapeMask() : .portrait
         rotationState.manuallyRotate(to: mask)
         persistRotationLock()
-        applyCurrentPolicy(preferredOrientation: mask)
+        updateOrientationPolicy(preferredOrientation: mask)
     }
 
     func toggleRotationLock() {
@@ -189,17 +192,7 @@ final class PlayerOrientationCoordinator {
         let currentMask = currentInterfaceOrientation().flatMap(Self.exactMask) ?? observedOrientation.mask
         rotationState.toggleLock(at: currentMask)
         persistRotationLock()
-        applyCurrentPolicy(preferredOrientation: rotationState.lockedOrientation ?? deviceOrientationMask())
-    }
-
-    private func applyCurrentPolicy(preferredOrientation: UIInterfaceOrientationMask) {
-        if Thread.isMainThread {
-            updateOrientationPolicy(preferredOrientation: preferredOrientation)
-        } else {
-            DispatchQueue.main.async { [weak self] in
-                self?.updateOrientationPolicy(preferredOrientation: preferredOrientation)
-            }
-        }
+        updateOrientationPolicy(preferredOrientation: rotationState.lockedOrientation ?? deviceOrientationMask())
     }
 
     private func updateOrientationPolicy(preferredOrientation: UIInterfaceOrientationMask) {

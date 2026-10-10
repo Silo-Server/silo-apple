@@ -4,7 +4,7 @@ import SwiftUI
 @MainActor
 enum WatchPartyEntry {
     // Off in Release until the physical-device and mixed-client gate clears;
-    // testers opt in from Settings > Experimental.
+    // users opt in from Settings > Extra Features.
     static var isEnabled: Bool {
         ExperimentalFeatures.shared.isEnabled(.watchParty)
     }
@@ -20,10 +20,7 @@ enum WatchPartyEntry {
     }
 
     static var isAvailable: Bool {
-        guard isEnabled else { return false }
-        let session = WatchPartySession.shared
-        return session.capabilities?.supportsSocket == true
-            && session.capabilities?.connectionReplaced == true && session.supportsPlayback
+        isEnabled && WatchPartySession.shared.supportsSynchronizedParty
     }
 
     /// Inside a party, only a host-pick room's manager picks directly; everyone

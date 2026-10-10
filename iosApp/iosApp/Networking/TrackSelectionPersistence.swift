@@ -1,7 +1,3 @@
-//
-//  TrackSelectionPersistence.swift
-//  Silo (iOS + tvOS)
-//
 //  Persists the user's explicit audio / subtitle track choices to the
 //  server's per-series preference endpoints so they survive exiting
 //  the player and revisiting the item — matching the web app. The web
@@ -25,6 +21,7 @@
 
 import Foundation
 import os
+import Synchronization
 
 enum TrackSelectionPersistence {
 
@@ -230,31 +227,34 @@ enum TrackSelectionPersistence {
     /// Chains the writes for one kind and key: each write starts only after
     /// the one dispatched before it has finished, whatever its outcome.
     /// Callers dispatch synchronously, so dispatch order is pick order.
-    private final class WriteOrder: @unchecked Sendable {
-        private let lock = NSLock()
-        private var tails: [String: (id: UInt64, task: Task<Void, Never>)] = [:]
-        private var nextId: UInt64 = 0
+    private final class WriteOrder: Sendable {
+        private struct State {
+            var tails: [String: (id: UInt64, task: Task<Void, Never>)] = [:]
+            var nextId: UInt64 = 0
+        }
+
+        private let state = Mutex(State())
 
         func enqueue(
             _ key: String,
             _ body: @escaping @Sendable (_ previous: Task<Void, Never>?) async -> Void
         ) -> Task<Void, Never> {
-            lock.withLock {
-                nextId += 1
-                let id = nextId
-                let previous = tails[key]?.task
+            state.withLock { state -> Task<Void, Never> in
+                state.nextId += 1
+                let id = state.nextId
+                let previous = state.tails[key]?.task
                 let task = Task {
                     await body(previous)
                     self.finish(key, id)
                 }
-                tails[key] = (id, task)
+                state.tails[key] = (id, task)
                 return task
             }
         }
 
         private func finish(_ key: String, _ id: UInt64) {
-            lock.withLock {
-                if tails[key]?.id == id { tails[key] = nil }
+            state.withLock { state in
+                if state.tails[key]?.id == id { state.tails[key] = nil }
             }
         }
     }

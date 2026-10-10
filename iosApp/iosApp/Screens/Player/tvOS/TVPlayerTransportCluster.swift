@@ -1,15 +1,13 @@
 #if os(tvOS)
 import SwiftUI
 
-/// Transport controls under the scrubber. Post-redesign this is an
-/// icon-only row with no container pill — the buttons float on the bottom
-/// gradient, VidHub-style, so the overlay stays visually quiet. A single
-/// `focusSection()` keeps D-pad left/right pinned within transport; vertical
-/// presses remain inside the visible controls.
+/// Transport controls under the scrubber: an icon-only row with no container
+/// pill, floating on the bottom gradient so the overlay stays visually quiet.
+/// A single `focusSection()` keeps D-pad left/right pinned within transport;
+/// vertical presses remain inside the visible controls.
 ///
-/// Consolidates what used to be three separate entry points (chapters,
-/// tracks, settings) into one `options` button that opens `TVPlayerInfoHUD`;
-/// the HUD's tab bar handles routing to the right pane.
+/// Chapters, tracks and settings share one `options` button that opens
+/// `TVPlayerInfoHUD`; the HUD's tab bar routes to the right pane.
 struct TVPlayerTransportCluster: View {
     let viewModel: PlayerViewModel
     let onOpenHUD: () -> Void

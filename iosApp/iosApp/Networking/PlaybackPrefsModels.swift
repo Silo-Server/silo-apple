@@ -1,7 +1,3 @@
-//
-//  PlaybackPrefsModels.swift
-//  Silo (iOS + tvOS)
-//
 //  Wire types for the user's playback preferences. The server stores
 //  these at three precedence levels: per-series (highest), per-library,
 //  and profile default (lowest). The cascade is resolved server-side
@@ -55,7 +51,7 @@ struct SubtitleTrackSignature: Codable, Hashable, Sendable {
 /// Audio counterpart to `SubtitleTrackSignature`. Layout + channels let
 /// the server prefer "5.1 English Atmos" over "stereo English commentary"
 /// across episodes.
-struct AudioTrackSignature: Codable, Hashable, Sendable {
+struct AudioTrackSignature: Encodable, Hashable, Sendable {
     let language: String?
     let title: String?
     let embeddedTitle: String?
@@ -87,28 +83,6 @@ struct AudioTrackSignature: Codable, Hashable, Sendable {
         case embeddedTitle = "embedded_title"
         case codec, layout, channels
         case isDefault = "default"
-    }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        language = try c.decodeIfPresent(String.self, forKey: .language)
-        title = try c.decodeIfPresent(String.self, forKey: .title)
-        embeddedTitle = try c.decodeIfPresent(String.self, forKey: .embeddedTitle)
-        codec = try c.decodeIfPresent(String.self, forKey: .codec)
-        layout = try c.decodeIfPresent(String.self, forKey: .layout)
-        channels = try c.decodeIfPresent(Int.self, forKey: .channels)
-        isDefault = try c.decodeIfPresent(Bool.self, forKey: .isDefault) ?? false
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encodeIfPresent(language, forKey: .language)
-        try c.encodeIfPresent(title, forKey: .title)
-        try c.encodeIfPresent(embeddedTitle, forKey: .embeddedTitle)
-        try c.encodeIfPresent(codec, forKey: .codec)
-        try c.encodeIfPresent(layout, forKey: .layout)
-        try c.encodeIfPresent(channels, forKey: .channels)
-        try c.encode(isDefault, forKey: .isDefault)
     }
 }
 
@@ -222,14 +196,6 @@ enum SubtitleMode: String, CaseIterable, Codable, Hashable {
         case .off:    return "Off"
         }
     }
-
-    var displayDescription: String {
-        switch self {
-        case .auto:   return "Show subtitles only when audio language doesn't match your spoken language."
-        case .always: return "Always show subtitles when available."
-        case .off:    return "Never show subtitles."
-        }
-    }
 }
 
 // MARK: - Per-series track prefs
@@ -243,7 +209,7 @@ enum TrackPreferenceKind: String, Sendable {
 
 // MARK: - Per-series subtitle pref
 
-struct SubtitlePrefRequest: Codable, Sendable {
+struct SubtitlePrefRequest: Encodable, Sendable {
     let subtitleLanguage: String
     let subtitleTrackIndex: Int
     let externalSubtitlePath: String
@@ -254,7 +220,7 @@ struct SubtitlePrefRequest: Codable, Sendable {
 
 // MARK: - Per-series audio pref
 
-struct AudioPrefRequest: Codable, Sendable {
+struct AudioPrefRequest: Encodable, Sendable {
     let audioTrackIndex: Int
     let audioLanguage: String
     let trackSignature: AudioTrackSignature?

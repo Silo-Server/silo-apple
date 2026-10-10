@@ -1,9 +1,8 @@
 import Foundation
 
-/// Whether a failed mutation reached the server, for the plan's three-outcome
-/// failure model: a definite failure is released and reported, an owner
-/// change applies nothing, and an unconfirmed one is never replayed
-/// automatically.
+/// Whether a failed mutation reached the server. A definite failure is
+/// released and reported, an owner change applies nothing, and an
+/// unconfirmed one is never replayed automatically.
 enum MutationDelivery: String, Sendable {
     /// A response arrived, or the request never left the device.
     case definite

@@ -7,6 +7,7 @@ struct MacPlayerOptionsPanel: View {
         case audio = "Audio"
         case subtitles = "Subtitles"
         case chapters = "Chapters"
+        case quality = "Quality"
         case playback = "Playback"
 
         var id: String { rawValue }
@@ -16,7 +17,7 @@ struct MacPlayerOptionsPanel: View {
     @Binding var selectedTab: Tab
     let onDismiss: () -> Void
 
-    private let playbackSpeeds: [Double] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
+    static let playbackSpeeds: [Double] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -82,7 +83,7 @@ struct MacPlayerOptionsPanel: View {
                 }
                 ForEach(viewModel.orderedSubtitleTracks) { track in
                     trackButton(
-                        title: track.primaryLabel,
+                        title: track.languageFirstPrimaryLabel,
                         detail: subtitleDetail(for: track),
                         selected: viewModel.selectedSubtitleId == track.trackId
                     ) {
@@ -97,7 +98,10 @@ struct MacPlayerOptionsPanel: View {
                         .padding(.horizontal, 12)
                         .padding(.top, 4)
                 }
+
+                timingControls
             }
+            .onAppear { viewModel.refreshSubtitleSync() }
         case .chapters:
             optionList {
                 if viewModel.chapters.isEmpty {
@@ -114,6 +118,42 @@ struct MacPlayerOptionsPanel: View {
                     }
                 }
             }
+        case .quality:
+            // The same plan-built list iOS and tvOS offer: Auto, then each
+            // server rung in plan order.
+            optionList {
+                ForEach(viewModel.qualityOptions) { option in
+                    trackButton(
+                        title: option.label,
+                        detail: nil,
+                        trailing: option.bitrateText,
+                        selected: option.id == viewModel.activeQualityId
+                    ) {
+                        viewModel.switchQuality(option.id)
+                    }
+                    // A second pick during a replan is refused as busy and
+                    // reports a failure even when the first switch succeeds.
+                    .disabled(viewModel.isQualitySwitching)
+                }
+
+                if viewModel.isQualitySwitching {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Switching quality…")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.72))
+                    .padding(.horizontal, 12)
+                    .padding(.top, 4)
+                } else if let error = viewModel.qualitySwitchError {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .padding(.horizontal, 12)
+                        .padding(.top, 4)
+                }
+            }
         case .playback:
             optionList {
                 Text("Speed")
@@ -123,7 +163,7 @@ struct MacPlayerOptionsPanel: View {
                     .padding(.top, 2)
 
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 82), spacing: 8)], spacing: 8) {
-                    ForEach(playbackSpeeds, id: \.self) { speed in
+                    ForEach(Self.playbackSpeeds, id: \.self) { speed in
                         Button {
                             viewModel.setPlaybackSpeed(speed)
                         } label: {
@@ -140,9 +180,7 @@ struct MacPlayerOptionsPanel: View {
                 routeStatus
                     .padding(.top, 8)
 
-                // Same rows tvOS and iOS report, in the single-column
-                // sectioned dressing — the panel is narrow, so the tvOS
-                // two-column split would crush the value column.
+                // Shared stats rows, single-column for the narrow panel.
                 PlaybackStatsPanel(stats: viewModel.playbackStats)
                     .padding(.horizontal, 12)
                     .padding(.top, 4)
@@ -163,6 +201,7 @@ struct MacPlayerOptionsPanel: View {
     private func trackButton(
         title: String,
         detail: String?,
+        trailing: String? = nil,
         selected: Bool,
         action: @escaping () -> Void
     ) -> some View {
@@ -187,6 +226,13 @@ struct MacPlayerOptionsPanel: View {
                 }
 
                 Spacer(minLength: 8)
+
+                if let trailing {
+                    Text(trailing)
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.58))
+                        .monospacedDigit()
+                }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
@@ -236,11 +282,77 @@ struct MacPlayerOptionsPanel: View {
 
     private func subtitleDetail(for track: PlayerTrack) -> String? {
         var parts: [String] = []
-        if let attributes = track.attributesLabel, !attributes.isEmpty {
+        if let attributes = track.languageFirstAttributesLabel, !attributes.isEmpty {
             parts.append(attributes)
         }
         parts.append(track.isExternal ? "External" : "Embedded")
+        if let status = viewModel.subtitleSyncStatus(for: track) {
+            parts.append(status)
+        }
         return parts.joined(separator: " · ")
+    }
+
+    /// "Sync to Audio" and "Reset Timing" for the selected track, stored or a
+    /// file next to the media, with a running sync's progress and the last
+    /// result. Anyone who can play the file may retime it; a refusal (demo
+    /// mode) replaces the actions with a short explanation.
+    @ViewBuilder
+    private var timingControls: some View {
+        let sync = viewModel.subtitleSync
+        if let key = viewModel.selectedSubtitleSyncKey, let entry = sync.entry(for: key),
+           sync.showsTimingControls(entry) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Timing")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.62))
+                if entry.isForbidden {
+                    Text(sync.forbiddenMessage)
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.58))
+                } else {
+                    HStack(spacing: 8) {
+                        if sync.canSync(entry) {
+                            Button(entry.isInProgress ? "Syncing…" : "Sync to Audio") {
+                                Task { await sync.requestSync(key: key) }
+                            }
+                        }
+                        if entry.canReset {
+                            Button("Reset Timing") {
+                                Task { await sync.resetTiming(key: key) }
+                            }
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(entry.isBusy || entry.isInProgress)
+                }
+                if let job = entry.job, job.isInProgress {
+                    SubtitleSyncProgressBar(percent: SubtitleSyncLabel.percent(job) ?? 0)
+                    if let phase = SubtitleSyncLabel.phase(job) {
+                        Text(phase)
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.58))
+                    }
+                }
+                if let result = entry.result {
+                    Text(result.text)
+                        .font(.caption)
+                        .foregroundStyle(result.isWarning ? Color.siloWarning.opacity(0.9) : .white.opacity(0.58))
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if !entry.isForbidden, sync.canSync(entry), !entry.isInProgress, entry.error == nil {
+                    Text(entry.actionNote)
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.45))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let error = entry.error {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+        }
     }
 
     private func speedLabel(_ speed: Double) -> String {

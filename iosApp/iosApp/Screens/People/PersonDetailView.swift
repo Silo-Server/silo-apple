@@ -99,19 +99,21 @@ final class PersonDetailViewModel {
         isLoadingPerson = person == nil
         defer { isLoadingPerson = false }
 
+        // Credits need only `personId`, so they load alongside the person read.
+        async let firstPage: Void = fetchPage(reset: true, generation: currentGeneration)
+        async let availability: Void = refreshAvailableFilters(generation: currentGeneration)
         do {
             if person == nil {
                 person = try await SiloAPI.shared.person(id: personId)
             }
             scheduleMetadataRefreshIfNeeded(for: person)
-            async let availability: Void = refreshAvailableFilters(generation: currentGeneration)
-            await fetchPage(reset: true, generation: currentGeneration)
-            await availability
         } catch {
-            guard currentGeneration == generation else { return }
-            self.error = ErrorState(error)
-            isLoadingItems = false
+            if currentGeneration == generation {
+                self.error = ErrorState(error)
+            }
         }
+        await firstPage
+        await availability
     }
 
     func applyFilter(_ filter: PersonMediaFilter) async {
@@ -136,7 +138,7 @@ final class PersonDetailViewModel {
             .compactMap(URL.init(string:))
         let newURLs = urls.filter { prefetchedPosterURLs.insert($0).inserted }
         guard !newURLs.isEmpty else { return }
-        PosterImageCache.prefetchCardArtwork(newURLs)
+        PosterImageCache.prefetchArtworkData(newURLs)
     }
     #endif
 
@@ -310,10 +312,7 @@ final class PersonDetailViewModel {
 
     private func resetFilmography() {
         #if os(tvOS)
-        if !prefetchedPosterURLs.isEmpty {
-            PosterImageCache.stopPrefetchingCardArtwork(Array(prefetchedPosterURLs))
-            prefetchedPosterURLs.removeAll()
-        }
+        prefetchedPosterURLs.removeAll()
         #endif
         items = []
         totalItems = nil
@@ -369,18 +368,16 @@ struct PersonDetailView: View {
     private func personContent(person: Person) -> some View {
         #if os(tvOS)
         TVPersonDetailContent(person: person, viewModel: viewModel)
-        #else
-        #if os(iOS)
+        #elseif os(iOS)
         // On iOS this pull means Back, including actor pages opened from
         // outside a title's detail sheet. Do not start a metadata refresh too.
         PhonePersonDetailContent(person: person, viewModel: viewModel)
         #else
         refreshablePersonContent(person: person)
         #endif
-        #endif
     }
 
-    #if !os(tvOS)
+    #if os(macOS)
     private func refreshablePersonContent(person: Person) -> some View {
         PhonePersonDetailContent(person: person, viewModel: viewModel)
             .refreshable {
@@ -472,7 +469,7 @@ private struct TVPersonDetailContent: View {
 
     private var metadataRow: some View {
         HStack(spacing: 12) {
-            ForEach(metadataBadges, id: \.self) { badge in
+            ForEach(person.personMetadataBadges, id: \.self) { badge in
                 Text(badge)
                     .font(.siloSmall)
                     .foregroundColor(.siloOnSurface)
@@ -510,10 +507,6 @@ private struct TVPersonDetailContent: View {
                 Task { await viewModel.applyFilter(filter) }
             }
         }
-    }
-
-    private var metadataBadges: [String] {
-        person.personMetadataBadges
     }
 
     private var totalLabel: String? {
@@ -586,11 +579,7 @@ private struct PhonePersonDetailContent: View {
                 metadataWrap
 
                 if let bio = clean(person.bio) {
-                    Text(bio)
-                        .font(.siloBody)
-                        .foregroundColor(.siloSecondaryText)
-                        .lineLimit(8)
-                        .fixedSize(horizontal: false, vertical: true)
+                    PersonBiography(text: bio)
                 }
             }
         }
@@ -642,6 +631,56 @@ private struct PhonePersonDetailContent: View {
             }
             .padding(.horizontal, SiloTheme.padding)
         }
+    }
+}
+#endif
+
+#if !os(tvOS)
+/// The biography, clipped to eight lines. When that cuts text off, a More
+/// control (or a tap on the text) shows all of it; a short biography shows
+/// no control.
+private struct PersonBiography: View {
+    let text: String
+
+    @State private var isExpanded = false
+    @State private var clippedHeight: CGFloat = 0
+    @State private var fullHeight: CGFloat = 0
+
+    private var isClipped: Bool { fullHeight > clippedHeight + 1 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(text)
+                .font(.siloBody)
+                .foregroundColor(.siloSecondaryText)
+                .lineLimit(isExpanded ? nil : 8)
+                .fixedSize(horizontal: false, vertical: true)
+                .onGeometryChange(for: CGFloat.self, of: \.size.height) { height in
+                    if !isExpanded { clippedHeight = height }
+                }
+                // The same text at the same width with no line limit, to
+                // learn whether eight lines cut anything off.
+                .background(alignment: .top) {
+                    Text(text)
+                        .font(.siloBody)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .hidden()
+                        .onGeometryChange(for: CGFloat.self, of: \.size.height) { fullHeight = $0 }
+                }
+                .contentShape(Rectangle())
+                .onTapGesture { if isClipped { toggle() } }
+
+            if isClipped {
+                Button(isExpanded ? "Less" : "More", action: toggle)
+                    .buttonStyle(.plain)
+                    .font(.siloBody.weight(.semibold))
+                    .foregroundColor(.siloOnSurface)
+            }
+        }
+    }
+
+    private func toggle() {
+        withAnimation(.easeInOut(duration: SiloTheme.normalDuration)) { isExpanded.toggle() }
     }
 }
 #endif
@@ -757,7 +796,7 @@ private struct PersonFilterButton: View {
     var body: some View {
         Button(action: action) {
             Text(title)
-                .font(buttonFont)
+                .font(.siloCaption)
                 .foregroundColor(foregroundColor)
                 .padding(.horizontal, horizontalPadding)
                 .padding(.vertical, verticalPadding)
@@ -789,14 +828,6 @@ private struct PersonFilterButton: View {
 
     private var strokeColor: Color {
         isFocused ? .siloOnSurface.opacity(0.85) : Color.white.opacity(isSelected ? 0.16 : 0.08)
-    }
-
-    private var buttonFont: Font {
-        #if os(tvOS)
-        .siloCaption
-        #else
-        .siloCaption
-        #endif
     }
 
     private var horizontalPadding: CGFloat {
@@ -837,7 +868,7 @@ private extension Person {
         }
         if let deathDate = formattedPersonDate(deathDate) {
             badges.append("Died \(deathDate)")
-        } else if let age = personAge(from: birthDate, to: nil) {
+        } else if let age = personAge(from: birthDate) {
             badges.append("\(age) years old")
         }
         if let birthplace = clean(birthplace) {
@@ -867,10 +898,9 @@ private func formattedPersonDate(_ value: String?) -> String? {
     return SelfDateFormatter.personDisplay.string(from: date)
 }
 
-private func personAge(from birthValue: String?, to deathValue: String?) -> Int? {
+private func personAge(from birthValue: String?) -> Int? {
     guard let birthDate = parsePersonDate(birthValue) else { return nil }
-    let endDate = parsePersonDate(deathValue) ?? Date()
-    let years = Calendar.current.dateComponents([.year], from: birthDate, to: endDate).year
+    let years = Calendar.current.dateComponents([.year], from: birthDate, to: Date()).year
     guard let years, years >= 0 else { return nil }
     return years
 }

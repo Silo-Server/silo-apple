@@ -80,9 +80,6 @@ struct APIv2Probe: Sendable {
     /// answered, so it must not tell the user to update one.
     static func isLegacyNotFound(body: String?) -> Bool {
         guard let body else { return false }
-        // Exact match, tolerating only the single trailing newline the Go
-        // helper writes. Leading whitespace or any other decoration is some
-        // other service's 404, not the legacy listener's.
         return body == legacyNotFoundBody || body == legacyNotFoundBody + "\n"
     }
 

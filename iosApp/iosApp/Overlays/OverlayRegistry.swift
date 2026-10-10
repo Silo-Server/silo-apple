@@ -29,20 +29,19 @@ enum OverlayRegistry {
     }
 
     /// Enabled overlays for a corner, in the user's chosen order. Any
-    /// overlay not listed in `prefs.order` falls back to registry order
-    /// (preserved deterministically via a secondary index, since
-    /// `sorted` is not guaranteed stable).
+    /// overlay not listed in `prefs.order` keeps registry order (`sorted`
+    /// is stable).
     ///
     /// Duplicate IDs in `prefs.order` — possible when the wire JSON was
     /// hand-edited or written by an older client — are tolerated: the
     /// first occurrence wins, later ones are dropped, no trap.
     static func enabled(at position: OverlayPosition, in prefs: CardOverlayPrefs) -> [OverlayDef] {
-        let candidates = all.enumerated().filter { _, def in
+        let candidates = all.filter { def in
             guard let cfg = prefs.items[def.id] else { return false }
             if isSuppressed(def.id, by: prefs) { return false }
             return cfg.enabled && cfg.position == position
         }
-        if prefs.order.isEmpty { return candidates.map(\.element) }
+        if prefs.order.isEmpty { return candidates }
 
         // `uniquingKeysWith` keeps the first index a given ID appears
         // at, so a malformed `order` like `[a, b, a]` doesn't trap.
@@ -50,36 +49,15 @@ enum OverlayRegistry {
             prefs.order.enumerated().map { ($1, $0) },
             uniquingKeysWith: { first, _ in first }
         )
-        return candidates
-            .sorted { lhs, rhs in
-                let lhsRank = rank[lhs.element.id] ?? Int.max
-                let rhsRank = rank[rhs.element.id] ?? Int.max
-                if lhsRank != rhsRank { return lhsRank < rhsRank }
-                // Equal ranks (typically both unranked at Int.max) →
-                // fall back to registry order.
-                return lhs.offset < rhs.offset
-            }
-            .map(\.element)
+        return candidates.sorted {
+            (rank[$0.id] ?? Int.max) < (rank[$1.id] ?? Int.max)
+        }
     }
 }
 
 // MARK: - Tech
 
 private extension OverlayRegistry {
-
-    static func prettyResolution(_ value: String?) -> String? {
-        guard let value, !value.isEmpty else { return nil }
-        let v = value.lowercased()
-        switch v {
-        case "2160p", "4k", "uhd": return "4K"
-        case "4320p", "8k":         return "8K"
-        default:
-            if v.range(of: #"^\d+p$"#, options: .regularExpression) != nil {
-                return v
-            }
-            return value.uppercased()
-        }
-    }
 
     static func compactHdrSuffix(_ value: String?) -> String? {
         guard let value, !value.isEmpty else { return nil }
@@ -126,9 +104,9 @@ private extension OverlayRegistry {
             defaultEnabled: true,
             iconId: .monitor,
             iconCapable: true,
-            // `prettyResolution`, not raw uppercase: web renders "4K" for a
-            // `2160p` payload and the standalone badge must match it.
-            getValue: { prettyResolution($0.resolution) }
+            // `MediaTextFormatting.resolution`, not raw uppercase: web renders
+            // "4K" for a `2160p` payload and the standalone badge must match it.
+            getValue: { MediaTextFormatting.resolution($0.resolution) }
         ),
         OverlayDef(
             id: .hdr,
@@ -144,7 +122,7 @@ private extension OverlayRegistry {
             defaultEnabled: false,
             iconCapable: true,
             getValue: { data in
-                guard let res = prettyResolution(data.resolution) else { return nil }
+                guard let res = MediaTextFormatting.resolution(data.resolution) else { return nil }
                 if let hdr = compactHdrSuffix(data.hdr) { return "\(res) \(hdr)" }
                 return res
             },
@@ -227,12 +205,17 @@ private extension OverlayRegistry {
 
 private extension OverlayRegistry {
 
-    static func formatRating(_ value: Double?) -> String? {
-        value.map { String(format: "%.1f", $0) }
+    // A rating badge carries its source's mark in the label ("IMDb 8.5",
+    // "RT 93%"), the same plain-text mark title pages use, so a score never
+    // shows without its source. Badges draw no source artwork, so they are
+    // not icon-capable and the per-badge icon toggle does not apply. (TMDB's
+    // logo is too wide for a badge; title pages use it instead.)
+    static func ratingLabel(_ mark: String, _ value: Double?) -> String? {
+        value.map { "\(mark) \(DisplayRating.oneDecimal($0))" }
     }
 
-    static func formatPercent(_ value: Int?) -> String? {
-        value.map { "\($0)%" }
+    static func ratingLabel(_ mark: String, _ value: Int?) -> String? {
+        value.map { "\(mark) \($0)%" }
     }
 
     static let ratings: [OverlayDef] = [
@@ -240,37 +223,33 @@ private extension OverlayRegistry {
             id: .ratingImdb,
             defaultPosition: .topRight,
             defaultEnabled: false,
-            iconId: .star,
             defaultAccent: "#f5c518",
-            iconCapable: true,
-            getValue: { formatRating($0.ratingImdb) }
+            iconCapable: false,
+            getValue: { ratingLabel("IMDb", $0.ratingImdb) }
         ),
         OverlayDef(
             id: .ratingTmdb,
             defaultPosition: .topRight,
             defaultEnabled: false,
-            iconId: .star,
             defaultAccent: "#01b4e4",
-            iconCapable: true,
-            getValue: { formatRating($0.ratingTmdb) }
+            iconCapable: false,
+            getValue: { ratingLabel("TMDB", $0.ratingTmdb) }
         ),
         OverlayDef(
             id: .ratingRt,
             defaultPosition: .topRight,
             defaultEnabled: false,
-            iconId: .tomato,
             defaultAccent: "#fa320a",
-            iconCapable: true,
-            getValue: { formatPercent($0.ratingRtCritic) }
+            iconCapable: false,
+            getValue: { ratingLabel("RT", $0.ratingRtCritic) }
         ),
         OverlayDef(
             id: .ratingRtAudience,
             defaultPosition: .topRight,
             defaultEnabled: false,
-            iconId: .tomato,
             defaultAccent: "#fa6400",
-            iconCapable: true,
-            getValue: { formatPercent($0.ratingRtAudience) }
+            iconCapable: false,
+            getValue: { ratingLabel("RT Audience", $0.ratingRtAudience) }
         ),
         OverlayDef(
             id: .contentRating,
@@ -280,6 +259,17 @@ private extension OverlayRegistry {
             iconCapable: true,
             getValue: { $0.contentRating }
         ),
+        OverlayDef(
+            id: .advisoryAge,
+            defaultPosition: .bottomRight,
+            defaultEnabled: false,
+            iconId: .users,
+            iconCapable: true,
+            getValue: { data in
+                guard let age = data.advisoryAge, age > 0 else { return nil }
+                return "\(age)+"
+            }
+        ),
     ]
 }
 
@@ -287,12 +277,7 @@ private extension OverlayRegistry {
 
 private extension OverlayRegistry {
 
-    static func formatRuntime(_ minutes: Int?) -> String? {
-        guard let minutes, minutes > 0 else { return nil }
-        let h = minutes / 60
-        let m = minutes % 60
-        return h > 0 ? "\(h)h \(m)m" : "\(m)m"
-    }
+    private static let english = Locale(identifier: "en")
 
     /// English display name for a language tag, matching web's
     /// `formatLanguage` (English CLDR names, so "en" → "English" not
@@ -303,7 +288,6 @@ private extension OverlayRegistry {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        let english = Locale(identifier: "en")
         let name = english.localizedString(forIdentifier: trimmed)
             ?? english.localizedString(forLanguageCode: trimmed)
         return name?.capitalized ?? trimmed.uppercased()
@@ -326,7 +310,7 @@ private extension OverlayRegistry {
             defaultEnabled: false,
             iconId: .clock,
             iconCapable: true,
-            getValue: { formatRuntime($0.runtime) }
+            getValue: { MediaTextFormatting.runtime(minutes: $0.runtime) }
         ),
         OverlayDef(
             id: .originalLanguage,
@@ -403,10 +387,10 @@ private extension OverlayRegistry {
             id: .rtCertifiedFresh,
             defaultPosition: .topRight,
             defaultEnabled: false,
-            iconId: .tomato,
             defaultAccent: "#fa320a",
-            iconCapable: true,
-            getValue: { $0.rtCertifiedFresh == true ? "Certified Fresh" : nil }
+            // Same rule as the rating badges: the source's text mark, no artwork.
+            iconCapable: false,
+            getValue: { $0.rtCertifiedFresh == true ? "RT Certified Fresh" : nil }
         ),
     ]
 }

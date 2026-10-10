@@ -38,7 +38,6 @@ struct TVPlayerScrubber: View {
     private var scrubForwardStep: Double { Double(viewModel.skipIntervals.forward) }
     private static let timelineAutoSeekTickNanos: UInt64 = 100_000_000
     private static let timelineAutoSeekBaseStep: Double = 2
-    private static let timelineAutoSeekRates = [-32, -16, -8, -4, -2, -1, 1, 2, 4, 8, 16, 32]
     @State private var timelineAutoSeekRate = 0
     @State private var timelineAutoSeekTask: Task<Void, Never>?
 
@@ -80,12 +79,6 @@ struct TVPlayerScrubber: View {
         guard viewModel.duration > 0 else { return 0 }
         let t = viewModel.isScrubbing ? viewModel.scrubPreviewTime : viewModel.currentTime
         return min(max(t / viewModel.duration, 0), 1)
-    }
-
-    private var bufferedFraction: Double {
-        guard viewModel.duration > 0 else { return 0 }
-        let end = viewModel.currentTime + viewModel.bufferedAheadSeconds
-        return min(max(end / viewModel.duration, 0), 1)
     }
 
     private var displayTime: Double {
@@ -174,7 +167,7 @@ struct TVPlayerScrubber: View {
                 }
             }
             .accessibilityLabel("Scrubber")
-            .accessibilityValue(Text(formatTime(displayTime)))
+            .accessibilityValue(Text(PlayerTimeFormatter.formatHMS(displayTime)))
     }
 
     // MARK: - Bar
@@ -183,11 +176,10 @@ struct TVPlayerScrubber: View {
         GeometryReader { geo in
             let width = geo.size.width
             ZStack(alignment: .leading) {
-                // Thin-line track: at 3pt the capsule glass adds nothing but
-                // cost, so the track is now a plain translucent white fill.
+                // Plain translucent track; glass adds nothing at this height.
                 // The played region is pure white on top; the unplayed region
-                // reads at ~22% opacity — enough contrast against video
-                // without pulling attention from the frame.
+                // stays faint — enough contrast against video without pulling
+                // attention from the frame.
                 Capsule(style: .continuous)
                     .fill(Color.white.opacity(isTimelineScrubbing ? 0.48 : isFocused ? 0.35 : 0.24))
                     .frame(height: trackHeight)
@@ -205,7 +197,7 @@ struct TVPlayerScrubber: View {
                 // and mis-represent the semantic — buffer is inherently a
                 // forward-looking indicator. Aether routes without comparable
                 // buffer telemetry leave `bufferedAheadSeconds` at zero.
-                let bufferedAhead = max(0, bufferedFraction - progressFraction)
+                let bufferedAhead = max(0, viewModel.bufferedEndFraction - progressFraction)
                 if bufferedAhead > 0 {
                     Capsule(style: .continuous)
                         .fill(Color.white.opacity(0.28))
@@ -375,9 +367,9 @@ struct TVPlayerScrubber: View {
 
     private func adjustTimelineAutoSeekRate(delta: Int) {
         guard isTimelineAutoSeeking else { return }
-        guard let currentIdx = Self.timelineAutoSeekRates.firstIndex(of: timelineAutoSeekRate) else { return }
-        let newIdx = max(0, min(Self.timelineAutoSeekRates.count - 1, currentIdx + delta))
-        timelineAutoSeekRate = Self.timelineAutoSeekRates[newIdx]
+        guard let currentIdx = PlayerViewModel.seekRates.firstIndex(of: timelineAutoSeekRate) else { return }
+        let newIdx = max(0, min(PlayerViewModel.seekRates.count - 1, currentIdx + delta))
+        timelineAutoSeekRate = PlayerViewModel.seekRates[newIdx]
     }
 
     private func stopTimelineAutoSeek() {
@@ -475,10 +467,6 @@ struct TVPlayerScrubber: View {
             hasTimelineSelectionMoved = true
         }
         viewModel.updateScrub(fraction: target / viewModel.duration)
-    }
-
-    private func formatTime(_ seconds: Double) -> String {
-        PlayerTimeFormatter.formatHMS(seconds)
     }
 }
 #endif

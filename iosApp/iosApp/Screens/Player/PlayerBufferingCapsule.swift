@@ -21,9 +21,14 @@ struct PlayerBufferingCapsule: View {
         .padding(.vertical, 6)
         .siloPlayerGlass(in: Capsule())
         .shadow(color: .black.opacity(0.45), radius: 18, y: 7)
+        #if os(macOS)
+        // The Mac player owns the whole window; a corner pill is easy to miss.
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        #else
         .padding(.top, topPadding)
         .padding(.trailing, trailingPadding)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+        #endif
         .allowsHitTesting(false)
         .transition(.opacity)
         .opacity(isVisible ? 1 : 0)
@@ -66,8 +71,6 @@ struct PlayerBufferingCapsule: View {
     private var topPadding: CGFloat {
         #if os(tvOS)
         64
-        #elseif os(macOS)
-        88
         #else
         68
         #endif
@@ -76,8 +79,6 @@ struct PlayerBufferingCapsule: View {
     private var trailingPadding: CGFloat {
         #if os(tvOS)
         80
-        #elseif os(macOS)
-        20
         #else
         16
         #endif

@@ -24,11 +24,9 @@ final class WatchPartySpoilerTests: XCTestCase {
         }
     }
 
-    func testCatalogFallbackWatchStateAndResumePosition() throws {
+    func testCatalogFallbackWatchState() throws {
         let watched = WatchPartySelectedItem(try catalog(extra: ["user_state": ["played": true, "is_favorite": false, "in_watchlist": false]]))
-        let resumed = WatchPartySelectedItem(try catalog(extra: ["position_seconds": 20]))
         XCTAssertFalse(watched.hidesBackdrop(with: enabled))
-        XCTAssertFalse(resumed.hidesBackdrop(with: enabled))
     }
 
     func testArtworkSlotsUseTheirOwnProvenance() throws {

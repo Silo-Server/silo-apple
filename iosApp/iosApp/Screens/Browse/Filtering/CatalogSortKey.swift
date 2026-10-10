@@ -49,6 +49,7 @@ enum BrowseMediaType: String, Codable, Hashable {
 enum CatalogSortKey: String, CaseIterable, Codable, Hashable {
     case title
     case addedAt = "added_at"
+    case releaseDate = "release_date"
     case year
     case ratingImdb = "rating_imdb"
     case runtime
@@ -65,7 +66,7 @@ enum CatalogSortKey: String, CaseIterable, Codable, Hashable {
         switch self {
         case .title, .author, .narrator, .series:
             return .asc
-        case .addedAt, .year, .ratingImdb, .runtime, .resolution:
+        case .addedAt, .releaseDate, .year, .ratingImdb, .runtime, .resolution:
             return .desc
         }
     }
@@ -74,6 +75,7 @@ enum CatalogSortKey: String, CaseIterable, Codable, Hashable {
         switch self {
         case .title: return "Title"
         case .addedAt: return "Date Added"
+        case .releaseDate: return "Release Date"
         case .year: return "Year"
         case .ratingImdb: return "Rating"
         case .runtime: return "Runtime"
@@ -89,7 +91,7 @@ enum CatalogSortKey: String, CaseIterable, Codable, Hashable {
         switch self {
         case .title, .author, .narrator, .series:
             return order == .asc ? "A–Z" : "Z–A"
-        case .year, .addedAt:
+        case .releaseDate, .year, .addedAt:
             return order == .asc ? "Oldest" : "Newest"
         case .runtime:
             return order == .asc ? "Shortest" : "Longest"
@@ -104,7 +106,7 @@ enum CatalogSortKey: String, CaseIterable, Codable, Hashable {
         case .audiobook:
             return [.title, .author, .narrator, .series, .addedAt, .runtime]
         case .movie, .series, .mixed:
-            return [.title, .addedAt, .year, .ratingImdb, .runtime, .resolution]
+            return [.title, .addedAt, .releaseDate, .year, .ratingImdb, .runtime, .resolution]
         }
     }
 }

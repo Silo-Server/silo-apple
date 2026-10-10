@@ -9,6 +9,19 @@ import XCTest
 /// to serve the routes at all being reported as a generic failure.
 final class SettingValuesAPITests: XCTestCase {
 
+    /// XCTest creates one instance per test method, so every test gets its
+    /// own routes and request records.
+    private let stub = StubURLProtocol.Handler()
+
+    override func tearDown() {
+        XCTAssertEqual(
+            stub.unmatched.map { "\($0.method) \($0.path)" },
+            [],
+            "every request a test sends must hit an explicit route"
+        )
+        super.tearDown()
+    }
+
     // MARK: - Value round-trips
 
     func testEveryValueShapeRoundTripsThroughSettingJSONValue() throws {
@@ -381,17 +394,18 @@ final class SettingValuesAPITests: XCTestCase {
     // MARK: - Requests over the wire
 
     func testGetContractCapabilitiesReportsUpgradeRequiredOnAV1OnlyServer() async throws {
-        SettingsStubProtocol.reset(mode: .serverTooOld)
+        // The chi router's own 404: plain text, no Silo error envelope.
+        stub.route(StubURLProtocol.any) { _ in .text("404 page not found\n", status: 404) }
         let api = await makeStubbedAPI()
 
         let result = await api.getContractCapabilities()
         XCTAssertEqual(result, .serverUpgradeRequired)
         XCTAssertNil(result.capabilities)
-        XCTAssertEqual(SettingsStubProtocol.state().lastRequest?.path, "/api/v2/settings/contract/capabilities")
+        XCTAssertEqual(stub.requests.last?.path, "/api/v2/settings/contract/capabilities")
     }
 
     func testGetContractCapabilitiesReturnsCapabilitiesOnACurrentServer() async throws {
-        SettingsStubProtocol.reset(mode: .normal)
+        routeSettingsServer()
         let api = await makeStubbedAPI()
 
         guard case .available(let capabilities) = await api.getContractCapabilities() else {
@@ -399,13 +413,13 @@ final class SettingValuesAPITests: XCTestCase {
         }
         XCTAssertEqual(capabilities.manifestRevision, SettingKey.revision)
         XCTAssertTrue(capabilities.supportsAtomicShortcuts)
-        let recorded = try XCTUnwrap(SettingsStubProtocol.state().lastRequest)
+        let recorded = try XCTUnwrap(stub.requests.last)
         XCTAssertEqual(recorded.method, "GET")
         XCTAssertEqual(recorded.path, "/api/v2/settings/contract/capabilities")
     }
 
     func testGetContractCapabilitiesRequiresTheMinimumServerRevision() async throws {
-        SettingsStubProtocol.reset(mode: .belowMinimumContractRevision)
+        routeSettingsServer(manifestRevision: SettingKey.minimumServerRevision - 1)
         let api = await makeStubbedAPI()
 
         let result = await api.getContractCapabilities()
@@ -424,7 +438,7 @@ final class SettingValuesAPITests: XCTestCase {
         let newest = SettingKey.allCases.filter { $0.introducedIn == latestKeyRevision }
         XCTAssertFalse(newest.isEmpty)
 
-        SettingsStubProtocol.reset(mode: .pinnedToRevision(latestKeyRevision - 1))
+        routeSettingsServer(manifestRevision: latestKeyRevision - 1)
         let api = await makeStubbedAPI()
 
         guard case .available(let capabilities) = await api.getContractCapabilities() else {
@@ -448,14 +462,21 @@ final class SettingValuesAPITests: XCTestCase {
             ("unsupported", false, .serverUpgradeRequired),
         ]
         for (state, allowed, expected) in cases {
-            SettingsStubProtocol.reset(mode: .capabilityState(state, allowed: allowed))
+            stub.reset()
+            stub.route(StubURLProtocol.method("GET", path: SettingsWire.capabilities)) { _ in
+                .json(SettingsWire.capabilitiesBody(state: state, allowed: allowed))
+            }
+            routeSettingsServer()
             let result = await api.getContractCapabilities()
             XCTAssertEqual(result, expected, "state \(state), allowed \(allowed)")
         }
     }
 
     func testGetContractCapabilitiesMapsAProblemToAFailure() async throws {
-        SettingsStubProtocol.reset(mode: .problem(status: 500))
+        stub.route(StubURLProtocol.method("GET", path: SettingsWire.capabilities)) { _ in
+            .text(SettingsWire.internalErrorProblem(status: 500), status: 500, contentType: "application/problem+json")
+        }
+        routeSettingsServer()
         let api = await makeStubbedAPI()
 
         guard case .failed(.server(let status, let code, _)) = await api.getContractCapabilities() else {
@@ -466,7 +487,7 @@ final class SettingValuesAPITests: XCTestCase {
     }
 
     func testGetContractCapabilitiesRefusesAnIdentityThatIsNoLongerCurrent() async throws {
-        SettingsStubProtocol.reset(mode: .normal)
+        routeSettingsServer()
         let api = await makeStubbedAPI()
         let stale = HTTPRequestIdentity(
             serverId: "server-a",
@@ -478,7 +499,7 @@ final class SettingValuesAPITests: XCTestCase {
         guard case .failed = await api.getContractCapabilities(requestIdentity: stale) else {
             return XCTFail("a probe for a replaced profile must not report an answer")
         }
-        XCTAssertNil(SettingsStubProtocol.state().lastRequest, "the request must not be sent at all")
+        XCTAssertTrue(stub.requests.isEmpty, "the request must not be sent at all")
 
         let current = HTTPRequestIdentity(
             serverId: "server-a",
@@ -493,7 +514,7 @@ final class SettingValuesAPITests: XCTestCase {
     }
 
     func testCapturedSettingsRequestRefusesToFollowANewActiveIdentity() async throws {
-        SettingsStubProtocol.reset(mode: .normal)
+        routeSettingsServer()
         let suiteName = "settings-identity-race-\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         addTeardownBlock {
@@ -509,9 +530,7 @@ final class SettingValuesAPITests: XCTestCase {
         await tokenStore.switchActiveServer(serverId: "server-a")
         await tokenStore.setServerUrl("http://settings-test.invalid")
         await tokenStore.setProfileId("profile-a")
-        let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [SettingsStubProtocol.self]
-        let http = HTTPClient(session: URLSession(configuration: config), tokenStore: tokenStore)
+        let http = HTTPClient(session: stub.makeSession(), tokenStore: tokenStore)
         let captured = HTTPRequestIdentity(
             serverId: "server-a",
             serverURL: "http://settings-test.invalid",
@@ -533,11 +552,11 @@ final class SettingValuesAPITests: XCTestCase {
         } catch HTTPError.requestIdentityChanged {
             // Expected: no URL request was built or sent.
         }
-        XCTAssertNil(SettingsStubProtocol.state().lastRequest)
+        XCTAssertTrue(stub.requests.isEmpty)
     }
 
     func testConcurrentScopedUnauthorizedResponsesShareOneRotatingRefresh() async throws {
-        SettingsStubProtocol.reset(mode: .concurrentScopedRefresh)
+        routeConcurrentScopedRefresh()
         let suiteName = "settings-refresh-single-flight-\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         addTeardownBlock {
@@ -561,9 +580,7 @@ final class SettingValuesAPITests: XCTestCase {
         await tokenStore.setProfileId(identity.profileId)
         await tokenStore.saveTokens(accessToken: "fake", refreshToken: "dummy")
 
-        let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [SettingsStubProtocol.self]
-        let http = HTTPClient(session: URLSession(configuration: config), tokenStore: tokenStore)
+        let http = HTTPClient(session: stub.makeSession(), tokenStore: tokenStore)
         async let first = http.requestData(
             method: "GET",
             path: "/api/v2/settings/contract/capabilities",
@@ -579,9 +596,8 @@ final class SettingValuesAPITests: XCTestCase {
 
         XCTAssertEqual(firstResponse.statusCode, 200)
         XCTAssertEqual(secondResponse.statusCode, 200)
-        let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
-        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 4)
+        XCTAssertEqual(requestCount(SettingsWire.refresh), 1)
+        XCTAssertEqual(requestCount(SettingsWire.capabilities), 4)
         let accessToken = await tokenStore.getAccessToken()
         let refreshToken = await tokenStore.getRefreshToken()
         XCTAssertEqual(accessToken, "placeholder")
@@ -589,7 +605,7 @@ final class SettingValuesAPITests: XCTestCase {
     }
 
     func testScopedAndOrdinaryUnauthorizedResponsesShareAccountRefreshFlight() async throws {
-        SettingsStubProtocol.reset(mode: .mixedRefreshScopedWins)
+        routeMixedRefreshFlight(refresh: .json(SettingsWire.rotatedTokens))
         let suiteName = "settings-refresh-mixed-flight-\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         addTeardownBlock {
@@ -613,9 +629,7 @@ final class SettingValuesAPITests: XCTestCase {
         await tokenStore.setProfileId(identity.profileId)
         await tokenStore.saveTokens(accessToken: "fake", refreshToken: "dummy")
 
-        let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [SettingsStubProtocol.self]
-        let http = HTTPClient(session: URLSession(configuration: config), tokenStore: tokenStore)
+        let http = HTTPClient(session: stub.makeSession(), tokenStore: tokenStore)
         let sessionExpiredCount = LockedCounter()
         let observer = NotificationCenter.default.addObserver(
             forName: .siloSessionExpired,
@@ -642,9 +656,8 @@ final class SettingValuesAPITests: XCTestCase {
 
         XCTAssertEqual(scopedResponse.statusCode, 200)
         XCTAssertEqual(ordinaryResponse.statusCode, 200)
-        let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
-        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 4)
+        XCTAssertEqual(requestCount(SettingsWire.refresh), 1)
+        XCTAssertEqual(requestCount(SettingsWire.capabilities), 4)
         let accessToken = await tokenStore.getAccessToken()
         let refreshToken = await tokenStore.getRefreshToken()
         XCTAssertEqual(accessToken, "placeholder")
@@ -653,7 +666,8 @@ final class SettingValuesAPITests: XCTestCase {
     }
 
     func testFailedScopedRefreshExpiresOrdinaryJoinerWithoutAnonymousRetry() async throws {
-        SettingsStubProtocol.reset(mode: .mixedRefreshScopedFailure)
+        let release = StubURLProtocol.Gate()
+        routeMixedRefreshFlight(refresh: .json(SettingsWire.invalidToken, status: 401), heldBy: release)
         let suiteName = "settings-refresh-mixed-failure-\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         addTeardownBlock {
@@ -677,15 +691,14 @@ final class SettingValuesAPITests: XCTestCase {
         await tokenStore.setProfileId(identity.profileId)
         await tokenStore.saveTokens(accessToken: "fake", refreshToken: "dummy")
 
-        let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [SettingsStubProtocol.self]
-        let ordinaryJoinCount = LockedCounter()
+        let joined = expectation(description: "ordinary 401 joined the scoped refresh")
+        joined.assertForOverFulfill = false
         let http = HTTPClient(
-            session: URLSession(configuration: config),
+            session: stub.makeSession(),
             tokenStore: tokenStore,
             refreshFlightJoinObserver: { kind in
                 if case .ordinary = kind {
-                    ordinaryJoinCount.increment()
+                    joined.fulfill()
                 }
             }
         )
@@ -711,11 +724,8 @@ final class SettingValuesAPITests: XCTestCase {
             headers: ["X-Test-Refresh-Flow": "ordinary"]
         )
 
-        defer { SettingsStubProtocol.releaseMixedRefresh() }
-        guard await waitForCounter(ordinaryJoinCount, atLeast: 1) else {
-            return XCTFail("the ordinary 401 never joined the scoped-owned refresh flight")
-        }
-        SettingsStubProtocol.releaseMixedRefresh()
+        await fulfillment(of: [joined], timeout: 2)
+        await release.open()
 
         do {
             _ = try await ordinary
@@ -730,9 +740,8 @@ final class SettingValuesAPITests: XCTestCase {
             XCTAssertEqual((error as? HTTPError)?.statusCode, 401)
         }
 
-        let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
-        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 2)
+        XCTAssertEqual(requestCount(SettingsWire.refresh), 1)
+        XCTAssertEqual(requestCount(SettingsWire.capabilities), 2)
         let accessToken = await tokenStore.getAccessToken()
         let refreshToken = await tokenStore.getRefreshToken()
         XCTAssertNil(accessToken)
@@ -753,7 +762,8 @@ final class SettingValuesAPITests: XCTestCase {
         defer { NotificationCenter.default.removeObserver(observer) }
 
         for status in [429, 503] {
-            SettingsStubProtocol.reset(mode: .mixedRefreshScopedTransientFailure(status: status))
+            stub.reset()
+            routeMixedRefreshFlight(refresh: .json(SettingsWire.temporarilyUnavailable, status: status))
             async let scoped: HTTPRawResponse = harness.http.requestData(
                 method: "GET",
                 path: "/api/v2/settings/contract/capabilities",
@@ -779,9 +789,8 @@ final class SettingValuesAPITests: XCTestCase {
                 XCTAssertEqual((error as? HTTPError)?.statusCode, 401)
             }
 
-            let state = SettingsStubProtocol.state()
-            XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
-            XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 2)
+            XCTAssertEqual(requestCount(SettingsWire.refresh), 1)
+            XCTAssertEqual(requestCount(SettingsWire.capabilities), 2)
             let accessToken = await harness.tokenStore.getAccessToken()
             let refreshToken = await harness.tokenStore.getRefreshToken()
             XCTAssertEqual(accessToken, "fake", "HTTP \(status) must preserve the access token")
@@ -791,7 +800,8 @@ final class SettingValuesAPITests: XCTestCase {
 
         // A later 401 wave must be able to submit the preserved refresh token
         // and rotate the account credentials normally.
-        SettingsStubProtocol.reset(mode: .mixedRefreshScopedWins)
+        stub.reset()
+        routeMixedRefreshFlight(refresh: .json(SettingsWire.rotatedTokens))
         let retried = try await harness.http.requestData(
             method: "GET",
             path: "/api/v2/settings/contract/capabilities",
@@ -807,7 +817,7 @@ final class SettingValuesAPITests: XCTestCase {
     }
 
     func testMalformedSuccessfulScopedRefreshDoesNotMarkServerUnreachable() async throws {
-        SettingsStubProtocol.reset(mode: .mixedRefreshScopedMalformedSuccess)
+        routeMixedRefreshFlight(refresh: .json(SettingsWire.malformedTokens))
         let harness = try await makeRefreshHarness(testName: "MalformedRefresh")
         let sessionExpiredCount = LockedCounter()
         let observer = NotificationCenter.default.addObserver(
@@ -877,7 +887,7 @@ final class SettingValuesAPITests: XCTestCase {
     }
 
     func testOrdinaryUnauthorizedResponseCannotRefreshAccountSelectedAfterRequestWasSent() async throws {
-        SettingsStubProtocol.reset(mode: .ordinaryUnauthorizedDelayed)
+        let release = routeHeldOrdinaryUnauthorized()
         let harness = try await makeRefreshHarness(testName: "UnauthorizedServerSwitch")
 
         let requestTask = Task {
@@ -886,8 +896,13 @@ final class SettingValuesAPITests: XCTestCase {
                 path: "/api/v2/settings/contract/capabilities"
             )
         }
-        guard await waitForPendingOrdinaryUnauthorized() else {
-            SettingsStubProtocol.releaseOrdinaryUnauthorized()
+        do {
+            try await stub.waitForRequest(
+                timeout: .seconds(2),
+                where: StubURLProtocol.method("GET", path: SettingsWire.capabilities)
+            )
+        } catch {
+            await release.open()
             return XCTFail("ordinary request did not reach the delayed 401")
         }
 
@@ -900,7 +915,7 @@ final class SettingValuesAPITests: XCTestCase {
             accessToken: "example",
             refreshToken: "sample"
         )
-        SettingsStubProtocol.releaseOrdinaryUnauthorized()
+        await release.open()
 
         do {
             _ = try await requestTask.value
@@ -912,13 +927,12 @@ final class SettingValuesAPITests: XCTestCase {
         let refreshToken = await harness.tokenStore.getRefreshToken()
         XCTAssertEqual(accessToken, "example")
         XCTAssertEqual(refreshToken, "sample")
-        let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"] ?? 0, 0)
-        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 1)
+        XCTAssertEqual(requestCount(SettingsWire.refresh), 0)
+        XCTAssertEqual(requestCount(SettingsWire.capabilities), 1)
     }
 
     func testOrdinaryUnauthorizedResponseCannotRefreshSameServerSessionInstalledAfterLogout() async throws {
-        SettingsStubProtocol.reset(mode: .ordinaryUnauthorizedDelayed)
+        let release = routeHeldOrdinaryUnauthorized()
         let harness = try await makeRefreshHarness(testName: "UnauthorizedSameServerRelogin")
 
         let requestTask = Task {
@@ -927,8 +941,13 @@ final class SettingValuesAPITests: XCTestCase {
                 path: "/api/v2/settings/contract/capabilities"
             )
         }
-        guard await waitForPendingOrdinaryUnauthorized() else {
-            SettingsStubProtocol.releaseOrdinaryUnauthorized()
+        do {
+            try await stub.waitForRequest(
+                timeout: .seconds(2),
+                where: StubURLProtocol.method("GET", path: SettingsWire.capabilities)
+            )
+        } catch {
+            await release.open()
             return XCTFail("ordinary request did not reach the delayed 401")
         }
 
@@ -938,7 +957,7 @@ final class SettingValuesAPITests: XCTestCase {
             refreshToken: "redacted"
         )
         await harness.tokenStore.setProfileId(harness.identity.profileId)
-        SettingsStubProtocol.releaseOrdinaryUnauthorized()
+        await release.open()
 
         do {
             _ = try await requestTask.value
@@ -950,13 +969,12 @@ final class SettingValuesAPITests: XCTestCase {
         let refreshToken = await harness.tokenStore.getRefreshToken()
         XCTAssertEqual(accessToken, "placeholder")
         XCTAssertEqual(refreshToken, "redacted")
-        let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"] ?? 0, 0)
-        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 1)
+        XCTAssertEqual(requestCount(SettingsWire.refresh), 0)
+        XCTAssertEqual(requestCount(SettingsWire.capabilities), 1)
     }
 
     func testScopedUnauthorizedResponseCannotRefreshSameServerSessionInstalledAfterLogout() async throws {
-        SettingsStubProtocol.reset(mode: .ordinaryUnauthorizedDelayed)
+        let release = routeHeldOrdinaryUnauthorized()
         let harness = try await makeRefreshHarness(testName: "ScopedUnauthorizedSameServerRelogin")
 
         let requestTask = Task {
@@ -966,8 +984,13 @@ final class SettingValuesAPITests: XCTestCase {
                 requestIdentity: harness.identity
             )
         }
-        guard await waitForPendingOrdinaryUnauthorized() else {
-            SettingsStubProtocol.releaseOrdinaryUnauthorized()
+        do {
+            try await stub.waitForRequest(
+                timeout: .seconds(2),
+                where: StubURLProtocol.method("GET", path: SettingsWire.capabilities)
+            )
+        } catch {
+            await release.open()
             return XCTFail("scoped request did not reach the delayed 401")
         }
 
@@ -977,7 +1000,7 @@ final class SettingValuesAPITests: XCTestCase {
             refreshToken: "redacted"
         )
         await harness.tokenStore.setProfileId(harness.identity.profileId)
-        SettingsStubProtocol.releaseOrdinaryUnauthorized()
+        await release.open()
 
         do {
             _ = try await requestTask.value
@@ -989,13 +1012,12 @@ final class SettingValuesAPITests: XCTestCase {
         let refreshToken = await harness.tokenStore.getRefreshToken()
         XCTAssertEqual(accessToken, "placeholder")
         XCTAssertEqual(refreshToken, "redacted")
-        let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"] ?? 0, 0)
-        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 1)
+        XCTAssertEqual(requestCount(SettingsWire.refresh), 0)
+        XCTAssertEqual(requestCount(SettingsWire.capabilities), 1)
     }
 
     func testOrdinaryUnauthorizedResponseCannotRetryAfterProfileSwitch() async throws {
-        SettingsStubProtocol.reset(mode: .ordinaryUnauthorizedDelayed)
+        let release = routeHeldOrdinaryUnauthorized()
         let harness = try await makeRefreshHarness(testName: "UnauthorizedProfileSwitch")
         await harness.tokenStore.setProfileToken("decoy-token")
 
@@ -1005,14 +1027,19 @@ final class SettingValuesAPITests: XCTestCase {
                 path: "/api/v2/settings/contract/capabilities"
             )
         }
-        guard await waitForPendingOrdinaryUnauthorized() else {
-            SettingsStubProtocol.releaseOrdinaryUnauthorized()
+        do {
+            try await stub.waitForRequest(
+                timeout: .seconds(2),
+                where: StubURLProtocol.method("GET", path: SettingsWire.capabilities)
+            )
+        } catch {
+            await release.open()
             return XCTFail("ordinary request did not reach the delayed 401")
         }
 
         await harness.tokenStore.setProfileId("profile-b")
         await harness.tokenStore.setProfileToken("gateway-token")
-        SettingsStubProtocol.releaseOrdinaryUnauthorized()
+        await release.open()
 
         do {
             _ = try await requestTask.value
@@ -1020,15 +1047,14 @@ final class SettingValuesAPITests: XCTestCase {
         } catch {
             XCTAssertEqual((error as? HTTPError)?.statusCode, 401)
         }
-        let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"] ?? 0, 0)
-        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 1)
-        XCTAssertEqual(state.lastRequest?.header("X-Profile-Id"), "profile-a")
-        XCTAssertEqual(state.lastRequest?.header("X-Profile-Token"), "decoy-token")
+        XCTAssertEqual(requestCount(SettingsWire.refresh), 0)
+        XCTAssertEqual(requestCount(SettingsWire.capabilities), 1)
+        XCTAssertEqual(stub.requests.last?.header("X-Profile-Id"), "profile-a")
+        XCTAssertEqual(stub.requests.last?.header("X-Profile-Token"), "decoy-token")
     }
 
     func testOrdinaryUnauthorizedResponseCannotCrossFromPersistentIntoTemporaryCredentials() async throws {
-        SettingsStubProtocol.reset(mode: .ordinaryUnauthorizedDelayed)
+        let release = routeHeldOrdinaryUnauthorized()
         let harness = try await makeRefreshHarness(testName: "PersistentToTemporary")
         await harness.tokenStore.setProfileToken("test-auth-token")
 
@@ -1038,8 +1064,13 @@ final class SettingValuesAPITests: XCTestCase {
                 path: "/api/v2/settings/contract/capabilities"
             )
         }
-        guard await waitForPendingOrdinaryUnauthorized() else {
-            SettingsStubProtocol.releaseOrdinaryUnauthorized()
+        do {
+            try await stub.waitForRequest(
+                timeout: .seconds(2),
+                where: StubURLProtocol.method("GET", path: SettingsWire.capabilities)
+            )
+        } catch {
+            await release.open()
             return XCTFail("persistent request did not reach the delayed 401")
         }
 
@@ -1054,7 +1085,7 @@ final class SettingValuesAPITests: XCTestCase {
             expiresAt: Date().addingTimeInterval(60)
         )
         await harness.tokenStore.beginTemporaryScope(temporary)
-        SettingsStubProtocol.releaseOrdinaryUnauthorized()
+        await release.open()
 
         do {
             _ = try await requestTask.value
@@ -1066,13 +1097,12 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(current?.credentialGenerationID, temporary.credentialGenerationID)
         XCTAssertEqual(current?.accessToken, "example")
         XCTAssertEqual(current?.refreshToken, "sample")
-        let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"] ?? 0, 0)
-        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 1)
+        XCTAssertEqual(requestCount(SettingsWire.refresh), 0)
+        XCTAssertEqual(requestCount(SettingsWire.capabilities), 1)
     }
 
     func testOrdinaryUnauthorizedResponseCannotCrossFromTemporaryIntoPersistentCredentials() async throws {
-        SettingsStubProtocol.reset(mode: .ordinaryUnauthorizedDelayed)
+        let release = routeHeldOrdinaryUnauthorized()
         let harness = try await makeRefreshHarness(testName: "TemporaryToPersistent")
         await harness.tokenStore.setProfileToken("test-auth-token")
         let temporary = TemporaryAuthScope(
@@ -1093,13 +1123,18 @@ final class SettingValuesAPITests: XCTestCase {
                 path: "/api/v2/settings/contract/capabilities"
             )
         }
-        guard await waitForPendingOrdinaryUnauthorized() else {
-            SettingsStubProtocol.releaseOrdinaryUnauthorized()
+        do {
+            try await stub.waitForRequest(
+                timeout: .seconds(2),
+                where: StubURLProtocol.method("GET", path: SettingsWire.capabilities)
+            )
+        } catch {
+            await release.open()
             return XCTFail("temporary request did not reach the delayed 401")
         }
 
         _ = await harness.tokenStore.endTemporaryScope()
-        SettingsStubProtocol.releaseOrdinaryUnauthorized()
+        await release.open()
 
         do {
             _ = try await requestTask.value
@@ -1111,13 +1146,12 @@ final class SettingValuesAPITests: XCTestCase {
         let refreshToken = await harness.tokenStore.getRefreshToken()
         XCTAssertEqual(accessToken, "fake")
         XCTAssertEqual(refreshToken, "dummy")
-        let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"] ?? 0, 0)
-        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 1)
+        XCTAssertEqual(requestCount(SettingsWire.refresh), 0)
+        XCTAssertEqual(requestCount(SettingsWire.capabilities), 1)
     }
 
     func testRejectedTemporaryGenerationRefreshesAndExpiresOnlyOnce() async throws {
-        SettingsStubProtocol.reset(mode: .temporaryRefreshRejected)
+        routeRejectedRefresh()
         let harness = try await makeRefreshHarness(testName: "RejectedTemporaryGeneration")
         let temporary = TemporaryAuthScope(
             serverId: harness.identity.serverId,
@@ -1156,9 +1190,8 @@ final class SettingValuesAPITests: XCTestCase {
             }
         }
 
-        let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
-        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 2)
+        XCTAssertEqual(requestCount(SettingsWire.refresh), 1)
+        XCTAssertEqual(requestCount(SettingsWire.capabilities), 2)
         XCTAssertEqual(expiryCount.value, 1)
         let current = await harness.tokenStore.getTemporaryScope()
         XCTAssertEqual(current?.credentialGenerationID, temporary.credentialGenerationID)
@@ -1175,7 +1208,7 @@ final class SettingValuesAPITests: XCTestCase {
     }
 
     func testRejectedTemporaryScopedRefreshPostsTemporaryExpiryNotification() async throws {
-        SettingsStubProtocol.reset(mode: .temporaryRefreshRejected)
+        routeRejectedRefresh()
         let harness = try await makeRefreshHarness(testName: "RejectedTemporaryScopedGeneration")
         let temporary = TemporaryAuthScope(
             serverId: harness.identity.serverId,
@@ -1224,9 +1257,8 @@ final class SettingValuesAPITests: XCTestCase {
             XCTAssertEqual((error as? HTTPError)?.statusCode, 401)
         }
 
-        let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
-        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 1)
+        XCTAssertEqual(requestCount(SettingsWire.refresh), 1)
+        XCTAssertEqual(requestCount(SettingsWire.capabilities), 1)
         XCTAssertEqual(temporaryExpiryCount.value, 1)
         XCTAssertEqual(persistentExpiryCount.value, 0)
         XCTAssertEqual(expiryEvents.values, [SessionExpiryEvent(
@@ -1240,7 +1272,7 @@ final class SettingValuesAPITests: XCTestCase {
     }
 
     func testSuccessfulTemporaryScopedRefreshRotatesOnlyTemporaryGeneration() async throws {
-        SettingsStubProtocol.reset(mode: .mixedRefreshScopedWins)
+        routeMixedRefreshFlight(refresh: .json(SettingsWire.rotatedTokens))
         let harness = try await makeRefreshHarness(testName: "SuccessfulTemporaryScopedGeneration")
         let temporary = TemporaryAuthScope(
             serverId: harness.identity.serverId,
@@ -1273,13 +1305,12 @@ final class SettingValuesAPITests: XCTestCase {
         let persistentRefresh = await harness.tokenStore.getRefreshToken()
         XCTAssertEqual(persistentAccess, "fake")
         XCTAssertEqual(persistentRefresh, "dummy")
-        let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
-        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 2)
+        XCTAssertEqual(requestCount(SettingsWire.refresh), 1)
+        XCTAssertEqual(requestCount(SettingsWire.capabilities), 2)
     }
 
     func testPersistentExpiryEventIsRejectedAfterSameServerSessionReplacement() async throws {
-        SettingsStubProtocol.reset(mode: .normal)
+        routeSettingsServer()
         let harness = try await makeRefreshHarness(testName: "PersistentExpiryEpoch")
         let accountValue = await harness.tokenStore.refreshAccountIdentity()
         let account = try XCTUnwrap(accountValue)
@@ -1307,7 +1338,7 @@ final class SettingValuesAPITests: XCTestCase {
     }
 
     func testTemporaryExpiryTeardownCannotRemoveReplacementAfterConsumerValidation() async throws {
-        SettingsStubProtocol.reset(mode: .normal)
+        routeSettingsServer()
         let harness = try await makeRefreshHarness(testName: "TemporaryExpiryReplacement")
         let rejected = TemporaryAuthScope(
             serverId: harness.identity.serverId,
@@ -1363,7 +1394,7 @@ final class SettingValuesAPITests: XCTestCase {
     }
 
     func testTemporaryScopeTeardownDistinguishesAbsenceFromReplacementGeneration() async throws {
-        SettingsStubProtocol.reset(mode: .normal)
+        routeSettingsServer()
         let harness = try await makeRefreshHarness(testName: "TemporaryScopeEndResult")
         let ending = TemporaryAuthScope(
             serverId: harness.identity.serverId,
@@ -1494,13 +1525,11 @@ final class SettingValuesAPITests: XCTestCase {
     }
 
     func testReplacementCancellationWaitsForOldEndBeforeStartingNewGenerationRequest() async throws {
-        SettingsStubProtocol.reset(mode: .normal)
+        routeSettingsServer()
         let harness = try await makeRefreshHarness(testName: "SerializedIdentityCancellation")
         let barrier = SerializedCancellationPassBarrier()
-        let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [SettingsStubProtocol.self]
         let http = HTTPClient(
-            session: URLSession(configuration: config),
+            session: stub.makeSession(),
             tokenStore: harness.tokenStore,
             cancellationPassBarrier: { await barrier.enter() }
         )
@@ -1527,7 +1556,7 @@ final class SettingValuesAPITests: XCTestCase {
             "replacement cancellation must queue instead of overlapping the old enumeration"
         )
         XCTAssertEqual(
-            SettingsStubProtocol.state().requestCounts["/api/v2/settings/contract/capabilities"] ?? 0,
+            requestCount(SettingsWire.capabilities),
             0,
             "replacement work must not start while an old cancellation can still enumerate it"
         )
@@ -1537,28 +1566,20 @@ final class SettingValuesAPITests: XCTestCase {
         guard await waitForCancellationPass(barrier, count: 2) else {
             return XCTFail("replacement cancellation pass did not start after the old pass")
         }
-        XCTAssertEqual(
-            SettingsStubProtocol.state().requestCounts["/api/v2/settings/contract/capabilities"] ?? 0,
-            0
-        )
+        XCTAssertEqual(requestCount(SettingsWire.capabilities), 0)
         await barrier.release(pass: 2)
 
         let response = try await replacement.value
         XCTAssertEqual(response.statusCode, 200)
-        XCTAssertEqual(
-            SettingsStubProtocol.state().requestCounts["/api/v2/settings/contract/capabilities"],
-            1
-        )
+        XCTAssertEqual(requestCount(SettingsWire.capabilities), 1)
     }
 
     func testScopedRefreshCannotRetryAsSameServerReplacementInstalledAfterRefresh() async throws {
-        SettingsStubProtocol.reset(mode: .mixedRefreshScopedWins)
+        routeMixedRefreshFlight(refresh: .json(SettingsWire.rotatedTokens))
         let harness = try await makeRefreshHarness(testName: "ScopedPostRefreshReplacement")
         let barrier = SerializedCancellationPassBarrier()
-        let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [SettingsStubProtocol.self]
         let http = HTTPClient(
-            session: URLSession(configuration: config),
+            session: stub.makeSession(),
             tokenStore: harness.tokenStore,
             scopedRefreshRetryBarrier: { await barrier.enter() }
         )
@@ -1592,13 +1613,12 @@ final class SettingValuesAPITests: XCTestCase {
         let replacementRefresh = await harness.tokenStore.getRefreshToken()
         XCTAssertEqual(replacementAccess, "placeholder")
         XCTAssertEqual(replacementRefresh, "redacted")
-        let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
-        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 1)
+        XCTAssertEqual(requestCount(SettingsWire.refresh), 1)
+        XCTAssertEqual(requestCount(SettingsWire.capabilities), 1)
     }
 
     func testCancelledTemporaryReplacementRestoresPriorOwnerGeneration() async throws {
-        SettingsStubProtocol.reset(mode: .normal)
+        routeSettingsServer()
         let harness = try await makeRefreshHarness(testName: "TemporaryActivationRollback")
         let previous = TemporaryAuthScope(
             serverId: harness.identity.serverId,
@@ -1652,13 +1672,11 @@ final class SettingValuesAPITests: XCTestCase {
     }
 
     func testRequestStartingBetweenCancellationSessionSnapshotsIsRejected() async throws {
-        SettingsStubProtocol.reset(mode: .normal)
+        routeSettingsServer()
         let harness = try await makeRefreshHarness(testName: "CancellationSnapshotGate")
         let barrier = SerializedCancellationPassBarrier()
-        let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [SettingsStubProtocol.self]
         let http = HTTPClient(
-            session: URLSession(configuration: config),
+            session: stub.makeSession(),
             tokenStore: harness.tokenStore,
             cancellationSessionBarrier: { index in
                 if index == 1 { await barrier.enter() }
@@ -1680,22 +1698,17 @@ final class SettingValuesAPITests: XCTestCase {
         } catch {
             XCTFail("unexpected error: \(error)")
         }
-        XCTAssertEqual(
-            SettingsStubProtocol.state().requestCounts["/api/v2/settings/contract/capabilities"] ?? 0,
-            0
-        )
+        XCTAssertEqual(requestCount(SettingsWire.capabilities), 0)
         await barrier.release(pass: 1)
         await cancellation.value
     }
 
     func testPublishedServerHydrationWaitsUntilCancellationAndTransitionAreOpen() async throws {
-        SettingsStubProtocol.reset(mode: .normal)
+        routeSettingsServer()
         let harness = try await makeRefreshHarness(testName: "PublishedServerHydrationGate")
         let cancellationBarrier = SerializedCancellationPassBarrier()
-        let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [SettingsStubProtocol.self]
         let http = HTTPClient(
-            session: URLSession(configuration: config),
+            session: stub.makeSession(),
             tokenStore: harness.tokenStore,
             cancellationPassBarrier: { await cancellationBarrier.enter() }
         )
@@ -1744,7 +1757,7 @@ final class SettingValuesAPITests: XCTestCase {
     }
 
     func testCancelledDispatchOpenWaiterPerformsNoHydrationWork() async throws {
-        SettingsStubProtocol.reset(mode: .normal)
+        routeSettingsServer()
         let harness = try await makeRefreshHarness(testName: "CancelledHydrationWaiter")
         guard let lease = await harness.http.beginIdentityTransition() else {
             return XCTFail("identity transition was unexpectedly cancelled")
@@ -1774,13 +1787,11 @@ final class SettingValuesAPITests: XCTestCase {
     }
 
     func testRequestCaptureCannotSurviveCompletedIdentityRetarget() async throws {
-        SettingsStubProtocol.reset(mode: .normal)
+        routeSettingsServer()
         let harness = try await makeRefreshHarness(testName: "CaptureDuringRetarget")
         let barrier = SerializedCancellationPassBarrier()
-        let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [SettingsStubProtocol.self]
         let http = HTTPClient(
-            session: URLSession(configuration: config),
+            session: stub.makeSession(),
             tokenStore: harness.tokenStore,
             requestCaptureBarrier: { await barrier.enter() }
         )
@@ -1813,17 +1824,15 @@ final class SettingValuesAPITests: XCTestCase {
         } catch {
             XCTFail("unexpected error: \(error)")
         }
-        XCTAssertNil(SettingsStubProtocol.state().lastRequest)
+        XCTAssertTrue(stub.requests.isEmpty)
     }
 
     func testCompletedResponseIsRejectedWhenIdentityTransitionsBeforeDelivery() async throws {
-        SettingsStubProtocol.reset(mode: .normal)
+        routeSettingsServer()
         let harness = try await makeRefreshHarness(testName: "ResponseDuringTransition")
         let barrier = SerializedCancellationPassBarrier()
-        let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [SettingsStubProtocol.self]
         let http = HTTPClient(
-            session: URLSession(configuration: config),
+            session: stub.makeSession(),
             tokenStore: harness.tokenStore,
             responseReceivedBarrier: { await barrier.enter() }
         )
@@ -1852,14 +1861,11 @@ final class SettingValuesAPITests: XCTestCase {
         } catch {
             XCTFail("unexpected error: \(error)")
         }
-        XCTAssertEqual(
-            SettingsStubProtocol.state().requestCounts["/api/v2/settings/contract/capabilities"],
-            1
-        )
+        XCTAssertEqual(requestCount(SettingsWire.capabilities), 1)
     }
 
     func testCandidateProbeDoesNotChangeActiveServerReachability() async throws {
-        SettingsStubProtocol.reset(mode: .normal)
+        routeSettingsServer()
         let harness = try await makeRefreshHarness(testName: "CandidateReachabilityIsolation")
         await MainActor.run { ConnectionMonitor.shared.noteServerUnreachable() }
 
@@ -1880,7 +1886,7 @@ final class SettingValuesAPITests: XCTestCase {
     }
 
     func testCancelledQueuedSessionInstallNeverAcquiresLeaseOrWritesTokens() async throws {
-        SettingsStubProtocol.reset(mode: .normal)
+        routeSettingsServer()
         let harness = try await makeRefreshHarness(testName: "CancelledQueuedInstall")
         guard let blockingLease = await harness.http.beginIdentityTransition() else {
             return XCTFail("blocking transition was unexpectedly cancelled")
@@ -1921,15 +1927,13 @@ final class SettingValuesAPITests: XCTestCase {
     }
 
     func testAccountBoundLogoutCannotDispatchAfterServerSwitch() async throws {
-        SettingsStubProtocol.reset(mode: .normal)
+        routeSettingsServer()
         let harness = try await makeRefreshHarness(testName: "BoundLogoutServerSwitch")
         let accountValue = await harness.tokenStore.refreshAccountIdentity()
         let account = try XCTUnwrap(accountValue)
         let barrier = SerializedCancellationPassBarrier()
-        let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [SettingsStubProtocol.self]
         let http = HTTPClient(
-            session: URLSession(configuration: config),
+            session: stub.makeSession(),
             tokenStore: harness.tokenStore,
             requestCaptureBarrier: { await barrier.enter() }
         )
@@ -1960,13 +1964,13 @@ final class SettingValuesAPITests: XCTestCase {
         } catch {
             XCTFail("unexpected error: \(error)")
         }
-        XCTAssertEqual(SettingsStubProtocol.state().requestCounts["/api/v2/auth/logout"] ?? 0, 0)
+        XCTAssertEqual(requestCount(SettingsWire.logout), 0)
         let currentAccess = await harness.tokenStore.getAccessToken()
         XCTAssertEqual(currentAccess, "example")
     }
 
     func testOrdinaryRefreshLateSuccessCannotWriteAcrossServerSwitch() async throws {
-        SettingsStubProtocol.reset(mode: .ordinaryRefreshDelayed)
+        let held = routeHeldOrdinaryRefresh()
         let harness = try await makeRefreshHarness(testName: "RefreshServerSwitch")
         let sessionExpiredCount = LockedCounter()
         let observer = NotificationCenter.default.addObserver(
@@ -1984,8 +1988,13 @@ final class SettingValuesAPITests: XCTestCase {
                 path: "/api/v2/settings/contract/capabilities"
             )
         }
-        guard await waitForPendingOrdinaryRefresh() else {
-            SettingsStubProtocol.releaseOrdinaryRefresh(status: 503)
+        do {
+            try await stub.waitForRequest(
+                timeout: .seconds(2),
+                where: StubURLProtocol.method("POST", path: SettingsWire.refresh)
+            )
+        } catch {
+            await held.release(status: 503)
             return XCTFail("ordinary refresh did not reach the delayed response")
         }
 
@@ -1996,7 +2005,7 @@ final class SettingValuesAPITests: XCTestCase {
             accessToken: "example",
             refreshToken: "sample"
         )
-        SettingsStubProtocol.releaseOrdinaryRefresh(status: 200)
+        await held.release(status: 200)
 
         do {
             _ = try await requestTask.value
@@ -2009,13 +2018,12 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(serverBAccess, "example")
         XCTAssertEqual(serverBRefresh, "sample")
         XCTAssertEqual(sessionExpiredCount.value, 0)
-        let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
-        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 1)
+        XCTAssertEqual(requestCount(SettingsWire.refresh), 1)
+        XCTAssertEqual(requestCount(SettingsWire.capabilities), 1)
     }
 
     func testOrdinaryRefreshLateSuccessCannotRestoreSignedOutSession() async throws {
-        SettingsStubProtocol.reset(mode: .ordinaryRefreshDelayed)
+        let held = routeHeldOrdinaryRefresh()
         let harness = try await makeRefreshHarness(testName: "RefreshSignOut")
         let sessionExpiredCount = LockedCounter()
         let observer = NotificationCenter.default.addObserver(
@@ -2033,13 +2041,18 @@ final class SettingValuesAPITests: XCTestCase {
                 path: "/api/v2/settings/contract/capabilities"
             )
         }
-        guard await waitForPendingOrdinaryRefresh() else {
-            SettingsStubProtocol.releaseOrdinaryRefresh(status: 503)
+        do {
+            try await stub.waitForRequest(
+                timeout: .seconds(2),
+                where: StubURLProtocol.method("POST", path: SettingsWire.refresh)
+            )
+        } catch {
+            await held.release(status: 503)
             return XCTFail("ordinary refresh did not reach the delayed response")
         }
 
         await harness.tokenStore.clearTokens()
-        SettingsStubProtocol.releaseOrdinaryRefresh(status: 200)
+        await held.release(status: 200)
 
         do {
             _ = try await requestTask.value
@@ -2055,7 +2068,7 @@ final class SettingValuesAPITests: XCTestCase {
     }
 
     func testOrdinaryRejectedRefreshCannotClearNewerCredentials() async throws {
-        SettingsStubProtocol.reset(mode: .ordinaryRefreshDelayed)
+        let held = routeHeldOrdinaryRefresh()
         let harness = try await makeRefreshHarness(testName: "RefreshNewerToken")
         let sessionExpiredCount = LockedCounter()
         let observer = NotificationCenter.default.addObserver(
@@ -2073,8 +2086,13 @@ final class SettingValuesAPITests: XCTestCase {
                 path: "/api/v2/settings/contract/capabilities"
             )
         }
-        guard await waitForPendingOrdinaryRefresh() else {
-            SettingsStubProtocol.releaseOrdinaryRefresh(status: 503)
+        do {
+            try await stub.waitForRequest(
+                timeout: .seconds(2),
+                where: StubURLProtocol.method("POST", path: SettingsWire.refresh)
+            )
+        } catch {
+            await held.release(status: 503)
             return XCTFail("ordinary refresh did not reach the delayed response")
         }
 
@@ -2082,7 +2100,7 @@ final class SettingValuesAPITests: XCTestCase {
             accessToken: "placeholder",
             refreshToken: "redacted"
         )
-        SettingsStubProtocol.releaseOrdinaryRefresh(status: 403)
+        await held.release(status: 403)
 
         do {
             _ = try await requestTask.value
@@ -2095,9 +2113,8 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(accessToken, "placeholder")
         XCTAssertEqual(refreshToken, "redacted")
         XCTAssertEqual(sessionExpiredCount.value, 0)
-        let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
-        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 1)
+        XCTAssertEqual(requestCount(SettingsWire.refresh), 1)
+        XCTAssertEqual(requestCount(SettingsWire.capabilities), 1)
     }
 
     func testScopedRefreshPersistsServerAccountRotationAcrossProfileChange() async throws {
@@ -2291,7 +2308,7 @@ final class SettingValuesAPITests: XCTestCase {
     }
 
     func testGetEffectiveValuesSendsRepeatedQueryParams() async throws {
-        SettingsStubProtocol.reset(mode: .normal)
+        routeSettingsServer()
         let api = await makeStubbedAPI()
 
         let response = try await api.getEffectiveValues(
@@ -2302,7 +2319,7 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(response.revision, SettingKey.revision)
         XCTAssertEqual(response.value(for: .playbackAutoPlayNext)?.value, .bool(true))
 
-        let recorded = try XCTUnwrap(SettingsStubProtocol.state().lastRequest)
+        let recorded = try XCTUnwrap(stub.requests.last)
         XCTAssertEqual(recorded.method, "GET")
         XCTAssertEqual(recorded.path, "/api/v2/settings/values/effective")
         XCTAssertEqual(recorded.queryItems, [
@@ -2318,7 +2335,7 @@ final class SettingValuesAPITests: XCTestCase {
     }
 
     func testGetEffectiveValuesRejectsARevisionBelowTheMinimum() async throws {
-        SettingsStubProtocol.reset(mode: .belowMinimumContractRevision)
+        routeSettingsServer(manifestRevision: SettingKey.minimumServerRevision - 1)
         let api = await makeStubbedAPI()
 
         do {
@@ -2339,7 +2356,7 @@ final class SettingValuesAPITests: XCTestCase {
         let newest = SettingKey.allCases.filter { $0.introducedIn == latestKeyRevision }
         XCTAssertFalse(newest.isEmpty)
 
-        SettingsStubProtocol.reset(mode: .pinnedToRevision(latestKeyRevision - 1))
+        routeSettingsServer(manifestRevision: latestKeyRevision - 1)
         let api = await makeStubbedAPI()
 
         let response = try await api.getEffectiveValues(keys: [.playbackSubtitleLanguage])
@@ -2354,7 +2371,7 @@ final class SettingValuesAPITests: XCTestCase {
     }
 
     func testGetEffectiveValuesReportsUpgradeRequiredOnAV1OnlyServer() async throws {
-        SettingsStubProtocol.reset(mode: .serverTooOld)
+        stub.route(StubURLProtocol.any) { _ in .text("404 page not found\n", status: 404) }
         let api = await makeStubbedAPI()
 
         do {
@@ -2366,7 +2383,10 @@ final class SettingValuesAPITests: XCTestCase {
     }
 
     func testGetEffectiveValuesMapsAKeyTheServerLacksToUnknownSetting() async throws {
-        SettingsStubProtocol.reset(mode: .unknownKey)
+        stub.route(StubURLProtocol.method("GET", path: SettingsWire.effective)) { _ in
+            .text(SettingsWire.unknownKeyProblem, status: 422, contentType: "application/problem+json")
+        }
+        routeSettingsServer()
         let api = await makeStubbedAPI()
 
         do {
@@ -2381,32 +2401,38 @@ final class SettingValuesAPITests: XCTestCase {
 
     func testGetEffectiveValuesRefusesRowsForAnotherProfileOrRepeatedKeys() async throws {
         let api = await makeStubbedAPI()
-        for mode in [SettingsStubProtocol.Mode.foreignProfileRow, .duplicateKeys] {
-            SettingsStubProtocol.reset(mode: mode)
+        let cases = [
+            ("foreign profile row", SettingsWire.foreignProfileRow(revision: SettingKey.revision)),
+            ("duplicate keys", SettingsWire.duplicateKeys(revision: SettingKey.revision)),
+        ]
+        for (label, body) in cases {
+            stub.reset()
+            stub.route(StubURLProtocol.method("GET", path: SettingsWire.effective)) { _ in .json(body) }
+            routeSettingsServer()
             do {
                 _ = try await api.getEffectiveValues(keys: [.playbackAutoPlayNext])
-                XCTFail("\(mode) must not be applied")
+                XCTFail("\(label) must not be applied")
             } catch let error as SettingsAPIError {
                 guard case .transport = error else {
-                    return XCTFail("expected a refused response for \(mode), got \(error)")
+                    return XCTFail("expected a refused response for \(label), got \(error)")
                 }
             }
         }
     }
 
     func testGetEffectiveValuesOmitsEmptyParams() async throws {
-        SettingsStubProtocol.reset(mode: .normal)
+        routeSettingsServer()
         let api = await makeStubbedAPI()
 
         _ = try await api.getEffectiveValues()
 
-        let recorded = try XCTUnwrap(SettingsStubProtocol.state().lastRequest)
+        let recorded = try XCTUnwrap(stub.requests.last)
         XCTAssertEqual(recorded.queryItems, [], "no keys means every remote definition, not keys=")
         XCTAssertNil(recorded.query["profile_id"], "the household-parent override is never sent")
     }
 
     func testProfileScopedCallWithoutAProfileFailsLocally() async throws {
-        SettingsStubProtocol.reset(mode: .normal)
+        routeSettingsServer()
         let api = await makeStubbedAPI(profileId: nil)
 
         do {
@@ -2415,14 +2441,14 @@ final class SettingValuesAPITests: XCTestCase {
         } catch let error as SettingsAPIError {
             XCTAssertEqual(error, .profileRequired)
         }
-        XCTAssertNil(SettingsStubProtocol.state().lastRequest, "the request must not be sent at all")
+        XCTAssertTrue(stub.requests.isEmpty, "the request must not be sent at all")
     }
 
     // MARK: - Harness
 
     static let stubProfileId = "profile-under-test"
 
-    /// A SiloAPI whose HTTPClient talks to SettingsStubProtocol, with a
+    /// A SiloAPI whose HTTPClient talks to this test's `stub`, with a
     /// TokenStore isolated to this test.
     private func makeStubbedAPI(profileId: String? = SettingValuesAPITests.stubProfileId) async -> SiloAPI {
         let suiteName = "settings-values-tests-\(UUID().uuidString)"
@@ -2438,9 +2464,7 @@ final class SettingValuesAPITests: XCTestCase {
         await tokenStore.setServerUrl("http://settings-test.invalid")
         await tokenStore.setProfileId(profileId)
 
-        let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [SettingsStubProtocol.self]
-        let http = HTTPClient(session: URLSession(configuration: config), tokenStore: tokenStore)
+        let http = HTTPClient(session: stub.makeSession(), tokenStore: tokenStore)
         return SiloAPI(http: http, tokenStore: tokenStore)
     }
 
@@ -2472,532 +2496,190 @@ final class SettingValuesAPITests: XCTestCase {
         await tokenStore.setProfileId(identity.profileId)
         await tokenStore.saveTokens(accessToken: "fake", refreshToken: "dummy")
 
-        let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [SettingsStubProtocol.self]
-        let http = HTTPClient(session: URLSession(configuration: config), tokenStore: tokenStore)
+        let http = HTTPClient(session: stub.makeSession(), tokenStore: tokenStore)
         return (tokenStore, identity, http)
     }
 
-    private func waitForPendingOrdinaryRefresh() async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(2)
-        while ContinuousClock.now < deadline {
-            if SettingsStubProtocol.hasPendingOrdinaryRefresh() {
-                return true
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        return false
-    }
-
-    private func waitForPendingOrdinaryUnauthorized() async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(2)
-        while ContinuousClock.now < deadline {
-            if SettingsStubProtocol.hasPendingOrdinaryUnauthorized() {
-                return true
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        return false
-    }
-
-    private func waitForCounter(_ counter: LockedCounter, atLeast target: Int) async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(2)
-        while ContinuousClock.now < deadline {
-            if counter.value >= target {
-                return true
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        return false
+    /// How many requests this test sent to `path`, on any host.
+    private func requestCount(_ path: String) -> Int {
+        stub.requests.filter { $0.path == path }.count
     }
 
     private func waitForCancellationPass(
         _ barrier: SerializedCancellationPassBarrier,
         count: Int
     ) async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(2)
-        while ContinuousClock.now < deadline {
-            if await barrier.entryCount >= count {
-                return true
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        return false
+        await eventually(timeout: .seconds(2)) { await barrier.entryCount >= count }
     }
 
     private func waitForIdentityTransitionWaiter(_ http: HTTPClient) async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(2)
-        while ContinuousClock.now < deadline {
-            if await http.pendingIdentityTransitionCount() > 0 {
-                return true
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        return false
+        await eventually(timeout: .seconds(2)) { await http.pendingIdentityTransitionCount() > 0 }
     }
 
     private func waitForRequestDispatchWaiter(_ http: HTTPClient) async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(2)
-        while ContinuousClock.now < deadline {
-            if await http.pendingRequestDispatchWaiterCount() > 0 {
-                return true
-            }
-            try? await Task.sleep(for: .milliseconds(10))
+        await eventually(timeout: .seconds(2)) { await http.pendingRequestDispatchWaiterCount() > 0 }
+    }
+
+    // MARK: - Server scenarios
+
+    // Each installer adds routes to this test's `stub`. Routes are matched in
+    // insertion order, so an installer called after a test's own override
+    // only answers what the override does not. Reply closures capture only
+    // Sendable locals, never `self`.
+
+    /// A server that speaks the canonical settings API at `manifestRevision`.
+    private func routeSettingsServer(manifestRevision: Int = SettingKey.revision) {
+        stub.route(StubURLProtocol.method("GET", path: ConnectionMonitor.healthPath)) { _ in
+            .json(SettingsWire.health)
         }
-        return false
+        stub.route(StubURLProtocol.method("GET", path: SettingsWire.capabilities)) { _ in
+            .json(SettingsWire.capabilitiesBody(manifestRevision: manifestRevision))
+        }
+        stub.route(StubURLProtocol.method("GET", path: SettingsWire.effective)) { _ in
+            .json(SettingsWire.effectiveBody(revision: manifestRevision))
+        }
+    }
+
+    /// Two expired scoped requests race one rotating account refresh. Both
+    /// initial 401s are held until the second arrives, so the regression
+    /// always exercises two already-sent requests joining the same refresh
+    /// flight.
+    private func routeConcurrentScopedRefresh() {
+        let arrivals = LockedCounter()
+        let bothSent = StubURLProtocol.Gate()
+        let capabilities = StubURLProtocol.method("GET", path: SettingsWire.capabilities)
+        let rotated: StubURLProtocol.Matcher = {
+            capabilities($0) && $0.header("Authorization") == "Bearer placeholder"
+        }
+        stub.route(StubURLProtocol.method("POST", path: SettingsWire.refresh)) { _ in
+            .json(SettingsWire.rotatedTokens)
+        }
+        stub.route(rotated) { _ in
+            .json(SettingsWire.capabilitiesBody())
+        }
+        stub.route(capabilities) { _ in
+            if arrivals.increment() >= 2 {
+                await bothSent.open()
+            }
+            await bothSent.wait()
+            return .json(SettingsWire.unauthorized, status: 401)
+        }
+    }
+
+    /// A scoped request (`X-Test-Refresh-Flow: scoped`) owns the account
+    /// refresh while an ordinary 401 joins it. The ordinary 401 is held until
+    /// the refresh starts. The refresh answers `refresh` once `release` opens
+    /// or, with no gate, after 100 ms, long enough for the ordinary 401 to
+    /// reach HTTPClient's shared account slot.
+    private func routeMixedRefreshFlight(
+        refresh: StubURLProtocol.Response,
+        heldBy release: StubURLProtocol.Gate? = nil
+    ) {
+        let refreshStarted = StubURLProtocol.Gate()
+        let capabilities = StubURLProtocol.method("GET", path: SettingsWire.capabilities)
+        let rotated: StubURLProtocol.Matcher = {
+            capabilities($0) && $0.header("Authorization") == "Bearer placeholder"
+        }
+        let scoped: StubURLProtocol.Matcher = {
+            capabilities($0) && $0.header("X-Test-Refresh-Flow") == "scoped"
+        }
+        stub.route(rotated) { _ in
+            .json(SettingsWire.capabilitiesBody())
+        }
+        stub.route(scoped) { _ in
+            .json(SettingsWire.unauthorized, status: 401)
+        }
+        stub.route(capabilities) { _ in
+            await refreshStarted.wait()
+            return .json(SettingsWire.unauthorized, status: 401)
+        }
+        stub.route(StubURLProtocol.method("POST", path: SettingsWire.refresh)) { _ in
+            await refreshStarted.open()
+            if let release {
+                await release.wait()
+            } else {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            return refresh
+        }
+    }
+
+    /// An ordinary request's refresh waits for the test to release it through
+    /// the returned `HeldResponse`.
+    private func routeHeldOrdinaryRefresh() -> HeldResponse {
+        let held = HeldResponse()
+        let capabilities = StubURLProtocol.method("GET", path: SettingsWire.capabilities)
+        let refreshed: StubURLProtocol.Matcher = {
+            capabilities($0)
+                && ["Bearer placeholder", "Bearer newer-access"].contains($0.header("Authorization"))
+        }
+        stub.route(refreshed) { _ in
+            .json(SettingsWire.capabilitiesBody())
+        }
+        stub.route(capabilities) { _ in
+            .json(SettingsWire.unauthorized, status: 401)
+        }
+        stub.route(StubURLProtocol.method("POST", path: SettingsWire.refresh)) { _ in
+            await held.response()
+        }
+        return held
+    }
+
+    /// An ordinary request's initial 401 waits, across a server or credential
+    /// switch, until the test opens the returned gate. Only the first such
+    /// request is held; every test using this sends exactly one.
+    private func routeHeldOrdinaryUnauthorized() -> StubURLProtocol.Gate {
+        let release = StubURLProtocol.Gate()
+        let capabilities = StubURLProtocol.method("GET", path: SettingsWire.capabilities)
+        let expired: StubURLProtocol.Matcher = {
+            capabilities($0) && $0.header("Authorization") != "Bearer placeholder"
+        }
+        stub.expect(expired) { _ in
+            await release.wait()
+            return .json(SettingsWire.unauthorized, status: 401)
+        }
+        stub.route(capabilities) { _ in
+            .json(SettingsWire.capabilitiesBody())
+        }
+        stub.route(StubURLProtocol.method("POST", path: SettingsWire.refresh)) { _ in
+            .json(SettingsWire.rotatedTokens)
+        }
+        return release
+    }
+
+    /// A temporary credential generation is terminally rejected.
+    private func routeRejectedRefresh() {
+        stub.route(StubURLProtocol.method("GET", path: SettingsWire.capabilities)) { _ in
+            .json(SettingsWire.unauthorized, status: 401)
+        }
+        stub.route(StubURLProtocol.method("POST", path: SettingsWire.refresh)) { _ in
+            .json(SettingsWire.invalidToken, status: 401)
+        }
     }
 }
 
-/// In-process stub for the canonical settings endpoints. State is static
-/// because URLSession instantiates the protocol itself; `reset` scopes it per
-/// test.
-final class SettingsStubProtocol: URLProtocol {
-    enum Mode: Equatable {
-        /// A server that speaks the canonical settings API.
-        case normal
-        /// A server predating it: the router 404s with no Silo envelope.
-        case serverTooOld
-        /// A server with the canonical routes but a manifest revision older
-        /// than ``SettingKey/minimumServerRevision``.
-        case belowMinimumContractRevision
-        /// A server one manifest revision behind the generated bindings.
-        case previousContractRevision
-        /// A server answering at an explicit revision, for scenarios that need
-        /// a revision other than "one behind head" — e.g. one behind whichever
-        /// revision most recently introduced a key, which is not always head
-        /// itself: a revision can bump for a schema widening with no new key.
-        case pinnedToRevision(Int)
-        /// Two expired scoped requests race one rotating account refresh.
-        case concurrentScopedRefresh
-        /// A scoped request owns refresh while an ordinary 401 joins it.
-        case mixedRefreshScopedWins
-        /// A scoped-owned refresh rejects while an ordinary 401 joins it.
-        case mixedRefreshScopedFailure
-        /// A scoped-owned refresh receives a retryable 429 or 5xx response.
-        case mixedRefreshScopedTransientFailure(status: Int)
-        /// The capability document answers with this state and `allowed`.
-        case capabilityState(String, allowed: Bool)
-        /// The capability read answers with a problem document of this status.
-        case problem(status: Int)
-        /// The effective read names a key the server's contract lacks.
-        case unknownKey
-        /// The effective read answers with a row for another profile.
-        case foreignProfileRow
-        /// The effective read answers with the same key twice.
-        case duplicateKeys
-        /// A scoped-owned refresh receives HTTP 200 with an invalid token body.
-        case mixedRefreshScopedMalformedSuccess
-        /// An ordinary request's refresh waits for an explicit test release.
-        case ordinaryRefreshDelayed
-        /// An ordinary request's initial 401 waits across a server switch.
-        case ordinaryUnauthorizedDelayed
-        /// A temporary credential generation is terminally rejected.
-        case temporaryRefreshRejected
-    }
+/// Wire paths and bodies for the settings server scenarios.
+private enum SettingsWire {
+    static let capabilities = "/api/v2/settings/contract/capabilities"
+    static let effective = "/api/v2/settings/values/effective"
+    static let refresh = "/api/v2/auth/refresh"
+    static let logout = "/api/v2/auth/logout"
 
-    struct RecordedRequest {
-        let method: String
-        let path: String
-        let query: [String: String]
-        /// Every query item in order, for names that repeat.
-        let queryItems: [URLQueryItem]
-        /// Names are lowercased, because URLSession is free to normalize
-        /// header casing and an assertion must not depend on it.
-        let headers: [String: String]
-        let body: Data?
+    static let rotatedTokens = #"{"access_token":"placeholder","refresh_token":"redacted","expires_in":3600}"#
+    static let unauthorized = #"{"error":"unauthorized"}"#
+    static let invalidToken = #"{"error":"invalid_token"}"#
+    static let temporarilyUnavailable = #"{"error":"temporarily_unavailable"}"#
+    /// HTTP 200 refresh body with no refresh token.
+    static let malformedTokens = #"{"access_token":"placeholder"}"#
+    static let health = #"{"status":"ok","server_name":"Candidate"}"#
 
-        func header(_ name: String) -> String? {
-            headers[name.lowercased()]
-        }
-    }
-
-    struct State {
-        var mode: Mode = .normal
-        var lastRequest: RecordedRequest?
-        var requestCounts: [String: Int] = [:]
-    }
-
-    private static let lock = NSLock()
-    private static var current = State()
-    private static var pendingConcurrentUnauthorized: [SettingsStubProtocol] = []
-    private static var pendingMixedOrdinaryUnauthorized: SettingsStubProtocol?
-    private static var pendingOrdinaryRefresh: SettingsStubProtocol?
-    private static var pendingOrdinaryUnauthorized: SettingsStubProtocol?
-    private static var pendingMixedRefresh: (
-        request: SettingsStubProtocol,
-        status: Int,
-        body: String
-    )?
-    private static var mixedRefreshStarted = false
-    private static var ordinaryUnauthorizedReleased = false
-
-    static func reset(mode: Mode) {
-        lock.lock()
-        current = State(mode: mode)
-        pendingConcurrentUnauthorized.removeAll()
-        pendingMixedOrdinaryUnauthorized = nil
-        pendingOrdinaryRefresh = nil
-        pendingOrdinaryUnauthorized = nil
-        pendingMixedRefresh = nil
-        mixedRefreshStarted = false
-        ordinaryUnauthorizedReleased = false
-        lock.unlock()
-    }
-
-    static func state() -> State {
-        lock.lock()
-        defer { lock.unlock() }
-        return current
-    }
-
-    static func hasPendingOrdinaryRefresh() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return pendingOrdinaryRefresh != nil
-    }
-
-    static func releaseOrdinaryRefresh(status: Int) {
-        let pending: SettingsStubProtocol?
-        lock.lock()
-        pending = pendingOrdinaryRefresh
-        pendingOrdinaryRefresh = nil
-        lock.unlock()
-
-        let body: String
-        if (200..<300).contains(status) {
-            body = #"{"access_token":"placeholder","refresh_token":"redacted","expires_in":3600}"#
-        } else {
-            body = #"{"error":"invalid_token"}"#
-        }
-        pending?.respond(status: status, body: body)
-    }
-
-    static func hasPendingOrdinaryUnauthorized() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return pendingOrdinaryUnauthorized != nil
-    }
-
-    static func releaseOrdinaryUnauthorized() {
-        let pending: SettingsStubProtocol?
-        lock.lock()
-        pending = pendingOrdinaryUnauthorized
-        pendingOrdinaryUnauthorized = nil
-        ordinaryUnauthorizedReleased = true
-        lock.unlock()
-        pending?.respond(status: 401, body: #"{"error":"unauthorized"}"#)
-    }
-
-    static func releaseMixedRefresh() {
-        let pending: (request: SettingsStubProtocol, status: Int, body: String)?
-        lock.lock()
-        pending = pendingMixedRefresh
-        pendingMixedRefresh = nil
-        lock.unlock()
-        guard let pending else { return }
-        pending.request.respond(status: pending.status, body: pending.body)
-    }
-
-    private static func mutate(_ apply: (inout State) -> Void) {
-        lock.lock()
-        apply(&current)
-        lock.unlock()
-    }
-
-    override static func canInit(with request: URLRequest) -> Bool {
-        request.url?.host == "settings-test.invalid"
-    }
-
-    override static func canonicalRequest(for request: URLRequest) -> URLRequest {
-        request
-    }
-
-    override func startLoading() {
-        let components = request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }
-        var query: [String: String] = [:]
-        for item in components?.queryItems ?? [] {
-            query[item.name] = item.value ?? ""
-        }
-        let recorded = RecordedRequest(
-            method: request.httpMethod ?? "",
-            path: components?.path ?? "",
-            query: query,
-            queryItems: components?.queryItems ?? [],
-            headers: Self.lowercasedHeaders(request.allHTTPHeaderFields ?? [:]),
-            body: Self.requestBody(of: request)
-        )
-        Self.mutate {
-            $0.lastRequest = recorded
-            $0.requestCounts[recorded.path, default: 0] += 1
-        }
-
-        let mode = Self.state().mode
-        if mode == .ordinaryRefreshDelayed {
-            handleOrdinaryDelayedRefresh(recorded)
-            return
-        }
-        if mode == .ordinaryUnauthorizedDelayed {
-            handleOrdinaryUnauthorizedDelayed(recorded)
-            return
-        }
-        if mode == .temporaryRefreshRejected {
-            switch (recorded.method, recorded.path) {
-            case ("GET", "/api/v2/settings/contract/capabilities"):
-                respond(status: 401, body: #"{"error":"unauthorized"}"#)
-            case ("POST", "/api/v2/auth/refresh"):
-                respond(status: 401, body: #"{"error":"invalid_token"}"#)
-            default:
-                respond(status: 404, body: #"{"error":"not_found"}"#)
-            }
-            return
-        }
-        if mode == .concurrentScopedRefresh {
-            switch (recorded.method, recorded.path) {
-            case ("POST", "/api/v2/auth/refresh"):
-                respond(
-                    status: 200,
-                    body: #"{"access_token":"placeholder","refresh_token":"redacted","expires_in":3600}"#
-                )
-            case ("GET", "/api/v2/settings/contract/capabilities"):
-                if recorded.header("Authorization") == "Bearer placeholder" {
-                    respond(
-                        status: 200,
-                        body: Self.capabilitiesBody()
-                    )
-                } else {
-                    holdConcurrentUnauthorizedUntilBothExpiredRequestsArrive()
-                }
-            default:
-                respond(status: 404, body: #"{"error":"not_found"}"#)
-            }
-            return
-        }
-        switch mode {
-        case .mixedRefreshScopedWins:
-            handleMixedRefreshScopedFlight(
-                recorded,
-                refreshStatus: 200,
-                refreshBody: #"{"access_token":"placeholder","refresh_token":"redacted","expires_in":3600}"#
-            )
-            return
-        case .mixedRefreshScopedFailure:
-            handleMixedRefreshScopedFlight(
-                recorded,
-                refreshStatus: 401,
-                refreshBody: #"{"error":"invalid_token"}"#,
-                holdRefreshForExplicitRelease: true
-            )
-            return
-        case .mixedRefreshScopedTransientFailure(let status):
-            handleMixedRefreshScopedFlight(
-                recorded,
-                refreshStatus: status,
-                refreshBody: #"{"error":"temporarily_unavailable"}"#
-            )
-            return
-        case .mixedRefreshScopedMalformedSuccess:
-            handleMixedRefreshScopedFlight(
-                recorded,
-                refreshStatus: 200,
-                refreshBody: #"{"access_token":"placeholder"}"#
-            )
-            return
-        default:
-            break
-        }
-        if mode == .serverTooOld {
-            // The chi router's own 404: plain text, no Silo error envelope.
-            respond(status: 404, body: "404 page not found\n", contentType: "text/plain", headers: [:])
-            return
-        }
-        let responseRevision: Int
-        switch mode {
-        case .belowMinimumContractRevision:
-            responseRevision = SettingKey.minimumServerRevision - 1
-        case .previousContractRevision:
-            responseRevision = SettingKey.revision - 1
-        case .pinnedToRevision(let revision):
-            responseRevision = revision
-        default:
-            responseRevision = SettingKey.revision
-        }
-
-        switch (recorded.method, recorded.path) {
-        case ("GET", ConnectionMonitor.healthPath):
-            respond(status: 200, body: #"{"status":"ok","server_name":"Candidate"}"#)
-        case ("GET", "/api/v2/settings/contract/capabilities"):
-            switch mode {
-            case .capabilityState(let state, let allowed):
-                respond(status: 200, body: Self.capabilitiesBody(state: state, allowed: allowed))
-            case .problem(let status):
-                respond(status: status, body: Self.problemBody(status: status), contentType: "application/problem+json")
-            default:
-                respond(status: 200, body: Self.capabilitiesBody(manifestRevision: responseRevision))
-            }
-        case ("GET", "/api/v2/settings/values/effective"):
-            switch mode {
-            case .unknownKey:
-                respond(status: 422, body: """
-                {"type":"https://siloserver.org/docs/api/v2/problems/validation_failed","title":"Validation failed",
-                 "status":422,"detail":"The request did not pass validation; see errors.",
-                 "errors":[{"location":"query.keys","code":"invalid",
-                            "detail":"No setting named no.such exists in this server's contract"}]}
-                """, contentType: "application/problem+json")
-            case .foreignProfileRow:
-                respond(status: 200, body: """
-                {"items":[{"key":"playback.auto_play_next","value":false,"source":"profile","scope":"profile",
-                           "profile_id":"someone-else","definition_revision":3}],
-                 "revision":\(responseRevision)}
-                """)
-            case .duplicateKeys:
-                respond(status: 200, body: """
-                {"items":[{"key":"playback.auto_play_next","value":true,"source":"default","definition_revision":3},
-                          {"key":"playback.auto_play_next","value":false,"source":"default","definition_revision":3}],
-                 "revision":\(responseRevision)}
-                """)
-            default:
-                respond(status: 200, body: """
-                {"items":[{"key":"playback.auto_play_next","value":true,"source":"default","definition_revision":3}],
-                 "revision":\(responseRevision)}
-                """)
-            }
-        default:
-            respond(status: 404, body: #"{"error":"not_found","message":"unstubbed route"}"#)
-        }
-    }
-
-    override func stopLoading() {}
-
-    /// Release both initial 401s together so the regression deterministically
-    /// exercises two already-sent requests joining the same refresh flight.
-    /// Retaining the protocol instances avoids blocking URLSession's loader
-    /// queue while waiting for the second request.
-    private func holdConcurrentUnauthorizedUntilBothExpiredRequestsArrive() {
-        let ready: [SettingsStubProtocol]
-        Self.lock.lock()
-        Self.pendingConcurrentUnauthorized.append(self)
-        if Self.pendingConcurrentUnauthorized.count >= 2 {
-            ready = Self.pendingConcurrentUnauthorized
-            Self.pendingConcurrentUnauthorized.removeAll()
-        } else {
-            ready = []
-        }
-        Self.lock.unlock()
-
-        for pending in ready {
-            pending.respond(status: 401, body: #"{"error":"unauthorized"}"#)
-        }
-    }
-
-    private func handleMixedRefreshScopedFlight(
-        _ recorded: RecordedRequest,
-        refreshStatus: Int,
-        refreshBody: String,
-        holdRefreshForExplicitRelease: Bool = false
-    ) {
-        switch (recorded.method, recorded.path) {
-        case ("GET", "/api/v2/settings/contract/capabilities"):
-            if recorded.header("Authorization") == "Bearer placeholder" {
-                respond(
-                    status: 200,
-                    body: Self.capabilitiesBody()
-                )
-                return
-            }
-            if recorded.header("X-Test-Refresh-Flow") == "scoped" {
-                respond(status: 401, body: #"{"error":"unauthorized"}"#)
-                return
-            }
-
-            let refreshAlreadyStarted: Bool
-            Self.lock.lock()
-            refreshAlreadyStarted = Self.mixedRefreshStarted
-            if !refreshAlreadyStarted {
-                Self.pendingMixedOrdinaryUnauthorized = self
-            }
-            Self.lock.unlock()
-            if refreshAlreadyStarted {
-                respond(status: 401, body: #"{"error":"unauthorized"}"#)
-            }
-
-        case ("POST", "/api/v2/auth/refresh"):
-            let pendingOrdinary: SettingsStubProtocol?
-            Self.lock.lock()
-            Self.mixedRefreshStarted = true
-            pendingOrdinary = Self.pendingMixedOrdinaryUnauthorized
-            Self.pendingMixedOrdinaryUnauthorized = nil
-            if holdRefreshForExplicitRelease {
-                Self.pendingMixedRefresh = (self, refreshStatus, refreshBody)
-            }
-            Self.lock.unlock()
-            pendingOrdinary?.respond(status: 401, body: #"{"error":"unauthorized"}"#)
-
-            if !holdRefreshForExplicitRelease {
-                // Keep the scoped-owned refresh in flight long enough for the
-                // ordinary 401 to reach HTTPClient's shared account slot.
-                Task { @MainActor [weak self] in
-                    try? await Task.sleep(for: .milliseconds(100))
-                    self?.respond(status: refreshStatus, body: refreshBody)
-                }
-            }
-
-        default:
-            respond(status: 404, body: #"{"error":"not_found"}"#)
-        }
-    }
-
-    private func handleOrdinaryDelayedRefresh(_ recorded: RecordedRequest) {
-        switch (recorded.method, recorded.path) {
-        case ("GET", "/api/v2/settings/contract/capabilities"):
-            if ["Bearer placeholder", "Bearer newer-access"].contains(
-                recorded.header("Authorization")
-            ) {
-                respond(
-                    status: 200,
-                    body: Self.capabilitiesBody()
-                )
-            } else {
-                respond(status: 401, body: #"{"error":"unauthorized"}"#)
-            }
-
-        case ("POST", "/api/v2/auth/refresh"):
-            Self.lock.lock()
-            Self.pendingOrdinaryRefresh = self
-            Self.lock.unlock()
-
-        default:
-            respond(status: 404, body: #"{"error":"not_found"}"#)
-        }
-    }
-
-    private func handleOrdinaryUnauthorizedDelayed(_ recorded: RecordedRequest) {
-        switch (recorded.method, recorded.path) {
-        case ("GET", "/api/v2/settings/contract/capabilities"):
-            let unauthorizedWasReleased: Bool
-            Self.lock.lock()
-            unauthorizedWasReleased = Self.ordinaryUnauthorizedReleased
-            Self.lock.unlock()
-            if unauthorizedWasReleased || recorded.header("Authorization") == "Bearer placeholder" {
-                respond(
-                    status: 200,
-                    body: Self.capabilitiesBody()
-                )
-            } else {
-                Self.lock.lock()
-                Self.pendingOrdinaryUnauthorized = self
-                Self.lock.unlock()
-            }
-
-        case ("POST", "/api/v2/auth/refresh"):
-            respond(
-                status: 200,
-                body: #"{"access_token":"placeholder","refresh_token":"redacted","expires_in":3600}"#
-            )
-
-        default:
-            respond(status: 404, body: #"{"error":"not_found"}"#)
-        }
-    }
+    /// The effective read names a key the server's contract lacks.
+    static let unknownKeyProblem = """
+    {"type":"https://siloserver.org/docs/api/v2/problems/validation_failed","title":"Validation failed",
+     "status":422,"detail":"The request did not pass validation; see errors.",
+     "errors":[{"location":"query.keys","code":"invalid",
+                "detail":"No setting named no.such exists in this server's contract"}]}
+    """
 
     /// A v2 `SettingsContractCapabilities` document.
     static func capabilitiesBody(
@@ -3016,63 +2698,63 @@ final class SettingsStubProtocol: URLProtocol {
         """
     }
 
-    private static func problemBody(status: Int) -> String {
+    static func internalErrorProblem(status: Int) -> String {
         """
         {"type":"https://siloserver.org/docs/api/v2/problems/internal_error","title":"Internal error",
          "status":\(status),"detail":"An unexpected error occurred."}
         """
     }
 
-    private static func lowercasedHeaders(_ headers: [String: String]) -> [String: String] {
-        var normalized: [String: String] = [:]
-        for (name, value) in headers {
-            normalized[name.lowercased()] = value
-        }
-        return normalized
+    static func effectiveBody(revision: Int) -> String {
+        """
+        {"items":[{"key":"playback.auto_play_next","value":true,"source":"default","definition_revision":3}],
+         "revision":\(revision)}
+        """
     }
 
-    /// URLSession surfaces outgoing bodies to URLProtocol as a stream, not
-    /// `httpBody`; drain it.
-    private static func requestBody(of request: URLRequest) -> Data? {
-        if let body = request.httpBody {
-            return body
-        }
-        guard let stream = request.httpBodyStream else {
-            return nil
-        }
-        stream.open()
-        defer { stream.close() }
-        var data = Data()
-        let bufferSize = 64 * 1024
-        var buffer = [UInt8](repeating: 0, count: bufferSize)
-        while stream.hasBytesAvailable {
-            let read = stream.read(&buffer, maxLength: bufferSize)
-            guard read > 0 else { break }
-            data.append(buffer, count: read)
-        }
-        return data
+    /// An effective response with a row for another profile.
+    static func foreignProfileRow(revision: Int) -> String {
+        """
+        {"items":[{"key":"playback.auto_play_next","value":false,"source":"profile","scope":"profile",
+                   "profile_id":"someone-else","definition_revision":3}],
+         "revision":\(revision)}
+        """
     }
 
-    private func respond(
-        status: Int,
-        body: String,
-        contentType: String = "application/json",
-        headers: [String: String] = [:]
-    ) {
-        guard let url = request.url, let client else { return }
-        var allHeaders = headers
-        allHeaders["Content-Type"] = contentType
-        let response = HTTPURLResponse(
-            url: url,
-            statusCode: status,
-            httpVersion: "HTTP/1.1",
-            headerFields: allHeaders
-        )!
-        client.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        if !body.isEmpty {
-            client.urlProtocol(self, didLoad: Data(body.utf8))
+    /// An effective response with the same key twice.
+    static func duplicateKeys(revision: Int) -> String {
+        """
+        {"items":[{"key":"playback.auto_play_next","value":true,"source":"default","definition_revision":3},
+                  {"key":"playback.auto_play_next","value":false,"source":"default","definition_revision":3}],
+         "revision":\(revision)}
+        """
+    }
+}
+
+/// A refresh reply held until the test releases it with a status: 2xx
+/// answers rotated tokens, anything else `{"error":"invalid_token"}`. The
+/// first release wins.
+private final class HeldResponse: @unchecked Sendable {
+    private let gate = StubURLProtocol.Gate()
+    private let lock = NSLock()
+    private var released: StubURLProtocol.Response?
+
+    func release(status: Int) async {
+        let body = (200..<300).contains(status) ? SettingsWire.rotatedTokens : SettingsWire.invalidToken
+        lock.withLock {
+            if released == nil {
+                released = .json(body, status: status)
+            }
         }
-        client.urlProtocolDidFinishLoading(self)
+        await gate.open()
+    }
+
+    /// Waits for `release(status:)`. A waiter whose request was cancelled
+    /// first resumes early; the stub drops a cancelled reply, so the 599
+    /// fallback is never delivered.
+    func response() async -> StubURLProtocol.Response {
+        await gate.wait()
+        return lock.withLock { released } ?? .status(599)
     }
 }
 
@@ -3080,10 +2762,13 @@ private final class LockedCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var count = 0
 
-    func increment() {
+    /// Returns the new count, so a caller can act on the value it produced.
+    @discardableResult
+    func increment() -> Int {
         lock.lock()
+        defer { lock.unlock() }
         count += 1
-        lock.unlock()
+        return count
     }
 
     var value: Int {

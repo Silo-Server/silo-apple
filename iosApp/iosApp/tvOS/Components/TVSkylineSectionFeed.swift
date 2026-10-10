@@ -3,9 +3,8 @@ import SwiftUI
 
 /// Shared Skyline landing layout (§6.1): an ambient backdrop, a focus
 /// marquee that passively previews the focused card, and native vertically
-/// scrolling section rows. Used by **both** Home and the library Browse tabs
-/// so the two stay pixel-identical — the only difference is the sections each
-/// feeds in.
+/// scrolling section rows. Shared by Home, library Browse, For You, and the
+/// Watch Party picker so they render identically; only the sections differ.
 ///
 /// Row-to-row movement belongs to the tvOS focus engine and the vertical
 /// scroll view. Programmatic focus is reserved for entering the page and
@@ -158,7 +157,7 @@ struct TVSkylineSectionFeed: View {
                 // its viewport uses the corrected layout frames above.
                 LazyVStack(alignment: .leading, spacing: SiloTheme.Skyline.rowBandPreviewSpacing) {
                     ForEach(Array(sections.enumerated()), id: \.element.id) { index, section in
-                        featuredRow(section, isFirstRow: index == 0)
+                        featuredRow(section, index: index)
                             .fixedSize(horizontal: false, vertical: true)
                             .id(section.id)
                     }
@@ -184,7 +183,8 @@ struct TVSkylineSectionFeed: View {
     }
 
     @ViewBuilder
-    private func featuredRow(_ section: ResolvedSection, isFirstRow: Bool) -> some View {
+    private func featuredRow(_ section: ResolvedSection, index: Int) -> some View {
+        let isFirstRow = index == 0
         SectionRow(
             section: section,
             onItemTap: onItemTap,
@@ -215,7 +215,6 @@ struct TVSkylineSectionFeed: View {
             },
             cardWidth: SiloTheme.Skyline.densePosterCardWidth,
             cardVerticalPadding: SiloTheme.Skyline.rowBandCardVerticalPadding,
-            onMoveDown: nil,
             focusRestorationOwner: Binding(
                 get: { focusRestorationOwnerSectionId == section.id },
                 set: { ownsRestoration in
@@ -228,7 +227,20 @@ struct TVSkylineSectionFeed: View {
                 }
             )
         )
-        .modifier(TVSkylineArtworkVisibility())
+        .modifier(TVSkylineArtworkVisibility(onVisible: { warmRows(after: index) }))
+    }
+
+    /// Decode the leading cards of the rows below one that came into view,
+    /// so a Down press reveals painted artwork rather than thumbhashes.
+    private func warmRows(after index: Int) -> [CardArtwork] {
+        let next = sections.dropFirst(index + 1).prefix(ArtworkLookahead.rowsAhead)
+        return ArtworkLookahead.warmRows(next, items: \.items) { section, item in
+            MediaRow.cardArtwork(
+                for: item,
+                layout: SectionRow.layout(for: section),
+                cardWidth: SiloTheme.Skyline.densePosterCardWidth
+            )
+        }
     }
 
     // MARK: - Focus
@@ -316,19 +328,33 @@ struct TVSkylineSectionFeed: View {
 /// Cancel artwork work when a row leaves the viewport without removing its
 /// buttons from the native focus graph. Visibility changes only at the edge.
 private struct TVSkylineArtworkVisibility: ViewModifier {
+    /// Runs each time the row comes into view and returns the artwork it
+    /// warmed, which is cancelled when the row leaves the viewport.
+    let onVisible: () -> [CardArtwork]
     @State private var isVisible = false
+    @State private var warmed: [CardArtwork] = []
 
     func body(content: Content) -> some View {
         content
             .environment(\.tvArtworkLoadingEnabled, isVisible)
-            .onScrollVisibilityChange(threshold: 0.01) { isVisible = $0 }
+            .onScrollVisibilityChange(threshold: 0.01) { visible in
+                isVisible = visible
+                if visible {
+                    warmed = onVisible()
+                } else {
+                    // Cards already on screen keep their own requests.
+                    PosterImageCache.stopPrefetchingArtwork(warmed)
+                    warmed = []
+                }
+            }
     }
 }
 
 /// Observe preview changes at the leaves. Reading the model's properties in
 /// the feed's body makes every artwork, tint, and enrichment update rebuild
-/// the scrolling rows and their focusable cards as well.
-private struct TVSkylineBackdrop: View {
+/// the scrolling rows and their focusable cards as well. Also used by the
+/// Requests page.
+struct TVSkylineBackdrop: View {
     let model: TVFocusMarqueeModel
 
     var body: some View {
@@ -342,7 +368,7 @@ private struct TVSkylineBackdrop: View {
     }
 }
 
-private struct TVSkylineMarquee: View {
+struct TVSkylineMarquee: View {
     let model: TVFocusMarqueeModel
     let scale: TVFocusMarquee.Scale
 

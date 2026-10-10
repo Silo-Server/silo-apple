@@ -9,8 +9,6 @@ struct PhoneCastRail: View {
     let cast: [CastMember]
     let onTap: (String) -> Void
 
-    private let photoSize: CGFloat = 76
-    private let cardWidth: CGFloat = 96
     private let cardSpacing: CGFloat = 14
     private let maxEntries = 24
 
@@ -18,40 +16,57 @@ struct PhoneCastRail: View {
         ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(alignment: HorizontalMediaRailLayout.cardAlignment, spacing: cardSpacing) {
                 ForEach(cast.prefix(maxEntries)) { member in
-                    Button {
-                        if let personId = member.personId { onTap(personId) }
-                    } label: {
-                        VStack(spacing: 8) {
-                            photo(for: member)
-                            VStack(spacing: 2) {
-                                Text(member.name)
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundColor(.siloOnSurface)
-                                    .lineLimit(2, reservesSpace: true)
-                                    .multilineTextAlignment(.center)
-                                if let character = member.character, !character.isEmpty {
-                                    Text(character)
-                                        .font(.system(size: 11, weight: .regular))
-                                        .foregroundColor(.siloSecondaryText)
-                                        .lineLimit(1)
-                                        .multilineTextAlignment(.center)
-                                }
-                            }
-                        }
-                        .frame(width: cardWidth)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
+                    PhoneCastCard(member: member, onTap: onTap)
                 }
             }
-            .padding(.horizontal, SiloTheme.safePadding)
+            .scrollTargetLayout()
             .padding(.vertical, 4)
             .phoneMediaRailBounds()
         }
+        .contentMargins(.horizontal, SiloTheme.safePadding, for: .scrollContent)
+        .mediaRailScrolling()
+        // Cards widen with the text; past AX2 one name would fill the screen.
+        .dynamicTypeSize(...DynamicTypeSize.accessibility2)
+    }
+}
+
+private struct PhoneCastCard: View {
+    let member: CastMember
+    let onTap: (String) -> Void
+
+    private let photoSize: CGFloat = 76
+    /// Grows with the names beneath the photo so a name keeps its default
+    /// words per line instead of breaking inside a word at large text sizes.
+    @ScaledMetric(relativeTo: .caption) private var cardWidth: CGFloat = 96
+
+    var body: some View {
+        Button {
+            if let personId = member.personId { onTap(personId) }
+        } label: {
+            VStack(spacing: 8) {
+                photo
+                VStack(spacing: 2) {
+                    Text(member.name)
+                        .siloScaledFont(size: 12, weight: .semibold, relativeTo: .caption)
+                        .foregroundColor(.siloOnSurface)
+                        .lineLimit(2, reservesSpace: true)
+                        .multilineTextAlignment(.center)
+                    if let character = member.character, !character.isEmpty {
+                        Text(character)
+                            .siloScaledFont(size: 11, relativeTo: .caption2)
+                            .foregroundColor(.siloSecondaryText)
+                            .lineLimit(1)
+                            .multilineTextAlignment(.center)
+                    }
+                }
+            }
+            .frame(width: cardWidth)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
-    @ViewBuilder
-    private func photo(for member: CastMember) -> some View {
+    private var photo: some View {
         ZStack {
             Color.siloSurfaceElevated
             if let url = member.photoUrl, !url.isEmpty {

@@ -3,13 +3,9 @@ import UIKit
 import UserNotifications
 
 extension SiloAppDelegate: UNUserNotificationCenterDelegate {
-    /// iOS gives background remote-notification wakes roughly 30 seconds to
-    /// call the completion handler, while HTTPClient's default URLSession
-    /// request timeout is 60 seconds — so the syncs are raced against a
-    /// deadline that leaves the system budget intact. 20s (up from 15s)
-    /// because the wake now also runs the download monitoring sync, whose
-    /// chain of sequential requests ends with the pipeline kick that
-    /// enqueues new episodes — cutting it short loses the enqueue.
+    /// Background wakes get ~30 s. 20 s fits the inbox sync and the download
+    /// monitoring sync, whose last request enqueues new episodes, inside that
+    /// budget. HTTPClient's own 60 s request timeout would not.
     private static let backgroundSyncDeadlineSeconds: TimeInterval = 20
 
     func application(
@@ -87,8 +83,8 @@ extension SiloAppDelegate: UNUserNotificationCenterDelegate {
         fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
     ) {
         Task { @MainActor in
-            let synced = await Self.syncWithDeadline(Self.backgroundSyncDeadlineSeconds)
-            completionHandler(synced ? .newData : .noData)
+            let fetchedDeliveries = await Self.syncWithDeadline(Self.backgroundSyncDeadlineSeconds)
+            completionHandler(fetchedDeliveries ? .newData : .noData)
         }
     }
 
@@ -115,7 +111,7 @@ extension SiloAppDelegate: UNUserNotificationCenterDelegate {
         // Navigation depends only on the payload already in hand — post the
         // deep link before any network work so the tap routes instantly.
         let userInfo = response.notification.request.content.userInfo
-        await ApplePushDeepLinkCoordinator.shared.postDeepLink(from: userInfo)
+        ApplePushDeepLinkCoordinator.postDeepLink(from: userInfo)
         if response.notification.request.trigger is UNPushNotificationTrigger {
             Task { @MainActor in
                 await ApplePushNotificationSyncCoordinator.shared.refreshFromRemoteNotification()
@@ -123,11 +119,12 @@ extension SiloAppDelegate: UNUserNotificationCenterDelegate {
         }
     }
 
-    /// Runs the notification-inbox sync and the download monitoring sync,
-    /// but returns `false` once the deadline passes, cancelling the
-    /// underlying requests. The completion handler for a background wake
-    /// must be called inside the system budget even when the server is
-    /// unreachable.
+    /// Runs the notification-inbox sync and the download monitoring sync and
+    /// returns whether the inbox page carried deliveries. A backlog page
+    /// counts even though the inbox is not caught up yet. Returns `false`
+    /// once the deadline passes, cancelling the underlying requests. The
+    /// completion handler for a background wake must be called inside the
+    /// system budget even when the server is unreachable.
     @MainActor
     private static func syncWithDeadline(_ seconds: TimeInterval) async -> Bool {
         await withTaskGroup(of: Bool.self) { group in
@@ -139,8 +136,7 @@ extension SiloAppDelegate: UNUserNotificationCenterDelegate {
                 if let serverId = ServerRegistry.shared.activeServerId, !serverId.isEmpty {
                     await TokenStore.shared.retargetActiveServer(serverId: serverId)
                 }
-                async let inboxSynced = ApplePushNotificationSyncCoordinator.shared
-                    .refreshFromRemoteNotification()
+                async let inboxSynced = ApplePushNotificationSyncCoordinator.shared.sync()
                 // Same path as DownloadBackgroundRefresh: a new-episode push
                 // for a monitored series registers the episode and enqueues
                 // it into the background URLSession here, so the transfer
@@ -153,10 +149,10 @@ extension SiloAppDelegate: UNUserNotificationCenterDelegate {
                 if !Task.isCancelled {
                     await DownloadManager.shared.onAppActive()
                 }
-                return await inboxSynced
+                return await inboxSynced.fetchedDeliveries
             }
             group.addTask {
-                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                try? await Task.sleep(for: .seconds(seconds))
                 return false
             }
             let first = await group.next() ?? false

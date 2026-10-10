@@ -34,12 +34,10 @@ final class MyRequestsViewModel {
         do {
             let requests = try await api.myRequests()
             buckets = MyRequestsBucket.bucket(requests)
+            RequestDetailCache.shared.storeOwnRecords(requests)
+            RequestDetailCache.shared.prefetch(buckets.flatMap(\.requests), api: api)
             hasLoaded = true
-            // The server's list now shows each held cancel's result.
-            if !unconfirmedCancelIds.isEmpty {
-                unconfirmedCancelIds.removeAll()
-                actionErrorMessage = nil
-            }
+            releaseHeldCancels()
         } catch {
             if buckets.isEmpty {
                 self.error = ErrorState(error)
@@ -48,25 +46,40 @@ final class MyRequestsViewModel {
         isLoading = false
     }
 
+    /// The server's list now shows each held cancel's result.
+    private func releaseHeldCancels() {
+        guard !unconfirmedCancelIds.isEmpty else { return }
+        unconfirmedCancelIds.removeAll()
+        actionErrorMessage = nil
+    }
+
     /// Whether the row may offer cancel again; a held cancel may not.
     func isCancelUnconfirmed(_ request: MediaRequest) -> Bool {
         unconfirmedCancelIds.contains(request.id)
     }
 
-    func cancel(_ request: MediaRequest) async {
+    /// Cancels one of the user's requests. `refresh` re-reads the list that
+    /// shows the row when it isn't this model's (the tvOS hub) and returns
+    /// whether the read succeeded. The bus patches that list on success, so
+    /// it runs only to settle an uncertain cancel.
+    func cancel(_ request: MediaRequest, refresh: (() async -> Bool)? = nil) async {
         guard cancellingId == nil, !unconfirmedCancelIds.contains(request.id) else { return }
         cancellingId = request.id
         actionErrorMessage = nil
         do {
             let updated = try await api.cancelRequest(id: request.id)
             RequestsEventBus.shared.publish(updated)
-            await load()
+            if refresh == nil { await load() }
         } catch where RequestMutationFailure.isUncertain(error) {
             unconfirmedCancelIds.insert(request.id)
             cancellingId = nil
             // A read under a replaced owner says nothing about this cancel.
             if !RequestMutationFailure.isOwnerChanged(error) {
-                await load()
+                if let refresh {
+                    if await refresh() { releaseHeldCancels() }
+                } else {
+                    await load()
+                }
             }
             if !unconfirmedCancelIds.isEmpty {
                 actionErrorMessage = RequestErrorCopy.unconfirmedCancelMessage

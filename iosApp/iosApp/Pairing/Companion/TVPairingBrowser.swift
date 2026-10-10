@@ -3,13 +3,17 @@ import Foundation
 import Network
 import OSLog
 
-/// A discovered Apple TV waiting to be set up.
+/// A discovered TV waiting to be set up (`st=setup`) or signed in
+/// (`st=login`). Apple TVs and Android TVs advertise the same record.
 struct DiscoveredTV: Identifiable, Equatable {
     let id: String          // TXT `id` (stable device id), or endpoint string.
     let name: String        // TXT `name`.
     let state: PairingReceiverState
     let endpoint: NWEndpoint
     let sid: String?        // TXT `sid`: per-advertising-session nonce, if present.
+    /// TXT `srv`: for a `login` TV, the deployment identity of the server
+    /// it is signed out of.
+    var serverIdentity: String? = nil
     // id-only equality is intentional: `sid`/`state` changes are surfaced via the
     // Optional nil↔value transition in CompanionPairingCardModifier's onChange latch,
     // not by field equality. Don't make this field-sensitive without revisiting that.
@@ -28,57 +32,64 @@ struct DiscoveredTV: Identifiable, Equatable {
 final class TVPairingBrowser {
     private(set) var found: [DiscoveredTV] = []
     private var browser: NWBrowser?
-    private var generation = 0
-    /// True between `start()` and `stop()` — gates self-heal restarts so a
-    /// deliberate stop stays stopped.
-    private var wantsBrowsing = false
+    /// Active between `start()` and `stop()`, so a deliberate stop stays
+    /// stopped.
+    private let selfHeal: BonjourSelfHeal
+    /// True between `start()` and `stop()`. While false, `found` is empty,
+    /// which says nothing about any TV. Stored so views observe it.
+    private(set) var isBrowsing = false
     private nonisolated static let logger = Logger(subsystem: "org.siloserver.silo", category: "pairing.browser")
+
+    init(selfHeal: BonjourSelfHeal = BonjourSelfHeal()) {
+        self.selfHeal = selfHeal
+    }
 
     func start() {
         guard browser == nil else { return }
-        wantsBrowsing = true
+        isBrowsing = true
         startBrowser()
     }
 
     private func startBrowser() {
-        generation += 1
-        let gen = generation
+        let gen = selfHeal.activate()
         let params = NWParameters()
         params.includePeerToPeer = true
         let browser = NWBrowser(for: .bonjourWithTXTRecord(type: PairingProtocol.serviceType, domain: nil), using: params)
+        // Both handlers run on `.main` (see `start(queue:)` below).
         browser.browseResultsChangedHandler = { [weak self] results, _ in
-            Task { @MainActor in
-                guard let self, self.generation == gen else { return }
+            MainActor.assumeIsolated {
+                guard let self, self.selfHeal.isCurrent(gen) else { return }
                 self.found = results.compactMap(Self.makeTV)
             }
         }
         browser.stateUpdateHandler = { [weak self] state in
-            Task { @MainActor in
-                guard let self, self.generation == gen else { return }
-                if case .failed(let error) = state {
-                    Self.logger.error("browser failed: \(String(describing: error), privacy: .public)")
-                    self.scheduleBrowserRestart()
-                }
+            MainActor.assumeIsolated {
+                self?.handleStateUpdate(state, generation: gen)
             }
         }
         browser.start(queue: .main)
         self.browser = browser
     }
 
+    func handleStateUpdate(_ state: NWBrowser.State, generation: Int) {
+        guard selfHeal.isCurrent(generation), case .failed(let error) = state else { return }
+        Self.logger.error("browser failed: \(String(describing: error), privacy: .public)")
+        scheduleBrowserRestart()
+    }
+
     private func scheduleBrowserRestart() {
         browser?.cancel()
         browser = nil
         found = []
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(2))
-            guard let self, self.wantsBrowsing, self.browser == nil else { return }
+        selfHeal.scheduleRestart { [weak self] in
+            guard let self, self.browser == nil else { return }
             self.startBrowser()
         }
     }
 
     func stop() {
-        wantsBrowsing = false
-        generation += 1
+        isBrowsing = false
+        selfHeal.deactivate()
         browser?.cancel()
         browser = nil
         found = []
@@ -86,10 +97,20 @@ final class TVPairingBrowser {
 
     private static func makeTV(_ result: NWBrowser.Result) -> DiscoveredTV? {
         guard case let .bonjour(txt) = result.metadata else { return nil }
-        let name = txt["name"] ?? "Apple TV"
-        let id = txt["id"] ?? "\(result.endpoint)"
-        let state = PairingReceiverState(rawValue: txt["st"] ?? "setup") ?? .setup
-        return DiscoveredTV(id: id, name: name, state: state, endpoint: result.endpoint, sid: txt["sid"])
+        return makeTV(txt: txt.dictionary, endpoint: result.endpoint)
+    }
+
+    /// Reads one advertisement. A TV that names no state is a first-run TV
+    /// (older TVs); an unknown state is not offered at all.
+    nonisolated static func makeTV(txt: [String: String], endpoint: NWEndpoint) -> DiscoveredTV? {
+        typealias Key = PairingProtocol.TXTKey
+        guard let state = PairingReceiverState(rawValue: txt[Key.state] ?? PairingReceiverState.setup.rawValue) else {
+            return nil
+        }
+        let name = ServerIdentity.usable(txt[Key.name]) ?? "TV"
+        let id = txt[Key.deviceId] ?? "\(endpoint)"
+        return DiscoveredTV(id: id, name: name, state: state, endpoint: endpoint, sid: txt[Key.sessionNonce],
+            serverIdentity: ServerIdentity.usable(txt[Key.serverIdentity]))
     }
 }
 #endif

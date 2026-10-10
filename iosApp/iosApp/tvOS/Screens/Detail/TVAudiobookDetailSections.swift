@@ -3,10 +3,9 @@ import SwiftUI
 
 /// Below-the-fold body of the Lounge audiobook detail page: About (overview +
 /// static credits), alternate narrations, and the discovery rails (series,
-/// more-by-author, related). This content used to live on a separate
-/// full-screen "⋯" info cover; it now scrolls under the hero like the
-/// movie/series detail bodies, so selections navigate directly via
-/// `onNavigateToItem` — there is no cover to dismiss first.
+/// more-by-author, related). It scrolls under the hero like the movie and
+/// series detail bodies, so selections navigate directly via
+/// `onNavigateToItem`.
 ///
 /// Focus: a vertical progression of native `focusSection` rows and rails;
 /// each rail lands d-pad entry on its first card (see `AudiobookCoverRail`).
@@ -223,26 +222,8 @@ private struct AudiobookCoverRail: View {
                 .padding(.vertical, 24)
             }
             .focusSection()
-            .applyCoverRailDefaultFocus(items.first?.contentId, binding: $focusedItemId)
+            .tvDefaultFocus(items.first?.contentId, in: $focusedItemId)
             .scrollClipDisabled()
-        }
-    }
-}
-
-private extension View {
-    /// Land d-pad entry on the first card rather than the geometrically-
-    /// nearest one. `.userInitiated` priority is what makes `defaultFocus`
-    /// win over proximity on rail entry — same helper shape as
-    /// `TVSimilarRail.applySimilarRailDefaultFocus`. No-op when empty.
-    @ViewBuilder
-    func applyCoverRailDefaultFocus(
-        _ firstContentId: String?,
-        binding: FocusState<String?>.Binding
-    ) -> some View {
-        if let firstContentId {
-            self.defaultFocus(binding, firstContentId, priority: .userInitiated)
-        } else {
-            self
         }
     }
 }

@@ -218,7 +218,7 @@ extension APIv2Client {
             } catch where retries < Self.downloadSubscriptionSyncPageRetries && Self.isTransportUncertain(error) {
                 retries += 1
                 if retryDelay > 0 {
-                    try await Task.sleep(nanoseconds: UInt64(retryDelay * Double(retries) * 1_000_000_000))
+                    try await Task.sleep(for: .seconds(retryDelay * Double(retries)))
                 }
             }
         }

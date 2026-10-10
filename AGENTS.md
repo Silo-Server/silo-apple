@@ -80,10 +80,22 @@ follow-up work.
 
 - Keep one concern per pull request. Split changes that solve independent
   problems or can be reviewed and shipped separately.
-- Include before-and-after images for UI changes. Include a short video when
-  motion or timing matters.
-- Upload pull request evidence to GitHub. Never commit PR-only assets such as
-  `.github/pr-assets/`.
+- Every pull request that changes what a user sees must include evidence, as
+  [Show visible changes](CONTRIBUTING.md#show-visible-changes) defines. That
+  covers UI and UX changes and changes to which items appear or what they show,
+  such as search results, home sections, recommendations, sorting, filtering,
+  metadata, or artwork. Use before-and-after captures of the same screen with the
+  same data, and a short recording when motion, timing, or focus matters. Write
+  `Evidence: none, no user-visible change` only when that is true.
+- Attach evidence on GitHub under the PR body's Evidence heading, or publish it
+  with `npx @silo-server/evidence publish <folder> --pr <number>` and put its
+  `Evidence:` link there. Only Silo maintainers and the pull request's author can
+  open a published page. GitHub has no API for attaching images to a pull
+  request, so an agent either publishes with the CLI or gives the developer the
+  captures to attach. Check media for private information before it goes on
+  GitHub. When publishing exits 4, ask the developer to run
+  `npx @silo-server/evidence login`; never approve that login or read the saved
+  key. Never commit PR-only assets such as `.github/pr-assets/`.
 - When babysitting a pull request, poll checks and review comments created
   after the last push. Verify bot findings against the source, fix real issues,
   and dismiss false positives with a written reason. Remain quiet when nothing

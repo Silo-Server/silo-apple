@@ -31,8 +31,9 @@ final class CurrentProfileStore {
             return
         }
         let gen = generation
-        let task = Task { @MainActor in
-            defer { inFlight = nil }
+        let task = Task {
+            // A load that `reset()` superseded must not clear its successor.
+            defer { if gen == generation { inFlight = nil } }
             guard let profileId = AuthService.shared.profileId else { return }
             guard let profiles = try? await AuthService.shared.getProfiles(),
                   gen == generation else { return }

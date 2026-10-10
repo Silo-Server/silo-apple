@@ -47,13 +47,6 @@ final class DiagnosticsCaptureGateCache: @unchecked Sendable {
     }
 
     private let now: () -> TimeInterval
-    /// `OSAllocatedUnfairLock` owns stable allocated storage, which a stored
-    /// `os_unfair_lock_s` does not: locking that through `&lock` is an inout
-    /// access the compiler may satisfy with a temporary copy, so the threads
-    /// that reach the gate — URLSession callbacks, the `HTTPClient` actor, the
-    /// main actor — could each lock a different word and lose mutual exclusion
-    /// over the memo. That would break the fail-closed epoch check below, which
-    /// is the only thing keeping a consent revocation from latching capture on.
     private let lock = OSAllocatedUnfairLock()
     private var epoch: UInt64 = 0
     private var cachedKey: Key?
@@ -454,8 +447,9 @@ actor DiagnosticsCoordinator {
             throw DiagnosticsCoordinatorError.identityChanged
         }
 
-        let status = try await siloAPI.apiV2Client.diagnosticsCapabilities()
-        let user = try await siloAPI.currentUser()
+        async let statusRequest = siloAPI.apiV2Client.diagnosticsCapabilities()
+        async let userRequest = siloAPI.currentUser()
+        let (status, user) = try await (statusRequest, userRequest)
         // Re-check the *stable* identity after the awaits: the active server
         // registry id plus the freshly fetched account user id. Comparing
         // these rather than raw access-token fingerprints means a transparent
@@ -800,23 +794,35 @@ actor DiagnosticsCoordinator {
         return await drainHostedDeletionIntents(maximumAttempts: 4)
     }
 
+    #if DEBUG
+    /// Test hook; the app drains through `scheduleHostedDeletionMaintenance()`.
     @discardableResult
     func retryHostedDeletions(maximumAttempts: Int? = nil) async -> Bool {
         await drainHostedDeletionIntents(maximumAttempts: maximumAttempts)
     }
+    #endif
 
     /// Foreground settings/prompt hydration must not wait behind remote
     /// maintenance. Coalesce triggers and bound each pass; future foregrounds
-    /// continue draining the durable queue.
-    func scheduleHostedDeletionMaintenance() {
-        guard hostedDeletionMaintenanceTask == nil else { return }
-        hostedDeletionMaintenanceTask = Task { [weak self] in
-            await self?.runHostedDeletionMaintenance()
+    /// continue draining the durable queue. Each pass starts with the pending
+    /// store's local maintenance, which its lookups never do. Returns the pass
+    /// in flight, so a caller can wait for it.
+    @discardableResult
+    func scheduleHostedDeletionMaintenance() -> Task<Void, Never> {
+        if let hostedDeletionMaintenanceTask {
+            return hostedDeletionMaintenanceTask
         }
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.runHostedDeletionMaintenance()
+        }
+        hostedDeletionMaintenanceTask = task
+        return task
     }
 
     private func runHostedDeletionMaintenance() async {
         defer { hostedDeletionMaintenanceTask = nil }
+        pendingStore.performMaintenance()
         _ = await drainHostedDeletionIntents(maximumAttempts: 4)
     }
 
@@ -1122,30 +1128,14 @@ actor DiagnosticsCoordinator {
         )
 
         do {
-            // Snapshot the destination *identity* before building the bundle.
-            // Bundle construction and sanitization can take long enough for the
-            // active server/account/profile to change underneath us. HTTPClient
-            // resolves the current TokenStore at request time,
-            // and a same-server account switch keeps the report's
-            // server_instance_id while swapping the account — so without
-            // re-checking, this old report could post to the newly active
-            // account.
-            //
-            // Compare a *stable* identity — the active server registry id and
-            // the selected profile — not the access-token value. HTTPClient can
-            // transparently refresh an expired access token while buildBundle is
-            // running; fingerprinting the token would misread that refresh as a
-            // destination change and, on the already-throttled Always path, turn
-            // a sendable report into keptRetryable and defer the next auto-upload
-            // for 24h. A genuine account switch on the same server passes through
-            // a token-cleared (unauthenticated) state and lands on a different
-            // profile, so requiring the token to still be present (sign-out
-            // check) plus an unchanged server and profile still rejects a moved
-            // destination. The captured profile is also re-checked against the
-            // active one so the server's X-Profile-Id can't disagree with the
-            // manifest's report.profile_id. The next attempt's `isUploadable`
-            // check above reclassifies a genuine account move as a destination
-            // mismatch precisely.
+            // Snapshot the stable destination identity (server registry id +
+            // profile) before the slow bundle build and re-check it before the
+            // POST, so this report can't post to an account that became active
+            // meanwhile. Token values aren't compared: HTTPClient may refresh
+            // the access token meanwhile. A same-server account switch clears
+            // the token and changes the profile, so it still fails the check.
+            // The captured profile is also checked against the active one so
+            // X-Profile-Id can't disagree with the manifest's report.profile_id.
             let destinationServerRegistryID = ServerRegistry.activeServerIDSnapshot
             let destinationProfileID = await TokenStore.shared.getProfileId()
             let capturedProfileID = report.manifest.report.profileID
@@ -1603,8 +1593,9 @@ actor DiagnosticsCoordinator {
             profileID: destination == .hosted ? nil : AuthService.shared.profileId,
             consentMode: manifestConsentMode,
             noticeVersion: snapshot.status.consentNoticeVersion,
-            appVersion: applicationVersionOverride?.isEmpty == false ? applicationVersionOverride! : Self.appVersion(),
-            appBuild: Self.appBuild(),
+            appVersion: applicationVersionOverride.flatMap { $0.isEmpty ? nil : $0 }
+                ?? AppleDeviceIdentity.bundleAppVersion,
+            appBuild: AppleDeviceIdentity.bundleAppBuild,
             platform: Self.platform(),
             osVersion: Self.osVersion(),
             destinationServerInstanceID: snapshot.status.serverInstanceID,
@@ -2113,14 +2104,9 @@ actor DiagnosticsCoordinator {
             // unavailable server, or an account boundary — so the on-disk trail
             // goes with the staged lines.
             //
-            // This purge is not new behavior, it is the same clearing relocated
-            // to the decision. It used to happen incidentally: the next
-            // breadcrumb of the launch would be offered to the journal, refused,
-            // and `appendRenderedLine` would purge as a side effect.
-            // `recordBreadcrumb` no longer routes pre-decision lines through
-            // that path (it would destroy the previous run's evidence on every
-            // cold launch), so the clearing is stated here instead of depending
-            // on a later breadcrumb arriving at all.
+            // Purge here: `recordBreadcrumb` doesn't offer pre-decision lines
+            // to the journal (that would destroy the previous run's evidence
+            // on every cold launch), so no later refusal will purge on its own.
             //
             // Latch before purging: a breadcrumb racing this must address the
             // journal — be refused, and purge — rather than quietly re-stage in
@@ -2206,9 +2192,12 @@ actor DiagnosticsCoordinator {
         discardEarlyBootBuffer()
     }
 
+    #if DEBUG
+    /// Test hook.
     nonisolated func breadcrumbsData() -> Data {
         Self.renderBreadcrumbs(Self.breadcrumbJournal.readAll())
     }
+    #endif
 
     nonisolated static func breadcrumbLines(
         _ lines: [DiagnosticsLogLine],
@@ -2320,14 +2309,6 @@ actor DiagnosticsCoordinator {
         case .disabled, .storageUnavailable, .quotaExceeded, .busy, .retryable, .underlying:
             return .keptRetryable
         }
-    }
-
-    private static func appVersion() -> String {
-        AppleDeviceIdentity.bundleAppVersion
-    }
-
-    private static func appBuild() -> String {
-        AppleDeviceIdentity.bundleAppBuild
     }
 
     private static func platform() -> Platform {
@@ -2621,24 +2602,12 @@ actor DiagnosticsCoordinator {
         if let previousBinding {
             RecentSessionTracker.shared.purge(binding: previousBinding)
         }
-        // The locked block above already closed the gate (context cleared,
-        // eligibility invalidated, generation bumped), so this function is
-        // ordered the same way `activeProfileWillChange` is: invalidate, then
-        // purge. Keep the purge after it — an in-flight early-boot flush must
-        // not be able to append into a journal this has already emptied.
-        //
-        // Also drops the pre-consent staging buffer, for the same reason the
-        // journal and ring are purged: those lines must not follow the user
-        // into the new destination's account.
-        //
-        // Both stay unconditional here, unlike `activeProfileWillChange`, which
-        // has to tell a real boundary from a launch's profile restoration. This
-        // function has no such ambiguity: its only caller is
-        // `DiagnosticsViewModel.setDestination`, which returns early unless the
-        // choice actually differs and is reachable only from the diagnostics
-        // settings screen of an authenticated session. There is no path that
-        // runs it during pre-consent startup, so every call is a genuine
-        // destination change.
+        // Purge after invalidating so an in-flight early-boot flush can't
+        // append into the emptied journal. The purge also drops the
+        // pre-consent staging buffer, so those lines don't follow the user to
+        // the new destination. Unconditional, unlike `activeProfileWillChange`:
+        // the only caller (`DiagnosticsViewModel.setDestination`) runs after a
+        // real change in an authenticated session.
         purgeBreadcrumbJournal()
         DiagLog.ring.clear()
         #if os(tvOS)

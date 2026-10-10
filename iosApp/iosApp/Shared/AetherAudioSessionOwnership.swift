@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// Process-wide bookkeeping for which `AetherEngine` instances are alive and which
 /// of them are actually holding audio, so a teardown on one of them can tell whether
@@ -27,8 +28,7 @@ import Foundation
 /// Silo is killed. A claim therefore carries an *activity probe*, and the release
 /// test asks whether any **other** claim is actually holding audio right now.
 enum AetherAudioSessionOwnership {
-    private static let lock = NSLock()
-    private static var registrations: [ObjectIdentifier: Registration] = [:]
+    private static let registrations = Mutex<[ObjectIdentifier: Registration]>([:])
 
     /// A claim's answer to "is your engine holding audio right now?".
     ///
@@ -62,22 +62,6 @@ enum AetherAudioSessionOwnership {
         }
     }
 
-    /// Number of live engine claims in this process.
-    static var liveEngineCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return registrations.count
-    }
-
-    /// True when the caller's own engine is the only one alive.
-    ///
-    /// Read this from a caller that is itself holding a ``Claim``; it counts that claim.
-    /// Prefer ``canReleaseSharedSession(excluding:)``, which also tolerates another
-    /// engine that exists but is idle.
-    static var isSoleLiveEngine: Bool {
-        liveEngineCount <= 1
-    }
-
     /// Whether the claim's owner may let its final teardown release the shared
     /// `AVAudioSession` — i.e. no *other* live engine is holding audio.
     ///
@@ -86,9 +70,7 @@ enum AetherAudioSessionOwnership {
     @MainActor
     static func canReleaseSharedSession(excluding claim: Claim) -> Bool {
         let ownID = ObjectIdentifier(claim)
-        lock.lock()
-        let others = registrations.filter { $0.key != ownID }.map(\.value)
-        lock.unlock()
+        let others = registrations.withLock { all in all.filter { $0.key != ownID }.map(\.value) }
         // Probes run outside the lock: they are main-actor reads into engines, and a
         // probe must never be able to re-enter this registry while it is locked.
         return !others.contains { $0.probe?() ?? true }
@@ -98,14 +80,10 @@ enum AetherAudioSessionOwnership {
         _ id: ObjectIdentifier,
         probe: (@MainActor @Sendable () -> Bool)?
     ) {
-        lock.lock()
-        registrations[id] = Registration(probe: probe)
-        lock.unlock()
+        registrations.withLock { $0[id] = Registration(probe: probe) }
     }
 
     private static func unregister(_ id: ObjectIdentifier) {
-        lock.lock()
-        registrations.removeValue(forKey: id)
-        lock.unlock()
+        registrations.withLock { _ = $0.removeValue(forKey: id) }
     }
 }

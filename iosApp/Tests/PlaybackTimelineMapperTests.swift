@@ -58,22 +58,6 @@ final class PlaybackTimelineMapperTests: XCTestCase {
         )
     }
 
-    func testArtifactTimingOriginMapsOntoActivePlayerAxis() throws {
-        let mapper = try PlaybackTimelineMapper(validating: timeline(
-            sourceStart: 42,
-            streamOrigin: 40,
-            playerStart: 2,
-            offset: 40,
-            canSeekAnywhere: false,
-            seekRestoration: "source_position"
-        ))
-
-        XCTAssertEqual(
-            mapper.playerPosition(forArtifactTime: 3.5, timingOriginSeconds: 40),
-            3.5
-        )
-    }
-
     func testRejectsMalformedTimelineBeforeLoad() {
         XCTAssertThrowsError(try PlaybackTimelineMapper(validating: timeline(
             sourceStart: 10,

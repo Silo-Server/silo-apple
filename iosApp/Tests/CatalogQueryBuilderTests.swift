@@ -46,6 +46,17 @@ final class CatalogQueryBuilderTests: XCTestCase {
         XCTAssertEqual(try build(s)["sort"], "-added_at", "added_at defaults to newest first")
     }
 
+    /// Release Date sends the full-date `release_date` field, not `year`,
+    /// and is offered for every video library type.
+    func testReleaseDateSortIsSignedDescending() throws {
+        var s = CatalogFilterState(); s.sort = .releaseDate
+        XCTAssertEqual(try build(s)["sort"], "-release_date", "release_date defaults to newest first")
+        for mediaType in [BrowseMediaType.movie, .series, .mixed] {
+            XCTAssertTrue(CatalogSortKey.available(for: mediaType).contains(.releaseDate), "\(mediaType)")
+        }
+        XCTAssertFalse(CatalogSortKey.available(for: .audiobook).contains(.releaseDate))
+    }
+
     func testSortOrderFlip() throws {
         var s = CatalogFilterState(); s.sort = .title; s.order = .desc
         XCTAssertEqual(try build(s)["sort"], "-title")

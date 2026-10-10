@@ -74,6 +74,8 @@ final class DownloadRegistryV2Tests: XCTestCase {
         XCTAssertTrue(capability.isUsable)
         XCTAssertEqual(capability.qualityPresets, ["original", "5mbps"])
         XCTAssertTrue(capability.seasonDownload)
+        XCTAssertFalse(capability.bulkQuality, "a server without the flag batches originals only")
+        XCTAssertFalse(capability.monitorQuality)
         let request = try XCTUnwrap(stub.requests.first)
         XCTAssertEqual(request.method, "GET")
         XCTAssertEqual(request.path, "/api/v2/capabilities/downloads")
@@ -102,6 +104,16 @@ final class DownloadRegistryV2Tests: XCTestCase {
         XCTAssertEqual(capability.label(for: .twentyMbps), "20 Mbps · up to 4K")
         XCTAssertEqual(capability.label(for: .oneMbps), "1 Mbps · up to 480p")
         XCTAssertEqual(capability.label(for: .tenMbps), "10 Mbps", "a preset the server does not describe keeps its bitrate label")
+
+        // The quality flags survive the on-disk capability cache, and a copy
+        // cached before them reads as original-only.
+        stub.reply(200, #"{"state":"available","allowed":true,"revision":"r1","enabled":true,"download_allowed":true,"quality_presets":["original","5mbps"],"transcode_enabled":true,"transcode_user_allowed":true,"season_download":true,"series_monitoring":true,"monitoring_modes":["all"],"bulk_quality":true,"monitor_quality":true}"#)
+        let flagged = try await api.downloadCapability(auth: auth)
+        XCTAssertTrue(flagged.bulkQuality)
+        XCTAssertTrue(flagged.monitorQuality)
+        let cachedFlags = try JSONDecoder().decode(DownloadCapability.self, from: JSONEncoder().encode(flagged))
+        XCTAssertTrue(cachedFlags.bulkQuality)
+        XCTAssertTrue(cachedFlags.monitorQuality)
 
         // The ceiling survives the on-disk capability cache.
         let cached = try JSONDecoder().decode(DownloadCapability.self, from: JSONEncoder().encode(capability))
@@ -268,6 +280,12 @@ final class DownloadRegistryV2Tests: XCTestCase {
             XCTAssertNil(body["expected_revision"])
             XCTAssertNil(body["media_file_id"])
         }
+        let preset = APIv2DownloadCreateRequest.seriesPage(seriesId: "series-1", seasonNumber: nil, batchId: "batch-2",
+            caps: .current(), quality: "5mbps")
+        let presetBody = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(preset)) as? [String: Any])
+        XCTAssertEqual(presetBody["quality"] as? String, "5mbps")
+        XCTAssertNil(presetBody["season_number"])
 
         stub.reset()
         stub.reply(202, created([entry("d1", content: "series-1", episode: "ep-1")], batch: "another-batch"))

@@ -75,7 +75,8 @@ private extension PlayerTrack {
             isExternal: isExternal,
             isSelected: isSelected,
             ffIndex: ffIndex,
-            srcId: srcId
+            srcId: srcId,
+            isDownloaded: isDownloaded
         )
     }
 }

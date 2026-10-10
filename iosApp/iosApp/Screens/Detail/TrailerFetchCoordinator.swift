@@ -85,6 +85,10 @@ final class TrailerFetchCoordinator {
         phase == .requesting || phase == .polling
     }
 
+    /// Whether a run's task is still alive. Read by tests: once it ends,
+    /// nothing fetches again.
+    var hasActiveRun: Bool { task != nil }
+
     // MARK: - Policy
 
     /// Gap between detail re-fetches once the refresh is queued.
@@ -133,6 +137,7 @@ final class TrailerFetchCoordinator {
     private let windowSeconds: TimeInterval
     private let settledPollCount: Int
     private let minimumObservationSeconds: TimeInterval
+    private let now: @MainActor () -> Date
 
     private var task: Task<Void, Never>?
     private var activeRunID: UUID?
@@ -154,7 +159,8 @@ final class TrailerFetchCoordinator {
         pollInterval: Duration? = nil,
         windowSeconds: TimeInterval? = nil,
         settledPollCount: Int? = nil,
-        minimumObservationSeconds: TimeInterval? = nil
+        minimumObservationSeconds: TimeInterval? = nil,
+        now: (@MainActor () -> Date)? = nil
     ) {
         self.request = request
         self.fetchDetail = fetchDetail
@@ -163,6 +169,7 @@ final class TrailerFetchCoordinator {
         self.settledPollCount = settledPollCount ?? Self.defaultSettledPollCount
         self.minimumObservationSeconds =
             minimumObservationSeconds ?? Self.defaultMinimumObservationSeconds
+        self.now = now ?? { Date.now }
     }
 
     // MARK: - Lifecycle
@@ -368,7 +375,7 @@ final class TrailerFetchCoordinator {
             }
         }
 
-        let startedAt = Date.now
+        let startedAt = now()
         let deadline = startedAt.addingTimeInterval(windowSeconds)
         // Before this the settle counter is not trusted to mean "the job
         // finished" — see `defaultMinimumObservationSeconds`. Clamped to the
@@ -379,7 +386,7 @@ final class TrailerFetchCoordinator {
         var settledPolls = 0
         var signature: DetailSignature?
 
-        while isCurrentRun(runID), Date.now < deadline {
+        while isCurrentRun(runID), now() < deadline {
             do {
                 try await Task.sleep(for: pollInterval)
             } catch {
@@ -426,7 +433,7 @@ final class TrailerFetchCoordinator {
                 // A quiet item only ends the run once the queued job has had
                 // time to finish. Until then the counter keeps climbing but
                 // cannot conclude anything.
-                if settledPolls >= settledPollCount, Date.now >= settleAllowedAt {
+                if settledPolls >= settledPollCount, now() >= settleAllowedAt {
                     Self.logger.debug("trailerFetchSettled")
                     phase = .exhausted
                     return

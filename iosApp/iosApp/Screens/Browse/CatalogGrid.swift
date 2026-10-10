@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// A poster grid — 3 columns on iPhone / iPad compact width, 5 on iPad
-/// regular width, 6 columns on tvOS. Cards handle their own focus lift on
-/// tvOS.
+/// A poster grid — 3 columns on iPhone, as many as fit the measured width on
+/// iPad and on wide phone windows such as the iPhone Duo's inner display (see
+/// `AdaptiveColumns.widthFittedPosters`), 6 columns on tvOS. Cards
+/// handle their own focus lift on tvOS.
 struct CatalogGrid: View {
     let items: [BrowseItem]
     let isLoading: Bool
@@ -35,12 +36,16 @@ struct CatalogGrid: View {
     private let rowSpacing: CGFloat = 60
     #else
     @Environment(\.horizontalSizeClass) private var hSize
+    @Environment(\.verticalSizeClass) private var vSize
     private var columns: [GridItem] {
         if dynamicTypeSize.isAccessibilitySize {
             return Array(
                 repeating: GridItem(.flexible(), spacing: 8, alignment: .top),
                 count: hSize == .regular ? 3 : 2
             )
+        }
+        if let fit = widthFittedPosterFit {
+            return fit.columns
         }
         if usesThreeColumnPhoneLayout {
             return Array(
@@ -58,20 +63,33 @@ struct CatalogGrid: View {
     #endif
 
     var body: some View {
+        let widthOverride = cardWidthOverride
         LazyVGrid(columns: columns, spacing: rowSpacing) {
+            if items.isEmpty && isLoading {
+                // First page still loading: the grid's own shape, unfilled.
+                ForEach(0..<(columns.count * 4), id: \.self) { _ in
+                    PosterSkeletonCard()
+                }
+            }
             ForEach(items) { item in
+                // Search can return episodes: caption them with the series
+                // name and "S01E02 · Pilot", as on Home.
                 MediaCard(
-                    title: item.title,
+                    title: EpisodeCardCaption.cardTitle(for: item),
                     posterUrl: item.posterUrl ?? "",
                     thumbhash: item.posterThumbhash,
+                    mediaType: item.type,
                     year: item.year,
+                    subtitle: EpisodeCardCaption.line(for: item),
                     userState: item.userState,
                     overlayData: OverlayData.from(item),
                     action: { onItemTap(item) },
                     playAction: playAction(for: item),
                     contentId: item.contentId,
+                    seriesContext: SeriesDetailContext(item: SectionItem(browseItem: item)),
                     aspect: item.isAudiobook ? .square : .poster,
-                    cardWidthOverride: phoneCardWidthOverride
+                    cardWidthOverride: widthOverride,
+                    episodeAccessibilityLabel: EpisodeCardCaption.accessibilityLabel(for: item)
                 )
                 .frame(maxWidth: .infinity)
                 .onAppear {
@@ -90,17 +108,18 @@ struct CatalogGrid: View {
         }
         #endif
         #if !os(tvOS)
-        .scrollTargetLayout()
         .environment(\.itemDetailBrowseSource, detailBrowseSource)
-        .onChange(of: items.map(\.contentId), initial: true) { _, contentIDs in
+        // Keyed on a hash of the ordered IDs rather than the ID array: a paged
+        // grid holds thousands of items and this runs on each body pass.
+        .onChange(of: ItemsFingerprint(items), initial: true) {
             detailBrowseSource = ItemDetailBrowseSource(
                 originID: detailBrowseOriginID,
-                contentIDs: contentIDs
+                contentIDs: items.map(\.contentId)
             )
         }
         #endif
 
-        if isLoading {
+        if isLoading && !items.isEmpty {
             HStack {
                 Spacer()
                 ProgressView()
@@ -135,9 +154,32 @@ struct CatalogGrid: View {
         #endif
     }
 
+    /// Cards fill their column instead of sitting at the fixed phone width
+    /// inside it: always on iPad, and on a phone once the grid is too wide for
+    /// three-up posters. Nil otherwise and until the grid has been measured.
+    private var widthFittedPosterFit: AdaptiveColumns.PosterGridFit? {
+        #if os(iOS)
+        let posterSize = uiCustomization.cardPresentation.posterSize
+        guard UIDevice.current.userInterfaceIdiom == .pad else {
+            return AdaptiveColumns.widePhonePosterFit(
+                containerWidth: gridWidth,
+                posterSize: posterSize,
+                verticalSizeClass: vSize
+            )
+        }
+        return AdaptiveColumns.widthFittedPosters(
+            containerWidth: gridWidth,
+            minimumCardWidth: AdaptiveColumns.tabletMinimumPosterWidth * posterSize.scale,
+            spacing: AdaptiveColumns.tabletPosterSpacing
+        )
+        #else
+        return nil
+        #endif
+    }
+
     /// MediaCard applies the global poster-size scale after its override. Undo
     /// that scale here, then cap the standard width to the measured grid cell.
-    private var phoneCardWidthOverride: CGFloat? {
+    private var cardWidthOverride: CGFloat? {
         #if os(iOS)
         if dynamicTypeSize.isAccessibilitySize {
             let fittedWidth = AdaptiveColumns.fittedPosterWidth(
@@ -147,6 +189,9 @@ struct CatalogGrid: View {
                 maximumWidth: 240
             )
             return fittedWidth / uiCustomization.cardPresentation.posterSize.scale
+        }
+        if let fit = widthFittedPosterFit {
+            return fit.cardWidth / uiCustomization.cardPresentation.posterSize.scale
         }
         #endif
         guard usesThreeColumnPhoneLayout else { return nil }
@@ -158,3 +203,18 @@ struct CatalogGrid: View {
         return fittedWidth / uiCustomization.cardPresentation.posterSize.scale
     }
 }
+
+#if !os(tvOS)
+/// Changes when a paged list is replaced, extended, or reordered at its ends.
+private struct ItemsFingerprint: Equatable {
+    let count: Int
+    let orderedIDsHash: Int
+
+    init(_ items: [BrowseItem]) {
+        count = items.count
+        var hasher = Hasher()
+        for item in items { hasher.combine(item.contentId) }
+        orderedIDsHash = hasher.finalize()
+    }
+}
+#endif

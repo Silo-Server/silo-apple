@@ -15,6 +15,8 @@ import Foundation
 /// - Cleared on any warm return to the detail page (`scenePhase` → active
 ///   while the page is alive): the page survived suspension, so there is
 ///   nothing to restore and the record must not outlive its story.
+/// - Cleared on sign-out and identity reset (AuthService), so a shared device
+///   keeps no record of the outgoing identity.
 ///
 /// Eligibility (freshness window, server/profile identity) is decided by
 /// `TrailerReturnPolicy`, which stays platform-free and unit-tested; this

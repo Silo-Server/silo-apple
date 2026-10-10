@@ -1,9 +1,8 @@
 #if !os(tvOS)
 import SwiftUI
 
-/// The actions for settings changes that ran out of automatic retries
-/// (owner decision D4): the change stays on this device until the user sends
-/// it again or discards it.
+/// The actions for settings changes that ran out of automatic retries: the
+/// change stays on this device until the user sends it again or discards it.
 struct HeldSettingChangesSection: View {
     let retry: () async -> Void
     let discard: () async -> Void

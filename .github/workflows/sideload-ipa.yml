@@ -25,9 +25,6 @@ on:
           - ios
           - tvos
 
-env:
-  XCODEGEN_VERSION: "2.43.0"
-
 # Serialize runs: build numbers are unique per run (see the release job), but
 # two runs targeting the same tag would still race each other's `gh release`
 # asset uploads, and one sideload build already occupies two macOS runners.
@@ -47,8 +44,8 @@ jobs:
         env:
           PLATFORM: ${{ github.event_name == 'workflow_dispatch' && inputs.platform || 'both' }}
         run: |
-          ios='{"platform":"iOS","lane":"ipa_ios_unsigned","artifact":"Silo-iOS-unsigned-ipa","ipa_path":"build/ios-unsigned/Silo-unsigned.ipa"}'
-          tvos='{"platform":"tvOS","lane":"ipa_tvos_unsigned","artifact":"SiloTV-tvOS-unsigned-ipa","ipa_path":"build/tvos-unsigned/SiloTV-unsigned.ipa"}'
+          ios='{"platform":"iOS","lane":"ipa_ios_unsigned","cache_scheme":"Silo-device","artifact":"Silo-iOS-unsigned-ipa","ipa_path":"build/ios-unsigned/Silo-unsigned.ipa"}'
+          tvos='{"platform":"tvOS","lane":"ipa_tvos_unsigned","cache_scheme":"SiloTV-device","artifact":"SiloTV-tvOS-unsigned-ipa","ipa_path":"build/tvos-unsigned/SiloTV-unsigned.ipa"}'
           case "$PLATFORM" in
             ios)  include="[$ios]" ;;
             tvos) include="[$tvos]" ;;
@@ -131,13 +128,19 @@ jobs:
     needs: release
     permissions:
       contents: write
+      actions: read
     uses: ./.github/workflows/release-source.yml
     with:
       release_tag: ${{ needs.release.outputs.tag }}
 
   build:
     needs: [setup, release, source]
-    runs-on: macos-15
+    # GitHub's Xcode 27 image (in preview). Building with the iOS 27 SDK keeps
+    # iPhone Duo out of the letterboxed compatibility mode older SDKs get.
+    runs-on: xcode-27
+    env:
+      SILO_CACHE_NAMESPACE: production
+      SILO_SOURCE_PACKAGES_PATH: ${{ github.workspace }}/.ci-cache/packages
     # Only the release-upload step (tag builds) needs write; scope it to the job
     # rather than the whole workflow to keep the rest at least privilege.
     permissions:
@@ -152,20 +155,36 @@ jobs:
           fetch-depth: 0            # tags + history for version resolution
           persist-credentials: false  # don't leave GITHUB_TOKEN in git config for xcodegen/SPM
 
-      - name: Select Xcode 26
-        run: sudo xcode-select -s /Applications/Xcode_26.3.app
+      - name: Select Xcode 27
+        run: sudo xcode-select -s /Applications/Xcode_27.0.app
 
-      - name: Install XcodeGen (pinned)
-        run: |
-          curl -fsSL -o /tmp/xcodegen.zip \
-            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
-          unzip -q /tmp/xcodegen.zip -d /tmp/xcodegen-dist
-          sudo /tmp/xcodegen-dist/xcodegen/install.sh /usr/local
-          xcodegen --version
+      - name: Record device package cache inputs
+        id: metadata
+        env:
+          DEVICE_SCHEME: ${{ matrix.cache_scheme }}
+        run: python3 scripts/ci/apple-build-metadata.py --root . --device-scheme "$DEVICE_SCHEME" --outputs
+
+      - name: Install XcodeGen (pinned, checksum-verified)
+        uses: ./.github/actions/install-xcodegen
 
       - uses: ruby/setup-ruby@v1
         with:
           bundler-cache: true
+
+      - name: Restore device packages
+        id: cache
+        continue-on-error: true
+        uses: ./.github/actions/cache-spm
+        with:
+          operation: restore
+          root: '.'
+          mode: dependencies
+          namespace: ${{ env.SILO_CACHE_NAMESPACE }}
+          toolchain-key: ${{ steps.metadata.outputs.toolchain_key }}
+          lock-key: ${{ steps.metadata.outputs.lock_sha256 }}
+          project-key: ${{ steps.metadata.outputs.build_config_sha256 }}-xcodegen2.43.0
+          source-sha: ${{ steps.metadata.outputs.source_sha }}
+          scheme: ${{ matrix.cache_scheme }}
 
       - name: Resolve marketing version
         id: ver
@@ -184,12 +203,15 @@ jobs:
           echo "Resolved marketing version: $V"
 
       - name: Build unsigned ${{ matrix.platform }} IPA
+        id: archive
         run: bundle exec fastlane ios ${{ matrix.lane }}
         env:
           MARKETING_VERSION: ${{ steps.ver.outputs.value }}
           # Always set (dispatch and tag push alike) so no sideload IPA ever
           # ships the project.yml CURRENT_PROJECT_VERSION placeholder.
           BUILD_NUMBER: ${{ needs.release.outputs.build_number }}
+          # Linked from Settings > About > Source Code in the built app.
+          SILO_RELEASE_SOURCE_URL: ${{ needs.source.outputs.source_url }}
 
       - name: Upload ${{ matrix.platform }} IPA artifact
         uses: actions/upload-artifact@v4
@@ -204,3 +226,21 @@ jobs:
           IPA_PATH: ${{ matrix.ipa_path }}
           RELEASE_TAG: ${{ needs.release.outputs.tag }}
         run: gh release upload "$RELEASE_TAG" "$IPA_PATH" --clobber
+
+      - name: Save device packages after successful publication
+        if: ${{ success() && steps.archive.outcome == 'success' }}
+        continue-on-error: true
+        uses: ./.github/actions/cache-spm
+        with:
+          operation: save
+          root: '.'
+          mode: dependencies
+          namespace: ${{ env.SILO_CACHE_NAMESPACE }}
+          toolchain-key: ${{ steps.metadata.outputs.toolchain_key }}
+          lock-key: ${{ steps.metadata.outputs.lock_sha256 }}
+          project-key: ${{ steps.metadata.outputs.build_config_sha256 }}-xcodegen2.43.0
+          source-sha: ${{ steps.metadata.outputs.source_sha }}
+          scheme: ${{ matrix.cache_scheme }}
+          save-cache: 'true'
+          save-dependencies: 'true'
+          spm-cache-hit: ${{ steps.cache.outputs.spm-cache-hit }}

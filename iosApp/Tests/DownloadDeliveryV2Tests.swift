@@ -54,6 +54,31 @@ final class DownloadDeliveryV2Tests: XCTestCase {
         XCTAssertEqual(manifest.subtitles?.first?.fetchUrl, "/api/v2/downloads/entry/subtitles/external:0")
     }
 
+    /// An episode manifest names its series poster apart from the episode
+    /// still, and the stored manifest keeps both.
+    func testEpisodeManifestKeepsTheSeriesPoster() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("DownloadDeliveryV2Tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let body = try manifestFixture { json in
+            json["series_poster_thumbhash"] = "SERIES"
+            var artwork = json["artwork_urls"] as? [String: Any] ?? [:]
+            artwork["series_poster"] = "/api/v2/downloads/entry/artwork/series_poster"
+            json["artwork_urls"] = artwork
+        }
+        let manifest = try HTTPClient.makeJSONDecoder().decode(OfflineManifest.self, from: Data(body.utf8))
+        let store = DownloadStore(rootDirectory: { root })
+        let url = root.appendingPathComponent("manifest.json")
+
+        await store.saveManifest(manifest, to: url)
+        let stored = await store.loadManifest(at: url)
+
+        XCTAssertEqual(manifest.seriesPosterThumbhash, "SERIES")
+        XCTAssertEqual(manifest.artworkUrls?.seriesPoster, "/api/v2/downloads/entry/artwork/series_poster")
+        XCTAssertEqual(stored, manifest)
+    }
+
     /// Offline playback re-reads `manifest.json` with the store's bare coder
     /// and finds subtitle files by the manifest's `fetch_url`.
     func testStoredManifestKeepsItsFileIdAndSubtitleKeys() async throws {

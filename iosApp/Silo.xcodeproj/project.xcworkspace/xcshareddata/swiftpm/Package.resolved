@@ -6,7 +6,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/Silo-Server/AetherEngine",
       "state" : {
-        "revision" : "b1e4879e6a41477ebef3b68e8d9f65239d1ba80b"
+        "revision" : "ef0d2c7f2aa564c03b789c40f8f5c5351fc1d084"
       }
     },
     {
@@ -23,8 +23,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/superuser404notfound/FFmpegBuild",
       "state" : {
-        "revision" : "9ee46ba4fb533e35efa6492eb1a903ca4f8058fc",
-        "version" : "3.4.0"
+        "revision" : "fda08325455bc12c112b5b82d014b98fa0fee0be",
+        "version" : "3.6.0"
       }
     },
     {

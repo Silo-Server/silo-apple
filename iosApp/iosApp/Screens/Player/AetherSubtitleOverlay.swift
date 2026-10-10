@@ -5,7 +5,9 @@ import SwiftUI
 /// It never fetches, parses, demuxes, or selects subtitle media.
 struct AetherSubtitleOverlay: View {
     let engine: AetherEngine
-    @ObservedObject var assSubtitles: ASSSubtitleSession
+    let assSubtitles: ASSSubtitleSession
+    /// Read when a publication arrives; see ``SubtitleCueHold``.
+    let cueHold: SubtitleCueHold
     let sourceTime: Double
     let primaryUsesMovieTimeline: Bool
     let secondaryUsesMovieTimeline: Bool
@@ -17,10 +19,8 @@ struct AetherSubtitleOverlay: View {
     @State private var primary: [SubtitleCue] = []
     @State private var secondary: [SubtitleCue] = []
     @State private var aetherSourceTime: Double = 0
-
-    private var renderStyle: AetherSubtitleRenderStyle {
-        AetherSubtitleRenderStyle(appearance: appearance)
-    }
+    @State private var primaryTrack = LTRAuthoredSubtitles.Track()
+    @State private var secondaryTrack = LTRAuthoredSubtitles.Track()
 
     /// Positive delay means captions appear later, so the cue clock is moved
     /// backwards. This preserves Silo's existing subtitle-sync sign contract.
@@ -31,21 +31,41 @@ struct AetherSubtitleOverlay: View {
     var body: some View {
         GeometryReader { geometry in
             let videoRect = displayedVideoRect(in: geometry.size)
+            // Built once per evaluation: it sanitizes the appearance and
+            // parses its colors, and every cue below needs it.
+            let style = AetherSubtitleRenderStyle(appearance: appearance)
             ZStack {
                 if assSubtitles.handlesCurrentTrack {
                     ASSSubtitleLayer(session: assSubtitles, videoRect: videoRect, delaySeconds: subtitleDelaySeconds)
                 } else {
-                    cueLayer(activeCues(in: primary, usesMovieTimeline: primaryUsesMovieTimeline), videoRect: videoRect, secondary: false)
+                    cueLayer(activeCues(in: primary, usesMovieTimeline: primaryUsesMovieTimeline),
+                             style: style, videoRect: videoRect, secondary: false)
                 }
-                cueLayer(activeCues(in: secondary, usesMovieTimeline: secondaryUsesMovieTimeline), videoRect: videoRect, secondary: true)
-                liveCueLayer(activeLiveCues(in: livePrimaryCues), videoRect: videoRect, secondary: false)
-                liveCueLayer(activeLiveCues(in: liveSecondaryCues), videoRect: videoRect, secondary: true)
+                cueLayer(activeCues(in: secondary, usesMovieTimeline: secondaryUsesMovieTimeline),
+                         style: style, videoRect: videoRect, secondary: true)
+                liveCueLayer(activeLiveCues(in: livePrimaryCues), style: style, videoRect: videoRect, secondary: false)
+                liveCueLayer(activeLiveCues(in: liveSecondaryCues), style: style, videoRect: videoRect, secondary: true)
             }
         }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
-        .onReceive(engine.$subtitleCues) { primary = $0 }
-        .onReceive(engine.$secondarySubtitleCues) { secondary = $0 }
+        // Every primary track switch changes the engine's active index, and the
+        // index is set before the switch publishes cues.
+        .onReceive(engine.$subtitleCues) {
+            // A showing track fetched again after a timing change keeps its
+            // cues until the new ones arrive.
+            if $0.isEmpty, cueHold.holds(.primary, trackID: engine.activeSubtitleTrackIndex) { return }
+            primary = primaryTrack.laidOutAsAuthored($0, trackID: engine.activeSubtitleTrackIndex)
+        }
+        // The engine publishes no secondary index. It clears the secondary
+        // cues whenever it selects a secondary track, so an empty publication
+        // starts over; an embedded secondary track that empties during a long
+        // gap starts over too.
+        .onReceive(engine.$secondarySubtitleCues) {
+            if $0.isEmpty, cueHold.holds(.secondary, trackID: nil) { return }
+            if $0.isEmpty { secondaryTrack = LTRAuthoredSubtitles.Track() }
+            secondary = secondaryTrack.laidOutAsAuthored($0, trackID: nil)
+        }
         .onReceive(engine.clock.$sourceTime) { aetherSourceTime = $0 }
     }
 
@@ -69,13 +89,15 @@ struct AetherSubtitleOverlay: View {
     @ViewBuilder
     private func liveCueLayer(
         _ cues: [LiveSubtitleCue],
+        style: AetherSubtitleRenderStyle,
         videoRect: CGRect,
         secondary: Bool
     ) -> some View {
         ForEach(cues) { cue in
             positionedText(
-                styledPlainText(cue.text, videoRect: videoRect),
+                styledPlainText(cue.text, style: style, videoRect: videoRect),
                 placement: nil,
+                style: style,
                 videoRect: videoRect,
                 secondary: secondary
             )
@@ -85,6 +107,7 @@ struct AetherSubtitleOverlay: View {
     @ViewBuilder
     private func cueLayer(
         _ cues: [SubtitleCue],
+        style: AetherSubtitleRenderStyle,
         videoRect: CGRect,
         secondary: Bool
     ) -> some View {
@@ -98,17 +121,19 @@ struct AetherSubtitleOverlay: View {
                     .position(x: rect.midX, y: rect.midY)
             case .text(let value):
                 positionedText(
-                    styledPlainText(value, videoRect: videoRect),
+                    styledPlainText(value, style: style, videoRect: videoRect),
                     placement: cue.placement,
+                    style: style,
                     videoRect: videoRect,
                     secondary: secondary
                 )
             case .richText(let runs):
                 positionedText(
                     runs.reduce(Text("")) { accumulated, run in
-                        Text("\(accumulated)\(styledText(run, videoRect: videoRect))")
+                        Text("\(accumulated)\(styledText(run, style: style, videoRect: videoRect))")
                     },
                     placement: cue.placement,
+                    style: style,
                     videoRect: videoRect,
                     secondary: secondary
                 )
@@ -119,10 +144,11 @@ struct AetherSubtitleOverlay: View {
     private func positionedText(
         _ text: Text,
         placement: SubtitleTextPlacement?,
+        style: AetherSubtitleRenderStyle,
         videoRect: CGRect,
         secondary: Bool
     ) -> some View {
-        let rendered = decoratedText(text, videoRect: videoRect)
+        let rendered = decoratedText(text, style: style, videoRect: videoRect)
 
         return Group {
             if let position = placement?.position {
@@ -138,6 +164,7 @@ struct AetherSubtitleOverlay: View {
             } else {
                 let resolved = defaultPlacement(
                     authoredAlignment: placement?.alignment,
+                    position: style.position,
                     videoRect: videoRect,
                     secondary: secondary
                 )
@@ -156,8 +183,7 @@ struct AetherSubtitleOverlay: View {
         }
     }
 
-    private func decoratedText(_ text: Text, videoRect: CGRect) -> some View {
-        let style = renderStyle
+    private func decoratedText(_ text: Text, style: AetherSubtitleRenderStyle, videoRect: CGRect) -> some View {
         let scale = playfieldScale(for: videoRect)
         let edgeOffset = max(
             0.5,
@@ -215,6 +241,7 @@ struct AetherSubtitleOverlay: View {
 
     private func defaultPlacement(
         authoredAlignment: Int?,
+        position: AetherSubtitleRenderStyle.Position,
         videoRect: CGRect,
         secondary: Bool
     ) -> ResolvedPlacement {
@@ -239,7 +266,7 @@ struct AetherSubtitleOverlay: View {
             }
         }
 
-        switch renderStyle.position {
+        switch position {
         case .top:
             return ResolvedPlacement(
                 alignment: .top,
@@ -346,23 +373,22 @@ struct AetherSubtitleOverlay: View {
         )
     }
 
-    private func styledPlainText(_ value: String, videoRect: CGRect) -> Text {
+    private func styledPlainText(_ value: String, style: AetherSubtitleRenderStyle, videoRect: CGRect) -> Text {
         Text(value)
-            .font(font(renderStyle.fontFamily, size: scaledFontSize(
-                renderStyle.fontSizeAt1080Lines,
+            .font(font(style.fontFamily, size: scaledFontSize(
+                style.fontSizeAt1080Lines,
                 videoRect: videoRect
             )))
             .foregroundColor(color(
-                renderStyle.foreground,
-                opacity: renderStyle.foregroundOpacity
+                style.foreground,
+                opacity: style.foregroundOpacity
             ))
     }
 
     /// Aether's rich runs are authored content. Each authored color/font/size
     /// wins unless MediaAccessibility marked that field as a required system
     /// override. Missing authored values still inherit Silo's effective style.
-    private func styledText(_ run: SubtitleTextRun, videoRect: CGRect) -> Text {
-        let style = renderStyle
+    private func styledText(_ run: SubtitleTextRun, style: AetherSubtitleRenderStyle, videoRect: CGRect) -> Text {
         var text = Text(run.text)
 
         let hasAuthoredColor = run.color != nil

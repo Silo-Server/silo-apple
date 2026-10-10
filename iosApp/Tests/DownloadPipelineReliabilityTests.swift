@@ -12,7 +12,7 @@ final class DownloadPipelineReliabilityTests: XCTestCase {
         _ status: LocalDownloadStatus,
         task: Int? = nil,
         taskBeforeRead: Int? = nil,
-        live: Set<Int> = [],
+        live: Int? = nil,
         pausing: Bool = false,
         restartOwned: Bool = false
     ) -> Plan {
@@ -20,7 +20,7 @@ final class DownloadPipelineReliabilityTests: XCTestCase {
             status: status,
             taskIdentifier: task,
             taskIdentifierBeforeRead: taskBeforeRead,
-            liveTaskIds: live,
+            liveTaskId: live,
             pausing: pausing,
             restartOwned: restartOwned
         )
@@ -153,31 +153,36 @@ final class DownloadPipelineReliabilityTests: XCTestCase {
     // MARK: Reconnect
 
     func testPipelineStillRunningInThisProcessIsNotStartedAgain() {
-        XCTAssertEqual(plan(.fetchingAssets, restartOwned: true), Plan(dropTask: false, requeue: false))
+        XCTAssertEqual(plan(.fetchingAssets, restartOwned: true), Plan(taskIdentifier: nil, requeue: false))
         // After a relaunch nothing owns it, so it starts again.
-        XCTAssertEqual(plan(.fetchingAssets), Plan(dropTask: false, requeue: true))
+        XCTAssertEqual(plan(.fetchingAssets), Plan(taskIdentifier: nil, requeue: true))
     }
 
     func testTransferStartedDuringTheLiveTaskReadIsKept() {
         // The read can't see a task created after it began.
-        XCTAssertEqual(plan(.downloading, task: 7, taskBeforeRead: nil, live: []), Plan(dropTask: false, requeue: false))
-        XCTAssertEqual(plan(.downloading, task: 7, taskBeforeRead: 3, live: [3]), Plan(dropTask: false, requeue: false))
+        XCTAssertEqual(plan(.downloading, task: 7, taskBeforeRead: nil), Plan(taskIdentifier: 7, requeue: false))
+        XCTAssertEqual(plan(.downloading, task: 7, taskBeforeRead: 3, live: 3), Plan(taskIdentifier: 7, requeue: false))
     }
 
     func testLostTransferIsDroppedAndStartedAgain() {
-        XCTAssertEqual(plan(.downloading, task: 3, taskBeforeRead: 3, live: [5]), Plan(dropTask: true, requeue: true))
-        XCTAssertEqual(plan(.downloading, task: 3, taskBeforeRead: 3, live: [3]), Plan(dropTask: false, requeue: false))
+        XCTAssertEqual(plan(.downloading, task: 3, taskBeforeRead: 3), Plan(taskIdentifier: nil, requeue: true))
+        XCTAssertEqual(plan(.downloading, task: 3, taskBeforeRead: 3, live: 3), Plan(taskIdentifier: 3, requeue: false))
+        // The live task this scope owns for the record replaces a stale id.
+        XCTAssertEqual(plan(.downloading, task: 3, taskBeforeRead: 3, live: 5), Plan(taskIdentifier: 5, requeue: false))
     }
 
     func testRetryWaitingOutItsBackOffKeepsTheRecord() {
-        XCTAssertEqual(plan(.downloading, restartOwned: true), Plan(dropTask: false, requeue: false))
-        XCTAssertEqual(plan(.downloading), Plan(dropTask: false, requeue: true))
+        XCTAssertEqual(plan(.downloading, restartOwned: true), Plan(taskIdentifier: nil, requeue: false))
+        XCTAssertEqual(plan(.downloading), Plan(taskIdentifier: nil, requeue: true))
     }
 
     func testPauseRoundTripKeepsItsTask() {
-        XCTAssertEqual(plan(.paused, task: 3, taskBeforeRead: 3, live: [], pausing: true),
-            Plan(dropTask: false, requeue: false))
-        XCTAssertEqual(plan(.paused, task: 3, taskBeforeRead: 3, live: []), Plan(dropTask: true, requeue: false))
+        XCTAssertEqual(plan(.paused, task: 3, taskBeforeRead: 3, pausing: true),
+            Plan(taskIdentifier: 3, requeue: false))
+        XCTAssertEqual(plan(.paused, task: 3, taskBeforeRead: 3), Plan(taskIdentifier: nil, requeue: false))
+        // A paused record whose task still runs keeps it, so resuming cancels
+        // that task before starting another.
+        XCTAssertEqual(plan(.paused, task: 3, taskBeforeRead: 3, live: 3), Plan(taskIdentifier: 3, requeue: false))
     }
 
     // MARK: Pipeline failures

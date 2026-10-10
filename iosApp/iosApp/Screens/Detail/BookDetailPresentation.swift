@@ -1,7 +1,7 @@
 import Foundation
 
 /// The book formats the shared detail page can present. Everything that
-/// differs between formats — wording, cover shape, placeholder art — lives
+/// differs between formats — wording, cover shape, placeholder mark — lives
 /// here, so supporting ebooks later is one new case rather than a new page.
 enum BookDetailKind {
     case audiobook
@@ -15,7 +15,7 @@ enum BookDetailKind {
 
     var placeholderSymbol: String {
         switch self {
-        case .audiobook: "headphones"
+        case .audiobook: ArtworkPlaceholderSymbol.audiobook
         }
     }
 
@@ -42,17 +42,10 @@ enum BookDetailKind {
 /// view so the rules can be unit tested on every platform.
 struct BookDetailPresentation {
     let detail: ItemDetail
-    let kind: BookDetailKind
     /// The live "Finished" state from the detail view model. It wins over the
     /// payload's `played` flag so toggling Finished updates the Play label
     /// before the next detail reload.
     let isMarkedFinished: Bool
-
-    init(detail: ItemDetail, kind: BookDetailKind = .audiobook, isMarkedFinished: Bool) {
-        self.detail = detail
-        self.kind = kind
-        self.isMarkedFinished = isMarkedFinished
-    }
 
     // MARK: - Identity
 
@@ -123,10 +116,6 @@ struct BookDetailPresentation {
     }
 
     // MARK: - Timeline
-
-    var parts: [FileVersion] {
-        AudiobookPlaybackContext.audioParts(of: detail)
-    }
 
     /// Total book length, preferring the server's authoritative value and
     /// falling back to the stitched part durations.

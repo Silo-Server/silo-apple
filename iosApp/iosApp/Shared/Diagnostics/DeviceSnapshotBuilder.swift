@@ -1,9 +1,7 @@
 #if os(iOS) || os(tvOS)
 import Darwin
 import Foundation
-#if canImport(UIKit)
 import UIKit
-#endif
 
 struct DeviceSnapshotBuilder {
     var identityProvider: () -> AppleDeviceIdentity = { AppleDeviceIdentity.current }
@@ -69,17 +67,13 @@ struct DeviceSnapshotBuilder {
     }
 
     private static func osVersion() -> String {
-        #if canImport(UIKit)
-        return UIDevice.current.systemVersion
-        #else
-        return ProcessInfo.processInfo.operatingSystemVersionString
-        #endif
+        UIDevice.current.systemVersion
     }
 
     private static func formFactor() -> String {
         #if os(tvOS)
         return "tv"
-        #elseif os(iOS)
+        #else
         switch UIDevice.current.userInterfaceIdiom {
         case .phone:
             return "phone"
@@ -88,8 +82,6 @@ struct DeviceSnapshotBuilder {
         default:
             return "mobile"
         }
-        #else
-        return "not_collected"
         #endif
     }
 }

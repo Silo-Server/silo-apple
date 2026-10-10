@@ -86,23 +86,6 @@ final class ProfilesV2Tests: XCTestCase {
         }
     }
 
-    /// `LibrariesResponse` is now only the cache shape; the v1 bare-array
-    /// wire form is no longer accepted.
-    func testLibrariesResponseRoundTripsOnlyItsCacheShape() throws {
-        let cached = LibrariesResponse(libraries: [
-            Library(id: 3, name: "Series", type: "series", sortOrder: 1, posterUrl: nil),
-        ])
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
-
-        let decoded = try decoder.decode(LibrariesResponse.self, from: encoder.encode(cached))
-        XCTAssertEqual(decoded.libraries, cached.libraries)
-        XCTAssertThrowsError(try decoder.decode(
-            LibrariesResponse.self, from: Data(#"[{"id":1,"name":"Movies","type":"movies"}]"#.utf8)))
-    }
-
     // MARK: Profiles
 
     func testListProfilesReadsTheV2Collection() async throws {

@@ -26,7 +26,7 @@ extension APIv2Client {
         return try HTTPClient.makeJSONDecoder().decode(APIv2SettingsContractCapabilities.self, from: data)
     }
 
-    /// `getOverlayConfig` (profile optional): the admin overlay kill switch
+    /// `getOverlayConfig` (profile optional): the server-wide overlay default
     /// and baseline, the same for every profile of the server.
     func overlayConfig(expectedIdentity: HTTPRequestIdentity? = nil) async throws -> APIv2OverlayConfig {
         let data = try await settingsRead("/api/v2/settings/overlay-config", expectedIdentity: expectedIdentity)

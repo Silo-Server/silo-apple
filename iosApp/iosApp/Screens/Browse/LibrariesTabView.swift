@@ -119,10 +119,6 @@ func visibleLibrariesForRoot(
     return libraries.filter { libraryMatchesPrimaryMenuCategory($0, category: category) }
 }
 
-func libraryRootCanSwitch(fixedLibraryId: Int?, visibleLibraryCount: Int) -> Bool {
-    visibleLibraryCount > 1
-}
-
 func resolvedLibraryIdForRoot(
     _ libraries: [Library],
     category: PrimaryMenuBuiltin?,
@@ -198,6 +194,30 @@ func storedLibrarySelectionId(
     return defaults.integer(forKey: "librariesTabSelectedLibraryId")
 }
 
+/// Mixed libraries inherit a category root's type; direct library roots expose a selector.
+func mixedLibraryVideoScope(libraryType: String, category: PrimaryMenuBuiltin?, selection: LibraryVideoScope) -> LibraryVideoScope? {
+    guard SiloMediaType.isMixedLibrary(libraryType) else { return nil }
+    switch category {
+    case .movies: return .movie
+    case .series: return .series
+    default: return selection
+    }
+}
+
+struct LibraryVideoScopePicker: View {
+    @Binding var selection: LibraryVideoScope
+
+    var body: some View {
+        Picker("Media type", selection: $selection) {
+            Text("Movies").tag(LibraryVideoScope.movie)
+            Text("Series").tag(LibraryVideoScope.series)
+        }
+        .pickerStyle(.segmented)
+        .padding(.horizontal, SiloTheme.padding)
+        .padding(.bottom, SiloTheme.smallPadding)
+    }
+}
+
 /// Root of the Libraries tab.
 ///
 /// Mirrors the Plex/Android flow: the tab lands directly on the active
@@ -213,6 +233,7 @@ struct LibrariesTabView: View {
     @State private var libraries: [Library] = []
     @State private var selectedLibraryId: Int?
     @State private var selectedTab: LibraryPageTab = .recommended
+    @State private var selectedVideoScope: LibraryVideoScope = .movie
     @State private var isLoading = true
     @State private var error: ErrorState?
     @State private var showPicker = false
@@ -312,13 +333,13 @@ struct LibrariesTabView: View {
 
     @ViewBuilder
     private func loadedContent(activeLibrary: Library) -> some View {
-        // Switch tab content directly here (rather than going through
-        // `LibraryDetailView`) so we can hoist the top bar + tab selector
-        // into a single `safeAreaInset` overlay shared by all three tabs.
+        // Switch tab content directly here so we can hoist the top bar + tab
+        // selector into a single `safeAreaInset` overlay shared by all three
+        // tabs.
         tabContent(activeLibrary: activeLibrary)
             // Forces the whole tab subtree to reset when switching
             // libraries, so stale content never flashes on screen.
-            .id(activeLibrary.id)
+            .id("\(activeLibrary.id):\(videoScope(for: activeLibrary)?.rawValue ?? "all")")
             .environment(chromeScrollState)
             .safeAreaInset(edge: .top, spacing: 0) {
                 topChrome(activeLibrary: activeLibrary)
@@ -334,11 +355,11 @@ struct LibrariesTabView: View {
     private func tabContent(activeLibrary: Library) -> some View {
         switch selectedTab {
         case .recommended:
-            LibraryRecommendedView(libraryId: activeLibrary.id)
+            LibraryRecommendedView(libraryId: activeLibrary.id, mediaScope: videoScope(for: activeLibrary))
         case .library:
-            BrowseView(libraryId: activeLibrary.id, title: nil, showsSearchShortcut: false, libraryType: activeLibrary.type)
+            BrowseView(libraryId: activeLibrary.id, title: nil, showsSearchShortcut: false, libraryType: activeLibrary.type, mediaScope: videoScope(for: activeLibrary))
         case .collections:
-            LibraryCollectionsView(libraryId: activeLibrary.id)
+            LibraryCollectionsView(libraryId: activeLibrary.id, mediaScope: videoScope(for: activeLibrary))
         }
     }
 
@@ -347,10 +368,7 @@ struct LibrariesTabView: View {
         VStack(spacing: 0) {
             LibrariesTopBar(
                 activeLibrary: activeLibrary,
-                canSwitch: libraryRootCanSwitch(
-                    fixedLibraryId: fixedLibraryId,
-                    visibleLibraryCount: visibleLibraries.count
-                ),
+                canSwitch: canSwitchLibraries,
                 onLibraryTap: { showPicker = true },
                 onSearch: { router.navigate(to: .search) },
                 onOpenSettings: { router.navigate(to: .settings) },
@@ -365,9 +383,16 @@ struct LibrariesTabView: View {
             .padding(.top, SiloTheme.smallPadding)
             .padding(.bottom, SiloTheme.smallPadding)
 
+            if activeLibrary.isMixedLibrary && category != .movies && category != .series {
+                LibraryVideoScopePicker(selection: $selectedVideoScope)
+            }
             LibraryPageTabSelector(selectedTab: $selectedTab)
                 .padding(.bottom, SiloTheme.padding)
         }
+    }
+
+    private func videoScope(for library: Library) -> LibraryVideoScope? {
+        mixedLibraryVideoScope(libraryType: library.type, category: category, selection: selectedVideoScope)
     }
 
     private var activeLibrary: Library? {
@@ -387,6 +412,16 @@ struct LibrariesTabView: View {
         return [PrimaryMenuBuiltin.movies, .series, .audiobooks].first {
             libraryMatchesPrimaryMenuCategory(fixed, category: $0)
         }
+    }
+
+    /// The Mac lists every library in its sidebar, so the page title offers
+    /// no picker there.
+    private var canSwitchLibraries: Bool {
+        #if os(macOS)
+        false
+        #else
+        visibleLibraries.count > 1
+        #endif
     }
 
     private var visibleLibraries: [Library] {

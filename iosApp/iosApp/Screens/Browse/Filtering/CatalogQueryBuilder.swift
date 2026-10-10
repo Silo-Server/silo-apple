@@ -18,8 +18,11 @@ enum CatalogQueryBuilder {
         /// `library_id`-scoped query is already homogeneous, and resolving
         /// the wrong scope (e.g. `movie` for an audiobook library) would
         /// filter every item out. tvOS sends it (it knows the library type).
-        includeType: Bool = true
+        includeType: Bool = true,
+        enforcedScope: LibraryVideoScope? = nil
     ) -> APIv2CatalogQuery {
+        var state = state
+        if enforcedScope != nil { state.mediaScope = nil }
         var q = APIv2CatalogQuery()
         q.limit = limit
         q.sort = state.sort.field
@@ -29,6 +32,7 @@ enum CatalogQueryBuilder {
         if state.mediaScope == nil, includeType {
             q.type = mediaType.catalogTypeParam
         }
+        if let enforcedScope { q.type = enforcedScope.rawValue }
         q.namePrefix = state.namePrefix
 
         var groups = GroupAccumulator()
@@ -56,6 +60,19 @@ enum CatalogQueryBuilder {
         if let status = state.watchStatus { groups.addWatchStatus(status) }
         q.groups = groups.encoded()
 
+        return q
+    }
+
+    /// One unfiltered item of a library, used to tell an empty library from
+    /// filters that match nothing. Carries no filters, name prefix, or `type`
+    /// scope, and skips the total count. The catalog applies the active
+    /// profile's rating limits, so a library whose titles are all hidden from
+    /// the profile reads as empty.
+    static func libraryProbe(libraryId: Int?) -> APIv2CatalogQuery {
+        var q = APIv2CatalogQuery()
+        q.libraryId = libraryId.map(String.init)
+        q.limit = 1
+        q.skipTotal = true
         return q
     }
 }

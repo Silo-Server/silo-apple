@@ -131,8 +131,8 @@ final class MediaLogRedactorTests: XCTestCase {
         XCTAssertTrue(redacted.contains("[redacted-path]"))
     }
 
-    /// The media-name rule used to start at the first word of the line and run
-    /// through an already-inserted marker, collapsing everything.
+    /// The media-name rule replaces only the filename, not the words before it
+    /// or a marker an earlier rule inserted.
     func testMediaNameRuleReplacesOnlyTheFilenameToken() {
         let redacted = MediaLogRedactor.sanitize("playing [redacted-url] Movie.mkv")
 
@@ -159,9 +159,8 @@ final class MediaLogRedactorTests: XCTestCase {
         }
     }
 
-    /// Rules 2 and 9 used to re-match rule 1's own output, so a single pass
-    /// over `Authorization: Bearer abc` already yielded `[redacted]]]` — one
-    /// stray bracket per rule that re-consumed the marker.
+    /// A later rule must not re-match an earlier rule's marker: one pass over
+    /// `Authorization: Bearer abc` yields a single `[redacted]`.
     func testRedactionMarkerDoesNotAccreteBrackets() {
         let header = MediaLogRedactor.sanitize("Authorization: Bearer abc")
         XCTAssertEqual(header, "Authorization: [redacted]")
@@ -174,7 +173,7 @@ final class MediaLogRedactorTests: XCTestCase {
         let source = "[AetherEngine] load url=https://private.example/items/movie.mkv?st=signed-secret "
             + #"headers=["X-Profile-Token": "profile-secret"]"#
         var captured: String?
-        let handler = AetherDiagnosticsBridge.makeHandler { captured = $0() }
+        let handler = AetherDiagnosticsBridge.makeHandler { _, _, line in captured = line() }
 
         handler(source)
         let redacted = try XCTUnwrap(captured)
@@ -192,7 +191,7 @@ final class MediaLogRedactorTests: XCTestCase {
     func testAetherDiagnosticsHandlerHandsTheSinkADeferredProvider() {
         var invocations = 0
         var redacted: String?
-        let handler = AetherDiagnosticsBridge.makeHandler { provider in
+        let handler = AetherDiagnosticsBridge.makeHandler { _, _, provider in
             invocations += 1
             // A gated sink simply never calls `provider`; no regex sweep runs.
             redacted = provider()
@@ -203,6 +202,54 @@ final class MediaLogRedactorTests: XCTestCase {
         XCTAssertEqual(invocations, 1)
         XCTAssertEqual(redacted?.contains("private.example"), false)
         XCTAssertEqual(redacted?.contains("movie.mkv"), false)
+    }
+
+    /// The lines that place missing TrueHD Atmos heights or LFE reach a report
+    /// without Debug Logging; the rest of the engine's chatter still waits for
+    /// it. The samples are lines AetherEngine wrote: `aetherctl serve` on a
+    /// TrueHD Atmos title, and the route line on the tvOS 27 simulator.
+    func testAtmosAndAudioRouteLinesAreEssentialAndTheRestVerbose() {
+        let essential = [
+            "[SpatialAudioBridge] init: layout=7.1.4 bitRate=3840 kbps codecs=apac.31.03 priming=2048 frames",
+            "[SpatialAudioBridge] bed levels 7.1.4 at 5.0 s over 30.0 s, rms/peak dBFS: L -50.4/-22.4, R -46.9/-20.0, "
+                + "C -39.0/-13.0, LFE -30.3/-11.8, Ls -42.6/-24.1, Rs -41.8/-24.1, Rls -40.8/-23.1, "
+                + "Rrs -39.6/-23.9, Vhl -35.3/-16.9, Vhr -35.4/-16.8, Ltr -31.8/-11.4, Rtr -31.6/-11.5; "
+                + "objects: up to 15 active, 12 elevated",
+            "[HLSVideoEngine] TrueHD Atmos: objects rendered into 7.1.4, delivered as apac.31.03 "
+                + "(lossy; the lossless 7.1 channel presentation is not used)",
+            "[HLSVideoEngine] TrueHD Atmos with objectAudioRendering off; the channel bridge carries the 7.1 "
+                + "presentation, with the objects mixed into the floor channels",
+            #"[HLSVideoEngine] master audio: codecs="avc1.640029,apac.31.03" audioRendition=no channels=none"#,
+            "[NativeAVPlayerHost] #3 audioRoute output=2 preferred=2 max=2 rendering=notApplicable "
+                + "multichannelContent=false ports=[Speaker[ch=-1]] latency=0ms io=10.0ms (settled)",
+            "[AetherEngine] audioRoute rendering mode changed output=8 preferred=8 max=8 rendering=surround",
+            "[SoftwarePlaybackHost] audioRoute output=2 preferred=2 max=2 (session start, live=false)",
+            "[NativeAVPlayerHost] #3 item.audioTrack codec='apac' enabled=true sr=48000 ch=12 (readyToPlay)",
+            "[NativeAVPlayerHost] #3 item.allowedAudioSpatializationFormats=monoStereoAndMultichannel (readyToPlay)",
+            "[NativeAVPlayerHost] #3 WARNING: FLAC bridge produced 8-channel LPCM but active audio route "
+                + "carries only 2 LPCM channels, tvOS will downmix",
+            "[NativeAVPlayerHost] #3 WARNING: ec-3 6-channel track playing into a 2-channel route.",
+        ]
+        for line in essential {
+            XCTAssertEqual(AetherDiagnosticsBridge.verbosity(for: line), .essential, line)
+        }
+        let verbose = [
+            "[HLSVideoEngine] prepared: codec=avc1.640029,mp4a.40.2 resolution=1920x1080",
+            "[NativeAVPlayerHost] #3 item.videoTrack codec='avc1' enabled=true (readyToPlay)",
+            "[SegmentCache] evicted seg12 TrueHD APAC audioRoute",
+        ]
+        for line in verbose {
+            XCTAssertEqual(AetherDiagnosticsBridge.verbosity(for: line), .verbose, line)
+        }
+    }
+
+    /// An essential engine error or warning stays one in the report.
+    func testEssentialEngineLinesKeepTheirSeverity() {
+        let error = "[HLSVideoEngine] ERROR: TrueHD Atmos rendering unavailable (x); keeping the channel bridge"
+        XCTAssertEqual(AetherDiagnosticsBridge.level(for: error, verbosity: .essential), .error)
+        let warning = "[NativeAVPlayerHost] #3 WARNING: ec-3 6-channel track playing into a 2-channel route."
+        XCTAssertEqual(AetherDiagnosticsBridge.level(for: warning, verbosity: .essential), .warning)
+        XCTAssertEqual(AetherDiagnosticsBridge.level(for: error, verbosity: .verbose), .debug)
     }
 
     func testBoundsUntrustedErrorText() {

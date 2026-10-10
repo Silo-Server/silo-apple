@@ -61,6 +61,9 @@ struct MediaCard: View {
     var thumbhash: String? = nil
     var episodeWatchState: EpisodeWatchState? = nil
     var imageIsEpisodeStill: Bool? = nil
+    /// Catalog type ("movie", "series", "episode", …). Picks the mark shown
+    /// when the poster is missing.
+    var mediaType: String? = nil
     var year: Int? = nil
     /// Secondary caption line drawn in place of the year — episode cards pass
     /// "S01E02 · Pilot" so the code and episode title sit under the series
@@ -84,15 +87,20 @@ struct MediaCard: View {
     var focusedItemId: FocusState<String?>.Binding? = nil
 
     var contentId: String? = nil
+    /// An episode card's series and episode. When set, a tap opens the
+    /// series on that episode instead of loading the episode first.
+    var seriesContext: SeriesDetailContext? = nil
     var contextPlayTitle: String? = nil
     var contextDetailTitle: String? = nil
     var onOpenContextDetail: (() -> Void)? = nil
     var onRemoveFromContinueWatching: (() -> Void)? = nil
     var onSetWatched: ((Bool) async -> Bool)? = nil
     var aspect: MediaCardAspect = .poster
-    /// Overrides the theme's default card width. Skyline's dense landing
-    /// rows (§5.6) pass 208 so two rows + the marquee fit above the fold;
-    /// the poster keeps its 2:3 ratio.
+    /// Overrides the theme's default card width, before the poster-size
+    /// preference scales it. Callers pass
+    /// `SiloTheme.Skyline.densePosterCardWidth` for Skyline's dense tvOS
+    /// rows, or a width fitted to a grid's columns. The poster keeps its
+    /// aspect ratio.
     var cardWidthOverride: CGFloat? = nil
     /// Episode context retained for the card's accessibility label. Episode
     /// numbers are intentionally not drawn over poster artwork.
@@ -102,45 +110,36 @@ struct MediaCard: View {
     /// Watchlist grids use it to drop the card from the list in place.
     var onUserStateChanged: ((MediaItemUserState) -> Void)? = nil
 
-    @State private var actionFeedback = MediaActionFeedback()
-    @State private var playedOverride: Bool?
-    @State private var favoriteOverride: Bool?
-    @State private var watchlistOverride: Bool?
-    @State private var uiCustomization = UICustomizationPreferences.shared
+    @State private var personalState = MediaCardPersonalState()
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
-    /// iOS 26 zoom transition namespace, shared from `MainTabView`. When
-    /// present (and `contentId` is non-nil) the poster acts as the
-    /// `.matchedTransitionSource` for the zoom into item detail. `nil` on
-    /// tvOS/macOS or when unset, in which case the tap falls back to a plain
-    /// push. (iOS branch only — tvOS uses focus-driven `.card` style.)
-    @Environment(\.zoomNamespace) private var zoomNamespace
     #if !os(tvOS)
     @Environment(AppRouter.self) private var router
     @Environment(\.browseLibraryId) private var browseLibraryId
     @Environment(\.itemDetailBrowseSource) private var detailBrowseSource
-    /// Stable per-placement id for the zoom source. A bare `contentId` collides
-    /// when the same item is visible in two rows (e.g. Continue Watching +
-    /// Recently Added), making SwiftUI pick an ambiguous source; a per-instance
-    /// id keeps each card's source unique and the tapped card's id is handed to
-    /// the destination via `router.pendingZoomSourceID`.
-    @State private var zoomInstanceID = UUID()
     #endif
 
-    private var cardWidth: CGFloat {
-        (cardWidthOverride ?? SiloTheme.posterCardWidth)
-            * uiCustomization.cardPresentation.posterSize.scale
+    private var uiCustomization: UICustomizationPreferences { .shared }
+
+    private var cardWidth: CGFloat { artworkSize.width }
+    private var cardHeight: CGFloat { artworkSize.height }
+    private var artworkSize: CGSize {
+        Self.artworkSize(cardWidthOverride: cardWidthOverride, aspect: aspect)
     }
-    private var cardHeight: CGFloat {
+
+    /// The size a card draws its artwork at, at the current card-size setting.
+    static func artworkSize(cardWidthOverride: CGFloat?, aspect: MediaCardAspect) -> CGSize {
+        let width = (cardWidthOverride ?? SiloTheme.posterCardWidth)
+            * UICustomizationPreferences.shared.cardPresentation.posterSize.scale
         switch aspect {
         case .poster:
-            cardWidth * (SiloTheme.posterCardHeight / SiloTheme.posterCardWidth)
+            return CGSize(width: width, height: width * (SiloTheme.posterCardHeight / SiloTheme.posterCardWidth))
         case .square:
-            cardWidth
+            return CGSize(width: width, height: width)
         }
     }
 
     var body: some View {
-        cardBody.mediaActionFeedback(actionFeedback)
+        cardBody.mediaActionFeedback(personalState.feedback)
     }
 
     private var cardBody: some View {
@@ -168,9 +167,7 @@ struct MediaCard: View {
             posterImage
         }
         .onChange(of: userState) { _, _ in
-            playedOverride = nil
-            favoriteOverride = nil
-            watchlistOverride = nil
+            personalState.reset()
         }
         #else
         Group {
@@ -183,9 +180,7 @@ struct MediaCard: View {
             }
         }
         .onChange(of: userState) { _, _ in
-            playedOverride = nil
-            favoriteOverride = nil
-            watchlistOverride = nil
+            personalState.reset()
         }
         .frame(width: cardWidth)
         #endif
@@ -196,15 +191,21 @@ struct MediaCard: View {
         Group {
             if let contentId {
                 Button {
-                    router.pendingZoomSourceID = zoomInstanceID.uuidString
-                    router.presentItemDetail(
-                        contentId: contentId,
-                        libraryId: browseLibraryId,
-                        browseSource: detailBrowseSource
-                    )
+                    if let seriesContext {
+                        router.presentItemDetail(
+                            contentId: seriesContext.seriesContentId,
+                            libraryId: browseLibraryId,
+                            resumeContext: seriesContext
+                        )
+                    } else {
+                        router.presentItemDetail(
+                            contentId: contentId,
+                            libraryId: browseLibraryId,
+                            browseSource: detailBrowseSource
+                        )
+                    }
                 } label: {
                     cardContent
-                        .zoomTransitionSource(id: zoomInstanceID.uuidString, in: zoomNamespace)
                 }
                 .buttonStyle(.plain)
             } else {
@@ -247,13 +248,9 @@ struct MediaCard: View {
         contentId != nil && userState != nil
     }
 
-    private var isFavorite: Bool {
-        favoriteOverride ?? (userState?.isFavorite == true)
-    }
+    private var isFavorite: Bool { personalState.isFavorite(userState) }
 
-    private var isInWatchlist: Bool {
-        watchlistOverride ?? (userState?.inWatchlist == true)
-    }
+    private var isInWatchlist: Bool { personalState.inWatchlist(userState) }
 
     private var canSetWatched: Bool {
         onSetWatched != nil || (hasPersonalActions && aspect != .square)
@@ -266,7 +263,7 @@ struct MediaCard: View {
             isWatched: isPlayed,
             isFavorite: isFavorite,
             inWatchlist: isInWatchlist,
-            isUpdating: actionFeedback.isUpdating,
+            isUpdating: personalState.feedback.isUpdating,
             onToggleWatched: canSetWatched ? toggleWatched : nil,
             onToggleFavorite: hasPersonalActions ? togglePersonalFavorite : nil,
             onToggleWatchlist: hasPersonalActions ? togglePersonalWatchlist : nil
@@ -274,70 +271,26 @@ struct MediaCard: View {
     }
 
     private func toggleWatched() {
-        let played = !isPlayed
-        let previous = playedOverride
-        // Home's injected handler owns its page-level failure alert.
-        actionFeedback.perform(reportsFailure: onSetWatched == nil) {
-            playedOverride = played
-            let outcome: PersonalStateOutcome
-            if let onSetWatched {
-                outcome = await onSetWatched(played) ? .applied : .failed(nil)
-            } else if let contentId {
-                outcome = await MediaCardWatchedSync.setWatched(contentId: contentId, played: played)
-            } else {
-                outcome = .failed(nil)
-            }
-            if outcome == .applied {
-                onUserStateChanged?(MediaItemUserState(
-                    played: played, isFavorite: isFavorite, inWatchlist: isInWatchlist
-                ))
-            } else {
-                playedOverride = previous
-            }
-            return outcome
+        let write: MediaCardPersonalState.WatchedWrite
+        if let onSetWatched {
+            // Home's injected handler owns its page-level failure alert.
+            write = .host(onSetWatched)
+        } else if let contentId {
+            write = .catalog(contentId: contentId)
+        } else {
+            return
         }
+        personalState.toggleWatched(from: userState, via: write, onApplied: onUserStateChanged)
     }
 
     private func togglePersonalFavorite() {
         guard let contentId else { return }
-        let newValue = !isFavorite
-        let watchlist = isInWatchlist
-        let previous = favoriteOverride
-        actionFeedback.perform {
-            favoriteOverride = newValue
-            let outcome = await PersonalListSync.setFavorite(
-                contentId: contentId, isFavorite: newValue, inWatchlist: watchlist
-            )
-            if outcome == .applied {
-                onUserStateChanged?(
-                    MediaItemUserState(played: isPlayed, isFavorite: newValue, inWatchlist: watchlist)
-                )
-            } else {
-                favoriteOverride = previous
-            }
-            return outcome
-        }
+        personalState.toggleFavorite(contentId: contentId, from: userState, onApplied: onUserStateChanged)
     }
 
     private func togglePersonalWatchlist() {
         guard let contentId else { return }
-        let newValue = !isInWatchlist
-        let favorite = isFavorite
-        let previous = watchlistOverride
-        actionFeedback.perform {
-            watchlistOverride = newValue
-            let outcome = await PersonalListSync.setWatchlist(
-                contentId: contentId, isFavorite: favorite, inWatchlist: newValue
-            )
-            if outcome == .applied {
-                onUserStateChanged?(
-                    MediaItemUserState(played: isPlayed, isFavorite: favorite, inWatchlist: newValue)
-                )
-            } else {
-                watchlistOverride = previous
-            }
-            return outcome
-        }
+        personalState.toggleWatchlist(contentId: contentId, from: userState, onApplied: onUserStateChanged)
     }
 
     private var cardContent: some View {
@@ -356,7 +309,7 @@ struct MediaCard: View {
 
     private var hidesEpisodeStill: Bool {
         guard var state = episodeWatchState else { return false }
-        state.played = playedOverride ?? state.played
+        state.played = isPlayed
         return EpisodeSpoilerPreferences.shared.settings.hidesImage(for: state, isEpisodeStill: imageIsEpisodeStill)
     }
 
@@ -366,12 +319,12 @@ struct MediaCard: View {
                 url: posterUrl,
                 thumbhash: thumbhash,
                 targetSize: CGSize(width: cardWidth, height: cardHeight),
-                contentMode: .fill
+                contentMode: .fill,
+                placeholderStyle: .artwork,
+                placeholderSymbol: ArtworkPlaceholderSymbol.forMediaType(mediaType)
             )
                 .episodeSpoilerBlur(hidesEpisodeStill)
                 .frame(width: cardWidth, height: cardHeight)
-                .clipped()
-                .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
 
             // Server / user-customized overlays (resolution, HDR, ratings, …)
             // sit under the watched check + progress bar so those built-in
@@ -379,17 +332,10 @@ struct MediaCard: View {
             if let overlayData, overlayStore.enabled {
                 CardOverlays(data: overlayData, prefs: overlayStore.prefs, variant: .poster)
                     .frame(width: cardWidth, height: cardHeight)
-                    .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
             }
 
-            // Progress bar at bottom of poster (inside rounded corners)
             if let progress, progress > 0 {
-                VStack {
-                    Spacer()
-                    ProgressBar(value: progress)
-                }
-                .frame(width: cardWidth, height: cardHeight)
-                .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
+                ProgressBar(value: progress)
             }
 
             // Watched indicator — white circle with check (Plezy style)
@@ -415,11 +361,12 @@ struct MediaCard: View {
             #endif
         }
         .frame(width: cardWidth, height: cardHeight)
+        // One mask for every layer, so overlays and the progress bar stay
+        // inside the rounded corners.
+        .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
     }
 
-    private var isPlayed: Bool {
-        playedOverride ?? (userState?.played == true)
-    }
+    private var isPlayed: Bool { personalState.isPlayed(userState) }
 
     private var accessibilityDescription: String {
         mediaCardAccessibilityLabel(
@@ -432,19 +379,27 @@ struct MediaCard: View {
 
     private var titleText: some View {
         Text(title)
-            .font(.siloSubheadline)
+            .font(.siloCardTitle)
             .foregroundColor(.siloOnSurface)
+            #if os(macOS)
+            // One truncated line, like Home's feed cards. Reserving a second
+            // line left a gap between most titles and their year, and made
+            // these rows taller than Home's.
+            .lineLimit(1)
+            .truncationMode(.tail)
+            #else
             // Reserve 2 lines of space so single- and multi-line titles
             // produce the same overall card height — keeps posters in a
             // row top-aligned when titles wrap.
             .lineLimit(2, reservesSpace: true)
+            #endif
     }
 
     @ViewBuilder
     private var yearText: some View {
         if let secondLine = subtitle ?? year.map(String.init) {
             Text(secondLine)
-                .font(.siloCaption)
+                .font(.siloCardMetadata)
                 .foregroundColor(.siloSecondaryText)
                 // One line, tail-truncated: an episode title must never wrap
                 // and push the row below it.
@@ -480,24 +435,6 @@ struct MediaCard: View {
         #endif
     }
 
-}
-
-// MARK: - Zoom transition source helper
-
-extension View {
-    /// Marks this view as the `.matchedTransitionSource` for the iOS 26
-    /// poster → detail zoom, keyed on the item's `contentId`. No-ops when the
-    /// namespace is `nil` (tvOS/macOS, or when the shared namespace is unset),
-    /// so callers get a plain push with no crash. Shared by `MediaCard` and
-    /// `EpisodeThumbCard` (both in this module).
-    @ViewBuilder
-    func zoomTransitionSource(id: String, in namespace: Namespace.ID?) -> some View {
-        if let namespace {
-            self.matchedTransitionSource(id: id, in: namespace)
-        } else {
-            self
-        }
-    }
 }
 
 // MARK: - tvOS Focusable wrapper

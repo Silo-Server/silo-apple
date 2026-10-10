@@ -1,6 +1,7 @@
 #if os(iOS)
 import Foundation
 import MediaPlayer
+import Nuke
 import OSLog
 import UIKit
 
@@ -12,6 +13,13 @@ import UIKit
 ///
 /// Single ownership: the SiloControl client owns one instance and attaches it
 /// only for the lifetime of a remote-media session.
+///
+/// Both centers are process-wide and may also be bound by a local audiobook
+/// or software-route video, so this controller claims them through
+/// `SharedNowPlayingArbiter` while attached, publishes only its own metadata
+/// and only while it is the newest claimant, and releases them through the
+/// arbiter on `detach()`.
+@MainActor
 final class NowPlayingController {
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
@@ -55,6 +63,10 @@ final class NowPlayingController {
     private var currentArtworkURL: URL?
     private var artworkFetchTask: Task<Void, Never>?
     private var preferredSkipIntervals = SkipIntervals(backward: 10, forward: 10)
+    /// This session's metadata. Published as a whole so fields another
+    /// owner left in the shared dictionary never leak into it, and kept so
+    /// the arbiter can ask for it to be republished.
+    private var nowPlayingInfo: [String: Any] = [:]
 
     enum MediaKind {
         case video
@@ -77,8 +89,16 @@ final class NowPlayingController {
     func attach(handlers: Handlers) {
         self.handlers = handlers
         if !isActive {
-            registerRemoteCommands()
+            // Claiming suspends any local audiobook or software-route video
+            // on the shared centers, so lock-screen commands reach only the
+            // TV session whose metadata is shown.
+            SharedNowPlayingArbiter.shared.claim(
+                self,
+                suspend: { [weak self] in self?.unregisterRemoteCommands() },
+                restore: { [weak self] in self?.restoreSharedBinding() }
+            )
             isActive = true
+            registerRemoteCommands()
         } else {
             updateCommandAvailability()
         }
@@ -94,12 +114,23 @@ final class NowPlayingController {
         currentArtworkURL = nil
 
         unregisterRemoteCommands()
-
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        nowPlayingInfo = [:]
+        SharedNowPlayingArbiter.shared.releaseSharedCenters(self)
     }
 
-    func setPreferredSkipInterval(_ seconds: TimeInterval) {
-        setPreferredSkipIntervals(backward: seconds, forward: seconds)
+    /// Re-registers targets and republishes metadata once this session is
+    /// again the newest claimant. No-op unless attached.
+    private func restoreSharedBinding() {
+        guard isActive else { return }
+        unregisterRemoteCommands()
+        registerRemoteCommands()
+        publishNowPlayingInfo()
+    }
+
+    /// False while detached or suspended behind a newer claimant, whose
+    /// metadata and command state this session must not overwrite.
+    private var drivesSharedCenters: Bool {
+        isActive && SharedNowPlayingArbiter.shared.isCurrentClaimant(self)
     }
 
     func setPreferredSkipIntervals(backward: TimeInterval, forward: TimeInterval) {
@@ -107,7 +138,7 @@ final class NowPlayingController {
             backward: max(1, backward),
             forward: max(1, forward)
         )
-        guard isActive else { return }
+        guard drivesSharedCenters else { return }
         let center = MPRemoteCommandCenter.shared()
         center.skipForwardCommand.preferredIntervals = [NSNumber(value: preferredSkipIntervals.forward)]
         center.skipBackwardCommand.preferredIntervals = [NSNumber(value: preferredSkipIntervals.backward)]
@@ -130,30 +161,37 @@ final class NowPlayingController {
         playbackRate: Double = 1.0
     ) {
         guard isActive else { return }
-        var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
-        info[MPMediaItemPropertyTitle] = title
+        nowPlayingInfo[MPMediaItemPropertyTitle] = title
+        // Clear omitted fields so a previous remote item's values do not linger.
         if let artist, !artist.isEmpty {
-            info[MPMediaItemPropertyArtist] = artist
+            nowPlayingInfo[MPMediaItemPropertyArtist] = artist
+        } else {
+            nowPlayingInfo[MPMediaItemPropertyArtist] = nil
         }
         if let albumTitle, !albumTitle.isEmpty {
-            info[MPMediaItemPropertyAlbumTitle] = albumTitle
+            nowPlayingInfo[MPMediaItemPropertyAlbumTitle] = albumTitle
+        } else {
+            nowPlayingInfo[MPMediaItemPropertyAlbumTitle] = nil
         }
         if duration > 0 {
-            info[MPMediaItemPropertyPlaybackDuration] = duration
+            nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = duration
+        } else {
+            nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = nil
         }
-        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = position
-        info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? playbackRate : 0.0
-        info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = playbackRate
-        info[MPNowPlayingInfoPropertyMediaType] = mediaKind.nowPlayingValue
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = position
+        nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? playbackRate : 0.0
+        nowPlayingInfo[MPNowPlayingInfoPropertyDefaultPlaybackRate] = playbackRate
+        nowPlayingInfo[MPNowPlayingInfoPropertyMediaType] = mediaKind.nowPlayingValue
+        publishNowPlayingInfo()
         updateCommandAvailability()
     }
 
     /// Fetch and publish poster artwork for the active item. Idempotent for
     /// the same URL — repeated calls with an unchanged URL no-op rather than
-    /// re-fetching. Pass `nil` to clear the artwork field. Fetch happens on
-    /// a background `URLSession.shared` data task; failures are logged and
-    /// leave the existing artwork (if any) unchanged.
+    /// re-fetching. Pass `nil` to clear the artwork field. The fetch goes
+    /// through the shared Nuke pipeline, so a poster already in its disk
+    /// cache is not downloaded again; failures are logged and leave the
+    /// existing artwork (if any) unchanged.
     func setArtworkURL(_ url: URL?) {
         guard isActive else { return }
         if currentArtworkURL == url {
@@ -173,24 +211,17 @@ final class NowPlayingController {
 
     private func fetchAndApplyArtwork(url: URL) async {
         do {
-            let (data, response) = try await URLSession.shared.data(from: url)
+            // No memory-cache write: playback keeps decoded-image memory low,
+            // and the published artwork already holds this image.
+            let image = try await ImagePipeline.shared.image(
+                for: ImageRequest(url: url, options: [.disableMemoryCacheWrites])
+            )
             try Task.checkCancellation()
-            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                Self.logger.warning(
-                    "Artwork fetch HTTP \(http.statusCode)"
-                )
-                return
-            }
-            guard let image = UIImage(data: data) else {
-                Self.logger.warning("Artwork decode failed")
-                return
-            }
-            await MainActor.run { [weak self] in
-                guard let self, self.isActive else { return }
-                guard self.currentArtworkURL == url else { return }
-                self.applyArtwork(image)
-            }
+            guard isActive, currentArtworkURL == url else { return }
+            applyArtwork(image)
         } catch is CancellationError {
+            return
+        } catch ImagePipeline.Error.cancelled {
             return
         } catch {
             Self.logger.warning(
@@ -200,14 +231,19 @@ final class NowPlayingController {
     }
 
     private func applyArtwork(_ image: UIImage?) {
-        var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
         if let image {
             let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
-            info[MPMediaItemPropertyArtwork] = artwork
+            nowPlayingInfo[MPMediaItemPropertyArtwork] = artwork
         } else {
-            info[MPMediaItemPropertyArtwork] = nil
+            nowPlayingInfo[MPMediaItemPropertyArtwork] = nil
         }
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        publishNowPlayingInfo()
+    }
+
+    private func publishNowPlayingInfo() {
+        guard drivesSharedCenters else { return }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo =
+            nowPlayingInfo.isEmpty ? nil : nowPlayingInfo
     }
 
     // MARK: - Remote commands
@@ -303,7 +339,7 @@ final class NowPlayingController {
     }
 
     private func updateCommandAvailability() {
-        guard isActive else { return }
+        guard drivesSharedCenters else { return }
         let center = MPRemoteCommandCenter.shared()
         center.stopCommand.isEnabled = handlers?.stop != nil
         center.nextTrackCommand.isEnabled = handlers.map { $0.next != nil && $0.isNextEnabled() } ?? false

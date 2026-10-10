@@ -28,27 +28,94 @@ struct RequestCardRail<Item: Identifiable, Card: View>: View {
     @ViewBuilder let card: (Item) -> Card
 
     var body: some View {
-        #if os(tvOS)
         ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(alignment: .top, spacing: RequestsUI.railSpacing) {
                 ForEach(items) { item in
                     card(item)
                 }
             }
+            #if os(tvOS)
             .padding(.vertical, RequestsUI.railVerticalPadding)
+            #else
+            .scrollTargetLayout()
+            .phoneMediaRailBounds()
+            #endif
         }
+        .mediaRailScrolling()
+        #if os(tvOS)
         .scrollClipDisabled()
         // Pull the rail back to the header rhythm the padding pushed out.
         .padding(.vertical, -RequestsUI.railVerticalPadding)
-        #else
-        ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(alignment: .top, spacing: RequestsUI.railSpacing) {
-                ForEach(items) { item in
-                    card(item)
+        #endif
+    }
+}
+
+/// Section header for requests rails, in the detail pages' editorial
+/// grammar (`PhoneSectionHeader` / `TVSectionHeader`): an optional tracked
+/// eyebrow over the title, and an optional trailing link.
+struct RequestsSectionHeader: View {
+    var label: String? = nil
+    let title: String
+    var trailing: String? = nil
+    var action: (() -> Void)? = nil
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 4) {
+                if let label, !label.isEmpty {
+                    Text(label.uppercased())
+                        .font(.system(size: labelSize, weight: .bold))
+                        .tracking(1.6)
+                        .foregroundColor(.siloOnSurface.opacity(0.55))
                 }
+                Text(title)
+                    .font(.system(size: titleSize, weight: .semibold))
+                    .foregroundColor(.siloOnSurface)
+                    .lineLimit(1)
             }
-            .phoneMediaRailBounds()
+
+            Spacer(minLength: 8)
+
+            if let trailing, let action {
+                Button(action: action) {
+                    HStack(spacing: 3) {
+                        Text(trailing)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: trailingSize * 0.8, weight: .semibold))
+                    }
+                    .font(.system(size: trailingSize, weight: .medium))
+                    .foregroundColor(.siloSecondaryText)
+                }
+                #if os(tvOS)
+                .buttonStyle(.plain)
+                #else
+                .buttonStyle(.borderless)
+                #endif
+            }
         }
+    }
+
+    private var labelSize: CGFloat {
+        #if os(tvOS)
+        17
+        #else
+        11
+        #endif
+    }
+
+    private var titleSize: CGFloat {
+        #if os(tvOS)
+        30
+        #else
+        22
+        #endif
+    }
+
+    private var trailingSize: CGFloat {
+        #if os(tvOS)
+        22
+        #else
+        13
         #endif
     }
 }

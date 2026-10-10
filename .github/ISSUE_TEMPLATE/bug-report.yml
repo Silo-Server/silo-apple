@@ -1,0 +1,154 @@
+name: Bug report
+description: Report something broken in the iOS, tvOS, or macOS app
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Report behavior you reproduced yourself. Keep what you observed separate from any theory about the cause. Redact credentials, tokens, personal data, server addresses, and private media details, and mark each redaction.
+
+        [Reporting a problem](https://siloserver.org/docs/report-a-problem) explains where to find versions, stats, and diagnostics. Using Claude Code or Codex? The [Silo troubleshooting skill](https://github.com/Silo-Server/silo-troubleshooting-skill) helps you collect the details and drafts this report, then has independent reviewers check it before you post. Problems that also happen in the web app usually come from the server and belong in [silo-server](https://github.com/Silo-Server/silo-server/issues/new/choose). Problems in the Android app belong in [silo-android](https://github.com/Silo-Server/silo-android/issues/new/choose).
+
+        Fabricated or AI-hallucinated reports are an immediate block. Read [CONTRIBUTING.md](https://github.com/Silo-Server/silo-apple/blob/main/CONTRIBUTING.md) first.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you actually observe? Include how often it happens (for example "3 of 3 attempts") and what still works, such as the same item in the web app.
+    validations:
+      required: true
+  - type: textarea
+    id: steps-to-reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Exact steps you ran, from a stated starting point.
+    validations:
+      required: true
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected behavior
+      description: What should have happened, and where that expectation comes from.
+    validations:
+      required: true
+  - type: dropdown
+    id: device-type
+    attributes:
+      label: Device
+      multiple: true
+      options:
+        - "iPhone"
+        - "iPad"
+        - "Apple TV"
+        - "Mac"
+    validations:
+      required: true
+  - type: input
+    id: device-details
+    attributes:
+      label: Device model and OS version
+      placeholder: Apple TV 4K (3rd generation), tvOS 26.1
+    validations:
+      required: true
+  - type: input
+    id: app-version
+    attributes:
+      label: App version and build
+      description: "**Settings > About > Version** on iPhone, iPad, and Mac, or **Settings > Server > About > App Version** on Apple TV."
+      placeholder: "1.0.0 (42)"
+    validations:
+      required: true
+  - type: dropdown
+    id: install-source
+    attributes:
+      label: Installed from
+      options:
+        - "TestFlight"
+        - "Sideloaded IPA from GitHub Releases"
+        - "Built from source"
+        - "Other"
+    validations:
+      required: true
+  - type: input
+    id: server-version
+    attributes:
+      label: Silo server version
+      description: The **Build** value at the bottom of the server's admin sidebar, for example `412 · 1a2b3c4d`. Ask your server admin if that is not you.
+    validations:
+      required: true
+  - type: textarea
+    id: playback-details
+    attributes:
+      label: Playback details
+      description: "For playback problems. On iPhone and iPad, the player's **…** button > **Stats** (or **Advanced** for route details). On Apple TV, **Info and options** > **Stats**. On Mac, the options panel > **Playback**. Include the delivery or route, container, video, audio, and dynamic range, plus the subtitle format and your audio setup (TV speakers, soundbar, receiver)."
+  - type: input
+    id: diagnostics-reference
+    attributes:
+      label: Diagnostics report reference
+      description: "In the app, open **Settings > Support > Diagnostics** (Apple TV: **Settings > Diagnostics**), set **Send Reports To** to **Silo Diagnostics**, choose **Send Diagnostics Now**, and copy the ID from **Sent History**. Not available in the Mac app."
+      placeholder: SILO-XXXXXXXX
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots or recording
+      description: Optional. Drag files here. Crop or blur server addresses, account names, and anything else private first.
+  - type: textarea
+    id: relevant-logs
+    attributes:
+      label: Relevant server logs
+      description: Optional. Raw lines from the server's **Admin > Logs**, filtered by playback session when you can.
+      render: shell
+  - type: textarea
+    id: technical-notes
+    attributes:
+      label: Technical notes
+      description: Optional suspected root cause or related observations. Keep this separate from what you observed above.
+  - type: input
+    id: ai-harness
+    attributes:
+      label: AI harness
+      description: Enter the exact agent harness or application, or "none".
+    validations:
+      required: true
+  - type: input
+    id: ai-tools
+    attributes:
+      label: AI tool(s)
+      description: Enter the exact tool name(s), or "none".
+    validations:
+      required: true
+  - type: input
+    id: ai-models
+    attributes:
+      label: AI model(s)
+      description: Enter the exact model identifier(s) reported by each tool, or "n/a".
+    validations:
+      required: true
+  - type: dropdown
+    id: ai-involvement
+    attributes:
+      label: AI involvement
+      options:
+        - No AI used
+        - Human-written, AI-reviewed
+        - AI-assisted
+        - Fully AI-generated, human verified
+    validations:
+      required: true
+  - type: textarea
+    id: ai-review
+    attributes:
+      label: Independent or adversarial review
+      description: Summarize the scope, method, findings, and resolutions, or enter "n/a" when this issue does not require independent or adversarial review.
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: I searched open and recently closed issues and pull requests, and this is not already reported
+          required: true
+        - label: I reproduced this myself on the device and app version above
+          required: true

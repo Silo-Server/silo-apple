@@ -13,7 +13,7 @@ struct WatchlistView: View {
     @State private var error: ErrorState?
     @State private var uiCustomization = UICustomizationPreferences.shared
     #if os(iOS)
-    @State private var selectedSection: IOSPersonalMediaSection = .movies
+    @State private var selectedSection: PersonalMediaSection = .movies
     #endif
     @Environment(AppRouter.self) private var router
     @Environment(\.horizontalSizeClass) private var hSize
@@ -104,12 +104,13 @@ struct WatchlistView: View {
         #elseif os(iOS)
         ScrollView {
             VStack(spacing: 16) {
+                let visibleItems = filteredIOSItems
                 IOSPersonalMediaSectionPicker(selection: $selectedSection)
 
-                if filteredIOSItems.isEmpty {
+                if visibleItems.isEmpty {
                     iosSelectedSectionEmptyState
                 } else {
-                    IOSPersonalMediaPosterLayout(items: filteredIOSItems) { item, state in
+                    IOSPersonalMediaPosterLayout(items: visibleItems) { item, state in
                         guard !state.inWatchlist else { return }
                         withAnimation {
                             items.removeAll { $0.contentId == item.contentId }
@@ -130,6 +131,7 @@ struct WatchlistView: View {
                         thumbhash: item.posterThumbhash,
                         episodeWatchState: item.isEpisodeItem ? EpisodeWatchState(browseItem: item) : nil,
                         imageIsEpisodeStill: item.posterIsEpisodeStill,
+                        mediaType: item.type,
                         year: item.year,
                         userState: item.userState,
                         overlayData: OverlayData.from(item),
@@ -172,6 +174,7 @@ struct WatchlistView: View {
                             thumbhash: item.posterThumbhash,
                             episodeWatchState: item.isEpisodeItem ? EpisodeWatchState(browseItem: item) : nil,
                             imageIsEpisodeStill: item.posterIsEpisodeStill,
+                            mediaType: item.type,
                             year: item.year,
                             userState: item.userState,
                             overlayData: OverlayData.from(item),

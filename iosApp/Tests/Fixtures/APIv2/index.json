@@ -19,6 +19,161 @@
       "body_file": "authentication_required.json"
     },
     {
+      "name": "cancel_device_login_not_found",
+      "operation_id": "cancelDeviceLogin",
+      "scenario": "Canceling with an unknown device code.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v2/auth/device/cancel",
+        "body": "{\"device_code\":\"nope\"}"
+      },
+      "expected_status": 404,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/problem+json"
+      },
+      "response_media_type": "application/problem+json",
+      "schema": "#/components/schemas/Problem",
+      "body_file": "cancel_device_login_not_found.json"
+    },
+    {
+      "name": "cancel_device_login_ok",
+      "operation_id": "cancelDeviceLogin",
+      "scenario": "The device leaves its sign-in screen and withdraws its request, so the code can no longer be approved.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v2/auth/device/cancel",
+        "body": "{\"device_code\":\"dev-pending\"}"
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/DeviceLoginCancel",
+      "body_file": "cancel_device_login_ok.json"
+    },
+    {
+      "name": "complete_account_identity_link_invalid_grant",
+      "operation_id": "completeAccountIdentityLink",
+      "scenario": "A link code redeemed with a verifier that does not fit is refused and stays redeemable.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v2/account/identities/link-complete",
+        "headers": {
+          "Authorization": "Bearer tok-member"
+        },
+        "body": "{\"code\":\"l1nk\",\"code_verifier\":\"wrong-verifier-wrong-verifier-wrong-verifier-x\"}"
+      },
+      "expected_status": 400,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/problem+json"
+      },
+      "response_media_type": "application/problem+json",
+      "schema": "#/components/schemas/Problem",
+      "body_file": "complete_account_identity_link_invalid_grant.json"
+    },
+    {
+      "name": "complete_oauth_login_invalid_grant",
+      "operation_id": "completeOAuthLogin",
+      "scenario": "A native code redeemed without its code verifier is refused and stays redeemable.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v2/auth/oauth/complete",
+        "body": "{\"code\":\"n4tive\"}"
+      },
+      "expected_status": 400,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/problem+json"
+      },
+      "response_media_type": "application/problem+json",
+      "schema": "#/components/schemas/Problem",
+      "body_file": "complete_oauth_login_invalid_grant.json"
+    },
+    {
+      "name": "complete_oauth_login_native_ok",
+      "operation_id": "completeOAuthLogin",
+      "scenario": "A native app redeems the code the app redirect carried with its PKCE code verifier.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v2/auth/oauth/complete",
+        "body": "{\"code\":\"n4tive\",\"code_verifier\":\"dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk\"}"
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/OAuthCompletion",
+      "body_file": "complete_oauth_login_native_ok.json"
+    },
+    {
+      "name": "create_account_identity_link_ticket_ok",
+      "operation_id": "createAccountIdentityLinkTicket",
+      "scenario": "The account confirms its password and gets a ticket that starts a provider linking flow.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v2/account/identities/link-ticket",
+        "headers": {
+          "Authorization": "Bearer tok-member"
+        },
+        "body": "{\"installation_id\":\"3\",\"password\":\"right password\"}"
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/AccountIdentityLinkTicket",
+      "body_file": "create_account_identity_link_ticket_ok.json"
+    },
+    {
+      "name": "create_account_identity_link_ticket_wrong_password",
+      "operation_id": "createAccountIdentityLinkTicket",
+      "scenario": "A wrong password is a validation problem at the password member.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v2/account/identities/link-ticket",
+        "headers": {
+          "Authorization": "Bearer tok-member"
+        },
+        "body": "{\"installation_id\":\"3\",\"password\":\"wrong password\"}"
+      },
+      "expected_status": 422,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/problem+json"
+      },
+      "response_media_type": "application/problem+json",
+      "schema": "#/components/schemas/Problem",
+      "body_file": "create_account_identity_link_ticket_wrong_password.json"
+    },
+    {
+      "name": "delete_account_identity_last_sign_in_method",
+      "operation_id": "deleteAccountIdentity",
+      "scenario": "Disconnecting the only way the account can sign in is refused.",
+      "request": {
+        "method": "DELETE",
+        "path": "/api/v2/account/identities/4",
+        "headers": {
+          "Authorization": "Bearer tok-member"
+        }
+      },
+      "expected_status": 409,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/problem+json"
+      },
+      "response_media_type": "application/problem+json",
+      "schema": "#/components/schemas/Problem",
+      "body_file": "delete_account_identity_last_sign_in_method.json"
+    },
+    {
       "name": "download_capability",
       "operation_id": "getDownloadCapability",
       "scenario": "Download policy exposes ordered status support independently of registry contents.",
@@ -209,7 +364,7 @@
       "scenario": "A browser looks a pairing request up by its user code before deciding.",
       "request": {
         "method": "GET",
-        "path": "/api/v2/auth/device?code=ABCD-1234"
+        "path": "/api/v2/auth/device?code=4821-7730"
       },
       "expected_status": 200,
       "response_headers": {
@@ -219,6 +374,23 @@
       "response_media_type": "application/json",
       "schema": "#/components/schemas/DeviceLogin",
       "body_file": "get_device_login_ok.json"
+    },
+    {
+      "name": "get_external_sign_in_capabilities_ok",
+      "operation_id": "getExternalSignInCapabilities",
+      "scenario": "An app discovers that the server links external sign-in identities and tests auth plugins.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/auth/external-sign-in/capabilities"
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "private, no-cache",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/ExternalSignInCapabilities",
+      "body_file": "get_external_sign_in_capabilities_ok.json"
     },
     {
       "name": "get_image_capabilities_ok",
@@ -263,6 +435,23 @@
       "body_file": "get_metadata_ai_capability_ok.json"
     },
     {
+      "name": "get_oauth_handshake_capabilities_ok",
+      "operation_id": "getOAuthHandshakeCapabilities",
+      "scenario": "An app discovers that the server hands OAuth sign-in off to native apps and links identities.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/auth/oauth/capabilities"
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "private, no-cache",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/OAuthHandshakeCapabilitiesOutputBody",
+      "body_file": "get_oauth_handshake_capabilities_ok.json"
+    },
+    {
       "name": "get_setup_status_ok",
       "operation_id": "getSetupStatus",
       "scenario": "First-run discovery before login: whether the server still needs its initial admin account.",
@@ -299,6 +488,108 @@
       "response_media_type": "application/json",
       "schema": "#/components/schemas/SystemInfo",
       "body_file": "get_system_info_ok.json"
+    },
+    {
+      "name": "link_account_identity_with_credentials_directory_refused",
+      "operation_id": "linkAccountIdentityWithCredentials",
+      "scenario": "Directory credentials the directory refuses are a validation problem at the directory password member.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v2/account/identities/link-credentials",
+        "headers": {
+          "Authorization": "Bearer tok-member"
+        },
+        "body": "{\"installation_id\":\"4\",\"password\":\"right password\",\"username\":\"alice\",\"directory_password\":\"wrong directory password\"}"
+      },
+      "expected_status": 422,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/problem+json"
+      },
+      "response_media_type": "application/problem+json",
+      "schema": "#/components/schemas/Problem",
+      "body_file": "link_account_identity_with_credentials_directory_refused.json"
+    },
+    {
+      "name": "link_account_identity_with_credentials_ok",
+      "operation_id": "linkAccountIdentityWithCredentials",
+      "scenario": "The account re-enters its password and links its directory (LDAP) identity with the directory username and password.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v2/account/identities/link-credentials",
+        "headers": {
+          "Authorization": "Bearer tok-member"
+        },
+        "body": "{\"installation_id\":\"4\",\"password\":\"right password\",\"username\":\"alice\",\"directory_password\":\"directory password\"}"
+      },
+      "expected_status": 201,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json",
+        "Location": "/api/v2/account/identities"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/AccountIdentity",
+      "body_file": "link_account_identity_with_credentials_ok.json"
+    },
+    {
+      "name": "link_account_identity_with_network_ok",
+      "operation_id": "linkAccountIdentityWithNetwork",
+      "scenario": "The account re-enters its password and links the Tailscale identity of the device it is using.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v2/account/identities/link-network",
+        "headers": {
+          "Authorization": "Bearer tok-member"
+        },
+        "body": "{\"installation_id\":\"5\",\"password\":\"right password\"}"
+      },
+      "expected_status": 201,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json",
+        "Location": "/api/v2/account/identities"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/AccountIdentity",
+      "body_file": "link_account_identity_with_network_ok.json"
+    },
+    {
+      "name": "list_account_identities_ok",
+      "operation_id": "listAccountIdentities",
+      "scenario": "The account's Sign-in section lists the provider identity it is linked to.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/account/identities",
+        "headers": {
+          "Authorization": "Bearer tok-member"
+        }
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/AccountIdentityCollection",
+      "body_file": "list_account_identities_ok.json"
+    },
+    {
+      "name": "list_auth_providers_ok",
+      "operation_id": "listAuthProviders",
+      "scenario": "The sign-in providers a client may offer before login: the built-in one and a plugin-backed OAuth provider.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/auth/providers"
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/AuthProviderCollection",
+      "body_file": "list_auth_providers_ok.json"
     },
     {
       "name": "list_progress_offset_rejected",
@@ -631,6 +922,24 @@
       "body_file": "poll_device_login_ok.json"
     },
     {
+      "name": "poll_device_login_opened",
+      "operation_id": "pollDeviceLogin",
+      "scenario": "The device polls a pending request an approver has open: it keeps its code and says to continue on the phone.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v2/auth/device/poll",
+        "body": "{\"device_code\":\"dev-opened\"}"
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/DeviceLoginPoll",
+      "body_file": "poll_device_login_opened.json"
+    },
+    {
       "name": "profile_verification_required",
       "operation_id": null,
       "scenario": "A profile-scoped operation called for a PIN-locked profile without X-Profile-Token; clients start PIN entry on this type.",
@@ -694,6 +1003,60 @@
       "response_media_type": "application/json",
       "schema": "#/components/schemas/TrailerRefresh",
       "body_file": "refresh_catalog_item_trailers_ok.json"
+    },
+    {
+      "name": "refresh_session_provider_unavailable",
+      "operation_id": "refreshSession",
+      "scenario": "A session opened through the external sign-in provider is due for its provider re-check, the provider cannot be reached, and the outage policy is fail_closed: the session stays valid and the client retries later.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v2/auth/refresh",
+        "body": "{\"refresh_token\":\"provider-down\"}"
+      },
+      "expected_status": 503,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/problem+json"
+      },
+      "response_media_type": "application/problem+json",
+      "schema": "#/components/schemas/Problem",
+      "body_file": "refresh_session_provider_unavailable.json"
+    },
+    {
+      "name": "sign_in_with_network_identity_off_overlay",
+      "operation_id": "signInWithNetworkIdentity",
+      "scenario": "A request that did not come through the provider's network has no device owner to sign in.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v2/auth/network/7/sign-in",
+        "body": "{}"
+      },
+      "expected_status": 403,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/problem+json"
+      },
+      "response_media_type": "application/problem+json",
+      "schema": "#/components/schemas/Problem",
+      "body_file": "sign_in_with_network_identity_off_overlay.json"
+    },
+    {
+      "name": "sign_in_with_network_identity_ok",
+      "operation_id": "signInWithNetworkIdentity",
+      "scenario": "A TV on the server's Tailscale network signs its owner in with no password: the body is an empty JSON object.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v2/auth/network/5/sign-in",
+        "body": "{}"
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/TokenPair",
+      "body_file": "sign_in_with_network_identity_ok.json"
     },
     {
       "name": "start_device_login_ok",

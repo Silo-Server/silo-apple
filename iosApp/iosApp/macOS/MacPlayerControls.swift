@@ -7,117 +7,84 @@ struct MacPlayerControls: View {
     let viewModel: PlayerViewModel
     @Binding var isOptionsPresented: Bool
     @Binding var selectedOptionsTab: MacPlayerOptionsPanel.Tab
-    let onDismiss: () -> Void
 
+    // The title and format line live in the window's title bar, beside the
+    // back button, so the picture carries only the transport controls.
     var body: some View {
         VStack(spacing: 0) {
-            topBar
             Spacer(minLength: 0)
             bottomControls
         }
         .padding(20)
     }
 
-    private var topBar: some View {
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(viewModel.title.isEmpty ? "Silo" : viewModel.title)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-
-                if !viewModel.metadata.badges.isEmpty {
-                    Text(viewModel.metadata.badges.joined(separator: " · "))
-                        .font(.caption)
-                        .foregroundStyle(.white.opacity(0.66))
-                        .lineLimit(1)
-                }
-            }
-
-            Spacer()
-
-            iconButton("xmark", help: "Close", action: onDismiss)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.black.opacity(0.50))
-        )
-    }
-
     private var bottomControls: some View {
         VStack(spacing: 12) {
             MacPlayerTimeline(viewModel: viewModel)
 
-            HStack(spacing: 10) {
-                iconButton(
-                    SeekIntervalLabel.symbolName(.backward, seconds: viewModel.skipIntervals.backward),
-                    help: SeekIntervalLabel.accessibilityLabel(.backward, seconds: viewModel.skipIntervals.backward)
-                ) {
-                    viewModel.skipBackward()
+            // Transport sits in the middle of the bar; options stay on the
+            // leading side and speed and full screen on the trailing side.
+            ZStack {
+                HStack(spacing: 10) {
+                    iconButton("captions.bubble", help: "Audio and subtitle options") {
+                        showOptions(.subtitles)
+                    }
+                    .disabled(!viewModel.hasTrackSelectionOptions)
+                    .opacity(viewModel.hasTrackSelectionOptions ? 1 : 0.45)
+
+                    iconButton("list.bullet", help: "Chapters") {
+                        showOptions(.chapters)
+                    }
+                    .disabled(viewModel.chapters.isEmpty)
+                    .opacity(viewModel.chapters.isEmpty ? 0.45 : 1)
+
+                    iconButton("speedometer", help: "Playback speed, stats and route") {
+                        showOptions(.playback)
+                    }
+
+                    qualityButton
+
+                    Spacer(minLength: 8)
+
+                    Text(speedLabel)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.70))
+                        .monospacedDigit()
+
+                    iconButton("arrow.up.left.and.arrow.down.right", help: "Fullscreen") {
+                        NSApp.keyWindow?.toggleFullScreen(nil)
+                    }
                 }
 
-                Button {
-                    viewModel.togglePlayPause()
-                } label: {
-                    Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
-                        .font(.system(size: 18, weight: .semibold))
-                        .frame(width: 38, height: 32)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.black)
-                .background(
-                    Capsule(style: .continuous)
-                        .fill(Color.white)
-                )
-                .help(viewModel.isPlaying ? "Pause" : "Play")
+                HStack(spacing: 10) {
+                    iconButton(
+                        SeekIntervalLabel.symbolName(.backward, seconds: viewModel.skipIntervals.backward),
+                        help: SeekIntervalLabel.accessibilityLabel(.backward, seconds: viewModel.skipIntervals.backward)
+                    ) {
+                        viewModel.skipBackward()
+                    }
 
-                iconButton(
-                    SeekIntervalLabel.symbolName(.forward, seconds: viewModel.skipIntervals.forward),
-                    help: SeekIntervalLabel.accessibilityLabel(.forward, seconds: viewModel.skipIntervals.forward)
-                ) {
-                    viewModel.skipForward()
-                }
+                    Button {
+                        viewModel.togglePlayPause()
+                    } label: {
+                        Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 18, weight: .semibold))
+                            .frame(width: 38, height: 32)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.black)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(Color.white)
+                    )
+                    .help(viewModel.isPlaying ? "Pause" : "Play")
 
-                Divider()
-                    .frame(height: 24)
-                    .overlay(Color.white.opacity(0.18))
-                    .padding(.horizontal, 4)
-
-                iconButton("captions.bubble", help: "Audio and subtitle options") {
-                    selectedOptionsTab = .subtitles
-                    isOptionsPresented.toggle()
-                }
-                .disabled(!viewModel.hasTrackSelectionOptions)
-                .opacity(viewModel.hasTrackSelectionOptions ? 1 : 0.45)
-
-                iconButton("list.bullet", help: "Chapters") {
-                    selectedOptionsTab = .chapters
-                    isOptionsPresented.toggle()
-                }
-                .disabled(viewModel.chapters.isEmpty)
-                .opacity(viewModel.chapters.isEmpty ? 0.45 : 1)
-
-                iconButton("speedometer", help: "Playback speed") {
-                    selectedOptionsTab = .playback
-                    isOptionsPresented.toggle()
-                }
-
-                iconButton("chart.line.uptrend.xyaxis", help: "Stats and route") {
-                    selectedOptionsTab = .playback
-                    isOptionsPresented.toggle()
-                }
-
-                Spacer(minLength: 8)
-
-                Text(speedLabel)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.white.opacity(0.70))
-                    .monospacedDigit()
-
-                iconButton("arrow.up.left.and.arrow.down.right", help: "Fullscreen") {
-                    NSApp.keyWindow?.toggleFullScreen(nil)
+                    iconButton(
+                        SeekIntervalLabel.symbolName(.forward, seconds: viewModel.skipIntervals.forward),
+                        help: SeekIntervalLabel.accessibilityLabel(.forward, seconds: viewModel.skipIntervals.forward)
+                    ) {
+                        viewModel.skipForward()
+                    }
                 }
             }
         }
@@ -150,6 +117,52 @@ struct MacPlayerControls: View {
                 .fill(Color.white.opacity(0.08))
         )
         .help(help)
+    }
+
+    /// Opens the options panel on `tab`. With the panel already open on
+    /// another tab it switches tabs; on the same tab it closes the panel.
+    private func showOptions(_ tab: MacPlayerOptionsPanel.Tab) {
+        let switchesTab = isOptionsPresented && selectedOptionsTab != tab
+        selectedOptionsTab = tab
+        if !switchesTab {
+            isOptionsPresented.toggle()
+        }
+    }
+
+    /// Opens the Quality tab and names the active choice, like the quality
+    /// pill on iOS.
+    private var qualityButton: some View {
+        Button {
+            showOptions(.quality)
+        } label: {
+            HStack(spacing: 6) {
+                if viewModel.isQualitySwitching {
+                    ProgressView()
+                        .controlSize(.mini)
+                } else {
+                    Image(systemName: "slider.horizontal.3")
+                }
+                Text(activeQualityLabel)
+                    .lineLimit(1)
+            }
+            .font(.system(size: 13, weight: .semibold))
+            .padding(.horizontal, 10)
+            .frame(height: 30)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.white)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(Color.white.opacity(0.08))
+        )
+        .help("Quality")
+        .accessibilityLabel("Playback Quality")
+        .accessibilityValue(activeQualityLabel)
+    }
+
+    private var activeQualityLabel: String {
+        viewModel.qualityOptions.first(where: { $0.id == viewModel.activeQualityId })?.label
+            ?? ApplePlaybackQuality.displayName(for: viewModel.activeQualityId)
     }
 
     private var speedLabel: String {

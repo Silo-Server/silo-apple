@@ -21,13 +21,18 @@ enum DetailPlaybackFormatting {
 
     static func versionShortLabel(_ version: FileVersion?) -> String {
         guard let version else { return "Auto" }
-        let tokens = [
+        let tokens = qualityTokens(version)
+        return tokens.isEmpty ? "Auto" : tokens.joined(separator: " · ")
+    }
+
+    /// Resolution, video codec, HDR family and audio codec, when known.
+    private static func qualityTokens(_ version: FileVersion) -> [String] {
+        [
             nonEmpty(version.resolution),
             nonEmpty(normalizedVideoCodec(version.codecVideo)),
             dynamicRangeLabel(version),
             nonEmpty(normalizedAudioCodec(version.codecAudio)),
         ].compactMap { $0 }
-        return tokens.isEmpty ? "Auto" : tokens.joined(separator: " · ")
     }
 
     /// Resting-state video summary for the compact tvOS selector segment.
@@ -52,12 +57,7 @@ enum DetailPlaybackFormatting {
     }
 
     static func versionPrimaryText(_ version: FileVersion) -> String {
-        let tokens = [
-            nonEmpty(version.resolution),
-            nonEmpty(normalizedVideoCodec(version.codecVideo)),
-            dynamicRangeLabel(version),
-            nonEmpty(normalizedAudioCodec(version.codecAudio)),
-        ].compactMap { $0 }
+        let tokens = qualityTokens(version)
         if !tokens.isEmpty {
             return tokens.joined(separator: " · ")
         }
@@ -68,10 +68,7 @@ enum DetailPlaybackFormatting {
     }
 
     static func versionSecondaryText(_ version: FileVersion) -> String? {
-        let tokens = [
-            nonEmpty(versionDetailLabel(version)),
-        ].compactMap { $0 }
-        return tokens.isEmpty ? nil : tokens.joined(separator: " · ")
+        nonEmpty(versionDetailLabel(version))
     }
 
     static func currentEdition(
@@ -113,8 +110,10 @@ enum DetailPlaybackFormatting {
         !(version?.subtitleTracks ?? []).isEmpty
     }
 
+    /// Unlike audio, one subtitle track is still a choice: Auto may resolve
+    /// to Off, so the viewer needs the selector to turn that track on.
     static func shouldEnableSubtitleSelector(version: FileVersion?) -> Bool {
-        (version?.subtitleTracks ?? []).count > 1
+        !(version?.subtitleTracks ?? []).isEmpty
     }
 
     static func audioOptions(
@@ -323,117 +322,35 @@ enum DetailPlaybackFormatting {
     /// for the "Auto" (no explicit override) case, applied to the detail
     /// payload's `SubtitleTrack` list. Returns nil when Auto resolves to no
     /// subtitles (mode off, no preference, or audio already in the preferred
-    /// language). Mirrors `SubtitleAutoResolver.resolve` branch-for-branch
-    /// with the inputs the detail page can supply, including where
-    /// `showForced` does and does not apply.
+    /// language). Runs the resolver itself, with the inputs the detail page can
+    /// supply, over the candidates the start request resolves (V3 combined
+    /// order, externals first), so the preview names the track playback starts
+    /// on. The returned ordinal stays the catalog offset so "Track N" labels
+    /// match subtitleOptions. An embedded row with no index is FFmpeg stream 0
+    /// (the wire omits a zero index), so it stays selectable.
     private static func autoResolvedSubtitle(
         version: FileVersion?,
         context: SubtitleAutoContext
     ) -> (track: SubtitleTrack, ordinal: Int)? {
         let catalog = Array((version?.subtitleTracks ?? []).enumerated())
         guard !catalog.isEmpty else { return nil }
-        // Search in the Protocol V3 combined order (externals first) that
-        // `SubtitleTrackCandidates` and the plan inventory use, so a first-match
-        // tie resolves to the same track playback will start. The returned
-        // ordinal stays the catalog offset so "Track N" labels line up with
-        // `subtitleOptions`.
-        // Same candidate set and order as `SubtitleTrackCandidates`: externals
-        // first, then embedded. An embedded row with no index is FFmpeg stream
-        // 0 (the wire omits a zero index), so it stays selectable.
         let ordered = catalog.filter { $0.element.external == true }
             + catalog.filter { $0.element.external != true }
-        guard let pick = autoResolvedSubtitle(in: ordered.map(\.element), context: context) else {
+        let candidates = SubtitleTrackCandidates.playerTracks(from: ordered.map(\.element))
+        let resolution = SubtitleAutoResolver.resolve(.init(
+            preferredLanguage: context.preferredLanguage,
+            mode: SubtitleMode(rawValue: context.mode ?? ""),
+            showForced: context.showForced,
+            trackSignature: context.signature,
+            availableSubtitles: candidates,
+            currentAudioLanguage: context.audioLanguage,
+            sourceContainer: version?.container
+        ))
+        guard case .select(let pick) = resolution,
+              let position = candidates.firstIndex(of: pick) else {
             return nil
         }
-        return (pick.track, ordered[pick.ordinal].offset)
-    }
-
-    /// `autoResolvedSubtitle(version:context:)` over an already ordered list;
-    /// `ordinal` is the position in `tracks`.
-    private static func autoResolvedSubtitle(
-        in tracks: [SubtitleTrack],
-        context: SubtitleAutoContext
-    ) -> (track: SubtitleTrack, ordinal: Int)? {
-        guard !tracks.isEmpty else { return nil }
-
-        let mode = SubtitleMode(rawValue: context.mode ?? "") ?? .auto
-        if mode == .off { return nil }
-
-        if let signature = context.signature,
-           let match = bestSignatureMatch(signature, in: tracks),
-           let ordinal = tracks.firstIndex(where: { $0.id == match.id }) {
-            return (match, ordinal)
-        }
-
-        guard let rawLang = context.preferredLanguage else {
-            if mode == .always {
-                return bestLanguageMatch(nil, in: tracks, preferForced: context.showForced)
-            }
-            return nil
-        }
-
-        if rawLang.isEmpty { return nil }
-
-        // Auto mode hides subs when the audio already matches the preferred
-        // subtitle language (e.g. English audio + English sub preference) —
-        // unless forced subs are wanted, in which case the language-matching
-        // forced (signs-only) track is exactly what plays.
-        if mode == .auto, let audio = context.audioLanguage,
-           SubtitleAutoResolver.languagesMatch(audio, rawLang) {
-            if context.showForced,
-               let forced = tracks.enumerated().first(where: { _, track in
-                   (track.forced ?? false)
-                       && track.language.map { SubtitleAutoResolver.languagesMatch($0, rawLang) } == true
-               }) {
-                return (forced.element, forced.offset)
-            }
-            return nil
-        }
-
-        // The user wants readable subs in this language: always the
-        // full-dialogue track — `showForced` must NOT steal this pick
-        // (mirrors the resolver's preferForced: false here).
-        if let pick = bestLanguageMatch(rawLang, in: tracks, preferForced: false) {
-            return pick
-        }
-
-        if context.showForced,
-           let forced = tracks.enumerated().first(where: { $0.element.forced == true }) {
-            return (forced.element, forced.offset)
-        }
-        return nil
-    }
-
-    /// Language-scored pick mirroring `SubtitleAutoResolver.bestLanguageMatch`
-    /// over `SubtitleTrack`. Prefers full-dialogue (non-forced, non-SDH) unless
-    /// `preferForced` is set. Carries the array offset through as the ordinal.
-    private static func bestLanguageMatch(
-        _ language: String?,
-        in tracks: [SubtitleTrack],
-        preferForced: Bool
-    ) -> (track: SubtitleTrack, ordinal: Int)? {
-        let pool = tracks.enumerated().filter { _, track in
-            guard let language else { return true }
-            guard let trackLang = track.language else { return false }
-            return SubtitleAutoResolver.languagesMatch(trackLang, language)
-        }
-        guard !pool.isEmpty else { return nil }
-        if preferForced, let forced = pool.first(where: { $0.element.forced == true }) {
-            return (forced.element, forced.offset)
-        }
-        if let full = pool.first(where: {
-            !($0.element.forced ?? false)
-                && !($0.element.hearingImpaired ?? false)
-                && !SubtitleAutoResolver.titleIndicatesHearingImpaired(
-                    $0.element.title ?? $0.element.embeddedTitle
-                )
-        }) {
-            return (full.element, full.offset)
-        }
-        if let nonForced = pool.first(where: { !($0.element.forced ?? false) }) {
-            return (nonForced.element, nonForced.offset)
-        }
-        return (pool[0].element, pool[0].offset)
+        return (ordered[position].element, ordered[position].offset)
     }
 
     static func subtitleOptions(
@@ -449,8 +366,8 @@ enum DetailPlaybackFormatting {
         let ordered = SubtitleDisplayOrder.order(
             indexed,
             preferredLanguage: preferredLanguage
-        ) { ordinal, track in
-            let type = subtitleType(track, ordinal: ordinal)
+        ) { _, track in
+            let type = subtitleType(track)
             return SubtitleDisplayOrder.Descriptor(
                 language: track.language,
                 codec: track.codec,
@@ -502,10 +419,8 @@ enum DetailPlaybackFormatting {
                 }
                 return "Auto: Off"
             }
-            let tracks = version?.subtitleTracks ?? []
-            if tracks.count == 1, let track = tracks.first {
-                return subtitlePillSummary(track, ordinal: 0)
-            }
+            // Without a preview, never name a track: the only track on a file
+            // does not play unless the preferences or the file pick it.
             return "Auto"
         }
         if selectedSubtitleTrackIndex == -1 { return "Off" }
@@ -598,8 +513,8 @@ enum DetailPlaybackFormatting {
     static func normalizedSubtitleCodec(_ codec: String?) -> String? {
         guard let codec = codec?.lowercased(), !codec.isEmpty else { return nil }
         if codec == "srt" || codec.contains("subrip") { return "SRT" }
-        if codec == "ass" || codec.contains("ass") { return "ASS" }
-        if codec == "ssa" || codec.contains("ssa") { return "SSA" }
+        if codec.contains("ass") { return "ASS" }
+        if codec.contains("ssa") { return "SSA" }
         if codec == "vtt" || codec.contains("webvtt") { return "WebVTT" }
         if codec == "sup" || codec.contains("pgs") || codec.contains("hdmv") { return "PGS" }
         if codec.contains("dvd") || codec.contains("vobsub") { return "VobSub" }
@@ -607,13 +522,17 @@ enum DetailPlaybackFormatting {
         return codec.uppercased()
     }
 
-    static func formatFileSize(_ bytes: Int64) -> String {
+    private static let fileSizeFormatter: ByteCountFormatter = {
         let formatter = ByteCountFormatter()
         formatter.allowedUnits = [.useMB, .useGB]
         formatter.countStyle = .file
         formatter.includesUnit = true
         formatter.isAdaptive = true
-        return formatter.string(fromByteCount: bytes)
+        return formatter
+    }()
+
+    static func formatFileSize(_ bytes: Int64) -> String {
+        fileSizeFormatter.string(fromByteCount: bytes)
     }
 
     private static func compactAudioLayout(_ track: AudioTrack) -> String? {
@@ -635,7 +554,7 @@ enum DetailPlaybackFormatting {
         }
     }
 
-    private static func subtitleType(_ track: SubtitleTrack, ordinal: Int) -> String? {
+    private static func subtitleType(_ track: SubtitleTrack) -> String? {
         if let title = nonEmpty(track.title) {
             let lowered = title.lowercased()
             if lowered.contains("sdh") || lowered.contains("hearing") {
@@ -727,7 +646,7 @@ enum DetailPlaybackFormatting {
             return true
         }
         if let codec = normalizedSubtitleCodec(track.codec)?.lowercased(),
-           lowered == codec.lowercased() || lowered == track.codec?.lowercased() {
+           lowered == codec || lowered == track.codec?.lowercased() {
             return true
         }
         return false

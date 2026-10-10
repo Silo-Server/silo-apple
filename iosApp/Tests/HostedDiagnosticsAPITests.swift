@@ -1270,6 +1270,126 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
     }
 
+    func testCommittedHostedEnvelopeSurvivesADifferentDeflateEncoding() throws {
+        // Simulates an envelope saved under a zlib whose deflate output differs
+        // from the one that later loads it.
+        let fixture = try makePendingHostedReport(label: "reencoded-envelope")
+        let bundle = try DiagnosticsBundleBuilder().build(
+            report: fixture.report,
+            logLines: [],
+            droppedLogLines: 0
+        )
+        try fixture.store.saveHostedEnvelope(bundle, for: fixture.report)
+        let rewritten = try reencoded(bundle, level: Z_NO_COMPRESSION)
+        XCTAssertNotEqual(rewritten.bundleData, bundle.bundleData)
+
+        let generation = try publishedHostedEnvelopeDirectory(of: fixture.report)
+        try rewritten.bundleData.write(
+            to: generation.appendingPathComponent("bundle.tar.gz"),
+            options: .atomic
+        )
+        try rewritten.manifestData.write(
+            to: generation.appendingPathComponent("manifest.json"),
+            options: .atomic
+        )
+
+        guard case .available(let cached) = fixture.store.loadHostedEnvelope(for: fixture.report) else {
+            return XCTFail("A valid envelope must not depend on deterministic deflate output")
+        }
+        XCTAssertEqual(cached.bundleData, rewritten.bundleData)
+        XCTAssertEqual(cached.manifestData, rewritten.manifestData)
+    }
+
+    func testCommittedHostedEnvelopeRejectsBundleBytesThatDoNotMatchManifestDigest() throws {
+        let fixture = try makePendingHostedReport(label: "digest-mismatch")
+        let bundle = try DiagnosticsBundleBuilder().build(
+            report: fixture.report,
+            logLines: [],
+            droppedLogLines: 0
+        )
+        try fixture.store.saveHostedEnvelope(bundle, for: fixture.report)
+        // Valid gzip of the right tar, but the outer manifest still describes
+        // the original bytes.
+        let unboundBytes = try DiagnosticsBundleBuilder.gzip(
+            gunzip(bundle.bundleData),
+            level: Z_NO_COMPRESSION
+        )
+        XCTAssertNotEqual(unboundBytes, bundle.bundleData)
+        let generation = try publishedHostedEnvelopeDirectory(of: fixture.report)
+        try unboundBytes.write(
+            to: generation.appendingPathComponent("bundle.tar.gz"),
+            options: .atomic
+        )
+
+        guard case .corrupt = fixture.store.loadHostedEnvelope(for: fixture.report) else {
+            return XCTFail("Stored bytes must stay bound to the manifest digest the collector checks")
+        }
+
+        // Same length and the same decompressed tar (the gzip MTIME field is
+        // outside the CRC), so only the digest check can reject these bytes.
+        var sameLengthBytes = bundle.bundleData
+        sameLengthBytes[sameLengthBytes.startIndex + 4] ^= 0x01
+        XCTAssertEqual(try gunzip(sameLengthBytes), try gunzip(bundle.bundleData))
+        try sameLengthBytes.write(
+            to: generation.appendingPathComponent("bundle.tar.gz"),
+            options: .atomic
+        )
+        guard case .corrupt = fixture.store.loadHostedEnvelope(for: fixture.report) else {
+            return XCTFail("Same-length bytes with a different digest must not load")
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+    }
+
+    func testCachedHostedEnvelopeRejectsDigestMatchedBytesWithDifferentMembers() throws {
+        let fixture = try makePendingHostedReport(label: "digest-matched-members")
+        let builder = DiagnosticsBundleBuilder()
+        let bundle = try builder.build(
+            report: fixture.report,
+            logLines: [],
+            droppedLogLines: 0
+        )
+        // Control: the re-encoding helper alone yields an envelope that validates.
+        XCTAssertNoThrow(try builder.validateCachedHostedEnvelope(
+            reencoded(bundle, level: Z_DEFAULT_COMPRESSION)
+        ))
+
+        let tar = try gunzip(bundle.bundleData)
+        let deviceEntry = try XCTUnwrap(bundle.archiveEntries.first { $0.relativePath == "device.json" })
+        let range = try XCTUnwrap(tar.range(of: deviceEntry.data))
+        var mutatedTar = tar
+        mutatedTar[range.lowerBound] = mutatedTar[range.lowerBound] == UInt8(ascii: "{")
+            ? UInt8(ascii: "[")
+            : UInt8(ascii: "{")
+        // Digest, sizes, outer manifest and embedded draft all match; only the
+        // decompressed members differ from the retained entries.
+        let result = try reencoded(bundle, level: Z_DEFAULT_COMPRESSION, tar: mutatedTar)
+
+        XCTAssertThrowsError(try builder.validateCachedHostedEnvelope(result)) {
+            XCTAssertEqual($0 as? DiagnosticsBundleError, .invalidHostedEnvelope)
+        }
+    }
+
+    func testGunzipRejectsTruncatedTrailingOversizedAndDecoratedStreams() throws {
+        let original = Data(repeating: 0x41, count: 4096)
+        let gz = try DiagnosticsBundleBuilder.gzip(original)
+        XCTAssertEqual(try DiagnosticsBundleBuilder.gunzip(gz, maximumBytes: 4096), original)
+
+        // The truncated stream must be long enough to reach inflate.
+        XCTAssertGreaterThanOrEqual(gz.count - 8, 18)
+        XCTAssertThrowsError(try DiagnosticsBundleBuilder.gunzip(gz.prefix(gz.count - 8), maximumBytes: 4096))
+        XCTAssertThrowsError(try DiagnosticsBundleBuilder.gunzip(gz + [0x00], maximumBytes: 4096))
+        XCTAssertThrowsError(try DiagnosticsBundleBuilder.gunzip(gz, maximumBytes: 4095))
+        XCTAssertThrowsError(try DiagnosticsBundleBuilder.gunzip(Data("not gzip".utf8), maximumBytes: 4096))
+        XCTAssertThrowsError(try DiagnosticsBundleBuilder.gunzip(Data(), maximumBytes: 4096))
+
+        // FNAME set (FLG bit 3) with a one-character name after the fixed header.
+        var decorated = gz
+        decorated[decorated.startIndex + 3] = 0x08
+        decorated.insert(contentsOf: Data("x\0".utf8), at: decorated.startIndex + 10)
+        XCTAssertEqual(try gunzip(decorated), original)
+        XCTAssertThrowsError(try DiagnosticsBundleBuilder.gunzip(decorated, maximumBytes: 4096))
+    }
+
     func testHostedProcessingAndRejectionStateRetainLocalEvidence() throws {
         let fixture = try makePendingHostedReport(label: "processing-state")
 
@@ -1630,6 +1750,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertEqual(hostedStub.requests().map(\.method), ["DELETE"])
     }
 
+    @MainActor
     func testReadyReceiptHidesEvidenceAcrossInterruptedLocalRemoval() async throws {
         let fixture = try makePendingHostedReport(
             label: "ready-delete-crash",
@@ -1644,12 +1765,25 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertEqual(try fixture.store.hostedReadyReceiptIDs(), [fixture.report.id])
         XCTAssertTrue(fixture.store.listReports(now: Date()).isEmpty)
 
-        // A fresh process with a working filesystem remover finishes the local
-        // half before the report can be listed or uploaded again.
+        // A fresh process with a working filesystem remover does no I/O when
+        // the store is built, and listing keeps the report hidden without
+        // deleting it. The coordinator's maintenance pass, which runs at
+        // launch and on every foreground, finishes the local half.
         let restoredStore = PendingReportStore(rootDirectory: root)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+        XCTAssertTrue(restoredStore.listReports(now: Date()).isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+
+        let coordinator = DiagnosticsCoordinator(
+            hostedAPI: try makeHostedUploadAPI(),
+            pendingStore: restoredStore
+        )
+        await coordinator.scheduleHostedDeletionMaintenance().value
+
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
         XCTAssertTrue(restoredStore.listReports(now: Date()).isEmpty)
         XCTAssertEqual(try restoredStore.hostedReadyReceiptIDs(), [fixture.report.id])
+        XCTAssertTrue(hostedStub.requests().isEmpty)
     }
 
     func testHostedDeletionIntentIsNotClearedOrUploadableWhileLocalEvidenceCannotBeRemoved() async throws {
@@ -1918,11 +2052,14 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                 XCTAssertFalse(FileManager.default.fileExists(
                     atPath: fixture.reports[0].directoryURL.path
                 ))
-                XCTAssertEqual(selfHostedStub.requestedPaths(), [
+                // Capabilities and the account are read concurrently; the
+                // upload follows both.
+                let paths = selfHostedStub.requestedPaths()
+                XCTAssertEqual(Set(paths.prefix(2)), [
                     "/api/v2/diagnostics/capabilities",
                     "/api/v2/account/me",
-                    "/api/v2/diagnostics/reports",
                 ])
+                XCTAssertEqual(paths.dropFirst(2), ["/api/v2/diagnostics/reports"])
 
                 let deleted = await coordinator.delete(report: fixture.reports[1])
                 XCTAssertTrue(deleted)
@@ -2192,6 +2329,51 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         )
         XCTAssertEqual(persisted.state.hostedRejectionCode, "privacy_artifact_rejected")
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+    }
+
+    // Main-actor isolation keeps the assertions on the main thread. On Xcode
+    // 27.0, XCTest intermittently dropped failures recorded off the main
+    // thread, which hid some of this test's failures.
+    @MainActor
+    func testBundlePutFailureAfterEnvelopeSaveKeepsHostedErasureHandle() async throws {
+        let cases: [(label: String, error: HostedDiagnosticsAPIError, expected: DiagnosticsUploadDecision)] = [
+            ("put-too-large", .http(statusCode: 413, code: "bundle_too_large"), .keptTooLarge),
+            ("put-unsupported-schema", .http(statusCode: 400, code: "unsupported_schema"), .keptNeedsServerUpdate),
+        ]
+        for testCase in cases {
+            let fixture = try makePendingHostedReport(label: testCase.label)
+            let coordinator = DiagnosticsCoordinator(pendingStore: fixture.store)
+            fixture.store.markHostedConsentRefreshRequired(fixture.report)
+
+            // The upload path holds this value across saveHostedEnvelope and
+            // the create POST / bundle PUT, so it is stale by the time the
+            // PUT fails.
+            let snapshot = try XCTUnwrap(
+                fixture.store.listReports(for: fixture.report.binding.binding, now: Date()).first
+            )
+            XCTAssertTrue(snapshot.state.hostedConsentRefreshRequired, testCase.label)
+            XCTAssertNil(snapshot.state.hostedEnvelopeGeneration, testCase.label)
+
+            let bundle = try DiagnosticsBundleBuilder().build(report: snapshot, logLines: [], droppedLogLines: 0)
+            try fixture.store.saveHostedEnvelope(bundle, for: snapshot)
+
+            let decision = await coordinator.handleHostedUploadError(testCase.error, report: snapshot)
+            XCTAssertEqual(decision, testCase.expected, testCase.label)
+
+            let persisted = try XCTUnwrap(
+                fixture.store.listReports(for: fixture.report.binding.binding, now: Date()).first
+            )
+            XCTAssertNotNil(persisted.state.hostedEnvelopeGeneration, testCase.label)
+            XCTAssertFalse(persisted.state.hostedConsentRefreshRequired, testCase.label)
+            if testCase.expected == .keptTooLarge {
+                XCTAssertTrue(persisted.state.tooLarge, testCase.label)
+            } else {
+                XCTAssertTrue(persisted.state.needsServerUpdate, testCase.label)
+            }
+
+            try fixture.store.stageHostedDeletionAndDelete(snapshot)
+            XCTAssertEqual(try fixture.store.hostedDeletionIntents(), [fixture.report.id], testCase.label)
+        }
     }
 
     func testCapabilitiesArePublicAndMapCollectorIdentity() async throws {
@@ -2944,6 +3126,47 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                 XCTFail("Unregistered hosted attribute \(line.cat.rawValue).\(key)", file: file, line: sourceLine)
             }
         }
+    }
+
+    private func publishedHostedEnvelopeDirectory(of report: PendingReport) throws -> URL {
+        try XCTUnwrap(
+            FileManager.default.contentsOfDirectory(
+                at: report.directoryURL,
+                includingPropertiesForKeys: nil
+            ).first {
+                $0.lastPathComponent.hasPrefix(".hosted-envelope-")
+                    && !$0.lastPathComponent.hasPrefix(".hosted-envelope-staging-")
+            }
+        )
+    }
+
+    /// Re-encodes a built hosted bundle at another deflate level, optionally
+    /// from a replacement tar, with an outer manifest that describes the new
+    /// bytes. Retained entries are unchanged.
+    private func reencoded(
+        _ bundle: DiagnosticsBundleBuildResult,
+        level: Int32,
+        tar: Data? = nil
+    ) throws -> DiagnosticsBundleBuildResult {
+        let tar = try tar ?? gunzip(bundle.bundleData)
+        let bundleData = try DiagnosticsBundleBuilder.gzip(tar, level: level)
+        let archive = DiagnosticsManifest.Archive(
+            entries: bundle.manifest.archive.entries,
+            bytes: bundleData.count,
+            uncompressedBytes: tar.count,
+            sha256: DiagnosticsSHA256.hex(data: bundleData)
+        )
+        let draft = try DiagnosticsJSONCoding.makeDecoder().decode(
+            DiagnosticsManifestDraft.self,
+            from: bundle.archiveEntries[0].data
+        )
+        let manifest = draft.finalized(archive: archive)
+        return DiagnosticsBundleBuildResult(
+            manifest: manifest,
+            manifestData: try DiagnosticsJSONCoding.makeEncoder().encode(manifest),
+            bundleData: bundleData,
+            archiveEntries: bundle.archiveEntries
+        )
     }
 
     private func gunzip(_ data: Data) throws -> Data {

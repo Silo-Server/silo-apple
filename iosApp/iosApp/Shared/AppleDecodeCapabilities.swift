@@ -33,13 +33,16 @@ enum AppleDecodeCapabilities {
         case platformAttested
     }
 
-    #if targetEnvironment(simulator)
-    static let isSimulator = true
-    #else
-    static let isSimulator = false
-    #endif
-
+    /// The device model, such as `iPhone17,1` or `AppleTV14,1`. A simulator's
+    /// `uname` reports the host architecture, so it reads the model it
+    /// simulates instead and gets that device's capability policy.
     static let machineIdentifier: String = {
+        #if targetEnvironment(simulator)
+        if let simulated = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"],
+           !simulated.isEmpty {
+            return simulated
+        }
+        #endif
         var systemInfo = utsname()
         uname(&systemInfo)
         return withUnsafeBytes(of: &systemInfo.machine) { raw in
@@ -53,10 +56,8 @@ enum AppleDecodeCapabilities {
     /// online performance signal exists yet that can trigger a typed replan.
     static func streamingVideoCapabilityModeForDevice(
         isTVOS: Bool,
-        isSimulator: Bool,
         machineIdentifier: String
     ) -> StreamingVideoCapabilityMode {
-        guard !isSimulator else { return .platformAttested }
         if isTVOS {
             return machineIdentifier.hasPrefix("AppleTV") && machineIdentifier != "AppleTV5,3"
                 ? .aetherDeclared : .platformAttested
@@ -73,7 +74,6 @@ enum AppleDecodeCapabilities {
         #endif
         return streamingVideoCapabilityModeForDevice(
             isTVOS: isTVOS,
-            isSimulator: isSimulator,
             machineIdentifier: machineIdentifier
         )
     }
@@ -82,13 +82,8 @@ enum AppleDecodeCapabilities {
         machineIdentifier == "AppleTV5,3"
     }
 
-    /// The narrower, fixture-bounded software set retained for downloads and
-    /// conservative streaming clients. H.264 High 10 is added as a separate
-    /// detailed entry below because ordinary H.264 is also hardware-backed.
-    static let softwareVideoCodecs = ["av1", "vp9", "mpeg2video", "vc1"]
-
-    /// Silo's declared online video set for AetherEngine 7.1.0 with
-    /// FFmpegBuild 3.3.0. Newly bundled formats await capability and playback
+    /// Silo's declared online video set for the pinned AetherEngine and
+    /// FFmpegBuild. Newly bundled formats await capability and playback
     /// validation in silo-apple#299. Aether routes H.264, HEVC, and
     /// hardware-decodable AV1 natively when the exact probed stream permits;
     /// every other decoder present in the build goes through libavcodec.
@@ -102,15 +97,11 @@ enum AppleDecodeCapabilities {
     /// path and must not silently broaden a receiver/native-HLS contract.
     static let packagedVideoCodecs = hardwareVideoCodecs
 
-    /// Audio codecs the client decodes. The simulator keeps the conservative
-    /// subset it was aligned to alongside its H.264-only video claim, rather
-    /// than the device's full list.
-    static let audioCodecs: [String] = isSimulator
-        ? ["aac", "ac3", "eac3", "mp3", "opus", "flac"]
-        : [
-            "aac", "ac3", "eac3", "dts", "truehd", "flac", "alac", "mp3",
-            "opus", "vorbis", "pcm", "pcm_s16le", "pcm_s24le"
-        ]
+    /// Audio codecs the client decodes.
+    static let audioCodecs = [
+        "aac", "ac3", "eac3", "dts", "truehd", "flac", "alac", "mp3",
+        "opus", "vorbis", "pcm", "pcm_s16le", "pcm_s24le"
+    ]
 
     /// Silo's declared online audio set from the same Aether/FFmpeg build.
     /// Newly bundled WMA and legacy Flash audio are tracked in silo-apple#299.
@@ -127,9 +118,9 @@ enum AppleDecodeCapabilities {
     /// ones (`mkv`/`matroska`, `ts`/`mpegts`) are listed: the server sends
     /// whichever its scanner recorded, and a claim it cannot match reads as
     /// "unsupported".
-    static let videoContainers: [String] = isSimulator
-        ? ["mp4", "mov", "m4v", "mkv", "matroska", "ts", "m2ts", "mpegts"]
-        : ["mp4", "mov", "m4v", "mkv", "matroska", "webm", "avi", "ts", "m2ts", "mpegts"]
+    static let videoContainers = [
+        "mp4", "mov", "m4v", "mkv", "matroska", "webm", "avi", "ts", "m2ts", "mpegts"
+    ]
 
     /// Bare audio containers proven by the first Aether-only Silo fixture
     /// matrix. The scanner currently normalizes M4A/M4B to `mp4`, but the
@@ -143,7 +134,7 @@ enum AppleDecodeCapabilities {
     /// Silo's declared containers for online original HTTP.
     /// Silo's scanner records MPEG program streams (`.mpg`/`.vob`) as `mpeg`,
     /// so that token is what carries FFmpegBuild's `mpegps` demuxer claim.
-    /// FFmpegBuild 3.3.0 includes ASF/WMV support. Advertising it together with
+    /// The pinned FFmpegBuild includes ASF/WMV support. Advertising it together with
     /// the matching audio codecs awaits playback validation in silo-apple#299.
     private static let aetherVideoContainers = [
         "mp4", "m4v", "mov", "mkv", "matroska", "avi", "mpegts", "ts", "m2ts",
@@ -198,10 +189,10 @@ enum AppleDecodeCapabilities {
     }
 
     /// The conservative resolution ceiling, or nil for "no client-imposed
-    /// cap". The simulator and Apple TV HD stop at 1080p; other device
-    /// surfaces retain the existing 2160p fallback token.
+    /// cap". Apple TV HD stops at 1080p; other device surfaces retain the
+    /// existing 2160p fallback token.
     static var maxResolution: String? {
-        isSimulator || isAppleTVHD ? "1080p" : nil
+        isAppleTVHD ? "1080p" : nil
     }
 
     /// `maxResolution` for surfaces that need it spelled out rather than left
@@ -213,17 +204,13 @@ enum AppleDecodeCapabilities {
         mode == .aetherDeclared ? "2160p" : maxResolutionToken
     }
 
-    static var streamingMaxResolutionToken: String {
-        streamingMaxResolutionToken(for: streamingVideoCapabilityMode)
-    }
-
     static var maxDecodeWidth: Int { maxDecodeHeight >= 2_160 ? 3_840 : 1_920 }
-    static var maxDecodeHeight: Int { isSimulator || isAppleTVHD ? 1_080 : 2_160 }
+    static var maxDecodeHeight: Int { isAppleTVHD ? 1_080 : 2_160 }
 
     /// The hardware attestations VideoToolbox supplies, followed by the
     /// narrower software envelopes proven with Aether fixtures. This is the
-    /// persistent-download safety contract and the fallback for Apple TV HD,
-    /// simulators, and macOS. Online iOS and Apple TV 4K playback delegate
+    /// persistent-download safety contract and the fallback for Apple TV HD
+    /// and macOS. Online iOS and Apple TV 4K playback delegate
     /// these decisions to Aether's source probe.
     static func videoDecodeAttestation() -> [AppleVideoDecodeCapability] {
         videoDecodeAttestationValue
@@ -291,7 +278,9 @@ enum AppleDecodeCapabilities {
 
     private static func hardwareDecodeSupported(_ codecType: CMVideoCodecType) -> Bool {
         #if targetEnvironment(simulator)
-        // The simulator answers for the host GPU, not a shippable device.
+        // VideoToolbox in the simulator reports no hardware decoders, which
+        // would leave server-packaged streams and downloads with no video
+        // codec. AVPlayer there still plays H.264.
         return codecType == kCMVideoCodecType_H264
         #else
         return VTIsHardwareDecodeSupported(codecType)

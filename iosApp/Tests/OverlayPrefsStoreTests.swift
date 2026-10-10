@@ -124,7 +124,80 @@ final class OverlayPrefsStoreTests: XCTestCase {
         XCTAssertFalse(store.enabled)
         XCTAssertEqual(store.prefs.preset, .minimal)
         let effective = try XCTUnwrap(stub.requests.first { $0.path.hasSuffix(Self.effectivePath) })
-        XCTAssertEqual(effective.query["keys"], "ui.card_overlays")
+        let requestedKeys = try XCTUnwrap(effective.url.flatMap {
+            URLComponents(url: $0, resolvingAgainstBaseURL: false)?.queryItems
+        })
+        .filter { $0.name == "keys" }
+        .map(\.value)
+        XCTAssertEqual(requestedKeys, ["ui.card_overlays", "ui.card_overlays_enabled"])
+    }
+
+    func testProfileChoiceOverridesTheServerDefaultInEitherDirection() async throws {
+        // (server default, profile choice, expected)
+        let cases: [(Bool, Bool?, Bool)] = [
+            (true, false, false),
+            (false, true, true),
+            (true, nil, true),
+            (false, nil, false),
+        ]
+        for (serverDefault, profileChoice, expected) in cases {
+            let stub = StubURLProtocol.Handler()
+            stub.route(StubURLProtocol.pathSuffix(Self.configPath)) { _ in
+                .json(#"{"enabled":\#(serverDefault),"quick_actions_enabled":false,"quick_actions_default":"both"}"#)
+            }
+            stub.route(StubURLProtocol.pathSuffix(Self.effectivePath)) { _ in
+                .json(Self.effectiveBody(overlaysEnabled: profileChoice))
+            }
+            let (api, _) = try await makeAPI(stub: stub, profileId: "profile-a")
+            let store = OverlayPrefsStore(api: api)
+
+            await store.refresh()
+
+            XCTAssertNil(store.lastError)
+            XCTAssertEqual(
+                store.enabled,
+                expected,
+                "server default \(serverDefault), profile choice \(String(describing: profileChoice))"
+            )
+        }
+    }
+
+    func testProfileChoiceMadeElsewhereAppliesOnRefreshAndClearForgetsIt() async throws {
+        let stub = StubURLProtocol.Handler()
+        // Off, then cleared on another device, then off again: each refresh
+        // must apply the newest answer without a clear() in between.
+        let choices: [Bool?] = [false, nil, false]
+        let answered = LockedCounter()
+        stub.route(StubURLProtocol.pathSuffix(Self.configPath)) { _ in
+            .json(#"{"enabled":true,"quick_actions_enabled":false,"quick_actions_default":"both"}"#)
+        }
+        stub.route(StubURLProtocol.pathSuffix(Self.effectivePath)) { _ in
+            let index = answered.next()
+            return .json(Self.effectiveBody(overlaysEnabled: choices[min(index, choices.count - 1)]))
+        }
+        let (api, _) = try await makeAPI(stub: stub, profileId: "profile-a")
+        let store = OverlayPrefsStore(api: api)
+
+        await store.refresh()
+        XCTAssertFalse(store.enabled)
+        await store.refresh()
+        XCTAssertTrue(store.enabled, "a cleared choice falls back to the server default")
+        await store.refresh()
+        XCTAssertFalse(store.enabled)
+
+        store.clear()
+        XCTAssertTrue(store.enabled, "the next profile must not inherit this profile's choice")
+    }
+
+    /// An effective-values answer with no saved badge document and the given
+    /// `ui.card_overlays_enabled` profile choice (nil = not chosen).
+    private nonisolated static func effectiveBody(overlaysEnabled: Bool?) -> String {
+        let enabledRow = overlaysEnabled.map {
+            #"{"key":"ui.card_overlays_enabled","value":\#($0),"source":"profile","scope":"profile"}"#
+        } ?? #"{"key":"ui.card_overlays_enabled","value":null,"source":"default"}"#
+        return #"""
+        {"items":[{"key":"ui.card_overlays","value":null,"source":"default"},\#(enabledRow)],"revision":99}
+        """#
     }
 
     func testConfigReplyWithoutRequiredMembersKeepsTheCachedKillSwitch() async throws {
@@ -176,5 +249,18 @@ final class OverlayPrefsStoreTests: XCTestCase {
         await tokens.setProfileId(profileId)
         let http = HTTPClient(session: stub.makeSession(), tokenStore: tokens)
         return (SiloAPI(http: http, tokenStore: tokens), tokens)
+    }
+}
+
+/// Counts stub calls, which arrive on URLSession's threads.
+private final class LockedCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    func next() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        defer { count += 1 }
+        return count
     }
 }

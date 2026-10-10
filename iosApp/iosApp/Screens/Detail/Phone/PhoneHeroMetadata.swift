@@ -2,11 +2,10 @@
 import Foundation
 
 /// A token in the hero's facts row. `.text` items get a middle-dot
-/// separator between them; `.rating` renders a green check + maturity
-/// label; `.chip` renders an outlined uppercase pill (4K / HDR / ATMOS / CC).
+/// separator between them; `.chip` is an outlined uppercase pill
+/// (4K / HDR / ATMOS / CC).
 enum PhoneHeroFactToken: Hashable {
     case text(String)
-    case rating(String)
     case chip(String)
 }
 
@@ -40,16 +39,6 @@ enum PhoneHeroMetadata {
         return []
     }
 
-    static func seasonSourceTokens(from detail: ItemDetail, episodeCount: Int) -> [String] {
-        var tokens: [String] = []
-        let count = detail.episodeCount ?? episodeCount
-        if count > 0 { tokens.append("\(count) Episode\(count == 1 ? "" : "s")") }
-        if let genres = detail.genres, !genres.isEmpty {
-            tokens.append(contentsOf: genres.prefix(2))
-        }
-        return tokens
-    }
-
     static func contentRatingChip(from detail: ItemDetail) -> String? {
         guard let rating = detail.contentRating?
             .trimmingCharacters(in: .whitespaces), !rating.isEmpty
@@ -67,27 +56,22 @@ enum PhoneHeroMetadata {
         } else if let year = detail.year, year > 0 {
             tokens.append(.text(String(year)))
         }
-        if let runtime = SelectedMediaRuntime.minutes(
-            detail: detail,
-            selectedVersion: selectedVersion
-        ), runtime > 0 {
-            tokens.append(.text(formatRuntime(runtime)))
-        }
-        if let imdb = detail.ratingImdb {
-            tokens.append(.text(String(format: "★ %.1f", imdb)))
+        let runtime = SelectedMediaRuntime.minutes(detail: detail, selectedVersion: selectedVersion)
+        if let runtimeText = MediaTextFormatting.runtime(minutes: runtime) {
+            tokens.append(.text(runtimeText))
         }
         tokens.append(contentsOf: qualityTokens(from: detail, version: selectedVersion))
         return tokens
     }
 
-    static func seriesFactsLine(from detail: ItemDetail) -> [PhoneHeroFactToken] {
+    /// `seasons` is the season list the page loaded from the library; the
+    /// count stays off the line until it arrives.
+    static func seriesFactsLine(from detail: ItemDetail, seasons: [Season]) -> [PhoneHeroFactToken] {
         var tokens: [PhoneHeroFactToken] = []
         if let year = detail.year, year > 0 { tokens.append(.text(String(year))) }
-        if let count = detail.seasonCount, count > 0 {
+        let count = seasons.librarySeasonCount
+        if count > 0 {
             tokens.append(.text("\(count) Season\(count == 1 ? "" : "s")"))
-        }
-        if let imdb = detail.ratingImdb {
-            tokens.append(.text(String(format: "★ %.1f", imdb)))
         }
         tokens.append(contentsOf: qualityTokens(from: detail))
         return tokens
@@ -102,9 +86,12 @@ enum PhoneHeroMetadata {
                 return seriesTitle
             }
         }
-        if let status = detail.status?
-            .trimmingCharacters(in: .whitespaces), !status.isEmpty,
-           detail.type == "series" {
+        // A series' airing state is `show_status`; `status` is the catalog
+        // item's own state and is usually empty for series.
+        if detail.type == "series",
+           let status = [detail.showStatus, detail.status]
+            .compactMap({ $0?.trimmingCharacters(in: .whitespaces) })
+            .first(where: { !$0.isEmpty }) {
             switch status.lowercased() {
             case "continuing", "returning series", "returning":
                 return "Continuing Series"
@@ -232,13 +219,6 @@ enum PhoneHeroMetadata {
 
     private static func hasSubtitles(version: FileVersion) -> Bool {
         !(version.subtitleTracks ?? []).isEmpty
-    }
-
-    static func formatRuntime(_ minutes: Int) -> String {
-        if minutes >= 60 {
-            return "\(minutes / 60)h \(minutes % 60)m"
-        }
-        return "\(minutes) min"
     }
 }
 #endif

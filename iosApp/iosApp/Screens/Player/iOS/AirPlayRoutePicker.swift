@@ -5,7 +5,7 @@ import SwiftUI
 /// AirPlay button for the mobile player's top strip.
 ///
 /// The picker lives inside the `showControls` branch of `MobilePlayerControls`,
-/// which the 3s auto-hide tears down. UIKit taps on this view never reach the
+/// which the auto-hide tears down. UIKit taps on this view never reach the
 /// SwiftUI gesture layer, so without `onPresentingRoutes` the timer keeps
 /// running while the route sheet is up and dismantles the button — and the
 /// sheet with it — mid-selection. The callback lets the caller pin the

@@ -94,6 +94,19 @@ private final class FakePairingAPI: PairingDeviceAuthorizing, @unchecked Sendabl
         return DeviceLookupResponse(matchCode: lookupMatchCode, deviceName: nil, devicePlatform: nil, status: nil)
     }
 
+    private(set) var cancelledCodes: [String] = []
+    /// Whether the server's capability offers `cancelDeviceLogin`.
+    var supportsCancel = true
+
+    func cancel(serverURL: String, deviceCode: String) async throws {
+        cancelledCodes.append(deviceCode)
+    }
+
+    func capability(serverURL: String) async throws -> APIv2DeviceCapability {
+        APIv2DeviceCapability(revision: "r", state: "available", remotePlaybackHandoff: false, protocolVersions: [2],
+            allowed: nil, cancel: supportsCancel, openedSignal: true)
+    }
+
     private(set) var approveAttempts = 0
 
     func approve(serverURL: String, bearer: String, userCode: String) async throws {
@@ -104,22 +117,6 @@ private final class FakePairingAPI: PairingDeviceAuthorizing, @unchecked Sendabl
 }
 
 // MARK: - Helpers
-
-@MainActor
-private func expectEventually(
-    _ label: String,
-    timeout: TimeInterval = 5,
-    file: StaticString = #filePath,
-    line: UInt = #line,
-    _ condition: () -> Bool
-) async {
-    let deadline = Date().addingTimeInterval(timeout)
-    while Date() < deadline {
-        if condition() { return }
-        try? await Task.sleep(for: .milliseconds(10))
-    }
-    XCTFail("timed out waiting for: \(label)", file: file, line: line)
-}
 
 private func entry(_ id: String, name: String) -> ServerEntry {
     ServerEntry(id: id, url: "https://\(id).example", fetchedName: name, profileId: nil, lastUsedAt: Date())
@@ -259,8 +256,9 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
             api: api,
             deviceModel: "iPhone",
             availableServers: { servers },
-            accessToken: { _ in "token" },
-            serverEndpoints: { _, _ in endpoints }
+            accessToken: { _ in .token("token") },
+            serverEndpoints: { _, _ in endpoints },
+            accountName: { _, _ in "laura" }
         )
         coordinator.start()
         return coordinator
@@ -353,7 +351,8 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
         await coordinator.pushSelected(servers)
         channel.deliver(.deviceStarted(serverURL: "https://a.example", userCode: "USER-1", matchCode: "ABCD"))
         await expectEventually("confirm step") {
-            if case .confirmMatch(_, _, let code) = coordinator.state { return code == "ABCD" }
+            // People compare the TV's sign-in code, not the match words.
+            if case .confirmMatch(_, _, _, _, let code, _) = coordinator.state { return code == "USER-1" }
             return false
         }
         channel.deliver(.cancel(reason: "receiver_cancelled"))
@@ -362,6 +361,37 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
             return false
         }
         XCTAssertTrue(api.approvedCodes.isEmpty, "must not approve a session the TV abandoned")
+    }
+
+    /// Rollout fallback, phone side: an Apple TV or Android TV released
+    /// before user codes shows only the match words (and sends the same
+    /// `deviceStarted` frame), so the setup confirm step names them next to
+    /// the code newer TVs show. The step also names the server, its host and
+    /// the account approving signs the TV in as.
+    func testConfirmStepNamesTheMatchWordsForOlderTVs() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        api.lookupMatchCode = "warm pony"
+        let coordinator = makeCoordinator(channel: channel, api: api, servers: [entry("a", name: "Home")])
+        channel.deliver(hello())
+        await expectEventually("picker") {
+            if case .pickServers = coordinator.state { return true }
+            return false
+        }
+        guard case let .pickServers(_, servers) = coordinator.state else {
+            return XCTFail("expected pickServers, got \(coordinator.state)")
+        }
+        await coordinator.pushSelected(servers)
+        channel.deliver(.deviceStarted(serverURL: "https://a.example", userCode: "4821-7730", matchCode: "warm pony"))
+        await expectEventually("both codes to compare") {
+            coordinator.state == .confirmMatch(tvName: "Living Room", serverName: "Home", serverHost: "a.example",
+                                               accountName: "laura", code: "4821-7730", matchWords: "warm pony")
+        }
+        // Worded as on Android and the web /activate card.
+        XCTAssertEqual(CompanionPairingCard.olderTVLine(matchWords: "warm pony"), "Older TV apps show WARM PONY instead.")
+        XCTAssertNil(CompanionPairingCard.olderTVLine(matchWords: nil))
+        XCTAssertNil(CompanionPairingCard.olderTVLine(matchWords: " "))
+        await coordinator.cancel()
     }
 
     /// Regression: servers after the first are auto-approved, so the code the
@@ -958,6 +988,33 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
         await runTask.value
     }
 
+    /// A status outside the poll contract ends the attempt the way every
+    /// device-code flow ends it (and the way wire validation already
+    /// refuses it), rather than being polled as if it were pending.
+    func testUnknownPollStatusFailsWithoutPollingAgain() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        api.pollResults = [.success(devicePoll("slow_down"))]
+        api.pollResponse = pendingPoll
+        let recorder = PersistRecorder()
+        let coordinator = makeCoordinator(api: api, recorder: recorder)
+        let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
+
+        await allowPush(channel, coordinator)
+        await expectEventually("unknown status failure") {
+            coordinator.state == .failed(serverName: "Home", code: .authFailed, help: nil)
+        }
+
+        XCTAssertEqual(api.pollCount, 1)
+        XCTAssertTrue(recorder.persisted.isEmpty)
+        XCTAssertTrue(channel.sent.contains {
+            if case .serverResult("https://home.example", .failed, "auth_failed") = $0 { return true }
+            return false
+        })
+        channel.deliver(.done)
+        await runTask.value
+    }
+
     func testCancellationDuringTransientPollBackoffDoesNotPublishFailure() async {
         let channel = FakePairingChannel()
         let api = FakePairingAPI()
@@ -1115,7 +1172,7 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
         api.pollResponse = pendingPoll // hold the attempt at awaitingApproval
         channel.deliver(.pushServer(serverURL: "https://two.example", serverName: "Two"))
         await expectEventually("manual-confirmation copy") {
-            if case let .awaitingApproval(_, _, automatic) = coordinator.state { return !automatic }
+            if case let .awaitingApproval(_, _, _, automatic) = coordinator.state { return !automatic }
             return false
         }
         channel.dropConnection()
@@ -1201,12 +1258,367 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
 }
 
 private func waitForIdentityTransitionWaiter(_ http: HTTPClient) async -> Bool {
-    let deadline = ContinuousClock.now + .seconds(2)
-    while ContinuousClock.now < deadline {
-        if await http.pendingIdentityTransitionCount() > 0 {
-            return true
-        }
-        try? await Task.sleep(for: .milliseconds(10))
-    }
-    return false
+    await eventually(timeout: .seconds(2)) { await http.pendingIdentityTransitionCount() > 0 }
 }
+
+// MARK: - TV sign-in (st=login) and setup failures
+
+/// A sign-in screen lending its displayed code to the receiver.
+@MainActor
+private final class FakeSignInCodeSource: NearbySignInCodeSource {
+    var code: DeviceLoginStartResponse? = DeviceLoginStartResponse(
+        deviceCode: "SCREEN-DEV", userCode: "4821-7730", matchCode: "warm pony",
+        verificationUri: "https://home.example/activate",
+        verificationUriComplete: "https://home.example/activate?code=48217730",
+        expiresAt: Date().addingTimeInterval(900), expiresIn: 900, interval: 5,
+        deviceName: "Living Room", devicePlatform: "tvos")
+    var outcome: NearbySignInOutcome = .signedIn
+    private(set) var awaitedDeviceCodes: [String] = []
+
+    func codeForNearbyApproval() async -> DeviceLoginStartResponse? { code }
+
+    func nearbyApprovalOutcome(deviceCode: String) async -> NearbySignInOutcome {
+        awaitedDeviceCodes.append(deviceCode)
+        return outcome
+    }
+}
+
+@MainActor
+final class TVSignInPairingTests: XCTestCase {
+    private func consent(_ channel: FakePairingChannel, _ coordinator: ReceiverPairingCoordinator,
+                         identity: String?) async {
+        channel.deliver(.pushServer(serverURL: "https://home.example", serverName: "Home", serverIdentity: identity))
+        await expectEventually("consent prompt") {
+            if case .consentRequested = coordinator.state { return true }
+            return false
+        }
+        coordinator.allowPendingServer()
+    }
+
+    /// #554: approved but not saved. The TV says so and tells the phone
+    /// instead of idling until the peer times out. The wire carries
+    /// `auth_failed`: Android has no `save_failed` yet.
+    func testSaveFailureAfterApprovalIsReportedToTheTVAndThePhone() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        api.pollResponse = approvedPoll
+        let coordinator = ReceiverPairingCoordinator(api: api, identityProbe: { _ in .unreachable }) { _ in false }
+        let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
+
+        await consent(channel, coordinator, identity: nil)
+        await expectEventually("save failure") {
+            if case .failed(_, .saveFailed, _) = coordinator.state { return true }
+            return false
+        }
+        XCTAssertTrue(channel.sent.contains {
+            if case .serverResult("https://home.example", .failed, "auth_failed") = $0 { return true }
+            return false
+        })
+        XCTAssertEqual(PairingFailureCode(wire: "save_failed"), .saveFailed, "a TV that sends it later still reads right")
+        channel.deliver(.done)
+        await runTask.value
+    }
+
+    /// A setup attempt abandoned while waiting for approval withdraws its
+    /// request, so the code can't be approved after the TV stopped waiting,
+    /// but only on a server whose capability offers cancel (the policy the
+    /// sign-in screen follows too).
+    func testAbandonedSetupAttemptWithdrawsItsRequest() async throws {
+        for supportsCancel in [true, false] {
+            let channel = FakePairingChannel()
+            let api = FakePairingAPI()
+            api.supportsCancel = supportsCancel
+            api.pollResponse = pendingPoll
+            let coordinator = ReceiverPairingCoordinator(api: api, identityProbe: { _ in .unreachable }) { _ in true }
+            let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
+
+            await consent(channel, coordinator, identity: nil)
+            await expectEventually("awaiting approval") {
+                if case .awaitingApproval(_, let code, _, _) = coordinator.state { return code == "USER-1" }
+                return false
+            }
+            await coordinator.cancel()
+            await runTask.value
+            if supportsCancel {
+                await expectEventually("request withdrawn") { api.cancelledCodes == ["DEV-1"] }
+            } else {
+                try await Task.sleep(for: .milliseconds(100))
+                XCTAssertTrue(api.cancelledCodes.isEmpty, "an older server has no cancel route")
+            }
+        }
+    }
+
+    /// Rollout fallback, TV side: a phone released before user codes shows
+    /// the match words, so the TV names them next to its code.
+    func testTVNamesTheMatchWordsForOlderPhones() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        api.pollResponse = pendingPoll
+        let coordinator = ReceiverPairingCoordinator(api: api, identityProbe: { _ in .unreachable }) { _ in true }
+        let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
+
+        // An older phone: a legacy push with no identity or endpoints.
+        await consent(channel, coordinator, identity: nil)
+        await expectEventually("both codes on screen") {
+            coordinator.state == .awaitingApproval(serverName: "Home", code: "USER-1", matchWords: "ABCD", automatic: false)
+        }
+        XCTAssertTrue(channel.sent.contains(.deviceStarted(serverURL: "https://home.example", userCode: "USER-1", matchCode: "ABCD")),
+            "the match code stays on the wire for the older phone to compare")
+        await coordinator.cancel()
+        await runTask.value
+    }
+
+    /// A signed-out TV answers the phone with the code its sign-in screen
+    /// already shows; it opens no second request, and relays the screen's
+    /// outcome to the phone.
+    func testSignInModeRelaysTheDisplayedCodeAndOutcome() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        let source = FakeSignInCodeSource()
+        let coordinator = ReceiverPairingCoordinator(api: api, identityProbe: { _ in .unreachable }) { _ in true }
+        coordinator.mode = .login(serverIdentity: "srv-1", source: source)
+        let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
+
+        await expectEventually("hello") { !channel.sent.isEmpty }
+        guard case .hello(_, _, .login, _) = channel.sent.first else {
+            return XCTFail("a sign-in TV says hello as login: \(String(describing: channel.sent.first))")
+        }
+        await consent(channel, coordinator, identity: "srv-1")
+        await expectEventually("signed in") {
+            if case .signedIn = coordinator.state { return true }
+            return false
+        }
+        XCTAssertTrue(channel.sent.contains(.deviceStarted(serverURL: "https://home.example", userCode: "4821-7730", matchCode: "warm pony")))
+        XCTAssertEqual(coordinator.mode.isSignIn, true)
+        XCTAssertTrue(channel.sent.contains(.serverResult(serverURL: "https://home.example", status: .signedIn, error: nil)))
+        XCTAssertEqual(source.awaitedDeviceCodes, ["SCREEN-DEV"])
+        XCTAssertTrue(api.startedServers.isEmpty, "no second device request")
+        channel.deliver(.done)
+        await runTask.value
+    }
+
+    /// A sign-in TV accepts only the server it is signed out of.
+    func testSignInModeRefusesAnotherServer() async {
+        let channel = FakePairingChannel()
+        let source = FakeSignInCodeSource()
+        let coordinator = ReceiverPairingCoordinator(api: FakePairingAPI(), identityProbe: { _ in .unreachable }) { _ in true }
+        coordinator.mode = .login(serverIdentity: "srv-1", source: source)
+        let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
+
+        await consent(channel, coordinator, identity: "someone-else")
+        await expectEventually("identity mismatch") {
+            if case .failed(_, .identityMismatch, _) = coordinator.state { return true }
+            return false
+        }
+        XCTAssertFalse(channel.sent.contains { if case .deviceStarted = $0 { return true } else { return false } })
+        XCTAssertTrue(source.awaitedDeviceCodes.isEmpty)
+        channel.deliver(.done)
+        await runTask.value
+    }
+
+    /// The sign-in screen's own failure shows on the TV and reaches the phone
+    /// as a code both platforms know.
+    func testSignInModeRelaysAFailedSave() async {
+        let channel = FakePairingChannel()
+        let source = FakeSignInCodeSource()
+        source.outcome = .failed(.saveFailed)
+        let coordinator = ReceiverPairingCoordinator(api: FakePairingAPI(), identityProbe: { _ in .unreachable }) { _ in true }
+        coordinator.mode = .login(serverIdentity: "srv-1", source: source)
+        let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
+
+        await consent(channel, coordinator, identity: "srv-1")
+        await expectEventually("typed failure to the phone") {
+            channel.sent.contains(.serverResult(serverURL: "https://home.example", status: .failed, error: "auth_failed"))
+        }
+        if case .failed(_, .saveFailed, _) = coordinator.state {} else {
+            XCTFail("the TV explains the save failure: \(coordinator.state)")
+        }
+        channel.deliver(.done)
+        await runTask.value
+    }
+
+    /// A phone that predates sign-in TVs pushes no identity. The TV asks for
+    /// a phone update instead of calling it a different server.
+    func testSignInModeAsksAnOlderPhoneToUpdate() async {
+        let channel = FakePairingChannel()
+        let source = FakeSignInCodeSource()
+        let coordinator = ReceiverPairingCoordinator(api: FakePairingAPI(), identityProbe: { _ in .unreachable }) { _ in true }
+        coordinator.mode = .login(serverIdentity: "srv-1", source: source)
+        let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
+
+        await consent(channel, coordinator, identity: nil)
+        await expectEventually("update required") {
+            if case .failed(_, .updateRequired, let help?) = coordinator.state { return help.contains("phone or tablet") }
+            return false
+        }
+        XCTAssertTrue(channel.sent.contains(.serverResult(serverURL: "https://home.example", status: .failed, error: "update_required")))
+        XCTAssertTrue(source.awaitedDeviceCodes.isEmpty)
+        channel.deliver(.done)
+        await runTask.value
+    }
+
+    /// The phone side of a sign-in TV: no chooser, only the TV's server is
+    /// pushed without alternate addresses (the TV ignores them in sign-in
+    /// mode), and the person compares the TV's own code. No older-TV match
+    /// words: only TVs that show user codes advertise their sign-in screen.
+    func testPhonePushesOnlyTheSignInTVsServer() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        api.lookupMatchCode = "ABCD"
+        let home = ServerEntry(id: "a", url: "https://a.example", fetchedName: "Home", profileId: nil,
+            lastUsedAt: Date(), verifiedServerId: "srv-1")
+        let coordinator = CompanionPairingCoordinator(
+            channel: channel, stream: channel.stream, tvName: "Living Room", fixedServer: home, api: api,
+            deviceModel: "iPhone", availableServers: { XCTFail("no chooser for a sign-in TV"); return [] },
+            accessToken: { _ in .token("token") },
+            serverEndpoints: { _, _ in XCTFail("a sign-in TV gets no alternate addresses"); return nil },
+            accountName: { _, _ in "laura" })
+        coordinator.start()
+        channel.deliver(.hello(tvName: "Living Room", tvDeviceId: "tv-1", state: .login, supportedVersions: [PairingProtocol.version]))
+        await expectEventually("pushed its server") {
+            channel.sent.contains {
+                if case .pushServer(let url, _, let identity, let endpoints) = $0 {
+                    return url == home.url && identity == "srv-1" && endpoints == nil
+                }
+                return false
+            }
+        }
+        channel.deliver(.deviceStarted(serverURL: home.url, userCode: "USER-1", matchCode: "ABCD"))
+        await expectEventually("compare the TV's code") {
+            // The TV's code to compare, with who approving signs it in as.
+            if case .confirmMatch(_, "Home", "a.example", "laura", "USER-1", nil) = coordinator.state { return true }
+            return false
+        }
+        XCTAssertEqual(channel.sent.filter { if case .pushServer = $0 { return true } else { return false } }.count, 1)
+        await coordinator.cancel()
+    }
+
+    /// The match code stays a consistency check for the first server too: a
+    /// relayed request the server doesn't recognise is never shown.
+    func testFirstServerRefusesARelayedCodeTheServerDisowns() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        api.lookupMatchCode = "ZZZZ"
+        let coordinator = CompanionPairingCoordinator(
+            channel: channel, stream: channel.stream, tvName: "Living Room", api: api, deviceModel: "iPhone",
+            availableServers: { [ServerEntry(id: "a", url: "https://a.example", fetchedName: "Home", profileId: nil, lastUsedAt: Date())] },
+            accessToken: { _ in .token("token") }, serverEndpoints: { _, _ in nil }, accountName: { _, _ in nil })
+        coordinator.start()
+        channel.deliver(.hello(tvName: "Living Room", tvDeviceId: "tv-1", state: .setup, supportedVersions: [PairingProtocol.version]))
+        await expectEventually("picker") {
+            if case .pickServers = coordinator.state { return true }
+            return false
+        }
+        guard case let .pickServers(_, servers) = coordinator.state else { return XCTFail() }
+        await coordinator.pushSelected(servers)
+        channel.deliver(.deviceStarted(serverURL: servers[0].url, userCode: "USER-1", matchCode: "ABCD"))
+        await expectEventually("refused") {
+            if case .finished(let ok, let bad) = coordinator.state { return ok.isEmpty && bad.map(\.name) == ["Home"] }
+            return false
+        }
+        XCTAssertTrue(api.approvedCodes.isEmpty)
+    }
+
+    /// A signed-in phone without a token for the TV's server gets a clear
+    /// instruction instead of an approval sent with no bearer.
+    func testApprovalWithoutAUsableTokenAsksToSignInAgain() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        var calls = 0
+        let coordinator = CompanionPairingCoordinator(
+            channel: channel, stream: channel.stream, tvName: "Living Room", api: api, deviceModel: "iPhone",
+            availableServers: { [ServerEntry(id: "a", url: "https://a.example", fetchedName: "Home", profileId: nil, lastUsedAt: Date())] },
+            // The lookup gets a bearer; by approval time the renewal failed.
+            accessToken: { _ in calls += 1; return calls == 1 ? .token("token") : .rejected },
+            serverEndpoints: { _, _ in nil }, accountName: { _, _ in nil })
+        coordinator.start()
+        channel.deliver(.hello(tvName: "Living Room", tvDeviceId: "tv-1", state: .setup, supportedVersions: [PairingProtocol.version]))
+        await expectEventually("picker") {
+            if case .pickServers = coordinator.state { return true }
+            return false
+        }
+        guard case let .pickServers(_, servers) = coordinator.state else { return XCTFail() }
+        await coordinator.pushSelected(servers)
+        channel.deliver(.deviceStarted(serverURL: servers[0].url, userCode: "USER-1", matchCode: "ABCD"))
+        await expectEventually("confirm") {
+            if case .confirmMatch = coordinator.state { return true }
+            return false
+        }
+        await coordinator.confirmMatch()
+        await expectEventually("sign in again") {
+            if case .error(let message) = coordinator.state { return message.contains("Sign in to Home") }
+            return false
+        }
+        XCTAssertEqual(api.approveAttempts, 0)
+    }
+
+    /// A renewal the sign-in provider could not confirm, or one that could
+    /// not reach the server, keeps the session: the phone says so instead of
+    /// asking the person to sign in again.
+    func testApprovalDuringAnOutageDoesNotAskToSignInAgain() async {
+        let cases: [(ApproverBearer, String)] = [
+            (.providerUnavailable, ExternalSignInError.reasonText("provider_unavailable")),
+            (.unreachable, "Couldn’t reach Home to approve the sign-in. Check this iPhone’s connection and try again."),
+        ]
+        for (failure, expected) in cases {
+            let channel = FakePairingChannel()
+            let api = FakePairingAPI()
+            var calls = 0
+            let coordinator = CompanionPairingCoordinator(
+                channel: channel, stream: channel.stream, tvName: "Living Room", api: api, deviceModel: "iPhone",
+                availableServers: { [ServerEntry(id: "a", url: "https://a.example", fetchedName: "Home", profileId: nil, lastUsedAt: Date())] },
+                accessToken: { _ in calls += 1; return calls == 1 ? .token("token") : failure },
+                serverEndpoints: { _, _ in nil }, accountName: { _, _ in nil })
+            coordinator.start()
+            channel.deliver(.hello(tvName: "Living Room", tvDeviceId: "tv-1", state: .setup, supportedVersions: [PairingProtocol.version]))
+            await expectEventually("picker") {
+                if case .pickServers = coordinator.state { return true }
+                return false
+            }
+            guard case let .pickServers(_, servers) = coordinator.state else { return XCTFail() }
+            await coordinator.pushSelected(servers)
+            channel.deliver(.deviceStarted(serverURL: servers[0].url, userCode: "USER-1", matchCode: "ABCD"))
+            await expectEventually("confirm") {
+                if case .confirmMatch = coordinator.state { return true }
+                return false
+            }
+            await coordinator.confirmMatch()
+            await expectEventually("\(failure)") {
+                if case .error(let message) = coordinator.state { return message == expected }
+                return false
+            }
+            XCTAssertEqual(api.approveAttempts, 0)
+        }
+    }
+}
+
+#if os(iOS)
+import Network
+
+/// The phone's nearby card must not keep offering what a TV no longer
+/// advertises (found on simulators: a "Sign in <TV>?" card stayed up after
+/// the TV had moved to its setup screen).
+final class CompanionOfferWithdrawalTests: XCTestCase {
+    private func tv(_ state: String, sid: String?, srv: String? = nil) -> DiscoveredTV {
+        var txt = ["id": "tv-1", "name": "Living Room", "st": state]
+        if let sid { txt["sid"] = sid }
+        if let srv { txt["srv"] = srv }
+        return TVPairingBrowser.makeTV(txt: txt, endpoint: .hostPort(host: "tv.local", port: 1))!
+    }
+
+    func testOfferStaysWhileTheTVAdvertisesTheSameSession() {
+        let offered = tv("login", sid: "a", srv: "srv-1")
+        XCTAssertEqual(CompanionPairingCardModifier.advertStatus(of: offered, in: [tv("login", sid: "a", srv: "srv-1")]), .same)
+    }
+
+    func testOfferIsWithdrawnWhenTheTVChangesStateOrSession() {
+        let offered = tv("login", sid: "a", srv: "srv-1")
+        XCTAssertEqual(CompanionPairingCardModifier.advertStatus(of: offered, in: [tv("setup", sid: "b")]), .changed)
+        XCTAssertEqual(CompanionPairingCardModifier.advertStatus(of: offered, in: [tv("login", sid: "c", srv: "srv-1")]), .changed)
+    }
+
+    func testAVanishedTVIsReportedGone() {
+        XCTAssertEqual(CompanionPairingCardModifier.advertStatus(of: tv("setup", sid: "a"), in: []), .gone)
+    }
+}
+#endif

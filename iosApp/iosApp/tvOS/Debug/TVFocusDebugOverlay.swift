@@ -1,4 +1,5 @@
 #if os(tvOS) && DEBUG
+import Combine
 import SwiftUI
 import UIKit
 
@@ -504,7 +505,7 @@ struct TVFocusDebugTabFramePublisher: View {
     let isSelected: Bool
 
     var body: some View {
-        if isSelected, TVDebugSettings.shared.showFocusTargets {
+        if isSelected, TVDebugSettings.showFocusTargets {
             GeometryReader { proxy in
                 Color.clear
                     .onAppear {
@@ -681,42 +682,35 @@ final class TVFocusDebugOverlayController {
 
     private var window: UIWindow?
 
-    func setEnabled(_ enabled: Bool) {
-        if enabled {
-            guard window == nil else { return }
-            let scenes = UIApplication.shared.connectedScenes
-                .compactMap { $0 as? UIWindowScene }
-            guard let scene = scenes.first(where: {
-                $0.activationState == .foregroundActive
-            }) ?? scenes.first else { return }
+    func enable() {
+        guard window == nil else { return }
+        let scenes = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+        guard let scene = scenes.first(where: {
+            $0.activationState == .foregroundActive
+        }) ?? scenes.first else { return }
 
-            let host = UIHostingController(rootView: TVFocusDebugOverlay())
-            host.view.backgroundColor = .clear
+        let host = UIHostingController(rootView: TVFocusDebugOverlay())
+        host.view.backgroundColor = .clear
 
-            let overlay = UIWindow(windowScene: scene)
-            overlay.windowLevel = .alert + 100
-            overlay.isUserInteractionEnabled = false
-            overlay.backgroundColor = .clear
-            overlay.rootViewController = host
-            overlay.isHidden = false
-            window = overlay
-        } else {
-            window?.isHidden = true
-            window = nil
-        }
+        let overlay = UIWindow(windowScene: scene)
+        overlay.windowLevel = .alert + 100
+        overlay.isUserInteractionEnabled = false
+        overlay.backgroundColor = .clear
+        overlay.rootViewController = host
+        overlay.isHidden = false
+        window = overlay
     }
 }
 
-/// Root-level activation hook: mirrors the persisted debug setting into
-/// the overlay window's lifecycle.
+/// Installs the overlay window at launch when the debug flag is set.
 struct TVFocusDebugActivationModifier: ViewModifier {
-    @State private var debugSettings = TVDebugSettings.shared
-
     func body(content: Content) -> some View {
-        content
-            .onChange(of: debugSettings.showFocusTargets, initial: true) { _, enabled in
-                TVFocusDebugOverlayController.shared.setEnabled(enabled)
+        content.onAppear {
+            if TVDebugSettings.showFocusTargets {
+                TVFocusDebugOverlayController.shared.enable()
             }
+        }
     }
 }
 #endif

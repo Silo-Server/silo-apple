@@ -1,3 +1,4 @@
+#if !os(macOS)
 import SwiftUI
 
 /// Next Up supplies geometry, never another video view. Moving a shared
@@ -25,14 +26,17 @@ struct PlayerSurfaceLayout<Surface: View, Content: View>: View {
     @ViewBuilder let surface: () -> Surface
     @ViewBuilder let content: () -> Content
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    #if os(iOS)
+    @Environment(\.playerTabletopLayout) private var tabletopLayout
+    #endif
 
     var body: some View {
         content()
             .overlayPreferenceValue(PlayerPreviewBoundsKey.self) { geometry in
                 GeometryReader { proxy in
-                    let fullFrame = CGRect(origin: .zero, size: proxy.size)
-                    let frame = isPreview ? geometry.bounds.map { proxy[$0] } ?? fullFrame : fullFrame
-                    let viewport = isPreview ? geometry.viewport.map { proxy[$0] } ?? fullFrame : fullFrame
+                    let playing = playingFrame(in: proxy)
+                    let frame = isPreview ? geometry.bounds.map { proxy[$0] } ?? playing : playing
+                    let viewport = isPreview ? geometry.viewport.map { proxy[$0] } ?? playing : playing
                     // One structural identity in both modes. Only geometry changes;
                     // expansion must not load, seek, bind a second host, or resume.
                     surface()
@@ -58,18 +62,29 @@ struct PlayerSurfaceLayout<Surface: View, Content: View>: View {
                 .accessibilityHidden(isPreview)
             }
     }
+
+    /// The whole screen, or everything above the fold in the iPhone Duo's
+    /// tabletop posture.
+    private func playingFrame(in proxy: GeometryProxy) -> CGRect {
+        let screen = CGRect(origin: .zero, size: proxy.size)
+        #if os(iOS)
+        if let tabletopLayout {
+            let videoMaxY = tabletopLayout.videoMaxY - proxy.frame(in: .global).minY
+            return CGRect(x: 0, y: 0, width: screen.width, height: min(max(videoMaxY, 0), screen.height))
+        }
+        #endif
+        return screen
+    }
 }
 
-/// iOS keeps one vertical preview/actions stack through rotation. The Mac
-/// retains its side-by-side layout and optional On Deck shelf.
-struct PlayerNextUpMobileLayout<Preview: View, Panel: View, Extras: View>: View {
+#if os(iOS)
+/// iOS keeps one vertical preview/actions stack through rotation.
+struct PlayerNextUpMobileLayout<Preview: View, Panel: View>: View {
     @ViewBuilder let preview: () -> Preview
     @ViewBuilder let panel: (_ compact: Bool) -> Panel
-    @ViewBuilder let extras: () -> Extras
 
     var body: some View {
         GeometryReader { proxy in
-            #if os(iOS)
             let compact = proxy.size.width > proxy.size.height
             PlayerNextUpStackLayout(compact: compact) {
                 preview()
@@ -78,42 +93,10 @@ struct PlayerNextUpMobileLayout<Preview: View, Panel: View, Extras: View>: View 
             .padding(.horizontal, 20)
             .padding(.vertical, compact ? 8 : 16)
             .frame(width: proxy.size.width, height: proxy.size.height)
-            #else
-            let horizontalInset = max(20, max(proxy.safeAreaInsets.leading, proxy.safeAreaInsets.trailing) + 12)
-            let topInset = max(16, proxy.safeAreaInsets.top + 12)
-            let bottomInset = max(16, proxy.safeAreaInsets.bottom + 12)
-            let width = max(0, min(1100, proxy.size.width - horizontalInset * 2))
-            let height = max(0, proxy.size.height - topInset - bottomInset)
-            let sideBySide = (width >= 500 && width > height) || width >= 760
-            let previewWidth = sideBySide
-                ? min(480, width * 0.43, height * 0.7 * 16 / 9)
-                : min(260, width, height * 0.22 * 16 / 9)
-            let layout = sideBySide
-                ? AnyLayout(HStackLayout(alignment: .center, spacing: 24))
-                : AnyLayout(VStackLayout(alignment: .center, spacing: 14))
-
-            VStack(spacing: 16) {
-                layout {
-                    preview().frame(width: previewWidth)
-                    panel(height < 270).frame(maxWidth: sideBySide ? 420 : .infinity)
-                        .layoutPriority(1)
-                }
-                .frame(maxWidth: .infinity)
-                .layoutPriority(1)
-
-                ScrollView(.vertical, showsIndicators: false) {
-                    extras()
-                }
-            }
-            .frame(width: width, height: height, alignment: .top)
-            .frame(maxWidth: .infinity)
-            .padding(.top, topInset)
-            #endif
         }
     }
 }
 
-#if os(iOS)
 /// Measure the actual action panel first, then fit the preview above it.
 /// Keeping the same stack and video anchor across sizes avoids reparenting
 /// the playing surface or guessing how much room the text and buttons need.
@@ -140,4 +123,5 @@ struct PlayerNextUpStackLayout: Layout {
                           proposal: .init(width: panelWidth, height: panelSize.height))
     }
 }
+#endif
 #endif

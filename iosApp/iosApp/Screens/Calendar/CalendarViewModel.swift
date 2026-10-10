@@ -6,13 +6,19 @@ import SwiftUI
 @Observable
 @MainActor
 final class CalendarViewModel {
+    typealias FetchCalendarWeek = (
+        _ start: String, _ end: String, _ filter: String, _ timezone: String
+    ) async throws -> CalendarResponse
+
     private static let filterDefaultsKey = "calendar.filter"
 
-    var days: [CalendarDay] = []
+    private(set) var days: [CalendarDay] = []
+    /// Each day's events keyed by its "YYYY-MM-DD" date; set with `days`.
+    private var eventsByDay: [String: [CalendarEvent]] = [:]
     var isLoading = false
     var error: ErrorState?
 
-    var week = CalendarWeek(containing: Date())
+    var week: CalendarWeek
     /// Day highlighted in the week strip; drives scroll-to-day.
     var selectedDay: Date = Date()
 
@@ -22,7 +28,21 @@ final class CalendarViewModel {
     /// already navigated away from can't clobber the visible state.
     @ObservationIgnored private var requestToken = 0
 
-    init() {
+    @ObservationIgnored private let fetchWeek: FetchCalendarWeek
+    /// The device timezone, read on every load so a change is picked up.
+    @ObservationIgnored private let deviceTimeZone: () -> TimeZone
+
+    init(
+        deviceTimeZone: @escaping () -> TimeZone = { .current },
+        fetchWeek: @escaping FetchCalendarWeek = { start, end, filter, timezone in
+            try await SiloAPI.shared.calendarEvents(
+                start: start, end: end, filter: filter, timezone: timezone
+            )
+        }
+    ) {
+        self.deviceTimeZone = deviceTimeZone
+        self.fetchWeek = fetchWeek
+        week = CalendarWeek(containing: Date(), timeZone: deviceTimeZone())
         let stored = UserDefaults.standard.string(forKey: Self.filterDefaultsKey) ?? ""
         filter = CalendarFilter(rawValue: stored) ?? .following
     }
@@ -36,8 +56,7 @@ final class CalendarViewModel {
     }
 
     func events(on date: Date) -> [CalendarEvent] {
-        let key = DateFormatters.isoDate.string(from: date)
-        return days.first(where: { $0.date == key })?.items ?? []
+        eventsByDay[week.dateString(date)] ?? []
     }
 
     func hasEvents(on date: Date) -> Bool {
@@ -80,39 +99,53 @@ final class CalendarViewModel {
     /// Returns to the current week and awaits its load so callers can scroll
     /// to today's shelf once the data is in place.
     func goToToday() async {
-        week = CalendarWeek(containing: Date())
+        week = CalendarWeek(containing: Date(), timeZone: deviceTimeZone())
         selectedDay = Date()
         await load()
     }
 
     // MARK: - Loading
 
+    /// After a device timezone change, rebuilds the shown week in the new
+    /// zone so its dates, the day keys and the request's timezone agree.
+    private func rebuildWeekIfTimeZoneChanged() {
+        let timeZone = deviceTimeZone()
+        guard timeZone.identifier != week.timeZone.identifier else { return }
+        week = week.rebuilt(in: timeZone)
+        selectedDay = week.containsToday() ? Date() : week.startDate
+    }
+
     func load() async {
+        rebuildWeekIfTimeZoneChanged()
         requestToken += 1
         let token = requestToken
         let week = week
         let filter = filter
-        let key = CacheKey.calendarWeek(week.startString, filter: filter.rawValue)
+        let timeZone = week.timeZone.identifier
+        let key = CacheKey.calendarWeek(week.startString, filter: filter.rawValue, timeZone: timeZone)
+        // Read before the fetch so a week that lands after a profile
+        // boundary cleared "calendar:" cannot refill it for the next profile.
+        let writeToken = ResponseCache.shared.writeToken
 
         if let cached: CalendarResponse = ResponseCache.shared.get(key) {
-            days = cached.events
+            setDays(cached.events)
             isLoading = false
         } else {
-            days = []
+            setDays([])
             isLoading = true
         }
         error = nil
 
         do {
-            let response = try await SiloAPI.shared.calendarEvents(
-                start: week.startString,
-                end: week.endString,
-                filter: filter.rawValue,
-                timezone: TimeZone.current.identifier
+            let response = try await fetchWeek(
+                week.startString,
+                week.endString,
+                filter.rawValue,
+                timeZone
             )
             guard token == requestToken else { return }
-            ResponseCache.shared.set(response, for: key)
-            days = response.events
+            ResponseCache.shared.set(response, for: key, fetchedAt: writeToken)
+            setDays(response.events)
         } catch let err {
             guard token == requestToken else { return }
             // A cancelled load (the tab was switched away mid-fetch) is
@@ -126,10 +159,17 @@ final class CalendarViewModel {
         isLoading = false
     }
 
+    private func setDays(_ newDays: [CalendarDay]) {
+        days = newDays
+        eventsByDay = Dictionary(newDays.map { ($0.date, $0.items) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    /// Revalidates the displayed week over its cached copy. `load()` always
+    /// fetches from the network and only seeds its first paint from the
+    /// cache, so the week stays on screen while the request runs. A failed
+    /// refresh keeps the displayed days; the error screen appears only when
+    /// there is nothing to show.
     func refresh() async {
-        ResponseCache.shared.remove(
-            CacheKey.calendarWeek(week.startString, filter: filter.rawValue)
-        )
         await load()
     }
 }

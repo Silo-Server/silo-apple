@@ -15,7 +15,19 @@ struct TVSettingsOption: Identifiable, Hashable {
 enum TVSettingsOptions {
     /// Tag for the "stored pair matches no preset" entry. Not a preset id, so
     /// selecting it is a no-op rather than a write.
-    static let customQualityId = "__custom__"
+    static let customQualityId = SettingsViewModel.customQualityTag
+
+    /// Leads a profile-backed Playback picker: selected while this Apple TV
+    /// has no value of its own, and choosing it clears that value.
+    static let useProfileSetting = TVSettingsOption(
+        id: SettingsViewModel.useProfileSettingTag,
+        label: SettingsViewModel.useProfileSettingLabel
+    )
+
+    static let onOff: [TVSettingsOption] = [
+        .init(id: SettingsViewModel.onTag, label: "On"),
+        .init(id: SettingsViewModel.offTag, label: "Off"),
+    ]
 
     static let profileLaunch: [TVSettingsOption] =
         ProfileLaunchBehavior.allCases.map {
@@ -43,6 +55,16 @@ enum TVSettingsOptions {
             unsetID: "",
             fallbackUnsetLabel: "No preference"
         )
+    }
+
+    /// The device's audio language choices. "No preference" is not stored on
+    /// a device, so it only appears for a value an earlier build stored.
+    static func deviceAudioLanguage(
+        _ languages: [PlaybackLanguageOption],
+        includingNoPreference: Bool
+    ) -> [TVSettingsOption] {
+        let options = audioLanguage(languages)
+        return [useProfileSetting] + (includingNoPreference ? options : Array(options.dropFirst()))
     }
 
     static let bufferAhead: [TVSettingsOption] =
@@ -99,13 +121,8 @@ enum TVSettingsOptions {
     static let subtitleMode: [TVSettingsOption] =
         SubtitleMode.allCases.map { .init(id: $0.rawValue, label: $0.displayLabel) }
 
-    static let subtitleSize: [TVSettingsOption] = [
-        .init(id: "small",   label: "Small"),
-        .init(id: "medium",  label: "Medium"),
-        .init(id: "large",   label: "Large"),
-        .init(id: "xlarge",  label: "X-Large"),
-        .init(id: "xxlarge", label: "XX-Large"),
-    ]
+    static let subtitleSize: [TVSettingsOption] =
+        SubtitleFontSizePreset.allCases.map { .init(id: $0.rawValue, label: $0.label) }
 
     static let fontFamily: [TVSettingsOption] =
         SubtitleFontFamilyPreset.allCases.map {
@@ -897,10 +914,7 @@ private struct TVSettingsPickerOptionRow: View {
 
 // MARK: - Subtitle preview
 
-/// Thin wrapper over the shared cross-platform preview so tvOS settings
-/// screens keep the Skyline rounded-card look. (The old bespoke preview
-/// drew "outline" as a stroked rectangle around the caption block, which
-/// is not what the setting does to glyphs.)
+/// Rounded-card wrapper over the shared `SubtitleAppearancePreview`.
 struct TVSettingsSubtitlePreview: View {
     let appearance: SubtitleAppearance
 

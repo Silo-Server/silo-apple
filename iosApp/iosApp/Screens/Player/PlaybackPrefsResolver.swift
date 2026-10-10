@@ -63,6 +63,10 @@ struct SubtitleAutoResolver {
         /// preferred subtitle language (e.g. English audio + English
         /// sub preference → no subs).
         let currentAudioLanguage: String?
+        /// The file's container (`FileVersion.container`). Decides which
+        /// embedded bitmap tracks this player renders without a burn-in; nil
+        /// assumes MKV.
+        let sourceContainer: String?
 
         init(
             preferredLanguage: String?,
@@ -74,7 +78,8 @@ struct SubtitleAutoResolver {
             disableWhenNoLanguageMatch: Bool = false,
             trackSignature: SubtitleTrackSignature?,
             availableSubtitles: [PlayerTrack],
-            currentAudioLanguage: String?
+            currentAudioLanguage: String?,
+            sourceContainer: String? = nil
         ) {
             self.preferredLanguage = preferredLanguage
             self.additionalPreferredLanguages = additionalPreferredLanguages
@@ -86,6 +91,7 @@ struct SubtitleAutoResolver {
             self.trackSignature = trackSignature
             self.availableSubtitles = availableSubtitles
             self.currentAudioLanguage = currentAudioLanguage
+            self.sourceContainer = sourceContainer
         }
     }
 
@@ -110,7 +116,8 @@ struct SubtitleAutoResolver {
                 preferredLanguages,
                 in: inputs.availableSubtitles.filter(\.isForced),
                 preferForced: true,
-                preferAccessibility: inputs.preferAccessibilityTracks
+                preferAccessibility: inputs.preferAccessibilityTracks,
+                sourceContainer: inputs.sourceContainer
             ) {
                 return .select(forced)
             }
@@ -130,7 +137,8 @@ struct SubtitleAutoResolver {
                 nil,
                 in: inputs.availableSubtitles,
                 preferForced: inputs.showForced,
-                preferAccessibility: inputs.preferAccessibilityTracks
+                preferAccessibility: inputs.preferAccessibilityTracks,
+                sourceContainer: inputs.sourceContainer
             ) {
                 return .select(any)
             }
@@ -156,7 +164,8 @@ struct SubtitleAutoResolver {
                    matchingLanguage,
                    in: inputs.availableSubtitles.filter(\.isForced),
                    preferForced: true,
-                   preferAccessibility: inputs.preferAccessibilityTracks
+                   preferAccessibility: inputs.preferAccessibilityTracks,
+                   sourceContainer: inputs.sourceContainer
                ) {
                 return .select(forced)
             }
@@ -171,7 +180,8 @@ struct SubtitleAutoResolver {
             preferredLanguages,
             in: inputs.availableSubtitles,
             preferForced: false,
-            preferAccessibility: inputs.preferAccessibilityTracks
+            preferAccessibility: inputs.preferAccessibilityTracks,
+            sourceContainer: inputs.sourceContainer
         ) {
             return .select(pick)
         }
@@ -238,17 +248,20 @@ struct SubtitleAutoResolver {
         _ language: String?,
         in tracks: [PlayerTrack],
         preferForced: Bool,
-        preferAccessibility: Bool = false
+        preferAccessibility: Bool = false,
+        sourceContainer: String?
     ) -> PlayerTrack? {
         guard let language else {
             return bestTrackClass(in: tracks, preferForced: preferForced,
-                                  preferAccessibility: preferAccessibility)
+                                  preferAccessibility: preferAccessibility,
+                                  sourceContainer: sourceContainer)
         }
         return bestLanguageMatch(
             [language],
             in: tracks,
             preferForced: preferForced,
-            preferAccessibility: preferAccessibility
+            preferAccessibility: preferAccessibility,
+            sourceContainer: sourceContainer
         )
     }
 
@@ -260,16 +273,18 @@ struct SubtitleAutoResolver {
         _ languages: [String],
         in tracks: [PlayerTrack],
         preferForced: Bool,
-        preferAccessibility: Bool
+        preferAccessibility: Bool,
+        sourceContainer: String?
     ) -> PlayerTrack? {
-        let predicates = trackClassPredicates(
+        let predicates = rankedTrackClassPredicates(
             preferForced: preferForced,
-            preferAccessibility: preferAccessibility
+            preferAccessibility: preferAccessibility,
+            sourceContainer: sourceContainer
         )
         for predicate in predicates {
             for language in languages {
                 let normalized = normalizedLanguageIdentifier(language)
-                if let exact = tracks.first(where: { track in
+                if let exact = preferredSource(in: tracks.filter { track in
                     predicate(track)
                         && track.lang.map(normalizedLanguageIdentifier) == normalized
                 }) {
@@ -277,7 +292,7 @@ struct SubtitleAutoResolver {
                 }
             }
             for language in languages {
-                if let fallback = tracks.first(where: { track in
+                if let fallback = preferredSource(in: tracks.filter { track in
                     predicate(track)
                         && track.lang.map { languagesMatch($0, language) } == true
                 }) {
@@ -291,15 +306,73 @@ struct SubtitleAutoResolver {
     private static func bestTrackClass(
         in tracks: [PlayerTrack],
         preferForced: Bool,
-        preferAccessibility: Bool
+        preferAccessibility: Bool,
+        sourceContainer: String?
     ) -> PlayerTrack? {
-        for predicate in trackClassPredicates(
+        for predicate in rankedTrackClassPredicates(
             preferForced: preferForced,
-            preferAccessibility: preferAccessibility
+            preferAccessibility: preferAccessibility,
+            sourceContainer: sourceContainer
         ) {
-            if let track = tracks.first(where: predicate) { return track }
+            if let track = preferredSource(in: tracks.filter(predicate)) { return track }
         }
         return nil
+    }
+
+    /// Ranking within the matching tracks, each tier only breaking ties in
+    /// the one before (silo-server #1849's web and Jellyfin rule):
+    /// 1. a track this player renders itself beats one needing a burn-in;
+    /// 2. the track class: full dialogue beats forced, plain beats SDH;
+    /// 3. embedded beats external beats downloaded (`preferredSource`).
+    /// A burn-in track still wins when nothing else matches.
+    private static func rankedTrackClassPredicates(
+        preferForced: Bool,
+        preferAccessibility: Bool,
+        sourceContainer: String?
+    ) -> [(PlayerTrack) -> Bool] {
+        let classes = trackClassPredicates(
+            preferForced: preferForced,
+            preferAccessibility: preferAccessibility
+        )
+        return [false, true].flatMap { burnIn in
+            classes.map { matchesClass in
+                { needsBurnIn($0, sourceContainer: sourceContainer) == burnIn && matchesClass($0) }
+            }
+        }
+    }
+
+    /// Embedded first: a muxed track was timed against this release, while a
+    /// sidecar may have been cut for another one. `min(by:)` keeps the first
+    /// of equal elements, so a full tie stays in list order.
+    private static func preferredSource(in tracks: [PlayerTrack]) -> PlayerTrack? {
+        tracks.min { sourceRank($0) < sourceRank($1) }
+    }
+
+    private static func sourceRank(_ track: PlayerTrack) -> Int {
+        if !track.isExternal { return 0 }
+        return track.isDownloaded ? 2 : 1
+    }
+
+    /// Whether showing the track needs a server burn-in on this player. The
+    /// original-file route declares no bitmap sidecars, and renders an embedded
+    /// bitmap track only when the container's native capability lists its
+    /// codec (`ApplePlaybackV3Capabilities`): PGS/DVD/DVB in MKV, none in MP4
+    /// or MPEG-TS. So a bitmap sidecar or download qualifies, as does embedded
+    /// bitmap in another container or XSUB. A nil container assumes MKV. The
+    /// inventory's `burn_in_only` is not used: it also marks embedded DVD/DVB,
+    /// which play here without one.
+    ///
+    /// The server may still choose a packaged delivery, which burns in any
+    /// bitmap track, but it decides that after this resolver runs for the
+    /// start request; ranking against the original-file route keeps the
+    /// detail preview, the start request and the post-load pass in agreement.
+    static func needsBurnIn(_ track: PlayerTrack, sourceContainer: String? = nil) -> Bool {
+        guard let codec = track.codec, SubtitleCodecClassifier.isBitmap(codec) else { return false }
+        if track.isExternal { return true }
+        let nativeCodecs = ApplePlaybackV3Capabilities.nativeEmbeddedSubtitleCapabilities(
+            containers: [sourceContainer ?? "mkv"]
+        ).flatMap(\.codecs)
+        return !nativeCodecs.contains(ApplePlaybackV3Capabilities.normalizedSubtitleCodec(codec))
     }
 
     private static func trackClassPredicates(

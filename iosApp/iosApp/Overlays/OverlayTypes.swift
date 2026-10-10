@@ -7,7 +7,7 @@ import SwiftUI
 /// `web/src/lib/overlays/types.ts` → `OverlayId`. Adding a new overlay
 /// requires updating the registry; renaming an existing one is a
 /// breaking change for stored prefs.
-enum OverlayId: String, CaseIterable, Codable, Hashable {
+enum OverlayId: String, Hashable {
     // tech
     case resolution
     case hdr
@@ -27,6 +27,7 @@ enum OverlayId: String, CaseIterable, Codable, Hashable {
     case ratingRt = "rating_rt"
     case ratingRtAudience = "rating_rt_audience"
     case contentRating = "content_rating"
+    case advisoryAge = "advisory_age"
     // metadata
     case year
     case runtime
@@ -39,14 +40,14 @@ enum OverlayId: String, CaseIterable, Codable, Hashable {
     case rtCertifiedFresh = "rt_certified_fresh"
 }
 
-enum OverlayPosition: String, CaseIterable, Codable, Hashable {
+enum OverlayPosition: String, Hashable {
     case topLeft = "top-left"
     case topRight = "top-right"
     case bottomLeft = "bottom-left"
     case bottomRight = "bottom-right"
 }
 
-enum PresetId: String, CaseIterable, Codable, Hashable {
+enum PresetId: String, Hashable {
     case minimal
     case classic
     case vibrant
@@ -57,7 +58,7 @@ enum PresetId: String, CaseIterable, Codable, Hashable {
 /// Per-overlay user configuration. `accentColor` and `showIcon` are
 /// optional overrides — `nil` means "use the registry default" /
 /// "use the preset's icon preference".
-struct OverlayItemConfig: Codable, Hashable {
+struct OverlayItemConfig: Hashable {
     var enabled: Bool
     var position: OverlayPosition
     /// Hex string (`"#f5c518"`); `nil` falls back to `OverlayDef.defaultAccent`.
@@ -69,7 +70,7 @@ struct OverlayItemConfig: Codable, Hashable {
 /// Versioned root document stored under the user setting key
 /// `ui.card_overlays`. Shared across web, iOS, and tvOS; `OverlaySchema`
 /// handles the JSON document and migration from older preferences.
-struct CardOverlayPrefs: Codable, Hashable {
+struct CardOverlayPrefs: Hashable {
     static let currentVersion = 2
 
     var version: Int
@@ -103,6 +104,8 @@ struct OverlayData: Hashable {
     var ratingRtCritic: Int?
     var ratingRtAudience: Int?
     var contentRating: String?
+    var advisoryAge: Int?
+    var advisorySource: String?
     var year: Int?
     var runtime: Int?
     var originalLanguage: String?
@@ -152,24 +155,21 @@ struct OverlayDef {
 }
 
 /// Typed icon identifiers. Lucide icons map to SF Symbols in
-/// ``OverlayIcon``; brand marks (HDR10, DV, Atmos, AV1, Tomato) render
-/// from inline shape views.
+/// ``OverlayIcon``; brand marks render as text.
 enum OverlayIconId: String, Hashable {
     // generic
-    case star
     case clock
     case tv
     case film
-    case award
     case ribbon
     case subtitles
     case languages
     case building
     case shield
+    case users
     case layout
     case monitor
     case volume
-    case calendar
     case globe
     // brand marks
     case hdr10
@@ -177,16 +177,15 @@ enum OverlayIconId: String, Hashable {
     case dolbyVision = "dolby-vision"
     case atmos
     case av1
-    case tomato
 
-    /// The text a wordmark icon already spells out as the mark itself.
-    /// Mirrors web's `WORDMARK_TEXT`: when a badge's label matches its
-    /// mark, the renderer suppresses the label so the badge doesn't
-    /// read "HDR10 HDR10".
-    var wordmarkText: String? {
+    /// The text a brand mark draws. The badge drops this token from its
+    /// label so it doesn't read "HDR10 HDR10" or "DV DV HDR10" (web's
+    /// `WORDMARK_TEXT` does the same for its text marks).
+    var brandText: String? {
         switch self {
         case .hdr: return "HDR"
         case .hdr10: return "HDR10"
+        case .dolbyVision: return "DV"
         case .atmos: return "ATMOS"
         case .av1: return "AV1"
         default: return nil
@@ -216,7 +215,7 @@ struct OverlayPreset {
     let foregroundColor: (Color?) -> Color
     /// Optional 1-pt accent border (used by `.square` when an accent is set).
     let borderColor: (Color?) -> Color?
-    /// Background blur material (used by `.pill`); `.nil` means no blur.
+    /// Background blur material (used by `.pill`); `nil` means no blur.
     let backdropMaterial: Material?
     /// Subtle shadow under the badge (only `.minimal` uses it).
     let textShadow: Bool

@@ -2,37 +2,46 @@
 import SwiftUI
 
 /// Editorial section header used below the phone hero — the same
-/// pattern as `TVSectionHeader`, scaled to phones. A small tracked
-/// all-caps "eyebrow" sits over the title only when it carries context
-/// the title doesn't (e.g. "This Season" over "Episodes").
+/// pattern as `TVSectionHeader`, scaled to phones.
 struct PhoneSectionHeader: View {
-    var label: String? = nil
     let title: String
     var trailingText: String? = nil
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 4) {
-                if let label, !label.isEmpty {
-                    Text(label.uppercased())
-                        .font(.system(size: 11, weight: .bold))
-                        .tracking(1.6)
-                        .foregroundColor(.siloOnSurface.opacity(0.55))
+        if let trailingText, !trailingText.isEmpty {
+            // Side by side while both fit on one line; otherwise the count
+            // moves under the title so neither breaks inside a word.
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline) {
+                    titleText
+                    Spacer(minLength: 8)
+                    trailing(trailingText)
                 }
 
-                Text(title)
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundColor(.siloOnSurface)
+                VStack(alignment: .leading, spacing: 4) {
+                    titleText
+                    trailing(trailingText)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-
-            Spacer(minLength: 8)
-
-            if let trailingText, !trailingText.isEmpty {
-                Text(trailingText)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(.siloSecondaryText)
+        } else {
+            HStack(alignment: .firstTextBaseline) {
+                titleText
+                Spacer(minLength: 8)
             }
         }
+    }
+
+    private var titleText: some View {
+        Text(title)
+            .siloScaledFont(size: 22, weight: .semibold, relativeTo: .title2)
+            .foregroundColor(.siloOnSurface)
+    }
+
+    private func trailing(_ text: String) -> some View {
+        Text(text)
+            .siloScaledFont(size: 13, weight: .medium, relativeTo: .footnote)
+            .foregroundColor(.siloSecondaryText)
     }
 }
 #endif

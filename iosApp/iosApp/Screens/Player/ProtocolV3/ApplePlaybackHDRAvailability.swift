@@ -13,14 +13,7 @@ struct ApplePlaybackHDRAvailability: Equatable {
     }
 
     static func probe() -> ApplePlaybackHDRAvailability {
-        #if targetEnvironment(simulator)
-        return ApplePlaybackHDRAvailability(
-            hdrPlaybackEligible: false,
-            supportsHDR10: false,
-            supportsHLG: false,
-            supportsDolbyVision: false
-        )
-        #elseif os(macOS)
+        #if os(macOS)
         let eligible = AVPlayer.eligibleForHDRPlayback
         return ApplePlaybackHDRAvailability(
             hdrPlaybackEligible: eligible,
@@ -58,24 +51,12 @@ struct ApplePlaybackDisplayCapabilities: Equatable {
         case uhd4K
     }
 
-    static let unknown = ApplePlaybackDisplayCapabilities(
-        hdrPlaybackEligible: false,
-        supportsDolbyVision: false,
-        supportsHDR10: false,
-        supportsHLG: false,
-        supportsAtmos: false,
-        maxResolution: nil,
-        supportsTenBit: false
-    )
-
     static func probe() -> ApplePlaybackDisplayCapabilities {
         let hdrAvailability = ApplePlaybackHDRAvailability.probe()
         var supportsAtmos = false
         #if !os(macOS)
         let outputs = AVAudioSession.sharedInstance().currentRoute.outputs
-        if #available(iOS 15.0, tvOS 15.0, *) {
-            supportsAtmos = outputs.contains { $0.isSpatialAudioEnabled }
-        }
+        supportsAtmos = outputs.contains { $0.isSpatialAudioEnabled }
         #endif
         return ApplePlaybackDisplayCapabilities(
             hdrPlaybackEligible: hdrAvailability.hdrPlaybackEligible,

@@ -3,7 +3,7 @@
 //  SiloTests
 //
 //  Controller-level tests for the poller-vs-websocket completion race — the
-//  highest-risk untested seam in the AI subtitle pipeline (M4 FIX 10). The
+//  highest-risk seam in the AI subtitle pipeline. The
 //  websocket `completed` path and the poller-authority terminal path BOTH route
 //  through `completePersistedHandoff`, guarded by the `handoffJobId` latch, so
 //  the persisted track must register EXACTLY once regardless of which driver
@@ -68,6 +68,9 @@ final class SubtitleAIControllerTests: XCTestCase {
             lastAction = action
             return Handle()
         }
+
+        /// Fire the most recently scheduled safety action (simulates timeout).
+        func fire() { lastAction?() }
     }
 
     // MARK: - Builders
@@ -81,6 +84,7 @@ final class SubtitleAIControllerTests: XCTestCase {
         let coordinator: LiveSubtitleCoordinator
         let sink: FakeSink
         let controls: FakeControls
+        let clock: ManualClock
         /// OWNED handoffs (auto-select): the shared latched handoff for a job
         /// this client started.
         let registerSelectCount: () -> Int
@@ -101,10 +105,11 @@ final class SubtitleAIControllerTests: XCTestCase {
     ) -> Harness {
         let controls = FakeControls(isPlaying: isPlaying)
         let sink = FakeSink()
+        let clock = ManualClock()
         let coordinator = LiveSubtitleCoordinator(
             controls: controls,
             sink: sink,
-            clock: ManualClock(),
+            clock: clock,
             selectionSnapshot: { nil }
         )
 
@@ -133,6 +138,7 @@ final class SubtitleAIControllerTests: XCTestCase {
             coordinator: coordinator,
             sink: sink,
             controls: controls,
+            clock: clock,
             registerSelectCount: { counters.selectCount },
             registerOnlyCount: { counters.onlyCount },
             lastRegisterOnlyIndex: { counters.lastOnlyIndex },
@@ -278,7 +284,7 @@ final class SubtitleAIControllerTests: XCTestCase {
         XCTAssertEqual(h.coordinator.phase, .completed)
     }
 
-    // MARK: - (c) poller-wins-after-socket-drop (FIX 2)
+    // MARK: - (c) poller-wins-after-socket-drop
 
     func testPollerWinsAfterSocketDropClosesCoordinator() async {
         let h = makeHarness(downloaded: [persisted(id: 321)])
@@ -295,7 +301,7 @@ final class SubtitleAIControllerTests: XCTestCase {
         h.controller.deliverPollerTerminalForTesting(completedJob(id: "5", resultSubtitleId: 321))
         await h.waitForRegisterSelectCount(1)
 
-        // FIX 2: the persisted track registers once AND the coordinator closes
+        // The persisted track registers once AND the coordinator closes
         // the orphaned live track + reaches `.completed` (not stuck `.streaming`).
         XCTAssertEqual(h.registerSelectCount(), 1, "registered exactly once")
         XCTAssertEqual(h.coordinator.phase, .completed, "coordinator must not strand in .streaming")
@@ -304,7 +310,7 @@ final class SubtitleAIControllerTests: XCTestCase {
         XCTAssertFalse(h.controller.livePresentationActive)
     }
 
-    // MARK: - (c2) ready-broadcast dedup against the owned WS completion (M5 FIX 1)
+    // MARK: - (c2) ready-broadcast dedup against the owned WS completion
 
     /// The server broadcasts `subtitle_ready` for a file to ALL its sessions —
     /// INCLUDING the session that just completed the job. When the websocket
@@ -433,6 +439,34 @@ final class SubtitleAIControllerTests: XCTestCase {
         XCTAssertEqual(h.coordinator.phase, .idle)
         XCTAssertFalse(h.controller.livePresentationActive)
         XCTAssertEqual(h.controller.phase, .idle)
+    }
+
+    // MARK: - (e) no `started` within the safety window
+
+    /// A job with no `started` frame (poll-only, or queued on the server) must
+    /// not hold the submit pause past the safety window, and the poller must
+    /// still hand the finished track off afterwards.
+    func testSubmitPauseReleasesAfterSafetyWindowAndPollerStillHandsOff() async {
+        let h = makeHarness(downloaded: [persisted(id: 555)])
+        h.controller.beginSubmitWindowForTesting()
+        XCTAssertFalse(h.controls.isPlaying, "submit pauses playback")
+
+        h.clock.fire()
+
+        XCTAssertTrue(h.controls.isPlaying, "safety window resumes the submit pause")
+        XCTAssertEqual(h.coordinator.phase, .preparing, "the job is still pending")
+        XCTAssertTrue(h.controller.livePresentationActive)
+        XCTAssertEqual(h.controller.phase, .submitting)
+
+        h.controller.seedAcceptedJobForTesting(runningJob(id: "12"))
+        h.controller.deliverPollerTerminalForTesting(completedJob(id: "12", resultSubtitleId: 555))
+        await h.waitForRegisterSelectCount(1)
+
+        XCTAssertEqual(h.registerSelectCount(), 1, "poller hands the persisted track off once")
+        XCTAssertEqual(h.coordinator.phase, .completed)
+        XCTAssertFalse(h.controller.livePresentationActive)
+        XCTAssertEqual(h.controller.phase, .completed)
+        XCTAssertEqual(h.sink.closeCount, 0, "no live track was ever installed")
     }
 }
 

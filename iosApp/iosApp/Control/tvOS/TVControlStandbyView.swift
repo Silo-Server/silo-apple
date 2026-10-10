@@ -2,7 +2,7 @@
 import SwiftUI
 
 struct TVControlStandbyView: View {
-    @Bindable var receiver: TVControlReceiver
+    let receiver: TVControlReceiver
     let state: TVControlStandbyState
 
     @FocusState private var isDisconnectFocused: Bool

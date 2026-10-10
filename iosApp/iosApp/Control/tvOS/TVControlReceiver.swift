@@ -30,6 +30,9 @@ final class TVControlReceiver {
     private var heartbeatTask: Task<Void, Never>?
     private var authWatchdogTask: Task<Void, Never>?
     private var handoffTask: Task<Void, Never>?
+    /// Session teardown of a player a handoff stopped. Kept apart from the
+    /// handoff, so a replacement handoff still waits for it.
+    private var playerCleanupTask: Task<Void, Never>?
     private var readyTimeoutTask: Task<Void, Never>?
     private var missedHeartbeats = 0
     private var isAuthorized = false
@@ -294,22 +297,15 @@ final class TVControlReceiver {
         connectionId: UUID
     ) {
         readTask?.cancel()
+        // Inherits the main actor, so frames are handled without a hop. A
+        // failed stream gets no error frame: the connection is already gone.
         readTask = Task { [weak self] in
             do {
                 for try await message in stream {
-                    await MainActor.run {
-                        self?.handle(message, connectionId: connectionId)
-                    }
+                    self?.handle(message, connectionId: connectionId)
                 }
-                await MainActor.run {
-                    self?.handleConnectionClosed(connectionId: connectionId)
-                }
-            } catch {
-                await MainActor.run {
-                    self?.sendError(code: "connection_failed", message: error.localizedDescription)
-                    self?.handleConnectionClosed(connectionId: connectionId)
-                }
-            }
+            } catch {}
+            self?.handleConnectionClosed(connectionId: connectionId)
         }
     }
 
@@ -412,18 +408,13 @@ final class TVControlReceiver {
             guard let self else { return }
             do {
                 let manager = RemotePlaybackIdentityManager.shared
-                if manager.activeIdentity != nil,
-                   !manager.matches(offer, controllerDeviceId: controllerDeviceId) {
-                    let previousPlayer = self.playerViewModel
-                    self.stopRemotePlayback()
-                    await previousPlayer?.waitForCleanupCompletion()
-                    await manager.end()
-                }
-
                 let ready = try await manager.prepare(
                     offer: offer,
                     controllerDeviceId: controllerDeviceId,
-                    controllerDeviceName: self.remoteControllerName
+                    controllerDeviceName: self.remoteControllerName,
+                    beforeActivation: { [weak self] in
+                        try await self?.stopPlaybackBeforeIdentitySwap()
+                    }
                 ) { [weak self] challenge in
                     guard let self,
                           self.activeConnectionId == connectionId,
@@ -460,6 +451,43 @@ final class TVControlReceiver {
                 self.handoffTask = nil
             }
         }
+    }
+
+    /// Stops what is playing, waits for its server session to close, then ends
+    /// an earlier phone's identity. An approved handoff runs this just before
+    /// it installs the phone's identity, including for a title the TV started
+    /// under its own account: the player's stop rides on the identity it
+    /// started under, so after the swap it is refused and the session lingers
+    /// beside the phone's.
+    private func stopPlaybackBeforeIdentitySwap() async throws {
+        let manager = RemotePlaybackIdentityManager.shared
+        if let player = playerViewModel {
+            stopRemotePlayback()
+            // Chained, so a stop a cancelled handoff left running is still awaited.
+            let earlierCleanup = playerCleanupTask
+            playerCleanupTask = Task {
+                await earlierCleanup?.value
+                await player.waitForCleanupCompletion()
+            }
+        } else if manager.activeIdentity != nil {
+            stopRemotePlayback()
+        }
+        // Also covers a stop an earlier, replaced handoff started.
+        if let cleanup = playerCleanupTask {
+            await cleanup.value
+            if playerCleanupTask == cleanup { playerCleanupTask = nil }
+        }
+        try Task.checkCancellation()
+        // Something started playing on the TV meanwhile; swapping the identity
+        // now would strand that player's session instead.
+        guard playerViewModel == nil else { throw PlaybackStartedDuringHandoff() }
+        if manager.activeIdentity != nil {
+            await manager.end()
+        }
+    }
+
+    private struct PlaybackStartedDuringHandoff: LocalizedError {
+        var errorDescription: String? { "The TV started playing something else. Try again." }
     }
 
     private func armReadyTimeout(connectionId: UUID) {
@@ -531,13 +559,12 @@ final class TVControlReceiver {
     }
 
     private func handleControl(_ command: SiloControlCommand) {
+        // .stop dismisses the player, so it bypasses the view model.
         if command.name == .stop {
             stopRemotePlayback()
             return
         }
 
-        // Volume, mute, and next-episode all flow through applySiloControlCommand
-        // below; only .stop needs special handling (it dismisses the player).
         guard let playerViewModel else {
             sendError(code: "player_not_ready", message: "The TV player is not ready yet.")
             return
@@ -553,6 +580,10 @@ final class TVControlReceiver {
 
     private func handleConnectionClosed(connectionId: UUID) {
         guard activeConnectionId == connectionId else { return }
+        resetConnectionState()
+    }
+
+    private func resetConnectionState() {
         cancelPendingHandoff()
         activeSession = nil
         activeConnectionId = nil
@@ -574,26 +605,9 @@ final class TVControlReceiver {
     }
 
     private func closeActiveSession(sendClose: Bool) {
-        cancelPendingHandoff()
         let session = activeSession
         let read = readTask
-        activeSession = nil
-        activeConnectionId = nil
-        remoteControllerName = nil
-        readTask = nil
-        stateTask?.cancel()
-        stateTask = nil
-        heartbeatTask?.cancel(); heartbeatTask = nil
-        authWatchdogTask?.cancel(); authWatchdogTask = nil
-        missedHeartbeats = 0
-        isAuthorized = false
-        didReceiveHello = false
-        negotiatedVersion = nil
-        remoteLaunchReady = false
-        remoteControllerDeviceId = nil
-        remoteControllerServerId = nil
-        remoteControllerServerIdentity = nil
-        standbyState = nil
+        resetConnectionState()
 
         guard let session else {
             read?.cancel()
@@ -603,7 +617,7 @@ final class TVControlReceiver {
         // consumer fires the message stream's onTermination, which tears the
         // connection down and races ahead of the `.close` — the peer then
         // sees a bare EOF, reads it as a dropped connection, and instantly
-        // auto-reconnects (the "Disconnect Remote loops right back" bug).
+        // auto-reconnects.
         // Stray inbound messages during the goodbye are dropped by the
         // activeConnectionId guard (already nil).
         Self.logger.info("control: closing session sendClose=\(sendClose, privacy: .public)")
@@ -704,34 +718,7 @@ final class TVControlReceiver {
 
     private func sendLoadingState(for contentId: String) {
         guard let session = activeSession else { return }
-        let state = SiloControlPlaybackState(
-            contentId: contentId,
-            sessionId: nil,
-            title: "Loading",
-            subtitle: nil,
-            isPlaying: false,
-            isLoading: true,
-            isBuffering: false,
-            currentTime: 0,
-            duration: 0,
-            audioTracks: [],
-            subtitleTracks: [],
-            selectedAudioTrackId: nil,
-            selectedSubtitleTrackId: nil,
-            qualityOptions: [],
-            activeQualityId: ApplePlaybackQuality.autoId,
-            isQualitySwitching: false,
-            playbackSpeed: PlayerSettings.shared.playbackSpeed,
-            videoGravity: PlayerSettings.shared.videoGravity.rawValue,
-            hdrEnabled: PlayerSettings.shared.hdrEnabled,
-            supportsVideoGravity: false,
-            volume: 1.0,
-            isMuted: false,
-            hasNextEpisode: false,
-            nextEpisodeTitle: nil,
-            error: nil
-        )
-        session.enqueue(.state(state))
+        session.enqueue(.state(placeholderState(contentId: contentId, title: "Loading", isLoading: true)))
     }
 
     private func sendError(code: String, message: String) {
@@ -753,13 +740,18 @@ final class TVControlReceiver {
     }
 
     private func idleState() -> SiloControlPlaybackState {
+        placeholderState(contentId: nil, title: "Ready", isLoading: false)
+    }
+
+    /// State for a TV with no playing title: idle, or loading `contentId`.
+    private func placeholderState(contentId: String?, title: String, isLoading: Bool) -> SiloControlPlaybackState {
         SiloControlPlaybackState(
-            contentId: nil,
+            contentId: contentId,
             sessionId: nil,
-            title: "Ready",
+            title: title,
             subtitle: nil,
             isPlaying: false,
-            isLoading: false,
+            isLoading: isLoading,
             isBuffering: false,
             currentTime: 0,
             duration: 0,

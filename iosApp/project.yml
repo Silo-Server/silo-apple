@@ -52,13 +52,18 @@ targetTemplates:
         # `dev` regardless. Every target using this template must declare the
         # key in its Info.plist or it reports `release` no matter what.
         SILO_BUILD_CHANNEL: release
+        # The published source archive for this build, surfaced as the
+        # `SiloSourceURL` Info.plist key behind Settings > About > Source
+        # Code. Release lanes set it from SILO_RELEASE_SOURCE_URL; empty
+        # builds link the repository instead.
+        SILO_SOURCE_URL: ""
 
 packages:
   # The only media engine in the replacement player. Keep this at an exact
   # reviewed revision; Package.resolved also freezes its binary dependencies.
   AetherEngine:
     url: https://github.com/Silo-Server/AetherEngine
-    revision: b1e4879e6a41477ebef3b68e8d9f65239d1ba80b
+    revision: ef0d2c7f2aa564c03b789c40f8f5c5351fc1d084
   SwiftAssRenderer:
     url: https://github.com/mihai8804858/swift-ass-renderer
     exactVersion: 1.3.1
@@ -80,7 +85,15 @@ targets:
           - "**/*.xcodeproj"
           - "**/*.xcworkspace"
           - "macOS/**"
+          - "tvOS-Info.plist"
       - path: Resources
+        buildPhase: resources
+      # Silo's own license and App Store permission, shown under Settings >
+      # About > Open Source Licenses. Bundled from the repository root so the
+      # app cannot drift from the published terms.
+      - path: ../LICENSE
+        buildPhase: resources
+      - path: ../APPSTORE-EXCEPTION.md
         buildPhase: resources
     # PRODUCT_BUNDLE_IDENTIFIER and CODE_SIGN_ENTITLEMENTS live in
     # Signing/Silo.xcconfig so local contributors can override
@@ -139,6 +152,13 @@ targets:
           - "macOS/**"
       - path: Resources
         buildPhase: resources
+      # Silo's own license and App Store permission, shown under Settings >
+      # About > Open Source Licenses. Bundled from the repository root so the
+      # app cannot drift from the published terms.
+      - path: ../LICENSE
+        buildPhase: resources
+      - path: ../APPSTORE-EXCEPTION.md
+        buildPhase: resources
     # PRODUCT_BUNDLE_IDENTIFIER and CODE_SIGN_ENTITLEMENTS live in
     # Signing/SiloTV.xcconfig so local contributors can override
     # them via Signing/Local.xcconfig without dirtying this file.
@@ -183,16 +203,19 @@ targets:
           - "Info.plist"
           - "tvOS-Info.plist"
           - "PrivacyInfo.xcprivacy"
-          - "TopShelf/**"
           - "tvOS/**"
           - "Screens/Player/iOS/**"
           - "Screens/Player/tvOS/**"
           - "Screens/Player/PlayerView.swift"
           - "Screens/WatchParty/**"
-      - path: iosApp/Screens/Player/PlayerTimeFormatter.swift
-      - path: iosApp/tvOS/Caching/CachedAsyncImage.swift
-      - path: iosApp/tvOS/Caching/PosterImageCache.swift
       - path: Resources
+        buildPhase: resources
+      # Silo's own license and App Store permission, shown under Settings >
+      # About > Open Source Licenses. Bundled from the repository root so the
+      # app cannot drift from the published terms.
+      - path: ../LICENSE
+        buildPhase: resources
+      - path: ../APPSTORE-EXCEPTION.md
         buildPhase: resources
     configFiles:
       Debug: Signing/SiloMac.xcconfig
@@ -373,12 +396,12 @@ targets:
           - "MetricKitCaptureTests.swift"
           # CompanionPairingCoordinator is declared under #if os(iOS).
           - "PairingCoordinatorTests.swift"
-          # RemotePlaybackClock / RemoteVolumeReconciler / SiloControlPlaybackState (Control/iOS).
+          # RemotePlaybackClock / RemoteVolumeReconciler / SiloControlClient (Control/iOS).
           - "SiloControlTests.swift"
-          # SiloControlPlaybackState (Control/iOS).
-          - "SiloControlWireCompatibilityTests.swift"
           # OnboardingTourViewModel / OnboardingTourAPI are declared under #if !os(tvOS).
           - "OnboardingInvitationTests.swift"
+          # AutoDownloadRules / AutoDownloadSchedule are declared under #if !os(tvOS).
+          - "AutoDownloadStatusTests.swift"
           # Same non-fixture files as SiloTests, re-added below with no phase.
           - "Fixtures/ASS/README.md"
           - "Fixtures/ASS/generate-font.py"

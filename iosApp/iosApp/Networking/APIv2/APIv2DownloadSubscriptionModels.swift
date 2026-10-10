@@ -29,7 +29,6 @@ struct APIv2DownloadSubscriptionSync: Decodable, Sendable {
     let subscriptionId: String
     /// Episodes this page registered. A repeated page may report zero.
     let registered: Int
-    let examined: Int
     let page: APIv2Page
 }
 

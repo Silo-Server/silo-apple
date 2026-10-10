@@ -72,5 +72,28 @@ extension View {
         )
         .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
     }
+
+    /// Lands d-pad entry into a rail on `id` instead of the geometrically
+    /// nearest card; `.userInitiated` priority is what lets `defaultFocus`
+    /// win over proximity. No-op while `id` is nil (loading or empty).
+    @ViewBuilder
+    func tvDefaultFocus(_ id: String?, in binding: FocusState<String?>.Binding) -> some View {
+        if let id {
+            defaultFocus(binding, id, priority: .userInitiated)
+        } else {
+            self
+        }
+    }
+
+    /// Binds a card to its parent's `@FocusState` when the parent supplies
+    /// one, so the parent can route default focus onto it.
+    @ViewBuilder
+    func tvFocused(_ binding: FocusState<String?>.Binding?, equals id: String?) -> some View {
+        if let binding, let id {
+            focused(binding, equals: id)
+        } else {
+            self
+        }
+    }
 }
 #endif

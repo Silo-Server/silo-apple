@@ -29,8 +29,4 @@ extension PlatformImage {
         return PlatformImage(cgImage: cgImage, size: .zero)
         #endif
     }
-
-    static func siloImage(data: Data) -> PlatformImage? {
-        PlatformImage(data: data)
-    }
 }

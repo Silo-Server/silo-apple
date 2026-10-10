@@ -20,16 +20,17 @@ enum WatchPartyAPIError: LocalizedError, Sendable {
 /// re-read the room instead.
 extension APIv2Client {
     private static let watchPartyBase = "/api/v2/watch-together"
+    private static let socketTicketCharacters = CharacterSet(
+        charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
 
     func watchPartyCapabilities(auth: CapturedOrdinaryRequestAuth) async throws -> WatchPartyCapabilities {
         try await watchPartyRead(path: Self.watchPartyBase + "/capabilities", auth: auth)
     }
 
-    func createWatchPartyRoom(selectionMode: WatchPartySelectionMode, roomId: String = UUID().uuidString.lowercased(),
+    func createWatchPartyRoom(selectionMode: WatchPartySelectionMode,
                               auth: CapturedOrdinaryRequestAuth) async throws -> WatchPartyRoomResponse {
-        guard UUID(uuidString: roomId) != nil, [.hostPick, .vote].contains(selectionMode) else {
-            throw WatchPartyAPIError.invalidRequest
-        }
+        guard [.hostPick, .vote].contains(selectionMode) else { throw WatchPartyAPIError.invalidRequest }
+        let roomId = UUID().uuidString.lowercased()
         struct Body: Encodable { let roomId: String; let selectionMode: WatchPartySelectionMode }
         return try await watchPartyRoomResponse(method: "POST", path: Self.watchPartyBase + "/rooms", expectedRoomId: roomId,
             body: watchPartyEncode(Body(roomId: roomId, selectionMode: selectionMode)), status: 201, auth: auth)
@@ -93,10 +94,9 @@ extension APIv2Client {
         _ = try await watchPartyRequest(method: "DELETE", path: watchPartyRoomPath(roomId), token: token, status: 204, auth: auth)
     }
 
-    func watchPartySuggestions(roomId: String, token: String, cursor: String? = nil, limit: Int = 100,
+    func watchPartySuggestions(roomId: String, token: String, cursor: String? = nil,
                                auth: CapturedOrdinaryRequestAuth) async throws -> WatchPartySuggestionPage {
-        guard (1...200).contains(limit) else { throw WatchPartyAPIError.invalidRequest }
-        var query = ["limit": String(limit)]
+        var query = ["limit": "100"]
         if let cursor { query["cursor"] = cursor }
         let page: WatchPartySuggestionPage = try await watchPartyRead(path: watchPartyRoomPath(roomId) + "/suggestions",
             query: query, token: token, auth: auth)
@@ -162,7 +162,7 @@ extension APIv2Client {
             token: token, auth: auth)
         let ticket = try watchPartyDecode(WatchPartySocketTicket.self, raw)
         guard ticket.protocol == "silo.room.v2", !ticket.ticket.isEmpty,
-              ticket.ticket.unicodeScalars.allSatisfy({ CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_").contains($0) }),
+              ticket.ticket.unicodeScalars.allSatisfy({ Self.socketTicketCharacters.contains($0) }),
               // The server clamps `expires_in` at 0 when the bearer is about to
               // expire; connecting then fails and reconnects with a new ticket.
               ticket.expiresIn >= 0, ticket.maxConnectionSeconds > 0 else { throw WatchPartyAPIError.invalidResponse }

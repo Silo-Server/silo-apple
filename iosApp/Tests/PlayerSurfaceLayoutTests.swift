@@ -16,36 +16,23 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
     private struct Harness: View {
         let presentation: Presentation
         let engine: AetherEngine
-        var legacy = false
         var reduceMotion = true
         var nextUpModel: PlayerViewModel?
 
         var body: some View {
-            Group {
-                if legacy {
-                    // Negative control: the two structural branches used by
-                    // PlayerView before this fix really do recreate the host.
-                    if presentation.preview {
-                        VStack { AetherPlayerSurface(engine: engine).frame(width: 240, height: 135) }
-                    } else {
-                        AetherPlayerSurface(engine: engine)
-                    }
-                } else {
-                    PlayerSurfaceLayout(isPreview: presentation.preview) {
-                        AetherPlayerSurface(engine: engine)
-                    } content: {
-                        ZStack {
-                            Color.black.ignoresSafeArea()
-                            if presentation.preview, let nextUpModel {
-                                PlayerNextUpScreen(viewModel: nextUpModel, onBack: {})
-                            } else if presentation.preview && presentation.hasPreviewBounds {
-                                Color.clear
-                                    .frame(width: 240, height: 135)
-                                    .anchorPreference(key: PlayerPreviewBoundsKey.self, value: .bounds) {
-                                        .init(bounds: $0)
-                                    }
+            PlayerSurfaceLayout(isPreview: presentation.preview) {
+                AetherPlayerSurface(engine: engine)
+            } content: {
+                ZStack {
+                    Color.black.ignoresSafeArea()
+                    if presentation.preview, let nextUpModel {
+                        PlayerNextUpScreen(viewModel: nextUpModel, onBack: {})
+                    } else if presentation.preview && presentation.hasPreviewBounds {
+                        Color.clear
+                            .frame(width: 240, height: 135)
+                            .anchorPreference(key: PlayerPreviewBoundsKey.self, value: .bounds) {
+                                .init(bounds: $0)
                             }
-                        }
                     }
                 }
             }
@@ -65,6 +52,18 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
         window.layoutIfNeeded()
     }
 
+    /// Lays the window out until `condition` holds, for a change with a
+    /// concrete end state. The caller asserts the end state afterwards.
+    private func settle(_ window: UIWindow, until condition: () -> Bool) async throws {
+        let deadline = ContinuousClock.now + .seconds(2)
+        while true {
+            window.setNeedsLayout()
+            window.layoutIfNeeded()
+            if condition() || ContinuousClock.now >= deadline { return }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
     private func makeWindow<Content: View>(_ content: Content, attachToScene: Bool = true) -> UIWindow {
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 844, height: 390))
         if attachToScene {
@@ -80,7 +79,6 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
         var panel = CGRect.zero
         var rotation = CGRect.zero
         var viewport = CGRect.zero
-        var extrasAppeared = false
     }
 
     private struct MeasuredFramesKey: PreferenceKey {
@@ -113,9 +111,6 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
                 // Measure the real production metadata/buttons.
                 PlayerNextUpScreen(viewModel: model, onBack: {}).mobileNextUpPanel(compact: compact)
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("mobile-layout")) } action: { frames.panel = $0 }
-            } extras: {
-                Color.gray.frame(height: 1000)
-                    .onAppear { frames.extrasAppeared = true }
             }
             let viewport = layout
                 .frame(width: size.width, height: size.height - MobilePlayerChromeVisibility.topClearance)
@@ -142,7 +137,6 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
             XCTAssertGreaterThan(frames.preview.height, 30)
             XCTAssertLessThanOrEqual(frames.preview.width, 300)
             XCTAssertEqual(frames.preview.midX, frames.panel.midX, accuracy: 1)
-            XCTAssertFalse(frames.extrasAppeared, "iOS must not mount an On Deck shelf")
         }
     }
 
@@ -316,28 +310,6 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
         }
     }
 
-    /// Rendered evidence of the controls at each viewport (paused, so the
-    /// play glyph shows). Assertion-free so it also runs against older code.
-    func testMobileControlsSnapshots() async throws {
-        for viewport in Self.mobileControlViewports {
-            let model = PlayerViewModel()
-            defer { model.cleanup() }
-            model.title = "The Next Chapter"
-            model.duration = 5400
-            model.currentTime = 1800
-            model.showControls = true
-            let window = mobileControlsWindow(model: model, size: viewport.size, insets: viewport.insets)
-            defer { window.isHidden = true; window.rootViewController = nil }
-            try await settle(window)
-            try await Task.sleep(for: .milliseconds(300))
-            let image = render(window)
-            let attachment = XCTAttachment(image: image)
-            attachment.name = "mobile-controls-\(viewport.name)"
-            attachment.lifetime = .keepAlways
-            add(attachment)
-        }
-    }
-
     func testTwentyPreviewCyclesKeepOneActualAetherView() async throws {
         let engine = try AetherEngine()
         let presentation = Presentation()
@@ -347,13 +319,13 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
         let original = try XCTUnwrap(surfaces(in: window).first)
         for _ in 0..<20 {
             presentation.preview = true
-            try await settle(window)
+            try await settle(window) { abs(original.bounds.width - 240) < 1 }
             XCTAssertEqual(surfaces(in: window).count, 1)
             XCTAssertTrue(surfaces(in: window).first === original)
             XCTAssertEqual(original.bounds.width, 240, accuracy: 1)
             XCTAssertEqual(original.bounds.height, 135, accuracy: 1)
             presentation.preview = false
-            try await settle(window)
+            try await settle(window) { original.bounds.width > 240 }
             XCTAssertTrue(surfaces(in: window).first === original)
             XCTAssertGreaterThan(original.bounds.width, 240)
         }
@@ -377,18 +349,6 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
         try await settle(window)
         XCTAssertEqual(surfaces(in: window).count, 1)
         XCTAssertTrue(surfaces(in: window).first === original)
-    }
-
-    func testLegacyNegativeControlRecreatesTheVideoView() async throws {
-        let engine = try AetherEngine()
-        let presentation = Presentation()
-        let window = makeWindow(Harness(presentation: presentation, engine: engine, legacy: true))
-        defer { window.isHidden = true; window.rootViewController = nil; engine.stop() }
-        try await settle(window)
-        let original = try XCTUnwrap(surfaces(in: window).first)
-        presentation.preview = true
-        try await settle(window)
-        XCTAssertFalse(surfaces(in: window).first === original)
     }
 
     func testPlayingPreviewExpandsWithoutReplacingItemOrLosingItsLayer() async throws {

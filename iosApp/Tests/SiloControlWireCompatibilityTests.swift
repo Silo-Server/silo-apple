@@ -84,7 +84,8 @@ final class SiloControlWireCompatibilityTests: XCTestCase {
     // MARK: - Commands: retired names from old peers
 
     /// The exact frame an old v2 phone sends when the user hits its HDR
-    /// toggle. Before the fix this threw, which killed the connection.
+    /// toggle. It decodes as unsupported instead of throwing, which would drop
+    /// the connection.
     func testRetiredSetHDREnabledCommandDecodesAsUnsupportedInsteadOfThrowing() throws {
         let data = Data(
             #"{"type":"control","v":2,"control":{"name":"set_hdr_enabled","enabled":true}}"#.utf8
@@ -116,10 +117,10 @@ final class SiloControlWireCompatibilityTests: XCTestCase {
         XCTAssertThrowsError(try JSONDecoder().decode(SiloControlMessage.self, from: data))
     }
 
-    // MARK: - Commands: no regression from the hand-written decoder
+    // MARK: - Commands: argument round trip
 
-    /// `SiloControlCommand` now decodes by hand, so every argument field has
-    /// to survive the round trip exactly as the synthesized decoder did.
+    /// `SiloControlCommand` decodes by hand, so every argument field must
+    /// survive an encode/decode round trip.
     func testKnownCommandsRoundTripEveryArgument() throws {
         let commands: [SiloControlCommand] = [
             .play,

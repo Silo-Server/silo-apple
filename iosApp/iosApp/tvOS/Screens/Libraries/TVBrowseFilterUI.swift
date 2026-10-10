@@ -20,6 +20,9 @@ struct TVBrowseControlRow: View {
     var onMoveDown: (() -> Void)? = nil
     let onSort: () -> Void
     let onFilter: () -> Void
+    /// Shuffles the whole library; nil where Shuffle isn't offered.
+    var onShuffle: (() -> Void)? = nil
+    var isShuffleStarting = false
 
     @FocusState private var focusedControl: TVBrowseControlFocus?
     @State private var lastAppliedFocusRequest = 0
@@ -36,9 +39,7 @@ struct TVBrowseControlRow: View {
             }
             .buttonStyle(TVBrowseControlPillStyle())
             .focused($focusedControl, equals: .sort)
-            .onMoveCommand { direction in
-                handleMove(from: .sort, direction)
-            }
+            .onMoveCommand(perform: handleMove)
 
             Button(action: onFilter) {
                 HStack(spacing: 10) {
@@ -55,8 +56,21 @@ struct TVBrowseControlRow: View {
             }
             .buttonStyle(TVBrowseControlPillStyle(active: filterCount > 0))
             .focused($focusedControl, equals: .filter)
-            .onMoveCommand { direction in
-                handleMove(from: .filter, direction)
+            .onMoveCommand(perform: handleMove)
+
+            if let onShuffle {
+                // Stays enabled while starting: a disabled button loses
+                // focus, and the launcher ignores repeat presses.
+                Button(action: onShuffle) {
+                    HStack(spacing: 10) {
+                        Image(systemName: "shuffle")
+                        Text("Shuffle")
+                    }
+                    .opacity(isShuffleStarting ? 0.6 : 1)
+                }
+                .buttonStyle(TVBrowseControlPillStyle())
+                .focused($focusedControl, equals: .shuffle)
+                .onMoveCommand(perform: handleMove)
             }
 
             Spacer(minLength: 0)
@@ -73,7 +87,7 @@ struct TVBrowseControlRow: View {
         focusedControl = .sort
     }
 
-    private func handleMove(from control: TVBrowseControlFocus, _ direction: MoveCommandDirection) {
+    private func handleMove(_ direction: MoveCommandDirection) {
         switch direction {
         case .up:
             onMoveUp?()
@@ -88,6 +102,7 @@ struct TVBrowseControlRow: View {
 private enum TVBrowseControlFocus: Hashable {
     case sort
     case filter
+    case shuffle
 }
 
 // MARK: - Sort panel
@@ -160,7 +175,6 @@ struct TVBrowseSortPanel: View {
 // MARK: - Filter panel (list → values)
 
 struct TVBrowseFilterPanel: View {
-    let mediaType: BrowseMediaType
     let facets: CatalogFacets
     let onApply: (CatalogFilterState) -> Void
     let onPreserveChange: (Bool) -> Void
@@ -201,7 +215,6 @@ struct TVBrowseFilterPanel: View {
          onApply: @escaping (CatalogFilterState) -> Void,
          onPreserveChange: @escaping (Bool) -> Void,
          onClose: @escaping () -> Void) {
-        self.mediaType = mediaType
         self.facets = facets
         self.onApply = onApply
         self.onPreserveChange = onPreserveChange

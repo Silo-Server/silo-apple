@@ -35,7 +35,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
     private let kind = BookDetailKind.audiobook
 
     private var presentation: BookDetailPresentation {
-        BookDetailPresentation(detail: detail, kind: kind, isMarkedFinished: isWatched)
+        BookDetailPresentation(detail: detail, isMarkedFinished: isWatched)
     }
 
     var body: some View {
@@ -54,12 +54,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
             .ignoresSafeArea(edges: .top)
             .coordinateSpace(name: PhoneDetailScrollCoordinateSpace.name)
             .detailScrollDismissal()
-            .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                let offset = max(0, geometry.contentOffset.y + geometry.contentInsets.top)
-                return offset <= 150 ? 0 : min(offset, 480)
-            } action: { _, offset in
-                scrollState.update(offset)
-            }
+            .phoneDetailScrollTracking(scrollState)
         }
     }
 
@@ -88,6 +83,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
             overview: detail.overview,
             factsLine: presentation.factsTokens.map(PhoneHeroFactToken.text),
             creditText: presentation.creditText,
+            overlayData: nil,
             enablesArtworkParallax: true,
             artworkStyle: hasBackdrop
                 ? .backdrop
@@ -102,7 +98,13 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
     /// download.
     private func actionStack(_ presentation: BookDetailPresentation) -> some View {
         VStack(spacing: 14) {
-            primaryButton(presentation)
+            AudiobookPrimaryButton(
+                contentId: detail.contentId,
+                presentation: presentation,
+                startPlayback: { restart, position in
+                    startPlayback(restart: restart, startPosition: position)
+                }
+            )
 
             PhoneLabeledActionRow {
                 PhoneLabeledAction(
@@ -132,91 +134,13 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
                         ? "Mark as Not Finished" : "Mark as Finished",
                     action: onToggleWatched
                 )
-                PhoneLabeledMenu(
-                    icon: "speedometer",
-                    label: "Speed \(speedLabel(audioStore.player.playbackRate))"
-                ) {
-                    speedMenuItems
-                }
+                AudiobookSpeedMenu()
                 PhoneLabeledMenu(label: "More") {
                     moreMenuItems
                 }
             }
         }
         .frame(maxWidth: .infinity)
-    }
-
-    /// While this book is the active session the button reflects the live
-    /// player instead of the (stale) detail payload: it reopens the player
-    /// when playing, resumes and reopens it when paused, and restarts the
-    /// book once the session has reached the end.
-    @ViewBuilder
-    private func primaryButton(_ presentation: BookDetailPresentation) -> some View {
-        let player = audioStore.player
-        if isActiveSession {
-            let fraction = player.duration > 0 ? min(1, max(0, player.currentTime / player.duration)) : nil
-            if player.isPlaying {
-                PhonePrimaryPillButton(
-                    icon: "waveform",
-                    title: "Now Playing",
-                    action: { audioStore.showFullPlayer() },
-                    fullWidth: true,
-                    progress: fraction
-                )
-            } else if AudiobookProgress.isFinished(
-                played: false,
-                position: player.currentTime,
-                totalDuration: player.duration
-            ) {
-                // The session reached the end. Playing from there would stop
-                // at once, so restart the book like the finished state does.
-                PhonePrimaryPillButton(
-                    icon: "arrow.counterclockwise",
-                    title: "Play Again",
-                    action: { startPlayback(restart: true) },
-                    fullWidth: true
-                )
-            } else {
-                let left = PlayerTimeFormatter.formatRuntime(max(0, player.duration - player.currentTime))
-                PhonePrimaryPillButton(
-                    icon: "play.fill",
-                    title: left.isEmpty ? "Resume" : "Resume · \(left) left",
-                    action: {
-                        player.play()
-                        audioStore.showFullPlayer()
-                    },
-                    fullWidth: true,
-                    progress: fraction
-                )
-            }
-        } else {
-            PhonePrimaryPillButton(
-                icon: presentation.primaryIcon,
-                title: presentation.primaryLabel,
-                action: { performPrimaryAction(presentation.primaryAction) },
-                fullWidth: true,
-                progress: presentation.resumeFraction
-            )
-        }
-    }
-
-    private var isActiveSession: Bool {
-        audioStore.player.context?.contentId == detail.contentId
-    }
-
-    @ViewBuilder
-    private var speedMenuItems: some View {
-        ForEach(speedOptions, id: \.self) { rate in
-            Button {
-                audioStore.player.setPlaybackRate(rate)
-            } label: {
-                if abs(audioStore.player.playbackRate - rate) < 0.01 {
-                    Label(speedLabel(rate), systemImage: "checkmark")
-                } else {
-                    Text(speedLabel(rate))
-                }
-            }
-        }
     }
 
     @ViewBuilder
@@ -236,19 +160,6 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
             } label: {
                 Label("Other Narrations", systemImage: "person.wave.2")
             }
-        }
-    }
-
-    /// Audiobooks resume where the listener left off without the movie
-    /// page's resume prompt; Start Over lives in the More menu.
-    private func performPrimaryAction(_ action: BookDetailPresentation.PrimaryAction) {
-        switch action {
-        case .resume(let position):
-            startPlayback(startPosition: position)
-        case .playAgain:
-            startPlayback(restart: true)
-        case .play:
-            startPlayback()
         }
     }
 
@@ -272,19 +183,23 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
     // MARK: - Below the fold
 
     private var belowFold: some View {
-        VStack(alignment: .leading, spacing: 36) {
-            if !displayChapters.isEmpty {
-                chaptersSection
+        // Derived once per render and handed to the sections.
+        let audioParts = AudiobookPlaybackContext.audioParts(of: detail)
+        let chapters = displayChapters(in: audioParts)
+        let credits = creditMembers
+        return VStack(alignment: .leading, spacing: 36) {
+            if !chapters.isEmpty {
+                chaptersSection(chapters)
                     .padding(.horizontal, SiloTheme.safePadding)
             }
 
-            if parts.count > 1 {
-                partsSection
+            if audioParts.count > 1 {
+                partsSection(audioParts)
                     .padding(.horizontal, SiloTheme.safePadding)
             }
 
-            if !creditMembers.isEmpty {
-                creditsSection
+            if !credits.isEmpty {
+                creditsSection(credits)
             }
 
             if let series = detail.audiobook?.series, !series.entries.isEmpty {
@@ -329,9 +244,10 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
 
     // MARK: - Chapters
 
-    private var chaptersSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            PhoneSectionHeader(title: "Chapters", trailingText: "\(displayChapters.count)")
+    private func chaptersSection(_ chapters: [DisplayChapter]) -> some View {
+        let visibleChapters = showAllChapters ? chapters : Array(chapters.prefix(chapterCollapseLimit))
+        return VStack(alignment: .leading, spacing: 14) {
+            PhoneSectionHeader(title: "Chapters", trailingText: "\(chapters.count)")
             VStack(spacing: 0) {
                 ForEach(Array(visibleChapters.enumerated()), id: \.element.id) { index, chapter in
                     timelineRow(
@@ -344,7 +260,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
                     }
                 }
 
-                if displayChapters.count > chapterCollapseLimit {
+                if chapters.count > chapterCollapseLimit {
                     Button {
                         withAnimation(.easeInOut(duration: SiloTheme.normalDuration)) {
                             showAllChapters.toggle()
@@ -353,7 +269,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
                         HStack(spacing: 6) {
                             Text(showAllChapters
                                  ? "Show less"
-                                 : "Show all \(displayChapters.count) chapters")
+                                 : "Show all \(chapters.count) chapters")
                             Image(systemName: showAllChapters ? "chevron.up" : "chevron.down")
                                 .font(.system(size: 12, weight: .semibold))
                         }
@@ -369,8 +285,9 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
         }
     }
 
-    private var partsSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
+    private func partsSection(_ parts: [FileVersion]) -> some View {
+        let startOffsets = Self.partStartOffsets(parts)
+        return VStack(alignment: .leading, spacing: 14) {
             PhoneSectionHeader(title: "Parts", trailingText: "\(parts.count)")
             VStack(spacing: 0) {
                 ForEach(parts.indices, id: \.self) { index in
@@ -380,7 +297,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
                         trailing: PlayerTimeFormatter.formatRuntime(partDuration(parts[index])),
                         showsDivider: index > 0
                     ) {
-                        startPlayback(startPosition: partStartOffset(index))
+                        startPlayback(startPosition: startOffsets[index])
                     }
                 }
             }
@@ -428,11 +345,11 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
 
     // MARK: - Authors & narrators
 
-    private var creditsSection: some View {
+    private func creditsSection(_ credits: [CastMember]) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             PhoneSectionHeader(title: creditsTitle)
                 .padding(.horizontal, SiloTheme.safePadding)
-            PhoneCastRail(cast: creditMembers, onTap: onPersonTap)
+            PhoneCastRail(cast: credits, onTap: onPersonTap)
         }
     }
 
@@ -542,15 +459,11 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
 
     // MARK: - Timeline data
 
-    private var parts: [FileVersion] {
-        AudiobookPlaybackContext.audioParts(of: detail)
-    }
-
     private var otherNarrations: [AudiobookNarration] {
         detail.audiobook?.otherNarrations ?? []
     }
 
-    private var displayChapters: [DisplayChapter] {
+    private func displayChapters(in parts: [FileVersion]) -> [DisplayChapter] {
         var offset = 0.0
         var chapters: [DisplayChapter] = []
         for part in parts {
@@ -572,10 +485,6 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
         return chapters.sorted { $0.startSeconds < $1.startSeconds }
     }
 
-    private var visibleChapters: [DisplayChapter] {
-        showAllChapters ? displayChapters : Array(displayChapters.prefix(chapterCollapseLimit))
-    }
-
     private let chapterCollapseLimit = 8
 
     private func partTitle(_ part: FileVersion, fallbackIndex: Int) -> String {
@@ -591,17 +500,118 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
         AudiobookPlaybackContext.partDuration(part)
     }
 
-    private func partStartOffset(_ index: Int) -> Double {
+    /// Where each part starts on the whole-book timeline.
+    private static func partStartOffsets(_ parts: [FileVersion]) -> [Double] {
         var offset = 0.0
-        for position in 0..<index where parts.indices.contains(position) {
-            offset += partDuration(parts[position])
+        return parts.map { part in
+            defer { offset += AudiobookPlaybackContext.partDuration(part) }
+            return offset
         }
-        return offset
+    }
+}
+
+// MARK: - Live player controls
+
+/// The primary play control. While this book is the active session it
+/// reflects the live player instead of the (stale) detail payload: it reopens
+/// the player when playing, resumes and reopens it when paused, and restarts
+/// the book once the session has reached the end. It reads the player itself,
+/// so playback-time ticks re-render this button rather than the whole hero.
+private struct AudiobookPrimaryButton: View {
+    let contentId: String
+    let presentation: BookDetailPresentation
+    let startPlayback: (_ restart: Bool, _ startPosition: Double?) -> Void
+
+    @Environment(AudioPlaybackStore.self) private var audioStore
+
+    var body: some View {
+        let player = audioStore.player
+        if player.context?.contentId == contentId {
+            let fraction = player.duration > 0 ? min(1, max(0, player.currentTime / player.duration)) : nil
+            if player.isPlaying {
+                PhonePrimaryPillButton(
+                    icon: "waveform",
+                    title: "Now Playing",
+                    action: { audioStore.showFullPlayer() },
+                    fullWidth: true,
+                    progress: fraction
+                )
+            } else if AudiobookProgress.isFinished(
+                played: false,
+                position: player.currentTime,
+                totalDuration: player.duration
+            ) {
+                // The session reached the end. Playing from there would stop
+                // at once, so restart the book like the finished state does.
+                PhonePrimaryPillButton(
+                    icon: "arrow.counterclockwise",
+                    title: "Play Again",
+                    action: { startPlayback(true, nil) },
+                    fullWidth: true
+                )
+            } else {
+                let left = PlayerTimeFormatter.formatRuntime(max(0, player.duration - player.currentTime))
+                PhonePrimaryPillButton(
+                    icon: "play.fill",
+                    title: left.isEmpty ? "Resume" : "Resume · \(left) left",
+                    action: {
+                        player.play()
+                        audioStore.showFullPlayer()
+                    },
+                    fullWidth: true,
+                    progress: fraction
+                )
+            }
+        } else {
+            PhonePrimaryPillButton(
+                icon: presentation.primaryIcon,
+                title: presentation.primaryLabel,
+                action: { performPrimaryAction(presentation.primaryAction) },
+                fullWidth: true,
+                progress: presentation.resumeFraction
+            )
+        }
     }
 
-    // MARK: - Speed
+    /// Audiobooks resume where the listener left off without the movie
+    /// page's resume prompt; Start Over lives in the More menu.
+    private func performPrimaryAction(_ action: BookDetailPresentation.PrimaryAction) {
+        switch action {
+        case .resume(let position):
+            startPlayback(false, position)
+        case .playAgain:
+            startPlayback(true, nil)
+        case .play:
+            startPlayback(false, nil)
+        }
+    }
+}
+
+/// Playback speed menu. Reads the live rate itself for the same reason as
+/// `AudiobookPrimaryButton`.
+private struct AudiobookSpeedMenu: View {
+    @Environment(AudioPlaybackStore.self) private var audioStore
 
     private let speedOptions: [Double] = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
+
+    var body: some View {
+        PhoneLabeledMenu(
+            icon: "speedometer",
+            label: "Speed \(speedLabel(audioStore.player.playbackRate))"
+        ) {
+            ForEach(speedOptions, id: \.self) { rate in
+                Button {
+                    audioStore.player.setPlaybackRate(rate)
+                } label: {
+                    if abs(audioStore.player.playbackRate - rate) < 0.01 {
+                        Label(speedLabel(rate), systemImage: "checkmark")
+                    } else {
+                        Text(speedLabel(rate))
+                    }
+                }
+            }
+        }
+    }
 
     private func speedLabel(_ rate: Double) -> String {
         let value = rate.truncatingRemainder(dividingBy: 1) == 0

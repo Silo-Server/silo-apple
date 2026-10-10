@@ -103,13 +103,6 @@ final class FacetLoader {
         return CatalogFacets(cached)
     }
 
-    /// Warm the cache without awaiting (e.g. on library selection).
-    func prefetch(libraryId: Int?) {
-        let key = CacheKey.catalogFilters(libraryId: libraryId, includeTechnical: true)
-        guard ResponseCache.shared.get(key) as APIv2CatalogFilters? == nil else { return }
-        Task { _ = try? await fetch(libraryId: libraryId, includeTechnical: true, key: key) }
-    }
-
     private func fetch(libraryId: Int?, includeTechnical: Bool, key: String) async throws -> APIv2CatalogFilters {
         if let existing = inFlight[key] { return try await existing.value }
         let task = Task {

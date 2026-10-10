@@ -52,13 +52,6 @@ enum PersonalListSync {
             ),
             for: key
         )
-        StartupContentPrefetcher.invalidateHomeSectionsInFlight()
-        ResponseCache.shared.remove(CacheKey.favorites)
-        ResponseCache.shared.remove(CacheKey.watchlist)
-        ResponseCache.shared.remove(CacheKey.homeSections)
-        ResponseCache.shared.remove(CacheKey.recommendations)
-        for prefix in ["browse:", "tvlibrary:", "library:", "collection:"] {
-            ResponseCache.shared.removeAll(withPrefix: prefix)
-        }
+        PersonalStateSync.invalidateDerivedLists()
     }
 }

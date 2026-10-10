@@ -5,7 +5,7 @@ import SwiftUI
 
 /// Offline series browse: a season/episode list scoped to downloaded
 /// content, reachable from the Downloads Manager. Rendered entirely from
-/// `DownloadManager.seriesGroups` + stored progress — no network.
+/// `DownloadManager.seriesGroup(forSeriesId:)` + stored progress — no network.
 struct OfflineSeriesBrowseView: View {
     let seriesId: String
 
@@ -14,12 +14,12 @@ struct OfflineSeriesBrowseView: View {
     private var manager: DownloadManager { DownloadManager.shared }
 
     @State private var selectedSeasonNumber: Int?
-
-    private var group: DownloadSeriesGroup? {
-        manager.seriesGroups.first { $0.seriesId == seriesId }
-    }
+    /// Downloads are costly to re-fetch, so "Delete All Episodes" confirms
+    /// first, as it does on the Downloads tab.
+    @State private var confirmingDeleteAll = false
 
     var body: some View {
+        let group = manager.seriesGroup(forSeriesId: seriesId)
         Group {
             if let group {
                 content(group)
@@ -37,12 +37,11 @@ struct OfflineSeriesBrowseView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .toolbar {
-            if let group {
+            if group != nil {
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
                         Button(role: .destructive) {
-                            manager.deleteDownloads(ids: group.allRecords.map(\.id))
-                            dismiss()
+                            confirmingDeleteAll = true
                         } label: {
                             Label("Delete All Episodes", systemImage: "trash")
                         }
@@ -51,6 +50,22 @@ struct OfflineSeriesBrowseView: View {
                     }
                 }
             }
+        }
+        .alert(
+            "Delete downloaded files?",
+            isPresented: $confirmingDeleteAll,
+            presenting: group
+        ) { group in
+            let count = group.episodeCount
+            Button(count == 1 ? "Delete Download" : "Delete \(count) Downloads", role: .destructive) {
+                // Only what was confirmed and is still in the series: records
+                // can finish, be removed, or be replaced while the alert is up.
+                let confirmed = Set(group.allRecords.map(\.id))
+                let current = manager.seriesGroup(forSeriesId: seriesId)?.allRecords ?? []
+                manager.deleteDownloads(ids: current.map(\.id).filter(confirmed.contains))
+                dismiss()
+            }
+            Button("Keep", role: .cancel) {}
         }
         .siloToolbarColorSchemeDark()
     }
@@ -63,10 +78,11 @@ struct OfflineSeriesBrowseView: View {
                     title: group.title,
                     eyebrow: heroEyebrow(group),
                     posterThumbhash: group.posterThumbhash,
+                    posterFileURL: manager.seriesPosterImageURL(for: group),
                     availability: "Downloaded · \(group.episodeCount) episode\(group.episodeCount == 1 ? "" : "s") · \(DownloadFormatting.bytes(group.totalBytes))",
                     isMonitored: group.isMonitored,
                     playTitle: playTitle(season),
-                    onPlay: { if let record = playTarget(season) { play(record) } }
+                    onPlay: { if let record = playTarget(season) { router.playOffline(record) } }
                 )
 
                 if group.seasons.count > 1 {
@@ -77,7 +93,7 @@ struct OfflineSeriesBrowseView: View {
                     seasonHeaderRow(season)
                     ForEach(season.records) { record in
                         DownloadEpisodeRow(record: record, watched: manager.isWatched(record)) {
-                            play(record)
+                            router.playOffline(record)
                         }
                         .contextMenu {
                             Button(role: .destructive) {
@@ -172,16 +188,6 @@ struct OfflineSeriesBrowseView: View {
         if let season = record.seasonNumber, season > 0 { return " S\(season)·E\(episode)" }
         return " E\(episode)"
     }
-
-    private func play(_ record: DownloadRecord) {
-        guard record.isPlayableOffline else { return }
-        let leafId = record.leafMediaItemId
-        router.presentOfflinePlayer(
-            downloadId: record.id,
-            contentId: leafId,
-            resumePosition: manager.localProgress(forMediaItemId: leafId)?.position
-        )
-    }
 }
 
 // MARK: - Leaf detail (movie or episode)
@@ -267,6 +273,7 @@ struct OfflineDownloadDetailView: View {
             ratingChip: ratingChip,
             overview: manifest?.overview,
             factsLine: factsLine(record),
+            overlayData: nil,
             enablesArtworkParallax: true,
             actions: { actions(record) },
             belowOverview: { EmptyView() }
@@ -278,7 +285,7 @@ struct OfflineDownloadDetailView: View {
             PhonePrimaryPillButton(
                 icon: "play.fill",
                 title: playLabel(record),
-                action: { play(record) },
+                action: { router.playOffline(record) },
                 fullWidth: true,
                 progress: resumeFraction(record)
             )
@@ -286,7 +293,7 @@ struct OfflineDownloadDetailView: View {
             PhoneLabeledActionRow {
                 if resumeFraction(record) != nil {
                     PhoneLabeledAction(icon: "gobackward", label: "Start Over", isToggle: false) {
-                        playFromStart(record)
+                        router.playOffline(record, fromStart: true)
                     }
                 }
                 PhoneLabeledAction(icon: "trash", label: "Delete", isToggle: false) {
@@ -342,10 +349,10 @@ struct OfflineDownloadDetailView: View {
             }
         }
         if let year = manifest?.year, year > 0 { tokens.append(.text(String(year))) }
-        if let runtime = manifest?.runtime, runtime > 0 {
-            tokens.append(.text(PhoneHeroMetadata.formatRuntime(runtime)))
+        if let runtime = MediaTextFormatting.runtime(minutes: manifest?.runtime) {
+            tokens.append(.text(runtime))
         }
-        if let resolution = manifest?.resolution, !resolution.isEmpty { tokens.append(.text(resolution)) }
+        if let resolution = MediaTextFormatting.resolution(manifest?.resolution) { tokens.append(.text(resolution)) }
         if manifest?.hdr == true { tokens.append(.text("HDR")) }
         return tokens
     }
@@ -411,23 +418,23 @@ struct OfflineDownloadDetailView: View {
         guard fraction < 0.98 else { return nil }
         return min(max(fraction, 0), 1)
     }
+}
 
-    private func play(_ record: DownloadRecord) {
+// MARK: - Playback
+
+extension AppRouter {
+    /// Presents the offline player for a downloaded record, resuming from its
+    /// stored local progress unless `fromStart`.
+    @MainActor
+    func playOffline(_ record: DownloadRecord, fromStart: Bool = false) {
         guard record.isPlayableOffline else { return }
         let leafId = record.leafMediaItemId
-        router.presentOfflinePlayer(
+        presentOfflinePlayer(
             downloadId: record.id,
             contentId: leafId,
-            resumePosition: manager.localProgress(forMediaItemId: leafId)?.position
-        )
-    }
-
-    private func playFromStart(_ record: DownloadRecord) {
-        guard record.isPlayableOffline else { return }
-        router.presentOfflinePlayer(
-            downloadId: record.id,
-            contentId: record.leafMediaItemId,
-            resumePosition: 0
+            resumePosition: fromStart
+                ? 0
+                : DownloadManager.shared.localProgress(forMediaItemId: leafId)?.position
         )
     }
 }
@@ -441,6 +448,7 @@ private struct OfflineBrowseHero: View {
     let title: String
     let eyebrow: String
     let posterThumbhash: String?
+    let posterFileURL: URL?
     let availability: String
     var isMonitored: Bool = false
     let playTitle: String
@@ -449,7 +457,7 @@ private struct OfflineBrowseHero: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
             HStack(alignment: .bottom, spacing: 14) {
-                DownloadPosterThumb(thumbhash: posterThumbhash, width: 72, corner: 10)
+                DownloadPosterThumb(thumbhash: posterThumbhash, fileURL: posterFileURL, width: 72, corner: 10)
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 7) {
                         Text(eyebrow)

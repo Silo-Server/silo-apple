@@ -22,10 +22,12 @@ final class APIv2ContractTests: XCTestCase {
     // MARK: Index routing
 
     /// Every vendored fixture: its index entry names the status and media
-    /// type the model layer routes on, and the body decodes as that type.
+    /// type the model layer routes on. A problem body decodes as a problem; a
+    /// success body that no other test reads decodes through the type the
+    /// client reads that operation with.
     func testEveryVendoredFixtureRoutesByStatusAndMediaType() throws {
         let entries = try Support.index(bundleClass: Self.self)
-        XCTAssertEqual(entries.count, 43, "vendored index must list exactly the selected fixtures")
+        XCTAssertEqual(entries.count, 62, "vendored index must list exactly the selected fixtures")
         for entry in entries {
             let data = try fixture(entry.name)
             XCTAssertEqual(entry.responseHeaders["Content-Type"], entry.responseMediaType, entry.name)
@@ -33,6 +35,7 @@ final class APIv2ContractTests: XCTestCase {
             if (200..<300).contains(entry.expectedStatus) {
                 XCTAssertEqual(entry.responseMediaType, "application/json", entry.name)
                 XCTAssertFalse(entry.schema.hasSuffix("/Problem"), entry.name)
+                try decodeSuccessBody(of: entry, data)
             } else {
                 XCTAssertEqual(entry.responseMediaType, "application/problem+json", entry.name)
                 XCTAssertEqual(entry.schema, "#/components/schemas/Problem", entry.name)
@@ -40,6 +43,62 @@ final class APIv2ContractTests: XCTestCase {
                 XCTAssertEqual(problem.status, entry.expectedStatus, entry.name)
             }
         }
+    }
+
+    private func decodeSuccessBody(of entry: Support.IndexEntry, _ data: Data) throws {
+        switch entry.operationId ?? "" {
+        case "getDownloadCapability":
+            _ = DownloadCapability(try decoder.decode(APIv2DownloadCapability.self, from: data))
+        case "reportDownloadStatus":
+            XCTAssertTrue(try decoder.decode(APIv2DownloadEntry.self, from: data).isUsable, entry.name)
+        case "listDownloads":
+            _ = try decoder.decode(APIv2DownloadEntryPage.self, from: data)
+        case "listUserLibraries":
+            _ = try decoder.decode(APIv2CatalogReadCollection<APIv2UserLibrary>.self, from: data).completeItems()
+        default:
+            break
+        }
+    }
+
+    // MARK: Device sign-in (TV)
+
+    /// The TV withdraws its own request, the poll reports an opened
+    /// request, and the capability says which of the two a server offers.
+    func testDeviceSignInCancelOpenedAndCapabilityFixtures() throws {
+        let cancel = try entry("cancel_device_login_ok")
+        XCTAssertEqual(cancel.operationId, "cancelDeviceLogin")
+        XCTAssertEqual(cancel.request.method, "POST")
+        XCTAssertEqual(cancel.request.path, "/api/v2/auth/device/cancel")
+        XCTAssertNil(cancel.request.headers?["Authorization"], "authenticated by the device code alone")
+        XCTAssertEqual(try decoder.decode(APIv2DeviceCancel.self, from: fixture("cancel_device_login_ok")).status, "canceled")
+        XCTAssertEqual(try entry("cancel_device_login_not_found").expectedStatus, 404)
+
+        let opened = try decoder.decode(APIv2DevicePoll.self, from: fixture("poll_device_login_opened")).validated()
+        XCTAssertEqual(opened.status, "pending")
+        XCTAssertEqual(opened.opened, true)
+        // A pending poll carries the request's current expiry; the TV moves
+        // its local deadline to it.
+        XCTAssertEqual(try XCTUnwrap(opened.expiresAt).timeIntervalSince1970, 1767323645.678, accuracy: 0.001)
+        let approved = try decoder.decode(APIv2DevicePoll.self, from: fixture("poll_device_login_ok")).validated()
+        XCTAssertNil(approved.expiresAt, "only pending answers carry it")
+
+        // The approval card says when the TV asked.
+        let lookup = try decoder.decode(APIv2DeviceLookup.self, from: fixture("get_device_login_ok")).presentation
+        XCTAssertEqual(try XCTUnwrap(lookup.requestedAt).timeIntervalSince1970, 1767323045.678, accuracy: 0.001)
+        XCTAssertEqual(lookup.serverId, "3f2a9d5e-6b1c-4c7e-9a0d-2f4b8c1e7a35")
+        let canceled = try decoder.decode(APIv2DevicePoll.self, from: Data(
+            #"{"status":"canceled","poll_after":5,"opened":false,"profile_id":"","profile_token":"","temporary":false}"#.utf8)).validated()
+        XCTAssertEqual(DeviceLoginStatus(raw: canceled.status), .canceled)
+
+        let capability = try decoder.decode(APIv2DeviceCapability.self, from: fixture("get_device_login_capability_ok"))
+        XCTAssertTrue(capability.supportsCancel)
+        XCTAssertTrue(capability.supportsOpenedSignal)
+        // Older servers omit both flags: no cancel, no opened signal.
+        let older = try decoder.decode(APIv2DeviceCapability.self, from: Data(
+            #"{"revision":"r","state":"available","remote_playback_handoff":true,"protocol_versions":[2]}"#.utf8))
+        XCTAssertTrue(older.offersDeviceSignIn)
+        XCTAssertFalse(older.supportsCancel)
+        XCTAssertFalse(older.supportsOpenedSignal)
     }
 
     // MARK: getSetupStatus
@@ -142,9 +201,6 @@ final class APIv2ContractTests: XCTestCase {
         }
         let page = try decoder.decode(APIv2ProgressPage.self, from: data)
         XCTAssertEqual(page.items.first?.mediaItemId, "movie-8f2c1a")
-        // The status filter enum the client sends stays open too.
-        XCTAssertEqual(APIv2ProgressStatus(wireValue: "paused"), .unknown("paused"))
-        XCTAssertEqual(APIv2ProgressStatus(wireValue: "in_progress"), .inProgress)
     }
 
     func testListProgressProblemFixtures() throws {
@@ -303,16 +359,20 @@ final class APIv2ContractTests: XCTestCase {
         XCTAssertEqual(capabilities.resultWindowLimit, 1000)
         XCTAssertEqual(capabilities.peopleMediaScope, true)
         XCTAssertEqual(capabilities.personPrefetch, true)
+        XCTAssertEqual(capabilities.videoWithEpisodesScope, true)
 
         // Only revision, state and allowed are required: an unconfigured
         // server omits the provider and its limits.
         let unconfigured = try Support.mutatedBody(named: "get_catalog_search_capabilities_ok", bundleClass: Self.self) {
             for key in ["provider", "result_window_limit", "session_ttl_seconds", "max_sessions_per_account",
-                        "people_media_scope", "person_prefetch"] { $0.removeValue(forKey: key) }
+                        "people_media_scope", "person_prefetch", "video_with_episodes_scope"] {
+                $0.removeValue(forKey: key)
+            }
             $0["state"] = "not_configured"
         }
         let minimal = try decoder.decode(APIv2CatalogSearchCapabilities.self, from: unconfigured)
         XCTAssertNil(minimal.provider)
+        XCTAssertNil(minimal.videoWithEpisodesScope)
         XCTAssertFalse(minimal.isAvailable)
 
         let denied = try Support.mutatedBody(named: "get_catalog_search_capabilities_ok", bundleClass: Self.self) {

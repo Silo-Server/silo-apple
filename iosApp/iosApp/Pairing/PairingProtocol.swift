@@ -7,18 +7,43 @@ enum PairingProtocol {
     static let version = 1
     /// Bonjour service type the TV advertises and the phone browses for.
     static let serviceType = "_silopair._tcp"
+
+    /// Rollout gate for sign-in TVs: whether the TV sign-in screen
+    /// advertises `st=login`. Both phone apps must accept `login` TVs before
+    /// either TV advertises one; a phone that predates them offers a
+    /// sign-in TV the setup chooser and pushes servers without an identity.
+    /// On in Debug builds for development; turn it on for release once the
+    /// iOS and Android phone apps that handle `login` have shipped.
+    static let advertisesSignInTVs: Bool = {
+        #if DEBUG
+        return true
+        #else
+        return false
+        #endif
+    }()
+
+    /// TXT keys. `st` is the receiver state; `srv` is the deployment
+    /// identity of a `login` TV's server (absent for `setup`).
+    enum TXTKey {
+        static let version = "v"
+        static let name = "name"
+        static let deviceId = "id"
+        static let sessionNonce = "sid"
+        static let state = "st"
+        static let serverIdentity = "srv"
+    }
 }
 
 /// The TV's advertised state, carried in the Bonjour TXT record and in `Hello`.
 enum PairingReceiverState: String, Codable, Equatable {
     /// Blank TV with no server configured — needs a URL pushed.
     case setup
-    /// TV already has a server — only needs a user signed in.
-    ///
-    /// RESERVED, NOT IMPLEMENTED: nothing advertises or handles `login` yet
-    /// (the advertiser hardcodes `setup`, and only the first-run screen
-    /// advertises at all). Kept on the wire so a future "sign in to a
-    /// configured TV" flow doesn't need a protocol bump.
+    /// TV already has a server and shows its sign-in screen: it only needs
+    /// an account signed in. Its TXT record carries `srv`, the deployment
+    /// identity (`GET /api/v2/system/identity`) of that server. A phone
+    /// offers it only when it holds a saved server with that verified
+    /// identity, skips the server chooser, and pushes that server alone.
+    /// The TV answers with the code it is already showing.
     case login
 }
 
@@ -74,9 +99,24 @@ enum PairingFailureCode: String, Codable, Equatable, Sendable {
     /// The server is v1-only, or no longer accepts this app version, so one
     /// of them must be updated first. Older phones read it as `auth_failed`.
     case updateRequired = "update_required"
+    /// The server approved the sign-in but the TV could not save it (for
+    /// example the keychain refused the write). Shown on this TV only:
+    /// Android has no `save_failed` yet, so the wire carries `auth_failed`
+    /// (see `wireValue`) until both platforms agree on the code.
+    case saveFailed = "save_failed"
 
     init(wire: String?) {
         self = wire.flatMap(PairingFailureCode.init(rawValue:)) ?? .authFailed
+    }
+
+    /// What a TV sends in `serverResult.error`: only the codes both
+    /// platforms share (auth_failed, denied, expired, unreachable,
+    /// identity_mismatch, update_required).
+    var wireValue: String {
+        switch self {
+        case .saveFailed: return PairingFailureCode.authFailed.rawValue
+        default: return rawValue
+        }
     }
 }
 

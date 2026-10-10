@@ -2,11 +2,24 @@ import Foundation
 
 // MARK: - Wire enums
 
+/// A string enum that decodes an unrecognized wire value as `fallback`
+/// instead of failing the whole payload.
+protocol FallbackDecodable: RawRepresentable<String>, Decodable {
+    static var fallback: Self { get }
+}
+
+extension FallbackDecodable {
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = Self(rawValue: raw) ?? .fallback
+    }
+}
+
 /// Media type for the requests domain (TMDB-shaped: movies + series only).
 /// `.all` exists solely as a search-filter query value; the server never
 /// returns it on a result. Unrecognized values decode as `.unknown` so a
 /// future server addition can't fail the whole payload.
-enum RequestMediaType: String, Codable, Hashable, CaseIterable, Identifiable {
+enum RequestMediaType: String, Codable, Hashable, CaseIterable, Identifiable, FallbackDecodable {
     case movie
     case series
     case all
@@ -14,10 +27,7 @@ enum RequestMediaType: String, Codable, Hashable, CaseIterable, Identifiable {
 
     var id: Self { self }
 
-    init(from decoder: Decoder) throws {
-        let raw = try decoder.singleValueContainer().decode(String.self)
-        self = RequestMediaType(rawValue: raw) ?? .unknown
-    }
+    static var fallback: Self { .unknown }
 
     var displayName: String {
         switch self {
@@ -31,7 +41,7 @@ enum RequestMediaType: String, Codable, Hashable, CaseIterable, Identifiable {
 
 /// Lifecycle status of a request (or of one fulfillment target). `failed`
 /// only appears on targets; requests express failure via `outcome`.
-enum RequestStatus: String, Codable, Hashable {
+enum RequestStatus: String, Codable, Hashable, FallbackDecodable {
     case pending
     case approved
     case queued
@@ -40,25 +50,19 @@ enum RequestStatus: String, Codable, Hashable {
     case failed
     case unknown
 
-    init(from decoder: Decoder) throws {
-        let raw = try decoder.singleValueContainer().decode(String.self)
-        self = RequestStatus(rawValue: raw) ?? .unknown
-    }
+    static var fallback: Self { .unknown }
 }
 
 /// Terminal-vs-active axis, orthogonal to `RequestStatus`: a declined or
 /// cancelled request keeps its last status but flips its outcome.
-enum RequestOutcome: String, Codable, Hashable {
+enum RequestOutcome: String, Codable, Hashable, FallbackDecodable {
     case active
     case declined
     case cancelled
     case failed
     case unknown
 
-    init(from decoder: Decoder) throws {
-        let raw = try decoder.singleValueContainer().decode(String.self)
-        self = RequestOutcome(rawValue: raw) ?? .unknown
-    }
+    static var fallback: Self { .unknown }
 }
 
 /// The one state the server says to show a user for a request (v2 `state`),
@@ -68,7 +72,7 @@ enum RequestOutcome: String, Codable, Hashable {
 /// servers omit it, so the models carry it as optional; an unrecognized
 /// value decodes as `.unknown`, and both mean "fall back to `status` and
 /// `outcome`".
-enum RequestUserState: String, Codable, Hashable {
+enum RequestUserState: String, Codable, Hashable, FallbackDecodable {
     case pending
     case approved
     case processing
@@ -80,21 +84,15 @@ enum RequestUserState: String, Codable, Hashable {
     case failed
     case unknown
 
-    init(from decoder: Decoder) throws {
-        let raw = try decoder.singleValueContainer().decode(String.self)
-        self = RequestUserState(rawValue: raw) ?? .unknown
-    }
+    static var fallback: Self { .unknown }
 }
 
-enum RequestAvailability: String, Codable, Hashable {
+enum RequestAvailability: String, Codable, Hashable, FallbackDecodable {
     case missing
     case available
     case unknown
 
-    init(from decoder: Decoder) throws {
-        let raw = try decoder.singleValueContainer().decode(String.self)
-        self = RequestAvailability(rawValue: raw) ?? .unknown
-    }
+    static var fallback: Self { .unknown }
 }
 
 // MARK: - Feature status
@@ -237,6 +235,13 @@ struct MediaRequest: Codable, Identifiable, Hashable {
     let createdAt: Date
     let updatedAt: Date
     let completedAt: Date?
+    /// When an admin (or auto-approval) approved it; drives the detail
+    /// page's stage timestamps. Defaulted so fixtures can omit it.
+    var approvedAt: Date? = nil
+    /// Who asked for it. Admin lists show the requester; `/requests/mine`
+    /// always names the signed-in user.
+    var requestedByUserId: String? = nil
+    var requestedByProfileId: String? = nil
 }
 
 // MARK: - Mutations

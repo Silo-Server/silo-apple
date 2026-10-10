@@ -1,7 +1,7 @@
 import SwiftUI
 
 extension Color {
-    // MARK: - Core Palette (Plezy OLED Dark)
+    // MARK: - Core Palette (OLED dark)
 
     /// Pure black background (#000000)
     static let siloBackground = Color(hex: "#000000")
@@ -42,6 +42,9 @@ extension Color {
 
     /// Red sampled from the Silo wordmark.
     static let siloBrandRed = Color(hex: "#F50B4F")
+
+    /// Deep blue field behind the mark on the app icon.
+    static let siloIconField = Color(hex: "#010D9F")
 
     /// Muted/secondary text — primary at 60% opacity (#99EDEDED)
     static let siloSecondaryText = Color(hex: "#99EDEDED")
@@ -99,4 +102,30 @@ extension Color {
 
     /// Disabled control tint
     static let siloDisabled = Color(hex: "#4B5563")
+
+    // MARK: - First-run status
+
+    /// Error text and outlines on first-run surfaces.
+    static let siloErrorInk = Color(hex: "#FF6961")
+
+    /// Attention status (unreachable server, setup needs a look).
+    static let siloStatusWarning = Color(hex: "#F4C869")
+
+    /// Live/OK status; the same green as `siloSwitchOn`.
+    static let siloStatusLive = siloSwitchOn
+
+    /// Text-field caret tint.
+    static let siloFieldTint = Color(hex: "#0A84FF")
+
+    #if os(macOS)
+    /// Mac page canvas: one flat charcoal behind every signed-in page.
+    static let siloPageCanvas = Color(hex: "#1A1A1C")
+
+    /// Mac sidebar surface, a shade darker than the page canvas so the two
+    /// regions read as separate without a border.
+    static let siloSidebarCanvas = Color(hex: "#121214")
+    #else
+    /// Signed-in iOS page canvas behind `SiloPageBackdrop`'s washes.
+    static let siloPageCanvas = Color(hex: "#111111")
+    #endif
 }

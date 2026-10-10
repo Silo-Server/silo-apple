@@ -2,12 +2,9 @@ import SwiftUI
 
 /// Week navigator.
 ///
-/// - iOS / macOS: a Trakt-style two-row block meant to live inside the
-///   pinned calendar card — a month-year label and `‹ Today ›` controls on
-///   top, then a full-width row of rich day cells (weekday / boxed number /
-///   event-count) below.
-/// - tvOS: the original focus-driven strip (prev/next chevrons around seven
-///   day buttons, plus a `Today` shortcut), unchanged.
+/// - iOS / macOS: prev/next chevrons around seven rich day cells (weekday,
+///   boxed number, event count), shown inside the pinned calendar card.
+/// - tvOS: focusable chevrons, seven day buttons and Today.
 struct CalendarWeekStrip: View {
     let week: CalendarWeek
     let selectedDay: Date

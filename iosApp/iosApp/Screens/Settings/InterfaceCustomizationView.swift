@@ -138,6 +138,10 @@ struct InterfaceCustomizationView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
+        // Resolved once per render: every row asks whether it can move, and
+        // each answer would otherwise re-resolve the whole menu.
+        let rows = visibleRows
+        let shortcuts = availableShortcuts
         List {
             if let message = preferences.capabilityMessage {
                 Section {
@@ -212,7 +216,7 @@ struct InterfaceCustomizationView: View {
             }
 
             Section {
-                ForEach(visibleRows) { row in
+                ForEach(rows) { row in
                     let item = row.item
                     HStack(spacing: 12) {
                         if row.isNestedLibrary {
@@ -239,7 +243,7 @@ struct InterfaceCustomizationView: View {
                                         .contentShape(Rectangle())
                                 }
                                 .buttonStyle(.plain)
-                                .disabled(!canMove(item, by: -1))
+                                .disabled(!canMove(item, by: -1, in: rows))
                                 .accessibilityLabel("Move \(displayTitle(for: item)) up")
 
                                 Button {
@@ -251,7 +255,7 @@ struct InterfaceCustomizationView: View {
                                         .contentShape(Rectangle())
                                 }
                                 .buttonStyle(.plain)
-                                .disabled(!canMove(item, by: 1))
+                                .disabled(!canMove(item, by: 1, in: rows))
                                 .accessibilityLabel("Move \(displayTitle(for: item)) down")
 
                                 Button {
@@ -279,7 +283,11 @@ struct InterfaceCustomizationView: View {
                 if isDefaultMenuApplied {
                     Text("Default menu applied. Add shortcuts to customize.")
                 } else {
+                    #if os(macOS)
+                    Text("Home is required. Use the arrows to reorder items. This menu is shared with your other devices. On this Mac the sidebar always lists every library, so pinning or removing a library here changes only those devices; the order of For You and Calendar applies here too.")
+                    #else
                     Text("Home is required. Use the arrows to reorder items. Libraries stay grouped under their media type and can only move within that group. Removing a library unpins it from your profile. Downloads (when available), Search, and Profile stay automatic.")
+                    #endif
                 }
             }
             .disabled(
@@ -287,9 +295,9 @@ struct InterfaceCustomizationView: View {
                     || preferences.primaryMenuUsesDeviceOverride
             )
 
-            if !availableShortcuts.isEmpty {
+            if !shortcuts.isEmpty {
                 Section("Available Shortcuts") {
-                    ForEach(availableShortcuts) { item in
+                    ForEach(shortcuts) { item in
                         Button {
                             addAvailableShortcut(item)
                         } label: {
@@ -302,7 +310,7 @@ struct InterfaceCustomizationView: View {
                             "Pin \(displayTitle(for: item)), "
                                 + primaryMenuShortcutTypeTitle(item, libraries: libraries)
                         )
-                        .disabled(!canEditAvailableShortcut(item))
+                        .disabled(!canEditShortcuts)
                     }
                 }
             }
@@ -323,7 +331,11 @@ struct InterfaceCustomizationView: View {
                 )
             }
         }
+        #if os(macOS)
+        .settingsListChrome()
+        #else
         .siloGroupedListStyle()
+        #endif
         .navigationTitle("Interface")
         .task {
             await preferences.refresh()
@@ -413,7 +425,8 @@ struct InterfaceCustomizationView: View {
     }
 
     private var isDefaultMenuApplied: Bool {
-        visibleDestinations.count == 1 && visibleDestinations[0].isHome
+        let destinations = visibleDestinations
+        return destinations.count == 1 && destinations[0].isHome
     }
 
     private var availableShortcuts: [PrimaryMenuItem] {
@@ -480,12 +493,12 @@ struct InterfaceCustomizationView: View {
         persistVisibleDestinations(items)
     }
 
-    private func canMove(_ item: PrimaryMenuItem, by offset: Int) -> Bool {
-        offsetPrimaryMenuEditorItem(
-            visibleRows,
-            itemId: item.id,
-            by: offset
-        ) != nil
+    private func canMove(
+        _ item: PrimaryMenuItem,
+        by offset: Int,
+        in rows: [PrimaryMenuEditorRow]
+    ) -> Bool {
+        offsetPrimaryMenuEditorItem(rows, itemId: item.id, by: offset) != nil
     }
 
     private func remove(_ item: PrimaryMenuItem) {
@@ -526,9 +539,8 @@ struct InterfaceCustomizationView: View {
         persistVisibleDestinations(visibleDestinations + [item])
     }
 
-    private func canEditAvailableShortcut(_: PrimaryMenuItem) -> Bool {
-        guard preferences.allowsEditing else { return false }
-        return !preferences.primaryMenuUsesDeviceOverride
+    private var canEditShortcuts: Bool {
+        preferences.allowsEditing && !preferences.primaryMenuUsesDeviceOverride
     }
 
     private func persistVisibleDestinations(_ destinations: [PrimaryMenuItem]) {
@@ -616,7 +628,11 @@ private struct HomeSectionsCustomizationView: View {
                 }
             }
         }
+        #if os(macOS)
+        .settingsListChrome()
+        #else
         .siloGroupedListStyle()
+        #endif
         .navigationTitle("Home Sections")
         #if os(iOS)
         .toolbar {
@@ -627,7 +643,7 @@ private struct HomeSectionsCustomizationView: View {
             await loadSections()
         }
         .refreshable {
-            await loadSections(forceRefresh: true)
+            await loadSections()
         }
     }
 
@@ -675,14 +691,13 @@ private struct HomeSectionsCustomizationView: View {
         preferences.setOrder(ids)
     }
 
-    private func loadSections(forceRefresh: Bool = false) async {
+    private func loadSections() async {
         preferences.refresh()
 
         if let cached: SectionsResponse = ResponseCache.shared.get(CacheKey.homeSections) {
             sections = cached.sections.filter { !$0.items.isEmpty }
         }
 
-        _ = forceRefresh
         // Cached rows paint immediately; this awaited refresh remains owned by
         // the view task so it is cancelled cleanly when the editor disappears.
         await refreshFromServer()

@@ -4,22 +4,18 @@ import Foundation
 
 final class LibraryVisibilityTests: XCTestCase {
     func testLibrariesResponseOnlyIncludesSupportedAppleLibraryTypes() {
-        let json = """
-        { "libraries": [
-          { "id": 1, "name": "Movies", "type": "movies" },
-          { "id": 2, "name": "Series", "type": "series" },
-          { "id": 3, "name": "Audiobooks", "type": "audiobooks" },
-          { "id": 4, "name": "Music", "type": "music" },
-          { "id": 5, "name": "Ebooks", "type": "ebooks" },
-          { "id": 6, "name": "Comics", "type": "comics" },
-          { "id": 7, "name": "Podcasts", "type": "podcasts" },
-          { "id": 8, "name": "Mixed Media", "type": "mixed" }
-        ] }
-        """
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let libraries = [
+            (1, "Movies", "movies"),
+            (2, "Series", "series"),
+            (3, "Audiobooks", "audiobooks"),
+            (4, "Music", "music"),
+            (5, "Ebooks", "ebooks"),
+            (6, "Comics", "comics"),
+            (7, "Podcasts", "podcasts"),
+            (8, "Mixed Media", "mixed"),
+        ].map { Library(id: $0.0, name: $0.1, type: $0.2, sortOrder: nil, posterUrl: nil) }
 
-        let response = try! decoder.decode(LibrariesResponse.self, from: Data(json.utf8))
+        let response = LibrariesResponse(libraries: libraries)
 
         XCTAssertEqual(response.libraries.map(\.id), [1, 2, 3, 8])
     }

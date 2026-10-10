@@ -16,6 +16,17 @@
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
 	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>org.siloserver.silo.auth-callback</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>org.siloserver.silo</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSApplicationCategoryType</key>
@@ -25,11 +36,19 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_silo._tcp</string>
+	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Silo uses your local network to find Silo servers.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSSupportsAutomaticGraphicsSwitching</key>
 	<true/>
 	<key>SiloBuildChannel</key>
 	<string>$(SILO_BUILD_CHANNEL)</string>
+	<key>SiloSourceURL</key>
+	<string>$(SILO_SOURCE_URL)</string>
 </dict>
 </plist>

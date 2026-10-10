@@ -1,10 +1,8 @@
 import SwiftUI
 
-#if os(iOS)
-/// Shared iPhone/iPad filter used by Favorites and Watchlist. Keeping the
-/// picker and inclusion rules in one place guarantees both saved-list screens
-/// retain identical tabs and grid geometry.
-enum IOSPersonalMediaSection: String, CaseIterable, Identifiable {
+/// Movies / TV Shows split for the saved-list screens (Favorites and
+/// Watchlist on iOS, Favorites on tvOS).
+enum PersonalMediaSection: String, CaseIterable, Identifiable {
     case movies = "Movies"
     case tvShows = "TV Shows"
 
@@ -22,12 +20,15 @@ enum IOSPersonalMediaSection: String, CaseIterable, Identifiable {
     }
 }
 
+#if os(iOS)
+/// Shared iPhone/iPad picker used by Favorites and Watchlist, so both
+/// saved-list screens keep identical tabs.
 struct IOSPersonalMediaSectionPicker: View {
-    @Binding var selection: IOSPersonalMediaSection
+    @Binding var selection: PersonalMediaSection
 
     var body: some View {
         Picker("Media type", selection: $selection) {
-            ForEach(IOSPersonalMediaSection.allCases) { section in
+            ForEach(PersonalMediaSection.allCases) { section in
                 Text(section.rawValue).tag(section)
             }
         }
@@ -37,8 +38,10 @@ struct IOSPersonalMediaSectionPicker: View {
     }
 }
 
-/// Saved titles use a fixed three-column poster grid on iPhone. iPad retains
-/// the wider Home-like rails that make better use of its additional width.
+/// Saved titles use a three-column poster grid on iPhone, with more columns in
+/// phone windows too wide for three-up (the iPhone Duo's inner display). iPad
+/// retains the wider Home-like rails that make better use of its additional
+/// width.
 struct IOSPersonalMediaPosterLayout: View {
     let items: [BrowseItem]
     let onUserStateChanged: (BrowseItem, MediaItemUserState) -> Void
@@ -47,6 +50,7 @@ struct IOSPersonalMediaPosterLayout: View {
     @State private var uiCustomization = UICustomizationPreferences.shared
     @State private var gridWidth: CGFloat = 0
     @State private var originID = UUID().uuidString
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     @State private var rowScrollPositions: [Int: String] = [:]
 
     @ViewBuilder
@@ -59,13 +63,7 @@ struct IOSPersonalMediaPosterLayout: View {
     }
 
     private var phoneGrid: some View {
-        LazyVGrid(
-            columns: Array(
-                repeating: GridItem(.flexible(), spacing: 8, alignment: .top),
-                count: 3
-            ),
-            spacing: 12
-        ) {
+        LazyVGrid(columns: phoneColumns, spacing: 12) {
             ForEach(items) { item in
                 MediaCard(
                     title: item.title,
@@ -73,6 +71,7 @@ struct IOSPersonalMediaPosterLayout: View {
                     thumbhash: item.posterThumbhash,
                     episodeWatchState: item.isEpisodeItem ? EpisodeWatchState(browseItem: item) : nil,
                     imageIsEpisodeStill: item.posterIsEpisodeStill,
+                    mediaType: item.type,
                     year: item.year,
                     userState: item.userState,
                     overlayData: OverlayData.from(item),
@@ -115,6 +114,7 @@ struct IOSPersonalMediaPosterLayout: View {
                                 thumbhash: item.posterThumbhash,
                                 episodeWatchState: item.isEpisodeItem ? EpisodeWatchState(browseItem: item) : nil,
                                 imageIsEpisodeStill: item.posterIsEpisodeStill,
+                                mediaType: item.type,
                                 year: item.year,
                                 userState: item.userState,
                                 overlayData: OverlayData.from(item),
@@ -131,7 +131,7 @@ struct IOSPersonalMediaPosterLayout: View {
                     }
                     .scrollTargetLayout()
                 }
-                .scrollTargetBehavior(.viewAligned(limitBehavior: .always))
+                .mediaRailScrolling()
                 .scrollPosition(
                     id: rowScrollPositionBinding(for: rowIndex),
                     anchor: .center
@@ -159,10 +159,33 @@ struct IOSPersonalMediaPosterLayout: View {
         }
     }
 
+    /// Three-up, or more columns once the phone window is too wide for that
+    /// (the iPhone Duo's inner display).
+    private var phoneColumns: [GridItem] {
+        if let fit = widePhonePosterFit {
+            return fit.columns
+        }
+        return Array(
+            repeating: GridItem(.flexible(), spacing: 8, alignment: .top),
+            count: 3
+        )
+    }
+
+    private var widePhonePosterFit: AdaptiveColumns.PosterGridFit? {
+        AdaptiveColumns.widePhonePosterFit(
+            containerWidth: gridWidth,
+            posterSize: uiCustomization.cardPresentation.posterSize,
+            verticalSizeClass: verticalSizeClass
+        )
+    }
+
     /// MediaCard scales overrides by the selected global preference. Cancel
     /// that scale, then cap the standard width to the measured grid cell.
     private var phoneCardWidthOverride: CGFloat {
-        AdaptiveColumns.fittedPosterWidth(
+        if let fit = widePhonePosterFit {
+            return fit.cardWidth / uiCustomization.cardPresentation.posterSize.scale
+        }
+        return AdaptiveColumns.fittedPosterWidth(
             containerWidth: gridWidth,
             columnCount: 3,
             spacing: 8
@@ -202,14 +225,14 @@ struct FavoritesView: View {
     @State private var error: ErrorState?
     @State private var uiCustomization = UICustomizationPreferences.shared
     #if os(tvOS)
-    @State private var selectedSection: FavoriteMediaSection = .movies
-    @FocusState private var focusedSection: FavoriteMediaSection?
+    @State private var selectedSection: PersonalMediaSection = .movies
+    @FocusState private var focusedSection: PersonalMediaSection?
     @State private var lastAppliedFocusRequest = 0
     #endif
     @Environment(AppRouter.self) private var router
     @Environment(\.horizontalSizeClass) private var hSize
     #if os(iOS)
-    @State private var selectedSection: IOSPersonalMediaSection = .movies
+    @State private var selectedSection: PersonalMediaSection = .movies
     #endif
 
     private var columns: [GridItem] {
@@ -244,12 +267,13 @@ struct FavoritesView: View {
     private var iosGridContent: some View {
         ScrollView {
             VStack(spacing: 16) {
+                let visibleItems = filteredIOSItems
                 IOSPersonalMediaSectionPicker(selection: $selectedSection)
 
-                if filteredIOSItems.isEmpty {
+                if visibleItems.isEmpty {
                     iosSelectedSectionEmptyState
                 } else {
-                    IOSPersonalMediaPosterLayout(items: filteredIOSItems) { item, state in
+                    IOSPersonalMediaPosterLayout(items: visibleItems) { item, state in
                         guard !state.isFavorite else { return }
                         withAnimation {
                             items.removeAll { $0.contentId == item.contentId }
@@ -340,6 +364,7 @@ struct FavoritesView: View {
                         thumbhash: item.posterThumbhash,
                         episodeWatchState: item.isEpisodeItem ? EpisodeWatchState(browseItem: item) : nil,
                         imageIsEpisodeStill: item.posterIsEpisodeStill,
+                        mediaType: item.type,
                         year: item.year,
                         userState: item.userState,
                         overlayData: OverlayData.from(item),
@@ -372,6 +397,7 @@ struct FavoritesView: View {
     private var tvGridContent: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 40) {
+                let visibleItems = filteredItems
                 if usesTVTopMenu {
                     Text("Favorites")
                         .font(.system(size: 64, weight: .bold))
@@ -380,7 +406,7 @@ struct FavoritesView: View {
 
                 sectionSelector
 
-                if filteredItems.isEmpty {
+                if visibleItems.isEmpty {
                     selectedSectionEmptyState
                 } else {
                     LazyVGrid(
@@ -388,7 +414,7 @@ struct FavoritesView: View {
                         alignment: .leading,
                         spacing: 60
                     ) {
-                        ForEach(filteredItems) { item in
+                        ForEach(visibleItems) { item in
                             favoriteCard(for: item)
                                 .frame(maxWidth: .infinity)
                         }
@@ -405,7 +431,7 @@ struct FavoritesView: View {
 
     private var sectionSelector: some View {
         HStack(spacing: 14) {
-            ForEach(FavoriteMediaSection.allCases) { section in
+            ForEach(PersonalMediaSection.allCases) { section in
                 Button {
                     withAnimation(.easeInOut(duration: SiloTheme.normalDuration)) {
                         selectedSection = section
@@ -454,6 +480,7 @@ struct FavoritesView: View {
             thumbhash: item.posterThumbhash,
             episodeWatchState: item.isEpisodeItem ? EpisodeWatchState(browseItem: item) : nil,
             imageIsEpisodeStill: item.posterIsEpisodeStill,
+            mediaType: item.type,
             year: item.year,
             userState: item.userState,
             overlayData: OverlayData.from(item),
@@ -528,24 +555,6 @@ struct FavoritesView: View {
 }
 
 #if os(tvOS)
-private enum FavoriteMediaSection: String, CaseIterable, Identifiable {
-    case movies = "Movies"
-    case tvShows = "TV Shows"
-
-    var id: Self { self }
-
-    func includes(_ item: BrowseItem) -> Bool {
-        switch self {
-        case .movies:
-            return SiloMediaType.isMovieLibrary(item.type)
-        case .tvShows:
-            return SiloMediaType.isSeries(item.type)
-                || item.type.trimmingCharacters(in: .whitespacesAndNewlines)
-                    .localizedCaseInsensitiveCompare("episode") == .orderedSame
-        }
-    }
-}
-
 private struct FavoriteSectionPillStyle: ButtonStyle {
     let isSelected: Bool
 

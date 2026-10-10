@@ -51,11 +51,10 @@ struct TVAudiobookDetailView: View {
         }
     }
 
-    /// Hero sized to the full viewport (so the initial screen reads exactly
-    /// like the old fixed page) with the info sections below the fold. The
-    /// blurred-cover background stays fixed behind the scroll; the sections
-    /// carry their own near-black backdrop so they stay legible as they ride
-    /// up over the brighter hero region of the wash.
+    /// Hero sized to the full viewport, with the info sections below the
+    /// fold. The blurred-cover background stays fixed behind the scroll; the
+    /// sections carry their own near-black backdrop so they stay legible as
+    /// they ride up over the brighter hero region of the wash.
     private var scrollBody: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 0) {
@@ -107,40 +106,9 @@ struct TVAudiobookDetailView: View {
 
     // MARK: - Background
 
-    /// A quiet cover-tinted wash: the square art blurred hard and dimmed,
-    /// under a dark teal radial glow and a fade to near-black — much calmer
-    /// than the old bright 760pt blur, matching the mockup's `.oc-bd`.
     private var background: some View {
-        ZStack {
-            if let url = detail.posterUrl, !url.isEmpty {
-                AsyncImageView(
-                    url: url,
-                    thumbhash: detail.posterThumbhash,
-                    targetSize: CGSize(width: 600, height: 600),
-                    contentMode: .fill
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .clipped()
-                .blur(radius: 70)
-                .opacity(0.35)
-            }
-            RadialGradient(
-                colors: [Color(red: 0.07, green: 0.25, blue: 0.235).opacity(0.9), .clear],
-                center: UnitPoint(x: 0.22, y: 0.4),
-                startRadius: 0,
-                endRadius: 1200
-            )
-            LinearGradient(
-                colors: [
-                    Color.black.opacity(0.35),
-                    Color.black.opacity(0.72),
-                    Color.black.opacity(0.96),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        }
-        .ignoresSafeArea()
+        TVAudiobookBackdrop(posterUrl: detail.posterUrl, thumbhash: detail.posterThumbhash)
+            .ignoresSafeArea()
     }
 
     // MARK: - Content
@@ -157,24 +125,14 @@ struct TVAudiobookDetailView: View {
     }
 
     private var cover: some View {
-        Group {
-            if let url = detail.posterUrl, !url.isEmpty {
-                AsyncImageView(
-                    url: url,
-                    thumbhash: detail.posterThumbhash,
-                    targetSize: CGSize(width: 460, height: 460),
-                    contentMode: .fill
-                )
-            } else {
-                RoundedRectangle(cornerRadius: SiloTheme.cornerRadius, style: .continuous)
-                    .fill(Color.siloSurfaceElevated)
-                    .overlay {
-                        Image(systemName: "book.closed")
-                            .font(.system(size: 460 * 0.22, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                    }
-            }
-        }
+        AsyncImageView(
+            url: detail.posterUrl ?? "",
+            thumbhash: detail.posterThumbhash,
+            targetSize: CGSize(width: 460, height: 460),
+            contentMode: .fill,
+            placeholderStyle: .artwork,
+            placeholderSymbol: ArtworkPlaceholderSymbol.audiobook
+        )
         .frame(width: 460, height: 460)
         .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius, style: .continuous))
         .overlay(
@@ -235,21 +193,21 @@ struct TVAudiobookDetailView: View {
     /// connectives quiet. Built as a concatenated `Text` so it wraps as one
     /// paragraph rather than a stack.
     private func creditsText(_ credits: TVAudiobookViewModel.Credits) -> Text {
-        var line = Text("")
+        let label = Color.white.opacity(0.72)
+        var segments: [Text] = []
         if let author = credits.author {
-            line = line
-                + Text("by ").foregroundColor(.white.opacity(0.72))
-                + Text(author).fontWeight(.semibold).foregroundColor(.white)
+            segments.append(Text("by ").foregroundColor(label))
+            segments.append(Text(author).fontWeight(.semibold).foregroundColor(.white))
         }
         if let narrator = credits.narrator {
             if credits.author != nil {
-                line = line + Text("  ·  ").foregroundColor(.white.opacity(0.72))
+                segments.append(Text("  ·  ").foregroundColor(label))
             }
-            line = line
-                + Text("read by ").foregroundColor(.white.opacity(0.72))
-                + Text(narrator).fontWeight(.semibold).foregroundColor(.white)
+            segments.append(Text("read by ").foregroundColor(label))
+            segments.append(Text(narrator).fontWeight(.semibold).foregroundColor(.white))
         }
-        return line.font(.system(size: 29))
+        return segments.reduce(Text(verbatim: "")) { Text("\($0)\($1)") }
+            .font(.system(size: 29))
     }
 
     // MARK: - State cluster
@@ -334,6 +292,46 @@ struct TVAudiobookDetailView: View {
         guard !didClaimInitialActionFocus else { return }
         didClaimInitialActionFocus = true
         focusedAction = .primary
+    }
+}
+
+/// Quiet cover-tinted wash: the square art blurred and dimmed under a dark
+/// teal radial glow and a fade to near-black (mockup `.oc-bd`). Shared with
+/// the loading frame so the loaded page replaces it without a jump.
+struct TVAudiobookBackdrop: View {
+    let posterUrl: String?
+    let thumbhash: String?
+
+    var body: some View {
+        ZStack {
+            if let posterUrl, !posterUrl.isEmpty {
+                AsyncImageView(
+                    url: posterUrl,
+                    thumbhash: thumbhash,
+                    targetSize: CGSize(width: 600, height: 600),
+                    contentMode: .fill
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
+                .blur(radius: 70)
+                .opacity(0.35)
+            }
+            RadialGradient(
+                colors: [Color(red: 0.07, green: 0.25, blue: 0.235).opacity(0.9), .clear],
+                center: UnitPoint(x: 0.22, y: 0.4),
+                startRadius: 0,
+                endRadius: 1200
+            )
+            LinearGradient(
+                colors: [
+                    Color.black.opacity(0.35),
+                    Color.black.opacity(0.72),
+                    Color.black.opacity(0.96),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
     }
 }
 #endif

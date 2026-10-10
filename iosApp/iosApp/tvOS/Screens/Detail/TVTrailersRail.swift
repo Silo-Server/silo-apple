@@ -2,26 +2,10 @@
 import SwiftUI
 import UIKit
 
-/// Horizontal rail of trailers and extras for the tvOS movie / series
-/// detail pages. Mirrors `PhoneTrailersRail` — same merged ordering from
-/// `TrailerRail.entries(videos:extras:allowRemote:)` — but renders
-/// landscape cards at the 10-foot scale so they read like the episode
-/// rail directly above them.
-///
-/// Pure presentation: the entries arrive already shaped by the call site,
-/// which also owns the YouTube-app availability probe that decides whether
-/// remote cards exist at all. The section header lives in here (not the
-/// parent) so an item with neither trailers nor extras shows nothing at
-/// all rather than an orphaned title — the same arrangement `TVSimilarRail`
-/// uses.
-///
-/// Focus follows the other detail rails exactly: one `.focusSection()`
-/// around the scroll view, plus a `defaultFocus` that lands d-pad entry on
-/// the first card instead of the geometrically-nearest middle one — the
-/// same mechanism and `.userInitiated` priority as `TVSimilarRail` and
-/// `TVDetailCastRail`. That priority only governs entry *into* this
-/// section; the hero's Play button keeps page-entry focus through its own
-/// `defaultFocus` on the detail scroll container.
+/// "Trailers & More" rail for movie and series detail: `TrailerRail` entries
+/// as landscape cards. The call site decides whether remote (YouTube) cards
+/// exist; the header lives here so an item with no trailers or extras shows
+/// nothing. Entry lands on the first card (`.userInitiated` `defaultFocus`).
 struct TVTrailersRail: View {
     let entries: [TrailerRailEntry]
     let onSelect: (TrailerRailEntry) -> Void
@@ -38,8 +22,6 @@ struct TVTrailersRail: View {
 
     private let cardSpacing: CGFloat = 48
     private let railVerticalPadding: CGFloat = 12
-    /// Header-to-content gap, matching the other detail sections'
-    /// `VStack(spacing: 28)` so the page rhythm stays uniform.
     private let headerSpacing: CGFloat = TVDetailLayout.sectionHeaderSpacing
 
     var body: some View {
@@ -70,7 +52,7 @@ struct TVTrailersRail: View {
         .focusSection()
         // Land d-pad entry on the first card, like the cast / similar /
         // episode rails, instead of the geometrically-nearest one.
-        .applyTrailerRailDefaultFocus(entries.first?.id, binding: $focusedEntryId)
+        .tvDefaultFocus(entries.first?.id, in: $focusedEntryId)
         .scrollClipDisabled()
         .onChange(of: focusedEntryId != nil) { _, focused in
             onFocusChange?(focused)
@@ -78,24 +60,6 @@ struct TVTrailersRail: View {
         .onChange(of: focusRequest) { _, request in
             guard request > 0, let firstId = entries.first?.id else { return }
             focusedEntryId = firstId
-        }
-    }
-}
-
-private extension View {
-    /// `.userInitiated` priority is what makes `defaultFocus` win over
-    /// geometric proximity on d-pad entry — the same helper shape as
-    /// `TVSimilarRail.applySimilarRailDefaultFocus`. No-op on an empty rail
-    /// (first id is nil).
-    @ViewBuilder
-    func applyTrailerRailDefaultFocus(
-        _ firstEntryId: String?,
-        binding: FocusState<String?>.Binding
-    ) -> some View {
-        if let firstEntryId {
-            self.defaultFocus(binding, firstEntryId, priority: .userInitiated)
-        } else {
-            self
         }
     }
 }
@@ -192,7 +156,7 @@ private struct TrailerCardLabel: View {
         switch entry {
         case .remote(let video):
             if let url = TrailerRail.thumbnailURL(siteKey: video.siteKey)?.absoluteString {
-                CachedAsyncImage(
+                AsyncImageView(
                     url: url,
                     targetSize: CGSize(width: cardWidth, height: thumbHeight),
                     contentMode: .fill

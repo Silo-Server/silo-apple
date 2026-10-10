@@ -59,17 +59,15 @@ extension PlaybackStats {
     /// The short set shown over iPhone video. It intentionally leaves the
     /// engine-health counters to the paged tvOS panel.
     var compactRows: [(String, String)] {
-        let wanted = [
-            "Route", "Source", "Delivery", "Container",
-            "Video", "Audio", "Dynamic range", "Subtitles",
-            "Playback status", "Forward buffer", "Display cushion",
-            "Dropped frames", "Instant read bitrate", "Network throughput"
-        ]
-        let rows = allRows
-        return wanted.compactMap { label in
-            rows.first { $0.0 == label }
-        }
+        allRows.filter { Self.compactLabels.contains($0.0) }
     }
+
+    private static let compactLabels: Set<String> = [
+        "Route", "Source", "Delivery", "Container",
+        "Video", "Audio", "Dynamic range", "Subtitles",
+        "Playback status", "Forward buffer", "Display cushion",
+        "Dropped frames", "Instant read bitrate", "Network throughput"
+    ]
 
     var hasRows: Bool { !allRows.isEmpty }
 

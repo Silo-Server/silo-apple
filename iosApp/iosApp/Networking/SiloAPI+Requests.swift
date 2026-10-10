@@ -3,8 +3,8 @@ import Foundation
 // MARK: - Media requests
 
 /// User-facing endpoints of the server's media-request system
-/// (`/api/v2/requests`, TMDB movies + series). Admin moderation stays on
-/// the web — the clients only search, create, track, and cancel.
+/// (`/api/v2/requests`, TMDB movies + series): search, create, track, and
+/// cancel, plus the admin approval queue (`/api/v2/admin/requests`).
 extension SiloAPI {
     /// Profile-scoped capability probe. Entry points gate on
     /// `RequestsFeatureStatus.isAvailable`.
@@ -44,5 +44,24 @@ extension SiloAPI {
     /// been submitted to an integration yet.
     func cancelRequest(id: String, reason: String? = nil) async throws -> MediaRequest {
         try await apiV2Client.cancelRequest(id: id, reason: reason)
+    }
+
+    // MARK: Admin approvals
+
+    func adminRequestCapabilities() async throws -> AdminRequestCapabilities {
+        try await apiV2Client.adminRequestCapabilities()
+    }
+
+    func adminRequests(
+        status: RequestStatus? = nil,
+        outcome: RequestOutcome? = nil,
+        mediaType: RequestMediaType? = nil,
+        tmdbId: Int? = nil
+    ) async throws -> [MediaRequest] {
+        try await apiV2Client.adminRequests(status: status, outcome: outcome, mediaType: mediaType, tmdbId: tmdbId)
+    }
+
+    func adminRequestAction(id: String, action: AdminRequestAction, reason: String? = nil) async throws -> MediaRequest {
+        try await apiV2Client.adminRequestAction(id: id, action: action, reason: reason)
     }
 }

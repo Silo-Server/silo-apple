@@ -3,7 +3,7 @@ import SwiftUI
 
 struct DiagnosticsReportDetailView: View {
     let report: PendingReport
-    @Bindable var model: DiagnosticsViewModel
+    let model: DiagnosticsViewModel
 
     @State private var summary: DiagnosticsReportSummary?
     @Environment(\.dismiss) private var dismiss

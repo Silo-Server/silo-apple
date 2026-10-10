@@ -7,112 +7,69 @@ import SwiftUI
 /// after its administrator finishes setup elsewhere.
 struct ServerNeedsSetupView: View {
     var router: AppRouter
-    @State private var isChecking = false
-    @State private var error: String?
-    @State private var retryTask: Task<Void, Never>?
+    @State private var retryModel = ServerNeedsSetupRetryModel()
+
+    private var serverURL: String { AuthService.shared.serverUrl }
 
     var body: some View {
-        AuroraScreen(variant: .server, scrim: .soft) {
-            SiloWordmarkView(width: 112)
-                .frame(maxWidth: .infinity)
-                .padding(.bottom, 24)
+        MarqueeStage(scrim: .bottom, frostStart: 0.45, onBack: changeServer) {
+            MarqueeTopBar {
+                MarqueeIconButton(systemImage: "chevron.left", accessibilityLabel: "Change server", action: changeServer)
+            } trailing: { EmptyView() }
+        } content: {
+            MarqueeServerCard(
+                name: ServerBranding.hostLabel(serverURL),
+                address: serverURL,
+                showsInitial: false,
+                badge: .init(text: "Setup needed", systemImage: "clock", tone: .warning),
+                status: .init(text: "Reachable · not set up yet", tone: .warning)
+            )
+            MarqueeHeadline(
+                title: "This server isn't ready",
+                lead: "Ask the server administrator to finish setup. When it's ready, return here and check again."
+            )
+            .padding(.top, 26)
 
-            AuroraJourneyProgress(currentStep: 1)
-                .frame(maxWidth: 330)
-                .frame(maxWidth: .infinity)
-                .padding(.bottom, 28)
-
-            AuroraEyebrow(text: "Server setup", centered: true)
-                .padding(.bottom, 16)
-
-            ZStack {
-                Circle().fill(Color.auroraAccent.opacity(0.14))
-                Circle().stroke(Color.auroraAccent.opacity(0.34), lineWidth: 1)
-                Image(systemName: "gearshape.2")
-                    .font(.system(size: 32, weight: .regular))
-                    .foregroundStyle(Color.auroraAccent)
+            if let error = retryModel.error {
+                MarqueeErrorText(error)
+                    .padding(.top, 14)
             }
-            .frame(width: 78, height: 78)
-            .frame(maxWidth: .infinity)
-            .padding(.bottom, 18)
 
-            VStack(spacing: 12) {
-                Text("This server isn't ready")
-                    .font(.siloTitle)
-                    .foregroundStyle(Color.auroraInk)
-                    .multilineTextAlignment(.center)
-                Text("Ask the server administrator to finish setup. When it's ready, return here and check again.")
-                    .font(.siloBody)
-                    .foregroundStyle(Color.auroraInkSecondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
+            Button(action: retry) {
+                Text(retryModel.isChecking ? "Checking…" : "Check again")
             }
-            .frame(maxWidth: .infinity)
-            .padding(.bottom, 22)
+            .buttonStyle(.marquee(.primary, isLoading: retryModel.isChecking))
+            .disabled(retryModel.isChecking)
+            .padding(.top, 26)
 
-            VStack(spacing: 16) {
-                if let error {
-                    AuroraErrorLabel(error)
+            if let url = URL(string: serverURL) {
+                Link(destination: url) {
+                    Label("Open setup in your browser", systemImage: "arrow.up.right.square")
                 }
-
-                Button(action: retry) {
-                    Text(isChecking ? "Checking…" : "Check again")
-                }
-                .buttonStyle(AuroraPrimaryButtonStyle(isLoading: isChecking))
-                .disabled(isChecking)
-
-                Button("Change server", action: changeServer)
-                    .buttonStyle(AuroraGhostButtonStyle())
-                    .frame(maxWidth: .infinity)
+                .buttonStyle(.marqueeGlass)
+                .padding(.top, 12)
             }
-            .padding(22)
-            .auroraGlass(cornerRadius: 24, emphasized: true)
-            .animation(.easeInOut(duration: 0.2), value: error)
+
+            Button("Change server", action: changeServer)
+                .buttonStyle(.marqueePlain)
+                .padding(.top, 6)
         }
+        .animation(.easeInOut(duration: 0.2), value: retryModel.error)
         .navigationBarBackButtonHidden()
-        .onDisappear(perform: cancelRetry)
+        .marqueeTransparentNavigation()
+        .onDisappear { retryModel.cancel() }
     }
 
     /// Re-probe the current server. If it's now set up, pop back to the login
     /// screen (this view sits on top of `LoginView` in the `.needsLogin`
     /// stack). Otherwise surface a gentle nudge.
     private func retry() {
-        guard !isChecking else { return }
-        isChecking = true
-        error = nil
-        let expectedServerURL = AuthService.shared.serverUrl
-        retryTask = Task {
-            do {
-                let status = try await AuthService.shared.checkServer(url: expectedServerURL)
-                await MainActor.run {
-                    isChecking = false
-                    guard !Task.isCancelled,
-                          AuthService.shared.serverUrl == expectedServerURL else { return }
-                    if status.needsSetup {
-                        error = "This server still needs administrator setup."
-                    } else {
-                        router.goBack()
-                    }
-                }
-            } catch {
-                await MainActor.run {
-                    isChecking = false
-                    guard !Task.isCancelled else { return }
-                    self.error = "Couldn't reach the server. Check it's running and try again."
-                }
-            }
-        }
+        retryModel.retry { router.goBack() }
     }
 
     private func changeServer() {
-        cancelRetry()
+        retryModel.cancel()
         router.resetToServerSetup()
-    }
-
-    private func cancelRetry() {
-        retryTask?.cancel()
-        retryTask = nil
-        isChecking = false
     }
 }
 #endif

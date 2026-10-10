@@ -69,7 +69,8 @@ struct APIv2SettingsContractCapabilities: Decodable, Hashable, Sendable {
 /// them is not an overlay config. Nothing on Apple renders card quick actions
 /// yet; they are decoded so the reply is checked against the whole contract.
 struct APIv2OverlayConfig: Decodable, Hashable, Sendable {
-    /// The admin kill switch for card overlays.
+    /// Default for profiles that have not chosen whether cards show
+    /// overlays (`ui.card_overlays_enabled`).
     let enabled: Bool
     let defaults: String?
     /// Default for profiles that have not chosen whether cards show quick

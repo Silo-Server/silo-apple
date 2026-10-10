@@ -26,11 +26,8 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
             AppleDecodeCapabilities.playbackV3VideoDecodeAttestation()
         )
         XCTAssertEqual(caps.clientFeatures, [PlaybackProtocolV3.softwareVideoDecodeFeature])
-        XCTAssertTrue(
-            Set(AppleDecodeCapabilities.softwareVideoCodecs).isDisjoint(
-                with: Set(caps.codecsVideo)
-            )
-        )
+        // Software-decoded codecs are never claimed as hardware video codecs.
+        XCTAssertTrue(Set(["av1", "vp9", "mpeg2video", "vc1"]).isDisjoint(with: Set(caps.codecsVideo)))
     }
 
     func testDownloadSoftwareClaimsRetainTheirOwnBounds() {
@@ -271,36 +268,31 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
     func testStreamingPolicyUsesAetherForPhysicalIOSAndAppleTV4K() {
         func mode(
             _ isTVOS: Bool,
-            _ isSimulator: Bool,
             _ machineIdentifier: String
         ) -> AppleDecodeCapabilities.StreamingVideoCapabilityMode {
             AppleDecodeCapabilities.streamingVideoCapabilityModeForDevice(
                 isTVOS: isTVOS,
-                isSimulator: isSimulator,
                 machineIdentifier: machineIdentifier
             )
         }
-        XCTAssertEqual(mode(true, false, "AppleTV5,3"), .platformAttested)
-        XCTAssertEqual(mode(true, false, "AppleTV6,2"), .aetherDeclared)
-        XCTAssertEqual(mode(true, false, "AppleTV11,1"), .aetherDeclared)
-        XCTAssertEqual(mode(true, false, "AppleTV14,1"), .aetherDeclared)
-        XCTAssertEqual(mode(true, false, "AppleTV99,1"), .aetherDeclared)
-        XCTAssertEqual(mode(true, true, "arm64"), .platformAttested)
-        XCTAssertEqual(mode(false, false, "iPhone19,1"), .aetherDeclared)
-        XCTAssertEqual(mode(false, false, "iPhone11,2"), .aetherDeclared)
-        XCTAssertEqual(mode(false, false, "iPad16,3"), .aetherDeclared)
-        XCTAssertEqual(mode(false, true, "iPhone19,1"), .platformAttested)
-        XCTAssertEqual(mode(false, true, "iPad16,3"), .platformAttested)
-        XCTAssertEqual(mode(false, false, "Mac16,1"), .platformAttested)
-        XCTAssertEqual(mode(false, false, "arm64"), .platformAttested)
-        XCTAssertEqual(mode(false, false, "unknown"), .platformAttested)
-        XCTAssertEqual(mode(true, false, "unknown"), .platformAttested)
+        XCTAssertEqual(mode(true, "AppleTV5,3"), .platformAttested)
+        XCTAssertEqual(mode(true, "AppleTV6,2"), .aetherDeclared)
+        XCTAssertEqual(mode(true, "AppleTV11,1"), .aetherDeclared)
+        XCTAssertEqual(mode(true, "AppleTV14,1"), .aetherDeclared)
+        XCTAssertEqual(mode(true, "AppleTV99,1"), .aetherDeclared)
+        XCTAssertEqual(mode(false, "iPhone19,1"), .aetherDeclared)
+        XCTAssertEqual(mode(false, "iPhone11,2"), .aetherDeclared)
+        XCTAssertEqual(mode(false, "iPad16,3"), .aetherDeclared)
+        XCTAssertEqual(mode(false, "Mac16,1"), .platformAttested)
+        XCTAssertEqual(mode(false, "arm64"), .platformAttested)
+        XCTAssertEqual(mode(false, "unknown"), .platformAttested)
+        XCTAssertEqual(mode(true, "unknown"), .platformAttested)
     }
 
     func testPhysicalIOSAdvertisesOriginalFileAudioSelectionAndHDRHandling() throws {
         for device in ["iPhone19,1", "iPad16,3"] {
             let mode = AppleDecodeCapabilities.streamingVideoCapabilityModeForDevice(
-                isTVOS: false, isSimulator: false, machineIdentifier: device
+                isTVOS: false, machineIdentifier: device
             )
             let snapshot = ApplePlaybackV3Capabilities.snapshot(videoCapabilityMode: mode)
             let original = try XCTUnwrap(snapshot.context.deliveries[PlaybackProtocolV3.DeliveryClass.originalHTTP])
@@ -351,18 +343,5 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
         for entry in AppleDecodeCapabilities.videoDecodeAttestation() {
             XCTAssertEqual(entry.hardware ? "VideoToolbox" : (entry.codec == "av1" ? "dav1d" : "libavcodec"), entry.decoderName)
         }
-    }
-
-    // MARK: - Simulator claim
-
-    func testSimulatorClaimStaysConservative() throws {
-        try XCTSkipUnless(AppleDecodeCapabilities.isSimulator)
-        XCTAssertEqual(
-            AppleDecodeCapabilities.streamingVideoCodecs,
-            ["h264", "av1", "vp9", "mpeg2video", "vc1"]
-        )
-        XCTAssertEqual(AppleDecodeCapabilities.maxResolution, "1080p")
-        XCTAssertFalse(DownloadCaps.current().hdr)
-        XCTAssertEqual(DownloadCaps.current().audioPassthroughCodecs, [])
     }
 }

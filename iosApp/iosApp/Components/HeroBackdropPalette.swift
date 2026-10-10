@@ -42,6 +42,8 @@ enum HeroBackdropPalette {
 
         do {
             let image = try await ImagePipeline.shared.image(for: request)
+            // Detached on purpose: CPU-bound sampling runs at utility
+            // priority and never on the caller's actor.
             let tint = await Task.detached(priority: .utility) {
                 sampleTint(from: image)
             }.value

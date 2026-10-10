@@ -1,9 +1,8 @@
 import Foundation
 
-/// Whether a failed v2 mutation reached the server: the three-outcome
-/// failure model (plan §9), decided in one place so every lane gives the
-/// same answer for the same error. Lanes map this onto their own result
-/// types; they keep no transport or status lists of their own.
+/// Whether a failed v2 mutation reached the server, for lanes that need only
+/// this three-outcome answer. Progress sync (`progressSyncFailure`) and the
+/// download registry (`downloadRegistryFailure`) classify separately.
 enum APIv2MutationOutcome: Equatable, Sendable {
     /// The server answered with an error (any non-2xx status or problem
     /// document). Release and report it.
