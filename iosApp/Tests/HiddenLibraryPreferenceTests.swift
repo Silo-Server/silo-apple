@@ -157,6 +157,30 @@ final class HiddenLibraryPreferenceTests: XCTestCase {
         XCTAssertEqual(written, [])
     }
 
+    /// Profile IDs are unique only within an account, so a switch to
+    /// another account's same-ID profile must not receive this save.
+    func testAccountSwitchBeforeTheWriteCancelsIt() async {
+        var accounts = ["account-a", "account-b"]
+        var written: [Set<Int>] = []
+
+        do {
+            _ = try await HiddenLibraryPreference.setHidden(
+                true,
+                libraryId: 5,
+                defaults: defaults,
+                requestIdentity: { Self.profileA },
+                accountID: { accounts.count > 1 ? accounts.removeFirst() : accounts[0] },
+                capabilities: { _ in .available(Self.contract) },
+                read: { _ in try Self.response(.array([.int(3)])) },
+                write: { ids, _ in written.append(ids) }
+            )
+            XCTFail("A save for an account that is no longer active must not write")
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+        }
+        XCTAssertEqual(written, [])
+    }
+
     /// A read without the key would look like an empty list, and writing
     /// from it would show every library hidden elsewhere.
     func testReadWithoutTheSettingRefusesToSave() async throws {

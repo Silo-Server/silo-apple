@@ -62,13 +62,16 @@ enum HiddenLibraryPreference {
     /// settings contract supports the key and the read returns its value; a
     /// read without it would otherwise turn into an empty list and the write
     /// would show every other hidden library. A failed check, read or write
-    /// throws and changes nothing, and a profile switch before the write
-    /// cancels it.
+    /// throws and changes nothing. A profile or account switch while the
+    /// save waits or before it writes cancels it: profile IDs are unique only
+    /// within an account, and requests go out with the current account's
+    /// credentials.
     static func setHidden(
         _ isHidden: Bool,
         libraryId: Int,
         defaults: SharedDefaults = .shared,
         requestIdentity: @escaping @MainActor () -> HTTPRequestIdentity? = SeekIntervalPreferences.activeRequestIdentity,
+        accountID: @escaping @MainActor () -> String? = { AuthService.shared.accountID },
         capabilities: @escaping (HTTPRequestIdentity) async -> SettingsCapabilitiesResult = {
             await SiloAPI.shared.getContractCapabilities(requestIdentity: $0)
         },
@@ -88,10 +91,12 @@ enum HiddenLibraryPreference {
         }
     ) async throws -> Set<Int> {
         guard let identity = requestIdentity() else { throw CancellationError() }
-        let account = AuthService.shared.accountID
+        let account = accountID()
+        let isCurrent = { requestIdentity() == identity && accountID() == account }
         let previous = lastSave
         let save = Task { @MainActor in
             await previous?.value
+            guard isCurrent() else { throw CancellationError() }
             try requireSupport(await capabilities(identity))
             let response = try await read(identity)
             guard let stored = response.value(for: .uiDisabledLibraryIds) else {
@@ -100,7 +105,7 @@ enum HiddenLibraryPreference {
             let current = libraryIds(from: stored.value)
             let updated = isHidden ? current.union([libraryId]) : current.subtracting([libraryId])
             if updated != current {
-                guard requestIdentity() == identity else { throw CancellationError() }
+                guard isCurrent() else { throw CancellationError() }
                 try await write(updated, identity)
             }
             if let data = try? JSONEncoder().encode(updated.sorted()) {
@@ -133,16 +138,18 @@ enum HiddenLibraryPreference {
     /// saved setting.
     static func publishChange(
         hiddenIds: Set<Int>,
-        requestIdentity: @MainActor () -> HTTPRequestIdentity? = SeekIntervalPreferences.activeRequestIdentity
+        requestIdentity: @MainActor () -> HTTPRequestIdentity? = SeekIntervalPreferences.activeRequestIdentity,
+        accountID: @MainActor () -> String? = { AuthService.shared.accountID }
     ) async {
         let identity = requestIdentity()
+        let account = accountID()
         let cached: LibrariesResponse? = ResponseCache.shared.get(CacheKey.userLibraries)
         // A read that started before the save carries the old list.
         StartupContentPrefetcher.invalidateUserLibrariesInFlight()
         do {
             _ = try await StartupContentPrefetcher.fetchUserLibraries(reusingRecent: false)
         } catch {
-            guard requestIdentity() == identity, let cached else { return }
+            guard requestIdentity() == identity, accountID() == account, let cached else { return }
             let all = cached.libraries + (cached.hiddenLibraries ?? [])
             let response = LibrariesResponse(
                 libraries: visibleLibraries(all, hiding: hiddenIds),
@@ -151,7 +158,7 @@ enum HiddenLibraryPreference {
             ResponseCache.shared.set(response, for: CacheKey.userLibraries)
             NotificationCenter.default.post(name: .userLibrariesDidRefresh, object: response)
         }
-        guard requestIdentity() == identity else { return }
+        guard requestIdentity() == identity, accountID() == account else { return }
         // Calendar leaves hidden libraries out too; an open Calendar
         // reloads on the refresh this posts.
         ResponseCache.shared.removeAll(withPrefix: "calendar:")

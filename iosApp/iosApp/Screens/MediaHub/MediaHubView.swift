@@ -692,6 +692,9 @@ final class MediaLandingViewModel {
     /// repaints instantly while the refresh runs.
     private static func cacheKey(_ key: String) -> String { "mediaHub:\(key)" }
     private var loadedKey: String?
+    /// Advances with every load, so an older load of the same scope (one a
+    /// refresh replaced) can't publish after the newer one.
+    private var generation = 0
 
     static func libraryRowLibraryId(_ section: ResolvedSection) -> Int? {
         guard section.id.hasPrefix(libraryRowPrefix) else { return nil }
@@ -706,6 +709,10 @@ final class MediaLandingViewModel {
         } else if !force, !sections.isEmpty {
             return
         }
+        generation += 1
+        let run = generation
+        // A cache invalidation while this runs keeps its rows out of the cache.
+        let writeToken = ResponseCache.shared.writeToken
         isLoading = true
         error = nil
 
@@ -721,11 +728,11 @@ final class MediaLandingViewModel {
             } else {
                 result = try await Self.mergedSections(kind: kind, libraries: kindLibraries, fresh: force)
             }
-            guard !Task.isCancelled, loadedKey == key else { return }
+            guard !Task.isCancelled, run == generation else { return }
             sections = result
-            ResponseCache.shared.set(result, for: Self.cacheKey(key))
+            ResponseCache.shared.set(result, for: Self.cacheKey(key), fetchedAt: writeToken)
         } catch {
-            guard !Task.isCancelled, loadedKey == key else { return }
+            guard !Task.isCancelled, run == generation else { return }
             if sections.isEmpty { self.error = ErrorState(error) }
         }
         isLoading = false
