@@ -4,7 +4,7 @@
 //
 //  Spoiler protection for unwatched episodes
 //  (`catalog.hide_unwatched_episode_{images,overviews}`, contract revision
-//  16). Image provenance is profile-independent; each surface that shows a
+//  17). Image provenance is profile-independent; each surface that shows a
 //  specific episode's still or description asks these helpers whether to hide
 //  it. The observable store that reads and writes the two profile settings
 //  lives in EpisodeSpoilerPreferences.swift.

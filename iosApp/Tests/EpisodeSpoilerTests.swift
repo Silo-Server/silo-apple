@@ -134,16 +134,16 @@ final class EpisodeSpoilerSettingsTests: XCTestCase {
 // MARK: - Contract
 
 final class EpisodeSpoilerContractTests: XCTestCase {
-    func testKeysAreServedFromRevisionSixteen() {
+    func testKeysAreServedFromRevisionSeventeen() {
         XCTAssertEqual(EpisodeSpoilerContract.keys, [
             .catalogHideUnwatchedEpisodeImages,
             .catalogHideUnwatchedEpisodeOverviews,
         ])
-        XCTAssertTrue(EpisodeSpoilerContract.isSupported(by: spoilerCapabilities(revision: 16)))
         XCTAssertTrue(EpisodeSpoilerContract.isSupported(by: spoilerCapabilities(revision: 17)))
-        XCTAssertFalse(EpisodeSpoilerContract.isSupported(by: spoilerCapabilities(revision: 15)))
-        XCTAssertFalse(EpisodeSpoilerContract.isSupported(by: spoilerCapabilities(revision: 16, batchedEffective: false)))
-        XCTAssertFalse(EpisodeSpoilerContract.isSupported(by: spoilerCapabilities(revision: 16, allowed: false)))
+        XCTAssertTrue(EpisodeSpoilerContract.isSupported(by: spoilerCapabilities(revision: 18)))
+        XCTAssertFalse(EpisodeSpoilerContract.isSupported(by: spoilerCapabilities(revision: 16)))
+        XCTAssertFalse(EpisodeSpoilerContract.isSupported(by: spoilerCapabilities(revision: 17, batchedEffective: false)))
+        XCTAssertFalse(EpisodeSpoilerContract.isSupported(by: spoilerCapabilities(revision: 17, allowed: false)))
     }
 
     func testResolveReadsBooleansAndDefaultsTheRest() throws {
@@ -222,8 +222,8 @@ final class EpisodeSpoilerPreferencesTests: XCTestCase {
         XCTAssertFalse(store.allowsEditing)
     }
 
-    func testRevisionFifteenHidesTheRowsAndNeverReadsOrWrites() async {
-        transport.capabilities = .available(spoilerCapabilities(revision: 15))
+    func testRevisionSixteenHidesTheRowsAndNeverReadsOrWrites() async {
+        transport.capabilities = .available(spoilerCapabilities(revision: 16))
         let store = makeStore()
         await store.refresh()
 
@@ -435,7 +435,7 @@ final class EpisodeSpoilerPreferencesTests: XCTestCase {
         await store.refresh()
         XCTAssertNotNil(suite.data(forKey: cacheKey))
 
-        transport.capabilities = .available(spoilerCapabilities(revision: 15))
+        transport.capabilities = .available(spoilerCapabilities(revision: 16))
         await store.refresh()
         XCTAssertNil(store.values)
         XCTAssertEqual(store.settings, .off)
@@ -704,7 +704,7 @@ private func spoilerCapabilities(
     )
 }
 
-private func spoilerResponse(_ values: [String: Any], revision: Int = 16) throws -> EffectiveSettingValuesResponse {
+private func spoilerResponse(_ values: [String: Any], revision: Int = 17) throws -> EffectiveSettingValuesResponse {
     let rows: [[String: Any]] = values.sorted { $0.key < $1.key }.map { key, value in
         ["key": key, "value": value, "source": "profile"]
     }
@@ -741,7 +741,7 @@ private final class FakeEpisodeSpoilerTransport: ProfileScopedSettingTransport, 
         let identity: HTTPRequestIdentity
     }
 
-    var capabilities: SettingsCapabilitiesResult = .available(spoilerCapabilities(revision: 16))
+    var capabilities: SettingsCapabilitiesResult = .available(spoilerCapabilities(revision: 17))
     var effective: [String: Any] = [:]
     var effectiveError: Error?
     var failingKeys: Set<SettingKey> = []
