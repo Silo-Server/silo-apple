@@ -61,10 +61,11 @@ final class SiloControlArtworkResolver {
         if let cached: ItemDetail = ResponseCache.shared.get(key) {
             series = cached
         } else {
+            let writeToken = ResponseCache.shared.writeToken
             guard let fetched = try? await MetadataRequestPool.shared.itemDetail(contentId: seriesId) else {
                 return nil
             }
-            ResponseCache.shared.set(fetched, for: key)
+            ResponseCache.shared.set(fetched, for: key, fetchedAt: writeToken)
             series = fetched
         }
         guard let poster = series.posterUrl, !poster.isEmpty else { return nil }
