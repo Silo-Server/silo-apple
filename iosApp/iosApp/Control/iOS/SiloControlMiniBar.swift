@@ -73,17 +73,28 @@ struct SiloControlMiniBar: View {
         }
     }
 
+    /// 2:3 poster sized to sit inside the bar. The inline pill is too short for
+    /// the full-size poster, which the capsule would otherwise clip.
+    private var thumbSize: CGSize {
+        isInline ? CGSize(width: 22, height: 33) : CGSize(width: 34, height: 50)
+    }
+
     @ViewBuilder
     private var thumb: some View {
-        if let url = artwork.posterURL, !url.isEmpty {
+        let shape = RoundedRectangle(cornerRadius: isInline ? 4 : 6, style: .continuous)
+        if let url = artwork.tilePosterURL, !url.isEmpty {
             AsyncImageView(url: url, contentMode: .fill)
-                .frame(width: 34, height: 50)
-                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .frame(width: thumbSize.width, height: thumbSize.height)
+                .clipShape(shape)
         } else {
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
+            shape
                 .fill(Color.siloSurfaceElevated)
-                .frame(width: 34, height: 50)
-                .overlay { Image(systemName: "tv").foregroundStyle(Color.siloSecondaryText) }
+                .frame(width: thumbSize.width, height: thumbSize.height)
+                .overlay {
+                    Image(systemName: "tv")
+                        .font(isInline ? .caption2 : .body)
+                        .foregroundStyle(Color.siloSecondaryText)
+                }
         }
     }
 }
