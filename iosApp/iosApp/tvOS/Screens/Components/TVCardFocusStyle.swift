@@ -57,6 +57,17 @@ private struct TVCardFocusButtonStyleBody: View {
     }
 }
 
+enum TVCardCaption {
+    /// tvOS's `.card` lift grows artwork by a near-constant ~38pt in height
+    /// at every card size, so it overhangs its bottom edge by about 19pt.
+    static let cardLiftOverhang: CGFloat = 19
+    /// Visible space kept between a focused poster and its title.
+    static let focusedClearance: CGFloat = 8
+    /// Unfocused captions dim well back so the focused one stands out.
+    static let unfocusedTitleOpacity: Double = 0.45
+    static let unfocusedSubtitleOpacity: Double = 0.32
+}
+
 extension View {
     func tvFocusRing(
         isFocused: Bool,
@@ -71,6 +82,47 @@ extension View {
                 )
         )
         .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+    }
+
+    /// Focused card title: brighter and heavier than its dimmed neighbours.
+    /// Pair with `tvCardSubtitleFocus` and `tvCardCaptionFocus` so the whole
+    /// caption highlights as one block.
+    func tvCardTitleFocus(isFocused: Bool) -> some View {
+        fontWeight(isFocused ? .semibold : nil)
+            .foregroundStyle(
+                isFocused
+                    ? Color.white
+                    : Color.siloOnSurface.opacity(TVCardCaption.unfocusedTitleOpacity)
+            )
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+    }
+
+    /// A card's second caption line (year, count, episode) follows the
+    /// title's highlight.
+    func tvCardSubtitleFocus(isFocused: Bool) -> some View {
+        fontWeight(isFocused ? .medium : nil)
+            .foregroundStyle(
+                isFocused
+                    ? Color.white.opacity(0.92)
+                    : Color.siloOnSurface.opacity(TVCardCaption.unfocusedSubtitleOpacity)
+            )
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+    }
+
+    /// Highlights a focused card's whole caption block with a soft glow and
+    /// drops it clear of the grown artwork so it never touches the poster.
+    /// `posterOverhang` is how far the focused artwork extends below its
+    /// layout frame; `spacing` is the card's poster-to-caption gap. Resting
+    /// layout is unchanged. Don't clip the caption, or the glow is cut off.
+    func tvCardCaptionFocus(
+        isFocused: Bool,
+        posterOverhang: CGFloat = TVCardCaption.cardLiftOverhang,
+        spacing: CGFloat
+    ) -> some View {
+        shadow(color: .white.opacity(isFocused ? 0.45 : 0), radius: 10)
+            .shadow(color: .white.opacity(isFocused ? 0.25 : 0), radius: 3)
+            .offset(y: isFocused ? max(0, posterOverhang + TVCardCaption.focusedClearance - spacing) : 0)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
     }
 
     /// Lands d-pad entry into a rail on `id` instead of the geometrically

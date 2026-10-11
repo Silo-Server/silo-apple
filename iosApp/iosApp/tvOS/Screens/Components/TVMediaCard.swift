@@ -3,7 +3,7 @@ import SwiftUI
 
 /// tvOS poster card on the cached Nuke renderer. `.nativeCard` uses the system
 /// `.card` lift and parallax; `.ring` uses a white ring and scale to match the
-/// episode and cast rails. A caption below brightens on focus.
+/// episode and cast rails. The caption below highlights on focus.
 struct TVMediaCard: View {
     let title: String
     let posterUrl: String
@@ -57,9 +57,20 @@ struct TVMediaCard: View {
     @State private var uiCustomization = UICustomizationPreferences.shared
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
 
+    private static let captionSpacing: CGFloat = 16
+
     private var resolvedCardWidth: CGFloat { artworkSize.width }
     private var cardHeight: CGFloat { artworkSize.height }
     private var artworkSize: CGSize { Self.artworkSize(cardWidth: cardWidth, aspect: aspect) }
+
+    /// How far the focused poster extends below its frame: the native lift,
+    /// or half of what the ring style's scale adds.
+    private var focusedPosterOverhang: CGFloat {
+        switch focusTreatment {
+        case .nativeCard: TVCardCaption.cardLiftOverhang
+        case .ring: (TVCardFocusButtonStyle().scale - 1) / 2 * cardHeight
+        }
+    }
 
     /// The size a card of `cardWidth` draws its artwork at, at the current
     /// card-size setting.
@@ -72,11 +83,15 @@ struct TVMediaCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: Self.captionSpacing) {
             posterButton
                 .mediaStateContextMenu(hasPersonalActions ? stateMenu : nil)
             if uiCustomization.cardPresentation.caption.showsTitle {
-                caption
+                caption.tvCardCaptionFocus(
+                    isFocused: isFocused,
+                    posterOverhang: focusedPosterOverhang,
+                    spacing: Self.captionSpacing
+                )
             }
         }
         .frame(width: resolvedCardWidth)
@@ -204,18 +219,16 @@ struct TVMediaCard: View {
         VStack(spacing: 4) {
             Text(title)
                 .font(.siloPosterTitle)
-                .foregroundColor(isFocused ? .siloOnSurface : .siloOnSurface.opacity(0.92))
                 .lineLimit(1)
                 .truncationMode(.tail)
+                .tvCardTitleFocus(isFocused: isFocused)
                 .frame(width: resolvedCardWidth, alignment: .center)
-                .clipped()
-                .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
 
             if uiCustomization.cardPresentation.caption.showsMetadata,
                let secondLine = subtitle ?? year.map(String.init) {
                 Text(secondLine)
                     .font(.siloPosterMetadata)
-                    .foregroundColor(.siloSecondaryText)
+                    .tvCardSubtitleFocus(isFocused: isFocused)
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .frame(width: resolvedCardWidth, alignment: .center)

@@ -56,6 +56,8 @@ struct EpisodeThumbCard: View {
     }
 
     #if os(tvOS)
+    private static let captionSpacing: CGFloat = 14
+
     @FocusState private var standaloneFocused: Bool
 
     private var isFocused: Bool {
@@ -70,29 +72,23 @@ struct EpisodeThumbCard: View {
 
     private var cardBody: some View {
         #if os(tvOS)
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: Self.captionSpacing) {
             thumbnailButton
 
             if uiCustomization.cardPresentation.caption.showsTitle {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(displayTitle)
                         .font(.siloPosterTitle)
-                        .foregroundStyle(
-                            isFocused
-                                ? Color.siloOnSurface
-                                : Color.siloOnSurface.opacity(0.85)
-                        )
                         .lineLimit(1)
                         .truncationMode(.tail)
+                        .tvCardTitleFocus(isFocused: isFocused)
                         .frame(width: cardWidth, alignment: .leading)
-                        .clipped()
-                        .animation(.easeOut(duration: 0.15), value: isFocused)
 
                     if uiCustomization.cardPresentation.caption.showsMetadata,
                        let subtitle = subtitleLine {
                         Text(subtitle)
                             .font(.siloPosterMetadata)
-                            .foregroundStyle(Color.siloSecondaryText)
+                            .tvCardSubtitleFocus(isFocused: isFocused)
                             .lineLimit(1)
                             .truncationMode(.tail)
                             .frame(width: cardWidth, alignment: .leading)
@@ -100,6 +96,7 @@ struct EpisodeThumbCard: View {
                     }
                 }
                 .frame(width: cardWidth, alignment: .leading)
+                .tvCardCaptionFocus(isFocused: isFocused, spacing: Self.captionSpacing)
             }
         }
         .frame(width: cardWidth)

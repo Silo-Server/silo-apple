@@ -29,6 +29,8 @@ struct TVCollectionPosterCard: View {
     @FocusState private var isFocused: Bool
     @State private var uiCustomization = UICustomizationPreferences.shared
 
+    private static let captionSpacing: CGFloat = 16
+
     // Standard 2:3 movie-poster aspect ratio — height tracks width.
     private var resolvedCardWidth: CGFloat {
         cardWidth * uiCustomization.cardPresentation.posterSize.scale
@@ -36,10 +38,10 @@ struct TVCollectionPosterCard: View {
     private var cardHeight: CGFloat { resolvedCardWidth * 1.5 }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: Self.captionSpacing) {
             posterButton
             if uiCustomization.cardPresentation.caption.showsTitle {
-                caption
+                caption.tvCardCaptionFocus(isFocused: isFocused, spacing: Self.captionSpacing)
             }
         }
         .frame(width: resolvedCardWidth)
@@ -102,17 +104,15 @@ struct TVCollectionPosterCard: View {
         VStack(spacing: 4) {
             Text(collection.name)
                 .font(.siloPosterTitle)
-                .foregroundColor(isFocused ? .siloOnSurface : .siloOnSurface.opacity(0.92))
                 .lineLimit(1)
                 .truncationMode(.tail)
+                .tvCardTitleFocus(isFocused: isFocused)
                 .frame(width: resolvedCardWidth, alignment: .center)
-                .clipped()
-                .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
 
             if uiCustomization.cardPresentation.caption.showsMetadata, let countText {
                 Text(countText)
                     .font(.siloPosterMetadata)
-                    .foregroundColor(.siloSecondaryText)
+                    .tvCardSubtitleFocus(isFocused: isFocused)
                     .lineLimit(1)
             }
         }
