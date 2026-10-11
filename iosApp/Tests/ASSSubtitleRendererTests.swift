@@ -253,6 +253,40 @@ final class ASSSubtitleRendererTests: XCTestCase {
         }
     }
 
+    func testRemoteHLSRendersTheNextGridFrameAfterAnOffGridStart() async throws {
+        let (presenter, output, _) = await makePresenter()
+        let interval = 0.04
+        let cues = (0..<10).map { index in
+            cue(index, [drawing(x: 10 + 30 * index, y: 30)],
+                start: Double(index) * interval, end: Double(index + 1) * interval)
+        }
+        await presenter.updateCues(cues, revision: 1)
+        output.now = 0.035
+        _ = try await presenter.step(ASSOverlayPresenter.Timing(canvas: canvas, cueOffset: 0,
+                                                                axis: .item(leadSeconds: 0), frameInterval: interval),
+                                     generation: 1)
+        let times = output.queued.prefix(3).map(\.time)
+        XCTAssertEqual(times.count, 3)
+        for (time, expected) in zip(times, [0.035, 0.04, 0.08]) {
+            XCTAssertEqual(time, expected, accuracy: 1e-6, "the grid frame just after the frame on screen renders")
+        }
+    }
+
+    func testACueForTheFrameOnScreenRefillsItEvenWhenTheClockHasMovedOn() async throws {
+        let (presenter, output, schedule) = await makePresenter()
+        let interval = 1_001.0 / 24_000
+        recordFrames(24, into: schedule)
+        _ = try await presenter.step(timing(interval: interval), generation: 1)
+        // Frame 0 is on screen and the clock has moved past its stamp, though not far enough to
+        // read as a seek, when a cue that ends before the clock arrives for it.
+        output.now = 0.015
+        await presenter.updateCues([cue(1, [drawing(x: 20, y: 30)], start: 0, end: 0.01)], revision: 2)
+        _ = try await presenter.step(timing(interval: interval), generation: 1)
+        XCTAssertEqual(output.queued.first?.time ?? -1, 0, accuracy: 1e-9)
+        XCTAssertGreaterThan(pixel(output.queued.first?.buffer, x: 25, y: 35).a, 200,
+                             "the frame on screen is redrawn with the late cue")
+    }
+
     func testPresenterQueuesOnlyChangesAndClearsAfterTheLastSign() async throws {
         let (presenter, output, schedule) = await makePresenter()
         let interval = 1_001.0 / 24_000
