@@ -203,14 +203,11 @@ enum ApplePlaybackV3Capabilities {
             sidecarBitmap: false,
             fontAttachments: true
         )
+        let managesOriginalDynamicRange = usesAetherDeclaration || managesOriginalDynamicRangeOnMac
         let originalHTTPClaims = commonClaims
             + ["client_subtitle_overlay"]
-            + (usesAetherDeclaration
-                ? [
-                    PlaybackProtocolV3.clientManagedDynamicRangeClaim,
-                    PlaybackProtocolV3.clientSelectedAudioTrackClaim,
-                ]
-                : [])
+            + (managesOriginalDynamicRange ? [PlaybackProtocolV3.clientManagedDynamicRangeClaim] : [])
+            + (usesAetherDeclaration ? [PlaybackProtocolV3.clientSelectedAudioTrackClaim] : [])
         let packagedSubtitles = PlaybackV3DeliverySubtitleCapabilities(
             embeddedText: true,
             sidecarText: true,
@@ -287,6 +284,28 @@ enum ApplePlaybackV3Capabilities {
             context: context,
             hdrAvailability: hdrAvailability
         )
+    }
+
+    /// A Mac keeps the bounded codec attestation, so the HDR originals the
+    /// server sends it are mostly hardware-decoded HEVC. Aether routes those
+    /// through AVPlayer, which maps HDR onto an SDR display itself, so the
+    /// server need not tone-map them. Intel Macs keep server tone mapping.
+    /// The claim makes the server ignore the output HDR evidence, and nothing
+    /// on macOS forces an HDR original to SDR output, so the Mac drops it
+    /// while the HDR setting is off.
+    static func macManagesOriginalDynamicRange(machineIdentifier: String, hdrEnabled: Bool) -> Bool {
+        hdrEnabled && machineIdentifier == "arm64"
+    }
+
+    private static var managesOriginalDynamicRangeOnMac: Bool {
+        #if os(macOS)
+        macManagesOriginalDynamicRange(
+            machineIdentifier: AppleDecodeCapabilities.machineIdentifier,
+            hdrEnabled: PlayerSettings.shared.hdrEnabled
+        )
+        #else
+        false
+        #endif
     }
 
     /// Capability evidence for Aether's audio-only execution mode. Keep every
