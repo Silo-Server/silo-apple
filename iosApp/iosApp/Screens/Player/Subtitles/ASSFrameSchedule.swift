@@ -87,7 +87,9 @@ final class ASSFrameSchedule: @unchecked Sendable {
             } else {
                 frames.insert(frame, at: index)
             }
-            if frames.count > capacity { frames.removeFirst(frames.count - capacity) }
+            // Nothing prunes while no overlay is showing, so trim in batches
+            // rather than shifting every retained frame on each report.
+            if frames.count > capacity { frames.removeFirst(frames.count - capacity * 3 / 4) }
         }
     }
 

@@ -182,6 +182,15 @@ final class ASSSubtitleRendererTests: XCTestCase {
         schedule.record(SoftwareVideoFrameTime(presentation: CMTime(value: 1, timescale: 10), generation: 2))
         XCTAssertEqual(schedule.frames(after: 0, through: 1, in: .software).map(\.presentation), [0.1])
         XCTAssertEqual(schedule.frames(after: 0, through: 1, in: .native).count, 3, "each path keeps its own frames")
+
+        // With no overlay pruning, a long playback trims the oldest frames in batches.
+        for index in 0...ASSFrameSchedule.capacity {
+            schedule.record(SoftwareVideoFrameTime(presentation: CMTime(value: Int64(index), timescale: 24), generation: 3))
+        }
+        let newest = Double(ASSFrameSchedule.capacity) / 24
+        XCTAssertEqual(schedule.frame(atOrBefore: .infinity, in: .software)?.presentation ?? -1, newest, accuracy: 1e-9)
+        XCTAssertNil(schedule.frame(atOrBefore: newest - Double(ASSFrameSchedule.capacity) * 3 / 4 / 24, in: .software),
+                     "the oldest quarter is gone")
     }
 
     func testPresenterRendersEachReportedFrameAtItsOwnTimestamp() async throws {
