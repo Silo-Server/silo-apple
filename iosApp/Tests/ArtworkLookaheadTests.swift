@@ -32,6 +32,8 @@ final class ArtworkLookaheadTests: XCTestCase {
         // Skyline keeps resume rows as stills even when they hold only movies.
         XCTAssertEqual(SectionRow.layout(for: section("continue_watching", [movie])), .thumbnail)
         XCTAssertEqual(SectionRow.layout(for: section("recently_added", [series, episode])), .thumbnail)
+        let season = try item("se1", type: " Season ")
+        XCTAssertEqual(SectionRow.layout(for: section("recently_added", [season, episode])), .thumbnail)
         #else
         XCTAssertEqual(SectionRow.layout(for: section("continue_watching", [movie])), .poster)
         XCTAssertEqual(SectionRow.layout(for: section("recently_added", [series, episode])), .poster)

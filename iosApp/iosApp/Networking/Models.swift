@@ -237,6 +237,15 @@ enum SiloMediaType {
         }
     }
 
+    static func isSeason(_ type: String) -> Bool {
+        switch normalized(type) {
+        case "season", "seasons":
+            return true
+        default:
+            return false
+        }
+    }
+
     /// Leaf media that can be handed directly to the player. Container
     /// types such as series and seasons still open their detail screen.
     static func isDirectlyPlayable(_ type: String) -> Bool {
