@@ -137,8 +137,13 @@ final class ASSSubtitleRendererTests: XCTestCase {
         let epoch = controller.beginLoad(spec, shouldPlayWhenReady: false)
         try await controller.finishLoad(epoch)
         XCTAssertEqual(controller.engine.fontAttachments.count, 1)
+        // Start the playback packet pump so embedded cues do not depend on
+        // the background prefetcher winning CPU time on a busy CI runner.
+        controller.setMuted(true)
+        controller.play()
         controller.selectSubtitleTrack(id: 2)
         try await waitForASS(controller, timeout: .seconds(20))
+        controller.pause()
         await controller.assSubtitles.render(size: size, scale: 1, delaySeconds: 0)
         XCTAssertTrue(controller.assSubtitles.handlesCurrentTrack)
         XCTAssertGreaterThan(pixel(controller.assSubtitles.frame, x: 25, y: 45).a, 200)
@@ -172,6 +177,8 @@ final class ASSSubtitleRendererTests: XCTestCase {
                                       panelIsInHDRMode: false)
         let epoch = controller.beginLoad(spec, shouldPlayWhenReady: false)
         try await controller.finishLoad(epoch)
+        controller.setMuted(true)
+        controller.play()
         controller.selectSubtitleTrack(id: 3)
         try await waitForASS(controller, timeout: .seconds(20))
         controller.selectSecondarySubtitleTrack(id: 2)
@@ -179,6 +186,7 @@ final class ASSSubtitleRendererTests: XCTestCase {
             if !controller.engine.secondarySubtitleCues.isEmpty { break }
             try await Task.sleep(for: .milliseconds(50))
         }
+        controller.pause()
         let text = controller.engine.secondarySubtitleCues.compactMap(\.text)
         XCTAssertTrue(text.contains("X"), "The companion overlay must receive display text, not an ASS event")
         XCTAssertFalse(text.contains { $0.contains("Default,,") || $0.contains("\\pos(") })
