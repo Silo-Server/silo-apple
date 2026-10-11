@@ -15,6 +15,9 @@ import TVServices
 final class ContentProvider: TVTopShelfContentProvider {
 
     private static let timestampFormatter = ISO8601DateFormatter()
+    /// Home rows can hold 100 items. The shelf shows the most recent ones,
+    /// and each episode's series costs a poster request inside the budget.
+    private static let maxItemsPerCollection = 20
 
     override func loadTopShelfContent() async -> (any TVTopShelfContent)? {
         let defaults = SharedStorage.suite
@@ -209,12 +212,15 @@ final class ContentProvider: TVTopShelfContentProvider {
         from response: TopShelfSectionsResponse,
         matching predicate: (TopShelfSection) -> Bool
     ) -> [TopShelfItem] {
-        response.sections
-            .filter(predicate)
-            .flatMap { $0.items }
-            .sorted { lhs, rhs in
-                sortKey(lhs) > sortKey(rhs)
-            }
+        Array(
+            response.sections
+                .filter(predicate)
+                .flatMap { $0.items }
+                .sorted { lhs, rhs in
+                    sortKey(lhs) > sortKey(rhs)
+                }
+                .prefix(Self.maxItemsPerCollection)
+        )
     }
 
     /// ISO-8601 `progressUpdatedAt` sorts naturally as a string (fixed-

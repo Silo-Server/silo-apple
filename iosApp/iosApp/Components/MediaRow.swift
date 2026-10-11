@@ -326,9 +326,12 @@ struct MediaRow: View {
                     .foregroundColor(.siloOnSurface)
             }
 
+            // Server headings can be long ("Because You Watched {title}"); a
+            // second line would push the cards down out of the row band.
             Text(title)
                 .font(.siloHeadline)
                 .foregroundColor(.siloOnSurface)
+                .lineLimit(1)
 
             Spacer()
 

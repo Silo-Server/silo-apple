@@ -19,16 +19,22 @@ final class ArtworkLookaheadTests: XCTestCase {
         let movie = try item("m1")
         let episode = try item("e1", type: "episode")
         let audiobook = try item("a1", type: "audiobook")
+        let series = try item("s1", type: "series")
 
         XCTAssertEqual(SectionRow.layout(for: section("next_up", [movie])), .thumbnail)
         XCTAssertEqual(SectionRow.layout(for: section("continue_watching", [episode])), .thumbnail)
         XCTAssertEqual(SectionRow.layout(for: section("trending", [audiobook])), .square)
         XCTAssertEqual(SectionRow.layout(for: section("trending", [audiobook, movie])), .poster)
+        // The shared Recently Added row mixes movies with TV arrivals. One new
+        // episode must not turn every movie in it into a still.
+        XCTAssertEqual(SectionRow.layout(for: section("recently_added", [movie, episode, series])), .poster)
         #if os(tvOS)
         // Skyline keeps resume rows as stills even when they hold only movies.
         XCTAssertEqual(SectionRow.layout(for: section("continue_watching", [movie])), .thumbnail)
+        XCTAssertEqual(SectionRow.layout(for: section("recently_added", [series, episode])), .thumbnail)
         #else
         XCTAssertEqual(SectionRow.layout(for: section("continue_watching", [movie])), .poster)
+        XCTAssertEqual(SectionRow.layout(for: section("recently_added", [series, episode])), .poster)
         #endif
     }
 
@@ -50,6 +56,19 @@ final class ArtworkLookaheadTests: XCTestCase {
             ArtworkVariants.shared.sizes(for: URL(string: items[index].posterUrl!)!).contains(drawn)
         }
         XCTAssertEqual(warmed, Array(2...(1 + ArtworkLookahead.cardsAhead)))
+    }
+
+    /// Home rows hold up to 100 items. The launch warm-up covers the first
+    /// screen of each row instead of spending its budget on the first row.
+    func testHomeArtworkWarmsTheLeadingCardsOfEachRow() throws {
+        let rows = try (0..<2).map { row in
+            section("row\(row)", try (0..<100).map { try item("home-\(row)-\($0)") })
+        }
+
+        let warmed = Set(StartupContentPrefetcher.homeArtworkURLs(for: rows).map(\.lastPathComponent))
+
+        let leading = (0..<ArtworkLookahead.cardsAhead).flatMap { ["home-0-\($0).jpg", "home-1-\($0).jpg"] }
+        XCTAssertEqual(warmed, Set(leading))
     }
 
     func testWarmingPastTheLastCardDoesNothing() throws {

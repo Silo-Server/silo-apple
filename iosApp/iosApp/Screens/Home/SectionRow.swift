@@ -68,12 +68,14 @@ struct SectionRow: View {
 
     /// True when the row should render 16:9 episode stills instead of posters.
     /// A dedicated "Next Up" row always does. For other episode-bearing rows
-    /// the platforms differ: tvOS Skyline keeps every episode row as a still,
-    /// and keeps Continue Watching as a still-based resume row even when the
-    /// row currently contains movies only. iOS/iPadOS/macOS reserve stills for
-    /// Continue Watching rows that actually contain episodes and render
-    /// episode-discovery rows (e.g. "Recently Released Episodes") as ordinary
-    /// series posters with an S·E badge.
+    /// the platforms differ: tvOS Skyline keeps every TV row with episodes as
+    /// a still, and keeps Continue Watching as a still-based resume row even
+    /// when the row currently contains movies only. A row that also carries
+    /// movies (the shared Recently Added row) stays a poster row, so one new
+    /// episode does not turn every movie card into a still. iOS/iPadOS/macOS
+    /// reserve stills for Continue Watching rows that actually contain episodes
+    /// and render episode-discovery rows (e.g. "Recently Released Episodes") as
+    /// ordinary series posters with an S·E badge.
     private static func isEpisodeRow(_ section: ResolvedSection) -> Bool {
         if section.sectionType.lowercased().contains("next") {
             return true
@@ -83,11 +85,17 @@ struct SectionRow: View {
         if section.isContinueWatchingSection {
             return true
         }
-        return hasEpisodeItems
+        return hasEpisodeItems && section.items.allSatisfy { isTVItem($0.type) }
         #else
         return section.isContinueWatchingSection && hasEpisodeItems
         #endif
     }
+
+    #if os(tvOS)
+    private static func isTVItem(_ type: String) -> Bool {
+        SiloMediaType.isEpisode(type) || SiloMediaType.isSeries(type) || type.lowercased() == "season"
+    }
+    #endif
 
     /// The card shape a section's row uses. Audiobook covers are square, so
     /// rows made entirely of audiobooks (Continue Listening, audiobook
