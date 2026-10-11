@@ -17,7 +17,7 @@ The authoritative dependency lock is
 
 | Component | Exact revision | Shipped form | License |
 | --- | --- | --- | --- |
-| AetherEngine 7.28.3 + Silo subtitle, HLS authorization, TrueHD Atmos and playback recovery patches | `fa70ab5bd2b0e17fdca5b6f19258e98331852778` | Swift package target linked into each host app | LGPL-3.0-only with AetherEngine's Apple Store / DRM exception |
+| AetherEngine 7.28.3 + Silo subtitle, HLS authorization, TrueHD Atmos and playback recovery patches | `5b397da6453ec3af9dc491a8f353251e064e1b38` | Swift package target linked into each host app | LGPL-3.0-only with AetherEngine's Apple Store / DRM exception |
 | FFmpegBuild 3.6.0 | `fda08325455bc12c112b5b82d014b98fa0fee0be` | Nine separately embedded dynamic frameworks | See the component table below |
 | LibTrueHD 2.0.0 (formerly SiloObjectAudio) | `7ac6b379cb5d77ff5f424bc9daa17131b044a962` | Static `TrueHD.xcframework` linked through AetherEngine | MIT; embedded `truehd` and `oamd` crates are Apache-2.0 |
 | LibDovi 2.1.0 | `0d7cce1d6836a30d13a3a2326e50a153af53f014` | Static `Dovi.xcframework` linked through AetherEngine | MIT packaging; embedded libdovi is MIT |
@@ -46,7 +46,7 @@ published under the LGPL at the exact source revision below. The bundled
 acknowledgements include AetherEngine's complete license and exception plus
 the GNU GPL version 3 text incorporated by LGPLv3.
 
-- Exact source: <https://github.com/Silo-Server/AetherEngine/tree/fa70ab5bd2b0e17fdca5b6f19258e98331852778>
+- Exact source: <https://github.com/Silo-Server/AetherEngine/tree/5b397da6453ec3af9dc491a8f353251e064e1b38>
   (engine pull requests: <https://github.com/Silo-Server/AetherEngine/pull/2>,
   <https://github.com/Silo-Server/AetherEngine/pull/6>,
   <https://github.com/Silo-Server/AetherEngine/pull/16>,

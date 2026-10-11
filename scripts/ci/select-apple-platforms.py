@@ -27,7 +27,7 @@ PROJECT = "iosApp/project.yml"
 # The meaningful lines of project.yml and every committed Signing/*.xcconfig.
 # Settings and includes can introduce build inputs outside a source directory.
 # Review ownership and update this snapshot when project configuration changes.
-BUILD_INPUTS_SHA256 = "c2f0b18ac96356b4e8703d05a95606801e52640d1ec84291641acb803be59355"
+BUILD_INPUTS_SHA256 = "bb225430e87e20cdd021af06b5cfc527aaa56175b125dc0967d47b78a3e498b0"
 SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
 ROOT_DOCUMENTATION = frozenset({"README.md", "CONTRIBUTING.md", "AGENTS.md", "SECURITY.md", "CHANGELOG.md"})
 # These 223 existing Swift inputs belong exclusively to the mobile test targets.
