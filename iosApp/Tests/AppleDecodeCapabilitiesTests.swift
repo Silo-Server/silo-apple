@@ -313,6 +313,14 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
         }
     }
 
+    func testAppleSiliconMacManagesOriginalDynamicRangeOnlyWhileHDRIsOn() {
+        // A Mac's `uname` reports its architecture, not a model.
+        let manages = ApplePlaybackV3Capabilities.macManagesOriginalDynamicRange
+        XCTAssertTrue(manages("arm64", true))
+        XCTAssertFalse(manages("arm64", false))
+        XCTAssertFalse(manages("x86_64", true))
+    }
+
     // MARK: - The vocabulary itself
 
     func testDeviceListsCoverTheFormatsTheStackDecodes() {

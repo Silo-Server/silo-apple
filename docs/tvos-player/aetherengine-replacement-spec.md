@@ -261,7 +261,10 @@ persistent-artifact constraints:
   materially less software-decode headroom and Aether does not yet emit a
   typed decoder-underperforming signal;
 - iPhone and iPad use the same declared policy as Apple TV 4K; macOS retains
-  `platform_attested` until its rollout policy is changed explicitly;
+  `platform_attested` until its rollout policy is changed explicitly. An Apple
+  silicon Mac still sends `client_managed_dynamic_range_v1` while its HDR
+  setting is on, so AVPlayer maps HDR originals onto an SDR display instead of
+  the server tone-mapping them;
 - a simulator follows the policy of the device model it simulates;
 - downloads retain the bounded attestation because an offline artifact cannot
   ask the server for a different plan.
