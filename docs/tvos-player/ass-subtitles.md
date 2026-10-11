@@ -1,7 +1,7 @@
 # Local ASS subtitles
 
 The Apple video player renders primary ASS/SSA tracks with libass through
-SwiftLibass 1.4.0 and SwiftAssRenderer 1.3.1. Aether retains raw ASS events for the primary channel and exposes
+SwiftLibass 1.4.0. Aether retains raw ASS events for the primary channel and exposes
 script headers and embedded fonts. The overlay renders these over the video
 without encoding new video frames. The server receives ASS styling and font
 capabilities for the original and packaged video routes; audio-only playback
@@ -15,23 +15,51 @@ system directly. A failed font request produces a visible subtitle error;
 switching off and back on retries it. A stale request cannot change the next
 selection's loading or error state.
 
-`ASSSubtitleRenderer` confines libass to an actor and uses SwiftAssRenderer's
-`BlendImagePipeline` to composite frames. It owns the library, renderer, and
-track allocations directly and frees them in order. The package's 1.3.1
-convenience renderer copies parsed tracks without freeing them, so Silo uses
-its lower-level image API instead of repeatedly loading whole scripts.
-It appends new events,
-deduplicates by content and timestamps rather than Matroska ReadOrder, and
-rebuilds when Aether removes cues or the header/fonts change. Font stores and
-old events are released with their renderer. Rendering has one awaited frame
-at a time while the overlay is visible, and selection/load changes reject
-outgoing frames. Authored positioning uses the displayed video rectangle.
+`ASSSubtitleRenderer` owns the libass library, renderer, and track
+allocations and frees them in order. Aether republishes its whole retained cue
+array on every change; the renderer appends only cues it has not seen, keyed by
+Aether cue ID, and deduplicates events by content and millisecond window rather
+than Matroska ReadOrder. Cues Aether prunes after they age out stay in libass
+for a backward seek. A cue that disappears or changes timing while it can still
+be drawn flushes the event list with `ass_flush_events`, keeping the renderer's
+font and glyph caches. So do the first cues of a reload held under the
+outgoing ones, which may have deleted events the pruning rule would keep; a
+held reload that ends with no cues clears them when loading finishes.
+Only a new header or font set rebuilds libass.
 
-Embedded events use Aether's displayed source clock. Complete sidecars add the
-server's timeline offset to that clock. Positive subtitle delay subtracts from
-render time. Between Aether's 100 ms native clock publications, the overlay
-samples the same AVPlayer for smooth ASS animation, without extrapolating
-through a seek, buffer stall, player replacement, or clock discontinuity.
+`ASSImageCompositor` blends libass's alpha masks straight into premultiplied
+BGRA canvases from a pixel-buffer pool, so the cost follows the drawn area.
+The SwiftAssRenderer float pipeline it replaces allocated and converted the
+whole bounding box every frame, tens of megabytes for a full-screen sign at
+4K. Libass renders at most 1920 × 1080 pixels; a 4K output shows that canvas
+scaled up. Authored positioning uses the displayed video rectangle.
+
+`ASSOverlayPresenter` renders a fraction of a second ahead of the picture and
+queues each canvas on an `AVSampleBufferDisplayLayer` whose control timebase
+is the video's own clock: the player item's timebase on AVPlayer paths, the
+software synchronizer on the software path. Core Animation pairs each canvas
+with the frame it belongs to, so neither render time nor a busy main thread
+shifts it. Canvases render at the exact timestamps of the frames Aether
+reports (`setNativeVideoFrameTimeObserver`, `setSoftwareVideoFrameTimeObserver`)
+and carry those timestamps unrounded. Typesetters place event boundaries
+between frames, so sampling a running clock instead lands on a neighbouring
+frame's event part of the time, which shows on a tracked sign as a one-frame
+shake. Only frames whose pixels libass reports changed are queued. A seek,
+detected as the clock leaving the position its rate predicts, flushes the
+layer and refills it from the frame on screen; cues that arrive for frames
+already queued replace them while the current canvas stays up. A selection or
+load change clears the layer at once. The session tags each selection with a
+generation and tells the layer which one to accept before it awaits the
+presenter, so canvases a step renders for an outgoing selection never show.
+
+Embedded events use Aether's source clock: the native path converts item time
+through Aether's `presentationAxisMap`, and the software path presents on the
+source clock. Remote HLS, where Aether reports no frames, spaces frames by the
+source's nominal frame rate and subtracts the measured lead of item time over
+Aether's picture time. Complete sidecars add the server's timeline offset to
+the cue clock. Positive subtitle delay subtracts from render time. The overlay
+logs, every ten seconds while it renders, its frame count, how many timestamps
+Aether reported, and average and slowest render times.
 
 Secondary ASS subtitles are decoded into normalized text, supported text
 styles, and placement for the companion overlay. They do not receive raw ASS
@@ -51,8 +79,13 @@ Off cancels pending native selection work.
 
 `ASSSubtitleRendererTests` uses actual libass output to check authored colors,
 positions, overlapping events with repeated ReadOrder, animation, backward
-seeking, expired/replaced cues, and font shaping. Its original test font draws
-X as a rectangle, making attachment use distinguishable from a fallback font.
+seeking, expired/replaced cues, aged-out versus retracted cues, and font
+shaping. Its original test font draws X as a rectangle, making attachment use
+distinguishable from a fallback font. Presenter tests drive a fake clock to
+check that every reported frame renders its own frame-timed event on the
+native, software, and remote-HLS clocks, that unchanged frames are not queued,
+and how seeks, late cues, and selection changes flush the layer. The
+compositor has an exact premultiplied-blending test.
 A bundled MKV exercises the full Aether/controller/rendering path for embedded
 tracks, track changes, a sidecar, and Off, and checks that secondary ASS is
 normalized while primary ASS stays raw. Another test holds font requests

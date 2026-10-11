@@ -196,7 +196,7 @@ final class MediaAuthorizationPlaybackTests: XCTestCase {
         engine.selectSubtitleTrack(index: subtitleID)
         let hasCues = await eventually(timeout: .seconds(5)) { !engine.isLoadingSubtitles && !engine.subtitleCues.isEmpty }
         XCTAssertTrue(hasCues, "A registered ASS track must download with the current bearer after rotation. \(origin.snapshot().description)")
-        await subtitles.render(size: CGSize(width: 320, height: 180), scale: 1, delaySeconds: 0)
+        await subtitles.step(size: CGSize(width: 320, height: 180), scale: 1, delaySeconds: 0)
         let fontsFinished = await eventually(timeout: .seconds(5)) { !subtitles.isLoadingFonts }
         XCTAssertTrue(fontsFinished)
         XCTAssertNil(subtitles.failureMessage)
