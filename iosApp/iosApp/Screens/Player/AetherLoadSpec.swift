@@ -156,6 +156,17 @@ struct AetherLoadSpec {
     /// Also Aether's own default; see `PlayerSettings.deinterlaceFieldRate`.
     static let defaultDeinterlaceFieldRate: DeinterlaceFieldRate = .field
 
+    /// The Dolby Vision layer a load presents, from the per-device Dolby
+    /// Vision setting (which is only offered while HDR is on). The setting
+    /// also shapes the capabilities sent to the server, but an original file
+    /// is opened here, so Aether has to be told too: with it off, a Profile
+    /// 7 / 8.1 / 8.4 source plays as its HDR10 / HLG base layer and the TV is
+    /// asked for HDR10 / HLG, not Dolby Vision. A Profile 5 source has no
+    /// base layer and stays Dolby Vision.
+    static func dolbyVisionHandling(hdrEnabled: Bool, dolbyVisionEnabled: Bool) -> DolbyVisionHandling {
+        hdrEnabled && dolbyVisionEnabled ? .automatic : .baseLayerOnly
+    }
+
     /// Resolve a download manifest's audio ordinal (`selected_audio_track_index`,
     /// a position among the delivered file's audio streams) to the stream id
     /// Aether selects by. Nil when the ordinal is outside the probed file, so
@@ -179,6 +190,7 @@ struct AetherLoadSpec {
         objectAudioRendering: ObjectAudioRendering = .off,
         deinterlaceMode: DeinterlaceMode = Self.defaultDeinterlaceMode,
         deinterlaceFieldRate: DeinterlaceFieldRate = Self.defaultDeinterlaceFieldRate,
+        dolbyVisionHandling: DolbyVisionHandling = .automatic,
         panelIsInHDRMode: Bool? = nil
     ) throws {
         guard offlineURL.isFileURL else {
@@ -217,6 +229,7 @@ struct AetherLoadSpec {
             SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: sidecar.index)
         }
         options = LoadOptions(
+            dolbyVisionHandling: dolbyVisionHandling,
             panelIsInHDRMode: panelIsInHDRMode ?? AetherDisplayContext.panelIsInHDRMode,
             audioBridgeMode: audioBridgeMode,
             objectAudioRendering: objectAudioRendering,
@@ -249,6 +262,7 @@ struct AetherLoadSpec {
         objectAudioRendering: ObjectAudioRendering = .off,
         deinterlaceMode: DeinterlaceMode = Self.defaultDeinterlaceMode,
         deinterlaceFieldRate: DeinterlaceFieldRate = Self.defaultDeinterlaceFieldRate,
+        dolbyVisionHandling: DolbyVisionHandling = .automatic,
         panelIsInHDRMode: Bool? = nil
     ) throws {
         guard ["http", "https", "file"].contains(directURL.scheme?.lowercased() ?? "") else {
@@ -298,6 +312,7 @@ struct AetherLoadSpec {
         }
         options = LoadOptions(
             httpHeaders: headers,
+            dolbyVisionHandling: dolbyVisionHandling,
             panelIsInHDRMode: panelIsInHDRMode ?? AetherDisplayContext.panelIsInHDRMode,
             audioBridgeMode: audioBridgeMode,
             objectAudioRendering: objectAudioRendering,
@@ -334,6 +349,7 @@ struct AetherLoadSpec {
         objectAudioRendering: ObjectAudioRendering = .off,
         deinterlaceMode: DeinterlaceMode = Self.defaultDeinterlaceMode,
         deinterlaceFieldRate: DeinterlaceFieldRate = Self.defaultDeinterlaceFieldRate,
+        dolbyVisionHandling: DolbyVisionHandling = .automatic,
         resumeSourcePosition: Double? = nil,
         panelIsInHDRMode: Bool? = nil
     ) throws {
@@ -480,6 +496,7 @@ struct AetherLoadSpec {
             httpHeaders: effectiveHeaders,
             httpRequestAuthorization: isServerHLS && plan.effectiveRecipe.videoCodec != nil
                 ? requestAuthorization : nil,
+            dolbyVisionHandling: dolbyVisionHandling,
             matchContentEnabled: matchContentEnabled,
             panelIsInHDRMode: panelIsInHDRMode ?? AetherDisplayContext.panelIsInHDRMode,
             audioBridgeMode: audioBridgeMode,

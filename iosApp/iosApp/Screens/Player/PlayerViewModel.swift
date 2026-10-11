@@ -3474,6 +3474,10 @@ class PlayerViewModel {
         let deinterlaceFieldRate: DeinterlaceFieldRate = settings.deinterlaceFieldRate == .film
             ? .frame
             : .field
+        let dolbyVisionHandling = AetherLoadSpec.dolbyVisionHandling(
+            hdrEnabled: settings.hdrEnabled,
+            dolbyVisionEnabled: settings.dolbyVisionEnabled
+        )
         let spec: AetherLoadSpec
         if let v3 = prepared.protocolV3 {
             let audioSourceStreamIndex: Int32?
@@ -3565,6 +3569,7 @@ class PlayerViewModel {
                 objectAudioRendering: objectAudioRendering,
                 deinterlaceMode: deinterlaceMode,
                 deinterlaceFieldRate: deinterlaceFieldRate,
+                dolbyVisionHandling: dolbyVisionHandling,
                 resumeSourcePosition: resumeSourcePosition
             )
         } else if streamRequest.url.isFileURL {
@@ -3601,7 +3606,8 @@ class PlayerViewModel {
                 audioBridgeMode: audioBridgeMode,
                 objectAudioRendering: objectAudioRendering,
                 deinterlaceMode: deinterlaceMode,
-                deinterlaceFieldRate: deinterlaceFieldRate
+                deinterlaceFieldRate: deinterlaceFieldRate,
+                dolbyVisionHandling: dolbyVisionHandling
             )
         } else {
             spec = try AetherLoadSpec(
@@ -3616,7 +3622,8 @@ class PlayerViewModel {
                 audioBridgeMode: audioBridgeMode,
                 objectAudioRendering: objectAudioRendering,
                 deinterlaceMode: deinterlaceMode,
-                deinterlaceFieldRate: deinterlaceFieldRate
+                deinterlaceFieldRate: deinterlaceFieldRate,
+                dolbyVisionHandling: dolbyVisionHandling
             )
         }
 

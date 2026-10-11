@@ -601,6 +601,61 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         XCTAssertTrue(spec.options.httpRequestAuthorization === authorization)
     }
 
+    /// The Dolby Vision setting has to reach Aether as well as the server's
+    /// capability report: an original file is opened by Aether, so with the
+    /// setting off it has to present the HDR10 / HLG base layer itself. Each
+    /// spec initializer must carry the handling into its `LoadOptions`.
+    func testDolbyVisionSettingMapsToAetherHandlingForEveryLoadSpec() throws {
+        XCTAssertEqual(
+            AetherLoadSpec.dolbyVisionHandling(hdrEnabled: true, dolbyVisionEnabled: true),
+            .automatic
+        )
+        XCTAssertEqual(
+            AetherLoadSpec.dolbyVisionHandling(hdrEnabled: true, dolbyVisionEnabled: false),
+            .baseLayerOnly
+        )
+        // The Dolby Vision row reads Off while HDR is off, whatever it stores.
+        XCTAssertEqual(
+            AetherLoadSpec.dolbyVisionHandling(hdrEnabled: false, dolbyVisionEnabled: true),
+            .baseLayerOnly
+        )
+
+        let response = try PlaybackV3FixtureTestSupport.v2Decision(bundleClass: Self.self)
+        guard case .playable(let plan, let sessionID) = response.validatedForApple() else {
+            return XCTFail("Expected a playable fixture")
+        }
+        let remote = try XCTUnwrap(URL(string: "https://dev.example.test/media/movie.mkv"))
+        let local = URL(fileURLWithPath: "/tmp/silo-offline/movie.mkv")
+        for handling in DolbyVisionHandling.allCases {
+            let planned = try AetherLoadSpec(
+                validating: plan,
+                sessionID: sessionID,
+                matchContentEnabled: true,
+                sourceURLOverride: remote,
+                dolbyVisionHandling: handling,
+                panelIsInHDRMode: false
+            )
+            let offline = try AetherLoadSpec(
+                offlineURL: local,
+                startPosition: 0,
+                audioOnly: false,
+                dolbyVisionHandling: handling,
+                panelIsInHDRMode: false
+            )
+            let direct = try AetherLoadSpec(
+                directURL: remote,
+                headers: [:],
+                startPosition: 0,
+                audioOnly: false,
+                dolbyVisionHandling: handling,
+                panelIsInHDRMode: false
+            )
+            XCTAssertEqual(planned.options.dolbyVisionHandling, handling)
+            XCTAssertEqual(offline.options.dolbyVisionHandling, handling)
+            XCTAssertEqual(direct.options.dolbyVisionHandling, handling)
+        }
+    }
+
     func testV3CredentialReloadTranslatesCurrentSourcePositionOntoPlanTimeline() throws {
         var object = try PlaybackV3FixtureTestSupport.v2DecisionObject(bundleClass: Self.self)
         var planObject = try XCTUnwrap(object["playback_plan"] as? [String: Any])
