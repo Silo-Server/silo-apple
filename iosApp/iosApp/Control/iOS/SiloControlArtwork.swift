@@ -44,20 +44,31 @@ final class SiloControlArtworkResolver {
         posterURL = detail.posterUrl
         backdropURL = detail.backdropUrl
         tilePosterURL = detail.posterUrl
-        resolvedContentId = contentId
 
-        guard SiloMediaType.isEpisode(detail.type),
-              let seriesId = detail.seriesId, !seriesId.isEmpty,
-              let seriesPoster = await seriesPosterURL(seriesId: seriesId),
-              !Task.isCancelled, resolvedContentId == contentId else { return }
-        tilePosterURL = seriesPoster
+        let seriesPoster = await seriesPosterURL(for: detail)
+        // Marked resolved only once the series lookup finishes, so an
+        // interrupted lookup runs again when the task restarts.
+        guard !Task.isCancelled else { return }
+        if let seriesPoster { tilePosterURL = seriesPoster }
+        resolvedContentId = contentId
     }
 
-    private func seriesPosterURL(seriesId: String) async -> String? {
-        if let cached: ItemDetail = ResponseCache.shared.get(CacheKey.itemDetail(seriesId)) {
-            return cached.posterUrl
+    private func seriesPosterURL(for detail: ItemDetail) async -> String? {
+        guard SiloMediaType.isEpisode(detail.type),
+              let seriesId = detail.seriesId, !seriesId.isEmpty else { return nil }
+        let key = CacheKey.itemDetail(seriesId)
+        let series: ItemDetail
+        if let cached: ItemDetail = ResponseCache.shared.get(key) {
+            series = cached
+        } else {
+            guard let fetched = try? await MetadataRequestPool.shared.itemDetail(contentId: seriesId) else {
+                return nil
+            }
+            ResponseCache.shared.set(fetched, for: key)
+            series = fetched
         }
-        return try? await SiloAPI.shared.itemDetail(contentId: seriesId).posterUrl
+        guard let poster = series.posterUrl, !poster.isEmpty else { return nil }
+        return poster
     }
 }
 
