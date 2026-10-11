@@ -146,7 +146,8 @@ class HomeViewModel {
             // authoritative local/cache update so a late response cannot put it
             // back on screen.
             StartupContentPrefetcher.invalidateHomeSectionsInFlight()
-            sections = removal.mutate(sections)
+            // Dismissing a row's last card removes the row.
+            sections = removal.mutate(sections).filter { !$0.items.isEmpty }
             ResponseCache.shared.update(CacheKey.homeSections, as: SectionsResponse.self) { response in
                 response = SectionsResponse(sections: removal.mutate(response.sections))
             }
@@ -178,7 +179,7 @@ class HomeViewModel {
                 sections = HomeSectionsMutation.removingCompletedItem(
                     contentId: item.contentId,
                     from: sections
-                )
+                ).filter { !$0.items.isEmpty }
                 ResponseCache.shared.update(CacheKey.homeSections, as: SectionsResponse.self) { response in
                     response = SectionsResponse(
                         sections: HomeSectionsMutation.removingCompletedItem(

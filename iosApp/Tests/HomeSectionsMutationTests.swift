@@ -149,7 +149,9 @@ final class HomeSectionsMutationTests: XCTestCase {
         XCTAssertEqual(continueWatchingCalls, 0)
         XCTAssertEqual(receivedContentId, "target")
         XCTAssertEqual(receivedSeriesId, "series-1")
-        XCTAssertEqual(viewModel.sections.map { $0.items.map(\.contentId) }, [["other"], [], ["target"]])
+        // The emptied Next Up row leaves Home rather than showing a bare header.
+        XCTAssertEqual(viewModel.sections.map(\.id), ["continue", "trending"])
+        XCTAssertEqual(viewModel.sections.map { $0.items.map(\.contentId) }, [["other"], ["target"]])
         XCTAssertEqual(cached?.sections.map { $0.items.map(\.contentId) }, [["other"], [], ["target"]])
         XCTAssertNil(viewModel.actionError)
     }
