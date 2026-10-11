@@ -19,7 +19,6 @@ struct HomeView: View {
     var onTopMenuFocusRequest: (() -> Void)? = nil
 
     @State private var viewModel = HomeViewModel()
-    @State private var homeSectionPreferences = HomeSectionPreferences.shared
     #if !os(tvOS)
     @State private var refreshPill = RefreshStatusPillState()
     /// Feeds the glass strip behind the floating header as rows scroll under it.
@@ -30,8 +29,8 @@ struct HomeView: View {
     /// the shared action cluster sits at one height on every root page.
     private let headerTopInset: CGFloat = SiloTheme.smallPadding
     /// The LazyVStack already contributes its normal section spacing after the
-    /// header runway. Adding a second large header gap pushed the first
-    /// visible row far down the screen whenever an earlier Home row was hidden.
+    /// header runway. Adding a second large header gap pushed the first row
+    /// far down the screen.
     private let headerToContentGap: CGFloat = 0
     #endif
     #endif
@@ -50,9 +49,9 @@ struct HomeView: View {
         // The shared Skyline feed uses the same layout component as the
         // library Browse tabs; Home supplies only the server-resolved Home rows.
         Group {
-            if !displayedSections.isEmpty {
+            if !viewModel.sections.isEmpty {
                 TVSkylineSectionFeed(
-                    sections: displayedSections,
+                    sections: viewModel.sections,
                     focusRequest: homeFocusRequest,
                     detailReturnFocusRequest: detailReturnFocusRequest,
                     isTopMenuFocused: isTopMenuFocused,
@@ -61,10 +60,6 @@ struct HomeView: View {
                     onRemoveFromContinueWatching: dismissContinueWatching,
                     onSetWatched: setWatched
                 )
-                // Preference edits replace the row band as one stable unit:
-                // the next visible row takes the vacated slot at the fixed
-                // first-row anchor, and no marquee from a hidden row lingers.
-                .id(homeSectionPreferences.layoutRevision)
             } else if let error = viewModel.error {
                 ErrorView(
                     state: error,
@@ -80,18 +75,6 @@ struct HomeView: View {
                         accessibilityLabel: "Loading home",
                         onMoveUp: onTopMenuFocusRequest
                     )
-            } else if !viewModel.sections.isEmpty {
-                EmptyStateView(
-                    icon: "eye.slash",
-                    title: "Home sections are hidden",
-                    subtitle: "Choose which rows appear in Settings → General → Home Sections."
-                )
-                .tvPageFocusOwner(
-                    focusRequest: homeFocusRequest,
-                    isTopMenuFocused: isTopMenuFocused,
-                    accessibilityLabel: "Home sections are hidden",
-                    onMoveUp: onTopMenuFocusRequest
-                )
             } else {
                 EmptyStateView(
                     icon: "play.rectangle.on.rectangle",
@@ -110,7 +93,6 @@ struct HomeView: View {
         // Runs on every appear, so returning from the player refreshes
         // Continue Watching.
         .task {
-            homeSectionPreferences.refresh()
             await viewModel.loadSections()
         }
         #else
@@ -119,7 +101,7 @@ struct HomeView: View {
                 .ignoresSafeArea()
 
             Group {
-                if !displayedSections.isEmpty {
+                if !viewModel.sections.isEmpty {
                     scrollContent
                 } else if let error = viewModel.error {
                     ErrorView(
@@ -130,12 +112,6 @@ struct HomeView: View {
                 } else if viewModel.isLoading {
                     PosterRowsSkeleton()
                         .padding(.top, topRunwaySpacing(topSafeAreaInset: 0))
-                } else if !viewModel.sections.isEmpty {
-                    EmptyStateView(
-                        icon: "eye.slash",
-                        title: "Home sections are hidden",
-                        subtitle: "Choose which rows appear in Settings → Interface → Home Sections."
-                    )
                 } else {
                     EmptyStateView(
                         icon: "play.rectangle.on.rectangle",
@@ -203,7 +179,6 @@ struct HomeView: View {
         .toolbar(.hidden, for: .navigationBar)
         #endif
         .task {
-            homeSectionPreferences.refresh()
             await viewModel.loadSections()
         }
         .refreshable {
@@ -264,7 +239,7 @@ struct HomeView: View {
     /// section as a hero at the top of the page wherever it sits in the Home
     /// order, as web does; any other featured section stays a row in place.
     private var feedSections: [ResolvedSection] {
-        var sections = displayedSections
+        var sections = viewModel.sections
         #if os(macOS)
         if let index = sections.firstIndex(where: \.isFeatured), index > 0 {
             sections.insert(sections.remove(at: index), at: 0)
@@ -308,13 +283,6 @@ struct HomeView: View {
         }
     }
     #endif
-
-    /// Rows in the profile's Home order with hidden rows removed. Filtering
-    /// before layout means a hidden row leaves no gap: the next row takes its
-    /// slot.
-    private var displayedSections: [ResolvedSection] {
-        homeSectionPreferences.arrangedSections(viewModel.sections)
-    }
 
     #if !os(tvOS)
     private func refreshHome() async {
