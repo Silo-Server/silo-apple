@@ -122,6 +122,18 @@ struct ProfileAvatarMenu: View {
 
     var body: some View {
         Menu {
+            #if os(iOS)
+            // The iOS tab bar holds only content destinations
+            // (`appleFixedTabDestinations`); these open as pages.
+            // Replacing the stack keeps a repeat pick, from the page's own
+            // menu, to one page.
+            if DownloadManager.shared.downloadsEnabled {
+                Button("Downloads", systemImage: "arrow.down.circle") { router.showOnly(.downloads) }
+            }
+            Button("Calendar", systemImage: "calendar") { router.showOnly(.calendar) }
+
+            Divider()
+            #endif
             #if os(iOS) || os(tvOS)
             if WatchPartyEntry.isAvailable {
                 Button(WatchPartySession.shared.isEngaged ? "Return to Watch Party" : "Watch Party", systemImage: "person.3") { router.navigate(to: .watchParty) }

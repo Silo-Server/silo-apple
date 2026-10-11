@@ -121,3 +121,32 @@ struct LibraryScopedPage<Cursor> {
     var next: Cursor?
     var startsOver = false
 }
+
+extension LibraryVideoScope {
+    /// Refills a library's shelves from each section's catalog source, for
+    /// the account that read them.
+    func refillLibrarySections(
+        _ rows: [ResolvedSection],
+        libraryId: Int,
+        auth: CapturedOrdinaryRequestAuth
+    ) async throws -> [(section: ResolvedSection, incomplete: Bool)] {
+        try await refillSections(rows) { (row: ResolvedSection, cursor: APIv2CatalogContinuation?) in
+            guard await SiloAPI.shared.isCurrentOwner(auth) else { throw HTTPError.requestIdentityChanged }
+            let page: CatalogListPage
+            if let cursor {
+                page = try await SiloAPI.shared.nextCatalogPage(cursor)
+            } else {
+                var query = APIv2CatalogQuery()
+                query.source = "section"
+                query.scope = "library"
+                query.libraryId = String(libraryId)
+                query.sectionId = row.id
+                query.limit = 100
+                page = try await SiloAPI.shared.catalogPage(query)
+            }
+            guard await SiloAPI.shared.isCurrentOwner(auth) else { throw HTTPError.requestIdentityChanged }
+            return LibraryScopedPage(items: page.response.items.map { SectionItem(browseItem: $0) },
+                                     next: page.continuation, startsOver: page.startsOver)
+        }
+    }
+}

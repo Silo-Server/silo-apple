@@ -520,7 +520,7 @@ struct APIv2Client: Sendable {
 
     /// Facets depend on the viewer's library access, so the read is bound to
     /// the caller's captured owner like the other catalog reads.
-    func catalogFilters(libraryId: String?, includeTechnical: Bool = true,
+    func catalogFilters(libraryId: String?, type: String? = nil, includeTechnical: Bool = true,
                         auth: CapturedOrdinaryRequestAuth) async throws -> APIv2CatalogFilters {
         try await gate()
         guard let profile = auth.profileId, !profile.isEmpty,
@@ -530,6 +530,7 @@ struct APIv2Client: Sendable {
         try Task.checkCancellation()
         var query: [String: String] = [:]
         if let libraryId { query["library_id"] = libraryId }
+        if let type { query["type"] = type }
         if !includeTechnical { query["skip_technical"] = "true" }
         let requestQuery = query
         let identity = Self.requestIdentity(auth, profile: profile)

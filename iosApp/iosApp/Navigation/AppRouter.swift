@@ -405,6 +405,12 @@ final class AppRouter {
         requestedTab = tab
     }
 
+    /// One-shot request from the iOS Libraries page to show the tab that
+    /// hosts this library (Watch, Listen, or its type's tab), consumed by
+    /// `MainTabView`. The page has already made the library that tab's
+    /// remembered selection, so the tab opens on it.
+    var requestedHubLibraryId: Int?
+
     // MARK: - Search Requests
 
     /// Search opened with `query` filled in. A fresh `id` makes a repeated
@@ -769,6 +775,16 @@ final class AppRouter {
         recordScreenBreadcrumb(target: "root", action: "popToRoot")
         path = NavigationPath()
     }
+
+    #if os(iOS)
+    /// Replaces the stack with `route` in one change. Popping to root and
+    /// then pushing the route that was already on top makes SwiftUI show a
+    /// blank page, so repeat links to a page use this instead.
+    func showOnly(_ route: Route) {
+        recordScreenBreadcrumb(target: route.diagnosticsTarget, action: "showOnly")
+        path = NavigationPath([route])
+    }
+    #endif
 
     /// Why the sign-in screen is showing, when it isn't the user's own
     /// choice. The sign-in screen explains an expired session instead of
@@ -1149,6 +1165,10 @@ private extension Route {
             return "serverNeedsSetup"
         case .search:
             return "search"
+        case .mediaBrowse:
+            return "mediaBrowse"
+        case .libraryCollections:
+            return "libraryCollections"
         case .libraryCollection:
             return "libraryCollection"
         case .itemDetail:
@@ -1173,6 +1193,10 @@ private extension Route {
             return "settings"
         case .serverList:
             return "serverList"
+        case .downloads:
+            return "downloads"
+        case .calendar:
+            return "calendar"
         case .watchParty:
             return "watchParty"
         case .requestsHub:
@@ -1191,6 +1215,8 @@ private extension Route {
             return "offlineDownloadDetail"
         case .autoDownloads:
             return "autoDownloads"
+        case .libraryVisibility:
+            return "libraryVisibility"
         }
     }
 }

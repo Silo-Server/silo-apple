@@ -216,6 +216,20 @@ struct InterfaceCustomizationView: View {
             }
 
             Section {
+                NavigationLink {
+                    LibraryVisibilitySettingsView()
+                } label: {
+                    Label("Libraries", systemImage: "square.stack.3d.up")
+                }
+            } footer: {
+                Text("Choose which libraries this profile sees in navigation, on Home and in Search.")
+            }
+
+            // iOS derives its tab bar from the profile's libraries
+            // (`appleFixedTabDestinations`); the synced primary menu still
+            // drives other clients.
+            #if !os(iOS)
+            Section {
                 ForEach(rows) { row in
                     let item = row.item
                     HStack(spacing: 12) {
@@ -314,6 +328,7 @@ struct InterfaceCustomizationView: View {
                     }
                 }
             }
+            #endif
 
             if let message = preferences.syncErrorMessage,
                message != preferences.capabilityMessage,

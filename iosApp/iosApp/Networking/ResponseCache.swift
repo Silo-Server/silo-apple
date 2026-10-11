@@ -227,12 +227,21 @@ enum CacheKey {
     /// Browse grid page-1 cache, keyed by the full filter/sort state
     /// (`CatalogFilterState.cacheKeyFragment`) and, for a mixed library,
     /// the selected movies/series scope so the two never share a page.
-    static func browse(libraryId: Int?, filterKey: String, mediaScope: String? = nil) -> String {
-        "browse:v2:\(libraryId.map(String.init) ?? "all"):\(filterKey)" + (mediaScope.map { ".type-\($0)" } ?? "")
+    /// `crossLibraryType` keys the iOS hubs' "All" grids, which have no
+    /// library to scope them.
+    static func browse(
+        libraryId: Int?,
+        filterKey: String,
+        mediaScope: String? = nil,
+        crossLibraryType: String? = nil
+    ) -> String {
+        let root = libraryId.map(String.init) ?? crossLibraryType.map { "all.\($0)" } ?? "all"
+        return "browse:v2:\(root):\(filterKey)" + (mediaScope.map { ".type-\($0)" } ?? "")
     }
     /// Per-library facet vocabulary from `/catalog/filters`.
-    static func catalogFilters(libraryId: Int?, includeTechnical: Bool = true) -> String {
-        "catalogFilters:\(libraryId.map(String.init) ?? "all"):\(includeTechnical ? "technical" : "basic")"
+    static func catalogFilters(libraryId: Int?, type: String? = nil, includeTechnical: Bool = true) -> String {
+        let root = libraryId.map(String.init) ?? "all"
+        return "catalogFilters:\(root)\(type.map { ".\($0)" } ?? ""):\(includeTechnical ? "technical" : "basic")"
     }
     static func librarySections(_ libraryId: Int) -> String {
         "library:\(libraryId):sections"
@@ -269,5 +278,7 @@ enum CacheKey {
         // watch-status filters make a page profile-specific.
         "tvlibrary:",
         "catalogFilters:",
+        // Watch and Listen landing rows carry resume state.
+        "mediaHub:",
     ]
 }

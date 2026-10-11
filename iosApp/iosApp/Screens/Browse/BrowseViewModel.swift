@@ -28,6 +28,9 @@ class BrowseViewModel {
     private var continuation: APIv2CatalogContinuation?
     private var libraryId: Int?
     private var mediaScope: LibraryVideoScope?
+    /// Media scope for a cross-library grid (Watch tab "All"); `nil` when a
+    /// library already scopes the query.
+    private var crossLibraryType: BrowseMediaType?
     private var hasConfigured = false
     private var configurationGeneration = 0
     /// Bumped on every reset; a returning fetch from an older generation
@@ -35,20 +38,34 @@ class BrowseViewModel {
     private var generation = 0
 
     @discardableResult
-    func configure(libraryId: Int?, libraryType: String? = nil, mediaScope: LibraryVideoScope? = nil) async -> Bool {
+    func configure(
+        libraryId: Int?,
+        libraryType: String? = nil,
+        mediaScope: LibraryVideoScope? = nil,
+        crossLibraryType: BrowseMediaType? = nil
+    ) async -> Bool {
         configurationGeneration += 1
         let myConfiguration = configurationGeneration
-        let libraryChanged = !hasConfigured || self.libraryId != libraryId || self.mediaScope != mediaScope
+        let libraryChanged = !hasConfigured
+            || self.libraryId != libraryId
+            || self.mediaScope != mediaScope
+            || self.crossLibraryType != crossLibraryType
         if libraryChanged {
             // Invalidate before metadata I/O so an old page cannot publish while
             // the next library or type is being configured.
             invalidatePages()
         }
-        let resolvedMediaType = await resolveMediaType(libraryId: libraryId, libraryType: libraryType)
+        let resolvedMediaType: BrowseMediaType
+        if let crossLibraryType {
+            resolvedMediaType = crossLibraryType
+        } else {
+            resolvedMediaType = await resolveMediaType(libraryId: libraryId, libraryType: libraryType)
+        }
         guard myConfiguration == configurationGeneration, !Task.isCancelled else { return false }
 
         self.libraryId = libraryId
         self.mediaScope = mediaScope
+        self.crossLibraryType = crossLibraryType
         hasConfigured = true
         mediaType = mediaScope.map { $0 == .movie ? .movie : .series } ?? resolvedMediaType
 
@@ -56,11 +73,11 @@ class BrowseViewModel {
             // A load-more during the metadata await read the old library or
             // type under the new generation; drop it before the new scope loads.
             invalidatePages()
-            filterState = BrowsePrefsStore.shared.savedState(libraryId: libraryId, mediaScope: mediaScope?.rawValue) ?? .none
+            filterState = BrowsePrefsStore.shared.savedState(libraryId: libraryId, mediaScope: mediaScope?.rawValue, crossLibraryType: prefsCrossLibraryType) ?? .none
             if mediaScope != nil { filterState.mediaScope = nil }
         }
 
-        facets = FacetLoader.shared.cachedFacets(libraryId: libraryId)
+        facets = FacetLoader.shared.cachedFacets(libraryId: libraryId, type: facetType)
         // Hydrate the page-1 snapshot the next reset will write back into.
         hydratePage1FromCache()
         return true
@@ -99,7 +116,8 @@ class BrowseViewModel {
                 page = try await StartupContentPrefetcher.fetchBrowseFirstPage(
                     libraryId: libraryId,
                     state: filterState,
-                    mediaScope: mediaScope
+                    mediaScope: mediaScope,
+                    crossLibraryType: crossLibraryType
                 )
             }
             // Discard if another reset superseded us while we awaited.
@@ -145,7 +163,7 @@ class BrowseViewModel {
         if mediaScope != nil { scopedState.mediaScope = nil }
         guard scopedState != filterState else { return }
         filterState = scopedState
-        BrowsePrefsStore.shared.saveState(scopedState, libraryId: libraryId, mediaScope: mediaScope?.rawValue)
+        BrowsePrefsStore.shared.saveState(scopedState, libraryId: libraryId, mediaScope: mediaScope?.rawValue, crossLibraryType: prefsCrossLibraryType)
         items = []
         hydratePage1FromCache()
         await loadItems(reset: true)
@@ -182,7 +200,7 @@ class BrowseViewModel {
     func loadFacetsIfNeeded() async {
         if facets != nil { return }
         let configuration = configurationGeneration
-        let loaded = try? await FacetLoader.shared.facets(libraryId: libraryId)
+        let loaded = try? await FacetLoader.shared.facets(libraryId: libraryId, type: facetType)
         guard configuration == configurationGeneration, !Task.isCancelled else { return }
         facets = loaded
     }
@@ -191,19 +209,33 @@ class BrowseViewModel {
 
     // MARK: - Preserve toggle
 
-    var preserveEnabled: Bool { BrowsePrefsStore.shared.preserveEnabled(libraryId: libraryId, mediaScope: mediaScope?.rawValue) }
+    /// Cross-library grids (All Movies, All Audiobooks) keep their own
+    /// saved filters.
+    private var prefsCrossLibraryType: String? { crossLibraryType?.crossLibraryTypeParam }
+
+    /// A cross-library grid offers only the filter values of its media type.
+    private var facetType: String? {
+        libraryId == nil ? crossLibraryType?.crossLibraryTypeParam : nil
+    }
+
+    var preserveEnabled: Bool { BrowsePrefsStore.shared.preserveEnabled(libraryId: libraryId, mediaScope: mediaScope?.rawValue, crossLibraryType: prefsCrossLibraryType) }
 
     func setPreserveEnabled(_ enabled: Bool) {
-        BrowsePrefsStore.shared.setPreserveEnabled(enabled, libraryId: libraryId, mediaScope: mediaScope?.rawValue)
+        BrowsePrefsStore.shared.setPreserveEnabled(enabled, libraryId: libraryId, mediaScope: mediaScope?.rawValue, crossLibraryType: prefsCrossLibraryType)
         if enabled {
-            BrowsePrefsStore.shared.saveState(filterState, libraryId: libraryId, mediaScope: mediaScope?.rawValue)
+            BrowsePrefsStore.shared.saveState(filterState, libraryId: libraryId, mediaScope: mediaScope?.rawValue, crossLibraryType: prefsCrossLibraryType)
         }
     }
 
     // MARK: - Cache
 
     private var currentCacheKey: String {
-        CacheKey.browse(libraryId: libraryId, filterKey: filterState.cacheKeyFragment, mediaScope: mediaScope?.rawValue)
+        CacheKey.browse(
+            libraryId: libraryId,
+            filterKey: filterState.cacheKeyFragment,
+            mediaScope: mediaScope?.rawValue,
+            crossLibraryType: prefsCrossLibraryType
+        )
     }
 
     private func hydratePage1FromCache() {

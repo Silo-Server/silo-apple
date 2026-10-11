@@ -38,6 +38,9 @@ enum StartupContentPrefetcher {
     private static var tvSeriesLandingTasks: [Int: Task<Void, Never>] = [:]
     #endif
     private static var profileScopedGeneration = 0
+    /// Advances when the hidden libraries change; see
+    /// `invalidateUserLibrariesInFlight()`.
+    private static var userLibrariesGeneration = 0
     private static var homeSectionsGeneration = 0
     private static var profilesGeneration = 0
 
@@ -106,6 +109,15 @@ enum StartupContentPrefetcher {
     static func invalidateHomeSectionsInFlight() {
         homeSectionsGeneration += 1
         homeSections.reset()
+    }
+
+    /// A change to which libraries the profile hides makes a list read that
+    /// is already in flight stale: the next caller starts a fresh one, and
+    /// callers waiting on the old one move to it rather than get the old list.
+    static func invalidateUserLibrariesInFlight() {
+        userLibrariesGeneration += 1
+        userLibraries.detach()
+        ResponseCache.shared.remove(CacheKey.userLibraries)
     }
 
     /// A personal-state change (watched, favorite, watchlist) alters these
@@ -341,20 +353,32 @@ enum StartupContentPrefetcher {
     static func fetchUserLibraries(reusingRecent: Bool = true) async throws -> LibrariesResponse {
         if reusingRecent, let recent = userLibraries.recentValue() { return recent }
         let generation = profileScopedGeneration
+        let librariesGeneration = userLibrariesGeneration
+        let previous: LibrariesResponse? = ResponseCache.shared.get(CacheKey.userLibraries)
         #if os(iOS) || os(tvOS)
         let probe = PrefetchProbe.begin("user_libraries", isOriginator: !userLibraries.isInFlight)
         #endif
         let task = userLibraries.join {
             async let hidden = HiddenLibraryPreference.hiddenLibraryIds()
             let response = try await SiloAPI.shared.libraries()
+            let hiddenIds = await hidden
             return LibrariesResponse(
-                libraries: HiddenLibraryPreference.visibleLibraries(response.libraries, hiding: await hidden)
+                libraries: HiddenLibraryPreference.visibleLibraries(response.libraries, hiding: hiddenIds),
+                hiddenLibraries: response.libraries.filter { hiddenIds.contains($0.id) }
             )
         }
         let writeToken = userLibraries.writeToken
         do {
             let response = try await task.value
             try validateProfileScopedGeneration(generation)
+            guard librariesGeneration == userLibrariesGeneration else {
+                // A hide or show landed while this read ran: join the read
+                // that started after it.
+                #if os(iOS) || os(tvOS)
+                probe.finish(error: nil)
+                #endif
+                return try await fetchUserLibraries()
+            }
             // Only the first caller to resume announces the refresh; waiters
             // that joined the same request would repeat it.
             let isFirstToLand = userLibraries.finish(task, value: response)
@@ -363,6 +387,13 @@ enum StartupContentPrefetcher {
             #endif
             ResponseCache.shared.set(response, for: CacheKey.userLibraries, fetchedAt: writeToken)
             if isFirstToLand {
+                // Another device hid or showed a library since the last
+                // read: drop what the server filtered by the old set, as a
+                // change made here does (`HiddenLibraryPreference.publishChange`).
+                if let previous, previous.hiddenLibraries != nil,
+                   Set((previous.hiddenLibraries ?? []).map(\.id)) != Set((response.hiddenLibraries ?? []).map(\.id)) {
+                    HiddenLibraryPreference.dropListsFilteredByHiddenLibraries()
+                }
                 NotificationCenter.default.post(name: .userLibrariesDidRefresh, object: response)
             }
             return response
@@ -522,10 +553,16 @@ enum StartupContentPrefetcher {
     static func fetchBrowseFirstPage(
         libraryId: Int?,
         state: CatalogFilterState = .none,
-        mediaScope: LibraryVideoScope? = nil
+        mediaScope: LibraryVideoScope? = nil,
+        crossLibraryType: BrowseMediaType? = nil
     ) async throws -> CatalogListPage {
         let generation = profileScopedGeneration
-        let key = CacheKey.browse(libraryId: libraryId, filterKey: state.cacheKeyFragment, mediaScope: mediaScope?.rawValue)
+        let key = CacheKey.browse(
+            libraryId: libraryId,
+            filterKey: state.cacheKeyFragment,
+            mediaScope: mediaScope?.rawValue,
+            crossLibraryType: crossLibraryType?.crossLibraryTypeParam
+        )
         let flight = browseFirstPages[key] ?? {
             let flight = SharedFetch<CatalogListPage>()
             browseFirstPages[key] = flight
@@ -543,16 +580,20 @@ enum StartupContentPrefetcher {
         let task = flight.join {
             // iOS omits `type` (library_id already scopes the page), except a
             // mixed library's Movies/Series navigation scope, which is
-            // independent of optional filter groups. Later pages follow this
-            // page's continuation, which retains it.
-            let query = CatalogQueryBuilder.build(
+            // independent of optional filter groups, and the iOS hubs'
+            // cross-library "All" grids, which have no library to scope them.
+            // Later pages follow this page's continuation, which retains it.
+            var query = CatalogQueryBuilder.build(
                 state,
                 libraryId: libraryId,
-                mediaType: .movie,
+                mediaType: crossLibraryType ?? .movie,
                 limit: browsePageSize,
-                includeType: false,
+                includeType: crossLibraryType != nil,
                 enforcedScope: mediaScope
             )
+            // Browse grids page by cursor and never show a count; the exact
+            // total is the slowest part of the query.
+            query.skipTotal = true
             return try await SiloAPI.shared.catalogPage(query)
         }
         let writeToken = flight.writeToken
@@ -848,6 +889,12 @@ final class SharedFetch<Value> {
 
     func reset() {
         task?.cancel()
+        task = nil
+        landed = nil
+    }
+
+    /// Like `reset()`, but callers already waiting keep their request.
+    func detach() {
         task = nil
         landed = nil
     }

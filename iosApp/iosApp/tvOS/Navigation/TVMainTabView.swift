@@ -1409,6 +1409,9 @@ struct TVMainTabView: View {
             CollectionsView()
         case .collectionDetail(let id):
             CollectionDetailView(collectionId: id)
+        case .mediaBrowse, .libraryCollections, .downloads, .calendar:
+            // These routes are iOS-only; tvOS never pushes them.
+            EmptyView()
         case .watchParty:
             #if os(iOS) || os(tvOS)
             WatchPartyHubView(session: .shared)

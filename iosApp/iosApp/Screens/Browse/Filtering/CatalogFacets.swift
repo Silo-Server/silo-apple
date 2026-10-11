@@ -87,35 +87,45 @@ final class FacetLoader {
 
     private var inFlight: [String: Task<APIv2CatalogFilters, Error>] = [:]
 
-    func facets(libraryId: Int?, includeTechnical: Bool = true) async throws -> CatalogFacets {
-        let key = CacheKey.catalogFilters(libraryId: libraryId, includeTechnical: includeTechnical)
+    /// `type` scopes a cross-library vocabulary (`libraryId == nil`) to one
+    /// media type.
+    func facets(libraryId: Int?, type: String? = nil, includeTechnical: Bool = true) async throws -> CatalogFacets {
+        let key = CacheKey.catalogFilters(libraryId: libraryId, type: type, includeTechnical: includeTechnical)
         if let cached: APIv2CatalogFilters = ResponseCache.shared.get(key) {
             return CatalogFacets(cached)
         }
-        return CatalogFacets(try await fetch(libraryId: libraryId, includeTechnical: includeTechnical, key: key))
+        return CatalogFacets(try await fetch(libraryId: libraryId, type: type, includeTechnical: includeTechnical, key: key))
     }
 
     /// Returns a cached facet set synchronously if present (for instant
     /// sheet/panel open), else `nil`.
-    func cachedFacets(libraryId: Int?, includeTechnical: Bool = true) -> CatalogFacets? {
-        let key = CacheKey.catalogFilters(libraryId: libraryId, includeTechnical: includeTechnical)
+    func cachedFacets(libraryId: Int?, type: String? = nil, includeTechnical: Bool = true) -> CatalogFacets? {
+        let key = CacheKey.catalogFilters(libraryId: libraryId, type: type, includeTechnical: includeTechnical)
         guard let cached: APIv2CatalogFilters = ResponseCache.shared.get(key) else { return nil }
         return CatalogFacets(cached)
     }
 
-    private func fetch(libraryId: Int?, includeTechnical: Bool, key: String) async throws -> APIv2CatalogFilters {
+    /// Drops every cached and in-flight vocabulary. Hiding or showing a
+    /// library changes what `/catalog/filters` returns.
+    func invalidateAll() {
+        inFlight.removeAll()
+        ResponseCache.shared.removeAll(withPrefix: "catalogFilters:")
+    }
+
+    private func fetch(libraryId: Int?, type: String?, includeTechnical: Bool, key: String) async throws -> APIv2CatalogFilters {
         if let existing = inFlight[key] { return try await existing.value }
+        let writeToken = ResponseCache.shared.writeToken
         let task = Task {
-            try await SiloAPI.shared.catalogFilters(libraryId: libraryId, includeTechnical: includeTechnical)
+            try await SiloAPI.shared.catalogFilters(libraryId: libraryId, type: type, includeTechnical: includeTechnical)
         }
         inFlight[key] = task
         do {
             let result = try await task.value
-            inFlight[key] = nil
-            ResponseCache.shared.set(result, for: key)
+            if inFlight[key] == task { inFlight[key] = nil }
+            ResponseCache.shared.set(result, for: key, fetchedAt: writeToken)
             return result
         } catch {
-            inFlight[key] = nil
+            if inFlight[key] == task { inFlight[key] = nil }
             throw error
         }
     }

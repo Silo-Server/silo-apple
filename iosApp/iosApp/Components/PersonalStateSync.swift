@@ -181,8 +181,9 @@ enum PersonalStateSync {
     }
 
     /// Drops the cached lists and grids derived from personal flags or watch
-    /// progress (Home, Recommendations, Favorites, Watchlist, library and
-    /// collection pages), then tells a mounted Home to re-read its rows. Home
+    /// progress (Home, Recommendations, Favorites, Watchlist, library,
+    /// collection and media hub pages), then tells a mounted Home to re-read
+    /// its rows. Home
     /// stays mounted under a pushed detail page, so without the notification
     /// its Continue Watching and Next Up rows keep the old cards until the
     /// next manual refresh.
@@ -191,7 +192,7 @@ enum PersonalStateSync {
         for key in [CacheKey.homeSections, CacheKey.recommendations, CacheKey.favorites, CacheKey.watchlist] {
             ResponseCache.shared.remove(key)
         }
-        for prefix in ["browse:", "tvlibrary:", "library:", "collection:"] {
+        for prefix in ["browse:", "tvlibrary:", "library:", "collection:", "mediaHub:"] {
             ResponseCache.shared.removeAll(withPrefix: prefix)
         }
         NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil)
