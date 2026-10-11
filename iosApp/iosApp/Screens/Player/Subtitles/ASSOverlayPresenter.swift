@@ -241,7 +241,8 @@ actor ASSOverlayPresenter {
 
         let start = cueTime(forPresentation: now, timing) ?? 0
         let end = cueTime(forPresentation: now + Self.lookaheadSeconds, timing) ?? start
-        if try applyCues(window: start...max(start, end) + interval), renderedThrough != nil {
+        // The frame on screen began up to a frame before `now`.
+        if try applyCues(window: (start - interval)...max(start, end) + interval), renderedThrough != nil {
             // Late cues replace the queued frames. Clearing the screen in
             // between would flash the picture without its signs.
             sink.flush(removingImage: false)
@@ -361,8 +362,9 @@ actor ASSOverlayPresenter {
         var frames: [(frame: ASSFrameSchedule.Frame, reported: Bool)] = []
         let interval = timing.frameInterval
         var time = ((start / interval).rounded(.down) + 1) * interval
-        // The division can round down a whole step when `start` is on the grid.
-        if time - start < interval / 2 { time += interval }
+        // The division can round down a whole step when `start` is on the grid,
+        // and a frame's stamp holds its time to the nanosecond.
+        if time - start < 1e-6 { time += interval }
         while time <= end {
             if let frame = synthesizedFrame(at: time, timing) { frames.append((frame, false)) }
             time += interval

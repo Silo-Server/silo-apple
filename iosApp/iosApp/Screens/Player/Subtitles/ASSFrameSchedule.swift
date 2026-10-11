@@ -67,6 +67,15 @@ final class ASSFrameSchedule: @unchecked Sendable {
             return low
         }
 
+        /// Moves to a newer epoch or generation. A native restart re-muxes from
+        /// `presentation` on, so the frames from there describe the new epoch
+        /// only; nil drops every frame.
+        mutating func restart(generation: UInt64, from presentation: Double?) {
+            self.generation = generation
+            guard let presentation else { return frames.removeAll() }
+            frames.removeSubrange(firstIndex(after: presentation.nextDown)...)
+        }
+
         mutating func insert(_ frame: Frame) {
             let time = frame.presentation
             // Decode order is presentation order apart from B-frame reordering,
@@ -82,6 +91,8 @@ final class ASSFrameSchedule: @unchecked Sendable {
         }
     }
 
+    /// Each table is mutated in place through the dictionary: a copy taken out
+    /// and written back would copy every retained frame on each report.
     private let state = OSAllocatedUnfairLock(initialState: [Source.native: Table(), .software: Table()])
 
     /// Native path: frames arrive in decode order as the producer muxes them,
@@ -92,16 +103,13 @@ final class ASSFrameSchedule: @unchecked Sendable {
         let frame = Frame(stamp: time.item, source: time.source.seconds)
         guard frame.presentation.isFinite, frame.source.isFinite else { return }
         state.withLock { tables in
-            var table = tables[.native, default: Table()]
-            if time.epoch > table.generation {
-                table.generation = time.epoch
-                let from = table.firstIndex(after: frame.presentation.nextDown)
-                table.frames.removeSubrange(from...)
-            } else if time.epoch < table.generation {
+            let generation = tables[.native, default: Table()].generation
+            if time.epoch > generation {
+                tables[.native, default: Table()].restart(generation: time.epoch, from: frame.presentation)
+            } else if time.epoch < generation {
                 return
             }
-            table.insert(frame)
-            tables[.native] = table
+            tables[.native, default: Table()].insert(frame)
         }
     }
 
@@ -111,15 +119,13 @@ final class ASSFrameSchedule: @unchecked Sendable {
         let seconds = time.presentation.seconds
         guard seconds.isFinite else { return }
         state.withLock { tables in
-            var table = tables[.software, default: Table()]
-            if time.generation > table.generation {
-                table.generation = time.generation
-                table.frames.removeAll()
-            } else if time.generation < table.generation {
+            let generation = tables[.software, default: Table()].generation
+            if time.generation > generation {
+                tables[.software, default: Table()].restart(generation: time.generation, from: nil)
+            } else if time.generation < generation {
                 return
             }
-            table.insert(Frame(stamp: time.presentation, source: seconds))
-            tables[.software] = table
+            tables[.software, default: Table()].insert(Frame(stamp: time.presentation, source: seconds))
         }
     }
 
@@ -162,11 +168,8 @@ final class ASSFrameSchedule: @unchecked Sendable {
     /// Drops frames shown long before `time`.
     func prune(before time: Double, in source: Source) {
         state.withLock { tables in
-            guard var table = tables[source] else { return }
-            let index = table.firstIndex(after: time)
-            guard index > 1 else { return }
-            table.frames.removeFirst(index - 1)
-            tables[source] = table
+            guard let index = tables[source]?.firstIndex(after: time), index > 1 else { return }
+            tables[source]?.frames.removeFirst(index - 1)
         }
     }
 }
