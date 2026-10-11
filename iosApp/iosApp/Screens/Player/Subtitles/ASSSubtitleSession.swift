@@ -414,9 +414,7 @@ final class ASSSubtitleSession {
         stats.frames += report.renderedFrames
         stats.reportedFrames += report.reportedFrames
         stats.renderSeconds += report.renderSeconds
-        if report.renderedFrames > 0 {
-            stats.slowest = max(stats.slowest, report.renderSeconds / Double(report.renderedFrames))
-        }
+        stats.slowest = max(stats.slowest, report.slowestRenderSeconds)
         guard ContinuousClock.now - stats.since >= .seconds(10) else { return }
         if stats.frames > 0 {
             let average = stats.renderSeconds / Double(stats.frames) * 1_000

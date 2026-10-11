@@ -123,6 +123,7 @@ actor ASSOverlayPresenter {
         var reportedFrames = 0
         var queuedCanvases = 0
         var renderSeconds: Double = 0
+        var slowestRenderSeconds: Double = 0
         var drewSomething = false
     }
 
@@ -269,7 +270,9 @@ actor ASSOverlayPresenter {
             let output = renderer.render(time: frame.source + timing.cueOffset, canvas: timing.canvas,
                                          force: renderedThrough == nil || forceNextRender)
             forceNextRender = false
-            report.renderSeconds += Self.seconds(ContinuousClock.now - started)
+            let seconds = Self.seconds(ContinuousClock.now - started)
+            report.renderSeconds += seconds
+            report.slowestRenderSeconds = max(report.slowestRenderSeconds, seconds)
             report.renderedFrames += 1
             if reported { report.reportedFrames += 1 }
             switch output {
@@ -280,7 +283,13 @@ actor ASSOverlayPresenter {
             case .unchanged:
                 break
             case .empty:
-                if queuedPixels, let clear = renderer.transparentCanvas() {
+                if queuedPixels {
+                    guard let clear = renderer.transparentCanvas() else {
+                        // Nothing to clear with yet; this frame renders again next step.
+                        forceNextRender = true
+                        schedule.prune(before: now - 2, in: timing.frameSource)
+                        return report
+                    }
                     sink.enqueue(clear, at: frame.stamp, generation: generation)
                     report.queuedCanvases += 1
                 }
