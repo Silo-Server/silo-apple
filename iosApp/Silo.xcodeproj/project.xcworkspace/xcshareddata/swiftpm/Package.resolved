@@ -6,7 +6,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/Silo-Server/AetherEngine",
       "state" : {
-        "revision" : "ef0d2c7f2aa564c03b789c40f8f5c5351fc1d084"
+        "revision" : "fa70ab5bd2b0e17fdca5b6f19258e98331852778"
       }
     },
     {
@@ -37,21 +37,21 @@
       }
     },
     {
+      "identity" : "libtruehd",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/superuser404notfound/LibTrueHD",
+      "state" : {
+        "revision" : "7ac6b379cb5d77ff5f424bc9daa17131b044a962",
+        "version" : "2.0.0"
+      }
+    },
+    {
       "identity" : "nuke",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/kean/Nuke",
       "state" : {
         "revision" : "30f7a7e72e0607d304fbf69c799474bd5fb6d1ce",
         "version" : "13.2.0"
-      }
-    },
-    {
-      "identity" : "siloobjectaudio",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/Silo-Server/SiloObjectAudio",
-      "state" : {
-        "revision" : "645b91c072fafb60146151fd5127f8ff0ca38b6f",
-        "version" : "1.0.0"
       }
     },
     {

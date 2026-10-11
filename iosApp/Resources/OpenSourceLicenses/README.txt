@@ -6,14 +6,14 @@ texts are bundled beside this file and are available from Settings > About >
 Acknowledgements.
 
 AetherEngine
-  Revision: ef0d2c7f2aa564c03b789c40f8f5c5351fc1d084 (upstream release
+  Revision: fa70ab5bd2b0e17fdca5b6f19258e98331852778 (upstream release
   7.28.3, through upstream commit dd1d5f88, plus Silo patches for subtitle renditions,
   source timing, primary ASS routing with normalized secondary/PiP text,
   refreshable authorization for native HLS, sidecar subtitles and fonts,
   TrueHD Atmos object rendering to Apple Positional Audio with its
   diagnostics, and playback recovery)
   License: GNU LGPL version 3 with the upstream Apple Store / DRM exception
-  Source (modified, as built): https://github.com/Silo-Server/AetherEngine/tree/ef0d2c7f2aa564c03b789c40f8f5c5351fc1d084
+  Source (modified, as built): https://github.com/Silo-Server/AetherEngine/tree/fa70ab5bd2b0e17fdca5b6f19258e98331852778
   Upstream base: https://github.com/superuser404notfound/AetherEngine/tree/dd1d5f885cd5da65a6641e42f5cd6ba341c6a05c
   Rebuild: the Package.swift and source tree at that revision
 
@@ -47,14 +47,16 @@ FFmpegBuild and embedded media frameworks
   commit IDs; the dereferenced commits recorded here pin the exact sources if
   those tags ever move.
 
-SiloObjectAudio / truehd
-  Revision: 645b91c072fafb60146151fd5127f8ff0ca38b6f (release 1.0.0)
-  License: Apache License 2.0 (SiloObjectAudio-Apache-2.0.txt, with its NOTICE)
-  Source and rebuild script: https://github.com/Silo-Server/SiloObjectAudio/tree/645b91c072fafb60146151fd5127f8ff0ca38b6f
+LibTrueHD / truehd (formerly SiloObjectAudio)
+  Revision: 7ac6b379cb5d77ff5f424bc9daa17131b044a962 (release 2.0.0)
+  License: MIT for the C API, framer, and build and verification scripts
+  (LibTrueHD-MIT.txt)
+  Source and rebuild script: https://github.com/superuser404notfound/LibTrueHD/tree/7ac6b379cb5d77ff5f424bc9daa17131b044a962
   Embeds the truehd crate from https://github.com/truehdd/truehdd
   (Apache-2.0), commit 45eff984e3e5ab0cf36a47d12148b1628c38bda4, the oamd crate
   0.1.0 from crates.io (https://github.com/truehdd/oamd, Apache-2.0), and the
   Rust standard library and crates listed in its NOTICE (MIT or Apache-2.0).
+  The NOTICE and the Apache License 2.0 are in truehd-Apache-2.0.txt.
 
 LibDovi / libdovi
   Packaging revision: 0d7cce1d6836a30d13a3a2326e50a153af53f014

@@ -17,9 +17,9 @@ The authoritative dependency lock is
 
 | Component | Exact revision | Shipped form | License |
 | --- | --- | --- | --- |
-| AetherEngine 7.28.3 + Silo subtitle, HLS authorization, TrueHD Atmos and playback recovery patches | `ef0d2c7f2aa564c03b789c40f8f5c5351fc1d084` | Swift package target linked into each host app | LGPL-3.0-only with AetherEngine's Apple Store / DRM exception |
+| AetherEngine 7.28.3 + Silo subtitle, HLS authorization, TrueHD Atmos and playback recovery patches | `fa70ab5bd2b0e17fdca5b6f19258e98331852778` | Swift package target linked into each host app | LGPL-3.0-only with AetherEngine's Apple Store / DRM exception |
 | FFmpegBuild 3.6.0 | `fda08325455bc12c112b5b82d014b98fa0fee0be` | Nine separately embedded dynamic frameworks | See the component table below |
-| SiloObjectAudio 1.0.0 | `645b91c072fafb60146151fd5127f8ff0ca38b6f` | Static `SiloObjectAudio.xcframework` linked through AetherEngine | Apache-2.0; embedded `truehd` and `oamd` crates are Apache-2.0 |
+| LibTrueHD 2.0.0 (formerly SiloObjectAudio) | `7ac6b379cb5d77ff5f424bc9daa17131b044a962` | Static `TrueHD.xcframework` linked through AetherEngine | MIT; embedded `truehd` and `oamd` crates are Apache-2.0 |
 | LibDovi 2.1.0 | `0d7cce1d6836a30d13a3a2326e50a153af53f014` | Static `Dovi.xcframework` linked through AetherEngine | MIT packaging; embedded libdovi is MIT |
 | Nuke and NukeUI 13.2.0 | `30f7a7e72e0607d304fbf69c799474bd5fb6d1ce` | Swift package targets linked into each host app | MIT |
 
@@ -46,7 +46,7 @@ published under the LGPL at the exact source revision below. The bundled
 acknowledgements include AetherEngine's complete license and exception plus
 the GNU GPL version 3 text incorporated by LGPLv3.
 
-- Exact source: <https://github.com/Silo-Server/AetherEngine/tree/ef0d2c7f2aa564c03b789c40f8f5c5351fc1d084>
+- Exact source: <https://github.com/Silo-Server/AetherEngine/tree/fa70ab5bd2b0e17fdca5b6f19258e98331852778>
   (engine pull requests: <https://github.com/Silo-Server/AetherEngine/pull/2>,
   <https://github.com/Silo-Server/AetherEngine/pull/6>,
   <https://github.com/Silo-Server/AetherEngine/pull/16>,
@@ -149,23 +149,26 @@ embedded crate.
   <https://github.com/quietvoid/dovi_tool/tree/d1abe0e27ff2c7ab3339614d06db9f8a058af6b2/dolby_vision>
 - Bundled texts: `LibDovi-Packaging-MIT.txt`, `libdovi-MIT.txt`
 
-## SiloObjectAudio and truehd
+## LibTrueHD and truehd
 
-SiloObjectAudio is Silo's object-audio decoder library, licensed under the Apache License
-2.0. Its static `SiloObjectAudio.xcframework` contains the `truehd` crate (TrueHD/MLP
-decoder) from the truehdd project at the exact commit
+LibTrueHD is the object-audio decoder library Silo wrote as SiloObjectAudio. In
+October 2026 Silo transferred it to AetherEngine's maintainer, who renamed it for
+release 2.0.0. Its C API, access-unit framer, and build and verification scripts are
+MIT licensed, Copyright (c) 2026 Quick104, with packaging changes since 2.0.0
+Copyright (c) 2026 Vincent Herbst. Its static `TrueHD.xcframework` contains the
+`truehd` crate (TrueHD/MLP decoder) from the truehdd project at the exact commit
 `45eff984e3e5ab0cf36a47d12148b1628c38bda4`, Copyright Rainbaby and the truehdd
 contributors, and the `oamd` crate 0.1.0 (object audio metadata) from crates.io,
 Copyright Rainbaby, both under the Apache License 2.0. It also compiles in
 the Rust standard library and the crates its NOTICE lists, each under the MIT
-license or the Apache License 2.0. The bundled text reproduces the NOTICE and the
-Apache License.
+license or the Apache License 2.0. The bundled texts reproduce LibTrueHD's MIT
+license, its NOTICE, and the Apache License.
 
 - Exact source and rebuild script:
-  <https://github.com/Silo-Server/SiloObjectAudio/tree/645b91c072fafb60146151fd5127f8ff0ca38b6f>
+  <https://github.com/superuser404notfound/LibTrueHD/tree/7ac6b379cb5d77ff5f424bc9daa17131b044a962>
 - Embedded decoder source: <https://github.com/truehdd/truehdd/tree/45eff984e3e5ab0cf36a47d12148b1628c38bda4>
 - Embedded metadata parser source: <https://crates.io/crates/oamd/0.1.0>
-- Bundled text: `SiloObjectAudio-Apache-2.0.txt`
+- Bundled texts: `LibTrueHD-MIT.txt`, `truehd-Apache-2.0.txt`
 
 ## Nuke and NukeUI
 

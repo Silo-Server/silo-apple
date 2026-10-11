@@ -1,4 +1,4 @@
-SiloObjectAudio (truehd-atmos-ffi)
+LibTrueHD (truehd-atmos-ffi)
 C API and Apple packaging of a Dolby TrueHD / Dolby Atmos decoder.
 
 This product includes software from the truehdd project
@@ -14,8 +14,11 @@ The static library also contains, compiled in, the Rust standard library and the
 each available under the MIT license or the Apache License, Version 2.0 (memchr: the MIT
 license or the Unlicense): anyhow, bitstream-io, log, memchr, no_std_io2, thiserror.
 
-The code in this directory (src/, include/, harness/, tests/, build.sh) is licensed under the
-Apache License, Version 2.0; see LICENSE. It frames access units itself, following the
+The truehd and oamd crates are compiled into the static library; their license, the Apache
+License, Version 2.0, is in LICENSE-APACHE.
+
+The code in this directory (src/, include/, harness/, tests/, examples/, build.sh) is licensed
+under the MIT license; see LICENSE. It frames access units itself, following the
 validation rules of truehd::process::extract::Extractor, and computes object metadata update
 times per ETSI TS 103 420 clause 5.3.
 
