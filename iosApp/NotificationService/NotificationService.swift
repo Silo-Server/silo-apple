@@ -8,6 +8,8 @@ final class NotificationService: UNNotificationServiceExtension {
         var bestAttemptContent: UNMutableNotificationContent?
         var enrichmentTask: Task<Void, Never>?
         var startedAt = Date()
+        /// How far the fetch got, for an outcome recorded at expiry.
+        var attempts = 0
         var credential: String?
     }
 
@@ -61,11 +63,15 @@ final class NotificationService: UNNotificationServiceExtension {
             ))
             return
         }
-        state.withLock { $0.credential = displayState.credentialKind }
-
         let client = ApplePushDisplayClient()
         let task = Task { [weak self, bestAttemptContent] in
-            let result = await client.fetchDisplay(deliveryID: deliveryID, state: displayState)
+            let result = await client.fetchDisplay(deliveryID: deliveryID, state: displayState) { [weak self] attempts, credential in
+                self?.state.withLock { state in
+                    guard state.contentHandler != nil else { return }
+                    state.attempts = attempts
+                    state.credential = credential
+                }
+            }
             if case .success(let response) = result.outcome {
                 response.apply(to: bestAttemptContent)
             }
@@ -86,15 +92,15 @@ final class NotificationService: UNNotificationServiceExtension {
     }
 
     override func serviceExtensionTimeWillExpire() {
-        let (task, content, startedAt, credential) = state.withLock {
-            ($0.enrichmentTask, $0.bestAttemptContent, $0.startedAt, $0.credential)
+        let (task, content, startedAt, attempts, credential) = state.withLock {
+            ($0.enrichmentTask, $0.bestAttemptContent, $0.startedAt, $0.attempts, $0.credential)
         }
         task?.cancel()
         if let content {
             complete(with: content, outcome: ApplePushDisplayOutcome(
                 kind: .expired,
                 reason: nil,
-                attempts: 0,
+                attempts: attempts,
                 credential: credential,
                 startedAt: startedAt
             ))

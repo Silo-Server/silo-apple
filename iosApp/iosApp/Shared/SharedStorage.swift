@@ -65,9 +65,6 @@ enum SharedStorage {
     static let applePushDisplayTokenAccount = keychainAccountPrefix + "push.displayToken"
     static let applePushDisplayTokenExpiresAtKey = "applePush.displayTokenExpiresAt"
     static let applePushDisplayTokenServerIdKey = "applePush.displayTokenServerId"
-    /// App Group defaults key: recent `ApplePushDisplayOutcome` records the
-    /// Notification Service extension leaves for the app's diagnostics.
-    static let applePushDisplayOutcomesKey = "applePush.displayOutcomes"
 
     static func accessTokenAccount(for serverID: String) -> String {
         keychainAccountPrefix + "\(serverID).accessToken"

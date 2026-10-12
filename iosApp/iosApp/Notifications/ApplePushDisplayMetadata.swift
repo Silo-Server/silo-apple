@@ -253,9 +253,11 @@ struct ApplePushDisplayFetchResult {
 }
 
 final class ApplePushDisplayClient {
-    /// The extension gets about 30 s per notification. New attempts stop
-    /// inside this budget so the system still gets the content in time.
+    /// The extension gets about 30 s per notification. Every request,
+    /// backoff and credential fallback ends inside this budget, leaving the
+    /// rest to record the outcome and hand the system its content.
     static let fetchBudget: TimeInterval = 25
+    private static let requestTimeout: TimeInterval = 8
     private static let minimumAttemptTime: TimeInterval = 2
     /// Each attempt is a 0.5, 1, then 2 s wait past the last, so a quick
     /// failure (no route yet) gives up within a few seconds instead of
@@ -279,17 +281,26 @@ final class ApplePushDisplayClient {
     private static let sharedSession = makeSession()
 
     private let session: URLSession
+    private let budget: TimeInterval
 
-    init(session: URLSession = ApplePushDisplayClient.sharedSession) {
+    init(session: URLSession = ApplePushDisplayClient.sharedSession,
+         budget: TimeInterval = ApplePushDisplayClient.fetchBudget) {
         self.session = session
+        self.budget = budget
     }
 
     /// Fetches display metadata, retrying failures another attempt can fix
     /// (a radio still waking, a dropped connection, a busy server) until
-    /// `fetchBudget` runs out. Pushes usually wake an idle phone, and one
+    /// the budget runs out. Pushes usually wake an idle phone, and one
     /// short attempt left the generic text on screen.
-    func fetchDisplay(deliveryID: String, state: ApplePushDisplayAuthState) async -> ApplePushDisplayFetchResult {
-        let deadline = Date().addingTimeInterval(Self.fetchBudget)
+    ///
+    /// `progress` hears each request as it goes out, with its attempt and
+    /// credential, so an extension that expires mid-fetch can say how far
+    /// the fetch got.
+    func fetchDisplay(deliveryID: String, state: ApplePushDisplayAuthState,
+                      progress: @escaping @Sendable (_ attempts: Int, _ credential: String) -> Void = { _, _ in })
+        async -> ApplePushDisplayFetchResult {
+        let deadline = Date().addingTimeInterval(budget)
         var state = state
         var attempts = 0
         func result(_ outcome: Result<ApplePushDisplayResponse, Error>) -> ApplePushDisplayFetchResult {
@@ -298,7 +309,8 @@ final class ApplePushDisplayClient {
         while true {
             attempts += 1
             do {
-                let response = try await fetchDisplayAuthenticated(deliveryID: deliveryID, state: &state)
+                let response = try await fetchDisplayAuthenticated(deliveryID: deliveryID, state: &state,
+                    deadline: deadline) { progress(attempts, $0) }
                 return result(.success(response))
             } catch {
                 guard attempts < Self.maxAttempts,
@@ -319,23 +331,28 @@ final class ApplePushDisplayClient {
     /// may have refreshed the access token while the app never foregrounded
     /// to renew the display token. `state` keeps the fallback so a later
     /// attempt does not resend the refused token.
-    private func fetchDisplayAuthenticated(deliveryID: String, state: inout ApplePushDisplayAuthState) async throws -> ApplePushDisplayResponse {
+    private func fetchDisplayAuthenticated(deliveryID: String, state: inout ApplePushDisplayAuthState, deadline: Date,
+                                           sending: (_ credential: String) -> Void) async throws -> ApplePushDisplayResponse {
         do {
-            return try await fetchDisplayOnce(deliveryID: deliveryID, state: state)
+            return try await fetchDisplayOnce(deliveryID: deliveryID, state: state, deadline: deadline, sending: sending)
         } catch ApplePushDisplayClientError.badStatus(let status, let retryAfter) where status == 401 || status == 403 {
-            guard let fallback = state.accessTokenFallback, !Task.isCancelled else {
+            guard let fallback = state.accessTokenFallback, !Task.isCancelled,
+                  deadline.timeIntervalSinceNow >= Self.minimumAttemptTime else {
                 throw ApplePushDisplayClientError.badStatus(status, retryAfter: retryAfter)
             }
             state = fallback
-            return try await fetchDisplayOnce(deliveryID: deliveryID, state: state)
+            return try await fetchDisplayOnce(deliveryID: deliveryID, state: state, deadline: deadline, sending: sending)
         }
     }
 
-    private func fetchDisplayOnce(deliveryID: String, state: ApplePushDisplayAuthState) async throws -> ApplePushDisplayResponse {
+    private func fetchDisplayOnce(deliveryID: String, state: ApplePushDisplayAuthState, deadline: Date,
+                                  sending: (_ credential: String) -> Void) async throws -> ApplePushDisplayResponse {
         guard let url = ApplePushDisplayWire.displayURL(serverURL: state.serverURL, deliveryID: deliveryID) else {
             throw ApplePushDisplayClientError.invalidURL
         }
-        var request = URLRequest(url: url)
+        let remaining = deadline.timeIntervalSinceNow
+        guard remaining > 0 else { throw URLError(.timedOut) }
+        var request = URLRequest(url: url, timeoutInterval: min(Self.requestTimeout, remaining))
         request.setValue("Bearer \(state.bearerToken)", forHTTPHeaderField: "Authorization")
         request.setValue(state.profileID, forHTTPHeaderField: "X-Profile-Id")
         if !state.profileToken.isEmpty {
@@ -343,15 +360,51 @@ final class ApplePushDisplayClient {
         }
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
-        let (data, response) = try await session.data(for: request)
+        sending(state.credentialKind)
+        let (data, response) = try await data(for: request, before: deadline)
         guard let http = response as? HTTPURLResponse else {
             throw ApplePushDisplayClientError.badStatus(0)
         }
         guard (200..<300).contains(http.statusCode) else {
-            let retryAfter = http.value(forHTTPHeaderField: "Retry-After").flatMap(TimeInterval.init)
+            let retryAfter = Self.retryAfter(http.value(forHTTPHeaderField: "Retry-After"))
             throw ApplePushDisplayClientError.badStatus(http.statusCode, retryAfter: retryAfter)
         }
         return try JSONDecoder().decode(ApplePushDisplayResponse.self, from: data)
+    }
+
+    /// The response, or `URLError(.timedOut)` at `deadline`. The session's
+    /// timeouts restart with every byte received, so they cannot bound a
+    /// slow response by themselves.
+    private func data(for request: URLRequest, before deadline: Date) async throws -> (Data, URLResponse) {
+        let session = self.session
+        return try await withThrowingTaskGroup(of: (Data, URLResponse).self) { group in
+            group.addTask { try await session.data(for: request) }
+            group.addTask {
+                try await Task.sleep(for: .seconds(max(0, deadline.timeIntervalSinceNow)))
+                throw URLError(.timedOut)
+            }
+            defer { group.cancelAll() }
+            return try await group.next()!
+        }
+    }
+
+    private static let httpDate: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "GMT")
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss 'GMT'"
+        return formatter
+    }()
+
+    /// The wait a `Retry-After` header asks for, as delay-seconds or an
+    /// HTTP date (RFC 9110). Nil for anything else, including a negative or
+    /// non-finite number.
+    private static func retryAfter(_ value: String?) -> TimeInterval? {
+        guard let value = value?.trimmingCharacters(in: .whitespaces), !value.isEmpty else { return nil }
+        if let seconds = TimeInterval(value) {
+            return seconds.isFinite && seconds >= 0 ? seconds : nil
+        }
+        return httpDate.date(from: value).map { max(0, $0.timeIntervalSinceNow) }
     }
 
     /// The wait before retrying after `error`, or `nil` when another attempt
@@ -374,7 +427,7 @@ final class ApplePushDisplayClient {
 
     private static func makeSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 8
+        configuration.timeoutIntervalForRequest = requestTimeout
         configuration.timeoutIntervalForResource = fetchBudget
         // The banner waits for the extension, so a missing route fails fast
         // and the retry backoff decides how long to keep trying.
@@ -403,7 +456,8 @@ struct ApplePushDisplayOutcome: Codable, Equatable {
     let kind: Kind
     /// The HTTP status, URL error code, or missing state behind `kind`.
     let reason: String?
-    /// Fetch attempts made; 0 when no fetch ran or none finished.
+    /// Fetch attempts made, counting one still in flight at expiry; 0 when
+    /// no request went out.
     let attempts: Int
     let durationMs: Int
     /// "display" or "access": the credential the last request used.
@@ -437,30 +491,48 @@ struct ApplePushDisplayOutcome: Codable, Equatable {
     }
 }
 
-/// The App Group hand-off between the extension, which appends one outcome
-/// per push, and the app, which drains them into diagnostics. Bounded so a
-/// phone that rarely opens Silo keeps only the newest pushes. Best effort:
-/// a push handled in the instant the app drains can lose or repeat a record.
+/// The App Group hand-off between the extension, which records one outcome
+/// per push, and the app, which drains them into diagnostics. Each outcome
+/// is its own file, so pushes finishing at once in the extension and a
+/// drain in the app never rewrite each other's records. Bounded so a phone
+/// that rarely opens Silo keeps only the newest pushes.
 enum ApplePushDisplayOutcomeLog {
     static let capacity = 30
+    static let defaultDirectory = FileManager.default
+        .containerURL(forSecurityApplicationGroupIdentifier: SharedStorage.appGroup)?
+        .appendingPathComponent("PushDisplayOutcomes", isDirectory: true)
 
-    static func append(_ outcome: ApplePushDisplayOutcome, to defaults: UserDefaults = SharedStorage.suite) {
-        var outcomes = read(from: defaults)
-        outcomes.append(outcome)
-        outcomes.removeFirst(max(0, outcomes.count - capacity))
-        guard let data = try? JSONEncoder().encode(outcomes) else { return }
-        defaults.set(data, forKey: SharedStorage.applePushDisplayOutcomesKey)
+    static func append(_ outcome: ApplePushDisplayOutcome, in directory: URL? = defaultDirectory) {
+        guard let directory, let data = try? JSONEncoder().encode(outcome) else { return }
+        let files = FileManager.default
+        try? files.createDirectory(at: directory, withIntermediateDirectories: true)
+        // Named by time so the oldest sort first; the UUID keeps outcomes
+        // recorded in the same microsecond apart.
+        let name = String(format: "%016lld-", Int64(outcome.recordedAt.timeIntervalSince1970 * 1_000_000))
+            + UUID().uuidString + ".json"
+        do {
+            try data.write(to: directory.appendingPathComponent(name), options: .atomic)
+        } catch {
+            return
+        }
+        for record in records(in: directory).dropLast(capacity) {
+            try? files.removeItem(at: record)
+        }
     }
 
-    static func drain(from defaults: UserDefaults = SharedStorage.suite) -> [ApplePushDisplayOutcome] {
-        let outcomes = read(from: defaults)
-        defaults.removeObject(forKey: SharedStorage.applePushDisplayOutcomesKey)
-        return outcomes
+    static func drain(from directory: URL? = defaultDirectory) -> [ApplePushDisplayOutcome] {
+        guard let directory else { return [] }
+        return records(in: directory).compactMap { record in
+            defer { try? FileManager.default.removeItem(at: record) }
+            guard let data = try? Data(contentsOf: record) else { return nil }
+            return try? JSONDecoder().decode(ApplePushDisplayOutcome.self, from: data)
+        }
     }
 
-    private static func read(from defaults: UserDefaults) -> [ApplePushDisplayOutcome] {
-        guard let data = defaults.data(forKey: SharedStorage.applePushDisplayOutcomesKey) else { return [] }
-        return (try? JSONDecoder().decode([ApplePushDisplayOutcome].self, from: data)) ?? []
+    /// Oldest first.
+    private static func records(in directory: URL) -> [URL] {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        return names.filter { $0.hasSuffix(".json") }.sorted().map { directory.appendingPathComponent($0) }
     }
 }
 #endif
