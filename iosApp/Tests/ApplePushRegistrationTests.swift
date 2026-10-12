@@ -87,6 +87,10 @@ final class ApplePushRegistrationTests: XCTestCase {
         XCTAssertEqual(content.userInfo["silo_url"] as? String, "/item/episode-1")
     }
 
+    /// A refused display token falls back to the access token, and a later
+    /// transient failure retries with the access token rather than the
+    /// refused one. Each request is reported as it goes out, so an expiring
+    /// extension can say how far the fetch got.
     func testDisplayFetchReadsV2AndRetriesARejectedDisplayTokenWithTheAccessToken() async throws {
         let displayPath = "/api/v2/notifications/push/apple/display/01JZ8T7QK3VX2W4M5N6P7R8S9T"
         let stub = StubURLProtocol.Handler()
@@ -96,6 +100,9 @@ final class ApplePushRegistrationTests: XCTestCase {
                 status: 401,
                 headers: ["Content-Type": "application/problem+json"]
             )
+        }
+        stub.expect({ $0.path == displayPath && $0.headers["authorization"] == "Bearer access" }) { _ in
+            .json(#"{"status":503}"#, status: 503)
         }
         let display = APIv2FixtureTestSupport.text(named: "notification_apple_push_display", bundleClass: Self.self)
         stub.route({ $0.path == displayPath && $0.headers["authorization"] == "Bearer access" }) { _ in
@@ -109,19 +116,23 @@ final class ApplePushRegistrationTests: XCTestCase {
             displayToken: "display-token"
         )
 
+        let progress = ProgressRecorder()
+
         let result = await ApplePushDisplayClient(session: stub.makeSession())
-            .fetchDisplay(deliveryID: "01JZ8T7QK3VX2W4M5N6P7R8S9T", state: state)
+            .fetchDisplay(deliveryID: "01JZ8T7QK3VX2W4M5N6P7R8S9T", state: state) { progress.record("\($0) \($1)") }
         let response = try result.outcome.get()
 
-        XCTAssertEqual(result.attempts, 1)
+        XCTAssertEqual(result.attempts, 2)
         XCTAssertEqual(result.credential, "access")
+        XCTAssertEqual(progress.events, ["1 display", "1 access", "2 access"])
         XCTAssertEqual(response.title, "Your request was approved")
         XCTAssertEqual(response.category, "request_approved")
         XCTAssertEqual(response.url, "/notifications")
         let requests = stub.requests
-        XCTAssertEqual(requests.map(\.method), ["GET", "GET"])
-        XCTAssertEqual(requests.map(\.path), [displayPath, displayPath])
-        XCTAssertEqual(requests.map { $0.headers["authorization"] }, ["Bearer display-token", "Bearer access"])
+        XCTAssertEqual(requests.map(\.method), ["GET", "GET", "GET"])
+        XCTAssertEqual(requests.map(\.path), [displayPath, displayPath, displayPath])
+        XCTAssertEqual(requests.map { $0.headers["authorization"] },
+                       ["Bearer display-token", "Bearer access", "Bearer access"])
         for request in requests {
             XCTAssertEqual(request.headers["x-profile-id"], "profile-1")
             XCTAssertEqual(request.headers["x-profile-token"], "pvt-1")
@@ -196,13 +207,63 @@ final class ApplePushRegistrationTests: XCTestCase {
         XCTAssertTrue(stub.unmatched.isEmpty)
     }
 
-    /// The extension and the app only share this App Group key. The app must
-    /// read back what the extension wrote, once, and a phone that rarely
-    /// opens Silo must keep only the newest pushes.
+    /// The extension gets about 30 s per push. A request that never answers
+    /// ends at the budget instead of its own idle timeout, and a refused
+    /// display token too close to the end does not start a fallback request.
+    func testDisplayFetchEndsAtTheBudget() async throws {
+        let displayPath = "/api/v2/notifications/push/apple/display/delivery-1"
+        let state = ApplePushDisplayAuthState(serverURL: "https://silo.example.test", profileID: "profile-1",
+            accessToken: "access", profileToken: "", displayToken: "display-token")
+        let hung = StubURLProtocol.Handler()
+        let gate = StubURLProtocol.Gate()
+        hung.route(StubURLProtocol.path(displayPath)) { _ in
+            await gate.wait()
+            return .json("{}")
+        }
+        let started = Date()
+
+        let timedOut = await ApplePushDisplayClient(session: hung.makeSession(), budget: 0.5)
+            .fetchDisplay(deliveryID: "delivery-1", state: state)
+
+        XCTAssertLessThan(Date().timeIntervalSince(started), 3)
+        XCTAssertEqual((timedOut.outcome.failureValue as? URLError)?.code, .timedOut)
+        XCTAssertEqual(timedOut.attempts, 1)
+
+        let refusing = StubURLProtocol.Handler()
+        refusing.route(StubURLProtocol.path(displayPath)) { _ in .json(#"{"status":401}"#, status: 401) }
+
+        let refused = await ApplePushDisplayClient(session: refusing.makeSession(), budget: 1)
+            .fetchDisplay(deliveryID: "delivery-1", state: state)
+
+        XCTAssertEqual(refused.outcome.failureValue as? ApplePushDisplayClientError, .badStatus(401))
+        XCTAssertEqual(refusing.requests.map { $0.headers["authorization"] }, ["Bearer display-token"])
+    }
+
+    /// A busy server or proxy may give `Retry-After` as an HTTP date. One
+    /// past the budget is not waited for, so the extension stops at once.
+    func testDisplayFetchHonorsAnHTTPDateRetryAfter() async {
+        let stub = StubURLProtocol.Handler()
+        stub.route(StubURLProtocol.path("/api/v2/notifications/push/apple/display/delivery-1")) { _ in
+            .json(#"{"status":503}"#, status: 503, headers: ["Retry-After": "Fri, 01 Jan 2100 00:00:00 GMT"])
+        }
+        let state = ApplePushDisplayAuthState(serverURL: "https://silo.example.test", profileID: "profile-1",
+            accessToken: "", profileToken: "", displayToken: "display-token")
+
+        let result = await ApplePushDisplayClient(session: stub.makeSession())
+            .fetchDisplay(deliveryID: "delivery-1", state: state)
+
+        XCTAssertEqual(result.attempts, 1)
+        XCTAssertEqual(stub.requests.count, 1)
+    }
+
+    /// The extension and the app share these records. The app must read
+    /// back what the extension wrote, once, including outcomes recorded at
+    /// the same moment, and a phone that rarely opens Silo keeps only the
+    /// newest pushes.
     func testDisplayOutcomeLogHandsTheNewestExtensionOutcomesToTheAppOnce() throws {
-        let suiteName = "ApplePushDisplayOutcomeLogTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ApplePushDisplayOutcomeLogTests.\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
         let startedAt = Date(timeIntervalSince1970: 1_760_000_000)
         let outcomes = (0...ApplePushDisplayOutcomeLog.capacity).map { index in
             ApplePushDisplayOutcome(
@@ -216,11 +277,18 @@ final class ApplePushRegistrationTests: XCTestCase {
         }
 
         for outcome in outcomes {
-            ApplePushDisplayOutcomeLog.append(outcome, to: defaults)
+            ApplePushDisplayOutcomeLog.append(outcome, in: directory)
         }
 
-        XCTAssertEqual(ApplePushDisplayOutcomeLog.drain(from: defaults), Array(outcomes.dropFirst()))
-        XCTAssertEqual(ApplePushDisplayOutcomeLog.drain(from: defaults), [])
+        XCTAssertEqual(ApplePushDisplayOutcomeLog.drain(from: directory), Array(outcomes.dropFirst()))
+        XCTAssertEqual(ApplePushDisplayOutcomeLog.drain(from: directory), [])
+
+        // Several pushes can finish at once in one extension process.
+        DispatchQueue.concurrentPerform(iterations: ApplePushDisplayOutcomeLog.capacity) { index in
+            ApplePushDisplayOutcomeLog.append(outcomes[index], in: directory)
+        }
+        XCTAssertEqual(Set(ApplePushDisplayOutcomeLog.drain(from: directory).map(\.recordedAt)),
+                       Set(outcomes.prefix(ApplePushDisplayOutcomeLog.capacity).map(\.recordedAt)))
     }
 
     func testDisplayAuthStatePrefersDisplayTokenOverAccessToken() {
@@ -311,6 +379,13 @@ final class ApplePushRegistrationTests: XCTestCase {
         XCTAssertNil(ApplePushDeepLinkCoordinator.deepLinkURL(fromDisplayURL: "   "))
     }
 
+    private final class ProgressRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var recorded: [String] = []
+        var events: [String] { lock.withLock { recorded } }
+        func record(_ event: String) { lock.withLock { recorded.append(event) } }
+    }
+
     /// Builds a fake `embedded.mobileprovision`: an XML plist wrapped in
     /// leading/trailing binary junk, like the real CMS envelope.
     private static func provisioningProfileData(apsEnvironment: String?) -> Data {
@@ -335,5 +410,12 @@ final class ApplePushRegistrationTests: XCTestCase {
         data.append(Data(plist.utf8))
         data.append(Data([0x00, 0x01, 0x02]))
         return data
+    }
+}
+
+private extension Result {
+    var failureValue: Failure? {
+        if case .failure(let error) = self { return error }
+        return nil
     }
 }
