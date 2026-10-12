@@ -68,6 +68,24 @@ enum TVCardCaption {
     static let unfocusedSubtitleOpacity: Double = 0.32
 }
 
+/// With Reduce Motion on, the caption still drops clear of the lifted poster
+/// but snaps there instead of sliding; the glow keeps its fade.
+private struct TVCardCaptionFocusModifier: ViewModifier {
+    let isFocused: Bool
+    let drop: CGFloat
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content
+            .shadow(color: .white.opacity(isFocused ? 0.45 : 0), radius: 10)
+            .shadow(color: .white.opacity(isFocused ? 0.25 : 0), radius: 3)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+            .offset(y: isFocused ? drop : 0)
+            .animation(reduceMotion ? nil : .easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+    }
+}
+
 extension View {
     func tvFocusRing(
         isFocused: Bool,
@@ -119,10 +137,10 @@ extension View {
         posterOverhang: CGFloat = TVCardCaption.cardLiftOverhang,
         spacing: CGFloat
     ) -> some View {
-        shadow(color: .white.opacity(isFocused ? 0.45 : 0), radius: 10)
-            .shadow(color: .white.opacity(isFocused ? 0.25 : 0), radius: 3)
-            .offset(y: isFocused ? max(0, posterOverhang + TVCardCaption.focusedClearance - spacing) : 0)
-            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+        modifier(TVCardCaptionFocusModifier(
+            isFocused: isFocused,
+            drop: max(0, posterOverhang + TVCardCaption.focusedClearance - spacing)
+        ))
     }
 
     /// Lands d-pad entry into a rail on `id` instead of the geometrically
