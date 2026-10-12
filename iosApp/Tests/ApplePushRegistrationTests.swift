@@ -290,6 +290,38 @@ final class ApplePushRegistrationTests: XCTestCase {
         XCTAssertEqual(stub.requests.count, 1)
     }
 
+    /// Time running out hands the system the content once and records
+    /// `expired` with how far the fetch got, even when stopping the fetch
+    /// makes it finish with its own outcome at that same moment.
+    func testDisplayCompletionRecordsExpiryWhenStoppingTheFetchEndsIt() async {
+        let recorded = ProgressRecorder()
+        let delivered = ProgressRecorder()
+        let completion = ApplePushDisplayCompletion { recorded.record("\($0.kind.rawValue) \($0.attempts) \($0.credential ?? "-")") }
+        completion.begin(handler: { delivered.record($0.title) }, startedAt: Date())
+        let content = UNMutableNotificationContent()
+        content.title = "New notification available"
+        completion.setFallback(content)
+        completion.progress(attempts: 2, credential: "access")
+        let (started, signal) = AsyncStream<Void>.makeStream()
+        let fetch = Task {
+            await withTaskCancellationHandler {
+                signal.yield()
+                try? await Task.sleep(for: .seconds(60))
+            } onCancel: {
+                completion.complete(with: content, outcome: ApplePushDisplayOutcome(kind: .network,
+                    reason: "url_error_-999", attempts: 2, credential: "access", startedAt: Date()))
+            }
+        }
+        for await _ in started { break }
+        completion.attach(fetch)
+
+        completion.expire()
+        await fetch.value
+
+        XCTAssertEqual(recorded.events, ["expired 2 access"])
+        XCTAssertEqual(delivered.events, ["New notification available"])
+    }
+
     /// The extension and the app share these records. The app must read
     /// back what the extension wrote, once, including outcomes recorded at
     /// the same moment, and a phone that rarely opens Silo keeps only the
