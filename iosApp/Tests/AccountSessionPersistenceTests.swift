@@ -90,6 +90,40 @@ final class AccountSessionPersistenceTests: XCTestCase {
         }
     }
 
+    /// Removing a server turns its pushes off first. When the removal then
+    /// fails, the server stays saved and signed in, so its pushes are turned
+    /// back on rather than left off for good.
+    @MainActor
+    func testFailedRemovalOfAnInactiveServerTurnsItsPushesBackOn() async throws {
+        let (store, keys, defaults, _) = try await harness()
+        defaults.set(true, forKey: ServerRegistry.migratedKey)
+        let pushes = PushCalls()
+        var allowsPersistence = true
+        let registry = ServerRegistry(defaults: defaults, keychain: keys,
+            launchPreferences: ProfileLaunchPreferences(defaults: defaults),
+            persistenceOverride: { _, _ in allowsPersistence }, tokenStore: store,
+            httpClient: HTTPClient(session: APIv2TestStub().makeSession(), tokenStore: store),
+            unregisterPush: { pushes.record("off \($0)") }, restorePush: { pushes.record("on \($0)") })
+        XCTAssertNotNil(registry.addOrUpdate(ServerEntry(id: "server", url: "https://session.example",
+            fetchedName: nil, lastUsedAt: Date())))
+        XCTAssertNotNil(registry.addOrUpdate(ServerEntry(id: "other", url: "https://other.example",
+            fetchedName: nil, lastUsedAt: Date())))
+        allowsPersistence = false
+
+        let removed = await registry.remove(serverId: "other")
+
+        XCTAssertFalse(removed)
+        XCTAssertNotNil(registry.entry(with: "other"))
+        XCTAssertEqual(pushes.calls, ["off other", "on other"])
+    }
+
+    private final class PushCalls: @unchecked Sendable {
+        private let lock = NSLock()
+        private var recorded: [String] = []
+        var calls: [String] { lock.withLock { recorded } }
+        func record(_ call: String) { lock.withLock { recorded.append(call) } }
+    }
+
     @MainActor
     func testSignOutReportsDiagnosticsFailureWithoutKeepingCredentials() async throws {
         let h = try await lifecycleHarness(purgeDiagnostics: { _ in false })

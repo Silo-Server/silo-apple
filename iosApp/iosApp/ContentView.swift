@@ -833,6 +833,22 @@ struct ContentView: View {
             return
         }
         #if os(iOS)
+        // A notification from another server or profile does not navigate,
+        // whichever branch below its link would take. A link held for
+        // profile selection is decided again for the profile chosen.
+        switch ApplePushDeepLinkCoordinator.admission(
+            for: url,
+            profileInUse: router.authState == .authenticated && !launchPreferences.requiresSelectionAfterBackground(),
+            activeServer: serverRegistry.activeServer,
+            activeProfileID: serverRegistry.activeProfileId
+        ) {
+        case .open: break
+        case .wait:
+            pendingDeepLink = url
+            return
+        case .drop:
+            return
+        }
         // A TV sign-in code from the web approval page. Approval is
         // account-level: it waits for a signed-in session, not a profile.
         if let link = DeviceApprovalLink(url: url) {
@@ -873,17 +889,6 @@ struct ContentView: View {
             pendingDeepLink = url
             return
         }
-
-        #if os(iOS)
-        // A notification from another server or profile does not navigate.
-        // Checked once a profile is in use: a link held for profile
-        // selection must match the profile chosen.
-        if router.authState == .authenticated,
-           !ApplePushDeepLinkCoordinator.opensUnderActiveIdentity(
-               url, activeServer: serverRegistry.activeServer, activeProfileID: serverRegistry.activeProfileId) {
-            return
-        }
-        #endif
 
         if host == "downloads" {
             guard router.authState == .authenticated else {
@@ -1061,6 +1066,14 @@ struct ContentView: View {
         router.authState = state
     }
 
+    /// Saved servers' push registrations still need renewing while no
+    /// profile is in use, or their display tokens lapse at Who's Watching.
+    private func maintainPushRegistrationsWithoutProfile() {
+        #if os(iOS)
+        Task { await ApplePushRegistrationCoordinator.shared.maintainWithoutProfile() }
+        #endif
+    }
+
     /// The splash has lifted over a committed route. Launch intents that
     /// present UI (deep links, sheets, the player) were held until now.
     /// A return to the foreground after a real background: the profile
@@ -1068,11 +1081,15 @@ struct ContentView: View {
     private func handleReturnFromBackgroundIfNeeded() {
         guard isReturningFromBackground else { return }
         isReturningFromBackground = false
-        guard router.authState == .authenticated else { return }
+        guard router.authState == .authenticated else {
+            maintainPushRegistrationsWithoutProfile()
+            return
+        }
         if keepsProfileActiveInBackground {
             launchPreferences.clearBackgroundedAt()
         } else if launchPreferences.requiresSelectionAfterBackground() {
             Task { await applyProfileReturnPolicy() }
+            maintainPushRegistrationsWithoutProfile()
             return
         } else {
             launchPreferences.clearBackgroundedAt()

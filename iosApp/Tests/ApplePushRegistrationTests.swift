@@ -525,6 +525,63 @@ final class ApplePushRegistrationTests: XCTestCase {
             activeServer: server("deployment-a"), activeProfileID: "profile-a", targets: heldElsewhere))
     }
 
+    /// The dispatcher asks before any of its own branches, whatever kind of
+    /// link a push carries: a TV approval or a Watch Party invitation from a
+    /// push waits for a profile, then opens only under the push's own server
+    /// and profile. A link that names no push keeps its own rules.
+    func testPushLinksOfEveryKindWaitForAProfileAndOpenOnlyUnderTheirOwn() throws {
+        let (_, keychain) = try isolatedStorage()
+        let targets = ApplePushDisplayTargetStore(keychain: keychain)
+        let server = ServerEntry(id: "registry-a", url: "https://a.example", fetchedName: nil, lastUsedAt: Date(),
+            verifiedServerId: "deployment-a")
+        func pushLink(_ displayURL: String) throws -> URL {
+            try XCTUnwrap(ApplePushDeepLinkCoordinator.deepLinkURL(from: [
+                "silo_url": displayURL, "silo_server_id": "deployment-a", "silo_profile_id": "profile-a",
+            ]))
+        }
+        func admission(_ url: URL, profileInUse: Bool, profileID: String = "profile-a")
+            -> ApplePushDeepLinkCoordinator.Admission {
+            ApplePushDeepLinkCoordinator.admission(for: url, profileInUse: profileInUse, activeServer: server,
+                activeProfileID: profileID, targets: targets)
+        }
+        let approval = try pushLink("silo://device?server=deployment-z&code=ABCD2345")
+        let party = try pushLink("silo://watch-party?server=https%3A%2F%2Fz.example&token=join-1")
+        XCTAssertNotNil(DeviceApprovalLink(url: approval))
+        XCTAssertNotNil(WatchPartyInvitation(url: party))
+
+        for link in [approval, party] {
+            XCTAssertEqual(admission(link, profileInUse: false), .wait)
+            XCTAssertEqual(admission(link, profileInUse: true), .open)
+            XCTAssertEqual(admission(link, profileInUse: true, profileID: "profile-b"), .drop)
+        }
+        let plainApproval = try XCTUnwrap(URL(string: "silo://device?server=deployment-z&code=ABCD2345"))
+        XCTAssertEqual(admission(plainApproval, profileInUse: false), .open)
+    }
+
+    /// At Who's Watching nothing asks for permission, but with permission
+    /// already granted the APNs token that saved servers' maintenance needs
+    /// is fetched.
+    @MainActor
+    func testWithoutAProfileMaintenanceFetchesTheTokenButNeverAsks() async {
+        let cases: [(UNAuthorizationStatus, [String])] = [(.authorized, ["token"]), (.notDetermined, []), (.denied, [])]
+        for (status, expected) in cases {
+            let calls = ProgressRecorder()
+            let coordinator = ApplePushRegistrationCoordinator(authorization: ApplePushAuthorizationClient(
+                hasAuthenticatedProfile: { false },
+                authorizationStatus: { status },
+                requestAuthorization: {
+                    calls.record("ask")
+                    return false
+                },
+                registerForRemoteNotifications: { calls.record("token") }
+            ))
+
+            await coordinator.maintainWithoutProfile()
+
+            XCTAssertEqual(calls.events, expected)
+        }
+    }
+
     private func isolatedStorage() throws -> (SharedDefaults, SharedKeychain) {
         let name = "ApplePushRegistrationTests.\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: name))

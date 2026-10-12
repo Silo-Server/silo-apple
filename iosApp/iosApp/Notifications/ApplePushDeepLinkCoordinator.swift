@@ -35,6 +35,35 @@ enum ApplePushDeepLinkCoordinator {
         return components.url
     }
 
+    enum Admission: Equatable {
+        case open
+        /// Hold the link until a profile is in use, then decide again.
+        case wait
+        /// Open the app without following the link.
+        case drop
+    }
+
+    /// What the deep-link dispatcher does with `url` before any of its own
+    /// branches: a link from a push that named its server and profile waits
+    /// until a profile is in use, then opens only under exactly those,
+    /// whatever kind of link it is (an item, a TV approval, a Watch Party
+    /// invitation). Other links open as before.
+    static func admission(
+        for url: URL,
+        profileInUse: Bool,
+        activeServer: ServerEntry?,
+        activeProfileID: String?,
+        targets: ApplePushDisplayTargetStore = ApplePushDisplayTargetStore()
+    ) -> Admission {
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        guard items.contains(where: { $0.name == serverIDQueryItem || $0.name == profileIDQueryItem }) else {
+            return .open
+        }
+        guard profileInUse else { return .wait }
+        return opensUnderActiveIdentity(url, activeServer: activeServer, activeProfileID: activeProfileID,
+                                        targets: targets) ? .open : .drop
+    }
+
     /// Whether `url` may open under the active server and profile. A link
     /// from a push that named its server and profile opens only under
     /// exactly those, so a tap never shows one server's or profile's item in

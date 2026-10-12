@@ -579,8 +579,9 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
 
     /// Sign-out waits only briefly for a server to turn pushes off before
     /// deleting the credentials the request needs, so the off goes ahead of
-    /// registrations already waiting for their turn.
-    func testUnregisterGoesAheadOfQueuedRegistrations() async throws {
+    /// registrations already waiting for their turn, and none of those for
+    /// the departing account runs afterwards to turn pushes back on.
+    func testUnregisterGoesAheadOfQueuedRegistrationsAndHoldsThemBack() async throws {
         let h = try await makeHarness()
         let registrar = h.registrar()
         let owner = try await h.owner()
@@ -594,11 +595,33 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(200))
 
         await gate.open()
-        _ = await (running.value, off.value, queued.value)
+        _ = await (running.value, off.value)
+        let heldBack = await queued.value
 
+        XCTAssertEqual(heldBack, .notSent(reason: "departing"))
+        let sends = h.server.registrations
+        XCTAssertEqual(sends.map { $0.header("X-Push-Generation") }, ["1", "2"])
+        XCTAssertEqual(sends.map { $0.bodyString?.contains(#""push_mode":"off""#) }, [false, true])
+    }
+
+    /// A sign-out or removal that fails after turning a server off leaves it
+    /// saved and signed in, so its pushes come back on, and its target with
+    /// them.
+    func testRestoreTurnsPushesBackOnAfterATeardownThatDidNotHappen() async throws {
+        let h = try await makeHarness()
+        let registrar = h.registrar()
+        let owner = try await h.owner()
+        _ = await registrar.register(Self.body(), owner: owner)
+        _ = await registrar.unregister(serverID: Self.serverID, activeOwner: owner)
+        XCTAssertEqual(h.targets.targets(), [])
+
+        let restored = await registrar.restore(serverID: Self.serverID)
+
+        XCTAssertEqual(restored, Self.accepted)
         let sends = h.server.registrations
         XCTAssertEqual(sends.map { $0.header("X-Push-Generation") }, ["1", "2", "3"])
         XCTAssertEqual(sends.map { $0.bodyString?.contains(#""push_mode":"off""#) }, [false, true, false])
+        XCTAssertEqual(h.targets.targets(), [Self.target()])
     }
 
     /// A deployment identity is self-asserted. A saved server claiming
