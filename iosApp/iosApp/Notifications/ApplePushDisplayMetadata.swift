@@ -179,7 +179,9 @@ final class ApplePushDisplayClient {
     /// holding the banner for the whole budget.
     private static let retryBackoff: [TimeInterval] = [0.5, 1, 2]
     private static let maxAttempts = retryBackoff.count + 1
-    private static let retryableStatuses: Set<Int> = [408, 429, 500, 502, 503, 504]
+    /// 520-524 are Cloudflare's answers for trouble reaching the origin, which
+    /// Silo servers behind Cloudflare return while the server is briefly away.
+    private static let retryableStatuses: Set<Int> = [408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524]
     private static let retryableURLErrors: Set<URLError.Code> = [
         .timedOut,
         .networkConnectionLost,

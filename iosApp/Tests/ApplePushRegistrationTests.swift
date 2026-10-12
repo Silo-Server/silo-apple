@@ -173,8 +173,10 @@ final class ApplePushRegistrationTests: XCTestCase {
     }
 
     /// A push usually wakes an idle phone: the first request can lose its
-    /// connection and the server can be briefly busy. Both are worth another
-    /// try inside the extension's budget rather than the generic text.
+    /// connection, and the server, or Cloudflare in front of it, can be
+    /// briefly busy. Each is worth another try inside the extension's budget
+    /// rather than the generic text, but not a Retry-After past that budget
+    /// (Cloudflare asks for 60 or 120 s).
     func testDisplayFetchRetriesTransientFailuresUntilItGetsContent() async throws {
         let displayPath = "/api/v2/notifications/push/apple/display/delivery-1"
         let stub = StubURLProtocol.Handler()
@@ -187,6 +189,9 @@ final class ApplePushRegistrationTests: XCTestCase {
                 status: 503,
                 headers: ["Content-Type": "application/problem+json", "Retry-After": "1"]
             )
+        }
+        stub.expect(StubURLProtocol.path(displayPath)) { _ in
+            .json("", status: 522, headers: ["Retry-After": "1"])
         }
         let display = APIv2FixtureTestSupport.text(named: "notification_apple_push_display", bundleClass: Self.self)
         stub.route(StubURLProtocol.path(displayPath)) { _ in .json(display) }
@@ -202,9 +207,21 @@ final class ApplePushRegistrationTests: XCTestCase {
             .fetchDisplay(deliveryID: "delivery-1", state: state)
 
         XCTAssertEqual(try result.outcome.get().title, "Your request was approved")
-        XCTAssertEqual(result.attempts, 3)
-        XCTAssertEqual(stub.requests.count, 3)
+        XCTAssertEqual(result.attempts, 4)
+        XCTAssertEqual(stub.requests.count, 4)
         XCTAssertTrue(stub.unmatched.isEmpty)
+
+        let originTimedOut = StubURLProtocol.Handler()
+        originTimedOut.route(StubURLProtocol.path(displayPath)) { _ in
+            .json("", status: 524, headers: ["Retry-After": "120"])
+        }
+
+        let waitedOut = await ApplePushDisplayClient(session: originTimedOut.makeSession())
+            .fetchDisplay(deliveryID: "delivery-1", state: state)
+
+        XCTAssertEqual(waitedOut.outcome.failureValue as? ApplePushDisplayClientError,
+                       .badStatus(524, retryAfter: 120))
+        XCTAssertEqual(waitedOut.attempts, 1)
     }
 
     /// The extension gets about 30 s per push, and the fetch ends inside its
