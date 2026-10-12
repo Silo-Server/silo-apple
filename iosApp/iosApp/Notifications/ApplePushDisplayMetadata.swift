@@ -188,7 +188,11 @@ struct ApplePushDisplayStateReader {
             return ApplePushDisplayWire.namesTarget(userInfo) ? .unknownTarget : .fetch(storedState())
         }
         guard let target = targets.target(serverID: name.serverID, profileID: name.profileID) else {
-            return .unknownTarget
+            // An App Store update replaces the extension without launching
+            // the app, so the legacy token waits there until the app moves
+            // it into a target. Until then, fetch as the build before
+            // targets did rather than drop every keyed push.
+            return legacyDisplayToken().isEmpty ? .unknownTarget : .fetch(storedState())
         }
         let active = isActive(target)
         return .fetch(ApplePushDisplayAuthState(

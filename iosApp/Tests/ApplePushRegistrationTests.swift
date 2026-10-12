@@ -282,17 +282,18 @@ final class ApplePushRegistrationTests: XCTestCase {
     /// A push that names its server and profile is fetched with exactly that
     /// target, whichever server is active. One this device keeps no target
     /// for is not fetched at all, and one that names nothing (an older
-    /// server or relay) keeps the active server and profile.
+    /// server or relay) keeps the active server and profile. An install
+    /// updated without the app launching still holds the legacy token and
+    /// no targets; its keyed pushes keep the active state until migration.
     func testDisplayRouteUsesExactlyThePushTarget() throws {
         let (defaults, keychain) = try isolatedStorage()
         defaults.set("registry-a", forKey: SharedStorage.activeServerIdKey)
         defaults.set("https://a.example", forKey: SharedStorage.serverUrlKey)
         defaults.set("profile-a", forKey: SharedStorage.profileIdKey)
+        defaults.set("registry-a", forKey: SharedStorage.applePushDisplayTokenServerIdKey)
         XCTAssertTrue(keychain.set("access-a", for: SharedStorage.mirroredAccessTokenAccount))
         XCTAssertTrue(keychain.set("proof-a", for: SharedStorage.mirroredProfileTokenAccount))
-        let store = ApplePushDisplayTargetStore(keychain: keychain)
-        XCTAssertTrue(store.save(Self.target("a", profileID: "profile-a")))
-        XCTAssertTrue(store.save(Self.target("b", profileID: "profile-b")))
+        XCTAssertTrue(keychain.set("display-a", for: SharedStorage.applePushDisplayTokenAccount))
         let reader = ApplePushDisplayStateReader(defaults: defaults, keychain: keychain)
         func route(_ serverID: String?, _ profileID: String?) -> ApplePushDisplayRoute {
             var userInfo: [AnyHashable: Any] = ["silo_delivery_id": "delivery-1"]
@@ -302,6 +303,18 @@ final class ApplePushRegistrationTests: XCTestCase {
         }
         let active = ApplePushDisplayRoute.fetch(ApplePushDisplayAuthState(serverURL: "https://a.example",
             profileID: "profile-a", accessToken: "access-a", profileToken: "proof-a", displayToken: "display-a"))
+
+        // Updated but not yet launched: no targets, only the legacy token.
+        XCTAssertEqual(route("deployment-b", "profile-b"), active)
+        XCTAssertEqual(route("deployment-a", nil), .unknownTarget)
+
+        let store = ApplePushDisplayTargetStore(keychain: keychain)
+        store.migrateLegacyToken(defaults: defaults) {
+            ServerEntry(id: $0, url: "https://a.example", fetchedName: nil, lastUsedAt: Date(),
+                verifiedServerId: "deployment-a")
+        }
+        XCTAssertEqual(store.targets(), [Self.target("a", profileID: "profile-a")])
+        XCTAssertTrue(store.save(Self.target("b", profileID: "profile-b")))
 
         // The active server's credentials never travel to another server.
         XCTAssertEqual(route("deployment-b", "profile-b"), .fetch(ApplePushDisplayAuthState(
@@ -354,8 +367,8 @@ final class ApplePushRegistrationTests: XCTestCase {
         let keychain = SharedKeychain(service: name, accessGroup: nil)
         addTeardownBlock {
             UserDefaults().removePersistentDomain(forName: name)
-            for account in [SharedStorage.applePushDisplayTargetsAccount, SharedStorage.mirroredAccessTokenAccount,
-                            SharedStorage.mirroredProfileTokenAccount] {
+            for account in [SharedStorage.applePushDisplayTargetsAccount, SharedStorage.applePushDisplayTokenAccount,
+                            SharedStorage.mirroredAccessTokenAccount, SharedStorage.mirroredProfileTokenAccount] {
                 keychain.delete(account)
             }
         }
