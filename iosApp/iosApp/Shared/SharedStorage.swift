@@ -67,6 +67,9 @@ enum SharedStorage {
     /// active server actually changes, not when the actor rehydrates the
     /// same persisted server on a cold launch.
     static let applePushDisplayTokenServerIdKey = "applePush.displayTokenServerId"
+    /// App Group defaults key: recent `ApplePushDisplayOutcome` records the
+    /// Notification Service extension leaves for the app's diagnostics.
+    static let applePushDisplayOutcomesKey = "applePush.displayOutcomes"
 
     static func accessTokenAccount(for serverID: String) -> String {
         keychainAccountPrefix + "\(serverID).accessToken"

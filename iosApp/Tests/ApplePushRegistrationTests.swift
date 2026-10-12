@@ -109,9 +109,12 @@ final class ApplePushRegistrationTests: XCTestCase {
             displayToken: "display-token"
         )
 
-        let response = try await ApplePushDisplayClient(session: stub.makeSession())
+        let result = await ApplePushDisplayClient(session: stub.makeSession())
             .fetchDisplay(deliveryID: "01JZ8T7QK3VX2W4M5N6P7R8S9T", state: state)
+        let response = try result.outcome.get()
 
+        XCTAssertEqual(result.attempts, 1)
+        XCTAssertEqual(result.credential, "access")
         XCTAssertEqual(response.title, "Your request was approved")
         XCTAssertEqual(response.category, "request_approved")
         XCTAssertEqual(response.url, "/notifications")
@@ -144,15 +147,80 @@ final class ApplePushRegistrationTests: XCTestCase {
             displayToken: "display-token"
         )
 
-        do {
-            _ = try await ApplePushDisplayClient(session: stub.makeSession())
-                .fetchDisplay(deliveryID: "delivery-1", state: state)
+        let result = await ApplePushDisplayClient(session: stub.makeSession())
+            .fetchDisplay(deliveryID: "delivery-1", state: state)
+
+        switch result.outcome {
+        case .success:
             XCTFail("A 404 must not produce display content")
-        } catch {
+        case .failure(let error):
             XCTAssertEqual(error as? ApplePushDisplayClientError, .badStatus(404))
         }
+        XCTAssertEqual(result.attempts, 1)
         XCTAssertEqual(stub.requests.count, 1)
         XCTAssertNil(stub.requests.first?.headers["x-profile-token"])
+    }
+
+    /// A push usually wakes an idle phone: the first request can lose its
+    /// connection and the server can be briefly busy. Both are worth another
+    /// try inside the extension's budget rather than the generic text.
+    func testDisplayFetchRetriesTransientFailuresUntilItGetsContent() async throws {
+        let displayPath = "/api/v2/notifications/push/apple/display/delivery-1"
+        let stub = StubURLProtocol.Handler()
+        stub.expect(StubURLProtocol.path(displayPath)) { _ in
+            throw URLError(.networkConnectionLost)
+        }
+        stub.expect(StubURLProtocol.path(displayPath)) { _ in
+            .json(
+                #"{"type":"https://siloserver.org/docs/api/v2/problems/service_unavailable","title":"Service unavailable","status":503}"#,
+                status: 503,
+                headers: ["Content-Type": "application/problem+json", "Retry-After": "1"]
+            )
+        }
+        let display = APIv2FixtureTestSupport.text(named: "notification_apple_push_display", bundleClass: Self.self)
+        stub.route(StubURLProtocol.path(displayPath)) { _ in .json(display) }
+        let state = ApplePushDisplayAuthState(
+            serverURL: "https://silo.example.test",
+            profileID: "profile-1",
+            accessToken: "",
+            profileToken: "",
+            displayToken: "display-token"
+        )
+
+        let result = await ApplePushDisplayClient(session: stub.makeSession())
+            .fetchDisplay(deliveryID: "delivery-1", state: state)
+
+        XCTAssertEqual(try result.outcome.get().title, "Your request was approved")
+        XCTAssertEqual(result.attempts, 3)
+        XCTAssertEqual(stub.requests.count, 3)
+        XCTAssertTrue(stub.unmatched.isEmpty)
+    }
+
+    /// The extension and the app only share this App Group key. The app must
+    /// read back what the extension wrote, once, and a phone that rarely
+    /// opens Silo must keep only the newest pushes.
+    func testDisplayOutcomeLogHandsTheNewestExtensionOutcomesToTheAppOnce() throws {
+        let suiteName = "ApplePushDisplayOutcomeLogTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let startedAt = Date(timeIntervalSince1970: 1_760_000_000)
+        let outcomes = (0...ApplePushDisplayOutcomeLog.capacity).map { index in
+            ApplePushDisplayOutcome(
+                kind: index.isMultiple(of: 2) ? .network : .enriched,
+                reason: index.isMultiple(of: 2) ? "url_error_-1001" : nil,
+                attempts: 2,
+                credential: "display",
+                startedAt: startedAt,
+                recordedAt: startedAt.addingTimeInterval(TimeInterval(index))
+            )
+        }
+
+        for outcome in outcomes {
+            ApplePushDisplayOutcomeLog.append(outcome, to: defaults)
+        }
+
+        XCTAssertEqual(ApplePushDisplayOutcomeLog.drain(from: defaults), Array(outcomes.dropFirst()))
+        XCTAssertEqual(ApplePushDisplayOutcomeLog.drain(from: defaults), [])
     }
 
     func testDisplayAuthStatePrefersDisplayTokenOverAccessToken() {

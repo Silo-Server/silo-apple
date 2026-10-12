@@ -1,3 +1,4 @@
+import OSLog
 import Synchronization
 import UserNotifications
 
@@ -6,7 +7,11 @@ final class NotificationService: UNNotificationServiceExtension {
         var contentHandler: ((UNNotificationContent) -> Void)?
         var bestAttemptContent: UNMutableNotificationContent?
         var enrichmentTask: Task<Void, Never>?
+        var startedAt = Date()
+        var credential: String?
     }
+
+    private static let logger = Logger(subsystem: "org.siloserver.silo.NotificationService", category: "display")
 
     /// `didReceive` and `serviceExtensionTimeWillExpire` arrive on
     /// system-owned threads while the enrichment task completes on the Swift
@@ -18,7 +23,11 @@ final class NotificationService: UNNotificationServiceExtension {
         _ request: UNNotificationRequest,
         withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void
     ) {
-        state.withLock { $0.contentHandler = contentHandler }
+        let startedAt = Date()
+        state.withLock {
+            $0.contentHandler = contentHandler
+            $0.startedAt = startedAt
+        }
 
         guard let bestAttemptContent = request.content.mutableCopy() as? UNMutableNotificationContent else {
             complete(with: request.content)
@@ -26,21 +35,35 @@ final class NotificationService: UNNotificationServiceExtension {
         }
         state.withLock { $0.bestAttemptContent = bestAttemptContent }
 
-        guard let deliveryID = ApplePushDisplayWire.deliveryID(from: bestAttemptContent.userInfo),
-              let displayState = ApplePushDisplayStateReader().currentState() else {
+        guard let deliveryID = ApplePushDisplayWire.deliveryID(from: bestAttemptContent.userInfo) else {
             complete(with: bestAttemptContent)
             return
         }
+        let displayState = ApplePushDisplayStateReader().storedState()
+        let missing = displayState.missingParts
+        guard missing.isEmpty else {
+            complete(with: bestAttemptContent, outcome: ApplePushDisplayOutcome(
+                kind: .missingState,
+                reason: missing.joined(separator: ","),
+                attempts: 0,
+                credential: nil,
+                startedAt: startedAt
+            ))
+            return
+        }
+        state.withLock { $0.credential = displayState.credentialKind }
 
         let client = ApplePushDisplayClient()
         let task = Task { [weak self, bestAttemptContent] in
-            do {
-                let response = try await client.fetchDisplay(deliveryID: deliveryID, state: displayState)
+            let result = await client.fetchDisplay(deliveryID: deliveryID, state: displayState)
+            if case .success(let response) = result.outcome {
                 response.apply(to: bestAttemptContent)
-            } catch {
-                // The generic APNs fallback remains the notification content.
             }
-            self?.complete(with: bestAttemptContent)
+            // On failure the generic APNs fallback remains the notification content.
+            self?.complete(
+                with: bestAttemptContent,
+                outcome: ApplePushDisplayOutcome(result: result, startedAt: startedAt)
+            )
         }
         let alreadyCompleted = state.withLock { state in
             // Expiry may have completed already; then the task's own
@@ -53,19 +76,34 @@ final class NotificationService: UNNotificationServiceExtension {
     }
 
     override func serviceExtensionTimeWillExpire() {
-        let (task, content) = state.withLock { ($0.enrichmentTask, $0.bestAttemptContent) }
+        let (task, content, startedAt, credential) = state.withLock {
+            ($0.enrichmentTask, $0.bestAttemptContent, $0.startedAt, $0.credential)
+        }
         task?.cancel()
         if let content {
-            complete(with: content)
+            complete(with: content, outcome: ApplePushDisplayOutcome(
+                kind: .expired,
+                reason: nil,
+                attempts: 0,
+                credential: credential,
+                startedAt: startedAt
+            ))
         }
     }
 
-    private func complete(with content: UNNotificationContent) {
+    /// Hands `content` to the system once. Only the call that does so records
+    /// `outcome`, so a fetch finishing after expiry cannot log a second one.
+    private func complete(with content: UNNotificationContent, outcome: ApplePushDisplayOutcome? = nil) {
         let handler = state.withLock { state in
             let handler = state.contentHandler
             state = State()
             return handler
         }
-        handler?(content)
+        guard let handler else { return }
+        if let outcome {
+            Self.logger.log("Push display \(outcome.kind.rawValue, privacy: .public) reason=\(outcome.reason ?? "-", privacy: .public) attempts=\(outcome.attempts, privacy: .public) duration_ms=\(outcome.durationMs, privacy: .public) credential=\(outcome.credential ?? "-", privacy: .public)")
+            ApplePushDisplayOutcomeLog.append(outcome)
+        }
+        handler(content)
     }
 }

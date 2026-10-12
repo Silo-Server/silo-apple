@@ -17,7 +17,43 @@ extension SiloAppDelegate: UNUserNotificationCenterDelegate {
         // launch finishes — the system traps when it launches the app for a
         // task with no handler.
         DownloadBackgroundRefresh.register()
+        Self.recordApplePushDisplayOutcomes()
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            Self.recordApplePushDisplayOutcomes()
+        }
         return true
+    }
+
+    /// The Notification Service extension has no diagnostics pipeline, so it
+    /// leaves one outcome per push in the App Group. Moving them into the
+    /// breadcrumb journal lets a report say why a notification kept the
+    /// generic "New notification available" text.
+    nonisolated static func recordApplePushDisplayOutcomes() {
+        for outcome in ApplePushDisplayOutcomeLog.drain() {
+            let enriched = outcome.kind == .enriched
+            var attrs: [String: DiagLogAttributeValue] = [
+                "outcome": .string(outcome.kind.rawValue),
+                "duration_ms": .int(outcome.durationMs),
+            ]
+            if let reason = outcome.reason {
+                attrs["reason"] = .string(reason)
+            }
+            // Successes stay essential: a few lines a day, and the ratio of
+            // fetched to generic notifications is what a report needs.
+            DiagTrace.breadcrumb(
+                .essential,
+                level: enriched ? .info : .warning,
+                category: .lifecycle,
+                tag: "PushDisplay",
+                message: "notification service \(outcome.kind.rawValue) after \(outcome.attempts) attempts with \(outcome.credential ?? "no") credential",
+                attrs: attrs,
+                timestamp: outcome.recordedAt
+            )
+        }
     }
 
     func application(
