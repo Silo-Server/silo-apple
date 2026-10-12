@@ -1,5 +1,6 @@
 #if os(iOS)
 import Foundation
+import Synchronization
 import UserNotifications
 
 struct ApplePushDisplayResponse: Decodable, Equatable {
@@ -435,6 +436,92 @@ final class ApplePushDisplayClient {
         // and the retry backoff decides how long to keep trying.
         configuration.waitsForConnectivity = false
         return URLSession(configuration: configuration)
+    }
+}
+
+/// Hands one push's content to the system exactly once, with the outcome
+/// of whichever comes first: the fetch finishing or the extension's time
+/// running out. The extension's callbacks arrive on system-owned threads
+/// while the fetch finishes on the Swift concurrency pool.
+final class ApplePushDisplayCompletion: @unchecked Sendable {
+    private struct State {
+        var handler: ((UNNotificationContent) -> Void)?
+        var startedAt = Date()
+        /// What the system gets if time runs out first.
+        var fallback: UNNotificationContent?
+        var fetch: Task<Void, Never>?
+        var attempts = 0
+        var credential: String?
+    }
+
+    private let state = Mutex(State())
+    private let record: @Sendable (ApplePushDisplayOutcome) -> Void
+
+    init(record: @escaping @Sendable (ApplePushDisplayOutcome) -> Void) {
+        self.record = record
+    }
+
+    func begin(handler: @escaping (UNNotificationContent) -> Void, startedAt: Date) {
+        state.withLock {
+            $0.handler = handler
+            $0.startedAt = startedAt
+        }
+    }
+
+    func setFallback(_ content: UNNotificationContent) {
+        state.withLock { $0.fallback = content }
+    }
+
+    /// Keeps the fetch so expiry can stop it, or stops it at once when the
+    /// push has already completed.
+    func attach(_ fetch: Task<Void, Never>) {
+        let completed = state.withLock { state in
+            guard state.handler != nil else { return true }
+            state.fetch = fetch
+            return false
+        }
+        if completed { fetch.cancel() }
+    }
+
+    /// How far the fetch got, for an outcome recorded at expiry.
+    func progress(attempts: Int, credential: String) {
+        state.withLock { state in
+            guard state.handler != nil else { return }
+            state.attempts = attempts
+            state.credential = credential
+        }
+    }
+
+    /// Only the call that hands over the content records `outcome`, so a
+    /// fetch finishing after expiry cannot record a second one.
+    func complete(with content: UNNotificationContent, outcome: ApplePushDisplayOutcome? = nil) {
+        let handler = state.withLock { state in
+            defer { state = State() }
+            return state.handler
+        }
+        guard let handler else { return }
+        finish(handler, content: content, outcome: outcome)
+    }
+
+    /// Claims the completion before stopping the fetch: a fetch that ends
+    /// because it was cancelled must not record its own outcome in place of
+    /// `expired`.
+    func expire() {
+        let expiring = state.withLock { state -> State? in
+            guard state.handler != nil, state.fallback != nil else { return nil }
+            defer { state = State() }
+            return state
+        }
+        guard let expiring, let handler = expiring.handler, let fallback = expiring.fallback else { return }
+        expiring.fetch?.cancel()
+        finish(handler, content: fallback, outcome: ApplePushDisplayOutcome(kind: .expired, reason: nil,
+            attempts: expiring.attempts, credential: expiring.credential, startedAt: expiring.startedAt))
+    }
+
+    private func finish(_ handler: (UNNotificationContent) -> Void, content: UNNotificationContent,
+                        outcome: ApplePushDisplayOutcome?) {
+        if let outcome { record(outcome) }
+        handler(content)
     }
 }
 
