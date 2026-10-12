@@ -153,6 +153,9 @@ actor TokenStore {
     private let profileKeychain: SharedKeychain
     private let defaults: SharedDefaults
     private let sessions: AccountSessionPersistence
+    #if os(iOS)
+    private let displayTargets: ApplePushDisplayTargetStore
+    #endif
     private var canonicalSession: CanonicalAccountSession?
     private var runtimeBlockedServers: Set<String> = []
 
@@ -216,6 +219,9 @@ actor TokenStore {
         self.profileKeychain = keychain.withAudience(Self.profileCredentialAudience)
         self.defaults = defaults
         self.sessions = sessionPersistence ?? AccountSessionPersistence(keychain: keychain)
+        #if os(iOS)
+        self.displayTargets = ApplePushDisplayTargetStore(keychain: keychain.withAudience(Self.profileCredentialAudience))
+        #endif
     }
 
     // MARK: - Diagnostics
@@ -281,7 +287,6 @@ actor TokenStore {
         if serverId == activeServerId { return }
         persistentCredentialGenerationID = UUID()
         activeServerId = serverId
-        clearApplePushDisplayTokenIfIssued(forServerOtherThan: serverId)
         cachedAccessToken = nil
         cachedRefreshToken = nil
         cachedProfileToken = nil
@@ -841,6 +846,7 @@ actor TokenStore {
             profileKeychain.delete(Self.profileTokenKey(for: serverId))
             defaults.removeObject(forKey: profileIdDefaultsKey)
             clearMirroredTokensForExtension()
+            removeDisplayTargets(registeredBy: serverId)
             return .persistentSessionCleared
         }
     }
@@ -926,6 +932,55 @@ actor TokenStore {
               value.accessToken?.isEmpty == false, value.refreshToken?.isEmpty == false else { return nil }
         return value
     }
+
+    #if os(iOS)
+    /// The verified account and sign-in epoch of the session stored for a
+    /// saved server, active or not. Nil for a signed-out, blocked, legacy, or
+    /// temporary slot, which cannot keep a push registration current.
+    func savedSessionAccount(for serverId: String) -> (accountID: String, epoch: UUID)? {
+        guard !serverId.isEmpty, temporaryScope?.serverId != serverId,
+              !runtimeBlockedServers.contains(serverId) else { return nil }
+        let session: CanonicalAccountSession?
+        if serverId == activeServerId {
+            ensureLoaded()
+            session = canonicalSession
+        } else if case .session(let value)? = try? sessions.load(serverId) {
+            session = value
+        } else {
+            session = nil
+        }
+        guard let session, !session.signedOut, Self.session(session, belongsTo: serverId),
+              let accountID = session.accountID, let epoch = session.epoch else { return nil }
+        return (accountID, epoch)
+    }
+
+    /// The profile verification proof stored for a saved server. The active
+    /// server's counts only while `profileID` is its selected profile; an
+    /// inactive server keeps the proof of the profile it last used.
+    func savedProfileToken(for serverId: String, profileID: String) -> String? {
+        guard temporaryScope == nil else { return nil }
+        if serverId == activeServerId {
+            guard defaults.string(forKey: profileIdDefaultsKey) == profileID else { return nil }
+            ensureLoaded()
+            return cachedProfileToken
+        }
+        return profileKeychain.get(Self.profileTokenKey(for: serverId))
+    }
+
+    /// Runs a local push-registration write only while `owner`'s account
+    /// still holds the stored session of `owner.serverID`, whether or not
+    /// that server is active. Throws `HTTPError.authorityChanged` after a
+    /// sign-out, a sign-in to another account, or a new sign-in epoch.
+    func withSavedServerAuthority(_ owner: ApplePushIntentOwner,
+                                  operation: @Sendable () throws -> Void) throws {
+        try Task.checkCancellation()
+        guard let current = savedSessionAccount(for: owner.serverID), current.accountID == owner.accountID,
+              current.epoch == owner.accountEpoch else {
+            throw HTTPError.authorityChanged
+        }
+        try operation()
+    }
+    #endif
 
     /// Whether a stored session is bound to the address its slot is keyed
     /// by. A registry id is derived from the saved server's URL
@@ -1213,6 +1268,7 @@ actor TokenStore {
         cachedAccessToken = nil; cachedRefreshToken = nil; cachedProfileToken = nil; canonicalSession = nil
         loadedForServerId = activeServerId
         clearMirroredTokensForExtension()
+        removeDisplayTargets(registeredBy: activeServerId)
     }
 
     /// Clear tokens for the active server only. Leaves other servers'
@@ -1264,6 +1320,7 @@ actor TokenStore {
         profileKeychain.delete(profileTokenKey)
         defaults.removeObject(forKey: profileIdDefaultsKey)
         clearMirroredTokensForExtension()
+        removeDisplayTargets(registeredBy: activeServerId)
         return durable
     }
 
@@ -1281,6 +1338,7 @@ actor TokenStore {
         accountKeychain.delete(Self.refreshTokenKey(for: serverId))
         accountKeychain.delete(Self.accountEpochKey(for: serverId))
         profileKeychain.delete(Self.profileTokenKey(for: serverId))
+        removeDisplayTargets(registeredBy: serverId)
         if serverId == activeServerId {
             canonicalSession = nil
             persistentCredentialGenerationID = UUID()
@@ -1390,13 +1448,9 @@ actor TokenStore {
         }
         guard persisted else { return false }
         cachedProfileToken = profileToken
-        // The display token was minted for the previous profile. Drop it
-        // before the new profile id is visible so the extension cannot pair
-        // the new context with the old credential; the next registration
-        // mints a replacement.
-        if defaults.string(forKey: profileIdDefaultsKey) != profileID {
-            clearApplePushDisplayToken()
-        }
+        // A display target names its own profile, so the previous profile's
+        // stays until this profile's registration replaces it, as the
+        // server's registration does.
         defaults.set(profileID, forKey: profileIdDefaultsKey)
         profileSelectionGeneration = UUID()
         mirrorActiveTokensForExtension()
@@ -1405,7 +1459,8 @@ actor TokenStore {
 
     /// Clears the complete persistent profile identity atomically. The account
     /// session remains installed so the profile picker can load household
-    /// profiles without forcing another sign-in.
+    /// profiles without forcing another sign-in. The profile's push display
+    /// target stays: the server's registration still belongs to it.
     func deactivateProfile(
         expectedAccount: RefreshAccountIdentity?,
         expectedProfileID: String? = nil,
@@ -1432,7 +1487,6 @@ actor TokenStore {
         defaults.removeObject(forKey: profileIdDefaultsKey)
         cachedProfileToken = nil
         profileSelectionGeneration = UUID()
-        clearApplePushDisplayToken()
         mirrorActiveTokensForExtension()
         return true
     }
@@ -1565,35 +1619,19 @@ actor TokenStore {
         }
     }
 
-    /// The display token is bound to one session, server, and profile, so it
-    /// dies with any of them; the next registration mints a fresh one.
-    private func clearApplePushDisplayToken() {
-        // Metadata is removed only once the Keychain item is gone, so a
-        // failed delete leaves the token paired with its real expiry and
-        // issuing server rather than looking freshly issued.
-        guard profileKeychain.delete(SharedStorage.applePushDisplayTokenAccount) else { return }
-        defaults.removeObject(forKey: SharedStorage.applePushDisplayTokenExpiresAtKey)
-        defaults.removeObject(forKey: SharedStorage.applePushDisplayTokenServerIdKey)
-    }
-
-    /// Server retargeting happens both on a real switch and when the actor
-    /// hydrates the persisted server on a cold launch (`activeServerId` starts
-    /// empty). Only the former invalidates the display token, so compare
-    /// against the server the token was issued for rather than the actor's
-    /// previous state. A token with no recorded server predates this key and
-    /// is cleared to be safe.
-    private func clearApplePushDisplayTokenIfIssued(forServerOtherThan serverId: String) {
-        guard profileKeychain.get(SharedStorage.applePushDisplayTokenAccount) != nil else { return }
-        let issuedFor = defaults.string(forKey: SharedStorage.applePushDisplayTokenServerIdKey) ?? ""
-        if issuedFor.isEmpty || issuedFor != serverId {
-            clearApplePushDisplayToken()
-        }
+    /// A display token belongs to its server's session, so it goes when that
+    /// session's credentials do. Turning the registration off first is the
+    /// caller's job (`ApplePushRegistrationCoordinator.unregister`).
+    private func removeDisplayTargets(registeredBy serverId: String) {
+        #if os(iOS)
+        guard !serverId.isEmpty else { return }
+        displayTargets.removeTargets(registeredBy: serverId)
+        #endif
     }
 
     private func clearMirroredTokensForExtension() {
         accountKeychain.delete(SharedStorage.mirroredAccessTokenAccount)
         profileKeychain.delete(SharedStorage.mirroredProfileTokenAccount)
-        clearApplePushDisplayToken()
         lastMirroredAccessToken = nil
         lastMirroredProfileToken = nil
     }

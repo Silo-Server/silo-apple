@@ -53,19 +53,17 @@ enum SharedStorage {
     static let mirroredAccessTokenAccount = keychainAccountPrefix + "topshelf.accessToken"
     static let mirroredProfileTokenAccount = keychainAccountPrefix + "topshelf.profileToken"
 
-    /// Long-lived, profile-scoped token the server returns from Apple push
-    /// registration. The Notification Service extension prefers it over the
-    /// mirrored access token because it cannot refresh an expired one.
-    /// Written by `ApplePushRegistrationCoordinator`, cleared with the mirrors.
+    /// Every `ApplePushDisplayTarget`, as one JSON array: the servers and
+    /// profiles this device is registered with for pushes, each with the
+    /// long-lived display token its server minted. Written by the app, read
+    /// by the Notification Service extension.
+    static let applePushDisplayTargetsAccount = keychainAccountPrefix + "push.displayTargets.v1"
+    /// The one display token builds before display targets kept, for the
+    /// active server only, with its expiry and issuing registry id in App
+    /// Group defaults. The app moves it into a target at launch; until then
+    /// the extension still reads it for pushes that name no target.
     static let applePushDisplayTokenAccount = keychainAccountPrefix + "push.displayToken"
-    /// App Group defaults key: RFC 3339 expiry of the stored display token,
-    /// used by the app to renew it before the extension starts sending an
-    /// expired credential. Not read by the extension.
     static let applePushDisplayTokenExpiresAtKey = "applePush.displayTokenExpiresAt"
-    /// App Group defaults key: registry id of the server the stored display
-    /// token was minted for. `TokenStore` clears the token only when the
-    /// active server actually changes, not when the actor rehydrates the
-    /// same persisted server on a cold launch.
     static let applePushDisplayTokenServerIdKey = "applePush.displayTokenServerId"
     /// App Group defaults key: recent `ApplePushDisplayOutcome` records the
     /// Notification Service extension leaves for the app's diagnostics.

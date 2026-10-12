@@ -7,7 +7,15 @@ import XCTest
 /// the installation key and generation headers, the journal's allocation and
 /// exact-replay rules, and the three outcomes.
 final class ApplePushOrderedRegistrationTests: XCTestCase {
-    private static let serverID = "server-a"
+    private static let serverURL = "https://silo.example"
+    /// Registry ids are derived from the address, which is what lets a saved
+    /// server's stored session be used while another server is active.
+    private static let serverID = ServerRegistry.serverId(for: serverURL)
+    private static let otherServerURL = "https://other.example"
+    private static let otherServerID = ServerRegistry.serverId(for: otherServerURL)
+    private static let tokenExpiry = "2099-01-01T00:00:00Z"
+    /// A day before the stub's tokens expire, inside the renewal window.
+    private static let renewalDue = ISO8601DateFormatter().date(from: tokenExpiry)!.addingTimeInterval(-86_400)
     private static let capabilityPath = "/api/v2/devices/push/apple/capabilities"
     private static let registrationPath = "/api/v2/devices/push/apple"
     private static let tokenA = String(repeating: "ab", count: 32)
@@ -18,7 +26,7 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
     private final class PushServer: @unchecked Sendable {
         enum Reply {
             case receipt(generation: String? = nil, enabled: Bool = true, removed: Bool = false,
-                         displayToken: String? = "display-1")
+                         displayToken: String? = "display-1", serverID: String? = "deployment-a")
             case problem(Int, String)
             case transportFailure
             case gated(StubURLProtocol.Gate)
@@ -40,15 +48,19 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
                     reply = .receipt()
                 }
                 switch reply {
-                case .receipt(let generation, let enabled, let removed, let displayToken):
+                case .receipt(let generation, let enabled, let removed, let displayToken, let serverID):
+                    let sent = (try? JSONSerialization.jsonObject(with: request.body ?? Data())) as? [String: Any]
                     var body: [String: Any] = [
                         "generation": generation ?? request.header("X-Push-Generation") ?? "",
                         "id": "registration-1", "server_device_id": "server-device-1",
-                        "push_mode": "private_push", "enabled": enabled, "removed": removed,
+                        "push_mode": sent?["push_mode"] ?? "private_push", "enabled": enabled, "removed": removed,
                     ]
                     if let displayToken {
                         body["display_token"] = displayToken
-                        body["display_token_expires_at"] = "2099-01-01T00:00:00Z"
+                        body["display_token_expires_at"] = ApplePushOrderedRegistrationTests.tokenExpiry
+                    }
+                    if let serverID {
+                        body["server_id"] = serverID
                     }
                     return .json(String(decoding: try JSONSerialization.data(withJSONObject: body), as: UTF8.self))
                 case .problem(let status, let type):
@@ -73,18 +85,34 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         private var current = Date(timeIntervalSince1970: 1_800_000_000)
         var now: Date { lock.withLock { current } }
         func advance(by interval: TimeInterval) { lock.withLock { current += interval } }
+        func set(_ date: Date) { lock.withLock { current = date } }
     }
 
     private struct Harness {
         let tokens: TokenStore
         let server: PushServer
         let journal: ApplePushInstallationJournal
-        let displayTokens: ApplePushDisplayTokenStore
+        let targets: ApplePushDisplayTargetStore
+        let http: HTTPClient
         let api: APIv2Client
 
-        func registrar(clock: Clock? = nil) -> ApplePushRegistrar {
+        func registrar(clock: Clock? = nil, savedServerIdentity: String? = nil) -> ApplePushRegistrar {
             let now: @Sendable () -> Date = clock.map { clock in { clock.now } } ?? { Date() }
-            return ApplePushRegistrar(api: api, tokenStore: tokens, journal: journal, displayTokens: displayTokens, now: now)
+            return ApplePushRegistrar(api: api, tokenStore: tokens, journal: journal, displayTargets: targets,
+                savedServers: ApplePushSavedServerClient(http: http, tokenStore: tokens,
+                    session: server.handler.makeSession()),
+                savedServerIdentity: { _ in savedServerIdentity }, now: now)
+        }
+
+        /// Signs in to a second saved server, which becomes the active one.
+        func signInToOtherServer() async throws {
+            await tokens.switchActiveServer(serverId: ApplePushOrderedRegistrationTests.otherServerID)
+            await tokens.setServerUrl(ApplePushOrderedRegistrationTests.otherServerURL)
+            let saved = await tokens.saveTokens(accessToken: "other-access", refreshToken: "other-refresh")
+            XCTAssertTrue(saved)
+            await tokens.setProfileId("other-profile")
+            let captured = await tokens.captureOrdinaryRequestAuth()
+            try await tokens.bindVerifiedAccount("34", expected: XCTUnwrap(captured))
         }
 
         func owner() async throws -> CapturedDurableAccountAuth {
@@ -103,17 +131,20 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         let keychain = SharedKeychain(service: name, accessGroup: nil)
         let journal = ApplePushInstallationJournal(keychain: keychain.withAudience(.userIndependent))
         addTeardownBlock {
-            for key in [
-                TokenStore.accessTokenKey(for: Self.serverID),
-                TokenStore.refreshTokenKey(for: Self.serverID),
-                TokenStore.profileTokenKey(for: Self.serverID),
-                TokenStore.accountEpochKey(for: Self.serverID),
-                AccountSessionPersistence.recordKey(Self.serverID),
-                AccountSessionPersistence.markerKey(Self.serverID),
+            let perServer = [Self.serverID, Self.otherServerID].flatMap { serverID in [
+                TokenStore.accessTokenKey(for: serverID),
+                TokenStore.refreshTokenKey(for: serverID),
+                TokenStore.profileTokenKey(for: serverID),
+                TokenStore.accountEpochKey(for: serverID),
+                AccountSessionPersistence.recordKey(serverID),
+                AccountSessionPersistence.markerKey(serverID),
+                ApplePushInstallationJournal.account(for: serverID),
+            ] }
+            for key in perServer + [
                 SharedStorage.mirroredAccessTokenAccount,
                 SharedStorage.mirroredProfileTokenAccount,
                 SharedStorage.applePushDisplayTokenAccount,
-                ApplePushInstallationJournal.account(for: Self.serverID),
+                SharedStorage.applePushDisplayTargetsAccount,
             ] {
                 keychain.withAudience(.userIndependent).delete(key)
                 keychain.withAudience(.currentUser).delete(key)
@@ -123,7 +154,7 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         let defaults = SharedDefaults(suite: suite, standard: suite)
         let tokens = TokenStore(keychain: keychain, defaults: defaults)
         await tokens.switchActiveServer(serverId: Self.serverID)
-        await tokens.setServerUrl("https://silo.example")
+        await tokens.setServerUrl(Self.serverURL)
         let saved = await tokens.saveTokens(accessToken: "access", refreshToken: "refresh")
         XCTAssertTrue(saved)
         await tokens.setProfileId("profile-a")
@@ -134,10 +165,16 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         try await tokens.bindVerifiedAccount("12", expected: requestOwner)
 
         let server = PushServer()
-        let api = APIv2Client(http: HTTPClient(session: server.handler.makeSession(), tokenStore: tokens),
-            tokenStore: tokens, isUpdateRequired: { false })
-        let displayTokens = ApplePushDisplayTokenStore(keychain: keychain.withAudience(.currentUser), defaults: defaults)
-        return Harness(tokens: tokens, server: server, journal: journal, displayTokens: displayTokens, api: api)
+        let http = HTTPClient(session: server.handler.makeSession(), tokenStore: tokens)
+        let api = APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false })
+        let targets = ApplePushDisplayTargetStore(keychain: keychain.withAudience(.currentUser))
+        return Harness(tokens: tokens, server: server, journal: journal, targets: targets, http: http, api: api)
+    }
+
+    private static func target(profileID: String = "profile-a", token: String = "display-1",
+                               serverID: String? = "deployment-a") -> ApplePushDisplayTarget {
+        ApplePushDisplayTarget(serverID: serverID, profileID: profileID, registryServerID: Self.serverID,
+            serverURL: Self.serverURL, displayToken: token, expiresAt: Self.tokenExpiry)
     }
 
     private static func body(token: String = tokenA) -> APIv2ApplePushRegistrationBody {
@@ -169,7 +206,20 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
             "apns_topic": "org.siloserver.silo", "push_mode": "private_push",
         ])
         XCTAssertEqual(try h.record()?.installationKey, key)
-        XCTAssertTrue(h.displayTokens.hasCurrentToken(forServerID: Self.serverID))
+        // Keyed by the deployment and profile pushes will name.
+        XCTAssertEqual(h.targets.targets(), [Self.target()])
+    }
+
+    /// An older server's receipt names no deployment; the registry's
+    /// verified identity keys the target instead.
+    func testReceiptWithoutServerIDKeysTheTargetByTheSavedServersIdentity() async throws {
+        let h = try await makeHarness()
+        h.server.enqueue(.receipt(serverID: nil))
+        let owner = try await h.owner()
+
+        _ = await h.registrar(savedServerIdentity: "deployment-saved").register(Self.body(), owner: owner)
+
+        XCTAssertEqual(h.targets.targets(), [Self.target(serverID: "deployment-saved")])
     }
 
     func testAcceptedIntentWithCurrentDisplayTokenSendsNothing() async throws {
@@ -240,6 +290,8 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         XCTAssertEqual(sends.map { $0.header("X-Push-Generation") }, ["1", "2"])
         XCTAssertEqual(sends.map { $0.header("X-Profile-Id") }, ["profile-a", "profile-b"])
         XCTAssertEqual(sends[0].header("X-Push-Installation-Key"), sends[1].header("X-Push-Installation-Key"))
+        // The server replaced the profile's registration, and so does the device.
+        XCTAssertEqual(h.targets.targets(), [Self.target(profileID: "profile-b")])
     }
 
     // MARK: - Refusals
@@ -316,7 +368,7 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         let owner = try await h.owner()
         let result = await h.registrar().register(Self.body(), owner: owner)
         XCTAssertEqual(result, .refused(reason: "invalid_receipt"))
-        XCTAssertFalse(h.displayTokens.hasCurrentToken(forServerID: Self.serverID))
+        XCTAssertEqual(h.targets.targets(), [])
     }
 
     // MARK: - Capability and journal gates
@@ -362,23 +414,26 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
     // MARK: - Display token
 
     /// A renewal is an exact replay. When it reports the registration as
-    /// removed, the display token is cleared and the intent is not renewed
+    /// removed, the display target is removed and the intent is not renewed
     /// again.
-    func testRemovedRegistrationClearsDisplayTokenAndStopsRenewal() async throws {
+    func testRemovedRegistrationClearsDisplayTargetAndStopsRenewal() async throws {
         let h = try await makeHarness()
+        let clock = Clock()
+        let registrar = h.registrar(clock: clock)
         let owner = try await h.owner()
-        _ = await h.registrar().register(Self.body(), owner: owner)
-        h.displayTokens.store(nil, expiresAt: nil, serverId: Self.serverID)
+        _ = await registrar.register(Self.body(), owner: owner)
+        XCTAssertEqual(h.targets.targets(), [Self.target()])
+        clock.set(Self.renewalDue)
         h.server.enqueue(.receipt(removed: true, displayToken: "must-not-store"))
 
-        let renewal = await h.registrar().register(Self.body(), owner: owner)
+        let renewal = await registrar.register(Self.body(), owner: owner)
 
         XCTAssertEqual(renewal, .registered(ApplePushAcceptedRegistration(
             id: "registration-1", serverDeviceID: "server-device-1", enabled: true, removed: true)))
         XCTAssertEqual(h.server.registrations.map { $0.header("X-Push-Generation") }, ["1", "1"])
-        XCTAssertFalse(h.displayTokens.hasCurrentToken(forServerID: Self.serverID))
+        XCTAssertEqual(h.targets.targets(), [])
         let count = h.server.handler.requests.count
-        let after = await h.registrar().register(Self.body(), owner: owner)
+        let after = await registrar.register(Self.body(), owner: owner)
         XCTAssertEqual(after, .unchanged)
         XCTAssertEqual(h.server.handler.requests.count, count)
     }
@@ -393,7 +448,7 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         let owner = try await h.owner()
         _ = await registrar.register(Self.body(), owner: owner)
         let accepted = try h.record()?.latest?.outcome
-        h.displayTokens.store(nil, expiresAt: nil, serverId: Self.serverID)
+        clock.set(Self.renewalDue)
         h.server.enqueue(.problem(403, "permission_denied"))
 
         let renewal = await registrar.register(Self.body(), owner: owner)
@@ -406,23 +461,26 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         XCTAssertEqual(h.server.handler.requests.count, count)
 
         clock.advance(by: ApplePushRegistrar.heldGenerationRetryInterval + 1)
+        h.server.enqueue(.receipt(displayToken: "display-2"))
         let after = await registrar.register(Self.body(), owner: owner)
 
         XCTAssertEqual(after, Self.accepted)
         XCTAssertEqual(h.server.registrations.map { $0.header("X-Push-Generation") }, ["1", "1", "1"])
-        XCTAssertTrue(h.displayTokens.hasCurrentToken(forServerID: Self.serverID))
+        XCTAssertEqual(h.targets.targets(), [Self.target(token: "display-2")])
     }
 
     /// A 409 on a renewal means the server has moved past this generation,
     /// so the accepted state is no longer true and renewal stops.
     func testConflictOnRenewalIsRecordedAsRefusal() async throws {
         let h = try await makeHarness()
+        let clock = Clock()
+        let registrar = h.registrar(clock: clock)
         let owner = try await h.owner()
-        _ = await h.registrar().register(Self.body(), owner: owner)
-        h.displayTokens.store(nil, expiresAt: nil, serverId: Self.serverID)
+        _ = await registrar.register(Self.body(), owner: owner)
+        clock.set(Self.renewalDue)
         h.server.enqueue(.problem(409, "conflict"))
 
-        let renewal = await h.registrar().register(Self.body(), owner: owner)
+        let renewal = await registrar.register(Self.body(), owner: owner)
 
         XCTAssertEqual(renewal, .refused(reason: "http_409_conflict"))
         XCTAssertEqual(try h.record()?.latest?.outcome, .refused(reason: "http_409_conflict"))
@@ -445,8 +503,101 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         let result = await task.value
 
         XCTAssertEqual(result, .uncertain)
-        XCTAssertFalse(h.displayTokens.hasCurrentToken(forServerID: Self.serverID))
+        XCTAssertEqual(h.targets.targets(), [])
         XCTAssertEqual(try h.record()?.latest?.outcome, .pending)
+    }
+
+    // MARK: - Saved servers
+
+    /// A server the person is not using keeps its display token current,
+    /// and removing it turns its pushes off, each through that server's own
+    /// stored session, installation key and next generation.
+    func testSavedServerRenewsAndTurnsOffWithItsOwnStoredSession() async throws {
+        let h = try await makeHarness()
+        let clock = Clock()
+        let registrar = h.registrar(clock: clock)
+        let owner = try await h.owner()
+        _ = await registrar.register(Self.body(), owner: owner)
+        try await h.signInToOtherServer()
+        let otherOwner = try await h.owner()
+        clock.set(Self.renewalDue)
+        h.server.enqueue(.receipt(displayToken: "display-2"))
+
+        await registrar.registerSavedServers(Self.body(), skipping: Self.otherServerID)
+
+        let renewal = try XCTUnwrap(h.server.registrations.last)
+        XCTAssertEqual(renewal.url?.host, "silo.example")
+        XCTAssertEqual(renewal.header("Authorization"), "Bearer access")
+        XCTAssertEqual(renewal.header("X-Profile-Id"), "profile-a")
+        XCTAssertEqual(renewal.header("X-Profile-Token"), "proof-a")
+        XCTAssertEqual(renewal.header("X-Push-Generation"), "1")
+        XCTAssertEqual(renewal.body, h.server.registrations.first?.body)
+        XCTAssertEqual(h.targets.targets(), [Self.target(token: "display-2")])
+
+        let off = await registrar.unregister(serverID: Self.serverID, activeOwner: otherOwner)
+
+        guard case .registered = off else { return XCTFail("unexpected \(off)") }
+        let request = try XCTUnwrap(h.server.registrations.last)
+        XCTAssertEqual(request.url?.host, "silo.example")
+        XCTAssertEqual(request.header("Authorization"), "Bearer access")
+        XCTAssertEqual(request.header("X-Push-Generation"), "2")
+        XCTAssertEqual(request.header("X-Push-Installation-Key"), renewal.header("X-Push-Installation-Key"))
+        XCTAssertTrue(request.bodyString?.contains(#""push_mode":"off""#) ?? false)
+        XCTAssertEqual(h.targets.targets(), [])
+    }
+
+    /// Who's Watching and profile switches leave every server's target in
+    /// place: the server's registration still belongs to that profile until
+    /// a new one replaces it. Clearing a server's credentials takes only
+    /// that server's target with them.
+    func testTargetsOutliveProfileChangesAndGoWithTheirServersCredentials() async throws {
+        let h = try await makeHarness()
+        let other = ApplePushDisplayTarget(serverID: "deployment-b", profileID: "other-profile",
+            registryServerID: Self.otherServerID, serverURL: Self.otherServerURL, displayToken: "display-b",
+            expiresAt: Self.tokenExpiry)
+        XCTAssertTrue(h.targets.save(Self.target()))
+        XCTAssertTrue(h.targets.save(other))
+
+        let deactivated = await h.tokens.deactivateProfile(expectedAccount: nil)
+        XCTAssertTrue(deactivated)
+        let identity = await h.tokens.refreshAccountIdentity()
+        let account = try XCTUnwrap(identity)
+        let activated = await h.tokens.activateProfile(profileID: "profile-b", profileToken: nil, expectedAccount: account)
+        XCTAssertTrue(activated)
+        XCTAssertEqual(h.targets.targets(), [Self.target(), other])
+
+        await h.tokens.deleteTokens(for: Self.otherServerID)
+        XCTAssertEqual(h.targets.targets(), [Self.target()])
+        await h.tokens.clearTokens()
+        XCTAssertEqual(h.targets.targets(), [])
+    }
+
+    /// An install updated from the single-token build keeps displaying the
+    /// active server's pushes: its token becomes that server's target.
+    func testLegacyDisplayTokenMovesIntoTheActiveServersTarget() throws {
+        let name = "ApplePushLegacyMigration.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: name))
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
+        let defaults = SharedDefaults(suite: suite, standard: suite)
+        let keychain = SharedKeychain(service: name, accessGroup: nil)
+        addTeardownBlock {
+            keychain.delete(SharedStorage.applePushDisplayTokenAccount)
+            keychain.delete(SharedStorage.applePushDisplayTargetsAccount)
+        }
+        defaults.set(Self.serverID, forKey: SharedStorage.activeServerIdKey)
+        defaults.set("profile-a", forKey: SharedStorage.profileIdKey)
+        defaults.set(Self.serverID, forKey: SharedStorage.applePushDisplayTokenServerIdKey)
+        defaults.set(Self.tokenExpiry, forKey: SharedStorage.applePushDisplayTokenExpiresAtKey)
+        XCTAssertTrue(keychain.set("display-1", for: SharedStorage.applePushDisplayTokenAccount))
+        let server = ServerEntry(id: Self.serverID, url: Self.serverURL, fetchedName: nil, lastUsedAt: Date(),
+            verifiedServerId: "deployment-a")
+        let store = ApplePushDisplayTargetStore(keychain: keychain)
+
+        store.migrateLegacyToken(defaults: defaults) { $0 == server.id ? server : nil }
+
+        XCTAssertEqual(store.targets(), [Self.target()])
+        XCTAssertNil(keychain.get(SharedStorage.applePushDisplayTokenAccount))
+        XCTAssertNil(defaults.string(forKey: SharedStorage.applePushDisplayTokenServerIdKey))
     }
 
     // MARK: - Journal

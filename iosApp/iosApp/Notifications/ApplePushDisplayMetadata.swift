@@ -106,12 +106,39 @@ struct ApplePushDisplayAuthState: Equatable {
     }
 }
 
+/// The server deployment and profile a push belongs to.
+struct ApplePushTargetName: Equatable, Sendable {
+    let serverID: String
+    let profileID: String
+}
+
 enum ApplePushDisplayWire {
     static let deliveryIDUserInfoKey = "silo_delivery_id"
     static let urlUserInfoKey = "silo_url"
+    static let serverIDUserInfoKey = "silo_server_id"
+    static let profileIDUserInfoKey = "silo_profile_id"
 
     static func deliveryID(from userInfo: [AnyHashable: Any]) -> String? {
-        guard let raw = userInfo[deliveryIDUserInfoKey] as? String else { return nil }
+        string(userInfo[deliveryIDUserInfoKey])
+    }
+
+    /// The server and profile the push names, or nil when it does not name
+    /// both. Servers and relays that predate target routing send neither.
+    static func targetName(from userInfo: [AnyHashable: Any]) -> ApplePushTargetName? {
+        guard let serverID = string(userInfo[serverIDUserInfoKey]),
+              let profileID = string(userInfo[profileIDUserInfoKey]) else { return nil }
+        return ApplePushTargetName(serverID: serverID, profileID: profileID)
+    }
+
+    /// Whether the push carries either target key. One without the other
+    /// still says the push may belong to another server, so it never falls
+    /// back to the active one.
+    static func namesTarget(_ userInfo: [AnyHashable: Any]) -> Bool {
+        userInfo[serverIDUserInfoKey] != nil || userInfo[profileIDUserInfoKey] != nil
+    }
+
+    private static func string(_ value: Any?) -> String? {
+        guard let raw = value as? String else { return nil }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
@@ -135,20 +162,69 @@ enum ApplePushDisplayWire {
     }
 }
 
+/// Where the extension fetches one push's display metadata.
+enum ApplePushDisplayRoute: Equatable {
+    case fetch(ApplePushDisplayAuthState)
+    /// The push names a server and profile this device keeps no target
+    /// for. Fetching from the active server instead would ask the wrong
+    /// server or profile, so nothing is fetched.
+    case unknownTarget
+}
+
 struct ApplePushDisplayStateReader {
     var defaults: SharedDefaults = .shared
     var keychain: SharedKeychain = SharedKeychain()
 
-    /// Everything stored, usable or not, so the extension can say what is
-    /// missing when it cannot fetch.
+    private var targets: ApplePushDisplayTargetStore {
+        ApplePushDisplayTargetStore(keychain: keychain.withAudience(.currentUser))
+    }
+
+    /// A push that names its server and profile uses exactly that target's
+    /// display token. The mirrored access and profile tokens belong to the
+    /// active server and profile, so they join only a target that is both.
+    /// A push that names no target keeps the active server and profile.
+    func route(for userInfo: [AnyHashable: Any]) -> ApplePushDisplayRoute {
+        guard let name = ApplePushDisplayWire.targetName(from: userInfo) else {
+            return ApplePushDisplayWire.namesTarget(userInfo) ? .unknownTarget : .fetch(storedState())
+        }
+        guard let target = targets.target(serverID: name.serverID, profileID: name.profileID) else {
+            return .unknownTarget
+        }
+        let active = isActive(target)
+        return .fetch(ApplePushDisplayAuthState(
+            serverURL: target.serverURL,
+            profileID: target.profileID,
+            accessToken: active ? keychain.get(SharedStorage.mirroredAccessTokenAccount) ?? "" : "",
+            profileToken: active ? keychain.get(SharedStorage.mirroredProfileTokenAccount) ?? "" : "",
+            displayToken: target.displayToken
+        ))
+    }
+
+    /// The active server and profile's state, usable or not, so the
+    /// extension can say what is missing when it cannot fetch.
     func storedState() -> ApplePushDisplayAuthState {
-        ApplePushDisplayAuthState(
+        let profileID = defaults.string(forKey: SharedStorage.profileIdKey) ?? ""
+        let activeTarget = targets.targets().first(where: isActive)
+        return ApplePushDisplayAuthState(
             serverURL: defaults.string(forKey: SharedStorage.serverUrlKey) ?? "",
-            profileID: defaults.string(forKey: SharedStorage.profileIdKey) ?? "",
+            profileID: profileID,
             accessToken: keychain.get(SharedStorage.mirroredAccessTokenAccount) ?? "",
             profileToken: keychain.get(SharedStorage.mirroredProfileTokenAccount) ?? "",
-            displayToken: keychain.get(SharedStorage.applePushDisplayTokenAccount) ?? ""
+            displayToken: activeTarget?.displayToken ?? legacyDisplayToken()
         )
+    }
+
+    private func isActive(_ target: ApplePushDisplayTarget) -> Bool {
+        target.registryServerID == defaults.string(forKey: SharedStorage.activeServerIdKey)
+            && target.profileID == defaults.string(forKey: SharedStorage.profileIdKey)
+    }
+
+    /// The single token an earlier build stored for the active server,
+    /// until the app moves it into a target.
+    private func legacyDisplayToken() -> String {
+        guard let issuedFor = defaults.string(forKey: SharedStorage.applePushDisplayTokenServerIdKey),
+              issuedFor == defaults.string(forKey: SharedStorage.activeServerIdKey) else { return "" }
+        return keychain.get(SharedStorage.applePushDisplayTokenAccount) ?? ""
     }
 }
 
@@ -305,6 +381,8 @@ struct ApplePushDisplayOutcome: Codable, Equatable {
     enum Kind: String, Codable {
         case enriched
         case missingState = "missing_state"
+        /// The push named a server and profile with no stored target.
+        case unknownTarget = "unknown_target"
         case httpStatus = "http_status"
         case network
         case invalidResponse = "invalid_response"

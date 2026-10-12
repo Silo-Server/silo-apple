@@ -20,6 +20,8 @@ final class AuthService: @unchecked Sendable {
     private let tokenStore: TokenStore
     private let sessionPersistence: AccountSessionPersistence
     private let purgeDiagnostics: @Sendable (String) async -> Bool
+    /// Turns the server's push registration off (`ApplePushRegistrationCoordinator.unregister`).
+    private let unregisterPush: @Sendable (String) async -> Void
 
     enum SignOutAuthorization: Equatable, Sendable {
         case allowed(account: RefreshAccountIdentity?)
@@ -58,6 +60,11 @@ final class AuthService: @unchecked Sendable {
             #else
             return true
             #endif
+        },
+        unregisterPush: @escaping @Sendable (String) async -> Void = { serverID in
+            #if os(iOS)
+            await ApplePushRegistrationCoordinator.shared.unregister(serverID: serverID)
+            #endif
         }
     ) {
         self.serverIdentityResolver = serverIdentityResolver
@@ -71,6 +78,7 @@ final class AuthService: @unchecked Sendable {
         self.defaults = defaults
         self.sessionPersistence = sessionPersistence
         self.purgeDiagnostics = purgeDiagnostics
+        self.unregisterPush = unregisterPush
     }
 
     /// Runs the v2 contract probe for `serverId` and records the verdict.
@@ -832,6 +840,9 @@ final class AuthService: @unchecked Sendable {
         guard case .allowed(let account) = Self.signOutAuthorization(
             activeServerId: serverID, capturedAuth: capturedAuth
         ) else { return .refused }
+        // Only a device that can still authenticate can tell the server to
+        // stop pushing, so this runs before the credentials are cleared.
+        if let serverID { await unregisterPush(serverID) }
         guard let lease = await httpClient.beginIdentityTransition() else { return .refused }
         await httpClient.cancelInFlightRequests()
         guard !Task.isCancelled,

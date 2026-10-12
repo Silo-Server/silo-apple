@@ -32,6 +32,9 @@ struct APIv2ApplePushRegistrationReceipt: Decodable, Equatable, Sendable {
     let displayToken: String?
     /// RFC 3339 expiry of `displayToken`. Omitted with it.
     let displayTokenExpiresAt: String?
+    /// The deployment identity (`GET /api/v2/system/identity`) pushes for
+    /// this registration name. Omitted by older servers.
+    let serverId: String?
 }
 
 /// `GET /api/v2/devices/push/apple/capabilities`.

@@ -273,10 +273,99 @@ final class ApplePushRegistrationTests: XCTestCase {
     }
 
     func testDisplayTokenExpiryParsesWithAndWithoutFractionalSeconds() throws {
-        let plain = try XCTUnwrap(ApplePushDisplayTokenStore.parseExpiry("2026-10-03T00:00:00Z"))
-        let fractional = try XCTUnwrap(ApplePushDisplayTokenStore.parseExpiry("2026-10-03T00:00:00.250Z"))
+        let plain = try XCTUnwrap(ApplePushDisplayTarget.parseExpiry("2026-10-03T00:00:00Z"))
+        let fractional = try XCTUnwrap(ApplePushDisplayTarget.parseExpiry("2026-10-03T00:00:00.250Z"))
         XCTAssertEqual(fractional.timeIntervalSince(plain), 0.25, accuracy: 0.001)
-        XCTAssertNil(ApplePushDisplayTokenStore.parseExpiry("not-a-date"))
+        XCTAssertNil(ApplePushDisplayTarget.parseExpiry("not-a-date"))
+    }
+
+    /// A push that names its server and profile is fetched with exactly that
+    /// target, whichever server is active. One this device keeps no target
+    /// for is not fetched at all, and one that names nothing (an older
+    /// server or relay) keeps the active server and profile.
+    func testDisplayRouteUsesExactlyThePushTarget() throws {
+        let (defaults, keychain) = try isolatedStorage()
+        defaults.set("registry-a", forKey: SharedStorage.activeServerIdKey)
+        defaults.set("https://a.example", forKey: SharedStorage.serverUrlKey)
+        defaults.set("profile-a", forKey: SharedStorage.profileIdKey)
+        XCTAssertTrue(keychain.set("access-a", for: SharedStorage.mirroredAccessTokenAccount))
+        XCTAssertTrue(keychain.set("proof-a", for: SharedStorage.mirroredProfileTokenAccount))
+        let store = ApplePushDisplayTargetStore(keychain: keychain)
+        XCTAssertTrue(store.save(Self.target("a", profileID: "profile-a")))
+        XCTAssertTrue(store.save(Self.target("b", profileID: "profile-b")))
+        let reader = ApplePushDisplayStateReader(defaults: defaults, keychain: keychain)
+        func route(_ serverID: String?, _ profileID: String?) -> ApplePushDisplayRoute {
+            var userInfo: [AnyHashable: Any] = ["silo_delivery_id": "delivery-1"]
+            if let serverID { userInfo["silo_server_id"] = serverID }
+            if let profileID { userInfo["silo_profile_id"] = profileID }
+            return reader.route(for: userInfo)
+        }
+        let active = ApplePushDisplayRoute.fetch(ApplePushDisplayAuthState(serverURL: "https://a.example",
+            profileID: "profile-a", accessToken: "access-a", profileToken: "proof-a", displayToken: "display-a"))
+
+        // The active server's credentials never travel to another server.
+        XCTAssertEqual(route("deployment-b", "profile-b"), .fetch(ApplePushDisplayAuthState(
+            serverURL: "https://b.example", profileID: "profile-b", accessToken: "", profileToken: "",
+            displayToken: "display-b")))
+        XCTAssertEqual(route("deployment-a", "profile-a"), active)
+        XCTAssertEqual(route("deployment-a", "profile-b"), .unknownTarget)
+        XCTAssertEqual(route("deployment-c", "profile-a"), .unknownTarget)
+        XCTAssertEqual(route("deployment-a", nil), .unknownTarget)
+        XCTAssertEqual(route(nil, nil), active)
+    }
+
+    /// A tap opens a push's item only under the server and profile the push
+    /// belongs to. Pushes from older servers name neither and open as before.
+    func testPushLinkOpensOnlyUnderItsServerAndProfile() throws {
+        let link = try XCTUnwrap(ApplePushDeepLinkCoordinator.deepLinkURL(from: [
+            "silo_url": "/item/movie-1", "silo_server_id": "deployment-a", "silo_profile_id": "profile-a",
+        ]))
+        let legacyLink = try XCTUnwrap(ApplePushDeepLinkCoordinator.deepLinkURL(from: ["silo_url": "/item/movie-1"]))
+        XCTAssertNil(ApplePushDeepLinkCoordinator.deepLinkURL(from: [
+            "silo_url": "/item/movie-1", "silo_server_id": "deployment-a",
+        ]))
+        let (_, keychain) = try isolatedStorage()
+        let noTargets = ApplePushDisplayTargetStore(keychain: keychain)
+        func server(_ verifiedServerID: String?) -> ServerEntry {
+            ServerEntry(id: "registry-a", url: "https://a.example", fetchedName: nil, lastUsedAt: Date(),
+                verifiedServerId: verifiedServerID)
+        }
+        func opens(_ url: URL, _ server: ServerEntry?, _ profileID: String?) -> Bool {
+            ApplePushDeepLinkCoordinator.opensUnderActiveIdentity(url, activeServer: server,
+                activeProfileID: profileID, targets: noTargets)
+        }
+
+        XCTAssertTrue(opens(link, server("deployment-a"), "profile-a"))
+        XCTAssertFalse(opens(link, server("deployment-a"), "profile-b"))
+        XCTAssertFalse(opens(link, server("deployment-a"), nil))
+        XCTAssertFalse(opens(link, server("deployment-b"), "profile-a"))
+        XCTAssertFalse(opens(link, nil, "profile-a"))
+        // A server whose identity was never verified is recognised by the
+        // target it registered, and by nothing else.
+        XCTAssertFalse(opens(link, server(nil), "profile-a"))
+        XCTAssertTrue(noTargets.save(Self.target("a", profileID: "profile-a")))
+        XCTAssertTrue(opens(link, server(nil), "profile-a"))
+        XCTAssertTrue(opens(legacyLink, server("deployment-b"), nil))
+    }
+
+    private func isolatedStorage() throws -> (SharedDefaults, SharedKeychain) {
+        let name = "ApplePushRegistrationTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: name))
+        let keychain = SharedKeychain(service: name, accessGroup: nil)
+        addTeardownBlock {
+            UserDefaults().removePersistentDomain(forName: name)
+            for account in [SharedStorage.applePushDisplayTargetsAccount, SharedStorage.mirroredAccessTokenAccount,
+                            SharedStorage.mirroredProfileTokenAccount] {
+                keychain.delete(account)
+            }
+        }
+        return (SharedDefaults(suite: suite, standard: suite), keychain)
+    }
+
+    private static func target(_ server: String, profileID: String) -> ApplePushDisplayTarget {
+        ApplePushDisplayTarget(serverID: "deployment-\(server)", profileID: profileID,
+            registryServerID: "registry-\(server)", serverURL: "https://\(server).example",
+            displayToken: "display-\(server)", expiresAt: nil)
     }
 
     func testNotificationDisplayURLMapsToAppDeepLink() throws {

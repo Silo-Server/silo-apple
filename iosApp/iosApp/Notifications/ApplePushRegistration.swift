@@ -1,63 +1,21 @@
 #if os(iOS)
 import Foundation
 import OSLog
+import Synchronization
 import UIKit
 import UserNotifications
 
-/// Persists the registration's display token where the Notification Service
-/// extension reads it. Kept separate from `TokenStore`'s access/profile
-/// mirrors because it is minted per registration, not per sign-in.
-struct ApplePushDisplayTokenStore {
+extension ApplePushDisplayTarget {
     /// Renew this far ahead of expiry so a token never lapses between two
     /// foregrounds; the server's default lifetime is 30 days.
     static let renewalLeadTime: TimeInterval = 7 * 24 * 60 * 60
 
-    var keychain: SharedKeychain = SharedKeychain(audience: TokenStore.profileCredentialAudience)
-    var defaults: SharedDefaults = .shared
-    var now: @Sendable () -> Date = { Date() }
-
-    /// `true` when a token issued by `serverID` is stored and is not within
-    /// `renewalLeadTime` of its expiry. A token with no recorded expiry, or
-    /// one that fails to parse, is treated as needing renewal: the metadata is
-    /// written only alongside a successful Keychain write, so its absence
-    /// means the token's state is unknown and a fresh registration is the
-    /// safe move.
-    func hasCurrentToken(forServerID serverID: String) -> Bool {
-        guard defaults.string(forKey: SharedStorage.applePushDisplayTokenServerIdKey) == serverID else { return false }
-        let stored = keychain.get(SharedStorage.applePushDisplayTokenAccount) ?? ""
-        guard !stored.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
-        guard let raw = defaults.string(forKey: SharedStorage.applePushDisplayTokenExpiresAtKey),
-              let expiresAt = Self.parseExpiry(raw) else {
-            return false
-        }
-        return expiresAt.timeIntervalSince(now()) > Self.renewalLeadTime
-    }
-
-    /// Returns `true` when the token was written, or when there was nothing
-    /// to write and any stale token was removed.
-    ///
-    /// Metadata only follows a Keychain mutation that succeeded. If the write
-    /// or delete fails, the previous token and its expiry stay paired, so
-    /// `hasCurrentToken()` keeps reporting the old token's real state and
-    /// registration retries on the next foreground instead of treating a
-    /// stale credential as current.
-    @discardableResult
-    func store(_ token: String?, expiresAt: String?, serverId: String) -> Bool {
-        let trimmed = token?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !trimmed.isEmpty else {
-            let removed = keychain.delete(SharedStorage.applePushDisplayTokenAccount)
-            if removed {
-                defaults.removeObject(forKey: SharedStorage.applePushDisplayTokenExpiresAtKey)
-                defaults.removeObject(forKey: SharedStorage.applePushDisplayTokenServerIdKey)
-            }
-            return removed
-        }
-        let written = keychain.set(trimmed, for: SharedStorage.applePushDisplayTokenAccount)
-        if written {
-            defaults.set(expiresAt, forKey: SharedStorage.applePushDisplayTokenExpiresAtKey)
-            defaults.set(serverId, forKey: SharedStorage.applePushDisplayTokenServerIdKey)
-        }
-        return written
+    /// Whether the token outlives the renewal window. A token with no
+    /// recorded or readable expiry is renewed: its state is unknown.
+    func isCurrent(at now: Date) -> Bool {
+        guard !displayToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let raw = expiresAt, let expiry = Self.parseExpiry(raw) else { return false }
+        return expiry.timeIntervalSince(now) > Self.renewalLeadTime
     }
 
     static func parseExpiry(_ raw: String) -> Date? {
@@ -68,9 +26,40 @@ struct ApplePushDisplayTokenStore {
     }
 }
 
+extension ApplePushDisplayTargetStore {
+    /// Moves the one display token an earlier build kept into a target for
+    /// the server and profile it was minted for, which were active then:
+    /// that build dropped the token whenever either changed. Without a
+    /// known deployment identity the target is stored for renewal, whose
+    /// receipt names the identity. The old token is deleted once a target
+    /// holds it, or at once when it no longer matches the active server.
+    func migrateLegacyToken(defaults: SharedDefaults, savedServer: (String) -> ServerEntry?) {
+        guard let token = keychain.get(SharedStorage.applePushDisplayTokenAccount) else { return }
+        let registryServerID = defaults.string(forKey: SharedStorage.applePushDisplayTokenServerIdKey) ?? ""
+        if registryServerID == defaults.string(forKey: SharedStorage.activeServerIdKey),
+           let profileID = defaults.string(forKey: SharedStorage.profileIdKey), !profileID.isEmpty,
+           let server = savedServer(registryServerID) {
+            let serverID = ServerIdentity.usable(server.verifiedServerId)
+            let migrated = save(ApplePushDisplayTarget(
+                serverID: serverID,
+                profileID: profileID,
+                registryServerID: registryServerID,
+                serverURL: server.url,
+                displayToken: token,
+                expiresAt: serverID == nil ? nil : defaults.string(forKey: SharedStorage.applePushDisplayTokenExpiresAtKey)
+            ))
+            guard migrated else { return }
+        }
+        guard keychain.delete(SharedStorage.applePushDisplayTokenAccount) else { return }
+        defaults.removeObject(forKey: SharedStorage.applePushDisplayTokenExpiresAtKey)
+        defaults.removeObject(forKey: SharedStorage.applePushDisplayTokenServerIdKey)
+    }
+}
+
 enum ApplePushRegistrationWire {
     static let defaultTopic = "org.siloserver.silo"
     static let privatePushMode = "private_push"
+    static let offPushMode = "off"
 
     /// The APNs environment is a *signing-time* decision (the
     /// `aps-environment` entitlement from the provisioning profile), not a
@@ -148,12 +137,18 @@ enum ApplePushRegistrationWire {
 
 /// Runs one ordered registration: journal allocation, the capability check,
 /// the send, and the receipt. An actor so Keychain reads and writes stay off
-/// the main actor and at most one registration runs at a time.
+/// the main actor; registrations queue so at most one runs at a time, for
+/// any server.
+///
+/// The active server registers through `HTTPClient` under the captured
+/// durable owner. Every other saved server with a display target registers
+/// through its own stored session (`ApplePushSavedServerClient`), so its
+/// display token stays current while another server is in use.
 ///
 /// Outcomes (`docs/native-api-v2.md`):
-/// - Accepted: the journal records the receipt; the display token is stored
-///   (or cleared for a disabled or removed registration) under the captured
-///   durable owner.
+/// - Accepted: the journal records the receipt; the server's display target
+///   is stored (or removed for a disabled, removed, or non-push
+///   registration) while the owner still holds the server's credentials.
 /// - Refused (400, 404, 406, 409, 413, 415, 422, or a receipt for another
 ///   generation): the journal records the refusal and the intent is not sent
 ///   again. The next changed intent (APNs token, account, login, profile)
@@ -205,34 +200,106 @@ actor ApplePushRegistrar {
     private let api: APIv2Client
     private let tokenStore: TokenStore
     private let journal: ApplePushInstallationJournal
-    private let displayTokens: ApplePushDisplayTokenStore
+    private let displayTargets: ApplePushDisplayTargetStore
+    private let savedServers: ApplePushSavedServerClient
+    /// The deployment identity the registry knows for a saved server, for a
+    /// receipt that does not name one.
+    private let savedServerIdentity: @Sendable (String) async -> String?
     private let now: @Sendable () -> Date
     /// Per server: the generation not to send again until the interval ends.
     private var held: [String: (generation: Int64, at: Date)] = [:]
+    private var isRegistering = false
+    private var queued: [CheckedContinuation<Void, Never>] = []
 
     init(api: APIv2Client = SiloAPI.shared.apiV2Client, tokenStore: TokenStore = .shared,
          journal: ApplePushInstallationJournal = ApplePushInstallationJournal(),
-         displayTokens: ApplePushDisplayTokenStore = ApplePushDisplayTokenStore(),
+         displayTargets: ApplePushDisplayTargetStore = ApplePushDisplayTargetStore(
+             keychain: SharedKeychain(audience: TokenStore.profileCredentialAudience)),
+         savedServers: ApplePushSavedServerClient = ApplePushSavedServerClient(),
+         savedServerIdentity: @escaping @Sendable (String) async -> String? = { serverID in
+             await MainActor.run { ServerRegistry.shared.entry(with: serverID)?.verifiedServerId }
+         },
          now: @escaping @Sendable () -> Date = { Date() }) {
         self.api = api
         self.tokenStore = tokenStore
         self.journal = journal
-        self.displayTokens = displayTokens
+        self.displayTargets = displayTargets
+        self.savedServers = savedServers
+        self.savedServerIdentity = savedServerIdentity
         self.now = now
     }
 
+    /// Registers the active server under its captured durable owner.
     func register(_ body: APIv2ApplePushRegistrationBody, owner: CapturedDurableAccountAuth) async -> Result {
         guard let intentOwner = ApplePushIntentOwner(owner) else { return .notSent(reason: "owner") }
+        let api = self.api, tokenStore = self.tokenStore
+        return await register(body, through: ApplePushRegistrationChannel(
+            owner: intentOwner,
+            serverURL: owner.request.account.serverURL,
+            capability: { try await api.applePushRegistrationCapability(auth: owner.request) },
+            send: { try await api.registerApplePush($0, installationKey: $1, generation: $2, auth: owner.request) },
+            commit: { try await tokenStore.withCurrentDurableAuthority(owner, operation: $0) }
+        ))
+    }
+
+    /// Registers a saved server under `owner`, the owner of its journal's
+    /// latest intent, with that server's stored session.
+    func register(_ body: APIv2ApplePushRegistrationBody, savedServer owner: ApplePushIntentOwner) async -> Result {
+        guard let channel = savedServers.channel(for: owner) else { return .notSent(reason: "server_url") }
+        return await register(body, through: channel)
+    }
+
+    /// Keeps every other saved server's registration current, each with its
+    /// own stored session: renews a display token nearing expiry, and moves
+    /// the registration to a new APNs token. `activeServerID` was just
+    /// registered through the active session and is skipped.
+    func registerSavedServers(_ body: APIv2ApplePushRegistrationBody, skipping activeServerID: String?) async {
+        for target in displayTargets.targets() where target.registryServerID != activeServerID {
+            guard let latest = try? journal.load(serverID: target.registryServerID)?.latest,
+                  latest.intent.owner.profileID == target.profileID,
+                  latest.intent.body.pushMode == body.pushMode else { continue }
+            let result = await register(body, savedServer: latest.intent.owner)
+            if result != .unchanged {
+                Self.logger.info("Saved-server Apple push registration: \(String(describing: result), privacy: .public)")
+            }
+        }
+    }
+
+    /// Turns pushes off for `serverID` while its credentials still exist.
+    /// Uses the active session when `activeOwner` belongs to that server,
+    /// otherwise the server's stored session under its journal's owner.
+    /// Nothing is sent for a server that never registered, or whose
+    /// registration the server already disabled or removed.
+    func unregister(serverID: String, activeOwner: CapturedDurableAccountAuth?) async -> Result {
+        guard let latest = try? journal.load(serverID: serverID)?.latest else { return .unchanged }
+        if case .accepted(let registration) = latest.outcome, !registration.isActive { return .unchanged }
+        let current = latest.intent.body
+        let off = APIv2ApplePushRegistrationBody(deviceId: current.deviceId, apnsToken: current.apnsToken,
+            apnsEnvironment: current.apnsEnvironment, apnsTopic: current.apnsTopic,
+            pushMode: ApplePushRegistrationWire.offPushMode)
+        if let activeOwner, ApplePushIntentOwner(activeOwner)?.serverID == serverID {
+            return await register(off, owner: activeOwner)
+        }
+        return await register(off, savedServer: latest.intent.owner)
+    }
+
+    private func register(_ body: APIv2ApplePushRegistrationBody, through channel: ApplePushRegistrationChannel) async -> Result {
+        await waitForTurn()
+        defer { finishTurn() }
         if let field = ApplePushRegistrationWire.contractViolation(in: body) {
             return .notSent(reason: "invalid_\(field)")
         }
+        let intentOwner = channel.owner
         let serverID = intentOwner.serverID
         let desired = ApplePushInstallationIntent(owner: intentOwner, body: body)
         let planned: (record: ApplePushInstallationRecord, command: ApplePushRegistrationCommand?, allocated: Bool)
         do {
             let record = try journal.loadOrCreate(serverID: serverID)
-            planned = try ApplePushInstallationJournal.plan(record, desired: desired,
-                renewDisplayToken: needsDisplayToken(serverID: serverID, generation: record.generation))
+            // Only a push registration carries a display token to renew; an
+            // accepted `off` is never replayed.
+            let renew = body.pushMode == ApplePushRegistrationWire.privatePushMode
+                && needsDisplayToken(owner: intentOwner, generation: record.generation)
+            planned = try ApplePushInstallationJournal.plan(record, desired: desired, renewDisplayToken: renew)
         } catch {
             return .notSent(reason: "journal_\(error)")
         }
@@ -244,7 +311,7 @@ actor ApplePushRegistrar {
         }
 
         do {
-            let capability = try await api.applePushRegistrationCapability(auth: owner.request)
+            let capability = try await channel.capability()
             guard capability.permitsRegistration else {
                 Self.logger.info("Ordered Apple push registration is unavailable: state=\(capability.state, privacy: .public) allowed=\(capability.allowed, privacy: .public) registration_available=\(capability.registrationAvailable, privacy: .public)")
                 return .unavailable
@@ -261,7 +328,7 @@ actor ApplePushRegistrar {
             let journal = self.journal
             let allocated = planned.record
             do {
-                try await tokenStore.withCurrentDurableAuthority(owner) {
+                try await channel.commit {
                     try journal.save(allocated, serverID: serverID)
                 }
             } catch {
@@ -271,8 +338,7 @@ actor ApplePushRegistrar {
 
         let receipt: APIv2ApplePushRegistrationReceipt
         do {
-            receipt = try await api.registerApplePush(command.intent.body, installationKey: command.installationKey,
-                generation: command.generation, auth: owner.request)
+            receipt = try await channel.send(command.intent.body, command.installationKey, command.generation)
         } catch {
             if let reason = Self.refusalReason(error), !command.isRenewal || Self.isGenerationConflict(error) {
                 record(.refused(reason: reason), for: command, serverID: serverID)
@@ -291,29 +357,63 @@ actor ApplePushRegistrar {
         let registration = ApplePushAcceptedRegistration(id: receipt.id, serverDeviceID: receipt.serverDeviceId,
             enabled: receipt.enabled, removed: receipt.removed)
         record(.accepted(registration), for: command, serverID: serverID)
-        // Always store, even when nil: a disabled or removed registration, or
-        // a server that cannot mint a token, must not leave an older token in
-        // the extension's slot. The write runs in the same TokenStore turn as
-        // the owner check, so a sign-out or profile switch that already
-        // cleared the slot cannot be undone by this late answer.
-        let token = registration.isActive ? receipt.displayToken : nil
-        let displayTokens = self.displayTokens
-        let expiresAt = token == nil ? nil : receipt.displayTokenExpiresAt
+        // Always written, even without a token: a disabled, removed, or
+        // non-push registration, or a server that cannot mint a token, must
+        // not leave an older target behind. The write runs in the same
+        // TokenStore turn as the owner check, so a sign-out that already
+        // removed the target cannot be undone by this late answer.
+        let token = receipt.displayToken?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        var target: ApplePushDisplayTarget?
+        if registration.isActive, body.pushMode == ApplePushRegistrationWire.privatePushMode, !token.isEmpty {
+            var deploymentID = ServerIdentity.usable(receipt.serverId)
+            if deploymentID == nil {
+                deploymentID = ServerIdentity.usable(await savedServerIdentity(serverID))
+            }
+            target = ApplePushDisplayTarget(serverID: deploymentID, profileID: intentOwner.profileID,
+                registryServerID: serverID, serverURL: channel.serverURL, displayToken: token,
+                expiresAt: receipt.displayTokenExpiresAt)
+        }
+        let displayTargets = self.displayTargets
         do {
-            try await tokenStore.withCurrentDurableAuthority(owner) {
-                displayTokens.store(token, expiresAt: expiresAt, serverId: serverID)
+            try await channel.commit { [target] in
+                if let target {
+                    displayTargets.save(target)
+                } else {
+                    displayTargets.removeTargets(registeredBy: serverID)
+                }
             }
         } catch {
             Self.logger.info("Discarding Apple push display token: owner changed while in flight")
         }
         held[serverID] = registration.isActive && receipt.displayToken == nil
             ? (command.generation, now()) : nil
-        Self.logger.info("Registered APNs token with Silo generation=\(command.generation, privacy: .public) renewal=\(command.isRenewal, privacy: .public) server_device_id=\(receipt.serverDeviceId, privacy: .private) enabled=\(receipt.enabled, privacy: .public) removed=\(receipt.removed, privacy: .public) displayToken=\(token != nil, privacy: .public)")
+        Self.logger.info("Registered APNs token with Silo generation=\(command.generation, privacy: .public) renewal=\(command.isRenewal, privacy: .public) push_mode=\(body.pushMode, privacy: .public) server_device_id=\(receipt.serverDeviceId, privacy: .private) enabled=\(receipt.enabled, privacy: .public) removed=\(receipt.removed, privacy: .public) displayToken=\(target != nil, privacy: .public)")
         return .registered(registration)
     }
 
-    private func needsDisplayToken(serverID: String, generation: Int64) -> Bool {
-        !displayTokens.hasCurrentToken(forServerID: serverID) && !isHeld(serverID: serverID, generation: generation)
+    private func needsDisplayToken(owner: ApplePushIntentOwner, generation: Int64) -> Bool {
+        if let target = displayTargets.target(registeredBy: owner.serverID), target.profileID == owner.profileID,
+           target.isCurrent(at: now()) {
+            return false
+        }
+        return !isHeld(serverID: owner.serverID, generation: generation)
+    }
+
+    private func waitForTurn() async {
+        guard isRegistering else {
+            isRegistering = true
+            return
+        }
+        await withCheckedContinuation { queued.append($0) }
+    }
+
+    /// Hands the turn to the next queued registration, if any.
+    private func finishTurn() {
+        if queued.isEmpty {
+            isRegistering = false
+        } else {
+            queued.removeFirst().resume()
+        }
     }
 
     private func isHeld(serverID: String, generation: Int64) -> Bool {
@@ -477,10 +577,10 @@ final class ApplePushRegistrationCoordinator {
         Self.logger.error("APNs device-token registration failed: \(String(describing: error), privacy: .public)")
     }
 
-    /// Registers the current APNs token for the current owner. A call while a
-    /// registration is running asks for one more pass after it, so a token or
-    /// profile change during the send is not lost and two sends never race
-    /// for a generation.
+    /// Registers the current APNs token for the current owner, then keeps
+    /// every other saved server's registration current. A call while a pass
+    /// is running asks for one more pass after it, so a token or profile
+    /// change during the send is not lost.
     func registerCurrentDeviceTokenIfPossible() async {
         guard AuthService.shared.hasServer, AuthService.shared.hasProfile, lastDeviceToken != nil else {
             return
@@ -507,16 +607,61 @@ final class ApplePushRegistrationCoordinator {
         default:
             return
         }
+        let body = makeRegistrationRequest(deviceToken: lastDeviceToken)
         // Registration is durable work for one verified account, login and
         // profile. Temporary playback credentials and unverified sessions
         // cannot capture this owner, so they never register the installation.
-        guard let owner = await TokenStore.shared.captureDurableAccountAuth() else {
+        var activeServerID: String?
+        if let owner = await TokenStore.shared.captureDurableAccountAuth() {
+            activeServerID = ApplePushIntentOwner(owner)?.serverID
+            let result = await registrar.register(body, owner: owner)
+            if case .notSent(let reason) = result {
+                Self.logger.info("Apple push registration not sent: \(reason, privacy: .public)")
+            }
+        } else {
             Self.logger.info("Skipping Apple push registration: no verified account owner to register under")
-            return
         }
-        let result = await registrar.register(makeRegistrationRequest(deviceToken: lastDeviceToken), owner: owner)
-        if case .notSent(let reason) = result {
-            Self.logger.info("Apple push registration not sent: \(reason, privacy: .public)")
+        await registrar.registerSavedServers(body, skipping: activeServerID)
+    }
+
+    /// How long sign-out and server removal wait for a server to turn pushes
+    /// off. They go ahead either way; the server's later pushes then keep
+    /// the generic text, since the device no longer holds its target.
+    static let unregisterDeadline: Duration = .seconds(5)
+
+    /// Turns pushes off for a saved server (`ServerEntry.id`) before its
+    /// credentials are cleared. Once they are gone nothing can tell the
+    /// server, which would keep pushing notifications this device cannot
+    /// display.
+    func unregister(serverID: String) async {
+        let registrar = self.registrar
+        let owner = await TokenStore.shared.captureDurableAccountAuth()
+        await Self.waitAtMost(Self.unregisterDeadline) {
+            _ = await registrar.unregister(serverID: serverID, activeOwner: owner)
+        }
+    }
+
+    /// Moves an earlier build's single display token into a target. Runs at
+    /// launch, before a registration pass could renew it.
+    static func migrateLegacyDisplayToken() {
+        ApplePushDisplayTargetStore(keychain: SharedKeychain(audience: TokenStore.profileCredentialAudience))
+            .migrateLegacyToken(defaults: .shared) { ServerRegistry.shared.entry(with: $0) }
+    }
+
+    /// Waits for `operation` at most `limit`. Past that it runs on unawaited;
+    /// its owner fence refuses anything it would still write once the
+    /// credentials are gone.
+    nonisolated static func waitAtMost(_ limit: Duration, for operation: @escaping @Sendable () async -> Void) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let once = ResumeOnce(continuation)
+            Task {
+                await operation()
+                once.resume()
+            }
+            Task {
+                try? await Task.sleep(for: limit)
+                once.resume()
+            }
         }
     }
 
@@ -528,6 +673,22 @@ final class ApplePushRegistrationCoordinator {
             apnsTopic: ApplePushRegistrationWire.topic(bundleIdentifier: Bundle.main.bundleIdentifier),
             pushMode: ApplePushRegistrationWire.privatePushMode
         )
+    }
+}
+
+private final class ResumeOnce: Sendable {
+    private let continuation: Mutex<CheckedContinuation<Void, Never>?>
+
+    init(_ continuation: CheckedContinuation<Void, Never>) {
+        self.continuation = Mutex(continuation)
+    }
+
+    func resume() {
+        let pending = continuation.withLock { slot -> CheckedContinuation<Void, Never>? in
+            defer { slot = nil }
+            return slot
+        }
+        pending?.resume()
     }
 }
 #endif

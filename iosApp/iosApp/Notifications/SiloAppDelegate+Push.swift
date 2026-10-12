@@ -17,6 +17,7 @@ extension SiloAppDelegate: UNUserNotificationCenterDelegate {
         // launch finishes — the system traps when it launches the app for a
         // task with no handler.
         DownloadBackgroundRefresh.register()
+        ApplePushRegistrationCoordinator.migrateLegacyDisplayToken()
         Self.recordApplePushDisplayOutcomes()
         NotificationCenter.default.addObserver(
             forName: UIApplication.willEnterForegroundNotification,

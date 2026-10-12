@@ -171,6 +171,8 @@ final class ServerRegistry {
     private let tokenStore: TokenStore
     private let httpClient: HTTPClient
     private let persistenceOverride: (([ServerEntry], String?) -> Bool)?
+    /// Turns the server's push registration off (`ApplePushRegistrationCoordinator.unregister`).
+    private let unregisterPush: @Sendable (String) async -> Void
 
     init(
         defaults: SharedDefaults = .shared,
@@ -178,7 +180,12 @@ final class ServerRegistry {
         launchPreferences: ProfileLaunchPreferences = .shared,
         persistenceOverride: (([ServerEntry], String?) -> Bool)? = nil,
         tokenStore: TokenStore = .shared,
-        httpClient: HTTPClient = .shared
+        httpClient: HTTPClient = .shared,
+        unregisterPush: @escaping @Sendable (String) async -> Void = { serverID in
+            #if os(iOS)
+            await ApplePushRegistrationCoordinator.shared.unregister(serverID: serverID)
+            #endif
+        }
     ) {
         self.defaults = defaults
         self.keychain = keychain
@@ -186,6 +193,7 @@ final class ServerRegistry {
         self.persistenceOverride = persistenceOverride
         self.tokenStore = tokenStore
         self.httpClient = httpClient
+        self.unregisterPush = unregisterPush
         Self.adoptLegacyDefaultsKeys(defaults)
         load()
         migrateLegacyIfNeeded()
@@ -501,6 +509,11 @@ final class ServerRegistry {
         serverId: String,
         resolveFallbackProfile: Bool = false
     ) async -> Bool {
+        // Only a device that can still authenticate can tell the server to
+        // stop pushing, so this runs before the credentials are deleted.
+        if entries.contains(where: { $0.id == serverId }) {
+            await unregisterPush(serverId)
+        }
         guard let transitionLease = await httpClient.beginIdentityTransition() else {
             recordRegistryEvent(
                 phase: "removeServer",

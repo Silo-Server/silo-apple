@@ -874,6 +874,17 @@ struct ContentView: View {
             return
         }
 
+        #if os(iOS)
+        // A notification from another server or profile does not navigate.
+        // Checked once a profile is in use: a link held for profile
+        // selection must match the profile chosen.
+        if router.authState == .authenticated,
+           !ApplePushDeepLinkCoordinator.opensUnderActiveIdentity(
+               url, activeServer: serverRegistry.activeServer, activeProfileID: serverRegistry.activeProfileId) {
+            return
+        }
+        #endif
+
         if host == "downloads" {
             guard router.authState == .authenticated else {
                 pendingDeepLink = url
