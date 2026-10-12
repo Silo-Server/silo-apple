@@ -231,15 +231,8 @@ actor ApplePushRegistrar {
 
     /// Registers the active server under its captured durable owner.
     func register(_ body: APIv2ApplePushRegistrationBody, owner: CapturedDurableAccountAuth) async -> Result {
-        guard let intentOwner = ApplePushIntentOwner(owner) else { return .notSent(reason: "owner") }
-        let api = self.api, tokenStore = self.tokenStore
-        return await register(body, through: ApplePushRegistrationChannel(
-            owner: intentOwner,
-            serverURL: owner.request.account.serverURL,
-            capability: { try await api.applePushRegistrationCapability(auth: owner.request) },
-            send: { try await api.registerApplePush($0, installationKey: $1, generation: $2, auth: owner.request) },
-            commit: { try await tokenStore.withCurrentDurableAuthority(owner, operation: $0) }
-        ))
+        guard let channel = activeChannel(for: owner) else { return .notSent(reason: "owner") }
+        return await register(body, through: channel)
     }
 
     /// Registers a saved server under `owner`, the owner of its journal's
@@ -249,14 +242,19 @@ actor ApplePushRegistrar {
         return await register(body, through: channel)
     }
 
-    /// Keeps every other saved server's registration current, each with its
-    /// own stored session: renews a display token nearing expiry, and moves
-    /// the registration to a new APNs token. `activeServerID` was just
-    /// registered through the active session and is skipped.
-    func registerSavedServers(_ body: APIv2ApplePushRegistrationBody, skipping activeServerID: String?) async {
-        for target in displayTargets.targets() where target.registryServerID != activeServerID {
-            guard let latest = try? journal.load(serverID: target.registryServerID)?.latest,
-                  latest.intent.owner.profileID == target.profileID,
+    /// Keeps the registration of every other saved server in `serverIDs`
+    /// current, each with its own stored session: renews a display token
+    /// nearing expiry, moves the registration to a new APNs token, and sends
+    /// again an intent whose answer was lost or that came back without a
+    /// token. It follows each server's journal rather than its display
+    /// target, which a lost answer or a tokenless receipt leaves stale or
+    /// missing. `activeServerID` was just registered through the active
+    /// session and is skipped. A cancelled pass stops between servers.
+    func registerSavedServers(_ body: APIv2ApplePushRegistrationBody, among serverIDs: [String],
+                              skipping activeServerID: String?) async {
+        for serverID in serverIDs where serverID != activeServerID {
+            guard !Task.isCancelled else { return }
+            guard let latest = try? journal.load(serverID: serverID)?.latest,
                   latest.intent.body.pushMode == body.pushMode else { continue }
             let result = await register(body, savedServer: latest.intent.owner)
             if result != .unchanged {
@@ -269,7 +267,9 @@ actor ApplePushRegistrar {
     /// Uses the active session when `activeOwner` belongs to that server,
     /// otherwise the server's stored session under its journal's owner.
     /// Nothing is sent for a server that never registered, or whose
-    /// registration the server already disabled or removed.
+    /// registration the server already disabled or removed. It goes ahead of
+    /// queued registrations: the credentials it needs are about to be
+    /// deleted, while queued maintenance can run on the next pass.
     func unregister(serverID: String, activeOwner: CapturedDurableAccountAuth?) async -> Result {
         guard let latest = try? journal.load(serverID: serverID)?.latest else { return .unchanged }
         if case .accepted(let registration) = latest.outcome, !registration.isActive { return .unchanged }
@@ -277,14 +277,31 @@ actor ApplePushRegistrar {
         let off = APIv2ApplePushRegistrationBody(deviceId: current.deviceId, apnsToken: current.apnsToken,
             apnsEnvironment: current.apnsEnvironment, apnsTopic: current.apnsTopic,
             pushMode: ApplePushRegistrationWire.offPushMode)
+        let channel: ApplePushRegistrationChannel?
         if let activeOwner, ApplePushIntentOwner(activeOwner)?.serverID == serverID {
-            return await register(off, owner: activeOwner)
+            channel = activeChannel(for: activeOwner)
+        } else {
+            channel = savedServers.channel(for: latest.intent.owner)
         }
-        return await register(off, savedServer: latest.intent.owner)
+        guard let channel else { return .notSent(reason: "server_url") }
+        return await register(off, through: channel, ahead: true)
     }
 
-    private func register(_ body: APIv2ApplePushRegistrationBody, through channel: ApplePushRegistrationChannel) async -> Result {
-        await waitForTurn()
+    private func activeChannel(for owner: CapturedDurableAccountAuth) -> ApplePushRegistrationChannel? {
+        guard let intentOwner = ApplePushIntentOwner(owner) else { return nil }
+        let api = self.api, tokenStore = self.tokenStore
+        return ApplePushRegistrationChannel(
+            owner: intentOwner,
+            serverURL: owner.request.account.serverURL,
+            capability: { try await api.applePushRegistrationCapability(auth: owner.request) },
+            send: { try await api.registerApplePush($0, installationKey: $1, generation: $2, auth: owner.request) },
+            commit: { try await tokenStore.withCurrentDurableAuthority(owner, operation: $0) }
+        )
+    }
+
+    private func register(_ body: APIv2ApplePushRegistrationBody, through channel: ApplePushRegistrationChannel,
+                          ahead: Bool = false) async -> Result {
+        await waitForTurn(ahead: ahead)
         defer { finishTurn() }
         if let field = ApplePushRegistrationWire.contractViolation(in: body) {
             return .notSent(reason: "invalid_\(field)")
@@ -399,12 +416,20 @@ actor ApplePushRegistrar {
         return !isHeld(serverID: owner.serverID, generation: generation)
     }
 
-    private func waitForTurn() async {
+    /// `ahead` takes the next turn, before every registration already
+    /// waiting.
+    private func waitForTurn(ahead: Bool) async {
         guard isRegistering else {
             isRegistering = true
             return
         }
-        await withCheckedContinuation { queued.append($0) }
+        await withCheckedContinuation { continuation in
+            if ahead {
+                queued.insert(continuation, at: 0)
+            } else {
+                queued.append(continuation)
+            }
+        }
     }
 
     /// Hands the turn to the next queued registration, if any.
@@ -515,6 +540,8 @@ final class ApplePushRegistrationCoordinator {
     private var lastDeviceToken: Data?
     private var registrationRunning = false
     private var registrationRequested = false
+    /// The running pass, which `unregister` cancels.
+    private var registrationPass: Task<Void, Never>?
     private var authorizationRequest: Task<Void, Never>?
 
     /// The permission request that is still waiting for the user's answer, if
@@ -588,10 +615,15 @@ final class ApplePushRegistrationCoordinator {
         registrationRequested = true
         guard !registrationRunning else { return }
         registrationRunning = true
-        defer { registrationRunning = false }
+        defer {
+            registrationRunning = false
+            registrationPass = nil
+        }
         while registrationRequested {
             registrationRequested = false
-            await registerOnce()
+            let pass = Task { await registerOnce() }
+            registrationPass = pass
+            await pass.value
         }
     }
 
@@ -621,7 +653,8 @@ final class ApplePushRegistrationCoordinator {
         } else {
             Self.logger.info("Skipping Apple push registration: no verified account owner to register under")
         }
-        await registrar.registerSavedServers(body, skipping: activeServerID)
+        await registrar.registerSavedServers(body, among: ServerRegistry.shared.entries.map(\.id),
+                                             skipping: activeServerID)
     }
 
     /// How long sign-out and server removal wait for a server to turn pushes
@@ -634,6 +667,10 @@ final class ApplePushRegistrationCoordinator {
     /// server, which would keep pushing notifications this device cannot
     /// display.
     func unregister(serverID: String) async {
+        // Turning a server off outranks keeping registrations current. The
+        // running pass stops at its next request, and the next pass sends
+        // whatever it leaves pending.
+        registrationPass?.cancel()
         let registrar = self.registrar
         let owner = await TokenStore.shared.captureDurableAccountAuth()
         await Self.waitAtMost(Self.unregisterDeadline) {

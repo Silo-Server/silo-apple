@@ -183,9 +183,10 @@ struct ApplePushDisplayStateReader {
     }
 
     /// A push that names its server and profile uses exactly that target's
-    /// display token. The mirrored access and profile tokens belong to the
-    /// active server and profile, so they join only a target that is both.
-    /// A push that names no target keeps the active server and profile.
+    /// display token and nothing else. The mirrored access and profile
+    /// tokens follow whichever server is active, which can change between
+    /// two reads, so they never travel with a target's address. A push that
+    /// names no target keeps the active server and profile.
     func route(for userInfo: [AnyHashable: Any]) -> ApplePushDisplayRoute {
         guard let name = ApplePushDisplayWire.targetName(from: userInfo) else {
             return ApplePushDisplayWire.namesTarget(userInfo) ? .unknownTarget : .fetch(storedState())
@@ -199,33 +200,32 @@ struct ApplePushDisplayStateReader {
             // targets did rather than drop every keyed push.
             return legacyDisplayToken().isEmpty ? .unknownTarget : .fetch(storedState())
         }
-        let active = isActive(target)
         return .fetch(ApplePushDisplayAuthState(
             serverURL: target.serverURL,
             profileID: target.profileID,
-            accessToken: active ? keychain.get(SharedStorage.mirroredAccessTokenAccount) ?? "" : "",
-            profileToken: active ? keychain.get(SharedStorage.mirroredProfileTokenAccount) ?? "" : "",
+            accessToken: "",
+            profileToken: "",
             displayToken: target.displayToken
         ))
     }
 
     /// The active server and profile's state, usable or not, so the
-    /// extension can say what is missing when it cannot fetch.
+    /// extension can say what is missing when it cannot fetch. The active
+    /// target's display token goes only to the address it was minted for.
     func storedState() -> ApplePushDisplayAuthState {
+        let serverURL = defaults.string(forKey: SharedStorage.serverUrlKey) ?? ""
         let profileID = defaults.string(forKey: SharedStorage.profileIdKey) ?? ""
-        let activeTarget = targets.targets().first(where: isActive)
+        let activeServerID = defaults.string(forKey: SharedStorage.activeServerIdKey)
+        let activeTarget = targets.targets().first {
+            $0.registryServerID == activeServerID && $0.profileID == profileID && $0.serverURL == serverURL
+        }
         return ApplePushDisplayAuthState(
-            serverURL: defaults.string(forKey: SharedStorage.serverUrlKey) ?? "",
+            serverURL: serverURL,
             profileID: profileID,
             accessToken: keychain.get(SharedStorage.mirroredAccessTokenAccount) ?? "",
             profileToken: keychain.get(SharedStorage.mirroredProfileTokenAccount) ?? "",
             displayToken: activeTarget?.displayToken ?? legacyDisplayToken()
         )
-    }
-
-    private func isActive(_ target: ApplePushDisplayTarget) -> Bool {
-        target.registryServerID == defaults.string(forKey: SharedStorage.activeServerIdKey)
-            && target.profileID == defaults.string(forKey: SharedStorage.profileIdKey)
     }
 
     /// The single token an earlier build stored for the active server,

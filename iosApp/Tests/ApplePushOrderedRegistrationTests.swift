@@ -525,7 +525,8 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         clock.set(Self.renewalDue)
         h.server.enqueue(.receipt(displayToken: "display-2"))
 
-        await registrar.registerSavedServers(Self.body(), skipping: Self.otherServerID)
+        await registrar.registerSavedServers(Self.body(), among: [Self.serverID, Self.otherServerID],
+                                             skipping: Self.otherServerID)
 
         let renewal = try XCTUnwrap(h.server.registrations.last)
         XCTAssertEqual(renewal.url?.host, "silo.example")
@@ -546,6 +547,58 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         XCTAssertEqual(request.header("X-Push-Installation-Key"), renewal.header("X-Push-Installation-Key"))
         XCTAssertTrue(request.bodyString?.contains(#""push_mode":"off""#) ?? false)
         XCTAssertEqual(h.targets.targets(), [])
+    }
+
+    /// A profile switch whose answer was lost leaves the old profile's
+    /// target and a pending intent for the new profile. Once another server
+    /// is active, maintenance still sends that intent again with the saved
+    /// server's own session, and the target follows the answer.
+    func testSavedServerMaintenanceReplaysALostProfileSwitch() async throws {
+        let h = try await makeHarness()
+        let registrar = h.registrar()
+        let first = try await h.owner()
+        _ = await registrar.register(Self.body(), owner: first)
+        await h.tokens.setProfileId("profile-b")
+        _ = await h.tokens.setProfileToken("proof-b")
+        let switched = try await h.owner()
+        h.server.enqueue(.transportFailure)
+        let lost = await registrar.register(Self.body(), owner: switched)
+        XCTAssertEqual(lost, .uncertain)
+        XCTAssertEqual(h.targets.targets(), [Self.target()])
+        try await h.signInToOtherServer()
+
+        await registrar.registerSavedServers(Self.body(), among: [Self.serverID, Self.otherServerID],
+                                             skipping: Self.otherServerID)
+
+        let replay = try XCTUnwrap(h.server.registrations.last)
+        XCTAssertEqual(replay.url?.host, "silo.example")
+        XCTAssertEqual(replay.header("X-Profile-Id"), "profile-b")
+        XCTAssertEqual(replay.header("X-Push-Generation"), "2")
+        XCTAssertEqual(h.targets.targets(), [Self.target(profileID: "profile-b")])
+    }
+
+    /// Sign-out waits only briefly for a server to turn pushes off before
+    /// deleting the credentials the request needs, so the off goes ahead of
+    /// registrations already waiting for their turn.
+    func testUnregisterGoesAheadOfQueuedRegistrations() async throws {
+        let h = try await makeHarness()
+        let registrar = h.registrar()
+        let owner = try await h.owner()
+        let gate = StubURLProtocol.Gate()
+        h.server.enqueue(.gated(gate))
+        let running = Task { await registrar.register(Self.body(), owner: owner) }
+        try await h.server.handler.waitForRequest(where: StubURLProtocol.method("POST", path: Self.registrationPath))
+        let queued = Task { await registrar.register(Self.body(token: Self.tokenB), owner: owner) }
+        try await Task.sleep(for: .milliseconds(200))
+        let off = Task { await registrar.unregister(serverID: Self.serverID, activeOwner: owner) }
+        try await Task.sleep(for: .milliseconds(200))
+
+        await gate.open()
+        _ = await (running.value, off.value, queued.value)
+
+        let sends = h.server.registrations
+        XCTAssertEqual(sends.map { $0.header("X-Push-Generation") }, ["1", "2", "3"])
+        XCTAssertEqual(sends.map { $0.bodyString?.contains(#""push_mode":"off""#) }, [false, true, false])
     }
 
     /// A deployment identity is self-asserted. A saved server claiming

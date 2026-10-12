@@ -15,25 +15,33 @@ enum ApplePushDeepLinkCoordinator {
 
     /// A push that names its server and profile carries them in the link,
     /// which waits like any other until a profile is in use. A push that
-    /// names only one of them has no link.
+    /// names only one of them has no link. Only the push itself names them:
+    /// the display URL comes from a server and cannot speak for another.
     static func deepLinkURL(from userInfo: [AnyHashable: Any]) -> URL? {
         guard let raw = userInfo[ApplePushDisplayWire.urlUserInfoKey] as? String,
-              let url = deepLinkURL(fromDisplayURL: raw) else { return nil }
-        guard ApplePushDisplayWire.namesTarget(userInfo) else { return url }
-        guard let name = ApplePushDisplayWire.targetName(from: userInfo),
+              let url = deepLinkURL(fromDisplayURL: raw),
               var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
-        components.queryItems = (components.queryItems ?? []) + [
-            URLQueryItem(name: serverIDQueryItem, value: name.serverID),
-            URLQueryItem(name: profileIDQueryItem, value: name.profileID),
-        ]
+        var items = (components.queryItems ?? []).filter {
+            $0.name != serverIDQueryItem && $0.name != profileIDQueryItem
+        }
+        if ApplePushDisplayWire.namesTarget(userInfo) {
+            guard let name = ApplePushDisplayWire.targetName(from: userInfo) else { return nil }
+            items += [
+                URLQueryItem(name: serverIDQueryItem, value: name.serverID),
+                URLQueryItem(name: profileIDQueryItem, value: name.profileID),
+            ]
+        }
+        components.queryItems = items.isEmpty ? nil : items
         return components.url
     }
 
     /// Whether `url` may open under the active server and profile. A link
     /// from a push that named its server and profile opens only under
     /// exactly those, so a tap never shows one server's or profile's item in
-    /// another; the app opens without navigating instead. Other links open
-    /// as before.
+    /// another; the app opens without navigating instead. When a saved
+    /// server holds the target the push was displayed with, that saved
+    /// server must be the active one; a server's reported identity counts
+    /// only when no saved server holds one. Other links open as before.
     static func opensUnderActiveIdentity(
         _ url: URL,
         activeServer: ServerEntry?,
@@ -41,14 +49,18 @@ enum ApplePushDeepLinkCoordinator {
         targets: ApplePushDisplayTargetStore = ApplePushDisplayTargetStore()
     ) -> Bool {
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
-        let serverID = items.first { $0.name == serverIDQueryItem }?.value
-        let profileID = items.first { $0.name == profileIDQueryItem }?.value
-        guard serverID != nil || profileID != nil else { return true }
-        guard let serverID, let profileID, let activeServer, profileID == activeProfileID else { return false }
+        let serverIDs = items.filter { $0.name == serverIDQueryItem }.map(\.value)
+        let profileIDs = items.filter { $0.name == profileIDQueryItem }.map(\.value)
+        guard !serverIDs.isEmpty || !profileIDs.isEmpty else { return true }
+        // Exactly one of each, or the link's attribution cannot be trusted.
+        guard serverIDs.count == 1, profileIDs.count == 1, let serverID = serverIDs[0], let profileID = profileIDs[0],
+              let activeServer, profileID == activeProfileID else { return false }
         let claims = targets.targets(serverID: serverID, profileID: profileID)
-        guard claims.count <= 1 else { return false }
-        if ServerIdentity.usable(activeServer.verifiedServerId) == serverID { return true }
-        return claims.first?.registryServerID == activeServer.id
+        switch claims.count {
+        case 0: return ServerIdentity.usable(activeServer.verifiedServerId) == serverID
+        case 1: return claims[0].registryServerID == activeServer.id
+        default: return false
+        }
     }
 
     static func deepLinkURL(fromDisplayURL rawValue: String) -> URL? {
