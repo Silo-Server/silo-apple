@@ -207,27 +207,44 @@ final class ApplePushRegistrationTests: XCTestCase {
         XCTAssertTrue(stub.unmatched.isEmpty)
     }
 
-    /// The extension gets about 30 s per push. A request that never answers
-    /// ends at the budget instead of its own idle timeout, and a refused
-    /// display token too close to the end does not start a fallback request.
+    /// The extension gets about 30 s per push, and the fetch ends inside its
+    /// budget. A 503 whose Retry-After still leaves time admits one more
+    /// attempt, and that request is cut off at the budget rather than at its
+    /// own timeout. A Retry-After longer than the time left starts nothing,
+    /// and a refused display token too close to the end does not start a
+    /// fallback request.
     func testDisplayFetchEndsAtTheBudget() async throws {
         let displayPath = "/api/v2/notifications/push/apple/display/delivery-1"
         let state = ApplePushDisplayAuthState(serverURL: "https://silo.example.test", profileID: "profile-1",
             accessToken: "access", profileToken: "", displayToken: "display-token")
-        let hung = StubURLProtocol.Handler()
+        let busyThenHung = StubURLProtocol.Handler()
+        busyThenHung.expect(StubURLProtocol.path(displayPath)) { _ in
+            .json(#"{"status":503}"#, status: 503, headers: ["Retry-After": "1"])
+        }
         let gate = StubURLProtocol.Gate()
-        hung.route(StubURLProtocol.path(displayPath)) { _ in
+        busyThenHung.route(StubURLProtocol.path(displayPath)) { _ in
             await gate.wait()
             return .json("{}")
         }
         let started = Date()
 
-        let timedOut = await ApplePushDisplayClient(session: hung.makeSession(), budget: 0.5)
+        let cutOff = await ApplePushDisplayClient(session: busyThenHung.makeSession(), budget: 3.5)
             .fetchDisplay(deliveryID: "delivery-1", state: state)
 
-        XCTAssertLessThan(Date().timeIntervalSince(started), 3)
-        XCTAssertEqual((timedOut.outcome.failureValue as? URLError)?.code, .timedOut)
-        XCTAssertEqual(timedOut.attempts, 1)
+        XCTAssertEqual(cutOff.attempts, 2)
+        XCTAssertEqual((cutOff.outcome.failureValue as? URLError)?.code, .timedOut)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 4.5)
+
+        let waitTooLong = StubURLProtocol.Handler()
+        waitTooLong.route(StubURLProtocol.path(displayPath)) { _ in
+            .json(#"{"status":503}"#, status: 503, headers: ["Retry-After": "5"])
+        }
+
+        let waitedOut = await ApplePushDisplayClient(session: waitTooLong.makeSession(), budget: 3.5)
+            .fetchDisplay(deliveryID: "delivery-1", state: state)
+
+        XCTAssertEqual(waitedOut.attempts, 1)
+        XCTAssertEqual(waitTooLong.requests.count, 1)
 
         let refusing = StubURLProtocol.Handler()
         refusing.route(StubURLProtocol.path(displayPath)) { _ in .json(#"{"status":401}"#, status: 401) }
