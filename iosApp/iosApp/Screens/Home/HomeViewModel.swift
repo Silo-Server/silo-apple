@@ -16,6 +16,12 @@ class HomeViewModel {
     /// True only while loading with nothing cached to show.
     var isLoading = false
     var error: ErrorState?
+    /// Whether the app is in the background, kept by `HomeView` from the
+    /// scene phase.
+    var isInBackground = false
+    /// A load failed while the app was in the background: Home kept its
+    /// placeholder and loads again when the app returns.
+    private var reloadsOnReturn = false
     private(set) var actionError: ErrorState?
     /// An unconfirmed watched change, offered for discard. Never re-sent.
     var personalStateNotice: PersonalStateNotice?
@@ -70,6 +76,7 @@ class HomeViewModel {
     func loadSections() async {
         isLoading = sections.isEmpty
         error = nil
+        reloadsOnReturn = false
 
         do {
             try await fetchAndApplySections()
@@ -78,15 +85,25 @@ class HomeViewModel {
             // surface the error only when there's nothing to show.
             if sections.isEmpty {
                 let state = ErrorState(err)
-                if state.isTransient {
+                if state.isTransient, !isInBackground {
                     await retryTransientInitialLoad()
                 } else {
-                    self.error = state
+                    showFailure(state)
                 }
             }
         }
 
-        isLoading = false
+        // A load put off until the app returns keeps the placeholder up.
+        isLoading = reloadsOnReturn
+    }
+
+    /// Loads again when the last load failed or was put off while the app
+    /// was in the background. `HomeView` calls it as the app returns: Home
+    /// stays mounted while the app is away, so its appear task does not run
+    /// again.
+    func reloadIfLastLoadFailed() async {
+        guard error != nil || reloadsOnReturn else { return }
+        await loadSections()
     }
 
     /// The Continue Watching row mixes two kinds of cards, and the server keys
@@ -217,7 +234,19 @@ class HomeViewModel {
         do {
             try await fetchAndApplySections()
         } catch {
-            self.error = ErrorState(error)
+            showFailure(ErrorState(error))
+        }
+    }
+
+    /// A failure in the background (a request cut off when the app was
+    /// suspended, or no network while a push woke it) says nothing about
+    /// what the person will find on return, so it is not shown; Home loads
+    /// again then.
+    private func showFailure(_ state: ErrorState) {
+        if isInBackground {
+            reloadsOnReturn = true
+        } else {
+            error = state
         }
     }
 }

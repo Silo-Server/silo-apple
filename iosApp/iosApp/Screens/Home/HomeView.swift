@@ -35,6 +35,7 @@ struct HomeView: View {
     #endif
     #endif
     @Environment(AppRouter.self) private var router
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         @Bindable var viewModel = viewModel
@@ -93,6 +94,7 @@ struct HomeView: View {
         // Runs on every appear, so returning from the player refreshes
         // Continue Watching.
         .task {
+            viewModel.isInBackground = scenePhase == .background
             await viewModel.loadSections()
         }
         #else
@@ -179,6 +181,7 @@ struct HomeView: View {
         .toolbar(.hidden, for: .navigationBar)
         #endif
         .task {
+            viewModel.isInBackground = scenePhase == .background
             await viewModel.loadSections()
         }
         .refreshable {
@@ -188,6 +191,15 @@ struct HomeView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .homeSectionsShouldRefresh)) { _ in
             Task { await viewModel.loadSections() }
+        }
+        // Home stays mounted while the app is away. A load that failed or
+        // was cut off meanwhile runs again as the app returns, instead of
+        // leaving an error up until the person taps Retry.
+        .onChange(of: scenePhase) { _, phase in
+            viewModel.isInBackground = phase == .background
+            if phase == .active {
+                Task { await viewModel.reloadIfLastLoadFailed() }
+            }
         }
         .alert(
             "Couldn’t Update Item",
