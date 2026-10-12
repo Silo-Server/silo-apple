@@ -45,8 +45,10 @@ enum ApplePushDeepLinkCoordinator {
         let profileID = items.first { $0.name == profileIDQueryItem }?.value
         guard serverID != nil || profileID != nil else { return true }
         guard let serverID, let profileID, let activeServer, profileID == activeProfileID else { return false }
+        let claims = targets.targets(serverID: serverID, profileID: profileID)
+        guard claims.count <= 1 else { return false }
         if ServerIdentity.usable(activeServer.verifiedServerId) == serverID { return true }
-        return targets.target(serverID: serverID, profileID: profileID)?.registryServerID == activeServer.id
+        return claims.first?.registryServerID == activeServer.id
     }
 
     static func deepLinkURL(fromDisplayURL rawValue: String) -> URL? {

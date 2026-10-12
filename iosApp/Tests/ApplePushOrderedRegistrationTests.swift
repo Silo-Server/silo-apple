@@ -95,6 +95,7 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         let targets: ApplePushDisplayTargetStore
         let http: HTTPClient
         let api: APIv2Client
+        let defaults: SharedDefaults
 
         func registrar(clock: Clock? = nil, savedServerIdentity: String? = nil) -> ApplePushRegistrar {
             let now: @Sendable () -> Date = clock.map { clock in { clock.now } } ?? { Date() }
@@ -168,7 +169,8 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         let http = HTTPClient(session: server.handler.makeSession(), tokenStore: tokens)
         let api = APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false })
         let targets = ApplePushDisplayTargetStore(keychain: keychain.withAudience(.currentUser))
-        return Harness(tokens: tokens, server: server, journal: journal, targets: targets, http: http, api: api)
+        return Harness(tokens: tokens, server: server, journal: journal, targets: targets, http: http, api: api,
+            defaults: defaults)
     }
 
     private static func target(profileID: String = "profile-a", token: String = "display-1",
@@ -544,6 +546,28 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         XCTAssertEqual(request.header("X-Push-Installation-Key"), renewal.header("X-Push-Installation-Key"))
         XCTAssertTrue(request.bodyString?.contains(#""push_mode":"off""#) ?? false)
         XCTAssertEqual(h.targets.targets(), [])
+    }
+
+    /// A deployment identity is self-asserted. A saved server claiming
+    /// another's cannot displace that server's target, and a push naming the
+    /// contested server and profile is fetched from neither.
+    func testSavedServerClaimingAnothersIdentityCannotDisplaceItsTarget() async throws {
+        let h = try await makeHarness()
+        let registrar = h.registrar()
+        let owner = try await h.owner()
+        _ = await registrar.register(Self.body(), owner: owner)
+        try await h.signInToOtherServer()
+        await h.tokens.setProfileId("profile-a")
+        let claimant = try await h.owner()
+        h.server.enqueue(.receipt(displayToken: "display-b", serverID: "deployment-a"))
+
+        _ = await registrar.register(Self.body(), owner: claimant)
+
+        XCTAssertEqual(h.targets.target(registeredBy: Self.serverID), Self.target())
+        let reader = ApplePushDisplayStateReader(defaults: h.defaults, keychain: h.targets.keychain)
+        XCTAssertEqual(reader.route(for: [
+            "silo_delivery_id": "delivery-1", "silo_server_id": "deployment-a", "silo_profile_id": "profile-a",
+        ]), .ambiguousTarget)
     }
 
     /// Who's Watching and profile switches leave every server's target in

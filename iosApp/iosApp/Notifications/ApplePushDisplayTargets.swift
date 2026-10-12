@@ -37,8 +37,12 @@ struct ApplePushDisplayTargetStore: Sendable {
         (try? load()) ?? []
     }
 
-    func target(serverID: String, profileID: String) -> ApplePushDisplayTarget? {
-        targets().first { $0.serverID == serverID && $0.profileID == profileID }
+    /// Every target claiming the server and profile a push names. A
+    /// deployment identity is self-asserted, so more than one means saved
+    /// servers disagree about who that deployment is, and none can be
+    /// trusted.
+    func targets(serverID: String, profileID: String) -> [ApplePushDisplayTarget] {
+        targets().filter { $0.serverID == serverID && $0.profileID == profileID }
     }
 
     func target(registeredBy registryServerID: String) -> ApplePushDisplayTarget? {
@@ -46,15 +50,15 @@ struct ApplePushDisplayTargetStore: Sendable {
     }
 
     /// Stores `target` in place of the one its saved server registered
-    /// before, and of any other target for the same deployment: a server
-    /// keeps one registration per device, so the newer one replaced it.
+    /// before. A saved server never replaces another's target, even one
+    /// claiming the same deployment: a server could claim any identity.
+    /// One deployment saved under two addresses still ends up with one
+    /// target, because the server refuses the second address's
+    /// installation proof.
     @discardableResult
     func save(_ target: ApplePushDisplayTarget) -> Bool {
         update { targets in
-            targets.removeAll { existing in
-                existing.registryServerID == target.registryServerID
-                    || (target.serverID != nil && existing.serverID == target.serverID)
-            }
+            targets.removeAll { $0.registryServerID == target.registryServerID }
             targets.append(target)
         }
     }

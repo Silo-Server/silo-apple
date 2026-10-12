@@ -169,6 +169,9 @@ enum ApplePushDisplayRoute: Equatable {
     /// for. Fetching from the active server instead would ask the wrong
     /// server or profile, so nothing is fetched.
     case unknownTarget
+    /// More than one saved server claims the server and profile the push
+    /// names, so nothing is fetched from any of them.
+    case ambiguousTarget
 }
 
 struct ApplePushDisplayStateReader {
@@ -187,7 +190,9 @@ struct ApplePushDisplayStateReader {
         guard let name = ApplePushDisplayWire.targetName(from: userInfo) else {
             return ApplePushDisplayWire.namesTarget(userInfo) ? .unknownTarget : .fetch(storedState())
         }
-        guard let target = targets.target(serverID: name.serverID, profileID: name.profileID) else {
+        let claims = targets.targets(serverID: name.serverID, profileID: name.profileID)
+        guard claims.count <= 1 else { return .ambiguousTarget }
+        guard let target = claims.first else {
             // An App Store update replaces the extension without launching
             // the app, so the legacy token waits there until the app moves
             // it into a target. Until then, fetch as the build before
@@ -385,7 +390,8 @@ struct ApplePushDisplayOutcome: Codable, Equatable {
     enum Kind: String, Codable {
         case enriched
         case missingState = "missing_state"
-        /// The push named a server and profile with no stored target.
+        /// The push named a server and profile with no stored target, or
+        /// with several (reason `ambiguous_target`).
         case unknownTarget = "unknown_target"
         case httpStatus = "http_status"
         case network

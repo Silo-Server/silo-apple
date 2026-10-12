@@ -39,10 +39,11 @@ final class NotificationService: UNNotificationServiceExtension {
             complete(with: bestAttemptContent)
             return
         }
-        guard case .fetch(let displayState) = ApplePushDisplayStateReader().route(for: bestAttemptContent.userInfo) else {
+        let route = ApplePushDisplayStateReader().route(for: bestAttemptContent.userInfo)
+        guard case .fetch(let displayState) = route else {
             complete(with: bestAttemptContent, outcome: ApplePushDisplayOutcome(
                 kind: .unknownTarget,
-                reason: nil,
+                reason: route == .ambiguousTarget ? "ambiguous_target" : nil,
                 attempts: 0,
                 credential: nil,
                 startedAt: startedAt
