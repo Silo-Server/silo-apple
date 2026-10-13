@@ -9,6 +9,9 @@ import Nuke
 /// - Otherwise the artwork is decoded on the size ladder just above its drawn
 ///   size, showing a smaller cached decode or the ThumbHash meanwhile, and
 ///   fades in quickly so the placeholder is gone as soon as it can be.
+/// - A load that fails on a transient error retries with backoff while the
+///   view is on screen (see `ArtworkRetryPolicy`), and again when the app
+///   becomes active.
 struct AsyncImageView: View {
     let url: String
     var thumbhash: String? = nil
@@ -32,6 +35,11 @@ struct AsyncImageView: View {
     private let artworkLoadingEnabled = true
     #endif
 
+    /// Bumped to rebuild the `LazyImage`, which starts a fresh load.
+    @State private var loadAttempt = 0
+    @State private var backoff = ArtworkRetryBackoff()
+    @State private var pendingRetry: Task<Void, Never>?
+
     var body: some View {
         if let targetSize {
             // Callers that know the size frame this view themselves, so the
@@ -46,8 +54,19 @@ struct AsyncImageView: View {
 
     /// `frame` is the measured container when there is one; otherwise the
     /// artwork fills whatever frame the caller gives this view.
-    @ViewBuilder
     private func artwork(drawnAt pointSize: CGSize, frame: CGSize?) -> some View {
+        // Outside the branches: a URL change can also move the view between
+        // them, and the old URL's backoff and pending retry must not carry
+        // over to the new one.
+        loadedArtwork(drawnAt: pointSize, frame: frame)
+            .onChange(of: url) { resetRetry() }
+            // A tvOS row that leaves the viewport stays mounted with loading
+            // off rather than disappearing, so treat that as leaving the screen.
+            .onChange(of: artworkLoadingEnabled) { resetRetry() }
+    }
+
+    @ViewBuilder
+    private func loadedArtwork(drawnAt pointSize: CGSize, frame: CGSize?) -> some View {
         let resolved = resolveArtwork(drawnAt: pointSize)
         if let cached = resolved.cached, cached.isSufficient {
             artworkImage(cached.image, frame: frame)
@@ -56,6 +75,8 @@ struct AsyncImageView: View {
             // first frame rather than after an empty request fails.
             missingPlaceholder(frame: frame)
         } else {
+            // Read here so a retry being scheduled re-renders the load state.
+            let retryIsPending = pendingRetry != nil
             LazyImage(
                 request: artworkLoadingEnabled ? resolved.request : nil,
                 transaction: Transaction(
@@ -64,26 +85,97 @@ struct AsyncImageView: View {
                         : .easeOut(duration: SiloTheme.fastDuration)
                 )
             ) { state in
-                if let image = state.image {
-                    image
-                        .resizable()
-                        .aspectRatio(contentMode: contentMode)
-                        .framed(frame)
-                        .clipped()
-                        .transition(.opacity)
-                        .onAppear(perform: notifyImageLoaded)
-                } else if let cached = resolved.cached {
-                    artworkImage(cached.image, frame: frame)
-                } else if let error = state.error, !Self.isUnstartedRequest(error) {
-                    missingPlaceholder(frame: frame)
-                } else {
-                    placeholder(frame: frame)
-                }
+                loadState(state, resolved: resolved, retryIsPending: retryIsPending, frame: frame)
+                    // On every state, not just the missing placeholder: a
+                    // failed load can also be showing a smaller cached decode.
+                    .onReceive(NotificationCenter.default.publisher(for: Self.appDidBecomeActive)) { _ in
+                        if ArtworkRetryPolicy.retriesOnActivation(
+                            after: state.error,
+                            loadingEnabled: artworkLoadingEnabled
+                        ) {
+                            retry(resettingBackoff: true)
+                        }
+                    }
             }
             // Ahead of warm-ups, which run at normal priority or lower.
             .priority(.high)
             .onDisappear(.cancel)
+            .onCompletion { handleCompletion($0) }
+            .id(LoadIdentity(url: url, attempt: loadAttempt))
+            // The next appearance gets the full retry schedule again.
+            .onDisappear(perform: resetRetry)
         }
+    }
+
+    @ViewBuilder
+    private func loadState(
+        _ state: any LazyImageState,
+        resolved: ResolvedArtwork,
+        retryIsPending: Bool,
+        frame: CGSize?
+    ) -> some View {
+        if let image = state.image {
+            image
+                .resizable()
+                .aspectRatio(contentMode: contentMode)
+                .framed(frame)
+                .clipped()
+                .transition(.opacity)
+                .onAppear(perform: notifyImageLoaded)
+        } else if let cached = resolved.cached {
+            artworkImage(cached.image, frame: frame)
+        } else if let error = state.error, !Self.isUnstartedRequest(error), !retryIsPending {
+            // Only once no retry is waiting, so a blip keeps the ThumbHash up
+            // rather than flashing the missing artwork.
+            missingPlaceholder(frame: frame)
+        } else {
+            placeholder(frame: frame)
+        }
+    }
+
+    // MARK: - Retry
+
+    private struct LoadIdentity: Hashable {
+        let url: String
+        let attempt: Int
+    }
+
+    #if os(macOS)
+    private static let appDidBecomeActive = NSApplication.didBecomeActiveNotification
+    #else
+    private static let appDidBecomeActive = UIApplication.didBecomeActiveNotification
+    #endif
+
+    private func handleCompletion(_ result: Result<ImageResponse, Error>) {
+        switch result {
+        case .success:
+            backoff.reset()
+        case let .failure(error):
+            guard let delay = backoff.delay(afterFailure: error) else { return }
+            cancelPendingRetry()
+            pendingRetry = Task { @MainActor in
+                try? await Task.sleep(for: delay)
+                guard !Task.isCancelled else { return }
+                retry(resettingBackoff: false)
+            }
+        }
+    }
+
+    private func retry(resettingBackoff: Bool) {
+        cancelPendingRetry()
+        if resettingBackoff { backoff.reset() }
+        loadAttempt += 1
+    }
+
+    private func cancelPendingRetry() {
+        pendingRetry?.cancel()
+        pendingRetry = nil
+    }
+
+    /// Ends this load's retry schedule, so the next failure starts it over.
+    private func resetRetry() {
+        cancelPendingRetry()
+        backoff.reset()
     }
 
     /// No request was made: a tvOS row loading offscreen, or no size yet. The
