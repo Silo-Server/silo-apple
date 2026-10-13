@@ -70,7 +70,7 @@ final class TrackLabelsTests: XCTestCase {
     }
 
     func testAudioTitleDropsCodecNamesButKeepsWordsThatContainThem() {
-        for codecTitle in ["AAC2.0", "DTS-HD MA 5.1", "DTSHD", "Dolby TrueHD", "E-AC-3 JOC", "EAC3", "FLAC"] {
+        for codecTitle in ["AAC2.0", "DTS-HD MA 5.1", "DTSHD", "Dolby TrueHD", "EAC3", "FLAC"] {
             XCTAssertNil(TrackLabels.audioTitle(codecTitle), codecTitle)
         }
         for title in ["Commentary by Isaac", "Midtsommar Director's Cut", "Flack Interview"] {
@@ -289,6 +289,9 @@ final class TrackLabelsTests: XCTestCase {
     /// title keeps it.
     func testAudioTitleKeepsAtmos() {
         XCTAssertEqual(TrackLabels.audioTitle("Dolby TrueHD Atmos 7.1"), "Atmos")
+        // E-AC-3 titles say Atmos as "JOC".
+        XCTAssertEqual(TrackLabels.audioTitle("E-AC-3 JOC 5.1"), "Atmos")
+        XCTAssertEqual(TrackLabels.audioTitle("DD+ Atmos JOC"), "Atmos")
         let player = playerTrack(kind: .audio, title: "Dolby TrueHD Atmos 7.1", lang: "eng", codec: "truehd", channels: 8)
         XCTAssertEqual(player.attributesLabel, "Atmos · TrueHD · 7.1")
     }

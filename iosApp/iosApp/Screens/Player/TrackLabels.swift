@@ -100,6 +100,9 @@ enum TrackLabels {
     static func audioTitle(_ title: String?, language: String? = nil) -> String? {
         guard let title = nonEmpty(title), !looksLikeReleaseName(title) else { return nil }
         var remainder = replacingMatches(of: audioTechnicalTerm, in: title)
+        // E-AC-3 titles say Atmos as "JOC"; it goes when the title already says Atmos.
+        let saysAtmos = remainder.range(of: "atmos", options: .caseInsensitive) != nil
+        remainder = replacingMatches(of: jointObjectCoding, in: remainder, with: saysAtmos ? " " : "Atmos")
         if let language = languageName(language) {
             remainder = removingWords(from: remainder) { word in
                 // A code counts only when written as one ("ENG (eac3)"),
@@ -135,13 +138,14 @@ enum TrackLabels {
             + #"|(?<![0-9a-z.])\d+(?:[.,]\d+)?[\s-]?(?:[km]?(?:bps|b/s|bit/s)|k?hz|bits?)(?![a-z])"#
             + #"|\b(?:atsc|a/52[ab]?|he-?aac(?:[\s-]?v2)?|aac[\s-]?lc|aac\s+latm|e?-?ac-?3|ec-?3|true[\s-]?hd|aac|flac|alac"#
             + #"|opus|vorbis|mp[23]|pcm\s+(?:un)?signed\s+[\d|]+-bit\s+(?:little|big)-endian(?:\s+for\s+blu-ray\s+media)?"#
-            + #"|l?pcm(?:_[a-z0-9]+)?|joc|dd\+?|ddp|stereo|mono|surround|dolby|digital(?:\s*plus)?|dca|mlp"#
+            + #"|l?pcm(?:_[a-z0-9]+)?|dd\+?|ddp|stereo|mono|surround|dolby|digital(?:\s*plus)?|dca|mlp"#
             + #"|advanced\s+audio\s+coding(?:\s+latm\s+syntax)?|coherent\s+acoustics|(?:free|apple)\s+lossless\s+audio\s+codec"#
             + #"|interactive\s+audio\s+codec|mpeg\s+audio\s+layer\s+\d|meridian\s+lossless\s+packing"#
             + #"|dts(?:-?hd)?(?:[\s:._-]*(?:ma|master\s+audio|hra?|high\s+resolution(?:\s+audio)?|es|x))?)(?![a-z])"#,
         options: [.caseInsensitive]
     )
 
+    private static let jointObjectCoding = try! NSRegularExpression(pattern: #"\bjoc\b"#, options: [.caseInsensitive])
     private static let emptyBrackets = try! NSRegularExpression(pattern: #"\([^\p{L}\p{N}]*\)|\[[^\p{L}\p{N}]*\]"#)
     private static let whitespaceRun = try! NSRegularExpression(pattern: #"\s+"#)
     private static let wholeBracketed = try! NSRegularExpression(pattern: #"^[(\[]([^()\[\]]+)[)\]]$"#)
@@ -150,9 +154,18 @@ enum TrackLabels {
         options: [.caseInsensitive]
     )
 
-    /// `text` with every match of `pattern` replaced by a space.
-    private static func replacingMatches(of pattern: NSRegularExpression, in text: String) -> String {
-        pattern.stringByReplacingMatches(in: text, range: fullRange(of: text), withTemplate: " ")
+    /// `text` with every match of `pattern` replaced by `replacement`, a
+    /// space by default.
+    private static func replacingMatches(
+        of pattern: NSRegularExpression,
+        in text: String,
+        with replacement: String = " "
+    ) -> String {
+        pattern.stringByReplacingMatches(
+            in: text,
+            range: fullRange(of: text),
+            withTemplate: NSRegularExpression.escapedTemplate(for: replacement)
+        )
     }
 
     private static func fullRange(of text: String) -> NSRange {
