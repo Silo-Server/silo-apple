@@ -7740,6 +7740,7 @@ class PlayerViewModel {
         // path finalized any prior one), so skip the server stop below —
         // it would report the offline position against a stale session.
         let stopServerSessionOnTeardown = offlinePlaybackContext == nil
+        var offlineProgressWrite: Task<Void, Never>?
         if let offline = offlinePlaybackContext {
             let finalOfflinePosition = completionProgressPositionForCurrentItem()
             let endedNaturally = PlayerNextUpCompletionPolicy.shouldFinalizeAsCompleted(
@@ -7753,7 +7754,7 @@ class PlayerViewModel {
             // Strong capture on purpose: this is the last write of the
             // resume point and must not be dropped because the VM was
             // released between dismiss and the hop to the MainActor.
-            Task { @MainActor in
+            offlineProgressWrite = Task { @MainActor in
                 self.recordOfflineProgress(
                     context: offline,
                     position: finalOfflinePosition,
@@ -7778,7 +7779,10 @@ class PlayerViewModel {
         realtimeConnectivityObserverToken = nil
         let unavailabilityToken = realtimeUnavailabilityObserverToken
         realtimeUnavailabilityObserverToken = nil
-        let cleanupCompletion = Task {
+        let cleanupCompletion = Task { [offlineProgressWrite] in
+            // The offline counterpart of the final `stopSession` below; a
+            // page waiting on this teardown reloads after it.
+            await offlineProgressWrite?.value
             await scrubPreviewShutdown?.value
             // Remove our availability observer before tearing down the realtime
             // client; normal fresh-load unbinds preserve this observer.

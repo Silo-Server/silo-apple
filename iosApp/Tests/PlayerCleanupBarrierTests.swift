@@ -54,4 +54,21 @@ final class PlayerCleanupBarrierTests: XCTestCase {
         let sawFinalWrite = await waiter.value
         XCTAssertTrue(sawFinalWrite)
     }
+
+    func testANewerPlayersCleanupDoesNotReplaceTheOneThePageWaitsFor() async {
+        let generation = PlayerCleanupBarrier.beginPlayback()
+        var finalWriteDone = false
+        PlayerCleanupBarrier.record(Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(50))
+            finalWriteDone = true
+        }, generation: generation)
+        // Another playback starts and its player closes at once, before the
+        // page's reload runs.
+        let newer = PlayerCleanupBarrier.beginPlayback()
+        PlayerCleanupBarrier.record(Task {}, generation: newer)
+
+        await PlayerCleanupBarrier.waitForCleanup(of: generation)
+
+        XCTAssertTrue(finalWriteDone)
+    }
 }

@@ -7,7 +7,11 @@ import Foundation
 /// The page then waits for a cleanup from a player created for its playback.
 @MainActor
 enum PlayerCleanupBarrier {
-    private static var latest: (generation: Int, cleanup: Task<Void, Never>)?
+    /// The most recent teardowns, each under the generation its player was
+    /// created in. A newer player's teardown never replaces an older one a
+    /// page may still be waiting for.
+    private static var cleanups: [(generation: Int, cleanup: Task<Void, Never>)] = []
+    private static let retainedCleanups = 8
     /// Bumped each time a page starts playback.
     private(set) static var generation = 0
 
@@ -18,30 +22,29 @@ enum PlayerCleanupBarrier {
         return generation
     }
 
-    /// Records a player's teardown under the generation it was created in, so
-    /// an older player's teardown, such as one in Picture in Picture ended by
-    /// a newer player, never answers for the newer player or replaces its
-    /// cleanup.
+    /// Records a player's teardown under the generation it was created in.
     static func record(_ cleanup: Task<Void, Never>, generation: Int) {
-        if let latest, latest.generation > generation { return }
-        latest = (generation, cleanup)
+        cleanups.append((generation, cleanup))
+        if cleanups.count > retainedCleanups {
+            cleanups.removeFirst(cleanups.count - retainedCleanups)
+        }
     }
 
-    /// Returns once a cleanup from a player created in `generation` or later
-    /// finishes. The page can reappear before the cover's teardown starts, so
-    /// this waits up to `grace` for that cleanup to be recorded. A player that
-    /// stays alive past the grace, such as one in Picture in Picture, does
-    /// not hold the page.
+    /// Returns once the cleanups of players created in `generation` or later
+    /// finish. An older player's teardown, such as one in Picture in Picture
+    /// ended by a newer player, never answers for this one. The page can
+    /// reappear before its player's teardown starts, so this waits up to
+    /// `grace` for a cleanup from `generation` itself. A player that stays
+    /// alive past the grace, such as one in Picture in Picture, does not hold
+    /// the page.
     static func waitForCleanup(of generation: Int, grace: Duration = .seconds(1)) async {
         let deadline = ContinuousClock.now + grace
-        while cleanup(of: generation) == nil, ContinuousClock.now < deadline, !Task.isCancelled {
+        while !cleanups.contains(where: { $0.generation == generation }),
+              ContinuousClock.now < deadline, !Task.isCancelled {
             try? await Task.sleep(for: .milliseconds(10))
         }
-        await cleanup(of: generation)?.value
-    }
-
-    private static func cleanup(of generation: Int) -> Task<Void, Never>? {
-        guard let latest, latest.generation >= generation else { return nil }
-        return latest.cleanup
+        for entry in cleanups where entry.generation >= generation {
+            await entry.cleanup.value
+        }
     }
 }
