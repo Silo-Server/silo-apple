@@ -20,6 +20,13 @@ struct ExitSentinelMarker: Codable, Equatable {
     var appVersion: String?
     var appBuild: String?
     var debuggerAttached: Bool?
+    /// A main-thread hang still in progress when the marker was last written
+    /// (see `HangWatchdog`). If the run ends without clearing it, the system
+    /// most likely killed the app for not responding.
+    var hangStartedAt: String?
+    var hangDurationMs: Int?
+    /// The app's physical memory footprint when the hang was last recorded.
+    var residentMB: Int?
 
     enum CodingKeys: String, CodingKey {
         case runID = "run_id"
@@ -31,6 +38,9 @@ struct ExitSentinelMarker: Codable, Equatable {
         case appVersion = "app_version"
         case appBuild = "app_build"
         case debuggerAttached = "debugger_attached"
+        case hangStartedAt = "hang_started_at"
+        case hangDurationMs = "hang_duration_ms"
+        case residentMB = "resident_mb"
     }
 
     init(
@@ -256,13 +266,16 @@ struct ExitSentinelMarkerStore {
         return current
     }
 
-    /// Record that a debugger attached to this run after it was armed.
-    func markCurrentRunDebuggerAttached(runID: String) {
-        guard var marker = readCurrent(), marker.runID == runID, marker.debuggerAttached != true else {
-            return
+    /// Change this run's armed marker in place. Does nothing when the current
+    /// slot is empty or holds another run, and skips the write when nothing
+    /// changed.
+    func updateCurrentRun(runID: String, _ change: (inout ExitSentinelMarker) -> Void) {
+        guard let marker = readCurrent(), marker.runID == runID else { return }
+        var updated = marker
+        change(&updated)
+        if updated != marker {
+            writeCurrent(updated)
         }
-        marker.debuggerAttached = true
-        writeCurrent(marker)
     }
 
     /// Clear only the current-run slot (normal background/terminate). The
@@ -434,7 +447,7 @@ final class ExitSentinel {
         let existing = store.readCurrent()
         if let existing, existing.runID == DiagLog.captureSessionID {
             if environment.debuggerAttached {
-                store.markCurrentRunDebuggerAttached(runID: existing.runID)
+                store.updateCurrentRun(runID: existing.runID) { $0.debuggerAttached = true }
             }
             // Fill an initially unknown binding, or rebind an existing marker
             // after a server/account switch in this same foreground run.
@@ -495,6 +508,31 @@ final class ExitSentinel {
 
         leftoverMarker = nil
         store.clearAll()
+    }
+
+    /// Record a main-thread hang that is still in progress on this run's
+    /// marker, so a kill during it can be labelled on the next launch. Called
+    /// from the watchdog queue.
+    func recordOngoingHang(startedAt: Date, duration: TimeInterval, residentMB: Int?) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard isForeground else { return }
+        store.updateCurrentRun(runID: DiagLog.captureSessionID) { marker in
+            marker.hangStartedAt = DiagnosticsTimestamp.string(from: startedAt)
+            marker.hangDurationMs = Int((duration * 1000).rounded())
+            marker.residentMB = residentMB
+        }
+    }
+
+    /// The main thread answered again; the run is no longer hung.
+    func clearOngoingHang() {
+        lock.lock()
+        defer { lock.unlock() }
+        store.updateCurrentRun(runID: DiagLog.captureSessionID) { marker in
+            marker.hangStartedAt = nil
+            marker.hangDurationMs = nil
+            marker.residentMB = nil
+        }
     }
 
     func appDidLaunch(now: Date = Date()) {

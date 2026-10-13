@@ -270,6 +270,9 @@ struct DiagnosticsCaptureContext {
     var maxBundleBytes: Int? = nil
     var maxManifestBytes: Int? = nil
     var availabilityStatus: DiagnosticsAvailabilityStatus = .available
+    /// The destination's `accepted_crash_sources`; see
+    /// `DiagnosticsStatusResponse.acceptsCrashSource`.
+    var acceptedCrashSources: [String]? = nil
     /// Process-local credential-owner epoch that produced a live hosted
     /// binding. It is never serialized into the report; the upload path uses
     /// it only to prevent evidence captured for account A from crossing a
@@ -297,6 +300,7 @@ struct DiagnosticsCaptureContext {
             maxBundleBytes: maxBundleBytes,
             maxManifestBytes: maxManifestBytes,
             availabilityStatus: availabilityStatus,
+            acceptedCrashSources: acceptedCrashSources,
             hostedCredentialIdentity: hostedCredentialIdentity
         )
     }

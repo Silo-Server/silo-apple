@@ -2262,11 +2262,64 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         }
     }
 
+    /// A watchdog hang queued while the server accepted the source must not
+    /// be sent after the server is rolled back to a version without it: that
+    /// server refuses it as an invalid manifest, and the refusal would mark
+    /// it server_rejected for good. It waits, unmarked, and sends once the
+    /// server accepts the source again.
+    func testWatchdogReportWaitsForAServerThatAcceptsItsSource() async throws {
+        try await withTemporaryActiveSelfHostedServer { serverRegistryID in
+            let fixture = try makePendingSelfHostedReports(label: "self-hosted-watchdog", count: 0)
+            let capturedAt = Date()
+            let report = try fixture.store.save(selfHostedRepeatCapture(
+                binding: fixture.binding,
+                fingerprint: "watchdog-1",
+                capturedAt: capturedAt,
+                crash: DiagnosticsCrashInfo(
+                    summary: "Silo did not respond for 3.0 s",
+                    stackExcerpt: nil,
+                    thread: "main",
+                    foreground: true,
+                    source: .watchdog,
+                    provenance: .preFailure,
+                    occurredAt: DiagnosticsTimestamp.string(from: capturedAt)
+                )
+            ))
+            let coordinator = try await makeSelfHostedCoordinator(
+                pendingStore: fixture.store,
+                serverRegistryID: serverRegistryID
+            )
+            selfHostedStub.configure(serverInstanceID: fixture.binding.serverInstanceID, reportID: report.id)
+
+            let held = await coordinator.upload(report: report)
+
+            XCTAssertEqual(held, .keptNeedsServerUpdate)
+            XCTAssertFalse(selfHostedStub.requestedPaths().contains("/api/v2/diagnostics/reports"))
+            let kept = try XCTUnwrap(fixture.store.report(id: report.id))
+            XCTAssertFalse(kept.state.isPermanentFailure)
+
+            selfHostedStub.configure(
+                serverInstanceID: fixture.binding.serverInstanceID,
+                reportID: report.id,
+                acceptedCrashSources: ["ueh", "exit_info", "metrickit", "exit_sentinel", "watchdog"]
+            )
+
+            let sent = await coordinator.upload(report: kept)
+
+            guard case .uploaded = sent else {
+                return XCTFail("Expected the report to upload once the server accepts watchdog, got \(sent)")
+            }
+        }
+    }
+
+    /// A manual report, or a hang report when `crash` is given.
     private func selfHostedRepeatCapture(
         binding: DiagnosticsBinding,
         fingerprint: String,
-        capturedAt: Date
+        capturedAt: Date,
+        crash: DiagnosticsCrashInfo? = nil
     ) -> PendingReportCapture {
+        let type: ReportType = crash == nil ? .manual : .hang
         let context = DiagnosticsCaptureContext(
             binding: binding,
             profileID: nil,
@@ -2281,13 +2334,13 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         return PendingReportCapture(
             binding: binding,
             profileID: nil,
-            type: .manual,
+            type: type,
             fingerprint: fingerprint,
             capturedAt: capturedAt,
             manifest: context.makeManifestDraft(
-                type: .manual,
+                type: type,
                 capturedAt: capturedAt,
-                crash: nil,
+                crash: crash,
                 deviceSummary: DiagnosticsManifest.DeviceSummary(
                     manufacturer: "Apple",
                     model: "iPhone",
@@ -3771,16 +3824,25 @@ private final class SelfHostedDiagnosticsStub: @unchecked Sendable {
     private var serverInstanceID = "self-hosted-diagnostics-instance"
     private var reportID = UUID()
     private var upload = UploadReply.created
+    /// The capabilities' `accepted_crash_sources`; omitted when nil, as an
+    /// older server does.
+    private var acceptedCrashSources: [String]?
 
     init() {
         installRoutes()
     }
 
-    func configure(serverInstanceID: String, reportID: UUID, upload: UploadReply = .created) {
+    func configure(
+        serverInstanceID: String,
+        reportID: UUID,
+        upload: UploadReply = .created,
+        acceptedCrashSources: [String]? = nil
+    ) {
         lock.withLock {
             self.serverInstanceID = serverInstanceID
             self.reportID = reportID
             self.upload = upload
+            self.acceptedCrashSources = acceptedCrashSources
         }
         handler.reset()
         installRoutes()
@@ -3792,8 +3854,13 @@ private final class SelfHostedDiagnosticsStub: @unchecked Sendable {
 
     private func installRoutes() {
         handler.route(StubURLProtocol.method("GET", path: "/api/v2/diagnostics/capabilities")) { [self] _ in
-            let serverInstanceID = lock.withLock { self.serverInstanceID }
-            return .json(#"{"revision":"r1","state":"available","allowed":true,"status":"available","server_instance_id":"\#(serverInstanceID)","accepted_schema_versions":[1],"max_bundle_bytes":10485760,"max_manifest_bytes":65536,"retention_days":30,"consent_notice_version":1,"upload_chunk_bytes":0}"#)
+            let (serverInstanceID, acceptedCrashSources) = lock.withLock {
+                (self.serverInstanceID, self.acceptedCrashSources)
+            }
+            let sources = acceptedCrashSources.map { sources in
+                #","accepted_crash_sources":["# + sources.map { "\"\($0)\"" }.joined(separator: ",") + "]"
+            } ?? ""
+            return .json(#"{"revision":"r1","state":"available","allowed":true,"status":"available","server_instance_id":"\#(serverInstanceID)","accepted_schema_versions":[1],"max_bundle_bytes":10485760,"max_manifest_bytes":65536,"retention_days":30,"consent_notice_version":1,"upload_chunk_bytes":0\#(sources)}"#)
         }
         handler.route(StubURLProtocol.method("GET", path: "/api/v2/account/me")) { _ in
             .json(#"{"id":"42","username":"diagnostics-test","email":"diagnostics@example.invalid","role":"user","permissions":[],"download_allowed":true}"#)

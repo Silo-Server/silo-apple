@@ -107,6 +107,41 @@ final class DiagnosticsCapabilitiesV2Tests: XCTestCase {
         XCTAssertEqual(cached, current)
     }
 
+    /// A server that predates `accepted_crash_sources` rejects a watchdog
+    /// report as an invalid manifest, and the hosted collector does not take
+    /// the source yet, so only a self-hosted server that lists it gets one.
+    func testWatchdogHangsAreFiledOnlyForServersThatListTheSource() async throws {
+        let (legacyClient, _) = try await makeClient(.json(document()))
+        let legacy = try await legacyClient.diagnosticsCapabilities()
+        let (currentClient, _) = try await makeClient(.json(document(
+            acceptedCrashSources: #","accepted_crash_sources":["ueh","exit_info","metrickit","exit_sentinel","watchdog"]"#
+        )))
+        let current = try await currentClient.diagnosticsCapabilities()
+
+        func context(_ status: DiagnosticsStatusResponse, binding: DiagnosticsBinding) -> DiagnosticsCaptureContext {
+            DiagnosticsCaptureContext(
+                binding: binding,
+                profileID: nil,
+                consentMode: .prompt,
+                noticeVersion: 2,
+                appVersion: "1.0",
+                appBuild: "1",
+                platform: .tvos,
+                osVersion: "27.0",
+                acceptedCrashSources: status.acceptedCrashSources
+            )
+        }
+        let selfHosted = DiagnosticsBinding(serverInstanceID: "srv_123", accountUserID: "42")
+        XCTAssertFalse(DiagnosticsCoordinator.canFileWatchdogHang(to: context(legacy, binding: selfHosted)))
+        XCTAssertTrue(DiagnosticsCoordinator.canFileWatchdogHang(to: context(current, binding: selfHosted)))
+        XCTAssertFalse(DiagnosticsCoordinator.canFileWatchdogHang(to: context(
+            current,
+            binding: .hosted(serverRegistryID: Self.serverID, accountUserID: "42")
+        )))
+        XCTAssertTrue(DiagnosticsStatusResponse.acceptsCrashSource(.exitSentinel, listed: nil))
+        XCTAssertFalse(DiagnosticsStatusResponse.acceptsCrashSource(.watchdog, listed: nil))
+    }
+
     func testAvailabilityRequiresAllowedAndAvailableState() async throws {
         let cases: [(state: String, allowed: Bool, status: String, expected: DiagnosticsAvailabilityStatus)] = [
             ("available", false, "available", .disabled),
