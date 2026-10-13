@@ -284,6 +284,57 @@ final class DiagnosticsRedactionTests: XCTestCase {
         XCTAssertTrue(hostPort.contains("mount [redacted_path] failed"))
     }
 
+    /// A colon right after an IPv6 address must not leave its zone behind or
+    /// stop it being hashed.
+    func testBareIPv6AddressBeforeAColonIsHashedWhole() throws {
+        let scoped = try rendered("connect fe80::1%en0: Connection refused")
+        XCTAssertFalse(scoped.contains("fe80::1"))
+        XCTAssertFalse(scoped.contains("%en0"))
+        XCTAssertTrue(scoped.contains("]: Connection refused"))
+
+        let joined = try rendered("peer=fd00::5:closed")
+        XCTAssertFalse(joined.contains("fd00::5"))
+        XCTAssertTrue(joined.contains("peer=[host:"))
+    }
+
+    /// A long colon-separated hex run that ends in a letter is not an
+    /// address. Matching it must stay fast, since redaction runs on the
+    /// thread that logs.
+    func testLongHexAndColonRunRendersQuickly() throws {
+        let dump = "dump " + String(repeating: "a:", count: 2_000) + "g"
+        let start = Date()
+        _ = try rendered(dump)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1)
+    }
+
+    /// The bare media-name rule redacts a run of words ending in a media
+    /// extension, so it must run after hosts are hashed or it cuts a host in
+    /// two and leaves the rest in clear.
+    func testHostWithMediaExtensionLabelIsHashedWhole() throws {
+        let unregistered = try rendered("socket relay.mp4.home.example.com:8096 refused")
+        XCTAssertFalse(unregistered.contains("home.example.com"))
+        XCTAssertTrue(unregistered.contains("socket [host:"))
+
+        DiagLog.registerSensitiveHost("silo.tail1234.ts.net")
+        let registered = try rendered("reachability silo.tail1234.ts.net timed out")
+        XCTAssertFalse(registered.contains("tail1234"))
+        XCTAssertTrue(registered.contains("reachability [host:"))
+    }
+
+    /// Hashing hosts before media names must leave both markers intact.
+    func testHostsAndMediaNamesKeepTheirOwnMarkers() throws {
+        DiagLog.registerSensitiveHost("media")
+        let named = try rendered("playing Movie (2019).mkv")
+        XCTAssertTrue(named.contains("[redacted_media_name]"))
+        XCTAssertFalse(named.contains("Movie"))
+
+        let address = try rendered("peer 10.0.0.5 sent Movie.mkv")
+        XCTAssertFalse(address.contains("10.0.0.5"))
+        XCTAssertFalse(address.contains("Movie"))
+        XCTAssertTrue(address.contains("peer [host:"))
+        XCTAssertTrue(address.contains("] [redacted_media_name]"))
+    }
+
     /// Colon-separated text that is not an address stays readable now that
     /// an address may follow a colon or end in punctuation.
     func testColonSeparatedLookalikesStayLiteral() throws {

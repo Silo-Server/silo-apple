@@ -263,7 +263,12 @@ private enum DiagnosticsRedactor {
     // A colon may come right before an address (`peer:10.0.0.5`,
     // `addr:fd00::5`); a word character may not, so matching never starts
     // in the middle of a token. An IPv6 candidate never starts right after
-    // `::`, which keeps `ns::abc::def` scopes literal.
+    // `::`, which keeps `ns::abc::def` scopes literal. The IPv6 candidate is
+    // a run of at most 64 hex digits, dots, and colons (an address with an
+    // embedded IPv4 and a `.port` is 51) that splits at colons one way only,
+    // so a long colon-separated hex dump can't backtrack and stall the
+    // logging thread. A zone (`%en0`) is always taken whole, so a colon after
+    // it (`fe80::1%en0: refused`) can't leave the zone behind.
     private static let bareIPv4Regex = try! NSRegularExpression(
         pattern: #"(?<![\w.])((?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3})(?::\d{1,5})?(?!\.?\w)"#,
         options: []
@@ -273,7 +278,7 @@ private enum DiagnosticsRedactor {
         options: []
     )
     private static let bareIPv6Regex = try! NSRegularExpression(
-        pattern: #"(?<![\w.%])(?<!::)([0-9A-Fa-f.]*:[0-9A-Fa-f.:]*:[0-9A-Fa-f.:]*)(?:%[A-Za-z0-9.-]+)?(?![\w:])"#,
+        pattern: #"(?<![\w.%])(?<!::)(?=[0-9A-Fa-f.:]{2,64}(?![0-9A-Fa-f.:]))((?:[0-9A-Fa-f.]*:){2,}[0-9A-Fa-f.]*)(?:%[\w.-]+)?(?!\w)"#,
         options: []
     )
     private static let hostPortRegex = try! NSRegularExpression(
@@ -412,12 +417,19 @@ private enum DiagnosticsRedactor {
         // that class only: its URL and credential rules are deliberately not
         // reused, because hashing the host while keeping the API path is what
         // makes these lines correlatable.
-        result = houseStyleMarkers(MediaLogRedactor.sanitizeFilesystemAndMediaIdentity(result))
-        // Hosts are hashed after paths are redacted: a `[host:…]` token inside
-        // `\\192.168.1.42\Share\…` or `/Volumes/10.0.0.5/…` would stop the
-        // path rules short and leave the share and folder names behind.
+        //
+        // Hosts are hashed between the two: after paths, because a `[host:…]`
+        // token inside `\\192.168.1.42\Share\…` or `/Volumes/10.0.0.5/…`
+        // would stop the path rules short and leave the share and folder
+        // names behind; before bare media names, because that rule redacts a
+        // run of words ending in a media extension and would cut through
+        // `relay.mp4.example.com` or `silo.tail1234.ts.net`, leaving the rest
+        // of the host in clear. The house-style markers are applied last, as
+        // the media rule recognises only the OSLog spelling of a marker.
+        result = MediaLogRedactor.sanitizeFilesystemPaths(result)
         result = replaceBareNetworkAddresses(in: result)
         result = replaceKnownHosts(in: result)
+        result = houseStyleMarkers(MediaLogRedactor.sanitizeMediaNames(result))
         return trim(result, maxLength: maxLength)
     }
 
