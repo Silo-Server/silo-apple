@@ -361,6 +361,37 @@ final class PendingReportStoreTests: XCTestCase {
         XCTAssertEqual(remaining(), ["manual", "crash-2", "crash-3"])
     }
 
+    /// Stored dates keep only milliseconds. A capture whose date has a finer
+    /// fraction must be ranked as it will be stored; otherwise it is written
+    /// and then evicted as one of four tied reports.
+    func testCaptureTiedAfterRoundingIsEvictedOnArrival() throws {
+        let store = try makeStore()
+        let binding = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "42")
+        // MetricKit gives every diagnostic in one payload the same date.
+        let periodEnd = Date(timeIntervalSince1970: 100_000.0004)
+        for index in 1...3 {
+            _ = try store.save(makeCapture(
+                binding: binding,
+                fingerprint: "hang-\(index)",
+                capturedAt: periodEnd,
+                type: .hang
+            ))
+        }
+
+        XCTAssertThrowsError(try store.save(makeCapture(
+            binding: binding,
+            fingerprint: "hang-4",
+            capturedAt: periodEnd,
+            type: .hang
+        ))) { error in
+            XCTAssertEqual(error as? DiagnosticsStoreError, .evictedOnArrival)
+        }
+        XCTAssertEqual(
+            store.listReports(for: binding).map(\.binding.fingerprint).sorted(),
+            ["hang-1", "hang-2", "hang-3"]
+        )
+    }
+
     private func makeStore(
         hostedDeletionRemover: ((URL) throws -> Void)? = nil
     ) throws -> PendingReportStore {

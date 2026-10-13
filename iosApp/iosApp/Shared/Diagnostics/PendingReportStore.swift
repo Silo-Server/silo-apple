@@ -379,7 +379,16 @@ final class PendingReportStore {
             _ = try loadHostedErasureLedgersLocked()
         }
         try cleanupExpiredLocked(now: capture.capturedAt)
-        if wouldEvictOnArrivalLocked(capture) {
+
+        let binding = PendingReportBinding(
+            serverInstanceID: capture.binding.serverInstanceID,
+            accountUserID: capture.binding.accountUserID,
+            profileID: capture.profileID,
+            capturedAt: DiagnosticsTimestamp.string(from: capture.capturedAt),
+            type: capture.type,
+            fingerprint: capture.fingerprint
+        )
+        if wouldEvictOnArrivalLocked(binding) {
             // Writing it only to delete it again would leave the caller
             // retrying the same capture forever. Settle it here instead.
             markFingerprintSeenLocked(capture.fingerprint, now: capture.capturedAt)
@@ -392,15 +401,6 @@ final class PendingReportStore {
             isDirectory: true
         )
         try? fileManager.removeItem(at: stagingDirectory)
-
-        let binding = PendingReportBinding(
-            serverInstanceID: capture.binding.serverInstanceID,
-            accountUserID: capture.binding.accountUserID,
-            profileID: capture.profileID,
-            capturedAt: DiagnosticsTimestamp.string(from: capture.capturedAt),
-            type: capture.type,
-            fingerprint: capture.fingerprint
-        )
 
         do {
             try fileManager.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
@@ -1189,14 +1189,21 @@ final class PendingReportStore {
         }
     }
 
-    /// Whether the cap would evict `capture` itself as soon as it is stored:
-    /// the binding already holds a full store of reports that all outrank it.
-    /// A tie goes to the report already stored.
-    private func wouldEvictOnArrivalLocked(_ capture: PendingReportCapture) -> Bool {
-        let incoming = (Self.evictionRank(capture.type), capture.capturedAt)
+    /// Orders reports for the cap, lowest evicted first. It uses the stored
+    /// timestamp, which keeps only milliseconds, so the arrival check ranks a
+    /// capture exactly as the cap will once it is written.
+    private static func evictionKey(_ binding: PendingReportBinding) -> (Int, Date) {
+        (evictionRank(binding.type), binding.capturedAtDate)
+    }
+
+    /// Whether the cap would evict this capture itself as soon as it is
+    /// stored: the binding already holds a full store of reports that all
+    /// outrank it. A tie goes to the report already stored.
+    private func wouldEvictOnArrivalLocked(_ incoming: PendingReportBinding) -> Bool {
+        let incomingKey = Self.evictionKey(incoming)
         let outranking = scanReportsLocked().filter { report in
-            report.binding.binding == capture.binding
-                && (Self.evictionRank(report.binding.type), report.binding.capturedAtDate) >= incoming
+            report.binding.binding == incoming.binding
+                && Self.evictionKey(report.binding) >= incomingKey
         }
         return outranking.count >= Self.maxPendingPerBinding
     }
@@ -1204,10 +1211,7 @@ final class PendingReportStore {
     private func enforceCapLocked(for binding: DiagnosticsBinding) throws {
         let reports = scanReportsLocked()
             .filter { $0.binding.binding == binding }
-            .sorted {
-                (Self.evictionRank($0.binding.type), $0.binding.capturedAtDate)
-                    < (Self.evictionRank($1.binding.type), $1.binding.capturedAtDate)
-            }
+            .sorted { Self.evictionKey($0.binding) < Self.evictionKey($1.binding) }
         guard reports.count > Self.maxPendingPerBinding else {
             return
         }
