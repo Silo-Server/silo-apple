@@ -9266,21 +9266,13 @@ extension PlayerViewModel {
     }
 
     private func makeSiloControlTrack(_ track: PlayerTrack) -> SiloControlTrack {
-        // Subtitle titles are often the release name, which made every row on
-        // the phone remote identical. Lead with the language, and keep what
-        // separates same-language tracks in the title: remotes show only that.
-        if track.kind == .sub {
-            return SiloControlTrack(
-                kind: track.kind.rawValue,
-                trackId: track.trackId,
-                title: track.languageFirstSingleLineLabel,
-                detail: track.languageFirstAttributesLabel
-            )
-        }
-        return SiloControlTrack(
+        // Rows lead with the language, so the title also carries what tells
+        // same-language tracks apart ("English (Commentary)"): remotes show
+        // only the title.
+        SiloControlTrack(
             kind: track.kind.rawValue,
             trackId: track.trackId,
-            title: track.primaryLabel,
+            title: track.singleLineLabel,
             detail: track.attributesLabel
         )
     }
