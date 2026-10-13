@@ -99,6 +99,25 @@ final class PlayerCleanupBarrierTests: XCTestCase {
         XCTAssertLessThan(ContinuousClock.now - start, .milliseconds(500))
     }
 
+    func testPlaysThatWentToATVDoNotDropAPendingTeardown() async {
+        let generation = PlayerCleanupBarrier.beginPlayback()
+        _ = PlayerCleanupBarrier.playerCreated()
+        var finalWriteDone = false
+        PlayerCleanupBarrier.record(Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(50))
+            finalWriteDone = true
+        }, generation: generation)
+        // Several Plays go to an engaged TV, then another page plays here.
+        for _ in 0..<10 {
+            _ = PlayerCleanupBarrier.beginPlayback()
+        }
+        _ = PlayerCleanupBarrier.playerCreated()
+
+        await PlayerCleanupBarrier.waitForCleanup(of: generation)
+
+        XCTAssertTrue(finalWriteDone)
+    }
+
     func testACancelledWaitReturnsBeforeTheTeardownFinishes() async {
         let generation = PlayerCleanupBarrier.beginPlayback()
         _ = PlayerCleanupBarrier.playerCreated()
