@@ -1110,22 +1110,13 @@ actor DiagnosticsCoordinator {
         } else {
             refreshedMode = currentConsent.mode.manifestMode
         }
-        if destination == .hosted {
-            return await uploadHosted(
-                report: report,
-                context: context,
-                consent: DiagnosticsManifest.Consent(
-                    mode: refreshedMode,
-                    noticeVersion: currentConsent.noticeVersion
-                )
-            )
-        }
-
-        let report = pendingStore.updatingConsent(
-            report,
+        let consent = DiagnosticsManifest.Consent(
             mode: refreshedMode,
             noticeVersion: currentConsent.noticeVersion
         )
+        if destination == .hosted {
+            return await uploadHosted(report: report, context: context, consent: consent)
+        }
 
         do {
             // Snapshot the stable destination identity (server registry id +
@@ -1144,7 +1135,18 @@ actor DiagnosticsCoordinator {
             guard let destinationOwner = try? await api.captureOwner() else {
                 return .keptRetryable
             }
-            let bundle = try await buildBundle(for: report)
+            let deliveryReport = try pendingStore.preparingDelivery(of: report, consent: consent)
+            // Until the claim below nothing can reach the server, so an attempt
+            // that stops before it lets the report count repeats again. After
+            // the claim, releaseSelfHostedDelivery does the same on a definite
+            // failure, and an uncertain delivery keeps the count frozen.
+            var claimed = false
+            defer {
+                if !claimed {
+                    pendingStore.releaseRepeats(deliveryReport)
+                }
+            }
+            let bundle = try await buildBundle(for: deliveryReport)
             let activeProfileID = await TokenStore.shared.getProfileId()
             guard await Self.currentAccessTokenFingerprint() != nil,
                   ServerRegistry.activeServerIDSnapshot == destinationServerRegistryID,
@@ -1160,9 +1162,8 @@ actor DiagnosticsCoordinator {
             // unanswered request, or a process that dies mid-upload, leaves
             // the report held instead of sent again. A definite answer releases
             // the claim; an earlier attempt still holding it blocks this one.
-            let claimed: Bool
             do {
-                claimed = try pendingStore.claimSelfHostedDelivery(report)
+                claimed = try pendingStore.claimSelfHostedDelivery(deliveryReport)
             } catch {
                 return .keptRetryable
             }
@@ -1189,10 +1190,10 @@ actor DiagnosticsCoordinator {
                     )
                 }
             } catch let error as DiagnosticsUploadError where error != .deliveryUncertain {
-                pendingStore.releaseSelfHostedDelivery(report)
+                pendingStore.releaseSelfHostedDelivery(deliveryReport)
                 throw error
             }
-            pendingStore.delete(report)
+            pendingStore.delete(deliveryReport)
             return .uploaded(response)
         } catch let error as DiagnosticsUploadError {
             return handleUploadError(error, report: report)
@@ -1227,6 +1228,15 @@ actor DiagnosticsCoordinator {
                 ?? HostedDiagnosticsCapabilities.conservativeCaptureStatus.maxManifestBytes
             let bundle: DiagnosticsBundleBuildResult
             let mustPersistEnvelope: Bool
+            // Set while a report prepared below has no saved envelope yet: if
+            // the attempt stops there, nothing was sent, so it counts repeats
+            // again. A saved envelope freezes the count on its own.
+            var preparedWithoutEnvelope: PendingReport?
+            defer {
+                if let preparedWithoutEnvelope {
+                    pendingStore.releaseRepeats(preparedWithoutEnvelope)
+                }
+            }
             switch pendingStore.loadHostedEnvelope(for: report) {
             case .quarantined:
                 return .keptRetryable
@@ -1244,12 +1254,9 @@ actor DiagnosticsCoordinator {
                     mustPersistEnvelope = false
                 }
             case .missing:
-                let framedReport = pendingStore.updatingConsent(
-                    report,
-                    mode: consent.mode,
-                    noticeVersion: consent.noticeVersion
-                )
-                bundle = try await buildBundle(for: framedReport)
+                let prepared = try pendingStore.preparingDelivery(of: report, consent: consent)
+                preparedWithoutEnvelope = prepared
+                bundle = try await buildBundle(for: prepared)
                 mustPersistEnvelope = true
             }
             guard bundle.manifest.report.profileID == nil,
@@ -1281,6 +1288,7 @@ actor DiagnosticsCoordinator {
                 // The collector create request is allowed only after the exact
                 // sanitized envelope is durable and replayable across a crash.
                 try pendingStore.saveHostedEnvelope(bundle, for: report)
+                preparedWithoutEnvelope = nil
             }
 
             // Persisting a new envelope performs several synchronous file
@@ -1922,7 +1930,12 @@ actor DiagnosticsCoordinator {
                 capturedAt: capturedAt,
                 manifest: manifest,
                 deviceSnapshot: device,
-                artifacts: artifacts
+                artifacts: artifacts,
+                // An abnormal exit carries no stack, so every one from the
+                // same build is the same issue.
+                issueFingerprint: DiagnosticsSHA256.hex(
+                    data: Data("exit_sentinel|\(boundContext.appBuild)".utf8)
+                )
             ))
             return true
         } catch {

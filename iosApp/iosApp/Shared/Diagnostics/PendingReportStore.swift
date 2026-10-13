@@ -44,6 +44,9 @@ struct PendingReportBinding: Codable, Equatable {
     let capturedAt: String
     let type: ReportType
     let fingerprint: String
+    /// Identifies the issue rather than the event; see
+    /// `PendingReportCapture.issueFingerprint`.
+    var issueFingerprint: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case serverInstanceID = "server_instance_id"
@@ -52,6 +55,7 @@ struct PendingReportBinding: Codable, Equatable {
         case capturedAt = "captured_at"
         case type
         case fingerprint
+        case issueFingerprint = "issue_fingerprint"
     }
 
     var binding: DiagnosticsBinding {
@@ -105,6 +109,12 @@ struct PendingReportState: Codable, Equatable {
     /// reports live 7 days, so the same crash would re-prompt on a later
     /// foreground.
     var promptDeclined: Bool
+    /// An upload of this report has started building from its manifest, so a
+    /// later repeat of the issue must not change the count on disk: it would
+    /// be marked seen but never sent. Set by `preparingDelivery`; cleared by
+    /// `releaseRepeats` or `releaseSelfHostedDelivery` when that upload ends
+    /// without delivering anything.
+    var repeatsFrozen: Bool
     var hostedEnvelopeGeneration: String?
     var hostedConsentRefreshRequired: Bool
     var hostedRemoteShortID: String?
@@ -126,12 +136,24 @@ struct PendingReportState: Codable, Equatable {
         hostedRemoteShortID != nil && hostedRejectionCode == nil
     }
 
+    /// Delivery has not started, so the manifest can still count a repeat. An
+    /// upload that began building, a built hosted envelope, a collector ID, or
+    /// a self-hosted upload that may have been sent has frozen what the
+    /// destination receives. A report that can never be delivered (too large,
+    /// or refused by the collector) would only hide the repeat, so the repeat
+    /// starts a new report instead.
+    var acceptsRepeats: Bool {
+        !repeatsFrozen && hostedEnvelopeGeneration == nil && hostedRemoteShortID == nil && !deliveryUncertain
+            && !tooLarge && hostedRejectionCode == nil
+    }
+
     enum CodingKeys: String, CodingKey {
         case needsServerUpdate = "needs_server_update"
         case tooLarge = "too_large"
         case serverRejected = "server_rejected"
         case deliveryUncertain = "delivery_uncertain"
         case promptDeclined = "prompt_declined"
+        case repeatsFrozen = "repeats_frozen"
         case hostedEnvelopeGeneration = "hosted_envelope_generation"
         case hostedConsentRefreshRequired = "hosted_consent_refresh_required"
         case hostedRemoteShortID = "hosted_remote_short_id"
@@ -144,6 +166,7 @@ struct PendingReportState: Codable, Equatable {
         serverRejected: Bool = false,
         deliveryUncertain: Bool = false,
         promptDeclined: Bool = false,
+        repeatsFrozen: Bool = false,
         hostedEnvelopeGeneration: String? = nil,
         hostedConsentRefreshRequired: Bool = false,
         hostedRemoteShortID: String? = nil,
@@ -154,6 +177,7 @@ struct PendingReportState: Codable, Equatable {
         self.serverRejected = serverRejected
         self.deliveryUncertain = deliveryUncertain
         self.promptDeclined = promptDeclined
+        self.repeatsFrozen = repeatsFrozen
         self.hostedEnvelopeGeneration = hostedEnvelopeGeneration
         self.hostedConsentRefreshRequired = hostedConsentRefreshRequired
         self.hostedRemoteShortID = hostedRemoteShortID
@@ -167,6 +191,7 @@ struct PendingReportState: Codable, Equatable {
         serverRejected = try container.decodeIfPresent(Bool.self, forKey: .serverRejected) ?? false
         deliveryUncertain = try container.decodeIfPresent(Bool.self, forKey: .deliveryUncertain) ?? false
         promptDeclined = try container.decodeIfPresent(Bool.self, forKey: .promptDeclined) ?? false
+        repeatsFrozen = try container.decodeIfPresent(Bool.self, forKey: .repeatsFrozen) ?? false
         hostedEnvelopeGeneration = try container.decodeIfPresent(
             String.self,
             forKey: .hostedEnvelopeGeneration
@@ -220,11 +245,16 @@ struct PendingReportCapture {
     let binding: DiagnosticsBinding
     let profileID: String?
     let type: ReportType
+    /// Identifies this event, so the same evidence is never stored twice.
     let fingerprint: String
     let capturedAt: Date
     let manifest: DiagnosticsManifestDraft
     let deviceSnapshot: DeviceSnapshotPayload
     let artifacts: [PendingReportArtifact]
+    /// Identifies the issue: the same for every repeat of one crash, hang, or
+    /// abnormal exit, independent of run IDs and timestamps. Nil for reports
+    /// that are never grouped, such as manual ones.
+    var issueFingerprint: String? = nil
 }
 
 struct DiagnosticsCaptureContext {
@@ -327,6 +357,9 @@ final class PendingReportStore {
     static let hostedReadyReceiptInterval: TimeInterval = 37 * 24 * 60 * 60
 
     private static let maxPendingPerBinding = 3
+    /// A repeat of an issue within this long of its pending report's capture
+    /// counts on that report instead of taking another slot.
+    static let repeatGroupingWindow: TimeInterval = 24 * 60 * 60
     private static let maxHostedReadyReceipts = 4_096
     private static let maxHostedDeletionIntents = 4_096
     /// Bounds defensive reads before allocating ledger contents. Four thousand
@@ -379,6 +412,9 @@ final class PendingReportStore {
             _ = try loadHostedErasureLedgersLocked()
         }
         try cleanupExpiredLocked(now: capture.capturedAt)
+        if let repeated = try countRepeatLocked(capture) {
+            return repeated
+        }
 
         let reportDirectory = pendingDirectory.appendingPathComponent(capture.id.uuidString.lowercased(), isDirectory: true)
         let stagingDirectory = pendingDirectory.appendingPathComponent(
@@ -393,7 +429,8 @@ final class PendingReportStore {
             profileID: capture.profileID,
             capturedAt: DiagnosticsTimestamp.string(from: capture.capturedAt),
             type: capture.type,
-            fingerprint: capture.fingerprint
+            fingerprint: capture.fingerprint,
+            issueFingerprint: capture.issueFingerprint
         )
 
         do {
@@ -846,9 +883,20 @@ final class PendingReportStore {
     }
 
     /// Clears the delivery claim after a definite failure: the server
-    /// answered without storing the report, or nothing was sent.
+    /// answered without storing the report, or nothing was sent. The report
+    /// counts repeats again until the next attempt prepares it.
     func releaseSelfHostedDelivery(_ report: PendingReport) {
-        updateState(of: report) { $0.deliveryUncertain = false }
+        updateState(of: report) {
+            $0.deliveryUncertain = false
+            $0.repeatsFrozen = false
+        }
+    }
+
+    /// Undoes `preparingDelivery` for an attempt that stopped before anything
+    /// could reach the destination, so later repeats count on this report
+    /// again instead of each opening a new one.
+    func releaseRepeats(_ report: PendingReport) {
+        updateState(of: report) { $0.repeatsFrozen = false }
     }
 
     /// Records that the user declined this report's prompt, suppressing further
@@ -857,39 +905,43 @@ final class PendingReportStore {
         updateState(of: report) { $0.promptDeclined = true }
     }
 
-    /// Rewrites the stored manifest's consent `mode` and `notice_version` so an
-    /// upload built from this report reflects the current consent record. If
-    /// the server's notice advanced after capture and demoted the account
+    /// Starts building an upload of `report` and returns the report to build
+    /// it from. Reloads the report under the lock, stops it counting repeats
+    /// (later ones start a new pending report), and rewrites the manifest's
+    /// consent from the current consent record. Never build from the
+    /// caller's snapshot instead: a repeat counted after it was loaded would
+    /// be marked seen but never sent.
+    ///
+    /// Both consent `mode` and `notice_version` are refreshed. If the
+    /// server's notice advanced after capture and demoted the account
     /// Always→Ask, refreshing only the notice version would leave the manifest
-    /// claiming `mode = always` for the new notice; refreshing the mode too
-    /// keeps it honest. Everything else — crash evidence, logs, device summary
-    /// — stays frozen as captured. Returns the updated report, or the original
-    /// if nothing changed or the rewrite failed.
-    @discardableResult
-    func updatingConsent(_ report: PendingReport, mode: ConsentMode, noticeVersion: Int) -> PendingReport {
+    /// claiming `mode = always` for the new notice. Everything else — crash
+    /// evidence, logs, device summary — stays frozen as captured.
+    func preparingDelivery(of report: PendingReport, consent: DiagnosticsManifest.Consent) throws -> PendingReport {
         lock.lock()
         defer { lock.unlock() }
 
-        guard report.manifest.consent.mode != mode
-            || report.manifest.consent.noticeVersion != noticeVersion else {
-            return report
+        guard let current = loadReport(from: report.directoryURL) else {
+            throw DiagnosticsStoreError.unreadableReport(report.id)
         }
-        var manifest = report.manifest
-        manifest.consent = DiagnosticsManifest.Consent(
-            mode: mode,
-            noticeVersion: noticeVersion
-        )
-        do {
-            try writeJSON(manifest, to: report.directoryURL.appendingPathComponent("manifest.json"))
-        } catch {
-            return report
+        // Manifest first: if it cannot be written, the caller has not
+        // started anything and the report must keep counting repeats.
+        var manifest = current.manifest
+        if manifest.consent != consent {
+            manifest.consent = consent
+            try writeJSON(manifest, to: current.directoryURL.appendingPathComponent("manifest.json"))
+        }
+        var state = current.state
+        if !state.repeatsFrozen {
+            state.repeatsFrozen = true
+            try writeJSON(state, to: current.directoryURL.appendingPathComponent("state.json"))
         }
         return PendingReport(
-            id: report.id,
-            directoryURL: report.directoryURL,
-            binding: report.binding,
+            id: current.id,
+            directoryURL: current.directoryURL,
+            binding: current.binding,
             manifest: manifest,
-            state: report.state
+            state: state
         )
     }
 
@@ -1166,6 +1218,36 @@ final class PendingReportStore {
             }
         }
         pruneFingerprintStateLocked(now: now)
+    }
+
+    /// Count `capture` on the newest pending report of the same issue, binding
+    /// and profile captured within `repeatGroupingWindow`, if one still
+    /// accepts repeats. Returns that report, or nil to store a new one.
+    private func countRepeatLocked(_ capture: PendingReportCapture) throws -> PendingReport? {
+        guard let issue = capture.issueFingerprint else { return nil }
+        let existing = scanReportsLocked()
+            .filter { report in
+                report.binding.issueFingerprint == issue
+                    && report.binding.binding == capture.binding
+                    && report.binding.profileID == capture.profileID
+                    && report.state.acceptsRepeats
+                    && abs(capture.capturedAt.timeIntervalSince(report.binding.capturedAtDate))
+                        <= Self.repeatGroupingWindow
+            }
+            .max { $0.binding.capturedAtDate < $1.binding.capturedAtDate }
+        guard let existing else { return nil }
+
+        var manifest = existing.manifest
+        manifest.report.occurrenceCount = min(
+            (manifest.report.occurrenceCount ?? 1) + 1,
+            DiagnosticsManifest.Report.maxOccurrenceCount
+        )
+        try writeJSON(manifest, to: existing.directoryURL.appendingPathComponent("manifest.json"))
+        markFingerprintSeenLocked(capture.fingerprint, now: capture.capturedAt)
+        guard let report = loadReport(from: existing.directoryURL) else {
+            throw DiagnosticsStoreError.unreadableReport(existing.id)
+        }
+        return report
     }
 
     private func enforceCapLocked(for binding: DiagnosticsBinding) throws {

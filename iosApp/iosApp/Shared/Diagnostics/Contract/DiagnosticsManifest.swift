@@ -85,8 +85,9 @@ struct DiagnosticsManifest: Codable, Equatable {
         let platform: Platform
         let osVersion: String
         let profileID: String?
-        /// How many times this issue happened before the report was sent.
-        /// Omitted when it happened once.
+        /// How many times this issue happened before the report was sent, when
+        /// more than once. Repeats of one issue within a day share a pending
+        /// report instead of each taking a slot (see `PendingReportStore`).
         var occurrenceCount: Int? = nil
 
         /// The contract's ceiling for `occurrence_count`.

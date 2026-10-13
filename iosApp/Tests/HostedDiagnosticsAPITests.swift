@@ -2184,6 +2184,125 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         }
     }
 
+    /// The settings screen sends the report it loaded earlier. A repeat
+    /// counted since then is part of the upload, and one counted while the
+    /// bundle is being built is kept as a new report rather than being
+    /// marked seen on a report that is then sent and deleted without it.
+    func testSelfHostedUploadNeverDropsARepeatOfTheReportItSends() async throws {
+        try await withTemporaryActiveSelfHostedServer { serverRegistryID in
+            let fixture = try makePendingSelfHostedReports(label: "self-hosted-repeats", count: 0)
+            let start = Date()
+            func occurrence(_ index: Int) -> PendingReportCapture {
+                selfHostedRepeatCapture(
+                    binding: fixture.binding,
+                    fingerprint: "event-\(index)",
+                    capturedAt: start.addingTimeInterval(TimeInterval(index))
+                )
+            }
+            let loaded = try fixture.store.save(occurrence(1))
+            _ = try fixture.store.save(occurrence(2))
+            var duringBuild: PendingReport?
+            let coordinator = try await makeSelfHostedCoordinator(
+                pendingStore: fixture.store,
+                serverRegistryID: serverRegistryID,
+                onHostedCredentialLoad: {
+                    guard duringBuild == nil else { return }
+                    duringBuild = try? fixture.store.save(occurrence(3))
+                }
+            )
+            selfHostedStub.configure(serverInstanceID: fixture.binding.serverInstanceID, reportID: loaded.id)
+
+            let decision = await coordinator.upload(report: loaded)
+
+            guard case .uploaded = decision else {
+                return XCTFail("Expected the report to upload, got \(decision)")
+            }
+            let sent = try XCTUnwrap(selfHostedStub.handler.requests
+                .first { $0.path == "/api/v2/diagnostics/reports" }?.bodyString)
+            XCTAssertNotNil(sent.range(of: #""occurrence_count"\s*:\s*2[,}]"#, options: .regularExpression))
+            let kept = try XCTUnwrap(duringBuild, "the repeat must arrive while the bundle builds")
+            XCTAssertNotEqual(kept.id, loaded.id)
+            XCTAssertEqual(fixture.store.listReports(for: fixture.binding).map(\.id), [kept.id])
+        }
+    }
+
+    /// A refused upload sent nothing, so the report goes back to counting
+    /// repeats. Otherwise every later repeat of a crash loop would open a new
+    /// report and refill the queue.
+    func testRepeatAfterAFailedSelfHostedUploadCountsOnTheSameReport() async throws {
+        try await withTemporaryActiveSelfHostedServer { serverRegistryID in
+            let fixture = try makePendingSelfHostedReports(label: "self-hosted-failed-repeat", count: 0)
+            let start = Date()
+            func occurrence(_ index: Int) -> PendingReportCapture {
+                selfHostedRepeatCapture(
+                    binding: fixture.binding,
+                    fingerprint: "event-\(index)",
+                    capturedAt: start.addingTimeInterval(TimeInterval(index))
+                )
+            }
+            let first = try fixture.store.save(occurrence(1))
+            let coordinator = try await makeSelfHostedCoordinator(
+                pendingStore: fixture.store,
+                serverRegistryID: serverRegistryID
+            )
+            selfHostedStub.configure(
+                serverInstanceID: fixture.binding.serverInstanceID,
+                reportID: first.id,
+                upload: .problem(status: 503, type: "diagnostics_busy")
+            )
+
+            let decision = await coordinator.upload(report: first)
+
+            XCTAssertEqual(decision, .keptRetryable)
+            XCTAssertEqual(selfHostedStub.requestedPaths().filter { $0 == "/api/v2/diagnostics/reports" }.count, 1)
+            let repeated = try fixture.store.save(occurrence(2))
+            XCTAssertEqual(repeated.id, first.id)
+            XCTAssertEqual(repeated.manifest.report.occurrenceCount, 2)
+            XCTAssertEqual(fixture.store.listReports(for: fixture.binding).map(\.id), [first.id])
+        }
+    }
+
+    private func selfHostedRepeatCapture(
+        binding: DiagnosticsBinding,
+        fingerprint: String,
+        capturedAt: Date
+    ) -> PendingReportCapture {
+        let context = DiagnosticsCaptureContext(
+            binding: binding,
+            profileID: nil,
+            consentMode: .manual,
+            noticeVersion: 1,
+            appVersion: "1.0",
+            appBuild: "7",
+            platform: .ios,
+            osVersion: "26.0",
+            destinationServerInstanceID: binding.serverInstanceID
+        )
+        return PendingReportCapture(
+            binding: binding,
+            profileID: nil,
+            type: .manual,
+            fingerprint: fingerprint,
+            capturedAt: capturedAt,
+            manifest: context.makeManifestDraft(
+                type: .manual,
+                capturedAt: capturedAt,
+                crash: nil,
+                deviceSummary: DiagnosticsManifest.DeviceSummary(
+                    manufacturer: "Apple",
+                    model: "iPhone",
+                    os: "26.0",
+                    formFactor: "phone"
+                ),
+                playbackSessionIDs: [],
+                consentMode: .manual
+            ),
+            deviceSnapshot: makeDeviceSnapshot(capturedAt: capturedAt),
+            artifacts: [PendingReportArtifact(relativePath: "logs.jsonl", data: Data())],
+            issueFingerprint: "issue-a"
+        )
+    }
+
     func testFoldedBadRequestKeepsTheSelfHostedReportWithoutRetry() async throws {
         try await withTemporaryActiveSelfHostedServer { serverRegistryID in
             let fixture = try makePendingSelfHostedReports(label: "self-hosted-rejected", count: 1)
@@ -3036,7 +3155,8 @@ final class HostedDiagnosticsAPITests: XCTestCase {
 
     private func makeSelfHostedCoordinator(
         pendingStore: PendingReportStore,
-        serverRegistryID: String
+        serverRegistryID: String,
+        onHostedCredentialLoad: (() -> Void)? = nil
     ) async throws -> DiagnosticsCoordinator {
         let suiteName = "HostedDiagnosticsAPITests.selfHosted.\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -3063,7 +3183,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         let siloAPI = SiloAPI(http: http, tokenStore: tokenStore)
         return DiagnosticsCoordinator(
             api: DiagnosticsAPI(client: siloAPI.apiV2Client),
-            hostedAPI: try makeHostedUploadAPI(),
+            hostedAPI: try makeHostedUploadAPI(onCredentialLoad: onHostedCredentialLoad),
             siloAPI: siloAPI,
             consentStore: DiagnosticsConsentStore(defaults: defaults),
             destinationStore: destinationStore,
@@ -3110,7 +3230,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         }
     }
 
-    private func makeHostedUploadAPI() throws -> HostedDiagnosticsAPI {
+    private func makeHostedUploadAPI(onCredentialLoad: (() -> Void)? = nil) throws -> HostedDiagnosticsAPI {
         HostedDiagnosticsAPI(
             baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
             session: makeSession(),
@@ -3118,7 +3238,8 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                 credential: HostedDiagnosticsCredential(
                     installationID: "install-acknowledgement-test",
                     installationToken: "acknowledgement-test-token"
-                )
+                ),
+                onLoad: onCredentialLoad
             )
         )
     }
@@ -3378,13 +3499,18 @@ private final class HostedTestCredentialStore: HostedDiagnosticsCredentialStorin
     private var credential: HostedDiagnosticsCredential?
     private(set) var saveCount = 0
     private(set) var clearCount = 0
+    /// Runs on each load. A self-hosted upload loads the credential only to
+    /// redact it while building the bundle, so this runs mid-build there.
+    private let onLoad: (() -> Void)?
 
-    init(credential: HostedDiagnosticsCredential?) {
+    init(credential: HostedDiagnosticsCredential?, onLoad: (() -> Void)? = nil) {
         self.credential = credential
+        self.onLoad = onLoad
     }
 
     func load() -> HostedDiagnosticsCredential? {
-        lock.withLock { credential }
+        onLoad?()
+        return lock.withLock { credential }
     }
 
     func save(_ credential: HostedDiagnosticsCredential) -> Bool {
