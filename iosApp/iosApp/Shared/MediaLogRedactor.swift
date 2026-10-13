@@ -117,9 +117,9 @@ enum MediaLogRedactor {
         // Bare media filenames. The match may neither start inside nor span a
         // `[redacted…]` marker, so `playing [redacted-url] Movie.mkv` loses
         // only the filename instead of collapsing the whole line. Nor may it
-        // start inside a diagnostics `[host:…]` token.
+        // start inside a diagnostics `[host:<12 hex>]` token.
         Rule(
-            #"(?<![A-Za-z0-9._~-])(?<!\[host:)(?!redacted[a-z0-9-]*\])"#
+            #"(?<![A-Za-z0-9._~-])(?!(?<=\[host:)[0-9a-f]{12}\])(?!redacted[a-z0-9-]*\])"#
                 + #"(?!(?:\#(genericMediaStems))\.(?:\#(mediaExtensions))\b)"#
                 + #"[A-Za-z0-9](?:(?!\[redacted)[A-Za-z0-9 _().,'&%+\-\[\]]){0,240}\.(?:\#(mediaExtensions))\b"#,
             replacement: "[redacted-media-name]"

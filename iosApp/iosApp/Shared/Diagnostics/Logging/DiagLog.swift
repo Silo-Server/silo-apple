@@ -268,7 +268,9 @@ private enum DiagnosticsRedactor {
     // embedded IPv4 and a `.port` is 51) that splits at colons one way only,
     // so a long colon-separated hex dump can't backtrack and stall the
     // logging thread. A zone (`%en0`) is always taken whole, so a colon after
-    // it (`fe80::1%en0: refused`) can't leave the zone behind.
+    // it (`fe80::1%en0: refused`) can't leave the zone behind. A candidate may
+    // end before a colon (`peer=fd00::5:closed`) but not inside a `::`, so
+    // `dec::face::method` stays a scope.
     private static let bareIPv4Regex = try! NSRegularExpression(
         pattern: #"(?<![\w.])((?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3})(?::\d{1,5})?(?!\.?\w)"#,
         options: []
@@ -278,7 +280,7 @@ private enum DiagnosticsRedactor {
         options: []
     )
     private static let bareIPv6Regex = try! NSRegularExpression(
-        pattern: #"(?<![\w.%])(?<!::)(?=[0-9A-Fa-f.:]{2,64}(?![0-9A-Fa-f.:]))((?:[0-9A-Fa-f.]*:){2,}[0-9A-Fa-f.]*)(?:%[\w.-]+)?(?!\w)"#,
+        pattern: #"(?<![\w.%])(?<!::)(?=[0-9A-Fa-f.:]{2,64}(?![0-9A-Fa-f.:]))((?:[0-9A-Fa-f.]*:){2,}[0-9A-Fa-f.]*)(?:%[\w.-]+)?(?!\w)(?!(?<=:):)(?!::)"#,
         options: []
     )
     private static let hostPortRegex = try! NSRegularExpression(
@@ -351,12 +353,19 @@ private enum DiagnosticsRedactor {
         var index = value.startIndex
         while index < value.endIndex {
             var matched = false
+            let current = value[index]
+            // A registered host such as `path` or `media` must not match
+            // inside a marker or token another rule already wrote.
+            if current == "[", let end = markerEnd(in: value, from: index) {
+                result += value[index..<end]
+                index = end
+                continue
+            }
             // When the character here is a single ASCII byte, a host can only
             // match if its own first character is that byte lowercased: a
             // lowercased candidate starts with the same scalar, and it equals
             // `host` only if their first scalars agree. Anything else (a
             // non-ASCII or multi-scalar character) takes the full comparison.
-            let current = value[index]
             let currentASCII = current.utf8.count == 1 ? current.asciiValue.map(Self.lowercasedASCII) : nil
             for known in hosts {
                 if let currentASCII, let first = known.firstASCII, currentASCII != first { continue }
@@ -380,6 +389,15 @@ private enum DiagnosticsRedactor {
             }
         }
         return result
+    }
+
+    /// The end of the `[redacted…]` marker or `[host:…]` token that starts at
+    /// `index`, or nil when none does.
+    private static func markerEnd(in value: String, from index: String.Index) -> String.Index? {
+        let rest = value[index...]
+        guard rest.hasPrefix("[redacted") || rest.hasPrefix("[host:"),
+              let close = rest.firstIndex(of: "]") else { return nil }
+        return value.index(after: close)
     }
 
     private static func lowercasedASCII(_ byte: UInt8) -> UInt8 {

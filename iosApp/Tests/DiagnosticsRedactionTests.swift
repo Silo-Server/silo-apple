@@ -324,9 +324,17 @@ final class DiagnosticsRedactionTests: XCTestCase {
     /// Hashing hosts before media names must leave both markers intact.
     func testHostsAndMediaNamesKeepTheirOwnMarkers() throws {
         DiagLog.registerSensitiveHost("media")
+        DiagLog.registerSensitiveHost("path")
         let named = try rendered("playing Movie (2019).mkv")
         XCTAssertTrue(named.contains("[redacted_media_name]"))
         XCTAssertFalse(named.contains("Movie"))
+
+        let path = try rendered("open /Users/person/notes.txt failed")
+        XCTAssertTrue(path.contains("open [redacted_path] failed"))
+
+        // Only a real token is exempt; text that merely starts like one is not.
+        let lookalike = try rendered("playing [host:PrivateMovie].mkv")
+        XCTAssertFalse(lookalike.contains("PrivateMovie"))
 
         let address = try rendered("peer 10.0.0.5 sent Movie.mkv")
         XCTAssertFalse(address.contains("10.0.0.5"))
@@ -342,6 +350,7 @@ final class DiagnosticsRedactionTests: XCTestCase {
             "elapsed 12:34:56 and 12:34:56.789",
             "mac aa:bb:cc:dd:ee:ff",
             "ns::abc::def and std::cerr",
+            "scope dec::face::method",
             "warning at file.swift:812:4",
             "crash in PlayerViewModel.swift:812: index out of range",
         ]
