@@ -139,21 +139,27 @@ final class DiagnosticsBundleBuilderTests: XCTestCase {
         XCTAssertTrue((metadata["terminationReason"] as? String)?.hasPrefix("Namespace SIGNAL, Code 6") == true)
     }
 
-    /// A long exception message must reach the hosted ID rules whole: a
-    /// length cut through an item ID would leave a fragment they cannot match.
-    func testHostedMetricKitLongFreeTextRedactsIdentifierPastLogLineCap() throws {
+    /// However long an exception message is, no length cut may split an item
+    /// ID: the hosted ID rules cannot match the fragment a split leaves.
+    func testHostedMetricKitLongFreeTextNeverKeepsPartOfAnIdentifier() throws {
         let itemID = "12345678-9abc-4def-8123-456789abcdef"
-        let raw = try JSONSerialization.data(withJSONObject: [
-            "diagnosticMetaData": [
-                "objectiveCexceptionReason": [
-                    "composedMessage": String(repeating: "z", count: 2030) + " item " + itemID + " missing",
+        // The ID crosses 2,048 (a log line's cap), 4,096 (the free-text cut),
+        // and 16,384 (the redactor's working limit) characters.
+        for fillerLength in [2_030, 4_080, 16_354] {
+            let raw = try JSONSerialization.data(withJSONObject: [
+                "diagnosticMetaData": [
+                    "objectiveCexceptionReason": [
+                        "composedMessage": String(repeating: "z", count: fillerLength) + " item " + itemID + " missing",
+                    ],
                 ],
-            ],
-        ])
+            ])
 
-        let sanitized = try DiagnosticsBundleBuilder.sanitizeHostedMetricKitJSON(raw)
-        let text = try XCTUnwrap(String(data: sanitized, encoding: .utf8))
-        XCTAssertFalse(text.contains("12345678"))
-        XCTAssertTrue(text.contains("[redacted_private_id] missing"))
+            let sanitized = try DiagnosticsBundleBuilder.sanitizeHostedMetricKitJSON(raw)
+            let text = try XCTUnwrap(String(data: sanitized, encoding: .utf8))
+            XCTAssertFalse(text.contains("12345678"), "filler \(fillerLength)")
+            if fillerLength < 4_000 {
+                XCTAssertTrue(text.contains("[redacted_private_id] missing"), "filler \(fillerLength)")
+            }
+        }
     }
 }

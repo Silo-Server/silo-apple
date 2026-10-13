@@ -32,10 +32,25 @@ enum DiagLog {
 
     /// Applies the URL, address, email, and credential rules every log line
     /// gets to text that did not come through the log, such as the free-text
-    /// fields of a MetricKit payload. Unlike a log line it is not truncated:
-    /// a cut can split an identifier that a later redaction pass would match.
+    /// fields of a MetricKit payload. A log line is cut at a fixed length;
+    /// this text is cut only at whitespace, because a cut through an
+    /// identifier leaves a fragment that a later redaction pass cannot match.
     static func redactFreeText(_ value: String) -> String {
-        DiagnosticsRedactor.sanitize(value, maxLength: .max)
+        DiagnosticsRedactor.sanitize(wholeWordPrefix(of: value), maxLength: .max)
+    }
+
+    /// Redaction can make text about three times longer (an email becomes
+    /// `[redacted_email]`), and `MediaLogRedactor` drops whatever passes its
+    /// working limit mid-word, so free text keeps at most a quarter of it.
+    private static let freeTextMaxLength = MediaLogRedactor.workingInputLimit / 4
+
+    private static func wholeWordPrefix(of value: String) -> String {
+        guard value.count > freeTextMaxLength else { return value }
+        // Room for "..." plus the character after the cut, so a cut that
+        // lands on whitespace keeps the word before it.
+        let head = value.prefix(freeTextMaxLength - 2)
+        let end = head.lastIndex(where: \.isWhitespace) ?? head.startIndex
+        return String(head[..<end]) + "..."
     }
 
     static func d(_ category: Category, _ tag: String, _ message: String, _ attrs: [String: DiagLogAttributeValue] = [:]) {
