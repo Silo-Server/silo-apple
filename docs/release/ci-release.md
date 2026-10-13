@@ -27,8 +27,9 @@ When distribution succeeds, the run adds a "TestFlight: distributed …" line to
 the prerelease. If a run fails before that, use **Re-run failed jobs**: it keeps
 the same build number. To abandon the build instead, delete its GitHub release
 and tag. The next run refuses to start while the newest prerelease lacks that
-line, so its notes don't skip changes no tester got, and Promote only accepts a
-build that has it.
+line, so its notes don't skip changes no tester got. Promote only accepts a
+build distributed on both iOS and tvOS, because one App Store release covers
+both.
 
 ## Store release
 

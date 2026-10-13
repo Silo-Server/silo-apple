@@ -40,9 +40,11 @@ jobs:
           version="$(sed -n 's/^version=//p' build.txt)"
           build="$(sed -n 's/^build=//p' build.txt)"
           release_tag="$(sed -n 's/^release_tag=//p' build.txt)"
+          # One store release covers both platforms, so promote only a build
+          # that reached testers on iOS and tvOS.
           if [[ "$(gh release view "$BETA_TAG" --json isPrerelease --jq .isPrerelease 2>/dev/null)" != "true" ]] ||
-             ! gh release view "$BETA_TAG" --json body --jq .body | grep -q '^TestFlight: distributed '; then
-            echo "::error::$BETA_TAG never reached TestFlight testers, so it can't be promoted."
+             ! gh release view "$BETA_TAG" --json body --jq .body | grep -q '^TestFlight: distributed .* on iOS and tvOS\.$'; then
+            echo "::error::$BETA_TAG didn't reach TestFlight testers on both iOS and tvOS, so it can't be promoted."
             exit 1
           fi
           if gh release view "$release_tag" >/dev/null 2>&1; then
