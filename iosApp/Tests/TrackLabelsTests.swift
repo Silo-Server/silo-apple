@@ -11,12 +11,13 @@ final class TrackLabelsTests: XCTestCase {
         channels: Int? = nil,
         isDefault: Bool = false,
         isForced: Bool = false,
+        isHearingImpaired: Bool = false,
         ffIndex: Int = 3
     ) -> PlayerTrack {
         PlayerTrack(
             trackId: 3, kind: kind, title: title, lang: lang, codec: codec,
             audioChannelCount: channels, bitrate: nil, isDefault: isDefault,
-            isForced: isForced, isHearingImpaired: false, isExternal: false,
+            isForced: isForced, isHearingImpaired: isHearingImpaired, isExternal: false,
             isSelected: false, ffIndex: ffIndex, srcId: nil
         )
     }
@@ -180,6 +181,51 @@ final class TrackLabelsTests: XCTestCase {
             "French (Signs & Songs, Forced)"
         )
         XCTAssertEqual(playerTrack(kind: .sub, title: "SDH", lang: "eng", codec: "subrip").singleLineLabel, "English (SDH)")
+    }
+
+    /// The phone remote shows only the title, so two tracks that would both
+    /// read "English" keep their codec and layout there.
+    func testSingleLineLabelsTellSameLanguageTracksApart() {
+        let audio = [
+            playerTrack(kind: .audio, title: "ENG (eac3)", lang: "eng", codec: "eac3", channels: 6),
+            playerTrack(kind: .audio, title: "ENG (aac)", lang: "eng", codec: "aac", channels: 2),
+            playerTrack(kind: .audio, title: "Commentary", lang: "eng", codec: "aac", channels: 2),
+            playerTrack(kind: .audio, title: "FRE (ac3)", lang: "fre", codec: "ac3", channels: 6),
+        ]
+        XCTAssertEqual(
+            PlayerTrack.singleLineLabels(audio),
+            ["English (EAC3 5.1)", "English (AAC Stereo)", "English (Commentary)", "French"]
+        )
+
+        let subtitles = [
+            playerTrack(kind: .sub, title: nil, lang: "eng", codec: "hdmv_pgs_subtitle"),
+            playerTrack(kind: .sub, title: nil, lang: "eng", codec: "subrip", isForced: true),
+            playerTrack(kind: .sub, title: nil, lang: "eng", codec: "subrip"),
+        ]
+        XCTAssertEqual(
+            PlayerTrack.singleLineLabels(subtitles),
+            ["English (PGS)", "English (Forced)", "English (SRT)"]
+        )
+    }
+
+    /// "HI" alone doesn't set the SDH flag, so the title stays as the only
+    /// sign of an accessibility track; with the flag set it is redundant.
+    func testHearingImpairedTitleStaysUntilTheFlagShows() {
+        let titled = playerTrack(kind: .sub, title: "HI", lang: "eng", codec: "subrip")
+        XCTAssertEqual(titled.detailLabel, "HI")
+        XCTAssertEqual(titled.attributesLabel, "HI · SRT")
+        XCTAssertEqual(titled.singleLineLabel, "English (HI)")
+
+        let flagged = playerTrack(kind: .sub, title: "HI", lang: "eng", codec: "subrip", isHearingImpaired: true)
+        XCTAssertNil(flagged.detailLabel)
+        XCTAssertEqual(flagged.attributesLabel, "SRT · SDH")
+        XCTAssertEqual(flagged.singleLineLabel, "English (SDH)")
+
+        let detail = SubtitleTrack(
+            index: 2, codec: "subrip", language: "eng", title: "HI", embeddedTitle: nil,
+            forced: nil, hearingImpaired: nil, isDefault: nil, external: nil, externalPath: nil
+        )
+        XCTAssertEqual(DetailPlaybackFormatting.subtitleDetail(detail, ordinal: 0, isSelectable: true), "HI · SRT")
     }
 
     /// Without a language the title names the row, so neither screen repeats

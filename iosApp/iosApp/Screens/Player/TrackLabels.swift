@@ -152,15 +152,24 @@ enum TrackLabels {
     /// A subtitle title worth showing: not a format name, the codec, the
     /// language, or a flag the row already shows (Forced, SDH). "Signs &
     /// Songs" or "Dub (SDH)" survive; "ASS", "SubRip", "English", or a
-    /// release name don't.
-    static func subtitleTitle(_ title: String?, language: String?, codec: String?) -> String? {
+    /// release name don't. `showsHearingImpaired` says whether the row shows
+    /// the SDH flag.
+    static func subtitleTitle(
+        _ title: String?,
+        language: String?,
+        codec: String?,
+        showsHearingImpaired: Bool
+    ) -> String? {
         guard let title = nonEmpty(title), !looksLikeReleaseName(title) else { return nil }
         let lowered = title.lowercased()
         let formatNames: Set<String> = [
             "ass", "ssa", "srt", "subrip", "pgs", "sup", "sub",
             "vtt", "webvtt", "vobsub", "dvdsub", "mov_text",
         ]
-        let flagNames: Set<String> = ["forced", "sdh", "cc", "hi", "hearing impaired"]
+        var flagNames: Set<String> = ["forced", "sdh", "cc", "hearing impaired"]
+        // A title of "HI" alone doesn't set the SDH flag, so it only repeats
+        // the flag when the track's disposition sets it.
+        if showsHearingImpaired { flagNames.insert("hi") }
         if formatNames.contains(lowered) || flagNames.contains(lowered) { return nil }
         if lowered == "subtitle" || lowered == "subtitles" { return nil }
         if let name = languageName(language)?.lowercased(), lowered == name { return nil }

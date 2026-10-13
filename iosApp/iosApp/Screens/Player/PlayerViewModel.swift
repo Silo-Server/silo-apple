@@ -9242,8 +9242,8 @@ extension PlayerViewModel {
             isBuffering: isBuffering,
             currentTime: currentTime,
             duration: duration,
-            audioTracks: audioTracks.map(makeSiloControlTrack),
-            subtitleTracks: subtitleTracks.map(makeSiloControlTrack),
+            audioTracks: makeSiloControlTracks(audioTracks),
+            subtitleTracks: makeSiloControlTracks(subtitleTracks),
             selectedAudioTrackId: selectedAudioId,
             selectedSubtitleTrackId: selectedSubtitleId,
             qualityOptions: qualityOptions.map(makeSiloControlOption),
@@ -9265,16 +9265,18 @@ extension PlayerViewModel {
         )
     }
 
-    private func makeSiloControlTrack(_ track: PlayerTrack) -> SiloControlTrack {
+    private func makeSiloControlTracks(_ tracks: [PlayerTrack]) -> [SiloControlTrack] {
         // Rows lead with the language, so the title also carries what tells
         // same-language tracks apart ("English (Commentary)"): remotes show
         // only the title.
-        SiloControlTrack(
-            kind: track.kind.rawValue,
-            trackId: track.trackId,
-            title: track.singleLineLabel,
-            detail: track.attributesLabel
-        )
+        zip(tracks, PlayerTrack.singleLineLabels(tracks)).map { track, title in
+            SiloControlTrack(
+                kind: track.kind.rawValue,
+                trackId: track.trackId,
+                title: title,
+                detail: track.attributesLabel
+            )
+        }
     }
 
     private func makeSiloControlOption(_ option: ApplePlaybackQualityOption) -> SiloControlOption {

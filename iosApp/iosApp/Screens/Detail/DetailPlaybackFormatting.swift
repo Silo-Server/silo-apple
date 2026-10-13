@@ -537,7 +537,12 @@ enum DetailPlaybackFormatting {
             if lowered.contains("forced") {
                 return "Forced"
             }
-            if let meaningful = TrackLabels.subtitleTitle(title, language: track.language, codec: track.codec) {
+            if let meaningful = TrackLabels.subtitleTitle(
+                title,
+                language: track.language,
+                codec: track.codec,
+                showsHearingImpaired: isHearingImpaired(track)
+            ) {
                 return meaningful
             }
         }
@@ -558,7 +563,8 @@ enum DetailPlaybackFormatting {
         TrackLabels.subtitleTitle(
             nonEmpty(track.title) ?? nonEmpty(track.embeddedTitle),
             language: track.language,
-            codec: track.codec
+            codec: track.codec,
+            showsHearingImpaired: isHearingImpaired(track)
         )
     }
 

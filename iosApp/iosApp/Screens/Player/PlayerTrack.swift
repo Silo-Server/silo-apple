@@ -81,7 +81,32 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
     /// surfaces that show only a name, such as the phone remote's menus:
     /// "English", "English (Commentary)", "English (Signs & Songs, Forced)".
     var singleLineLabel: String {
+        singleLineLabel(includingFormat: false)
+    }
+
+    /// `singleLineLabel` for each track, adding the codec and layout where
+    /// two tracks would otherwise read the same: "English (EAC3 5.1)" and
+    /// "English (AAC Stereo)" rather than "English" twice.
+    static func singleLineLabels(_ tracks: [PlayerTrack]) -> [String] {
+        let labels = tracks.map(\.singleLineLabel)
+        let counts = Dictionary(labels.map { ($0, 1) }, uniquingKeysWith: +)
+        return zip(tracks, labels).map { track, label in
+            counts[label, default: 0] > 1 ? track.singleLineLabel(includingFormat: true) : label
+        }
+    }
+
+    private func singleLineLabel(includingFormat: Bool) -> String {
         var qualifiers = [detailLabel].compactMap { $0 }
+        if includingFormat {
+            let format: [String?]
+            switch kind {
+            case .audio: format = [TrackLabels.audioCodec(Self.normalizedText(codec)), channelCountLabel]
+            case .sub: format = [TrackLabels.subtitleCodec(Self.normalizedText(codec))]
+            case .video, .unknown: format = []
+            }
+            let joined = format.compactMap { $0 }.joined(separator: " ")
+            if !joined.isEmpty { qualifiers.append(joined) }
+        }
         if showsForced { qualifiers.append("Forced") }
         if showsHearingImpaired { qualifiers.append("SDH") }
         guard !qualifiers.isEmpty else { return primaryLabel }
@@ -138,7 +163,13 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
         if OfflinePreparedTrackInventory.hasSynthesizedName(self) { return nil }
         switch kind {
         case .audio: return TrackLabels.audioTitle(normalizedTitle, language: normalizedLanguageCode)
-        case .sub: return TrackLabels.subtitleTitle(normalizedTitle, language: normalizedLanguageCode, codec: codec)
+        case .sub:
+            return TrackLabels.subtitleTitle(
+                normalizedTitle,
+                language: normalizedLanguageCode,
+                codec: codec,
+                showsHearingImpaired: showsHearingImpaired
+            )
         case .video, .unknown: return normalizedTitle
         }
     }
