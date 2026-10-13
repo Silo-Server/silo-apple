@@ -141,25 +141,33 @@ final class DiagnosticsBundleBuilderTests: XCTestCase {
 
     /// However long an exception message is, no length cut may split an item
     /// ID: the hosted ID rules cannot match the fragment a split leaves.
+    /// Text too long to redact whole is replaced instead of cut.
     func testHostedMetricKitLongFreeTextNeverKeepsPartOfAnIdentifier() throws {
         let itemID = "12345678-9abc-4def-8123-456789abcdef"
-        // The ID crosses 2,048 (a log line's cap), 4,096 (the free-text cut),
-        // and 16,384 (the redactor's working limit) characters.
-        for fillerLength in [2_030, 4_080, 16_354] {
-            let raw = try JSONSerialization.data(withJSONObject: [
-                "diagnosticMetaData": [
-                    "objectiveCexceptionReason": [
-                        "composedMessage": String(repeating: "z", count: fillerLength) + " item " + itemID + " missing",
-                    ],
-                ],
-            ])
+        let messages = [
+            // Crosses a log line's 2,048-character cap; short enough to keep.
+            String(repeating: "z", count: 2_030),
+            // Crosses the redactor's 16,384-character working limit.
+            String(repeating: "z", count: 16_354),
+            // Under 4,000 characters, but URL redaction lengthens it past that limit.
+            "https://example.com/" + String(repeating: "a.ts/", count: 742),
+        ].map { $0 + " item " + itemID + " missing" }
 
+        var redactedMessages: [String] = []
+        for message in messages {
+            let raw = try JSONSerialization.data(withJSONObject: [
+                "diagnosticMetaData": ["objectiveCexceptionReason": ["composedMessage": message]],
+            ])
             let sanitized = try DiagnosticsBundleBuilder.sanitizeHostedMetricKitJSON(raw)
             let text = try XCTUnwrap(String(data: sanitized, encoding: .utf8))
-            XCTAssertFalse(text.contains("12345678"), "filler \(fillerLength)")
-            if fillerLength < 4_000 {
-                XCTAssertTrue(text.contains("[redacted_private_id] missing"), "filler \(fillerLength)")
-            }
+            XCTAssertFalse(text.contains("12345678"), "message of \(message.count) characters")
+            let metadata = try XCTUnwrap(
+                (JSONSerialization.jsonObject(with: sanitized) as? [String: Any])?["diagnosticMetaData"] as? [String: Any]
+            )
+            let reason = try XCTUnwrap(metadata["objectiveCexceptionReason"] as? [String: Any])
+            redactedMessages.append(try XCTUnwrap(reason["composedMessage"] as? String))
         }
+        XCTAssertTrue(redactedMessages[0].hasSuffix(" item [redacted_private_id] missing"))
+        XCTAssertEqual(Array(redactedMessages.dropFirst()), ["[redacted_long_text]", "[redacted_long_text]"])
     }
 }

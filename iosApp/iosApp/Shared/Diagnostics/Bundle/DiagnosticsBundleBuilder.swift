@@ -395,7 +395,8 @@ struct DiagnosticsBundleBuilder {
             return array.map { sanitizeHostedMetricKitValue($0, isFreeText: isFreeText) }
         }
         if let string = value as? String {
-            let redacted = isFreeText ? DiagLog.redactFreeText(string) : string
+            guard isFreeText else { return sanitizeHostedCrashText(string) }
+            guard let redacted = DiagLog.redactFreeText(string) else { return "[redacted_long_text]" }
             return sanitizeHostedCrashText(redacted)
         }
         return value
