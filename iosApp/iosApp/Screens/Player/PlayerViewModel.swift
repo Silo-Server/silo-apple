@@ -1160,6 +1160,10 @@ class PlayerViewModel {
 
     private static let autoplayStartSessionTimeout: TimeInterval = 15
     private(set) var lastLoadRequest: LoadRequest?
+    /// Where a Keep Watching remount that failed was resuming. Retry remounts
+    /// there as Keep Watching did, keeping the viewer's choices; any other
+    /// load clears it.
+    private(set) var failedResumeAfterEndPosition: Double?
     private static let nextUpCountdownDefaultSeconds = 10
     private static let nextUpHUDCountdownThresholdSeconds: Double = 100
     private static let nearEndPlaybackErrorThresholdSeconds: Double = 8
@@ -4927,6 +4931,7 @@ class PlayerViewModel {
             cancelReconnect()
         }
         lastLoadRequest = request
+        failedResumeAfterEndPosition = nil
         offlinePlaybackContext = nil
         contentIdsNeedingDetailRefresh.insert(request.contentId)
         hasReachedEndOfFile = false
@@ -5243,6 +5248,9 @@ class PlayerViewModel {
                 Self.logger.error(
                     "Load failed: \(MediaLogRedactor.sanitize(error), privacy: .public)"
                 )
+                if origin == .resumeAfterEnd {
+                    self.failedResumeAfterEndPosition = resumePositionOverride
+                }
                 self.handleBeginFreshLoadFailure(error: error, origin: origin)
             }
         }
@@ -5836,6 +5844,16 @@ class PlayerViewModel {
         }
         guard let last = lastLoadRequest else { return }
         Self.logger.info("Retrying playback for contentId=\(last.contentId, privacy: .public)")
+        if let position = failedResumeAfterEndPosition {
+            beginFreshLoad(
+                request: last,
+                progressPosition: nil,
+                resumePositionOverride: position,
+                allowNearEndResume: true,
+                origin: .resumeAfterEnd
+            )
+            return
+        }
         beginFreshLoad(
             request: last,
             progressPosition: currentTime,
