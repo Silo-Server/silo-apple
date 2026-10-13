@@ -146,6 +146,21 @@ final class TopShelfHTTPClientTests: XCTestCase {
         XCTAssertEqual(h.stub.requestedPaths, [Self.sectionsPath, Self.refreshPath])
     }
 
+    func testProfileChangeDuringTheRejectedRequestSendsNoRefresh() async throws {
+        let h = try harness()
+        h.stub.sequence(path: Self.sectionsPath, [.json(401, "{}")])
+        h.stub.reply(path: Self.refreshPath, 200, Self.refreshedTokens)
+        h.stub.hold(path: Self.sectionsPath)
+
+        let fetch = Task { try await h.client.fetchHomeSections(imageSizeQuery: [:]) }
+        await h.stub.waitUntilHeld()
+        h.switchProfile()
+        h.stub.release()
+
+        await assertNotAuthenticated(fetch)
+        XCTAssertEqual(h.stub.requestedPaths, [Self.sectionsPath])
+    }
+
     func testProfileChangeDuringASuccessfulRequestReturnsNothing() async throws {
         let h = try harness()
         h.stub.reply(path: Self.sectionsPath, 200, #"{"sections":[]}"#)

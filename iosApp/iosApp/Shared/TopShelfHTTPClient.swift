@@ -198,12 +198,15 @@ struct TopShelfHTTPClient {
         let token = await credentials.tokens.accessToken
         var (data, http) = try await send(url, credentials: credentials, bearer: token)
         let serverURL = credentials.serverURL
-        if http.statusCode == 401,
-           let fresh = await credentials.tokens.replacement(for: token, refreshing: { [session] refreshToken in
-               await Self.refreshedAccessToken(serverURL: serverURL, refreshToken: refreshToken, session: session)
-           }) {
+        if http.statusCode == 401 {
+            // Never spend a refresh token the app may have signed out of.
             guard isCurrentScope else { throw Error.notAuthenticated }
-            (data, http) = try await send(url, credentials: credentials, bearer: fresh)
+            if let fresh = await credentials.tokens.replacement(for: token, refreshing: { [session] refreshToken in
+                await Self.refreshedAccessToken(serverURL: serverURL, refreshToken: refreshToken, session: session)
+            }) {
+                guard isCurrentScope else { throw Error.notAuthenticated }
+                (data, http) = try await send(url, credentials: credentials, bearer: fresh)
+            }
         }
         guard (200..<300).contains(http.statusCode) else {
             throw Error.unexpectedStatus(http.statusCode)
