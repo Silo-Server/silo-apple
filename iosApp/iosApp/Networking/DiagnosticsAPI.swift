@@ -20,7 +20,7 @@ struct DiagnosticsStatusResponse: Codable, Equatable {
     /// single-shot multipart upload.
     let uploadChunkBytes: Int?
     /// The `crash.source` values the server's validator accepts. Absent
-    /// (nil) on servers that predate the list.
+    /// (nil) on servers that predate the list; see `acceptsCrashSource`.
     var acceptedCrashSources: [String]? = nil
 
     var serverInstanceID: String {
@@ -29,6 +29,17 @@ struct DiagnosticsStatusResponse: Codable, Equatable {
 
     var supportsChunkedUpload: Bool {
         (uploadChunkBytes ?? 0) > 0
+    }
+
+    /// Whether a report with this `crash.source` passes the manifest
+    /// validation of a server that sent `acceptedCrashSources`. A server
+    /// without the list rejects anything newer than the sources it shipped
+    /// with as an invalid manifest.
+    static func acceptsCrashSource(_ source: CrashSource, listed acceptedCrashSources: [String]?) -> Bool {
+        guard let acceptedCrashSources else {
+            return [.ueh, .exitInfo, .metrickit, .exitSentinel].contains(source)
+        }
+        return acceptedCrashSources.contains(source.rawValue)
     }
 }
 

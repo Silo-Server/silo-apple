@@ -203,6 +203,13 @@ struct ContentView: View {
             #endif
             #if os(tvOS)
             ExitSentinel.shared.appDidEnterForeground()
+            // The scene can already be active when the root view first
+            // appears, and `onChange(of: scenePhase)` does not report an
+            // initial value, so a cold launch starts the watchdog here, as it
+            // arms the exit sentinel. `start()` is idempotent.
+            if scenePhase != .background {
+                HangWatchdog.shared.start()
+            }
             #endif
         }
         .onReceive(NotificationCenter.default.publisher(for: .siloSessionExpired)) { notification in
@@ -481,8 +488,10 @@ struct ContentView: View {
             switch newPhase {
             case .active:
                 ExitSentinel.shared.appDidEnterForeground()
+                HangWatchdog.shared.start()
             case .background:
                 ExitSentinel.shared.appDidEnterBackground()
+                HangWatchdog.shared.stop()
             default:
                 break
             }

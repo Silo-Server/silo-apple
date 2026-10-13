@@ -1632,6 +1632,7 @@ actor DiagnosticsCoordinator {
             maxBundleBytes: snapshot.status.maxBundleBytes,
             maxManifestBytes: snapshot.status.maxManifestBytes,
             availabilityStatus: snapshot.status.status,
+            acceptedCrashSources: snapshot.status.acceptedCrashSources,
             hostedCredentialIdentity: hostedCredentialIdentity
         )
     }
@@ -1913,7 +1914,7 @@ actor DiagnosticsCoordinator {
         let occurredAt = lastKnownAliveAt.map(DiagnosticsTimestamp.string(from:))
             ?? DiagnosticsTimestamp.string(from: capturedAt)
         let crash = DiagnosticsCrashInfo(
-            summary: "Silo did not shut down cleanly last time",
+            summary: Self.abnormalExitSummary(for: marker),
             stackExcerpt: nil,
             thread: nil,
             foreground: true,
@@ -1954,17 +1955,134 @@ actor DiagnosticsCoordinator {
                 deviceSnapshot: device,
                 artifacts: artifacts,
                 // An abnormal exit carries no stack, so every one from the
-                // same build is the same issue.
-                issueFingerprint: DiagnosticsSHA256.hex(
-                    data: Data("exit_sentinel|\(boundContext.appBuild)".utf8)
-                )
+                // same build is the same issue; one that ended during a hang
+                // is a different issue from one that did not.
+                issueFingerprint: DiagnosticsSHA256.hex(data: Data(
+                    "exit_sentinel|\(marker.hangStartedAt == nil ? "exit" : "hang")|\(boundContext.appBuild)".utf8
+                ))
             ))
             return true
         } catch {
             return false
         }
     }
+
+    /// File a `hang` report for a main-thread hang the watchdog saw end. Only
+    /// a self-hosted server that lists the `watchdog` crash source gets one:
+    /// the hosted collector's contract does not have it yet, and an older
+    /// server would reject the report outright. The lifecycle breadcrumb the
+    /// watchdog writes reaches every destination.
+    ///
+    /// `epoch` is the evidence epoch when the hang ended. The report is filed
+    /// only if it still holds, so a capture queued behind other work cannot
+    /// outlive a profile switch or a Turn Off and Delete and be filed after
+    /// diagnostics is turned back on.
+    @discardableResult
+    func captureWatchdogHang(
+        startedAt: Date,
+        endedAt: Date,
+        residentMB: Int?,
+        epoch: DiagnosticsEvidenceEpoch
+    ) async -> Bool {
+        guard Self.currentEvidenceEpoch() == epoch,
+              let context = await captureContext(),
+              Self.canFileWatchdogHang(to: context) else {
+            return false
+        }
+        let runID = DiagLog.captureSessionID
+        let started = DiagnosticsTimestamp.string(from: startedAt)
+        let fingerprint = DiagnosticsSHA256.hex(data: Data("watchdog|\(runID)|\(started)".utf8))
+        if pendingStore.hasSeenFingerprint(fingerprint, now: endedAt) {
+            return true
+        }
+        let device = deviceSnapshotBuilder.build(provenance: .preFailure)
+        let crash = DiagnosticsCrashInfo(
+            summary: Self.watchdogHangSummary(duration: endedAt.timeIntervalSince(startedAt), residentMB: residentMB),
+            stackExcerpt: nil,
+            thread: "main",
+            foreground: true,
+            source: .watchdog,
+            provenance: .preFailure,
+            occurredAt: started,
+            occurredAtStart: started,
+            occurredAtEnd: DiagnosticsTimestamp.string(from: endedAt)
+        )
+        let manifest = context.makeManifestDraft(
+            type: .hang,
+            capturedAt: endedAt,
+            crash: crash,
+            deviceSummary: deviceSnapshotBuilder.deviceSummary(from: device),
+            playbackSessionIDs: RecentSessionTracker.shared.recentSessionIDs(for: context.binding),
+            captureSessionID: runID
+        )
+        var artifacts: [PendingReportArtifact] = []
+        let breadcrumbs = Self.renderBreadcrumbs(Self.breadcrumbLines(
+            Self.breadcrumbJournal.readAll(),
+            forRunID: runID,
+            since: .distantPast
+        ))
+        if !breadcrumbs.isEmpty {
+            artifacts.append(PendingReportArtifact(relativePath: "breadcrumbs.jsonl", data: breadcrumbs))
+        }
+        artifacts.append(Self.appendingLatestPlaybackSummary(
+            to: logSnapshotArtifact(since: .distantPast, runID: runID),
+            binding: context.binding,
+            profileID: context.profileID
+        ))
+        // Again after the context lookup and the evidence reads above.
+        guard Self.currentEvidenceEpoch() == epoch else { return false }
+        do {
+            _ = try pendingStore.save(PendingReportCapture(
+                binding: context.binding,
+                profileID: context.profileID,
+                type: .hang,
+                fingerprint: fingerprint,
+                capturedAt: endedAt,
+                manifest: manifest,
+                deviceSnapshot: device,
+                artifacts: artifacts,
+                // No stack to tell hangs apart, so every watchdog hang in one
+                // build is one issue.
+                issueFingerprint: DiagnosticsSHA256.hex(data: Data("watchdog|\(context.appBuild)".utf8))
+            ))
+        } catch {
+            return false
+        }
+        NotificationCenter.default.post(name: .diagnosticsPendingReportCreated, object: nil)
+        return true
+    }
     #endif
+
+    nonisolated static func canFileWatchdogHang(to context: DiagnosticsCaptureContext) -> Bool {
+        context.destinationChoice == .selfHosted
+            && DiagnosticsStatusResponse.acceptsCrashSource(.watchdog, listed: context.acceptedCrashSources)
+    }
+
+    nonisolated static func watchdogHangSummary(duration: TimeInterval, residentMB: Int?) -> String {
+        var summary = String(format: "Silo did not respond for %.1f s", duration)
+        if let residentMB {
+            summary += ", using \(residentMB) MB of memory"
+        }
+        return summary
+    }
+
+    /// The report summary for an unclean exit. A run that ended while the
+    /// watchdog saw the main thread blocked was most likely killed by the
+    /// system for not responding, so say so, with how long and how much
+    /// memory the app was using.
+    nonisolated static func abnormalExitSummary(for marker: ExitSentinelMarker) -> String {
+        guard marker.hangStartedAt != nil else {
+            return "Silo did not shut down cleanly last time"
+        }
+        var summary = "Silo stopped while not responding"
+        if let hangDurationMs = marker.hangDurationMs {
+            summary += String(format: " for %.1f s", Double(hangDurationMs) / 1000)
+        }
+        if let residentMB = marker.residentMB {
+            summary += ", using \(residentMB) MB of memory"
+        }
+        return summary
+    }
 
     /// Returns whether the breadcrumb reached the journal. A `false` result
     /// before the launch's consent context resolves means the line was staged

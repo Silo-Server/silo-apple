@@ -163,10 +163,10 @@ final class ExitSentinelLeftoverPolicyTests: XCTestCase {
         let store = makeStore()
         store.writeCurrent(marker(environment: environment))
 
-        store.markCurrentRunDebuggerAttached(runID: "another-run")
+        store.updateCurrentRun(runID: "another-run") { $0.debuggerAttached = true }
         XCTAssertEqual(store.readCurrent()?.debuggerAttached, false)
 
-        store.markCurrentRunDebuggerAttached(runID: "previous-run")
+        store.updateCurrentRun(runID: "previous-run") { $0.debuggerAttached = true }
         XCTAssertEqual(store.readCurrent()?.debuggerAttached, true)
     }
 
@@ -175,4 +175,64 @@ final class ExitSentinelLeftoverPolicyTests: XCTestCase {
         XCTAssertLessThan(bootTime, Date().timeIntervalSince1970)
         XCTAssertGreaterThan(bootTime, 1_000_000_000)
     }
+
+    // MARK: - Hang in progress
+
+    func testOngoingHangIsKeptOnTheMarkerAndLabelsTheExit() throws {
+        let store = makeStore()
+        store.writeCurrent(marker(environment: environment))
+        store.updateCurrentRun(runID: "previous-run") { marker in
+            marker.hangStartedAt = "2026-10-04T10:05:00.000Z"
+            marker.hangDurationMs = 8_400
+            marker.residentMB = 512
+        }
+
+        let reloaded = try XCTUnwrap(ExitSentinelMarkerStore(currentURL: store.currentURL).readCurrent())
+        XCTAssertEqual(reloaded.hangDurationMs, 8_400)
+        XCTAssertEqual(
+            DiagnosticsCoordinator.abnormalExitSummary(for: reloaded),
+            "Silo stopped while not responding for 8.4 s, using 512 MB of memory"
+        )
+        // A hang does not change whether the exit is worth reporting.
+        XCTAssertEqual(ExitSentinelLeftoverPolicy.decide(reloaded, current: environment), .report)
+
+        XCTAssertEqual(
+            DiagnosticsCoordinator.abnormalExitSummary(for: marker(environment: environment)),
+            "Silo did not shut down cleanly last time"
+        )
+    }
+
+    #if os(tvOS)
+    /// The watchdog writes a hang in progress to this run's armed marker and
+    /// clears it when the main thread answers. A backgrounded run has no
+    /// armed marker to write to.
+    func testWatchdogHangIsWrittenToTheArmedMarkerAndCleared() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ExitSentinelHangTests-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("exit-sentinel.json")
+        let sentinel = ExitSentinel(markerURL: url, environment: { [environment] in environment })
+        sentinel.setCaptureEnabled { true }
+        let store = ExitSentinelMarkerStore(currentURL: url)
+        let start = Date(timeIntervalSince1970: 1_790_000_000)
+
+        sentinel.appDidEnterForeground(now: start)
+        sentinel.recordOngoingHang(startedAt: start.addingTimeInterval(60), duration: 2.5, residentMB: 300)
+        let hung = try XCTUnwrap(store.readCurrent())
+        XCTAssertEqual(hung.hangStartedAt, DiagnosticsTimestamp.string(from: start.addingTimeInterval(60)))
+        XCTAssertEqual(hung.hangDurationMs, 2_500)
+        XCTAssertEqual(hung.residentMB, 300)
+        XCTAssertEqual(hung.startedAtDate, start)
+
+        sentinel.clearOngoingHang()
+        let answered = try XCTUnwrap(store.readCurrent())
+        XCTAssertNil(answered.hangStartedAt)
+        XCTAssertNil(answered.hangDurationMs)
+        XCTAssertNil(answered.residentMB)
+
+        sentinel.appDidEnterBackground()
+        sentinel.recordOngoingHang(startedAt: start.addingTimeInterval(120), duration: 3, residentMB: 300)
+        XCTAssertNil(store.readCurrent())
+    }
+    #endif
 }
