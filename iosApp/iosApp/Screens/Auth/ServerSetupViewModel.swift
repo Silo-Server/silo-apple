@@ -321,12 +321,12 @@ class ServerSetupViewModel {
            !parsedHost.isEmpty {
             let parsedScheme = rawHost.contains("://") ? components.scheme?.lowercased() : nil
             let parsedPort = components.port.map(String.init)
-            // Hosts are case-insensitive, and the registry keys a server by
-            // its URL, so a pasted "Media.Example.com" must not become a
-            // second entry. The path keeps its case.
+            // Keep the host's case: the registry already matches a host that
+            // differs only in case to the saved server, and a server picked
+            // from Recent must reconnect its own entry, not a duplicate.
             return ParsedServerInput(
                 schemeOverride: parsedScheme,
-                host: parsedHost.lowercased(),
+                host: parsedHost,
                 portOverride: parsedPort,
                 path: normalizedPath(components.percentEncodedPath)
             )
