@@ -1,15 +1,27 @@
 name: TestFlight Release
 
+# Makes a TestFlight build: tags the commit vX.Y.Z-beta.B, publishes a GitHub
+# prerelease with notes on what changed since the last build, and uploads iOS
+# and tvOS build B of marketing version X.Y.Z to TestFlight. X.Y.Z stays the
+# same until it is approved for the App Store, so later builds skip Beta App
+# Review. promote.yml turns a TestFlight build into a store release.
+# See docs/release/ci-release.md.
+
 on:
-  push:
-    # v* -> both platforms; the +ios / +tvos build-metadata suffix
-    # (v1.4.0+ios / v1.4.0+tvos) targets that platform only. Both match 'v*'.
-    tags: ['v*']
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Marketing version (e.g. 1.4.0)'
+      bump:
+        description: 'build = another build of the unreleased version. minor or patch = start the next version after an App Store release.'
         required: true
+        type: choice
+        default: build
+        options:
+          - build
+          - minor
+          - patch
+      version:
+        description: 'Optional: use this marketing version (for example 1.2.0) instead of bump.'
+        required: false
         type: string
       platform:
         description: 'Which platform(s) to release'
@@ -21,14 +33,15 @@ on:
           - ios
           - tvos
 
-# Serialize releases: each run computes latest_testflight_build_number + 1,
-# so overlapping runs would collide. Let an in-flight release finish.
+# Serialize releases: each run takes the next build number, so overlapping
+# runs would collide. Let an in-flight release finish.
 concurrency:
   group: testflight-release
   cancel-in-progress: false
 
-# Apple build jobs only read the repository. The source publication job gets
-# contents: write so it can attach rebuild sources before binary distribution.
+# Apple build jobs only read the repository. The release and source jobs get
+# contents: write to publish the prerelease and its rebuild sources before
+# binary distribution.
 permissions:
   contents: read
 
@@ -41,6 +54,7 @@ jobs:
   # A trusted complete main run can gate this exact commit. Toolchain or source
   # uncertainty selects the full suite; an error in preflight blocks the release.
   preflight:
+    needs: prepare
     runs-on: xcode-27
     timeout-minutes: 10
     permissions:
@@ -106,95 +120,139 @@ jobs:
             exit 1
           fi
 
+  # Choose the version, build number and tag once so every job agrees on them.
+  # Runs first, so a bad bump fails before the regression suite.
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      build: ${{ steps.version.outputs.build }}
+      tag: ${{ steps.version.outputs.tag }}
+      previous_tag: ${{ steps.version.outputs.previous_tag }}
+    steps:
+      - name: Require main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Releases are made from main."
+          exit 1
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # all tags
+          persist-credentials: false
+      - uses: ruby/setup-ruby@v1
+        with:
+          bundler-cache: true
+      - name: Look up the latest TestFlight build
+        env:
+          APP_STORE_CONNECT_API_KEY_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_KEY_ID }}
+          APP_STORE_CONNECT_API_KEY_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY_KEY }}
+        run: BUILD_NUMBERS_FILE="$RUNNER_TEMP/testflight.env" bundle exec fastlane ios next_build_number
+      # A promoted version waiting for App Review (a draft vX.Y.Z release)
+      # counts as released.
+      - name: Choose version and build
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUMP: ${{ inputs.bump }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          min_build="$(sed -n 's/^next_build=//p' "$RUNNER_TEMP/testflight.env")"
+          drafts=()
+          while read -r draft; do
+            drafts+=(--draft "$draft")
+          done < <(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName,isDraft \
+            --jq '.[] | select(.isDraft) | .tagName')
+          python3 scripts/ci/release-version.py next --bump "$BUMP" --version "$VERSION" \
+            --min-build "$min_build" "${drafts[@]}" | tee -a "$GITHUB_OUTPUT"
+
+  # Publish the prerelease once the regression gate passes, before any binary:
+  # the app links its source archive, which must be public first.
+  release:
+    needs: [regression-gate, prepare]
+    if: ${{ !cancelled() && needs.regression-gate.result == 'success' && needs.prepare.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release (and generate its notes)
+    outputs:
+      changelog: ${{ steps.changelog.outputs.value }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      PREVIOUS_TAG: ${{ needs.prepare.outputs.previous_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Write release notes
+        run: |
+          set -euo pipefail
+          gh api "repos/$GH_REPO/releases/generate-notes" \
+            -f tag_name="$TAG" -f target_commitish="$GITHUB_SHA" \
+            ${PREVIOUS_TAG:+-f previous_tag_name="$PREVIOUS_TAG"} --jq .body > "$RUNNER_TEMP/notes.md"
+      # TestFlight's "What to Test": the Features and Fixes since the last build,
+      # leaving room for the source line the Fastfile appends (4,000 max).
+      - name: Write What to Test
+        id: changelog
+        run: |
+          set -euo pipefail
+          delimiter="silo_changelog_$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
+          {
+            echo "value<<$delimiter"
+            python3 scripts/ci/release-version.py store-notes 3800 < "$RUNNER_TEMP/notes.md"
+            echo "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+      - name: Publish the GitHub prerelease
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          BUILD: ${{ needs.prepare.outputs.build }}
+          PLATFORM: ${{ inputs.platform }}
+        run: |
+          set -euo pipefail
+          # A re-run of this run's failed jobs finds its own release. Anything
+          # else holding the tag is a different build.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            if [ "$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)" != "$GITHUB_SHA" ]; then
+              echo "::error::$TAG already belongs to another commit. Run Release again for a new build number."
+              exit 1
+            fi
+            echo "$TAG already exists for this commit; re-using it."
+            exit 0
+          fi
+          case "$PLATFORM" in
+            ios) platforms="iOS" ;;
+            tvos) platforms="tvOS" ;;
+            *) platforms="iOS and tvOS" ;;
+          esac
+          {
+            echo "TestFlight build $VERSION ($BUILD) for $platforms."
+            echo
+            cat "$RUNNER_TEMP/notes.md"
+            echo
+            echo "Source and rebuild instructions are in the Silo-source archive."
+          } > notes.md
+          # A prerelease never becomes Latest; that stays the App Store release.
+          gh release create "$TAG" --target "$GITHUB_SHA" --prerelease \
+            --title "Silo $VERSION ($BUILD)" --notes-file notes.md
+
   source:
-    needs: [regression-gate, setup]
-    if: ${{ !cancelled() && needs.regression-gate.result == 'success' && needs.setup.result == 'success' }}
+    needs: [regression-gate, prepare, release]
+    if: ${{ !cancelled() && needs.regression-gate.result == 'success' && needs.release.result == 'success' }}
     permissions:
       contents: write
       actions: read
     uses: ./.github/workflows/release-source.yml
     with:
-      release_tag: ${{ github.event_name == 'push' && github.ref_name || format('source-{0}', github.sha) }}
-
-  # Resolve release inputs once so archive and distribution select identical
-  # versions, build numbers, and release notes for each platform.
-  setup:
-    runs-on: ubuntu-latest
-    outputs:
-      platform: ${{ steps.p.outputs.platform }}
-      version: ${{ steps.ver.outputs.value }}
-      changelog: ${{ steps.changelog.outputs.value }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - id: p
-        env:
-          GH_EVENT_NAME: ${{ github.event_name }}
-          GH_REF_NAME: ${{ github.ref_name }}
-          INPUT_PLATFORM: ${{ inputs.platform }}
-        run: |
-          P="$(scripts/ci/resolve-platform.sh \
-                "$GH_EVENT_NAME" "$GH_REF_NAME" "$INPUT_PLATFORM")"
-          echo "platform=$P" >> "$GITHUB_OUTPUT"
-          echo "Release platform: $P"
-      - name: Resolve marketing version
-        id: ver
-        env:
-          GH_EVENT_NAME: ${{ github.event_name }}
-          GH_REF_NAME: ${{ github.ref_name }}
-          INPUT_VERSION: ${{ inputs.version }}
-        run: |
-          set -euo pipefail
-          V="$(scripts/ci/resolve-marketing-version.sh \
-                "$GH_EVENT_NAME" "$GH_REF_NAME" "$INPUT_VERSION")"
-          echo "value=$V" >> "$GITHUB_OUTPUT"
-          echo "Resolved marketing version: $V"
-      - name: Capture release changelog
-        id: changelog
-        run: |
-          python3 - <<'PY_CHANGELOG'
-          import os
-          import subprocess
-          import uuid
-          changelog = subprocess.check_output(
-              ['git', 'log', '-1', '--pretty=format:%s'], text=True).strip()
-          delimiter = 'silo_changelog_' + uuid.uuid4().hex
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write(f'value<<{delimiter}\n{changelog}\n{delimiter}\n')
-          PY_CHANGELOG
-
-  # Reserve each build number once, before the platform archives fan out.
-  # The workflow release lock remains held through Linux distribution.
-  build-numbers:
-    needs: [setup, regression-gate]
-    if: ${{ !cancelled() && needs.setup.result == 'success' && needs.regression-gate.result == 'success' }}
-    runs-on: ubuntu-latest
-    outputs:
-      ios_build: ${{ steps.bn.outputs.ios_build }}
-      tvos_build: ${{ steps.bn.outputs.tvos_build }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: ruby/setup-ruby@v1
-        with:
-          bundler-cache: true
-      - name: Reserve per-platform build numbers
-        id: bn
-        env:
-          APP_STORE_CONNECT_API_KEY_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_KEY_ID }}
-          APP_STORE_CONNECT_API_KEY_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ISSUER_ID }}
-          APP_STORE_CONNECT_API_KEY_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY_KEY }}
-        run: |
-          BUILD_NUMBERS_FILE="$GITHUB_OUTPUT" bundle exec fastlane ios reserve_build_numbers
+      release_tag: ${{ needs.prepare.outputs.tag }}
 
   ios:
-    needs: [regression-gate, setup, build-numbers, source]
+    needs: [regression-gate, prepare, release, source]
     if: >-
       !cancelled() && needs.regression-gate.result == 'success' &&
-      needs.setup.result == 'success' && needs.build-numbers.result == 'success' &&
-      needs.source.result == 'success' && needs.setup.outputs.platform != 'tvos'
+      needs.prepare.result == 'success' && needs.source.result == 'success' &&
+      inputs.platform != 'tvos'
     runs-on: xcode-27
     env:
       SILO_SOURCE_PACKAGES_PATH: ${{ github.workspace }}/.ci-cache/packages
@@ -236,9 +294,9 @@ jobs:
       - name: Build and upload iOS to TestFlight
         run: bundle exec fastlane ios beta_ios
         env:
-          MARKETING_VERSION: ${{ needs.setup.outputs.version }}
-          BUILD_NUMBER: ${{ needs.build-numbers.outputs.ios_build }}
-          TESTFLIGHT_CHANGELOG: ${{ needs.setup.outputs.changelog }}
+          MARKETING_VERSION: ${{ needs.prepare.outputs.version }}
+          BUILD_NUMBER: ${{ needs.prepare.outputs.build }}
+          TESTFLIGHT_CHANGELOG: ${{ needs.release.outputs.changelog }}
           SILO_DEFER_TESTFLIGHT_DISTRIBUTION: 'true'
           TEAM_ID: ${{ secrets.TEAM_ID }}
           MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
@@ -278,11 +336,11 @@ jobs:
           spm-cache-hit: ${{ steps.cache.outputs.spm-cache-hit }}
 
   tvos:
-    needs: [regression-gate, setup, build-numbers, source]
+    needs: [regression-gate, prepare, release, source]
     if: >-
       !cancelled() && needs.regression-gate.result == 'success' &&
-      needs.setup.result == 'success' && needs.build-numbers.result == 'success' &&
-      needs.source.result == 'success' && needs.setup.outputs.platform != 'ios'
+      needs.prepare.result == 'success' && needs.source.result == 'success' &&
+      inputs.platform != 'ios'
     runs-on: xcode-27
     env:
       SILO_SOURCE_PACKAGES_PATH: ${{ github.workspace }}/.ci-cache/packages
@@ -324,9 +382,9 @@ jobs:
       - name: Build and upload tvOS to TestFlight
         run: bundle exec fastlane ios beta_tvos
         env:
-          MARKETING_VERSION: ${{ needs.setup.outputs.version }}
-          BUILD_NUMBER: ${{ needs.build-numbers.outputs.tvos_build }}
-          TESTFLIGHT_CHANGELOG: ${{ needs.setup.outputs.changelog }}
+          MARKETING_VERSION: ${{ needs.prepare.outputs.version }}
+          BUILD_NUMBER: ${{ needs.prepare.outputs.build }}
+          TESTFLIGHT_CHANGELOG: ${{ needs.release.outputs.changelog }}
           SILO_DEFER_TESTFLIGHT_DISTRIBUTION: 'true'
           TEAM_ID: ${{ secrets.TEAM_ID }}
           MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
@@ -366,11 +424,11 @@ jobs:
           spm-cache-hit: ${{ steps.cache.outputs.spm-cache-hit }}
 
   ios-distribution:
-    needs: [ios, setup, build-numbers, source, regression-gate]
+    needs: [ios, prepare, release, source, regression-gate]
     if: >-
       !cancelled() && needs.ios.result == 'success' &&
-      needs.regression-gate.result == 'success' && needs.setup.result == 'success' &&
-      needs.build-numbers.result == 'success' && needs.source.result == 'success'
+      needs.regression-gate.result == 'success' && needs.prepare.result == 'success' &&
+      needs.source.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -383,9 +441,9 @@ jobs:
       - name: Wait for and distribute the uploaded iOS build
         run: bundle exec fastlane ios distribute_ios
         env:
-          MARKETING_VERSION: ${{ needs.setup.outputs.version }}
-          BUILD_NUMBER: ${{ needs.build-numbers.outputs.ios_build }}
-          TESTFLIGHT_CHANGELOG: ${{ needs.setup.outputs.changelog }}
+          MARKETING_VERSION: ${{ needs.prepare.outputs.version }}
+          BUILD_NUMBER: ${{ needs.prepare.outputs.build }}
+          TESTFLIGHT_CHANGELOG: ${{ needs.release.outputs.changelog }}
           APP_STORE_CONNECT_API_KEY_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_KEY_ID }}
           APP_STORE_CONNECT_API_KEY_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ISSUER_ID }}
           APP_STORE_CONNECT_API_KEY_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY_KEY }}
@@ -393,11 +451,11 @@ jobs:
           SILO_RELEASE_SOURCE_URL: ${{ needs.source.outputs.source_url }}
 
   tvos-distribution:
-    needs: [tvos, setup, build-numbers, source, regression-gate]
+    needs: [tvos, prepare, release, source, regression-gate]
     if: >-
       !cancelled() && needs.tvos.result == 'success' &&
-      needs.regression-gate.result == 'success' && needs.setup.result == 'success' &&
-      needs.build-numbers.result == 'success' && needs.source.result == 'success'
+      needs.regression-gate.result == 'success' && needs.prepare.result == 'success' &&
+      needs.source.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -410,9 +468,9 @@ jobs:
       - name: Wait for and distribute the uploaded tvOS build
         run: bundle exec fastlane ios distribute_tvos
         env:
-          MARKETING_VERSION: ${{ needs.setup.outputs.version }}
-          BUILD_NUMBER: ${{ needs.build-numbers.outputs.tvos_build }}
-          TESTFLIGHT_CHANGELOG: ${{ needs.setup.outputs.changelog }}
+          MARKETING_VERSION: ${{ needs.prepare.outputs.version }}
+          BUILD_NUMBER: ${{ needs.prepare.outputs.build }}
+          TESTFLIGHT_CHANGELOG: ${{ needs.release.outputs.changelog }}
           APP_STORE_CONNECT_API_KEY_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_KEY_ID }}
           APP_STORE_CONNECT_API_KEY_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ISSUER_ID }}
           APP_STORE_CONNECT_API_KEY_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY_KEY }}

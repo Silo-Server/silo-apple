@@ -255,9 +255,10 @@ modify the library and relink the application. Silo uses the source-code path;
 the app is distributed under the repository's AGPL license.
 
 The TestFlight and sideload workflows publish a source archive to GitHub
-Releases before their binary jobs run. Tag-triggered builds attach it to the
-same tag as the binary release. Manual TestFlight builds publish it under
-`source-<app-commit>` and include its URL in the build's What to Test notes.
+Releases before their binary jobs run. TestFlight builds attach it to their
+`vX.Y.Z-beta.B` prerelease and include its URL in the build's What to Test
+notes; sideload builds attach it to their `v<version>-build.<run>` release.
+Earlier TestFlight builds published it under `source-<app-commit>`.
 External local TestFlight uploads require `SILO_RELEASE_SOURCE_URL` to point
 to the matching published archive. Other distribution channels must publish
 these materials and provide their location alongside the binary as well.

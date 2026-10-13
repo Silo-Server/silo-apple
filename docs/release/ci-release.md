@@ -1,30 +1,65 @@
 # CI / TestFlight Release
 
-## How releases trigger
-- Push tag `vX.Y.Z` (e.g. `v1.4.0`) → builds iOS + tvOS, uploads to TestFlight,
-  distributes to external groups, notifies testers.
-- Push prerelease tag `vX.Y.Z-beta.N` → same, marketing version `X.Y.Z`.
-- **Single platform via tag:** append a `+ios` or `+tvos` build-metadata suffix
-  — `vX.Y.Z+ios` releases iOS only, `vX.Y.Z+tvos` tvOS only. Plain `vX.Y.Z`
-  releases both. Works with prereleases too (`vX.Y.Z-beta.N+ios`). The marketing
-  version stays `X.Y.Z` (the suffix is stripped).
-- Manual: Actions tab → "TestFlight Release" → Run workflow → enter `version`
-  and pick `platform` (`both` / `ios` / `tvos`).
+Releases run from GitHub Actions on `main`. Each run picks its own version and
+build number.
 
-A single-platform selection builds only that platform; the other job is skipped.
+## TestFlight build
 
-Every release run, from a tag or a manual dispatch, first runs the Apple
-regression workflow (SiloTests, SiloTVTests, SiloMac build) on the release
-commit. If it fails, this workflow publishes no source release, reserves no
-build numbers and uploads nothing. The gate adds about one regression run (20-30
-minutes) to a release. A `v*` tag also starts `sideload-ipa.yml`, which is not
-gated and still publishes the tag's GitHub release with source and unsigned IPAs.
+Actions → **TestFlight Release** → Run workflow, leaving `bump` on `build` and
+`platform` on `both` (or pick `ios` / `tvos`). The very first run has no
+earlier tag to continue from: enter `1.0.0` as `version`.
 
-The git tag is the marketing version. A preflight `build-numbers` job reserves
-the next per-platform build number from App Store Connect once, then the iOS and
-tvOS jobs **build in parallel** consuming those fixed numbers (no build-number
-race). On a both-platform run the two are independent — tvOS still releases even
-if iOS fails; their build-number sequences are separate, so a gap is harmless.
+The run tags the commit `v1.0.0-beta.66`, publishes a GitHub prerelease with the
+pull requests merged since the previous build (grouped by label), and uploads
+iOS and tvOS `1.0.0 (66)` to TestFlight's external groups. The Features and
+Fixes from those notes become TestFlight's "What to Test".
+
+Every run first runs the Apple regression workflow (SiloTests, SiloTVTests,
+SiloMac build) on the release commit, or reuses a matching main run's result.
+If it fails, the run publishes nothing and uploads nothing. The gate adds about
+one regression run (20-30 minutes) unless a main run can be reused.
+
+The prerelease and its source archive are published before any binary, because
+the app links that archive (see `THIRD_PARTY_NOTICES.md`). Never delete a
+prerelease whose build shipped.
+
+If a run fails after publishing its prerelease, use **Re-run failed jobs**: it
+keeps the same build number. To abandon the build instead, delete its GitHub
+release and tag; the next run refuses to start while a tagged build never
+reached TestFlight, so its notes don't skip changes no tester got.
+
+## Store release
+
+1. Actions → **Promote to App Store** → enter the TestFlight build to ship, such
+   as `v1.0.0-beta.66`. It drafts the GitHub release `v1.0.0` on that build's
+   commit, with notes since the last App Store release. Nothing is rebuilt.
+2. In App Store Connect, add that build to the iOS and tvOS versions and submit
+   them for review.
+3. Edit the draft notes on GitHub, and publish them as the latest release once
+   Apple approves the version.
+
+While the draft exists, the version counts as released: TestFlight Release
+refuses `bump: build`, and `bump: minor` starts the next version. If App Review
+rejects the build, delete the draft, fix the problem, make another TestFlight
+build of the same version, and promote that one.
+
+## After an App Store release
+
+App Store Connect closes a marketing version to new builds, TestFlight
+included, once it is approved. The next run needs `bump: minor` (the next
+version has new features) or `bump: patch` (fixes only); `bump: build` refuses a
+released version. The first build of each new version goes through Beta App
+Review once; later builds of the same version don't.
+
+## Numbers
+
+- `1.0.0` is the marketing version. It stays the same for every TestFlight build
+  until it is approved for the App Store.
+- `66` is the build number, shared by iOS and tvOS: one more than the latest
+  TestFlight build on either platform (and any build already tagged).
+- Tags: `vX.Y.Z-beta.B` for TestFlight builds (GitHub prereleases) and `vX.Y.Z`
+  for App Store releases. Earlier manual runs published `source-<commit>`
+  releases instead; those stay, because shipped builds link their archives.
 
 ## Required repository secrets
 | Secret | Purpose |

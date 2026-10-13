@@ -20,19 +20,17 @@ or similar. This is separate from the TestFlight pipeline
   generally cannot grant, so the app uses the ordinary keychain instead.
 
 ## How it triggers
-- Push tag `vX.Y.Z` → builds both IPAs and attaches them to that tag's release.
 - Manual: Actions → "Sideload IPA Build" → Run workflow → enter `version` and
   pick `platform` (`both` / `ios` / `tvos`); the run mints a
-  `v<version>-build.<run>` tag and attaches the IPAs to it. Tag pushes always
-  build both platforms.
+  `v<version>-build.<run>` tag and attaches the IPAs to its prerelease.
 
-The marketing version resolves the same way as the TestFlight workflow
-(`scripts/ci/resolve-marketing-version.sh`). The archives are unsigned, so
+`scripts/ci/resolve-marketing-version.sh` validates the `version` input. The
+archives are unsigned, so
 nothing is sequenced against App Store Connect and the two jobs run in
 parallel.
 
 ## Telling two sideload builds apart
-Both trigger paths stamp `CFBundleVersion` from the workflow's
+Each run stamps `CFBundleVersion` from the workflow's
 `github.run_number`, so every sideloaded IPA is distinguishable from every
 other build of the same marketing version — including several prerelease tags
 of one version, which carry no build number of their own to count from.

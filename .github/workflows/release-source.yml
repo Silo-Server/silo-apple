@@ -47,15 +47,10 @@ jobs:
         id: publish
         run: |
           set -euo pipefail
+          # The calling workflow creates the release; this job adds the source.
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            # The sideload workflow may create the same tag's release first.
-            FLAGS=()
-            if [[ "$RELEASE_TAG" == source-* ]]; then FLAGS+=(--latest=false); fi
-            gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" \
-              --title "$RELEASE_TAG" \
-              "${FLAGS[@]}" \
-              --notes "Release source and rebuild instructions are in the Silo-source archive." \
-              || gh release view "$RELEASE_TAG" >/dev/null
+            echo "::error::Release $RELEASE_TAG does not exist. The calling workflow must create it first."
+            exit 1
           fi
           IS_DRAFT="$(gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft')"
           if [[ "$IS_DRAFT" == "true" ]]; then

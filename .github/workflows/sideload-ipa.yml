@@ -7,8 +7,6 @@ name: Sideload IPA Build
 # release secrets. See docs/release/sideloading.md.
 
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
     inputs:
       version:
@@ -33,8 +31,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Compute the build matrix from the dispatch input. Tag pushes (and any run
-  # without an explicit choice) build both platforms.
+  # Compute the build matrix from the dispatch input.
   setup:
     runs-on: ubuntu-latest
     outputs:
@@ -42,7 +39,7 @@ jobs:
     steps:
       - id: set
         env:
-          PLATFORM: ${{ github.event_name == 'workflow_dispatch' && inputs.platform || 'both' }}
+          PLATFORM: ${{ inputs.platform }}
         run: |
           ios='{"platform":"iOS","lane":"ipa_ios_unsigned","cache_scheme":"Silo-device","artifact":"Silo-iOS-unsigned-ipa","ipa_path":"build/ios-unsigned/Silo-unsigned.ipa"}'
           tvos='{"platform":"tvOS","lane":"ipa_tvos_unsigned","cache_scheme":"SiloTV-device","artifact":"SiloTV-tvOS-unsigned-ipa","ipa_path":"build/tvos-unsigned/SiloTV-unsigned.ipa"}'
@@ -55,13 +52,13 @@ jobs:
           echo "matrix={\"include\":$include}" >> "$GITHUB_OUTPUT"
 
   # Create the GitHub Release ONCE before the platform builds fan out, so the
-  # matrix jobs only upload assets (no create race). Tag pushes release under
-  # the pushed tag; dispatch runs mint a v<version>-build.N tag.
+  # matrix jobs only upload assets (no create race). Each run mints a
+  # v<version>-build.N tag, published as a prerelease so it never displaces the
+  # App Store release as Latest. TestFlight builds come from release.yml.
   #
-  # BOTH paths get a build number stamped into the IPAs via BUILD_NUMBER.
-  # Tag pushes used to leave it empty, so every tag-built sideload IPA shipped
-  # CFBundleVersion=1 (the project.yml literal) and two builds of the same
-  # marketing version were indistinguishable in the server's Activity page.
+  # The run's build number is stamped into the IPAs via BUILD_NUMBER, so two
+  # builds of the same marketing version stay distinguishable in the server's
+  # Activity page.
   #
   # The number is github.run_number, NOT a max or count over existing
   # releases. A release-derived counter cannot survive the cases that matter:
@@ -95,28 +92,18 @@ jobs:
         run: |
           set -euo pipefail
           # Validates the resolved version is a plain dotted version before it
-          # is embedded in a tag name / shell strings. Runs for both events:
-          # a tag push resolves v1.4.0-beta.2 -> 1.4.0.
+          # is embedded in a tag name / shell strings.
           V="$(scripts/ci/resolve-marketing-version.sh \
                 "$GH_EVENT_NAME" "$GH_REF_NAME" "$INPUT_VERSION")"
           BUILD="$GH_RUN_NUMBER"
           echo "build_number=$BUILD" >> "$GITHUB_OUTPUT"
-          if [[ "$GH_EVENT_NAME" == "workflow_dispatch" ]]; then
-            TAG="v${V}-build.${BUILD}"
-            TITLE="v${V} (Build ${BUILD})"
-          else
-            TAG="$GH_REF_NAME"
-            TITLE="$GH_REF_NAME (Build ${BUILD})"
-          fi
-          # Tag pushes can already have a release (created manually or by a
-          # previous run); only create when missing. Re-title an existing one
-          # either way: the build step uploads with --clobber, so a stale
-          # title would advertise a different build than the attached IPAs.
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --title "$TITLE"
-          else
+          TAG="v${V}-build.${BUILD}"
+          TITLE="v${V} (Build ${BUILD})"
+          # A re-run finds the release its first attempt created.
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" \
               --target "$GITHUB_SHA" \
+              --prerelease \
               --title "$TITLE" \
               --notes "Unsigned iOS/tvOS IPAs for third-party signing / sideloading. See docs/release/sideloading.md. The Silo-source archive contains the matching source and rebuild instructions." \
               || gh release view "$TAG" >/dev/null
@@ -141,7 +128,7 @@ jobs:
     env:
       SILO_CACHE_NAMESPACE: production
       SILO_SOURCE_PACKAGES_PATH: ${{ github.workspace }}/.ci-cache/packages
-    # Only the release-upload step (tag builds) needs write; scope it to the job
+    # Only the release-upload step needs write; scope it to the job
     # rather than the whole workflow to keep the rest at least privilege.
     permissions:
       contents: write
@@ -207,7 +194,7 @@ jobs:
         run: bundle exec fastlane ios ${{ matrix.lane }}
         env:
           MARKETING_VERSION: ${{ steps.ver.outputs.value }}
-          # Always set (dispatch and tag push alike) so no sideload IPA ever
+          # Always set so no sideload IPA ever
           # ships the project.yml CURRENT_PROJECT_VERSION placeholder.
           BUILD_NUMBER: ${{ needs.release.outputs.build_number }}
           # Linked from Settings > About > Source Code in the built app.

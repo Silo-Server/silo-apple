@@ -1,0 +1,77 @@
+name: Promote to App Store
+
+# Turns a TestFlight build into a store release without rebuilding it: drafts
+# the GitHub release vX.Y.Z on the build's commit, with notes since the last
+# App Store release. Submitting the build for App Review happens in App Store
+# Connect. Publish the draft once Apple approves the version.
+# See docs/release/ci-release.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'TestFlight build to release, for example v1.0.0-beta.66'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    name: Promote ${{ inputs.tag }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # draft the release
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      BETA_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Draft the GitHub release
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/release-version.py beta "$BETA_TAG" > build.txt
+          version="$(sed -n 's/^version=//p' build.txt)"
+          build="$(sed -n 's/^build=//p' build.txt)"
+          release_tag="$(sed -n 's/^release_tag=//p' build.txt)"
+          if [[ "$(gh release view "$BETA_TAG" --json isPrerelease --jq .isPrerelease 2>/dev/null)" != "true" ]]; then
+            echo "::error::$BETA_TAG has no published TestFlight build on GitHub."
+            exit 1
+          fi
+          if gh release view "$release_tag" >/dev/null 2>&1; then
+            echo "::error::$release_tag already exists (possibly as a draft). Delete the draft to promote again."
+            exit 1
+          fi
+          commit="$(gh api "repos/$GH_REPO/commits/$BETA_TAG" --jq .sha)"
+          # Notes cover everything since the last App Store release (the Latest
+          # GitHub release). The first App Store release has none to start from,
+          # so its notes are written by hand.
+          previous="$(gh release list --exclude-pre-releases --exclude-drafts --json tagName,isLatest \
+            --jq '.[] | select(.isLatest and (.tagName | test("^v[0-9]+[.][0-9]+[.][0-9]+$"))) | .tagName')"
+          {
+            echo "Silo $version, build $build: the TestFlight build $BETA_TAG."
+            echo
+            if [[ -n "$previous" ]]; then
+              gh api "repos/$GH_REPO/releases/generate-notes" \
+                -f tag_name="$release_tag" -f target_commitish="$commit" \
+                -f previous_tag_name="$previous" --jq .body
+            else
+              echo "First App Store release: replace this line with release notes."
+            fi
+            echo
+            echo "The source archive this build links to is on the $BETA_TAG release."
+          } > notes.md
+          gh release create "$release_tag" --draft --target "$commit" \
+            --title "Silo $version" --notes-file notes.md
+          {
+            echo "Drafted $release_tag."
+            echo
+            echo "1. In App Store Connect, add build $build to the iOS and tvOS $version versions and submit them for review."
+            echo "2. Edit the draft notes on GitHub."
+            echo "3. When Apple approves $version, publish the GitHub release. The next TestFlight build then needs bump: minor or patch."
+          } >> "$GITHUB_STEP_SUMMARY"

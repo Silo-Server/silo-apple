@@ -1,0 +1,15 @@
+# Groups the release notes GitHub generates by the labels silo-triage puts on
+# pull requests. TestFlight's What to Test keeps only the Features and Fixes
+# sections (scripts/ci/release-version.py). See docs/release/ci-release.md.
+changelog:
+  categories:
+    - title: 🚀 Features
+      labels: [enhancement]
+    - title: 🐛 Fixes
+      labels: [bug]
+    - title: 📚 Documentation
+      labels: [documentation]
+    - title: 📦 Dependencies
+      labels: [dependencies]
+    - title: Other changes
+      labels: ["*"]

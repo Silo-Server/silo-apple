@@ -80,8 +80,8 @@ end
 
 # Returns the CI-injected BUILD_NUMBER, or nil when it is unset or blank.
 #
-# The release workflow passes the number its reserve_build_numbers job reserved
-# for the platform; the sideload workflow passes its run number. The value flows
+# The release workflow passes the build number its prepare job picked for both
+# platforms; the sideload workflow passes its run number. The value flows
 # into xcodebuild's xcargs as CURRENT_PROJECT_VERSION, a shell string, so it
 # must be a plain integer with no spaces or shell metacharacters (same threat
 # model as marketing_version_xcarg).
@@ -164,9 +164,9 @@ TVOS_SIDELOAD_KEYCHAIN_XCARG = "SILO_USER_INDEPENDENT_KEYCHAIN=NO ".freeze
 
 # Returns the build number to stamp on a TestFlight build.
 #
-# In CI the reserve_build_numbers job computes the next number per platform once
-# and passes it to the (parallel) ios/tvos jobs via BUILD_NUMBER — so the two
-# jobs never race latest_testflight_build_number against each other. Local and
+# In CI the release workflow picks one number for both platforms once and passes
+# it to the (parallel) ios/tvos jobs via BUILD_NUMBER — so the two jobs never
+# race latest_testflight_build_number against each other. Local and
 # ad-hoc runs leave BUILD_NUMBER unset and fall back to querying App Store
 # Connect directly. injected_build_number validates the injected value.
 def resolve_build_number(api_key:, app_identifier:, platform:)
@@ -376,7 +376,7 @@ def testflight_release(platform)
     api_key:        api_key
   )
 
-  # Injected by CI's reserve_build_numbers job, or queried directly for local runs.
+  # Injected by CI's release workflow, or queried directly for local runs.
   build_number = resolve_build_number(
     api_key:        api_key,
     app_identifier: app_id,
@@ -593,10 +593,10 @@ end
 # Found" prompts at random for unrelated apps on the runner. Snapshot the
 # original state before any lane runs and restore it on success and error.
 #
-# Keychains only exist on macOS; the reserve_build_numbers lane runs on a
+# Keychains only exist on macOS; the next_build_number lane runs on a
 # Linux runner where `security` is absent, so gate every hook on mac? too.
 
-API_ONLY_LANES = %i[reserve_build_numbers distribute_ios distribute_tvos].freeze
+API_ONLY_LANES = %i[next_build_number distribute_ios distribute_tvos].freeze
 
 def ci_keychain_managed?(lane)
   is_ci && FastlaneCore::Helper.mac? && !API_ONLY_LANES.include?(lane.to_sym)
@@ -697,30 +697,23 @@ platform :ios do
 
   # ── Build-number reservation ────────────────────────────────────────────────
 
-  desc "Reserve the next per-platform TestFlight build numbers (CI preflight)"
-  lane :reserve_build_numbers do
+  desc "Print the next TestFlight build number, shared by iOS and tvOS (CI)"
+  lane :next_build_number do
     # Query-only: no keychain/signing setup needed, so this runs on a plain
-    # Linux runner. Computes the next iOS and tvOS build numbers once so the
-    # parallel beta_ios / beta_tvos jobs consume fixed values instead of each
-    # racing latest_testflight_build_number.
+    # Linux runner. One number for both platforms, so "1.0.0 (66)" names the
+    # same build on iPhone and Apple TV and in the release tag v1.0.0-beta.66.
     api_key = setup_api_key
     app_id  = "org.siloserver.silo"
 
-    ios_build = latest_testflight_build_number(
-      api_key: api_key, app_identifier: app_id, platform: "ios"
-    ) + 1
-    tvos_build = latest_testflight_build_number(
-      api_key: api_key, app_identifier: app_id, platform: "appletvos"
-    ) + 1
+    latest = %w[ios appletvos].map do |platform|
+      latest_testflight_build_number(api_key: api_key, app_identifier: app_id, platform: platform)
+    end.max
 
-    # Emit key=value lines to BUILD_NUMBERS_FILE (CI points this at
-    # $GITHUB_OUTPUT). Append so we never clobber other outputs already there.
+    # Emit a key=value line to BUILD_NUMBERS_FILE (release.yml reads it back).
+    # Append so we never clobber other lines already there.
     out = ENV.fetch("BUILD_NUMBERS_FILE", "build_numbers.env")
-    File.open(out, "a") do |f|
-      f.puts "ios_build=#{ios_build}"
-      f.puts "tvos_build=#{tvos_build}"
-    end
-    UI.success("Reserved build numbers — iOS: #{ios_build}, tvOS: #{tvos_build}")
+    File.open(out, "a") { |f| f.puts "next_build=#{latest + 1}" }
+    UI.success("Next build number for iOS and tvOS: #{latest + 1}")
   end
 
   # ── Unsigned IPAs for third-party signing / sideloading ─────────────────────

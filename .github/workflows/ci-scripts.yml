@@ -22,7 +22,7 @@ jobs:
       - name: Test release input parsing
         run: |
           bash scripts/ci/resolve-marketing-version.test.sh
-          bash scripts/ci/resolve-platform.test.sh
+          python3 scripts/ci/release-version.test.py
       - name: Test release source archive
         run: python3 scripts/ci/package-release-source.test.py
       - name: Test published source proof reuse

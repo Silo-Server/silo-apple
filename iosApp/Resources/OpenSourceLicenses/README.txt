@@ -123,8 +123,9 @@ SwiftAssRenderer, SwiftLibass, and local ASS rendering
   manifest, and instructions for rebuilding with a modified library are
   published as Silo-source-<app-commit>.tar.gz at:
   https://github.com/Silo-Server/silo-apple/releases
-  Tagged builds place the archive on their release; manually dispatched
-  TestFlight builds use a source-<app-commit> release. The TestFlight build's
+  Each TestFlight build places the archive on its vX.Y.Z-beta.<build>
+  release (earlier builds used a source-<app-commit> release), and each
+  sideload build on its own release. The TestFlight build's
   What to Test notes include the exact archive URL. Builds from the release
   and sideload workflows also show it at the top of these acknowledgements
   and behind Settings > About > Source Code on iPhone and iPad; other builds
