@@ -18,6 +18,8 @@ struct AetherSubtitleOverlay: View {
 
     @State private var primary: [SubtitleCue] = []
     @State private var secondary: [SubtitleCue] = []
+    /// The engine clock's latest tick, stored only while embedded cues need
+    /// it, so each stored tick redraws the overlay.
     @State private var aetherSourceTime: Double = 0
     @State private var primaryCursor = SubtitleCueCursor<SubtitleCue>()
     @State private var secondaryCursor = SubtitleCueCursor<SubtitleCue>()
@@ -70,7 +72,6 @@ struct AetherSubtitleOverlay: View {
             if $0.isEmpty, cueHold.holds(.primary, trackID: engine.activeSubtitleTrackIndex) { return }
             primary = primaryTrack.laidOutAsAuthored($0, trackID: engine.activeSubtitleTrackIndex)
             primaryCursor.reset(primary)
-            aetherSourceTime = engine.clock.sourceTime
         }
         // The engine publishes no secondary index. It clears the secondary
         // cues whenever it selects a secondary track, so an empty publication
@@ -81,24 +82,15 @@ struct AetherSubtitleOverlay: View {
             if $0.isEmpty { secondaryTrack = LTRAuthoredSubtitles.Track() }
             secondary = secondaryTrack.laidOutAsAuthored($0, trackID: nil)
             secondaryCursor.reset(secondary)
-            aetherSourceTime = engine.clock.sourceTime
         }
         .onReceive(engine.clock.$sourceTime) { time in
             guard needsEngineClock else { return }
             aetherSourceTime = time
         }
-        // A delay change or timeline switch moves every cue clock at once. A
-        // switch can start reading the engine clock, whose ticks were skipped
-        // while nothing needed them, so it resyncs before repositioning.
+        // A delay change or timeline switch moves every cue clock at once.
         .onChange(of: subtitleSyncMs) { _, _ in repositionCursors() }
-        .onChange(of: primaryUsesMovieTimeline) { _, _ in
-            aetherSourceTime = engine.clock.sourceTime
-            primaryCursor.reposition()
-        }
-        .onChange(of: secondaryUsesMovieTimeline) { _, _ in
-            aetherSourceTime = engine.clock.sourceTime
-            secondaryCursor.reposition()
-        }
+        .onChange(of: primaryUsesMovieTimeline) { _, _ in primaryCursor.reposition() }
+        .onChange(of: secondaryUsesMovieTimeline) { _, _ in secondaryCursor.reposition() }
     }
 
     private func repositionCursors() {
@@ -106,6 +98,14 @@ struct AetherSubtitleOverlay: View {
         secondaryCursor.reposition()
         livePrimaryCursor.reposition()
         liveSecondaryCursor.reposition()
+    }
+
+    /// The engine clock itself. `aetherSourceTime` lags it while ticks are
+    /// skipped, so a track that just started reading the clock would see an
+    /// old time; reading `aetherSourceTime` still redraws on each stored tick.
+    private var engineTime: Double {
+        _ = aetherSourceTime
+        return engine.clock.sourceTime
     }
 
     static func renderClock(movieTime: Double, engineTime: Double, usesMovieTimeline: Bool, delaySeconds: Double) -> Double {
@@ -123,7 +123,7 @@ struct AetherSubtitleOverlay: View {
         guard !cues.isEmpty else { return [] }
         // Complete sidecars use original movie timestamps; embedded cues use
         // the served stream's clock, which may be rebased by a server remux.
-        let renderClock = Self.renderClock(movieTime: sourceTime, engineTime: aetherSourceTime,
+        let renderClock = Self.renderClock(movieTime: sourceTime, engineTime: engineTime,
                                           usesMovieTimeline: usesMovieTimeline, delaySeconds: subtitleDelaySeconds)
         return cursor.active(at: renderClock)
     }

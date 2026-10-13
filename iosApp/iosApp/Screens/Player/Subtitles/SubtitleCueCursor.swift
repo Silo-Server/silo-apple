@@ -43,7 +43,9 @@ final class SubtitleCueCursor<Cue: SubtitleCueTiming> {
         self.cues = cues
         // Ties keep list order; `sorted` alone is not stable.
         startOrder = cues.indices.sorted { (cues[$0].startTime, $0) < (cues[$1].startTime, $1) }
-        longest = cues.reduce(0) { max($0, $1.endTime - $1.startTime) }
+        // Rounded up, so the rounded `time - longest` in `rebuild` can't pass
+        // the start of a cue that ends just after `time`.
+        longest = cues.reduce(0) { max($0, ($1.endTime - $1.startTime).nextUp) }
         reposition()
     }
 

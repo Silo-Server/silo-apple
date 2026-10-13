@@ -52,6 +52,14 @@ final class SubtitleCueCursorTests: XCTestCase {
         XCTAssertEqual(cursor.active(at: 700), [])
     }
 
+    func testRebuildKeepsACueInItsLastInstantDespiteRounding() {
+        // With the duration rounded to nearest, the rebuild's cutoff
+        // (time - duration) lands just above -1, past this cue's start.
+        let cues = [Cue(id: 0, startTime: -1, endTime: 0.001)]
+        let time = 0.001.nextDown
+        XCTAssertEqual(cursor(cues).active(at: time), naive(cues, at: time))
+    }
+
     func testDelayChangeAndRepositionMatchTheNaiveFilter() {
         let cues = (0..<20).map { Cue(id: $0, startTime: Double($0) * 2, endTime: Double($0) * 2 + 1.5) }
         let cursor = cursor(cues)
