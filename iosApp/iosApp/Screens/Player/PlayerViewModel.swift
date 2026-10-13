@@ -4267,7 +4267,7 @@ class PlayerViewModel {
     /// Called when the active backend reports natural EOF. Move the shell into
     /// a paused end-state immediately so the player does not look frozen if
     /// auto-play-next is unavailable.
-    private func handleEndOfFile() {
+    func handleEndOfFile() {
         // Once per load. Two callers can land here for the same end — the
         // `.ended` event and a near-end playback error reclassified as a
         // natural finish — and running twice would raise the Next Up postroll
@@ -4366,12 +4366,6 @@ class PlayerViewModel {
             // or hit Back.
             nextUpAutoplayCancelled = true
             cancelNextUpCountdown()
-            showNotice(
-                title: "Connection lost",
-                message: "Lost connection to the server before the episode finished.",
-                tone: .warning,
-                duration: 6
-            )
         }
 
         #if os(iOS) || os(tvOS)
@@ -4464,6 +4458,22 @@ class PlayerViewModel {
             return
         }
         beginNextUpPostroll(videoEnded: true)
+
+        // After the postroll, which clears notices left over from playback;
+        // the postroll shows this one.
+        if isPremature {
+            // A download has no connection to lose: its early end is a file
+            // that stops short.
+            let isDownload = lastLoadRequest?.offlineDownloadId != nil
+            showNotice(
+                title: isDownload ? "Download incomplete" : "Connection lost",
+                message: isDownload
+                    ? "The downloaded video file ends early. Delete and re-download it."
+                    : "Lost connection to the server before the episode finished.",
+                tone: .warning,
+                duration: 6
+            )
+        }
     }
 
 
