@@ -14,11 +14,21 @@ enum PlayerCleanupBarrier {
     private static let retainedCleanups = 8
     /// Bumped each time a page starts playback.
     private(set) static var generation = 0
+    /// The newest generation a player was created in. A page whose playback
+    /// went to a TV instead never gets a local player, so it has nothing to
+    /// wait for.
+    private static var newestPlayerGeneration = 0
 
     /// Starts a new generation for the player a page is about to present and
     /// returns it for `waitForCleanup(of:)`.
     static func beginPlayback() -> Int {
         generation &+= 1
+        return generation
+    }
+
+    /// Called as a player is created; returns the generation it belongs to.
+    static func playerCreated() -> Int {
+        newestPlayerGeneration = generation
         return generation
     }
 
@@ -36,8 +46,9 @@ enum PlayerCleanupBarrier {
     /// reappear before its player's teardown starts, so this waits up to
     /// `grace` for a cleanup from `generation` itself. A player that stays
     /// alive past the grace, such as one in Picture in Picture, does not hold
-    /// the page.
+    /// the page, and a playback that created no player returns at once.
     static func waitForCleanup(of generation: Int, grace: Duration = .seconds(1)) async {
+        guard newestPlayerGeneration >= generation else { return }
         let deadline = ContinuousClock.now + grace
         while !cleanups.contains(where: { $0.generation == generation }),
               ContinuousClock.now < deadline, !Task.isCancelled {

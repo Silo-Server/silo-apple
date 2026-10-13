@@ -1185,7 +1185,7 @@ class PlayerViewModel {
     init(libraryId: Int? = nil) {
         self.initialLibraryId = libraryId
         self.seriesReturnGeneration = SeriesPlaybackReturnInbox.generation
-        self.cleanupBarrierGeneration = PlayerCleanupBarrier.generation
+        self.cleanupBarrierGeneration = PlayerCleanupBarrier.playerCreated()
         let controller: AetherPlaybackController
         do {
             controller = try AetherPlaybackController()
