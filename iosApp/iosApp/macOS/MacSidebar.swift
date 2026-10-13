@@ -88,6 +88,11 @@ struct MacSidebar: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            // The list reports a click only when the selection changes, so the
+            // row handles its own click: the highlighted row returns to its root.
+            .onTapGesture { onSelect(destination.id) }
             .tag(destination.id)
         }
     }
