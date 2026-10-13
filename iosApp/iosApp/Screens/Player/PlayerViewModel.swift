@@ -51,11 +51,13 @@ enum CreditsAutoSkipPolicy {
     }
 }
 
-/// `playback.auto_skip_recap`: the credits rule, plus two more. A Watch Party
-/// never skips a recap on its own, because the seek would move every member;
-/// they keep the Skip Recap button. And nothing skips before the load's first
-/// frame: a recap often starts at 0:00, and seeking that early can prevent the
-/// startup milestone, as with intros.
+/// `playback.auto_skip_recap`: the credits rule, plus three more. A Watch
+/// Party never skips a recap on its own, because the seek would move every
+/// member; they keep the Skip Recap button. Nothing skips before the load's
+/// first frame: a recap often starts at 0:00, and seeking that early can
+/// prevent the startup milestone, as with intros. And every recap already
+/// skipped stays skipped, not only the last one, so a replan to another file
+/// and back does not skip the first file's recap again.
 enum RecapAutoSkipPolicy {
     static func target(
         enabled: Bool,
@@ -65,16 +67,17 @@ enum RecapAutoSkipPolicy {
         time: Double,
         range: TimeRange?,
         markerKey: String?,
-        lastSkippedKey: String?
+        skippedKeys: Set<String>
     ) -> Double? {
         guard !isWatchParty, playbackStarted else { return nil }
+        if let markerKey, skippedKeys.contains(markerKey) { return nil }
         return CreditsAutoSkipPolicy.target(
             enabled: enabled,
             playbackEligible: playbackEligible,
             time: time,
             range: range,
             markerKey: markerKey,
-            lastSkippedKey: lastSkippedKey
+            lastSkippedKey: nil
         )
     }
 }
@@ -990,7 +993,8 @@ class PlayerViewModel {
     var canRequestSeek: Bool { !isWatchPartyPlayback || watchPartyAdapter?.canSeek == true }
     var effectivePlaybackSpeed: Double { isWatchPartyPlayback ? watchPartyCorrectionRate : settings.playbackSpeed }
     private var autoSkippedCreditsKey: String?
-    private var autoSkippedRecapKey: String?
+    /// Recaps already skipped for the current content, by marker key.
+    private var autoSkippedRecapKeys: Set<String> = []
     /// Skip Credits reached the end of the file while playback continued.
     /// The viewer chose to finish the item, so it completes even after Keep
     /// Watching, until a seek leaves the credits.
@@ -4912,7 +4916,7 @@ class PlayerViewModel {
         // again.
         if lastLoadRequest?.contentId != request.contentId {
             introSkipPrompt.reset()
-            autoSkippedRecapKey = nil
+            autoSkippedRecapKeys = []
             viewingHasPlayed = false
             reconnectLoadRequest = nil
             // Other content starts with a full reconnect budget.
@@ -6605,14 +6609,14 @@ class PlayerViewModel {
             time: time,
             range: recapRange,
             markerKey: key,
-            lastSkippedKey: autoSkippedRecapKey
+            skippedKeys: autoSkippedRecapKeys
         ), let key else {
             return
         }
 
         // Set the latch before seeking: a synchronous backend time callback
         // caused by the seek must see this recap as already handled.
-        autoSkippedRecapKey = key
+        autoSkippedRecapKeys.insert(key)
         Self.logger.info(
             "[CMP-MARKERS] auto-skip recap target=\(target, privacy: .public) current=\(time, privacy: .public)"
         )
@@ -7747,7 +7751,7 @@ class PlayerViewModel {
         markerReconcileRequestId = nil
         introSkipPrompt.reset()
         autoSkippedCreditsKey = nil
-        autoSkippedRecapKey = nil
+        autoSkippedRecapKeys = []
         knownExternalSubtitles = []
         locallyRegisteredSidecarSubtitleTracks = []
         localProtocolV3SubtitleSelection = nil
