@@ -1003,6 +1003,32 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertEqual(envelope.manifestData, bundle.manifestData)
     }
 
+    /// A report whose deletion is staged can outlive its removal (the app dies
+    /// first, or removal fails). It is never uploaded, so a repeat must start
+    /// a report of its own instead of being counted there and lost.
+    func testRepeatDoesNotJoinAHostedReportBeingDeleted() throws {
+        let fixture = try makePendingHostedReport(label: "hosted-deleting-repeat", issueFingerprint: "issue-a")
+        let bundle = try DiagnosticsBundleBuilder().build(
+            report: fixture.report,
+            logLines: [],
+            droppedLogLines: 0,
+            redactionTokens: []
+        )
+        try fixture.store.saveHostedEnvelope(bundle, for: fixture.report)
+        let backup = fixture.report.directoryURL.deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("deleting-repeat-backup", isDirectory: true)
+        try FileManager.default.copyItem(at: fixture.report.directoryURL, to: backup)
+        defer { try? FileManager.default.removeItem(at: backup) }
+        try fixture.store.stageHostedDeletionAndDelete(fixture.report)
+        try FileManager.default.copyItem(at: backup, to: fixture.report.directoryURL)
+
+        let repeated = try fixture.store.save(makeHostedCapture(label: "hosted-deleting-repeat-2", issueFingerprint: "issue-a"))
+
+        XCTAssertNotEqual(repeated.id, fixture.report.id)
+        XCTAssertNil(repeated.manifest.report.occurrenceCount)
+    }
+
     /// The hosted collector has not adopted `report.occurrence_count` yet,
     /// so a repeat count stays local for hosted reports. Self-hosted servers
     /// on the newer contract receive it.

@@ -1227,9 +1227,14 @@ final class PendingReportStore {
     /// accepts repeats. Returns that report, or nil to store a new one.
     private func countRepeatLocked(_ capture: PendingReportCapture) throws -> PendingReport? {
         guard let issue = capture.issueFingerprint else { return nil }
+        // A hosted report with a deletion intent may still be on disk if its
+        // removal failed or the app died first. It is hidden and never
+        // uploaded, so a repeat counted there would be lost with it.
+        let deleting = (try? loadHostedDeletionIntentsLocked()).map { Set($0.keys) } ?? []
         let existing = scanReportsLocked()
             .filter { report in
-                report.binding.issueFingerprint == issue
+                !deleting.contains(report.id.uuidString.lowercased())
+                    && report.binding.issueFingerprint == issue
                     && report.binding.binding == capture.binding
                     && report.binding.profileID == capture.profileID
                     && report.state.acceptsRepeats
