@@ -1166,13 +1166,15 @@ class PlayerViewModel {
     private(set) var lastLoadRequest: LoadRequest?
     /// Where a Keep Watching remount resumes, until it shows a frame. Retry
     /// remounts there as Keep Watching did, keeping the viewer's choices,
-    /// whichever way the load failed. The first frame or any other load
-    /// clears it.
+    /// whichever way the load failed. The first frame clears it, as does any
+    /// other load except a reconnect or renewal of this one.
     private(set) var pendingResumeAfterEndPosition: Double?
     private static let nextUpCountdownDefaultSeconds = 10
     private static let nextUpHUDCountdownThresholdSeconds: Double = 100
     private static let nearEndPlaybackErrorThresholdSeconds: Double = 8
     private var nextUpAutoplayCancelled = false
+    /// The source stopping early cancelled autoplay, not the viewer.
+    private var autoplayCancelledByLostSource = false
     /// Set when the user taps Keep Watching; suppresses re-presenting the
     /// pre-end Next Up prompt while the playhead stays inside the prompt
     /// window. Cleared when the playhead leaves the window (seek back) or a
@@ -3157,14 +3159,15 @@ class PlayerViewModel {
             // short tail of a finished episode (resuming at exact EOF would
             // end again at once), or where a lost source stopped.
             let target = max(0, min(currentTime, duration - 10))
-            if endedPrematurely, !PlayerNextUpCompletionPolicy.isInPromptWindow(
-                currentTime: target,
-                duration: duration,
-                promptSeconds: settings.nextUpPromptSeconds
-            ) {
-                // The lost source cancelled autoplay, not the viewer. Resumed
-                // short of the prompt, the real end offers Next Up again, even
-                // with the prompt turned off.
+            if endedPrematurely, autoplayCancelledByLostSource,
+               !PlayerNextUpCompletionPolicy.isInPromptWindow(
+                   currentTime: target,
+                   duration: duration,
+                   promptSeconds: settings.nextUpPromptSeconds
+               ) {
+                // Resumed short of the prompt, the real end offers Next Up
+                // again, even with the prompt turned off. A cancel the viewer
+                // made before the source stopped still holds.
                 nextUpAutoplayCancelled = false
                 nextUpPromptDismissed = false
             }
@@ -4427,6 +4430,7 @@ class PlayerViewModel {
             // `playNextEpisodeNow()`. The user is left on a recoverable
             // surface where they can retry via Play Now, pick from On Deck,
             // or hit Back.
+            autoplayCancelledByLostSource = !nextUpAutoplayCancelled
             nextUpAutoplayCancelled = true
             cancelNextUpCountdown()
             showNotice(
@@ -4668,6 +4672,7 @@ class PlayerViewModel {
         nextUpScreenVideoEnded = false
         nextUpPresentationSource = .automatic
         nextUpAutoplayCancelled = false
+        autoplayCancelledByLostSource = false
         nextUpPromptDismissed = false
         audioTracks = []
         subtitleTracks = []
@@ -4932,7 +4937,13 @@ class PlayerViewModel {
         PosterImageCache.trimDecodedMemory()
         #endif
         isNextUpTransitioning = origin == .autoplay && showNextUpScreen
-        let carriedViewerChoices = origin == .resumeAfterEnd ? viewerChoices : nil
+        // A reconnect or renewal of a Keep Watching remount that has not
+        // played yet continues that remount: same choices, same retry.
+        let continuesResumeAfterEnd = pendingResumeAfterEndPosition != nil
+            && (origin == .reconnect || origin == .recovery)
+            && lastLoadRequest?.contentId == request.contentId
+        let resumesAfterEnd = origin == .resumeAfterEnd || continuesResumeAfterEnd
+        let carriedViewerChoices = resumesAfterEnd ? viewerChoices : nil
         recordCurrentPlaybackMutation()
         let pendingNaturalEndProgressTask = naturalEndProgressTask
         naturalEndProgressTask = nil
@@ -4954,7 +4965,11 @@ class PlayerViewModel {
             cancelReconnect()
         }
         lastLoadRequest = request
-        pendingResumeAfterEndPosition = origin == .resumeAfterEnd ? resumePositionOverride : nil
+        if origin == .resumeAfterEnd {
+            pendingResumeAfterEndPosition = resumePositionOverride
+        } else if !continuesResumeAfterEnd {
+            pendingResumeAfterEndPosition = nil
+        }
         offlinePlaybackContext = nil
         contentIdsNeedingDetailRefresh.insert(request.contentId)
         hasReachedEndOfFile = false
