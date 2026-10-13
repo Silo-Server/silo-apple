@@ -197,7 +197,7 @@ class PlayerViewModel {
         category: "Player"
     )
 
-    fileprivate let aetherPlaybackController: AetherPlaybackController
+    let aetherPlaybackController: AetherPlaybackController
     @ObservationIgnored
     private var activeAetherLoadEpoch: AetherPlaybackController.LoadEpoch?
     /// The epoch whose `finishLoad` has returned, i.e. whose engine startup ran
@@ -638,6 +638,10 @@ class PlayerViewModel {
     private var finishedAtEndOfFile: Bool {
         hasReachedEndOfFile && !reachedEndPrematurely
     }
+    /// Parked on an end of stream short of the end of the item.
+    private var endedPrematurely: Bool {
+        hasReachedEndOfFile && reachedEndPrematurely
+    }
     let settings = PlayerSettings.shared
     /// Profile-wide skip intervals. Read at each skip, so a change made while
     /// the player is open applies to the next press.
@@ -971,6 +975,30 @@ class PlayerViewModel {
         guard let creditsRange else { return true }
         return currentTime >= creditsRange.start
     }
+    /// What the viewer already decided about the playing item. Leaving the
+    /// end-of-playback screen remounts the same item, so it keeps these.
+    struct ViewerChoices: Equatable {
+        let didSkipCreditsToEnd: Bool
+        let autoSkippedCreditsKey: String?
+        let nextUpPromptDismissed: Bool
+        let nextUpAutoplayCancelled: Bool
+    }
+    var viewerChoices: ViewerChoices {
+        get {
+            ViewerChoices(
+                didSkipCreditsToEnd: didSkipCreditsToEnd,
+                autoSkippedCreditsKey: autoSkippedCreditsKey,
+                nextUpPromptDismissed: nextUpPromptDismissed,
+                nextUpAutoplayCancelled: nextUpAutoplayCancelled
+            )
+        }
+        set {
+            didSkipCreditsToEnd = newValue.didSkipCreditsToEnd
+            autoSkippedCreditsKey = newValue.autoSkippedCreditsKey
+            nextUpPromptDismissed = newValue.nextUpPromptDismissed
+            nextUpAutoplayCancelled = newValue.nextUpAutoplayCancelled
+        }
+    }
     private var staleSessionRecoverySessionId: String?
     struct LoadRequest {
         var libraryId: Int? = nil
@@ -1120,6 +1148,10 @@ class PlayerViewModel {
         /// survive (§6.2). Failures go back to the reconnect, which waits
         /// for the next attempt or gives up.
         case reconnect
+        /// Keep Watching from the end-of-playback screen remounts the same
+        /// item. Keeps the viewer's choices about it; a failure surfaces like
+        /// a user pick.
+        case resumeAfterEnd
     }
 
     private enum BeginFreshLoadError: Error {
@@ -1127,7 +1159,7 @@ class PlayerViewModel {
     }
 
     private static let autoplayStartSessionTimeout: TimeInterval = 15
-    private var lastLoadRequest: LoadRequest?
+    private(set) var lastLoadRequest: LoadRequest?
     private static let nextUpCountdownDefaultSeconds = 10
     private static let nextUpHUDCountdownThresholdSeconds: Double = 100
     private static let nearEndPlaybackErrorThresholdSeconds: Double = 8
@@ -3089,10 +3121,17 @@ class PlayerViewModel {
         if isAdvancingShuffle { cancelShuffleOperations() }
         // An autoplay load failure may restore the postroll after disposing
         // the old playback pipeline. There is no current episode to resume in
-        // that state, so let the shell fall back to closing the player.
-        guard hasActiveAetherSession, !isNextUpTransitioning else { return false }
+        // that state, so let the shell fall back to closing the player. A
+        // source that stopped early still names its item and resume point, so
+        // it resumes even after its transport is gone.
+        guard hasActiveAetherSession || endedPrematurely, !isNextUpTransitioning else { return false }
 
         let shouldResumeAfterEnd = nextUpScreenVideoEnded || hasReachedEndOfFile
+        // Leaving the end takes a fresh load, which must not bring back a
+        // session an administrator ended.
+        if shouldResumeAfterEnd, serverEndedSessionHandled || lastLoadRequest == nil {
+            return false
+        }
         nextUpAutoplayCancelled = true
         nextUpPromptDismissed = true
         showNextUpScreen = false
@@ -3101,17 +3140,13 @@ class PlayerViewModel {
 
         if shouldResumeAfterEnd,
            duration.isFinite,
-           duration > 0,
-           hasActiveAetherSession {
-            // Returning from the terminal postroll needs a real playable
-            // position; resuming at exact EOF would immediately present the
-            // postroll again. Replay a short tail of the current episode.
-            hasReachedEndOfFile = false
-            let target = max(0, duration - 10)
-            let reloadsPlaybackPipeline = commitSeek(to: target, source: "nextUpBack")
-            if !reloadsPlaybackPipeline {
-                aetherPlaybackController.play()
-            }
+           duration > 0 {
+            // Aether keeps an ended session terminal: it ignores seeks, and
+            // play does not revive it. Remount at a playable position: a
+            // short tail of a finished episode (resuming at exact EOF would
+            // end again at once), or where a lost source stopped.
+            let target = max(0, min(currentTime, duration - 10))
+            remountCurrentPlayback(at: target, origin: .resumeAfterEnd)
         } else if !isPlaying {
             aetherPlaybackController.play()
         }
@@ -3412,14 +3447,15 @@ class PlayerViewModel {
         )
     }
 
-    private func completionProgressPositionForCurrentItem() -> Double {
+    func completionProgressPositionForCurrentItem() -> Double {
         PlayerNextUpCompletionPolicy.progressPosition(
             isNextUpPresented: showNextUpScreen,
             hasReachedEndOfFile: finishedAtEndOfFile,
             currentTime: currentTime,
             duration: duration,
             promptSeconds: settings.nextUpPromptSeconds,
-            skippedCredits: skippedCreditsToEnd
+            skippedCredits: skippedCreditsToEnd,
+            endedPrematurely: endedPrematurely
         )
     }
 
@@ -4267,7 +4303,7 @@ class PlayerViewModel {
     /// Called when the active backend reports natural EOF. Move the shell into
     /// a paused end-state immediately so the player does not look frozen if
     /// auto-play-next is unavailable.
-    private func handleEndOfFile() {
+    func handleEndOfFile() {
         // Once per load. Two callers can land here for the same end — the
         // `.ended` event and a near-end playback error reclassified as a
         // natural finish — and running twice would raise the Next Up postroll
@@ -4329,7 +4365,7 @@ class PlayerViewModel {
             )
             // Not a finish: the reload must not record the item as completed.
             hasReachedEndOfFile = false
-            if remountWatchPartyPlayback(at: observedPosition) { return }
+            if remountCurrentPlayback(at: observedPosition) { return }
             hasReachedEndOfFile = true
         }
 
@@ -4869,6 +4905,7 @@ class PlayerViewModel {
         PosterImageCache.trimDecodedMemory()
         #endif
         isNextUpTransitioning = origin == .autoplay && showNextUpScreen
+        let carriedViewerChoices = origin == .resumeAfterEnd ? viewerChoices : nil
         recordCurrentPlaybackMutation()
         let pendingNaturalEndProgressTask = naturalEndProgressTask
         naturalEndProgressTask = nil
@@ -4915,6 +4952,7 @@ class PlayerViewModel {
             preferredSidecarSubtitleTrackId: request.preferredSidecarSubtitleTrackId,
             preferredProtocolV3SubtitleIndex: request.preferredProtocolV3SubtitleIndex
         )
+        if let carriedViewerChoices { viewerChoices = carriedViewerChoices }
         // No engine event arrives while the replacement session is prepared,
         // so hand the pill the stall now. A same-content reload keeps the
         // `always` undo, and its timer must hold through the spinner.
@@ -5089,6 +5127,8 @@ class PlayerViewModel {
                         self.loadNextUpOnDeckItems(for: prepared.watchDetail)
                     }
                 }
+                // The session and Next Up setup above reset these for a new item.
+                if let carriedViewerChoices { self.viewerChoices = carriedViewerChoices }
                 self.qualityOptions = ApplePlaybackQuality.playbackOptions(
                     serverQualities: prepared.protocolV3?.plan.availableQualities ?? []
                 )
@@ -5296,7 +5336,7 @@ class PlayerViewModel {
         }()
 
         switch origin {
-        case .userInitiated:
+        case .userInitiated, .resumeAfterEnd:
             finalizeTerminalPlaybackError(message, retryable: Self.isRetryablePlaybackFailure(error))
         case .autoplay:
             let logMessage = MediaLogRedactor.sanitize(message)
@@ -5481,15 +5521,16 @@ class PlayerViewModel {
 
     /// A start request for the current item that keeps what the viewer is
     /// watching: the same version and the current audio and subtitle choice
-    /// (subtitles that are off stay off).
-    private func makeRecoveryLoadRequest() -> LoadRequest? {
+    /// (subtitles that are off stay off). `keepingDownload` keeps a local
+    /// download local; a server session cannot be built from it.
+    private func makeRecoveryLoadRequest(keepingDownload: Bool = false) -> LoadRequest? {
         guard let lastLoadRequest else { return nil }
         return lastLoadRequest.copyForRecovery(
             preferredFileId: currentSelectedVersion?.fileId ?? lastLoadRequest.preferredFileId,
             preferredAudioTrackIndex: resolvedAudioTrackIndexForResume(),
             preferredSubtitleTrackIndex: resolvedSubtitleTrackIndexForResume(),
             preferredSidecarSubtitleTrackId: resolvedSidecarSubtitleTrackIdForResume(),
-            offlineDownloadId: nil,
+            offlineDownloadId: keepingDownload ? lastLoadRequest.offlineDownloadId : nil,
             serverSubtitlesDisabled: hasDisabledServerSubtitlesForResume
         )
     }
@@ -6615,12 +6656,15 @@ class PlayerViewModel {
         return "\(contentId):\(fileId):\(range.start):\(range.end)"
     }
 
+    /// Names the marker, not the session, like the intro key: a remount
+    /// keeps the latch under a new session, and every other load clears it.
     private func currentCreditsSkipKey(for range: TimeRange) -> String? {
-        guard let sessionId = activePlaybackSessionId,
+        guard activePlaybackSessionId != nil,
+              let contentId = currentWatchDetail?.contentId,
               let fileId = currentSelectedVersion?.fileId else {
             return nil
         }
-        return "\(sessionId):\(fileId):credits:\(range.start):\(range.end)"
+        return "\(contentId):\(fileId):credits:\(range.start):\(range.end)"
     }
 
     func beginScrub(fraction: Double) {
@@ -7631,7 +7675,8 @@ class PlayerViewModel {
             currentTime: currentTime,
             duration: duration,
             promptSeconds: settings.nextUpPromptSeconds,
-            skippedCredits: skippedCreditsToEnd
+            skippedCredits: skippedCreditsToEnd,
+            endedPrematurely: endedPrematurely
         )
         recordCurrentPlaybackMutation()
         // The server counts an episode watched past its threshold, which is
@@ -7745,7 +7790,8 @@ class PlayerViewModel {
                 currentTime: currentTime,
                 duration: duration,
                 promptSeconds: settings.nextUpPromptSeconds,
-                skippedCredits: skippedCreditsToEnd
+                skippedCredits: skippedCreditsToEnd,
+                endedPrematurely: endedPrematurely
             )
             // Strong capture on purpose: this is the last write of the
             // resume point and must not be dropped because the VM was
@@ -8098,7 +8144,7 @@ class PlayerViewModel {
     /// The server ended this session for good: an administrator stopped it
     /// while the player could not be told over the control socket. Leave the
     /// way an administrator stop does, instead of renewing into a new session.
-    private func leaveServerEndedSession() {
+    func leaveServerEndedSession() {
         guard !isDisposed, !serverEndedSessionHandled else { return }
         serverEndedSessionHandled = true
         cancelReconnect()
@@ -9364,19 +9410,21 @@ extension PlayerViewModel {
     }
 
     /// Aether keeps an ended session terminal: it ignores seeks, and play does
-    /// not revive it. Moving a member off the end therefore takes a fresh
-    /// load at the target, mounted paused like any other party load.
+    /// not revive it. Moving off the end therefore takes a fresh load of the
+    /// current item at the target, on the version, audio and subtitles
+    /// playing now. A Watch Party load mounts paused like any other party
+    /// load.
     @discardableResult
-    private func remountWatchPartyPlayback(at position: Double) -> Bool {
-        guard isWatchPartyPlayback, !isDisposed,
-              let request = lastLoadRequest,
-              position.isFinite, position >= 0 else { return false }
+    private func remountCurrentPlayback(at position: Double, origin: LoadOrigin = .recovery) -> Bool {
+        guard !isDisposed,
+              position.isFinite, position >= 0,
+              let request = makeRecoveryLoadRequest(keepingDownload: true) else { return false }
         beginFreshLoad(
             request: request,
             progressPosition: nil,
             resumePositionOverride: position,
             allowNearEndResume: true,
-            origin: .recovery
+            origin: origin
         )
         publishWatchPartySnapshot()
         return true
@@ -9558,7 +9606,7 @@ extension PlayerViewModel {
             }
             guard position.isFinite, position >= 0 else { throw WatchPartyPlaybackError.notReady }
             if hasReachedEndOfFile {
-                guard remountWatchPartyPlayback(at: position) else { throw WatchPartyPlaybackError.notReady }
+                guard remountCurrentPlayback(at: position) else { throw WatchPartyPlaybackError.notReady }
             } else {
                 commitSeek(to: position, source: "watchParty", roomCommand: true)
             }
