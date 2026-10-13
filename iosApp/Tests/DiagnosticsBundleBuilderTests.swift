@@ -110,6 +110,7 @@ final class DiagnosticsBundleBuilderTests: XCTestCase {
         let subFrame = try XCTUnwrap((frame["subFrames"] as? [[String: Any]])?.first)
         XCTAssertEqual(subFrame["offsetIntoBinaryTextSegment"] as? Int, 8192)
     }
+
     /// OS-composed exception text can quote a server URL, a LAN address, or
     /// an account email. Hosted archives redact them like any log line.
     func testHostedMetricKitFreeTextIsRedacted() throws {
@@ -136,5 +137,23 @@ final class DiagnosticsBundleBuilderTests: XCTestCase {
         XCTAssertEqual(reason["exceptionName"] as? String, "NSInvalidArgumentException")
         XCTAssertTrue((reason["composedMessage"] as? String)?.hasPrefix("bad response from ") == true)
         XCTAssertTrue((metadata["terminationReason"] as? String)?.hasPrefix("Namespace SIGNAL, Code 6") == true)
+    }
+
+    /// A long exception message must reach the hosted ID rules whole: a
+    /// length cut through an item ID would leave a fragment they cannot match.
+    func testHostedMetricKitLongFreeTextRedactsIdentifierPastLogLineCap() throws {
+        let itemID = "12345678-9abc-4def-8123-456789abcdef"
+        let raw = try JSONSerialization.data(withJSONObject: [
+            "diagnosticMetaData": [
+                "objectiveCexceptionReason": [
+                    "composedMessage": String(repeating: "z", count: 2030) + " item " + itemID + " missing",
+                ],
+            ],
+        ])
+
+        let sanitized = try DiagnosticsBundleBuilder.sanitizeHostedMetricKitJSON(raw)
+        let text = try XCTUnwrap(String(data: sanitized, encoding: .utf8))
+        XCTAssertFalse(text.contains("12345678"))
+        XCTAssertTrue(text.contains("[redacted_private_id] missing"))
     }
 }

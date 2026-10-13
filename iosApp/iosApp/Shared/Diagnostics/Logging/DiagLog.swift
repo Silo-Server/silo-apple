@@ -32,9 +32,10 @@ enum DiagLog {
 
     /// Applies the URL, address, email, and credential rules every log line
     /// gets to text that did not come through the log, such as the free-text
-    /// fields of a MetricKit payload.
-    static func redactFreeText(_ value: String, maxLength: Int) -> String {
-        DiagnosticsRedactor.sanitize(value, maxLength: maxLength)
+    /// fields of a MetricKit payload. Unlike a log line it is not truncated:
+    /// a cut can split an identifier that a later redaction pass would match.
+    static func redactFreeText(_ value: String) -> String {
+        DiagnosticsRedactor.sanitize(value, maxLength: .max)
     }
 
     static func d(_ category: Category, _ tag: String, _ message: String, _ attrs: [String: DiagLogAttributeValue] = [:]) {

@@ -374,8 +374,6 @@ struct DiagnosticsBundleBuilder {
         "terminationReason", "exceptionReason", "objectiveCexceptionReason",
         "composedMessage", "exceptionName", "className",
     ]
-    /// Matches the message cap of a rendered log line.
-    private static let hostedMetricKitFreeTextMaxLength = 2048
 
     private static func sanitizeHostedMetricKitValue(_ value: Any, isFreeText: Bool = false) -> Any {
         if let object = value as? [String: Any] {
@@ -397,9 +395,7 @@ struct DiagnosticsBundleBuilder {
             return array.map { sanitizeHostedMetricKitValue($0, isFreeText: isFreeText) }
         }
         if let string = value as? String {
-            let redacted = isFreeText
-                ? DiagLog.redactFreeText(string, maxLength: hostedMetricKitFreeTextMaxLength)
-                : string
+            let redacted = isFreeText ? DiagLog.redactFreeText(string) : string
             return sanitizeHostedCrashText(redacted)
         }
         return value
