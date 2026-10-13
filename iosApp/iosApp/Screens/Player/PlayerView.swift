@@ -1190,8 +1190,10 @@ struct PlayerNextUpScreen: View {
             usesProvidedThumbnailTapAction: onDeckUsesProvidedThumbnailTapAction,
             // The panel sits above the third card, so a geometric Down entry
             // would skip the first. Let the focus engine enter the row and
-            // land on its first card instead of redirecting the move.
+            // land on its first card instead of redirecting the move, and
+            // scroll the strip home on exit so that card is loaded next time.
             prefersDefaultFocusOnFirstItem: true,
+            scrollsToFirstItemWhenFocusLeaves: true,
             onMoveUp: focusAboveOnDeck
         )
     }
