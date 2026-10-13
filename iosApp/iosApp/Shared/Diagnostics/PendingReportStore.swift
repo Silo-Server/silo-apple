@@ -232,8 +232,8 @@ struct DiagnosticsCaptureContext {
     let profileID: String?
     let consentMode: ConsentMode
     let noticeVersion: Int
-    let appVersion: String
-    let appBuild: String
+    var appVersion: String
+    var appBuild: String
     let platform: Platform
     let osVersion: String
     var destinationServerInstanceID: String? = nil

@@ -203,6 +203,14 @@ struct ContentView: View {
             #endif
             #if os(tvOS)
             ExitSentinel.shared.appDidEnterForeground()
+            #elseif os(iOS)
+            // `.onChange(of: scenePhase)` below skips the initial value, so a
+            // scene that is already active when the root view appears would
+            // stay unarmed until its first background round trip. A
+            // background launch is not active here and stays unarmed.
+            if scenePhase == .active {
+                ExitSentinel.shared.appDidEnterForeground()
+            }
             #endif
         }
         .onReceive(NotificationCenter.default.publisher(for: .siloSessionExpired)) { notification in
@@ -275,9 +283,7 @@ struct ContentView: View {
             // distinguishable from an abnormal exit at the same point in the
             // timeline: the abnormal one simply lacks this line.
             LaunchTimeline.recordTermination(state: Self.diagnosticsScenePhase(scenePhase))
-            #if os(tvOS)
             ExitSentinel.shared.appWillTerminate()
-            #endif
         }
         #endif
         #if os(tvOS)
@@ -361,6 +367,8 @@ struct ContentView: View {
                 drainPendingDeepLinkIfReady()
                 #if os(tvOS)
                 restoreTrailerReturnIfNeeded(hasPriorityLaunchIntent: hasPendingDeepLink)
+                #endif
+                #if os(iOS) || os(tvOS)
                 await ExitSentinel.shared.captureLeftoverIfNeeded()
                 #endif
                 await refreshSessionStores()
@@ -477,13 +485,22 @@ struct ContentView: View {
                 break
             }
             #endif
-            #if os(tvOS)
+            #if os(iOS) || os(tvOS)
             switch newPhase {
             case .active:
                 ExitSentinel.shared.appDidEnterForeground()
             case .background:
                 ExitSentinel.shared.appDidEnterBackground()
-            default:
+            case .inactive:
+                #if os(iOS)
+                // An iPhone app the user swipes away in the app switcher is
+                // inactive, not backgrounded, when it is killed. Disarm here
+                // so that kill is not reported as an unclean exit.
+                ExitSentinel.shared.appDidBecomeInactive()
+                #else
+                break
+                #endif
+            @unknown default:
                 break
             }
             #endif
@@ -1097,13 +1114,11 @@ struct ContentView: View {
 
         // Capabilities and settings may have changed while the app was
         // away. Most of these refreshes go to the network every time.
-        #if os(tvOS)
+        #if os(iOS) || os(tvOS)
         Task {
             await ExitSentinel.shared.captureLeftoverIfNeeded()
             await diagnosticsModel.handleForeground()
         }
-        #elseif os(iOS)
-        Task { await diagnosticsModel.handleForeground() }
         #endif
         // Detail pages read this lazily, so the next one re-reads it
         // instead of every foreground paying for a request.

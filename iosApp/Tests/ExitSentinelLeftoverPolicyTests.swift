@@ -175,4 +175,99 @@ final class ExitSentinelLeftoverPolicyTests: XCTestCase {
         XCTAssertLessThan(bootTime, Date().timeIntervalSince1970)
         XCTAssertGreaterThan(bootTime, 1_000_000_000)
     }
+
+    // MARK: - Re-arming in the same process
+
+    private func makeSentinel() -> (ExitSentinel, ExitSentinelMarkerStore) {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ExitSentinelRearmTests-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("exit-sentinel.json")
+        let sentinel = ExitSentinel(markerURL: url, environment: { [environment] in environment })
+        sentinel.setCaptureEnabled { true }
+        return (sentinel, ExitSentinelMarkerStore(currentURL: url))
+    }
+
+    /// iOS disarms on every `.inactive` blip (Control Center, Face ID) so an
+    /// app-switcher swipe is not an unclean exit. The next `.active` re-arms
+    /// the same run, so its evidence window must still start at the run's
+    /// start, not at the blip.
+    func testReArmingAfterAnInactiveBlipKeepsTheRunStart() throws {
+        let (sentinel, store) = makeSentinel()
+        let launch = Date(timeIntervalSince1970: 1_790_000_000)
+        sentinel.appDidEnterForeground(now: launch)
+        let armed = try XCTUnwrap(store.readCurrent())
+        XCTAssertEqual(armed.startedAtDate, launch)
+
+        sentinel.appDidBecomeInactive()
+        XCTAssertNil(store.readCurrent())
+        sentinel.appDidEnterForeground(now: launch.addingTimeInterval(90))
+        XCTAssertEqual(store.readCurrent(), armed)
+    }
+
+    /// A real background edge ends the window, as it always has on tvOS, even
+    /// when an `.inactive` edge came first.
+    func testReturningFromBackgroundStartsANewWindow() throws {
+        let (sentinel, store) = makeSentinel()
+        let launch = Date(timeIntervalSince1970: 1_790_000_000)
+        sentinel.appDidEnterForeground(now: launch)
+        sentinel.appDidBecomeInactive()
+        sentinel.appDidEnterBackground()
+
+        sentinel.appDidEnterForeground(now: launch.addingTimeInterval(90))
+        XCTAssertEqual(try XCTUnwrap(store.readCurrent()).startedAtDate, launch.addingTimeInterval(90))
+    }
+
+    /// A disarm that is not a lifecycle edge (a child profile, consent off)
+    /// ends the run's window; arming again starts a new one.
+    func testReArmingAfterAnEligibilityDisarmStartsANewWindow() throws {
+        let (sentinel, store) = makeSentinel()
+        let launch = Date(timeIntervalSince1970: 1_790_000_000)
+        sentinel.appDidEnterForeground(now: launch)
+        sentinel.appDidBecomeInactive()
+        sentinel.disarmCurrentRun()
+
+        sentinel.appDidEnterForeground(now: launch.addingTimeInterval(90))
+        XCTAssertEqual(try XCTUnwrap(store.readCurrent()).startedAtDate, launch.addingTimeInterval(90))
+    }
+
+    /// Launch promotes an unclean previous run on both platforms. Only tvOS
+    /// arms there: iOS can launch in the background, so it waits for the
+    /// first `.active` scene phase.
+    func testLaunchPromotesTheLeftoverAndArmsOnlyOnTVOS() throws {
+        let (sentinel, store) = makeSentinel()
+        let crashed = marker(environment: environment)
+        store.writeCurrent(crashed)
+
+        sentinel.appDidLaunch()
+
+        XCTAssertEqual(store.readLeftover(), crashed)
+        #if os(tvOS)
+        XCTAssertEqual(try XCTUnwrap(store.readCurrent()).runID, DiagLog.captureSessionID)
+        #else
+        XCTAssertNil(store.readCurrent())
+        #endif
+    }
+
+    /// A leftover can wait for capture across an app update; its report names
+    /// the build that exited, not the one that captured it.
+    func testAbnormalExitReportCarriesTheMarkersBuild() {
+        let current = DiagnosticsCaptureContext(
+            binding: DiagnosticsBinding(serverInstanceID: "srv", accountUserID: "acct"),
+            profileID: "current-profile",
+            consentMode: .prompt,
+            noticeVersion: 1,
+            appVersion: "1.5.0",
+            appBuild: "813",
+            platform: .ios,
+            osVersion: "27.0"
+        )
+        let bound = DiagnosticsCoordinator.abnormalExitContext(current, marker: marker(environment: environment))
+        XCTAssertEqual(bound.appVersion, "1.4.0")
+        XCTAssertEqual(bound.appBuild, "812")
+        XCTAssertEqual(bound.profileID, "prof")
+
+        let legacy = DiagnosticsCoordinator.abnormalExitContext(current, marker: marker(environment: nil))
+        XCTAssertEqual(legacy.appBuild, "813")
+    }
 }

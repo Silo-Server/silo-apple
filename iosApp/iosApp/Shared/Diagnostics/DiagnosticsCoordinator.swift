@@ -300,7 +300,7 @@ actor DiagnosticsCoordinator {
     /// is required for a decided refusal — a user who chose "Never" must be
     /// left with no on-disk trail — and destructive before any decision exists,
     /// because the only thing on disk then is the *previous* run's trail, which
-    /// is the evidence the tvOS abnormal-exit report is built from.
+    /// is the evidence the abnormal-exit report is built from.
     ///
     /// Latched the first time this launch observes its decision actually take
     /// effect, which is exactly one of:
@@ -786,9 +786,7 @@ actor DiagnosticsCoordinator {
         // erasure would undo the erasure.
         Self.purgeBreadcrumbJournal()
         DiagLog.ring.clear()
-        #if os(tvOS)
         ExitSentinel.shared.purge()
-        #endif
         guard erased else { return false }
         guard binding.destinationChoice == .hosted else { return true }
         return await drainHostedDeletionIntents(maximumAttempts: 4)
@@ -1713,14 +1711,12 @@ actor DiagnosticsCoordinator {
             : await activeProfileIsChild(binding: snapshot.binding)
         let eligible = isChild == false
         _ = Self.publishActiveProfileBreadcrumbEligibility(eligible, generation: generation)
-        #if os(tvOS)
         if eligible {
             ExitSentinel.shared.profileEligibilityDidResolve(
                 binding: snapshot.binding,
                 profileID: AuthService.shared.profileId
             )
         }
-        #endif
         return eligible
     }
 
@@ -1773,9 +1769,7 @@ actor DiagnosticsCoordinator {
             statusRefreshEpoch.invalidate()
             if let binding = Self.currentBreadcrumbBinding() { bindings.insert(binding) }
             DiagLog.ring.clear()
-            #if os(tvOS)
             ExitSentinel.shared.purge()
-            #endif
         }
         for binding in bindings {
             RecentSessionTracker.shared.purge(binding: binding)
@@ -1821,7 +1815,6 @@ actor DiagnosticsCoordinator {
         return true
     }
 
-    #if os(tvOS)
     func captureAbnormalExit(marker: ExitSentinelMarker) async -> Bool {
         guard let context = await captureContext() else {
             return false
@@ -1859,9 +1852,7 @@ actor DiagnosticsCoordinator {
                 break
             }
         }
-        let boundContext = marker.binding != nil
-            ? context.overridingProfileID(marker.profileID)
-            : context
+        let boundContext = Self.abnormalExitContext(context, marker: marker)
         let fingerprint = DiagnosticsSHA256.hex(
             data: Data("exit_sentinel|\(marker.runID)|\(marker.startedAt)".utf8)
         )
@@ -1929,7 +1920,22 @@ actor DiagnosticsCoordinator {
             return false
         }
     }
-    #endif
+
+    /// The capture context for `marker`'s run: its profile when the marker is
+    /// bound, and the build that ran. A leftover can wait for capture across
+    /// an app update, so the current build is not necessarily the one that
+    /// exited.
+    nonisolated static func abnormalExitContext(
+        _ context: DiagnosticsCaptureContext,
+        marker: ExitSentinelMarker
+    ) -> DiagnosticsCaptureContext {
+        var bound = marker.binding != nil ? context.overridingProfileID(marker.profileID) : context
+        if let appVersion = marker.appVersion, let appBuild = marker.appBuild {
+            bound.appVersion = appVersion
+            bound.appBuild = appBuild
+        }
+        return bound
+    }
 
     /// Returns whether the breadcrumb reached the journal. A `false` result
     /// before the launch's consent context resolves means the line was staged
@@ -1940,7 +1946,7 @@ actor DiagnosticsCoordinator {
     /// effect. Its refusal path is destructive — `appendRenderedLine` purges
     /// the whole breadcrumb directory when `isEnabled()` is false — and on a
     /// cold launch the only thing in that directory is the *previous* run's
-    /// trail, which is what the tvOS abnormal-exit report is made of. Asking it
+    /// trail, which is what the abnormal-exit report is made of. Asking it
     /// "may I write?" during the pre-consent window therefore destroys the
     /// evidence before anyone reads it, and the launch breadcrumbs this
     /// subsystem emits from `SiloApp.init` onward hit that window on every
@@ -2470,7 +2476,7 @@ actor DiagnosticsCoordinator {
         Self.invalidateCaptureGateCache()
         // A server/account switch mid-run leaves the previous binding's trail in
         // the on-disk breadcrumb journal AND in the process-wide log ring.
-        // MetricKit (and the tvOS abnormal-exit path) can later bundle either
+        // MetricKit (and the abnormal-exit path) can later bundle either
         // into a report bound to the NEW account, leaking the old account's
         // navigation/playback breadcrumbs and CMP/playback log lines (including
         // session_ids). Rotate the journal and clear the ring when the active
@@ -2493,22 +2499,21 @@ actor DiagnosticsCoordinator {
             noticeVersion: noticeVersion,
             statusAvailable: statusAvailable
         )
-        #if os(tvOS)
         ExitSentinel.shared.setCaptureEnabled {
             DiagnosticsCoordinator.breadcrumbCaptureEnabled()
         }
-        // The tvOS sentinel arms in SiloApp.init, before the first status
-        // refresh. With no last-known snapshot the current run's marker was
-        // written with binding == nil and would otherwise only be back-filled
-        // on a later foreground event. Bind it now — the moment the diagnostics
-        // binding first resolves — so a crash later in this same foreground is
-        // attributed to this account instead of being treated as a legacy
-        // marker (and bound to whoever is active) on relaunch.
+        // The sentinel arms at launch (tvOS) or first activation (iOS),
+        // before the first status refresh. With no last-known snapshot the
+        // current run's marker was written with binding == nil and would
+        // otherwise only be back-filled on a later foreground event. Bind it
+        // now — the moment the diagnostics binding first resolves — so a crash
+        // later in this same foreground is attributed to this account instead
+        // of being treated as a legacy marker (and bound to whoever is active)
+        // on relaunch.
         ExitSentinel.shared.bindCurrentMarker(
             binding: binding,
             profileID: AuthService.shared.profileId
         )
-        #endif
     }
 
     nonisolated private static func currentBreadcrumbBinding() -> DiagnosticsBinding? {
@@ -2610,9 +2615,7 @@ actor DiagnosticsCoordinator {
         // real change in an authenticated session.
         purgeBreadcrumbJournal()
         DiagLog.ring.clear()
-        #if os(tvOS)
         ExitSentinel.shared.disarmCurrentRun()
-        #endif
     }
 
     #if DEBUG
@@ -2839,12 +2842,10 @@ actor DiagnosticsCoordinator {
         ) else {
             return
         }
-        #if os(tvOS)
         ExitSentinel.shared.profileEligibilityDidResolve(
             binding: binding,
             profileID: AuthService.shared.profileId
         )
-        #endif
     }
 
     /// Start an async resolution and return its ownership token. Explicit
@@ -2866,14 +2867,12 @@ actor DiagnosticsCoordinator {
         // epoch here is what makes the publish below able to detect that a
         // newer boundary raced it.
         invalidateCaptureGateCache()
-        #if os(tvOS)
         if invalidateCurrent {
             // The marker may belong to the prior adult profile. Remove this
             // process's current-run slot immediately; a previous-run crash
             // marker is preserved by the run-id check.
             ExitSentinel.shared.disarmCurrentRun()
         }
-        #endif
         return generation
     }
 
