@@ -151,11 +151,15 @@ extension SettingKey {
         .playerOrientationMode,
     ]
 
-    /// What a player refresh reads: the synced keys plus the ones the player
-    /// only follows. `playback.auto_skip_recap` has no Apple player setting
-    /// (it is set from the profile, for example on the web), so the player
-    /// never writes, resets or migrates it.
-    static let playerReadSettings: [SettingKey] = playerDeviceSettings + [.playbackAutoSkipRecap]
+    /// Profile settings the player follows but has no Apple setting for.
+    /// `playback.auto_skip_recap` is set from the profile, for example on the
+    /// web, so the player never writes or migrates it. The web can still give
+    /// this device its own value, which "Use Profile Settings" clears like any
+    /// other.
+    static let playerFollowedSettings: [SettingKey] = [.playbackAutoSkipRecap]
+
+    /// What a player refresh reads: the synced keys plus the followed ones.
+    static let playerReadSettings: [SettingKey] = playerDeviceSettings + playerFollowedSettings
 }
 
 /// A Playback setting the profile can hold as well as this device, so the
@@ -969,19 +973,21 @@ final class PlayerSettings {
         setting.keys.contains { deviceOverriddenKeys.contains($0) }
     }
 
-    /// How many settings "Use Profile Settings" would change: each synced
-    /// setting this device holds its own value for (quality's two keys count
-    /// once), plus each device-only preference away from its default.
+    /// How many settings "Use Profile Settings" would change: each setting
+    /// this device holds its own value for (quality's two keys count once),
+    /// plus each device-only preference away from its default.
     var deviceChangedSettingCount: Int {
-        let synced = Set(deviceOverriddenKeys.map { $0 == .maxBitrateKbps ? .preferredQuality : $0 })
-        return synced.count + changedDeviceLocalPreferenceCount
+        let overridden = Set(deviceOverriddenKeys.map { $0 == .maxBitrateKbps ? .preferredQuality : $0 })
+        return overridden.count + changedDeviceLocalPreferenceCount
     }
 
     /// Whether "Use Profile Settings" would reset something the profile has
     /// no value for — a device-only synced key or a local preference — which
     /// goes back to its default rather than to a profile value.
     var deviceChangesIncludeDeviceOnlySettings: Bool {
-        let profileBacked = Set(ProfileBackedPlaybackSetting.allCases.flatMap(\.keys))
+        let profileBacked = Set(
+            ProfileBackedPlaybackSetting.allCases.flatMap(\.keys) + SettingKey.playerFollowedSettings
+        )
         return changedDeviceLocalPreferenceCount > 0
             || deviceOverriddenKeys.contains { !profileBacked.contains($0) }
     }
@@ -1071,7 +1077,7 @@ final class PlayerSettings {
         if let resetScopeID {
             markMigrationComplete(for: resetScopeID)
         }
-        for key in SettingKey.playerDeviceSettings {
+        for key in SettingKey.playerReadSettings {
             enqueueDeviceClear(key)
         }
         await flushPendingDeviceSettings()
@@ -1241,15 +1247,11 @@ final class PlayerSettings {
         applyEffectiveSubtitleAppearance(effectiveByKey[.subtitleAppearance])
 
         // A clear still on its way has not reached the server, whose answer
-        // therefore still shows the device value being removed. Only synced
-        // keys count: a followed-only key such as `playback.auto_skip_recap`
-        // can hold a device row too, but "Use Profile Settings" never clears
-        // it, so counting it would leave that reset looking undone.
+        // therefore still shows the device value being removed.
         let clearing = flusher.unsettledClears
-        let synced = Set(SettingKey.playerDeviceSettings)
         deviceOverriddenKeys = Set(
             effectiveByKey.compactMap { key, entry in
-                entry.scope == .profileDevice && synced.contains(key) && !clearing.contains(key) ? key : nil
+                entry.scope == .profileDevice && !clearing.contains(key) ? key : nil
             }
         )
     }
