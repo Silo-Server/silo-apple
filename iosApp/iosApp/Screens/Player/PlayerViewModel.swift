@@ -1517,7 +1517,9 @@ class PlayerViewModel {
             sourceWatch.observePlayhead(movieTime, hasMediaAhead: engineHasMediaAhead)
             updateNextUpPresentation(for: movieTime)
             syncIntroSkipPrompt()
-            autoSkipRecapIfNeeded(at: movieTime)
+            // Not `movieTime`: an intro skip just above may have moved the
+            // playhead past a recap that overlaps the intro.
+            autoSkipRecapIfNeeded(at: currentTime)
             autoSkipCreditsIfNeeded(at: movieTime)
             pushNowPlayingIfDue()
             refreshPlaybackStats()
@@ -4656,7 +4658,6 @@ class PlayerViewModel {
         currentSelectedVersion = nil
         activePreparedProtocolV3 = nil
         autoSkippedCreditsKey = nil
-        autoSkippedRecapKey = nil
         didSkipCreditsToEnd = false
         selectedAudioId = nil
         selectedSubtitleId = nil
@@ -4903,13 +4904,15 @@ class PlayerViewModel {
         recordCurrentPlaybackMutation()
         let pendingNaturalEndProgressTask = naturalEndProgressTask
         naturalEndProgressTask = nil
-        // Intro decisions belong to the content, not to one stream of it. A
-        // retry or a reload that lands a seek keeps them, so a viewer who
-        // skipped or dismissed an intro is not asked again — and `always`
+        // Intro and recap decisions belong to the content, not to one stream
+        // of it. A retry or a reload that lands a seek keeps them, so a viewer
+        // who skipped or dismissed an intro is not asked again, `always`
         // cannot skip the same intro twice when the reload lands just short of
-        // its end.
+        // its end, and a recap the viewer went back to watch is not skipped
+        // again.
         if lastLoadRequest?.contentId != request.contentId {
             introSkipPrompt.reset()
+            autoSkippedRecapKey = nil
             viewingHasPlayed = false
             reconnectLoadRequest = nil
             // Other content starts with a full reconnect budget.
@@ -5080,7 +5083,6 @@ class PlayerViewModel {
                 let session = prepared.session
                 self.activePlaybackSessionId = session.sessionId
                 self.autoSkippedCreditsKey = nil
-                self.autoSkippedRecapKey = nil
                 self.staleSessionRecoverySessionId = nil
                 // Snapshot the preferred language for track-list ordering
                 // unconditionally (even with an explicit choice) so the
@@ -6683,8 +6685,8 @@ class PlayerViewModel {
     }
 
     /// Names the marker, not the session, like the intro key: a protocol-v3
-    /// replan can replace the session id mid-playback, and a recap already
-    /// skipped must stay skipped across it.
+    /// replan or a reload can replace the session id mid-playback, and a
+    /// recap already skipped must stay skipped across it.
     private func currentRecapSkipKey(for range: TimeRange) -> String? {
         guard activePlaybackSessionId != nil,
               let contentId = currentWatchDetail?.contentId,
