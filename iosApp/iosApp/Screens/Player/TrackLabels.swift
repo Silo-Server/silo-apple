@@ -133,7 +133,7 @@ enum TrackLabels {
     private static let audioTechnicalTerm = try! NSRegularExpression(
         pattern: #"(?<![0-9])(?<![0-9]\.)(?:\d\.\d(?:\.\d)?(?:\s?ch)?|\d+\s?ch(?:annels?)?)(?![0-9a-z])"#
             + #"|(?<![0-9a-z.])\d+(?:[.,]\d+)?[\s-]?(?:[km]?(?:bps|b/s|bit/s)|k?hz|bits?)(?![a-z])"#
-            + #"|\b(?:atsc|a/52[ab]?|he-?aac(?:[\s-]?v?2)?|aac[\s-]?lc|aac\s+latm|e?-?ac-?3|ec-?3|true[\s-]?hd|aac|flac|alac"#
+            + #"|\b(?:atsc|a/52[ab]?|he-?aac(?:[\s-]?v2)?|aac[\s-]?lc|aac\s+latm|e?-?ac-?3|ec-?3|true[\s-]?hd|aac|flac|alac"#
             + #"|opus|vorbis|mp[23]|pcm\s+(?:un)?signed\s+[\d|]+-bit\s+(?:little|big)-endian(?:\s+for\s+blu-ray\s+media)?"#
             + #"|l?pcm(?:_[a-z0-9]+)?|joc|dd\+?|ddp|stereo|mono|surround|dolby|digital(?:\s*plus)?|dca|mlp"#
             + #"|advanced\s+audio\s+coding(?:\s+latm\s+syntax)?|coherent\s+acoustics|(?:free|apple)\s+lossless\s+audio\s+codec"#

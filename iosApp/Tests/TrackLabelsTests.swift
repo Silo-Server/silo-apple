@@ -206,6 +206,13 @@ final class TrackLabelsTests: XCTestCase {
             PlayerTrack.singleLineLabels(subtitles),
             ["English (PGS)", "English (Forced)", "English (SRT)"]
         )
+
+        // Tracks that also share the codec and layout are numbered in order.
+        let twins = [
+            playerTrack(kind: .audio, title: nil, lang: "eng", codec: "aac", channels: 2),
+            playerTrack(kind: .audio, title: nil, lang: "eng", codec: "aac", channels: 2),
+        ]
+        XCTAssertEqual(PlayerTrack.singleLineLabels(twins), ["English (AAC Stereo) 1", "English (AAC Stereo) 2"])
     }
 
     /// "HI" alone doesn't set the SDH flag, so the title stays as the only
@@ -267,12 +274,13 @@ final class TrackLabelsTests: XCTestCase {
     /// kept title go with them.
     func testAudioTitleDropsTechnicalFragments() {
         for title in [
-            "HE-AAC", "AAC-LC 2.0", "DTS-HD MA 5.1 @ 3500 kbps", "FLAC 24-bit 96kHz",
+            "HE-AAC", "HE-AAC 256 kbps", "HE-AAC 2 ch", "HE-AACv2", "AAC-LC 2.0", "DTS-HD MA 5.1 @ 3500 kbps", "FLAC 24-bit 96kHz",
             "AC3 640kbps", "AAC 2 ch", "DTS-HD.MA.5.1", "LPCM 2.0",
         ] {
             XCTAssertNil(TrackLabels.audioTitle(title), title)
         }
         XCTAssertEqual(TrackLabels.audioTitle("TrueHD 7.1.4 Commentary"), "Commentary")
+        XCTAssertEqual(TrackLabels.audioTitle("HE-AAC 2020 Original Dub"), "2020 Original Dub")
         XCTAssertEqual(TrackLabels.audioTitle("Director's Commentary – DTS 5.1"), "Director's Commentary")
         XCTAssertEqual(TrackLabels.audioTitle("English (Commentary)", language: "eng"), "Commentary")
     }
@@ -307,6 +315,7 @@ final class TrackLabelsTests: XCTestCase {
         )
         XCTAssertEqual(sidecar.primaryLabel, "SRT")
         XCTAssertEqual(sidecar.attributePillLabels(), ["External"])
-        XCTAssertEqual(PlayerTrack.singleLineLabels([sidecar, sidecar]), ["SRT", "SRT"])
+        // The remote shows only this name, so two of them are numbered.
+        XCTAssertEqual(PlayerTrack.singleLineLabels([sidecar, sidecar]), ["SRT 1", "SRT 2"])
     }
 }

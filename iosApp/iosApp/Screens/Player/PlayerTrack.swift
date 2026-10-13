@@ -89,12 +89,22 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
 
     /// `singleLineLabel` for each track, adding the codec and layout where
     /// two tracks would otherwise read the same: "English (EAC3 5.1)" and
-    /// "English (AAC Stereo)" rather than "English" twice.
+    /// "English (AAC Stereo)" rather than "English" twice. Tracks that still
+    /// match are numbered in order ("SRT 1", "SRT 2"), since a remote shows
+    /// only this name.
     static func singleLineLabels(_ tracks: [PlayerTrack]) -> [String] {
         let labels = tracks.map(\.singleLineLabel)
         let counts = Dictionary(labels.map { ($0, 1) }, uniquingKeysWith: +)
-        return zip(tracks, labels).map { track, label in
+        let formatted = zip(tracks, labels).map { track, label in
             counts[label, default: 0] > 1 ? track.singleLineLabel(includingFormat: true) : label
+        }
+        let formattedCounts = Dictionary(formatted.map { ($0, 1) }, uniquingKeysWith: +)
+        var seen: [String: Int] = [:]
+        return formatted.map { label in
+            guard formattedCounts[label, default: 0] > 1 else { return label }
+            let number = seen[label, default: 0] + 1
+            seen[label] = number
+            return "\(label) \(number)"
         }
     }
 
