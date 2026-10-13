@@ -765,6 +765,10 @@ class PlayerViewModel {
     /// playback resumes without clobbering a newer, unrelated notice.
     private var liveSubtitlePreparingNoticeId: UUID?
     private var remoteDismissTask: Task<Void, Never>?
+    /// A stop from the server or a remote has scheduled the player to close.
+    private var isClosingForRemoteStop: Bool {
+        remoteDismissTask != nil || remoteDismissToken != nil
+    }
     private var progressTask: Task<Void, Never>?
     private var staleSessionRecoveryTask: Task<Void, Never>?
     /// Held so the init-time `refreshSettingsFromServer` call can be cancelled
@@ -1160,10 +1164,11 @@ class PlayerViewModel {
 
     private static let autoplayStartSessionTimeout: TimeInterval = 15
     private(set) var lastLoadRequest: LoadRequest?
-    /// Where a Keep Watching remount that failed was resuming. Retry remounts
-    /// there as Keep Watching did, keeping the viewer's choices; any other
-    /// load clears it.
-    private(set) var failedResumeAfterEndPosition: Double?
+    /// Where a Keep Watching remount resumes, until it shows a frame. Retry
+    /// remounts there as Keep Watching did, keeping the viewer's choices,
+    /// whichever way the load failed. The first frame or any other load
+    /// clears it.
+    private(set) var pendingResumeAfterEndPosition: Double?
     private static let nextUpCountdownDefaultSeconds = 10
     private static let nextUpHUDCountdownThresholdSeconds: Double = 100
     private static let nearEndPlaybackErrorThresholdSeconds: Double = 8
@@ -1177,7 +1182,7 @@ class PlayerViewModel {
     private(set) var contentIdsNeedingDetailRefresh: Set<String> = []
     /// Series of the last episode whose watch detail loaded. Covers the gap
     /// while a replacement episode loads and `currentWatchDetail` is empty.
-    private var lastSeriesPlayback: (seriesId: String, seasonNumber: Int?)?
+    private var lastSeriesPlayback: (episodeId: String, seriesId: String, seasonNumber: Int?)?
     /// `SeriesPlaybackReturnInbox` generation when this player was created.
     private let seriesReturnGeneration: Int
     #if os(iOS) || os(macOS)
@@ -1746,6 +1751,7 @@ class PlayerViewModel {
         guard startedAetherLoadEpoch != epoch else { return }
         startedAetherLoadEpoch = epoch
         viewingHasPlayed = true
+        pendingResumeAfterEndPosition = nil
         handleFileLoaded()
         if let playing = lastLoadRequest?.contentId, shuffleState != nil {
             shuffleState?.markPlayed(playing)
@@ -3132,8 +3138,9 @@ class PlayerViewModel {
 
         let shouldResumeAfterEnd = nextUpScreenVideoEnded || hasReachedEndOfFile
         // Leaving the end takes a fresh load, which must not bring back a
-        // session an administrator ended.
-        if shouldResumeAfterEnd, serverEndedSessionHandled || lastLoadRequest == nil {
+        // session an administrator ended or a stop is closing. The load would
+        // also cancel that stop's pending dismiss.
+        if shouldResumeAfterEnd, serverEndedSessionHandled || isClosingForRemoteStop || lastLoadRequest == nil {
             return false
         }
         nextUpAutoplayCancelled = true
@@ -3150,6 +3157,21 @@ class PlayerViewModel {
             // short tail of a finished episode (resuming at exact EOF would
             // end again at once), or where a lost source stopped.
             let target = max(0, min(currentTime, duration - 10))
+            if endedPrematurely, !PlayerNextUpCompletionPolicy.isInPromptWindow(
+                currentTime: target,
+                duration: duration,
+                promptSeconds: settings.nextUpPromptSeconds
+            ) {
+                // The lost source cancelled autoplay, not the viewer. Resumed
+                // short of the prompt, the real end offers Next Up again, even
+                // with the prompt turned off.
+                nextUpAutoplayCancelled = false
+                nextUpPromptDismissed = false
+            }
+            // Resolve the credits latch against the position now, as teardown
+            // does: the remount has no credits marker until it loads, and a
+            // skip the playhead has since left must not finish the item.
+            didSkipCreditsToEnd = skippedCreditsToEnd
             remountCurrentPlayback(at: target, origin: .resumeAfterEnd)
         } else if !isPlaying {
             aetherPlaybackController.play()
@@ -3477,7 +3499,7 @@ class PlayerViewModel {
               let rawSeriesId = detail.seriesId else { return }
         let seriesId = rawSeriesId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !seriesId.isEmpty else { return }
-        lastSeriesPlayback = (seriesId, detail.seasonNumber)
+        lastSeriesPlayback = (detail.contentId, seriesId, detail.seasonNumber)
         contentIdsNeedingDetailRefresh.insert(seriesId)
         if let seasonNumber = detail.seasonNumber {
             contentIdsNeedingDetailRefresh.insert("\(seriesId)-S\(seasonNumber)")
@@ -3502,14 +3524,15 @@ class PlayerViewModel {
         }
         // The player closed while the next episode was still loading. Autoplay
         // keeps that episode's season in `nextUpEpisode`; otherwise assume the
-        // previous episode's season.
+        // previous episode's season. A remount of the same episode, such as
+        // Keep Watching after the end, still knows whether it was finished.
         guard let loadingId = lastLoadRequest?.contentId, let lastSeriesPlayback else { return nil }
         let queued = nextUpEpisode?.contentId == loadingId ? nextUpEpisode : nil
         return SeriesPlaybackReturn(
             episodeContentId: loadingId,
             seriesContentId: lastSeriesPlayback.seriesId,
             seasonNumber: queued?.seasonNumber ?? lastSeriesPlayback.seasonNumber,
-            completed: false
+            completed: loadingId == lastSeriesPlayback.episodeId && completed
         )
     }
 
@@ -4931,7 +4954,7 @@ class PlayerViewModel {
             cancelReconnect()
         }
         lastLoadRequest = request
-        failedResumeAfterEndPosition = nil
+        pendingResumeAfterEndPosition = origin == .resumeAfterEnd ? resumePositionOverride : nil
         offlinePlaybackContext = nil
         contentIdsNeedingDetailRefresh.insert(request.contentId)
         hasReachedEndOfFile = false
@@ -5248,9 +5271,6 @@ class PlayerViewModel {
                 Self.logger.error(
                     "Load failed: \(MediaLogRedactor.sanitize(error), privacy: .public)"
                 )
-                if origin == .resumeAfterEnd {
-                    self.failedResumeAfterEndPosition = resumePositionOverride
-                }
                 self.handleBeginFreshLoadFailure(error: error, origin: origin)
             }
         }
@@ -5844,7 +5864,7 @@ class PlayerViewModel {
         }
         guard let last = lastLoadRequest else { return }
         Self.logger.info("Retrying playback for contentId=\(last.contentId, privacy: .public)")
-        if let position = failedResumeAfterEndPosition {
+        if let position = pendingResumeAfterEndPosition {
             beginFreshLoad(
                 request: last,
                 progressPosition: nil,
