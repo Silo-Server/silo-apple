@@ -87,6 +87,31 @@ final class PlaybackSessionSummaryRecorderTests: XCTestCase {
         XCTAssertEqual(summary.playMethod, "transcode_hls")
     }
 
+    /// A reload in the same session (quality or route change) while playback
+    /// waits for data ends that wait there; it still counts as a stall.
+    func testReloadDuringAWaitCountsTheWait() throws {
+        let recorder = makeRecorder()
+        recorder.loadBegan(sessionID: "s1", planID: "p1", playMethod: "original_http")
+        recorder.firstFrame(bitrateBps: 0)
+        time += 30
+        recorder.bufferingChanged(true)
+        time += 5
+        recorder.loadBegan(sessionID: "s1", planID: "p2", playMethod: "transcode_hls")
+        // The engine clears buffering as the replacement loads.
+        recorder.bufferingChanged(false)
+        time += 1
+        recorder.firstFrame(bitrateBps: 0)
+        time += 10
+        recorder.stopped()
+
+        let summary = try XCTUnwrap(emitted.last)
+        XCTAssertEqual(summary.planChangeCount, 1)
+        XCTAssertEqual(summary.stallCount, 1)
+        XCTAssertEqual(summary.stallTotalMs, 5000)
+        XCTAssertEqual(summary.rebufferCount, 1)
+        XCTAssertEqual(summary.rebufferTotalMs, 5000)
+    }
+
     func testNewServerSessionFinishesThePreviousSummary() {
         let recorder = makeRecorder()
         recorder.loadBegan(sessionID: "s1", planID: "p1", playMethod: "original_http")
@@ -268,6 +293,52 @@ final class PlaybackSessionSummaryRecorderTests: XCTestCase {
         epoch = DiagnosticsEvidenceEpoch(owner: other, erasureGeneration: 8)
         beforeSwitch()
         XCTAssertEqual(writes, 1, "another profile became active before the queued write")
+    }
+
+    /// Turn Off and Delete (or any other erasure of captured evidence) also
+    /// erases the summaries: a report made afterwards attaches neither a
+    /// finished session's counts nor an active one's earlier counts.
+    func testErasureDropsFinishedAndActiveSummaries() throws {
+        let logs = PendingReportArtifact(relativePath: "logs.jsonl", data: Data())
+        let finished = makeRecorder()
+        finished.loadBegan(sessionID: "s1", planID: "p1", playMethod: "original_http")
+        finished.firstFrame(bitrateBps: 0)
+        finished.failed(code: "network_timeout")
+        finished.stopped()
+        XCTAssertNotNil(PlaybackSessionSummaryRecorder.latestSummary(owner: Self.owner))
+
+        DiagnosticsCoordinator.purgeBreadcrumbJournal()
+
+        XCTAssertNil(PlaybackSessionSummaryRecorder.latestSummary(owner: Self.owner))
+        XCTAssertEqual(
+            DiagnosticsCoordinator.appendingLatestPlaybackSummary(to: logs, binding: Self.binding, profileID: "profile-a"),
+            logs
+        )
+
+        let active = makeRecorder()
+        active.loadBegan(sessionID: "s2", planID: "p1", playMethod: "original_http")
+        active.firstFrame(bitrateBps: 0)
+        active.failed(code: "network_timeout")
+        emitted = []
+
+        DiagnosticsCoordinator.purgeBreadcrumbJournal()
+
+        // The session's events up to its next load neither emit nor publish
+        // what was counted before the erasure.
+        time += 120
+        active.bufferingChanged(true)
+        time += 2
+        active.bufferingChanged(false)
+        active.failed(code: "decode")
+        active.stopped()
+        XCTAssertTrue(emitted.isEmpty)
+        XCTAssertNil(PlaybackSessionSummaryRecorder.latestSummary(owner: Self.owner))
+
+        // The next load starts a fresh summary.
+        active.loadBegan(sessionID: "s2", planID: "p1", playMethod: "original_http")
+        let fresh = try XCTUnwrap(PlaybackSessionSummaryRecorder.latestSummary(owner: Self.owner, now: time)).summary
+        XCTAssertEqual(fresh.errorCount, 0)
+        XCTAssertNil(fresh.failureCode)
     }
 
     func testPurgingTheJournalMovesTheEvidenceEpoch() {

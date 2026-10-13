@@ -2349,8 +2349,12 @@ actor DiagnosticsCoordinator {
     nonisolated static func currentEvidenceEpoch() -> DiagnosticsEvidenceEpoch {
         DiagnosticsEvidenceEpoch(
             owner: PlaybackSessionSummaryRecorder.currentDiagnosticsOwner(),
-            erasureGeneration: evidenceErasureLock.withLock { evidenceErasureGeneration }
+            erasureGeneration: currentEvidenceErasureGeneration()
         )
+    }
+
+    nonisolated static func currentEvidenceErasureGeneration() -> UInt64 {
+        evidenceErasureLock.withLock { evidenceErasureGeneration }
     }
 
     /// Add this process's latest playback session summary to a report's

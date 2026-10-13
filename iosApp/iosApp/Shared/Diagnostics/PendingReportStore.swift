@@ -139,12 +139,12 @@ struct PendingReportState: Codable, Equatable {
     /// Delivery has not started, so the manifest can still count a repeat. An
     /// upload that began building, a built hosted envelope, a collector ID, or
     /// a self-hosted upload that may have been sent has frozen what the
-    /// destination receives. A report that can never be delivered (too large,
-    /// or refused by the collector) would only hide the repeat, so the repeat
+    /// destination receives. A report that is never sent automatically (a
+    /// permanent failure: too large, refused by the server or collector, or
+    /// waiting for a server update) would only hide the repeat, so the repeat
     /// starts a new report instead.
     var acceptsRepeats: Bool {
-        !repeatsFrozen && hostedEnvelopeGeneration == nil && hostedRemoteShortID == nil && !deliveryUncertain
-            && !tooLarge && hostedRejectionCode == nil
+        !repeatsFrozen && hostedEnvelopeGeneration == nil && hostedRemoteShortID == nil && !isPermanentFailure
     }
 
     enum CodingKeys: String, CodingKey {
