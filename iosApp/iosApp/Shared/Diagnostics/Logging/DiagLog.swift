@@ -379,12 +379,16 @@ private enum DiagnosticsRedactor {
         trim(redactFilesystemAndMedia(in: redactNetworkAndCredentials(in: value)), maxLength: maxLength)
     }
 
-    /// `sanitize` without a length cut. Returns nil when the text, once its
-    /// URLs and credentials are redacted, is longer than the filesystem and
-    /// media rules read, because they would drop the rest mid-word.
+    /// `sanitize` without a length cut. Returns nil when the text, before or
+    /// after its URLs and credentials are redacted, is longer than the
+    /// filesystem and media rules read, because they would drop the rest
+    /// mid-word. Checking first also bounds the URL pass, which copies the
+    /// whole string for each URL it rewrites.
     static func sanitizeWhole(_ value: String) -> String? {
+        let limit = MediaLogRedactor.workingInputLimit
+        guard value.count <= limit else { return nil }
         let redacted = redactNetworkAndCredentials(in: value)
-        guard redacted.count <= MediaLogRedactor.workingInputLimit else { return nil }
+        guard redacted.count <= limit else { return nil }
         return redactFilesystemAndMedia(in: redacted)
     }
 
