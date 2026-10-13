@@ -59,10 +59,10 @@ struct AsyncImageView: View {
         // them, and the old URL's backoff and pending retry must not carry
         // over to the new one.
         loadedArtwork(drawnAt: pointSize, frame: frame)
-            .onChange(of: url) {
-                cancelPendingRetry()
-                backoff.reset()
-            }
+            .onChange(of: url) { resetRetry() }
+            // A tvOS row that leaves the viewport stays mounted with loading
+            // off rather than disappearing, so treat that as leaving the screen.
+            .onChange(of: artworkLoadingEnabled) { resetRetry() }
     }
 
     @ViewBuilder
@@ -102,11 +102,8 @@ struct AsyncImageView: View {
             .onDisappear(.cancel)
             .onCompletion { handleCompletion($0) }
             .id(LoadIdentity(url: url, attempt: loadAttempt))
-            .onDisappear {
-                // The next appearance gets the full retry schedule again.
-                cancelPendingRetry()
-                backoff.reset()
-            }
+            // The next appearance gets the full retry schedule again.
+            .onDisappear(perform: resetRetry)
         }
     }
 
@@ -173,6 +170,12 @@ struct AsyncImageView: View {
     private func cancelPendingRetry() {
         pendingRetry?.cancel()
         pendingRetry = nil
+    }
+
+    /// Ends this load's retry schedule, so the next failure starts it over.
+    private func resetRetry() {
+        cancelPendingRetry()
+        backoff.reset()
     }
 
     /// No request was made: a tvOS row loading offscreen, or no size yet. The
