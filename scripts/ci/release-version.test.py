@@ -19,7 +19,7 @@ class NextReleaseTest(unittest.TestCase):
     def test_first_release_needs_an_explicit_version(self):
         with self.assertRaisesRegex(release.ReleaseError, "explicit version"):
             release.next_release(LEGACY_TAGS, "minor", min_build=66)
-        with self.assertRaisesRegex(release.ReleaseError, "for example 1.0.0"):
+        with self.assertRaisesRegex(release.ReleaseError, "Pass the version"):
             release.next_release(LEGACY_TAGS, "build", min_build=66)
         result = release.next_release(LEGACY_TAGS, "build", "1.0.0", min_build=66)
         self.assertEqual(
