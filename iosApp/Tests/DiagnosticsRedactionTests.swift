@@ -229,6 +229,56 @@ final class DiagnosticsRedactionTests: XCTestCase {
         XCTAssertTrue(line.contains("127.0.0.1:5000"))
     }
 
+    func testHostAndPortBeforePunctuationIsHashed() throws {
+        let clause = try rendered("connect to nas.local:8096: refused")
+        XCTAssertFalse(clause.contains("nas.local"))
+        XCTAssertFalse(clause.contains("8096"))
+        XCTAssertTrue(clause.contains("]: refused"))
+
+        let sentence = try rendered("socket nas.local:8096.")
+        XCTAssertFalse(sentence.contains("nas.local"))
+        XCTAssertFalse(sentence.contains("8096"))
+        XCTAssertTrue(sentence.contains("socket [host:"))
+        XCTAssertTrue(sentence.contains("]."))
+    }
+
+    func testAddressAfterAColonIsHashed() throws {
+        let ipv4 = try rendered("peer:10.0.0.5 reset")
+        XCTAssertFalse(ipv4.contains("10.0.0.5"))
+        XCTAssertTrue(ipv4.contains("peer:[host:"))
+
+        let ipv6 = try rendered("addr:fd00::5 down")
+        XCTAssertFalse(ipv6.contains("fd00::5"))
+        XCTAssertTrue(ipv6.contains("addr:[host:"))
+    }
+
+    /// Apple's Network framework prints an endpoint as `address.port`.
+    func testNetworkFrameworkIPv6EndpointIsHashed() throws {
+        let line = try rendered("connected to 2001:db8::1.443")
+        XCTAssertFalse(line.contains("2001:db8"))
+        XCTAssertFalse(line.contains("443"))
+        XCTAssertTrue(line.contains("connected to [host:"))
+
+        let sentence = try rendered("connected to 2001:db8::1.443.")
+        XCTAssertFalse(sentence.contains("2001:db8"))
+        XCTAssertTrue(sentence.contains("]."))
+    }
+
+    /// Colon-separated text that is not an address stays readable now that
+    /// an address may follow a colon or end in punctuation.
+    func testColonSeparatedLookalikesStayLiteral() throws {
+        let samples = [
+            "elapsed 12:34:56 and 12:34:56.789",
+            "mac aa:bb:cc:dd:ee:ff",
+            "ns::abc::def and std::cerr",
+            "warning at file.swift:812:4",
+            "crash in PlayerViewModel.swift:812: index out of range",
+        ]
+        for sample in samples {
+            XCTAssertTrue(try rendered(sample).contains(sample), sample)
+        }
+    }
+
     func testQuotedAndEscapedJSONSecretsAreRedacted() throws {
         let accessKey = ["access", "token"].joined(separator: "_")
         let apiKey = ["api", "key"].joined(separator: "_")

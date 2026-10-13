@@ -260,8 +260,12 @@ private enum DiagnosticsRedactor {
     // and resolver errors print them: bare IPv4 and IPv6 literals and
     // `host:port` endpoints. Each candidate is validated before it is hashed
     // so timestamps, `file.swift:line` locations, and C++ scopes stay literal.
+    // A colon may come right before an address (`peer:10.0.0.5`,
+    // `addr:fd00::5`); a word character may not, so matching never starts
+    // in the middle of a token. An IPv6 candidate never starts right after
+    // `::`, which keeps `ns::abc::def` scopes literal.
     private static let bareIPv4Regex = try! NSRegularExpression(
-        pattern: #"(?<![\w.:])((?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3})(?::\d{1,5})?(?!\.?\w)"#,
+        pattern: #"(?<![\w.])((?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3})(?::\d{1,5})?(?!\.?\w)"#,
         options: []
     )
     private static let bracketedIPv6Regex = try! NSRegularExpression(
@@ -269,11 +273,11 @@ private enum DiagnosticsRedactor {
         options: []
     )
     private static let bareIPv6Regex = try! NSRegularExpression(
-        pattern: #"(?<![\w:.%])([0-9A-Fa-f.]*:[0-9A-Fa-f.:]*:[0-9A-Fa-f.:]*)(?:%[A-Za-z0-9.-]+)?(?![\w:])"#,
+        pattern: #"(?<![\w.%])(?<!::)([0-9A-Fa-f.]*:[0-9A-Fa-f.:]*:[0-9A-Fa-f.:]*)(?:%[A-Za-z0-9.-]+)?(?![\w:])"#,
         options: []
     )
     private static let hostPortRegex = try! NSRegularExpression(
-        pattern: #"(?<![\w.@-])((?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}):\d{1,5}(?![\w.:])"#,
+        pattern: #"(?<![\w.@-])((?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}):\d{1,5}(?!\w|[.:]\w)"#,
         options: []
     )
     // `name.ext:line` source and file locations that `hostPortRegex` would
@@ -505,8 +509,11 @@ private enum DiagnosticsRedactor {
     /// The bare-IPv6 pattern also takes in the punctuation that ends a
     /// sentence or a `host: reason` clause ("2001:db8::1234." or "fd00::5:"),
     /// which no address parser accepts. Give back trailing dots and colons
-    /// until the candidate parses, then keep them after the token. A lone
-    /// `::` is a C++ scope or a separator far more often than an address.
+    /// until the candidate parses, then keep them after the token. Apple's
+    /// Network framework writes an endpoint as `address.port`
+    /// (`2001:db8::1.443`), so a candidate that still fails is retried
+    /// without a trailing `.port`, and the port is dropped. A lone `::` is a
+    /// C++ scope or a separator far more often than an address.
     private static func replaceBareIPv6(in value: String) -> String {
         let source = value as NSString
         let matches = bareIPv6Regex.matches(in: value, range: NSRange(location: 0, length: source.length))
@@ -522,6 +529,11 @@ private enum DiagnosticsRedactor {
             } else {
                 while !isIPv6Literal(host), let last = host.last, last == "." || last == ":" {
                     suffix.insert(host.removeLast(), at: suffix.startIndex)
+                }
+                if !isIPv6Literal(host),
+                   let port = host.range(of: #"\.\d{1,5}$"#, options: .regularExpression),
+                   isIPv6Literal(String(host[..<port.lowerBound])) {
+                    host.removeSubrange(port)
                 }
             }
             guard host != "::", isIPv6Literal(host), !isLoopbackHost(host.lowercased()) else { continue }
