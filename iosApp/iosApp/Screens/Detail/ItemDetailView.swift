@@ -418,22 +418,29 @@ private struct ItemDetailPhoneContent: View {
                 if let playback = takePlaybackReturn() {
                     await applySeriesPlaybackReturn(playback)
                 }
-                viewModel.initialResumeSeasonNumber = viewModel.selectedSeason?.seasonNumber
-                    ?? viewModel.initialResumeSeasonNumber
             } else {
                 selectedSeriesEpisodeId = resumeContext?.episodeContentId
                 viewModel.initialResumeSeasonNumber = resumeContext?.seasonNumber
             }
-            let cleanupGeneration = playerCleanupGeneration
-            playerCleanupGeneration = nil
             detailScrollState.reset()
             // Seed from the painted detail so the selector doesn't show
             // "Auto" while the page reloads, then again from the fresh one.
             seedSubtitleOverrideIfNeeded()
-            if let cleanupGeneration {
+            if let cleanupGeneration = playerCleanupGeneration {
                 // Reloading before the closed player's last progress write
                 // lands would show the progress and watched state from before it.
                 await PlayerCleanupBarrier.waitForCleanup(of: cleanupGeneration)
+                // Hidden again before the write landed; the next return waits.
+                guard !Task.isCancelled else { return }
+                if playerCleanupGeneration == cleanupGeneration {
+                    playerCleanupGeneration = nil
+                }
+            }
+            if isReturning {
+                // Read after the wait, so a Series return that arrived during
+                // it keeps the season it chose.
+                viewModel.initialResumeSeasonNumber = viewModel.selectedSeason?.seasonNumber
+                    ?? viewModel.initialResumeSeasonNumber
             }
             await viewModel.loadDetail(contentId: contentId)
             reseedSubtitleOverride()
@@ -466,9 +473,9 @@ private struct ItemDetailPhoneContent: View {
                   isPageVisible else { return }
             playerCleanupGeneration = nil
             Task {
+                await PlayerCleanupBarrier.waitForCleanup(of: cleanupGeneration)
                 viewModel.initialResumeSeasonNumber = viewModel.selectedSeason?.seasonNumber
                     ?? viewModel.initialResumeSeasonNumber
-                await PlayerCleanupBarrier.waitForCleanup(of: cleanupGeneration)
                 await viewModel.loadDetail(contentId: contentId)
                 // A track picked inside the player persisted server-side;
                 // drop the pre-play selector state so the reloaded pref

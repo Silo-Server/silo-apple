@@ -14,10 +14,10 @@ enum PlayerCleanupBarrier {
     private static let retainedCleanups = 8
     /// Bumped each time a page starts playback.
     private(set) static var generation = 0
-    /// The newest generation a player was created in. A page whose playback
-    /// went to a TV instead never gets a local player, so it has nothing to
-    /// wait for.
-    private static var newestPlayerGeneration = 0
+    /// Recent generations a player was created in. A page whose playback went
+    /// to a TV instead never gets a local player, so it has nothing to wait
+    /// for, even after another page's player is created.
+    private static var playerGenerations: Set<Int> = []
 
     /// Starts a new generation for the player a page is about to present and
     /// returns it for `waitForCleanup(of:)`.
@@ -28,7 +28,8 @@ enum PlayerCleanupBarrier {
 
     /// Called as a player is created; returns the generation it belongs to.
     static func playerCreated() -> Int {
-        newestPlayerGeneration = generation
+        playerGenerations.insert(generation)
+        playerGenerations = playerGenerations.filter { generation - $0 < retainedCleanups }
         return generation
     }
 
@@ -46,14 +47,16 @@ enum PlayerCleanupBarrier {
     /// reappear before its player's teardown starts, so this waits up to
     /// `grace` for a cleanup from `generation` itself. A player that stays
     /// alive past the grace, such as one in Picture in Picture, does not hold
-    /// the page, and a playback that created no player returns at once.
+    /// the page, and a playback that created no player returns at once. A
+    /// caller cancelled before the teardowns are awaited returns without them.
     static func waitForCleanup(of generation: Int, grace: Duration = .seconds(1)) async {
-        guard newestPlayerGeneration >= generation else { return }
+        guard playerGenerations.contains(generation) else { return }
         let deadline = ContinuousClock.now + grace
         while !cleanups.contains(where: { $0.generation == generation }),
               ContinuousClock.now < deadline, !Task.isCancelled {
             try? await Task.sleep(for: .milliseconds(10))
         }
+        guard !Task.isCancelled else { return }
         for entry in cleanups where entry.generation >= generation {
             await entry.cleanup.value
         }

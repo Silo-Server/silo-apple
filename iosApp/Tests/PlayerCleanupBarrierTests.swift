@@ -86,4 +86,34 @@ final class PlayerCleanupBarrierTests: XCTestCase {
 
         XCTAssertLessThan(ContinuousClock.now - start, .milliseconds(500))
     }
+
+    func testAPlaybackThatCreatedNoPlayerIgnoresALaterPagesPlayer() async {
+        // Play went to an engaged TV; another page then played here.
+        let generation = PlayerCleanupBarrier.beginPlayback()
+        _ = PlayerCleanupBarrier.beginPlayback()
+        _ = PlayerCleanupBarrier.playerCreated()
+
+        let start = ContinuousClock.now
+        await PlayerCleanupBarrier.waitForCleanup(of: generation)
+
+        XCTAssertLessThan(ContinuousClock.now - start, .milliseconds(500))
+    }
+
+    func testACancelledWaitReturnsBeforeTheTeardownFinishes() async {
+        let generation = PlayerCleanupBarrier.beginPlayback()
+        _ = PlayerCleanupBarrier.playerCreated()
+        let teardown = Task { @MainActor in _ = try? await Task.sleep(for: .seconds(10)) }
+        defer { teardown.cancel() }
+        PlayerCleanupBarrier.record(teardown, generation: generation)
+        // The page is hidden again while it waits.
+        let waiter = Task { @MainActor in
+            await PlayerCleanupBarrier.waitForCleanup(of: generation)
+        }
+        waiter.cancel()
+
+        let start = ContinuousClock.now
+        await waiter.value
+
+        XCTAssertLessThan(ContinuousClock.now - start, .seconds(5))
+    }
 }
