@@ -124,6 +124,8 @@ jobs:
   # Runs first, so a bad bump fails before the regression suite.
   prepare:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # list draft releases, which read-only tokens can't see
     outputs:
       version: ${{ steps.version.outputs.version }}
       build: ${{ steps.version.outputs.build }}
@@ -159,13 +161,32 @@ jobs:
         run: |
           set -euo pipefail
           min_build="$(sed -n 's/^next_build=//p' "$RUNNER_TEMP/testflight.env")"
+          if [ -z "$min_build" ]; then
+            echo "::error::Could not read the latest TestFlight build number."
+            exit 1
+          fi
+          draft_tags="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName,isDraft \
+            --jq '.[] | select(.isDraft) | .tagName')"
           drafts=()
-          while read -r draft; do
+          for draft in $draft_tags; do
             drafts+=(--draft "$draft")
-          done < <(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName,isDraft \
-            --jq '.[] | select(.isDraft) | .tagName')
+          done
           python3 scripts/ci/release-version.py next --bump "$BUMP" --version "$VERSION" \
             --min-build "$min_build" "${drafts[@]}" | tee -a "$GITHUB_OUTPUT"
+      # A prerelease without the distribution note comes from a run that failed
+      # before testers got the build. Starting this build's notes there would
+      # leave out changes no tester got.
+      - name: Require the previous build to have reached testers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIOUS_TAG: ${{ steps.version.outputs.previous_tag }}
+        run: |
+          set -euo pipefail
+          if [ -n "$PREVIOUS_TAG" ] && ! gh release view "$PREVIOUS_TAG" --repo "$GITHUB_REPOSITORY" \
+              --json body --jq .body | grep -q '^TestFlight: distributed '; then
+            echo "::error::$PREVIOUS_TAG never reached TestFlight testers. Re-run that run's failed jobs, or delete its GitHub release and tag, then run Release again."
+            exit 1
+          fi
 
   # Publish the prerelease once the regression gate passes, before any binary:
   # the app links its source archive, which must be public first.
@@ -476,3 +497,37 @@ jobs:
           APP_STORE_CONNECT_API_KEY_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY_KEY }}
           TESTFLIGHT_EXTERNAL_GROUPS: ${{ secrets.TESTFLIGHT_EXTERNAL_GROUPS }}
           SILO_RELEASE_SOURCE_URL: ${{ needs.source.outputs.source_url }}
+
+  # Note on the prerelease which platforms reached testers. Promotion and the
+  # next run's notes rely on it.
+  record:
+    needs: [prepare, ios-distribution, tvos-distribution]
+    if: ${{ !cancelled() && (needs.ios-distribution.result == 'success' || needs.tvos-distribution.result == 'success') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Note the distribution on the prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          BUILD: ${{ needs.prepare.outputs.build }}
+          IOS: ${{ needs.ios-distribution.result }}
+          TVOS: ${{ needs.tvos-distribution.result }}
+        run: |
+          set -euo pipefail
+          if [ "$IOS" = success ] && [ "$TVOS" = success ]; then
+            platforms="iOS and tvOS"
+          elif [ "$IOS" = success ]; then
+            platforms="iOS"
+          else
+            platforms="tvOS"
+          fi
+          gh release view "$TAG" --json body --jq .body > body.md
+          {
+            grep -v '^TestFlight: distributed ' body.md || true
+            echo "TestFlight: distributed $VERSION ($BUILD) to external testers on $platforms."
+          } > notes.md
+          gh release edit "$TAG" --notes-file notes.md

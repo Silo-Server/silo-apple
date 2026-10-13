@@ -36,11 +36,6 @@ class NextReleaseTest(unittest.TestCase):
         self.assertEqual("v1.0.0-beta.67", result["tag"])
         self.assertEqual("v1.0.0-beta.66", result["previous_tag"])
 
-    def test_refuses_to_skip_a_tagged_build_testflight_never_got(self):
-        tags = LEGACY_TAGS + ["v1.0.0-beta.66"]
-        with self.assertRaisesRegex(release.ReleaseError, "never reached TestFlight"):
-            release.next_release(tags, "build", min_build=66)
-
     def test_build_continues_the_newest_unreleased_version(self):
         tags = LEGACY_TAGS + ["v1.0.0-beta.66", "v1.0.0", "v1.0.1-beta.67", "v1.1.0-beta.68"]
         self.assertEqual("v1.1.0-beta.69", release.next_release(tags, "build", min_build=69)["tag"])
@@ -67,6 +62,20 @@ class NextReleaseTest(unittest.TestCase):
             release.next_release(tags, "build", "1.0.0", min_build=67)
         with self.assertRaisesRegex(release.ReleaseError, "look like"):
             release.next_release(tags, "build", "1.1", min_build=67)
+
+
+class PreviousReleaseTest(unittest.TestCase):
+    def test_newest_older_store_release(self):
+        tags = LEGACY_TAGS + ["v1.0.0-beta.66", "v1.0.0", "v1.1.0-beta.70", "v1.1.0", "v1.2.0-beta.75"]
+        self.assertEqual({"previous_release": "v1.1.0"}, release.previous_release(tags, "v1.2.0"))
+        self.assertEqual({"previous_release": "v1.0.0"}, release.previous_release(tags, "v1.1.0"))
+
+    def test_first_store_release_has_none(self):
+        self.assertEqual({"previous_release": ""}, release.previous_release(LEGACY_TAGS, "v1.0.0"))
+
+    def test_needs_a_store_release_tag(self):
+        with self.assertRaises(release.ReleaseError):
+            release.previous_release(LEGACY_TAGS, "v1.0.0-beta.66")
 
 
 class BetaReleaseTest(unittest.TestCase):

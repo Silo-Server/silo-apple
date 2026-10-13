@@ -30,6 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0 # all tags
           persist-credentials: false
 
       - name: Draft the GitHub release
@@ -39,8 +40,9 @@ jobs:
           version="$(sed -n 's/^version=//p' build.txt)"
           build="$(sed -n 's/^build=//p' build.txt)"
           release_tag="$(sed -n 's/^release_tag=//p' build.txt)"
-          if [[ "$(gh release view "$BETA_TAG" --json isPrerelease --jq .isPrerelease 2>/dev/null)" != "true" ]]; then
-            echo "::error::$BETA_TAG has no published TestFlight build on GitHub."
+          if [[ "$(gh release view "$BETA_TAG" --json isPrerelease --jq .isPrerelease 2>/dev/null)" != "true" ]] ||
+             ! gh release view "$BETA_TAG" --json body --jq .body | grep -q '^TestFlight: distributed '; then
+            echo "::error::$BETA_TAG never reached TestFlight testers, so it can't be promoted."
             exit 1
           fi
           if gh release view "$release_tag" >/dev/null 2>&1; then
@@ -48,11 +50,10 @@ jobs:
             exit 1
           fi
           commit="$(gh api "repos/$GH_REPO/commits/$BETA_TAG" --jq .sha)"
-          # Notes cover everything since the last App Store release (the Latest
-          # GitHub release). The first App Store release has none to start from,
-          # so its notes are written by hand.
-          previous="$(gh release list --exclude-pre-releases --exclude-drafts --json tagName,isLatest \
-            --jq '.[] | select(.isLatest and (.tagName | test("^v[0-9]+[.][0-9]+[.][0-9]+$"))) | .tagName')"
+          # Notes cover everything since the previous App Store release. The
+          # first App Store release has none to start from, so its notes are
+          # written by hand.
+          previous="$(python3 scripts/ci/release-version.py previous-release "$release_tag" | sed -n 's/^previous_release=//p')"
           {
             echo "Silo $version, build $build: the TestFlight build $BETA_TAG."
             echo

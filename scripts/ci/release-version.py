@@ -18,6 +18,7 @@ Commands print key=value lines for $GITHUB_OUTPUT:
 
     release-version.py next --bump build|minor|patch [--version X.Y.Z] [--draft vX.Y.Z ...] [--min-build N]
     release-version.py beta vX.Y.Z-beta.B
+    release-version.py previous-release vX.Y.Z
     release-version.py store-notes LIMIT < generated-notes.md
 """
 
@@ -96,14 +97,6 @@ def next_release(tags, bump, version=None, min_build=None, drafts=()):
             "App Store Connect closes a version to new builds once it is approved."
         )
 
-    # A tagged build that TestFlight never received came from a run that failed
-    # after publishing its prerelease. Starting the next build's notes there
-    # would leave out changes no tester got.
-    if min_build is not None and previous_build >= min_build:
-        raise ReleaseError(
-            f"{previous_tag} never reached TestFlight. Re-run that run's failed jobs, "
-            "or delete its GitHub release and tag, then run Release again."
-        )
     build = max(previous_build + 1, min_build or 1)
     return {
         "version": version_text(target),
@@ -111,6 +104,16 @@ def next_release(tags, bump, version=None, min_build=None, drafts=()):
         "tag": f"v{version_text(target)}-beta.{build}",
         "previous_tag": previous_tag or "",
     }
+
+
+def previous_release(tags, name):
+    """The newest App Store release (an exact vX.Y.Z tag) older than name."""
+    target = parse_tag(name)
+    if not target or target[1] is not None or "+" in name:
+        raise ReleaseError(f"{name!r} is not a store release tag like v1.2.0.")
+    older = [tag[0] for tag_name, tag in ((n, parse_tag(n)) for n in tags)
+             if tag and tag[1] is None and "+" not in tag_name and tag[0] < target[0]]
+    return {"previous_release": f"v{version_text(max(older))}" if older else ""}
 
 
 def beta_release(name):
@@ -185,6 +188,8 @@ def main(argv):
     next_parser.add_argument("--min-build", type=int)
     beta_parser = commands.add_parser("beta")
     beta_parser.add_argument("tag")
+    previous_parser = commands.add_parser("previous-release")
+    previous_parser.add_argument("tag")
     notes_parser = commands.add_parser("store-notes")
     notes_parser.add_argument("limit", type=int)
     args = parser.parse_args(argv)
@@ -195,6 +200,8 @@ def main(argv):
             return 0
         if args.command == "next":
             result = next_release(git_tags(), args.bump, args.version, args.min_build, args.draft)
+        elif args.command == "previous-release":
+            result = previous_release(git_tags(), args.tag)
         else:
             result = beta_release(args.tag)
     except ReleaseError as error:

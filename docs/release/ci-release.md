@@ -23,10 +23,12 @@ The prerelease and its source archive are published before any binary, because
 the app links that archive (see `THIRD_PARTY_NOTICES.md`). Never delete a
 prerelease whose build shipped.
 
-If a run fails after publishing its prerelease, use **Re-run failed jobs**: it
-keeps the same build number. To abandon the build instead, delete its GitHub
-release and tag; the next run refuses to start while a tagged build never
-reached TestFlight, so its notes don't skip changes no tester got.
+When distribution succeeds, the run adds a "TestFlight: distributed …" line to
+the prerelease. If a run fails before that, use **Re-run failed jobs**: it keeps
+the same build number. To abandon the build instead, delete its GitHub release
+and tag. The next run refuses to start while the newest prerelease lacks that
+line, so its notes don't skip changes no tester got, and Promote only accepts a
+build that has it.
 
 ## Store release
 
