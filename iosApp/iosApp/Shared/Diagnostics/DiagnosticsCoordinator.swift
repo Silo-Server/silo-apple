@@ -1096,6 +1096,15 @@ actor DiagnosticsCoordinator {
         guard Self.canBeginUpload(status: context.availabilityStatus) else {
             return .keptRetryable
         }
+        // A report captured while the server accepted its crash source (a
+        // watchdog hang) can outlive that support if the server is rolled
+        // back. Sending it would be refused as an invalid manifest and mark
+        // it server_rejected for good; keep it unmarked instead, so it sends
+        // once the server accepts the source again.
+        if destination == .selfHosted, let source = report.manifest.crash?.source,
+           !DiagnosticsStatusResponse.acceptsCrashSource(source, listed: context.acceptedCrashSources) {
+            return .keptNeedsServerUpdate
+        }
         // The server attributes an upload to the profile in the X-Profile-Id
         // header (HTTPClient sends the *currently active* profile) and rejects
         // it as profile_mismatch (HTTP 400) when that disagrees with the
