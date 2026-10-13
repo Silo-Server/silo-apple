@@ -76,12 +76,7 @@ enum AetherAuthenticationRecoveryPolicy {
     /// with video survives token rotation without a reload. Audio-only media
     /// keeps the headers it opened with and the reload-after-rotation path.
     static func resolvesRequestCredentials(delivery: String, hasVideo: Bool) -> Bool {
-        hasVideo && [
-            PlaybackProtocolV3.PlanDelivery.originalHTTP,
-            PlaybackProtocolV3.PlanDelivery.remuxProgressive,
-            PlaybackProtocolV3.PlanDelivery.remuxHLS,
-            PlaybackProtocolV3.PlanDelivery.transcodeHLS,
-        ].contains(delivery)
+        hasVideo && PlaybackProtocolV3.PlanDelivery.supported.contains(delivery)
     }
 
     static func shouldReloadAfterProgress(
