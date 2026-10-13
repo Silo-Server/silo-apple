@@ -4,11 +4,10 @@ import Foundation
 /// already seen paints its final layout on the first frame instead of
 /// building itself as reads land.
 ///
-/// It holds three things, keyed by media type + TMDB id:
+/// It holds two things, keyed by media type + TMDB id:
 /// - the title detail (`RequestMediaDetail`) from the last read or prefetch;
 /// - the signed-in user's own request records, from every `/requests/mine`
-///   read — the status is known before the page asks;
-/// - admin records from the approval queue.
+///   read — the status is known before the page asks.
 ///
 /// A tap seeds it too: a card carries enough of the title for a
 /// provisional page when no detail has been read yet. Every page still
@@ -31,10 +30,6 @@ final class RequestDetailCache {
     private var details: [Key: RequestMediaDetail] = [:]
     private var detailOrder: [Key] = []
     private var ownRecords: [Key: MediaRequest] = [:]
-    private var moderationRecords: [Key: MediaRequest] = [:]
-    /// The exact request an admin opened from the approval queue, which
-    /// wins over any other request for the same title.
-    private var pinnedModeration: [Key: MediaRequest] = [:]
     private var seeds: [Key: RequestMediaResult] = [:]
     /// Titles waiting to be warmed, shared by every list that asked.
     private var prefetchQueue: [(key: Key, api: SiloAPI)] = []
@@ -51,20 +46,13 @@ final class RequestDetailCache {
     // MARK: - Reads
 
     func ownRecord(_ key: Key) -> MediaRequest? { ownRecords[key] }
-    func moderationRecord(_ key: Key) -> MediaRequest? { moderationRecords[key] }
-    func pinnedModerationRecord(_ key: Key) -> MediaRequest? { pinnedModeration[key] }
-
-    /// Any other way into the title opens an ordinary page.
-    func unpinModeration(_ key: Key) {
-        pinnedModeration.removeValue(forKey: key)
-    }
 
     /// A page to show before the detail read answers: the cached detail, or
     /// one built from what a card or record already carried.
     func firstFrameDetail(_ key: Key) -> RequestMediaDetail? {
         if let detail = details[key] { return detail }
         if let seed = seeds[key] { return Self.provisionalDetail(from: seed) }
-        if let record = ownRecords[key] ?? moderationRecords[key] {
+        if let record = ownRecords[key] {
             return Self.provisionalDetail(from: record)
         }
         return nil
@@ -108,30 +96,12 @@ final class RequestDetailCache {
         }
     }
 
-    /// Records in priority order: the first per title wins, so a pending
-    /// request listed before a failed one is the one the page decides on,
-    /// as the detail read picks it.
-    func storeModerationRecords(_ records: [MediaRequest]) {
-        var next: [Key: MediaRequest] = [:]
-        for record in records {
-            let key = Key(mediaType: record.mediaType, tmdbId: record.tmdbId)
-            if next[key] == nil { next[key] = record }
-        }
-        moderationRecords = next
-        // A complete read no longer listing a pinned request means someone
-        // already decided on it; its pin must not bring the buttons back.
-        let queued = Set(records.map(\.id))
-        pinnedModeration = pinnedModeration.filter { queued.contains($0.value.id) }
-    }
-
-    func pinModeration(_ record: MediaRequest) {
-        pinnedModeration[Key(mediaType: record.mediaType, tmdbId: record.tmdbId)] = record
-    }
-
-    /// Drops the pin once the request has been decided on.
-    func unpinModeration(_ record: MediaRequest) {
-        let key = Key(mediaType: record.mediaType, tmdbId: record.tmdbId)
-        if pinnedModeration[key]?.id == record.id { pinnedModeration.removeValue(forKey: key) }
+    /// A follow toggle: the next first frame of the title, from the cached
+    /// detail or a card's seed, shows the new state.
+    func applyTitleState(_ update: RequestTitleStateUpdate) {
+        let key = Key(mediaType: update.mediaType, tmdbId: update.tmdbId)
+        details[key]?.request = update.request
+        seeds[key]?.request = update.request
     }
 
     func seed(_ result: RequestMediaResult) {
@@ -146,8 +116,6 @@ final class RequestDetailCache {
         details.removeAll()
         detailOrder.removeAll()
         ownRecords.removeAll()
-        moderationRecords.removeAll()
-        pinnedModeration.removeAll()
         seeds.removeAll()
     }
 

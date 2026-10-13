@@ -229,21 +229,11 @@ extension AppRouter {
     func openRequestResult(_ result: RequestMediaResult) {
         // The card already knows the title and its status: seed the page.
         RequestDetailCache.shared.seed(result)
-        RequestDetailCache.shared.unpinModeration(.init(mediaType: result.mediaType, tmdbId: result.tmdbId))
         navigate(to: .requestDestination(for: result))
-    }
-
-    /// Opens someone else's request from an approval queue: the detail page
-    /// decides on that exact request, not another one for the same title.
-    @MainActor
-    func openModerationRecord(_ record: MediaRequest) {
-        RequestDetailCache.shared.pinModeration(record)
-        navigate(to: .requestDestination(for: record))
     }
 
     @MainActor
     func openRequestRecord(_ record: MediaRequest) {
-        RequestDetailCache.shared.unpinModeration(.init(mediaType: record.mediaType, tmdbId: record.tmdbId))
         navigate(to: .requestDestination(for: record))
     }
 }

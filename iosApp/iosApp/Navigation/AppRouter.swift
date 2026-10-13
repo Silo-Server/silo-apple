@@ -1181,8 +1181,6 @@ private extension Route {
             return "requestDetail"
         case .myRequests:
             return "myRequests"
-        case .requestApprovals:
-            return "requestApprovals"
         case .offlinePlayer:
             return "offlinePlayer"
         case .offlineSeriesBrowse:

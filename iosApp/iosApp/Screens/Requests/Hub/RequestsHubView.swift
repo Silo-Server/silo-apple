@@ -54,12 +54,10 @@ private struct PhoneRequestsHubView: View {
                 viewModel.applyRequestUpdate(update)
             }
         }
-        .onChange(of: RequestsEventBus.shared.lastModeration) { _, _ in
-            viewModel.applyModeration()
-        }
-        .onChange(of: RequestsFeatureStore.shared.canModerate) { _, _ in
-            // Moderation can be confirmed after the hub's first load.
-            viewModel.applyModeration()
+        .onChange(of: RequestsEventBus.shared.lastTitleState) { _, update in
+            if let update {
+                viewModel.applyTitleState(update)
+            }
         }
     }
 
@@ -83,8 +81,8 @@ private struct PhoneRequestsHubView: View {
             )
             .padding(.top, 80)
         } else {
-            if viewModel.pendingApprovals > 0 || !viewModel.statusCounts.isEmpty {
-                summaryRows
+            if !viewModel.statusCounts.isEmpty {
+                summaryRow
             }
             if !viewModel.myRequests.isEmpty {
                 yourRequestsStrip
@@ -207,27 +205,14 @@ private struct PhoneRequestsHubView: View {
 
     // MARK: - Summary
 
-    /// One glanceable card per thing worth knowing: requests on the move
-    /// (opens My Requests) and, for admins, requests waiting on them.
-    private var summaryRows: some View {
-        VStack(spacing: 10) {
-            if !viewModel.statusCounts.isEmpty {
-                summaryCard(
-                    title: summaryTitle,
-                    parts: summaryParts,
-                    action: { router.navigate(to: .myRequests) }
-                )
-            }
-            if viewModel.pendingApprovals > 0 {
-                summaryCard(
-                    title: viewModel.pendingApprovals == 1
-                        ? "1 request needs your approval"
-                        : "\(viewModel.pendingApprovals) requests need your approval",
-                    parts: [],
-                    action: { router.navigate(to: .requestApprovals) }
-                )
-            }
-        }
+    /// One glanceable card for the user's requests on the move; opens My
+    /// Requests.
+    private var summaryRow: some View {
+        summaryCard(
+            title: summaryTitle,
+            parts: summaryParts,
+            action: { router.navigate(to: .myRequests) }
+        )
     }
 
     private var summaryTitle: String {

@@ -64,10 +64,12 @@ struct PlayerSettingsSheet: View {
 
     private var videoSection: some View {
         Section {
-            NavigationLink {
-                qualityPage
-            } label: {
-                LabeledContent("Quality", value: activeQualityLabel)
+            if viewModel.hasQualityChoice {
+                NavigationLink {
+                    qualityPage
+                } label: {
+                    LabeledContent("Quality", value: activeQualityLabel)
+                }
             }
 
             Picker("Aspect", selection: Binding(

@@ -44,8 +44,15 @@ final class DiagnosticsContractTests: XCTestCase {
     }
 
     /// The schema bounds `report.occurrence_count` to 1...1,000,000; the
-    /// invalid fixtures cover zero and null, so pin the upper edge here.
+    /// invalid fixtures cover zero and null, so check that the client's
+    /// ceiling is the schema's and pin the upper edge here.
     func testOccurrenceCountIsBoundedByTheContractMaximum() throws {
+        let schemaURL = try bundledFixtureURL("manifest.schema.json", bundleClass: Self.self)
+        let schema = try JSONSerialization.jsonObject(with: Data(contentsOf: schemaURL)) as? [String: Any]
+        let reportSchema = (schema?["properties"] as? [String: Any])?["report"] as? [String: Any]
+        let countSchema = (reportSchema?["properties"] as? [String: Any])?["occurrence_count"] as? [String: Any]
+        XCTAssertEqual(countSchema?["maximum"] as? Int, DiagnosticsManifest.Report.maxOccurrenceCount)
+
         let url = try bundledFixtureURL("tvos-abnormal-exit.json", bundleClass: Self.self)
         var report = try DiagnosticsJSONCoding.makeDecoder()
             .decode(DiagnosticsManifest.self, from: Data(contentsOf: url)).report
