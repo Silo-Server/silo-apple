@@ -198,7 +198,7 @@ struct HomeView: View {
         .onChange(of: scenePhase) { _, phase in
             viewModel.isInBackground = phase == .background
             if phase == .active {
-                Task { await viewModel.reloadIfLastLoadFailed() }
+                Task { await viewModel.reloadIfInterrupted() }
             }
         }
         .alert(
