@@ -1,17 +1,22 @@
 Source: silo-server docs/design/schemas/client-diagnostics/v1
-Server ref: 09c4ac176
-Server commit: 09c4ac1766b4a2fc394be9237f2762b9076b7274 (2026-10-05)
+Server ref: 7425ed292 (head of Silo-Server/silo-server#1986, not yet merged)
+Server commit: 7425ed292653c7f0e1a2387877aea61739b3d37a (2026-10-05)
 
-Written by scripts/sync-apiv2-fixtures.sh 09c4ac176, which mirrors the server
-directory with git show <commit>:<path>. README.md and this SOURCE are the
-only files not copied from the server. Do not hand-edit the rest.
+Mirrored with git show <commit>:<path>, the same step scripts/sync-apiv2-fixtures.sh
+runs for this directory, without re-vendoring Tests/Fixtures/APIv2. README.md and
+this SOURCE are the only files not copied from the server. Do not hand-edit the rest.
 
-Vendored from the server, 17 files:
+Re-vendor from the merge commit of silo-server#1986 once it lands on server main,
+with scripts/sync-apiv2-fixtures.sh <merge-commit>.
+
+Vendored from the server, 20 files:
   attr-registry.json
   device.schema.json
   fixtures/invalid/archive-entry-outside-allowlist.json
   fixtures/invalid/bad-schema-version.json
   fixtures/invalid/missing-consent.json
+  fixtures/invalid/occurrence-count-null.json
+  fixtures/invalid/occurrence-count-zero.json
   fixtures/invalid/platform-macos-reserved.json
   fixtures/invalid/stack-excerpt-over-8kib.json
   fixtures/invalid/unknown-report-type.json
@@ -22,5 +27,6 @@ Vendored from the server, 17 files:
   fixtures/valid/ios-hang-metrickit.json
   fixtures/valid/loglines.jsonl
   fixtures/valid/tvos-abnormal-exit.json
+  fixtures/valid/tvos-hang-watchdog.json
   logline.schema.json
   manifest.schema.json

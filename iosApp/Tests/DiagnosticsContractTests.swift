@@ -13,6 +13,7 @@ final class DiagnosticsContractTests: XCTestCase {
         "android-tv-crash-ueh.json",
         "ios-hang-metrickit.json",
         "tvos-abnormal-exit.json",
+        "tvos-hang-watchdog.json",
     ]
     private let validDeviceFixture = "device.json"
     private let validLogLineFixture = "loglines.jsonl"
@@ -20,6 +21,8 @@ final class DiagnosticsContractTests: XCTestCase {
         "archive-entry-outside-allowlist.json": .validate,
         "bad-schema-version.json": .validate,
         "missing-consent.json": .decode,
+        "occurrence-count-null.json": .decode,
+        "occurrence-count-zero.json": .validate,
         "platform-macos-reserved.json": .decode,
         "stack-excerpt-over-8kib.json": .validate,
         "unknown-report-type.json": .decode,
@@ -38,6 +41,22 @@ final class DiagnosticsContractTests: XCTestCase {
 
         let logLineURL = try bundledFixtureURL(validLogLineFixture, bundleClass: Self.self)
         try validateJSONLFixture(logLineURL)
+    }
+
+    /// The schema bounds `report.occurrence_count` to 1...1,000,000; the
+    /// invalid fixtures cover zero and null, so pin the upper edge here.
+    func testOccurrenceCountIsBoundedByTheContractMaximum() throws {
+        let url = try bundledFixtureURL("tvos-abnormal-exit.json", bundleClass: Self.self)
+        var report = try DiagnosticsJSONCoding.makeDecoder()
+            .decode(DiagnosticsManifest.self, from: Data(contentsOf: url)).report
+        XCTAssertEqual(report.occurrenceCount, 3)
+
+        report.occurrenceCount = DiagnosticsManifest.Report.maxOccurrenceCount
+        XCTAssertNoThrow(try report.validate())
+        report.occurrenceCount = DiagnosticsManifest.Report.maxOccurrenceCount + 1
+        XCTAssertThrowsError(try report.validate())
+        report.occurrenceCount = nil
+        XCTAssertNoThrow(try report.validate())
     }
 
     func testDiagnosticsAPIDecodesWithHTTPClientSnakeCaseStrategy() throws {

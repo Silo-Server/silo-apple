@@ -397,6 +397,8 @@ struct DiagnosticsBundleBuilder {
         )
     }
 
+    /// `occurrence_count` is left out on purpose: the hosted collector has
+    /// not adopted it yet, so the repeat count stays local for hosted reports.
     private static func sanitizeHostedReport(
         _ report: DiagnosticsManifest.Report
     ) -> DiagnosticsManifest.Report {
@@ -933,6 +935,11 @@ struct DiagnosticsBundleBuilder {
     //    one check that catches real leaks. The retry line's `msg` ("401 retry"
     //    / "401 not retried") carries the distinction on its own, so hosted
     //    evidence loses nothing by dropping the attribute.
+    //
+    // 3. Keys newer than the hosted collector's vendored registry: the playback
+    //    session summary keys and `lifecycle.resident_mb`. The collector
+    //    rejects a whole bundle on an unregistered key, so these stay
+    //    self-hosted until it re-vendors the contract.
     //
     // Before adding a key here, normalize it and check it against
     // `FORBIDDEN_KEYS`, `FORBIDDEN_COMPACT_KEYS` and the credential/identifier
