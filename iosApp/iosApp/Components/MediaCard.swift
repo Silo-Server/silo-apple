@@ -584,7 +584,8 @@ private let tvMediaCardCaptionSpacing: CGFloat = 22
 /// Only cards outside a managed row need their own focus state. Keeping this
 /// dynamic property out of row cards avoids invalidating their full button
 /// and context-menu bodies when the shared focus environment changes.
-private struct TVStandaloneCardFocus<Content: View>: View {
+/// Shared by `MediaCard` and `EpisodeThumbCard`.
+struct TVStandaloneCardFocus<Content: View>: View {
     @FocusState private var isFocused: Bool
     @ViewBuilder var content: (FocusState<Bool>.Binding) -> Content
 

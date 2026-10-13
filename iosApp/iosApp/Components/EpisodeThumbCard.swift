@@ -7,7 +7,8 @@ import SwiftUI
 /// Episode numbering stays in accessibility and detail metadata rather than
 /// being drawn over the artwork.
 /// On tvOS the image sits inside a `.card` button for focus lift/parallax and
-/// a FocusState binding drives the title highlight.
+/// a FocusState binding drives the title highlight. Only small focus subviews
+/// read that binding, so a focus move re-evaluates them, not every card body.
 struct EpisodeThumbCard: View {
     let item: SectionItem
     var showProgress: Bool = false
@@ -37,7 +38,6 @@ struct EpisodeThumbCard: View {
     @State private var uiCustomization = UICustomizationPreferences.shared
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
     #if os(tvOS)
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var continueWatchingMetadata = TVContinueWatchingPlaybackMetadataStore.shared
     #endif
     #if !os(tvOS)
@@ -57,13 +57,6 @@ struct EpisodeThumbCard: View {
 
     #if os(tvOS)
     private static let captionSpacing: CGFloat = 14
-
-    @FocusState private var standaloneFocused: Bool
-
-    private var isFocused: Bool {
-        guard let focusedItemId else { return standaloneFocused }
-        return focusedItemId.wrappedValue == item.contentId
-    }
     #endif
 
     var body: some View {
@@ -72,31 +65,21 @@ struct EpisodeThumbCard: View {
 
     private var cardBody: some View {
         #if os(tvOS)
-        VStack(alignment: .leading, spacing: Self.captionSpacing) {
-            thumbnailButton
-
-            if uiCustomization.cardPresentation.caption.showsTitle {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(displayTitle)
-                        .font(.siloPosterTitle)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .tvCardTitleFocus(isFocused: isFocused)
-                        .frame(width: cardWidth, alignment: .leading)
-
-                    if uiCustomization.cardPresentation.caption.showsMetadata,
-                       let subtitle = subtitleLine {
-                        Text(subtitle)
-                            .font(.siloPosterMetadata)
-                            .tvCardSubtitleFocus(isFocused: isFocused)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                            .frame(width: cardWidth, alignment: .leading)
-                            .clipped()
-                    }
+        Group {
+            if let focusedItemId {
+                tvCard(focus: TVEpisodeCardFocusSource(
+                    focusedItemId: focusedItemId,
+                    itemId: item.contentId,
+                    standaloneFocused: nil
+                ))
+            } else {
+                TVStandaloneCardFocus { binding in
+                    tvCard(focus: TVEpisodeCardFocusSource(
+                        focusedItemId: nil,
+                        itemId: item.contentId,
+                        standaloneFocused: binding
+                    ))
                 }
-                .frame(width: cardWidth, alignment: .leading)
-                .tvCardCaptionFocus(isFocused: isFocused, spacing: Self.captionSpacing)
             }
         }
         .frame(width: cardWidth)
@@ -343,24 +326,34 @@ struct EpisodeThumbCard: View {
     }
 
     #if os(tvOS)
+    private func tvCard(focus: TVEpisodeCardFocusSource) -> some View {
+        VStack(alignment: .leading, spacing: Self.captionSpacing) {
+            thumbnailButton(focus: focus)
+
+            if uiCustomization.cardPresentation.caption.showsTitle {
+                TVEpisodeCardCaption(
+                    title: displayTitle,
+                    subtitle: uiCustomization.cardPresentation.caption.showsMetadata ? subtitleLine : nil,
+                    cardWidth: cardWidth,
+                    spacing: Self.captionSpacing,
+                    focus: focus
+                )
+            }
+        }
+    }
+
     @ViewBuilder
-    private var thumbnailButton: some View {
+    private func thumbnailButton(focus: TVEpisodeCardFocusSource) -> some View {
         let button = Button(action: action) {
             thumbnail
         }
         .buttonStyle(.card)
         .applyEpisodeFocus(
-            focusedItemId,
+            focus.focusedItemId,
             itemId: item.contentId,
-            standaloneBinding: $standaloneFocused
+            standaloneBinding: focus.standaloneFocused
         )
-        .scaleEffect(isFocused && !reduceMotion ? 1.025 : 1)
-        .shadow(
-            color: .black.opacity(isFocused ? 0.5 : 0.2),
-            radius: isFocused ? 20 : 8,
-            y: isFocused ? 10 : 4
-        )
-        .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+        .modifier(TVEpisodeCardFocusLift(focus: focus))
         .applyEpisodePlayPauseAction(playAction)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityDescription)
@@ -444,6 +437,74 @@ struct EpisodeThumbCard: View {
 }
 
 #if os(tvOS)
+/// Where a card's focus lives: the row's shared item ID, or the Boolean
+/// `TVStandaloneCardFocus` supplies when it stands alone. Only the subviews
+/// below read it.
+private struct TVEpisodeCardFocusSource {
+    let focusedItemId: FocusState<String?>.Binding?
+    let itemId: String
+    let standaloneFocused: FocusState<Bool>.Binding?
+
+    var isFocused: Bool {
+        guard let focusedItemId else { return standaloneFocused?.wrappedValue ?? false }
+        return focusedItemId.wrappedValue == itemId
+    }
+}
+
+/// The caption is the only text that reacts to focus, so it reads focus here
+/// instead of in the card body, the way `TVMediaCardCaption` does.
+private struct TVEpisodeCardCaption: View {
+    let title: String
+    let subtitle: String?
+    let cardWidth: CGFloat
+    let spacing: CGFloat
+    let focus: TVEpisodeCardFocusSource
+
+    var body: some View {
+        let isFocused = focus.isFocused
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.siloPosterTitle)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .tvCardTitleFocus(isFocused: isFocused)
+                .frame(width: cardWidth, alignment: .leading)
+
+            if let subtitle {
+                Text(subtitle)
+                    .font(.siloPosterMetadata)
+                    .tvCardSubtitleFocus(isFocused: isFocused)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(width: cardWidth, alignment: .leading)
+                    .clipped()
+            }
+        }
+        .frame(width: cardWidth, alignment: .leading)
+        .tvCardCaptionFocus(isFocused: isFocused, spacing: spacing)
+    }
+}
+
+/// The focused card's scale and shadow. As a modifier, a focus change
+/// re-evaluates only this body and passes the wrapped button and its
+/// artwork through untouched.
+private struct TVEpisodeCardFocusLift: ViewModifier {
+    let focus: TVEpisodeCardFocusSource
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        let isFocused = focus.isFocused
+        content
+            .scaleEffect(isFocused && !reduceMotion ? 1.025 : 1)
+            .shadow(
+                color: .black.opacity(isFocused ? 0.5 : 0.2),
+                radius: isFocused ? 20 : 8,
+                y: isFocused ? 10 : 4
+            )
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+    }
+}
+
 private extension View {
     @ViewBuilder
     func applyEpisodePlayPauseAction(_ action: (() -> Void)?) -> some View {
@@ -460,12 +521,14 @@ private extension View {
     func applyEpisodeFocus(
         _ binding: FocusState<String?>.Binding?,
         itemId: String,
-        standaloneBinding: FocusState<Bool>.Binding
+        standaloneBinding: FocusState<Bool>.Binding?
     ) -> some View {
         if let binding {
             self.focused(binding, equals: itemId)
-        } else {
+        } else if let standaloneBinding {
             self.focused(standaloneBinding)
+        } else {
+            self
         }
     }
 }
