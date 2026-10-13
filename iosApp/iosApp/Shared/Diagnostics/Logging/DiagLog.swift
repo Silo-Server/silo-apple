@@ -268,8 +268,9 @@ private enum DiagnosticsRedactor {
     // embedded IPv4 and a `.port` is 51) that splits at colons one way only,
     // so a long colon-separated hex dump can't backtrack and stall the
     // logging thread. A zone (`%en0`) is always taken whole, so a colon after
-    // it (`fe80::1%en0: refused`) can't leave the zone behind. A candidate may
-    // end before a colon (`peer=fd00::5:closed`) but not inside a `::`, so
+    // it (`fe80::1%en0: refused`) can't leave the zone behind. Without a
+    // zone, a candidate may end before a delimiter colon
+    // (`peer=fd00::5:closed`, `fd00:::closed`) but not inside a `::`, so
     // `dec::face::method` stays a scope.
     private static let bareIPv4Regex = try! NSRegularExpression(
         pattern: #"(?<![\w.])((?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3})(?::\d{1,5})?(?!\.?\w)"#,
@@ -280,7 +281,7 @@ private enum DiagnosticsRedactor {
         options: []
     )
     private static let bareIPv6Regex = try! NSRegularExpression(
-        pattern: #"(?<![\w.%])(?<!::)(?=[0-9A-Fa-f.:]{2,64}(?![0-9A-Fa-f.:]))((?:[0-9A-Fa-f.]*:){2,}[0-9A-Fa-f.]*)(?:%[\w.-]+)?(?!\w)(?!(?<=:):)(?!::)"#,
+        pattern: #"(?<![\w.%])(?<!::)(?=[0-9A-Fa-f.:]{2,64}(?![0-9A-Fa-f.:]))((?:[0-9A-Fa-f.]*:){2,}[0-9A-Fa-f.]*)(?:%[\w.-]+|(?!%[\w.-])(?!(?<=[^:]:):(?!:))(?!::))(?!\w)"#,
         options: []
     )
     private static let hostPortRegex = try! NSRegularExpression(
@@ -391,13 +392,25 @@ private enum DiagnosticsRedactor {
         return result
     }
 
-    /// The end of the `[redacted…]` marker or `[host:…]` token that starts at
-    /// `index`, or nil when none does.
+    /// The end of the `[redacted…]` marker or `[host:<12 hex>]` token that
+    /// starts at `index`, or nil when none does. Only the exact shapes the
+    /// redaction rules write count, so text that merely starts like one is
+    /// still scanned, and the check looks at a bounded prefix so a line full
+    /// of unclosed brackets stays linear.
     private static func markerEnd(in value: String, from index: String.Index) -> String.Index? {
-        let rest = value[index...]
-        guard rest.hasPrefix("[redacted") || rest.hasPrefix("[host:"),
-              let close = rest.firstIndex(of: "]") else { return nil }
-        return value.index(after: close)
+        let window = value[index...].prefix(32)
+        guard let close = window.firstIndex(of: "]") else { return nil }
+        let inner = window[window.index(after: index)..<close]
+        let isMarker: Bool
+        if inner.hasPrefix("host:") {
+            let hex = inner.dropFirst(5)
+            isMarker = hex.count == 12 && hex.allSatisfy { $0.isHexDigit && !$0.isUppercase }
+        } else if inner.hasPrefix("redacted") {
+            isMarker = inner.dropFirst(8).allSatisfy { $0 == "_" || $0 == "-" || ("a"..."z").contains($0) }
+        } else {
+            isMarker = false
+        }
+        return isMarker ? value.index(after: close) : nil
     }
 
     private static func lowercasedASCII(_ byte: UInt8) -> UInt8 {

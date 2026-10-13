@@ -295,6 +295,14 @@ final class DiagnosticsRedactionTests: XCTestCase {
         let joined = try rendered("peer=fd00::5:closed")
         XCTAssertFalse(joined.contains("fd00::5"))
         XCTAssertTrue(joined.contains("peer=[host:"))
+
+        let compressedEnd = try rendered("peer=fd00:::closed")
+        XCTAssertFalse(compressedEnd.contains("fd00"))
+        XCTAssertTrue(compressedEnd.contains("peer=[host:"))
+
+        let scopedBeforeSeparator = try rendered("connect fe80::1%en0:: Connection refused")
+        XCTAssertFalse(scopedBeforeSeparator.contains("fe80::1"))
+        XCTAssertFalse(scopedBeforeSeparator.contains("%en0"))
     }
 
     /// A long colon-separated hex run that ends in a letter is not an
@@ -335,6 +343,10 @@ final class DiagnosticsRedactionTests: XCTestCase {
         // Only a real token is exempt; text that merely starts like one is not.
         let lookalike = try rendered("playing [host:PrivateMovie].mkv")
         XCTAssertFalse(lookalike.contains("PrivateMovie"))
+
+        DiagLog.registerSensitiveHost("private.example.net")
+        let fakeToken = try rendered("retry [host: private.example.net] failed")
+        XCTAssertFalse(fakeToken.contains("private.example.net"))
 
         let address = try rendered("peer 10.0.0.5 sent Movie.mkv")
         XCTAssertFalse(address.contains("10.0.0.5"))
