@@ -102,7 +102,11 @@ struct AsyncImageView: View {
             .onDisappear(.cancel)
             .onCompletion { handleCompletion($0) }
             .id(LoadIdentity(url: url, attempt: loadAttempt))
-            .onDisappear(perform: cancelPendingRetry)
+            .onDisappear {
+                // The next appearance gets the full retry schedule again.
+                cancelPendingRetry()
+                backoff.reset()
+            }
         }
     }
 
