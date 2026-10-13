@@ -979,6 +979,30 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertTrue(selfHostedManifest.deviceSummary.model.contains(privateDeviceSummaryID))
     }
 
+    /// The hosted envelope never carries the count, so a hosted report keeps
+    /// counting repeats after its envelope is saved, for example while the
+    /// collector create waits on a retry, instead of opening a report per
+    /// repeat.
+    func testHostedReportWithASavedEnvelopeKeepsCountingRepeats() throws {
+        let fixture = try makePendingHostedReport(label: "hosted-envelope-repeat", issueFingerprint: "issue-a")
+        let bundle = try DiagnosticsBundleBuilder().build(
+            report: fixture.report,
+            logLines: [],
+            droppedLogLines: 0,
+            redactionTokens: []
+        )
+        try fixture.store.saveHostedEnvelope(bundle, for: fixture.report)
+
+        let repeated = try fixture.store.save(makeHostedCapture(label: "hosted-envelope-repeat-2", issueFingerprint: "issue-a"))
+
+        XCTAssertEqual(repeated.id, fixture.report.id)
+        XCTAssertEqual(repeated.manifest.report.occurrenceCount, 2)
+        guard case .available(let envelope) = fixture.store.loadHostedEnvelope(for: repeated) else {
+            return XCTFail("Counting a repeat must keep the saved envelope")
+        }
+        XCTAssertEqual(envelope.manifestData, bundle.manifestData)
+    }
+
     /// The hosted collector has not adopted `report.occurrence_count` yet,
     /// so a repeat count stays local for hosted reports. Self-hosted servers
     /// on the newer contract receive it.
@@ -2987,8 +3011,27 @@ final class HostedDiagnosticsAPITests: XCTestCase {
     private func makePendingHostedReport(
         label: String,
         reportID: UUID = UUID(),
+        issueFingerprint: String? = nil,
         hostedDeletionRemover: ((URL) throws -> Void)? = nil
     ) throws -> (store: PendingReportStore, report: PendingReport) {
+        let capture = makeHostedCapture(label: label, reportID: reportID, issueFingerprint: issueFingerprint)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "HostedAcknowledgement-\(label)-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let store = PendingReportStore(
+            rootDirectory: root,
+            hostedDeletionRemover: hostedDeletionRemover
+        )
+        return (store, try store.save(capture))
+    }
+
+    private func makeHostedCapture(
+        label: String,
+        reportID: UUID = UUID(),
+        issueFingerprint: String? = nil
+    ) -> PendingReportCapture {
         let capturedAt = Date()
         let binding = DiagnosticsBinding.hosted(
             serverRegistryID: "collector-acknowledgement-test-server",
@@ -3018,16 +3061,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             playbackSessionIDs: [],
             consentMode: .manual
         )
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
-            "HostedAcknowledgement-\(label)-\(UUID().uuidString)",
-            isDirectory: true
-        )
-        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
-        let store = PendingReportStore(
-            rootDirectory: root,
-            hostedDeletionRemover: hostedDeletionRemover
-        )
-        let report = try store.save(PendingReportCapture(
+        return PendingReportCapture(
             id: reportID,
             binding: binding,
             profileID: nil,
@@ -3041,9 +3075,9 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                     relativePath: "logs.jsonl",
                     data: Data("local evidence must survive".utf8)
                 ),
-            ]
-        ))
-        return (store, report)
+            ],
+            issueFingerprint: issueFingerprint
+        )
     }
 
     private func saveAdditionalHostedReport(

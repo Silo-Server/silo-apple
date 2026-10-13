@@ -510,6 +510,53 @@ final class PendingReportStoreTests: XCTestCase {
         XCTAssertEqual(store.report(id: first.id, now: start)?.manifest, prepared.manifest)
     }
 
+    /// Each attempt ends only its own hold, so one that stops early cannot let
+    /// a repeat into a report another attempt is still building from.
+    func testRepeatWaitsForEveryAttemptBuildingTheReport() throws {
+        let store = try makeStore()
+        let binding = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "42")
+        let start = Date(timeIntervalSince1970: 100_000)
+        let first = try store.save(makeCapture(binding: binding, fingerprint: "event-1", capturedAt: start, issue: "issue-a"))
+
+        let building = try store.preparingDelivery(of: first, consent: first.manifest.consent)
+        let stoppedEarly = try store.preparingDelivery(of: first, consent: first.manifest.consent)
+        store.finishDelivery(stoppedEarly)
+        let repeated = try store.save(makeCapture(
+            binding: binding,
+            fingerprint: "event-2",
+            capturedAt: start.addingTimeInterval(60),
+            issue: "issue-a"
+        ))
+
+        XCTAssertNotEqual(repeated.id, first.id)
+        XCTAssertEqual(store.report(id: first.id, now: start)?.manifest, building.manifest)
+    }
+
+    /// A hold lasts only while its upload runs. An app killed mid-upload
+    /// never ends it, and after relaunch the report counts repeats again
+    /// instead of sending every one to a new report.
+    func testUploadInterruptedByAnEarlierProcessDoesNotStopRepeats() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PendingReportStoreTests-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let binding = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "42")
+        let start = Date(timeIntervalSince1970: 100_000)
+        let killed = PendingReportStore(rootDirectory: directory)
+        let first = try killed.save(makeCapture(binding: binding, fingerprint: "event-1", capturedAt: start, issue: "issue-a"))
+        _ = try killed.preparingDelivery(of: first, consent: first.manifest.consent)
+
+        let relaunched = PendingReportStore(rootDirectory: directory)
+        let repeated = try relaunched.save(makeCapture(
+            binding: binding,
+            fingerprint: "event-2",
+            capturedAt: start.addingTimeInterval(60),
+            issue: "issue-a"
+        ))
+
+        XCTAssertEqual(repeated.id, first.id)
+        XCTAssertEqual(repeated.manifest.report.occurrenceCount, 2)
+    }
+
     private func makeStore(
         hostedDeletionRemover: ((URL) throws -> Void)? = nil
     ) throws -> PendingReportStore {
