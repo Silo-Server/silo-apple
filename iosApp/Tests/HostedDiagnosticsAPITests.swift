@@ -979,7 +979,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertTrue(selfHostedManifest.deviceSummary.model.contains(privateDeviceSummaryID))
     }
 
-    /// The hosted collector does not accept `report.occurrence_count` yet,
+    /// The hosted collector has not adopted `report.occurrence_count` yet,
     /// so a repeat count stays local for hosted reports. Self-hosted servers
     /// on the newer contract receive it.
     func testOccurrenceCountReachesOnlySelfHostedManifests() throws {

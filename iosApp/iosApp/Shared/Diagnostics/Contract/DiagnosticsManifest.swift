@@ -76,6 +76,8 @@ struct DiagnosticsManifest: Codable, Equatable {
         }
     }
 
+    /// Decodes through the hand-written `init(from:)` below, so a new field
+    /// needs a line there too; a defaulted `var` left out decodes as nil.
     struct Report: Codable, Equatable {
         let type: ReportType
         let capturedAt: String

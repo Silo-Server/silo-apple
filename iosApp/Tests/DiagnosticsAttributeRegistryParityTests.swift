@@ -183,19 +183,22 @@ final class DiagnosticsAttributeRegistryParityTests: XCTestCase {
     }
 
     /// The keys canonical registers but the hosted collector is deliberately not
-    /// given. Two separate reasons, and they fail differently:
+    /// given. Three separate reasons, and they fail differently:
     ///
-    /// - The `playback` keys identify one user's specific viewing session. The
-    ///   hosted collector would accept them; we choose not to send them.
+    /// - `playback.session_id`, `play_method`, `reason` and `position_ms`
+    ///   identify one user's specific viewing session. The hosted collector
+    ///   would accept them; we choose not to send them.
     /// - `network.attempt` collides with the hosted collector's `FORBIDDEN_KEYS`
     ///   privacy scanner (silo-diagnostics `src/privacy.ts`). Sending it does
     ///   not reject the bundle — the report reaches `ready` but permanently
     ///   fails the `privacy_fields` check and shows as `privacy_flagged`. Since
     ///   a routine 401-token-refresh retry emits it, forwarding it would flag
-    ///   ordinary reports as privacy incidents.
-    /// - The playback session summary keys and `lifecycle.resident_mb` are newer
-    ///   than the hosted collector's vendored registry, which rejects a whole
-    ///   bundle on an unregistered key. They join the allowlist once the
+    ///   ordinary reports as privacy incidents. The playback session summary's
+    ///   `session_ms` and `plan_change_count` collide the same way, through the
+    ///   scanner's `session` and `plan` prefixes.
+    /// - The other playback session summary keys and `lifecycle.resident_mb` are
+    ///   newer than the hosted collector's vendored registry, which rejects a
+    ///   whole bundle on an unregistered key. They join the allowlist once the
     ///   collector re-vendors the contract.
     ///
     /// Stated explicitly so that widening the allowlist has to be a deliberate
@@ -237,6 +240,18 @@ final class DiagnosticsAttributeRegistryParityTests: XCTestCase {
             the distinction; keep the attribute self-hosted only.
             """
         )
+        // The same scanner matches these through its `session` and `plan`
+        // prefixes, so re-vendoring the summary keys must leave them out.
+        for key in ["session_ms", "plan_change_count"] {
+            XCTAssertNil(
+                hosted[.playback]?[key],
+                """
+                playback.\(key) is in the hosted allowlist. The hosted collector's \
+                FORBIDDEN_KEYS match it, so every hosted report with a playback \
+                summary would be permanently privacy_flagged. Keep it self-hosted only.
+                """
+            )
+        }
     }
 
     // MARK: - Helpers
