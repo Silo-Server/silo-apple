@@ -69,6 +69,9 @@ final class PlaybackSessionSummaryRecorder {
     private var sessionID: String?
     /// Who was signed in when the session began (see `currentOwner`).
     private var owner: String?
+    /// The evidence erasure generation when the session began. An erasure
+    /// since then discards the session's summary.
+    private var erasureGeneration: UInt64 = 0
     private var planID: String?
     private var summary: PlaybackSessionSummary?
     private var waitStartedAt: TimeInterval?
@@ -97,10 +100,16 @@ final class PlaybackSessionSummaryRecorder {
                 recorder.finishLocked(.stopped, at: time)
                 recorder.sessionID = sessionID
                 recorder.owner = recorder.currentOwner()
+                recorder.erasureGeneration = Self.currentErasureGeneration()
                 recorder.summary = PlaybackSessionSummary(playMethod: playMethod, startedAt: time)
-            } else if recorder.planID != planID {
-                recorder.summary?.planChangeCount += 1
-                recorder.summary?.playMethod = playMethod
+            } else {
+                // A wait open as the reload begins lasted until now. The
+                // replacement load's own wait starts a new one.
+                recorder.summary = recorder.summary.map { Self.folding(recorder.openWaitLocked, into: $0, at: time) }
+                if recorder.planID != planID {
+                    recorder.summary?.planChangeCount += 1
+                    recorder.summary?.playMethod = playMethod
+                }
             }
             recorder.planID = planID
             recorder.waitStartedAt = nil
@@ -193,22 +202,25 @@ final class PlaybackSessionSummaryRecorder {
         var summary: PlaybackSessionSummary
         var openWait: OpenWait?
         var owner: String?
+        var erasureGeneration: UInt64
     }
 
     private static let latestLock = NSLock()
     private static var latest: Latest?
 
     /// The most recent session's summary in this process, open or finished,
-    /// if it was played by `owner`. An open session's `sessionMs` and any
-    /// wait still in progress are measured at `now`. Reports captured in this
-    /// run attach it.
+    /// if it was played by `owner` and no evidence was erased since it began.
+    /// An open session's `sessionMs` and any wait still in progress are
+    /// measured at `now`. Reports captured in this run attach it.
     static func latestSummary(
         owner: String?,
         now: TimeInterval = ProcessInfo.processInfo.systemUptime
     ) -> (summary: PlaybackSessionSummary, now: TimeInterval)? {
+        let erasureGeneration = currentErasureGeneration()
         latestLock.lock()
         defer { latestLock.unlock() }
-        guard let latest, let owner, latest.owner == owner else { return nil }
+        guard let latest, let owner, latest.owner == owner,
+              latest.erasureGeneration == erasureGeneration else { return nil }
         return (folding(latest.openWait, into: latest.summary, at: now), now)
     }
 
@@ -223,13 +235,32 @@ final class PlaybackSessionSummaryRecorder {
     private func update(_ change: (PlaybackSessionSummaryRecorder) -> Void) {
         lock.lock()
         defer { lock.unlock() }
+        discardIfErasedLocked()
         change(self)
         publishLatestLocked()
     }
 
+    /// Evidence was erased (Turn Off and Delete, a profile purge, or consent
+    /// set to Never) after this session began: drop its summary rather than
+    /// emit or publish its earlier counts. Events up to the next load are
+    /// ignored; the next load starts a fresh summary.
+    private func discardIfErasedLocked() {
+        guard summary != nil, erasureGeneration != Self.currentErasureGeneration() else { return }
+        summary = nil
+        sessionID = nil
+        owner = nil
+        planID = nil
+        waitStartedAt = nil
+    }
+
     private func publishLatestLocked() {
         guard let summary else { return }
-        let published = Latest(summary: summary, openWait: openWaitLocked, owner: owner)
+        let published = Latest(
+            summary: summary,
+            openWait: openWaitLocked,
+            owner: owner,
+            erasureGeneration: erasureGeneration
+        )
         Self.latestLock.lock()
         Self.latest = published
         Self.latestLock.unlock()
@@ -289,6 +320,10 @@ extension PlaybackSessionSummaryRecorder {
         DiagnosticsCoordinator.currentDiagnosticsBinding.map {
             diagnosticsOwner(binding: $0, profileID: AuthService.shared.profileId)
         }
+    }
+
+    static func currentErasureGeneration() -> UInt64 {
+        DiagnosticsCoordinator.currentEvidenceErasureGeneration()
     }
 }
 
@@ -374,5 +409,6 @@ extension PlaybackSessionSummaryRecorder {
 extension PlaybackSessionSummaryRecorder {
     static func recordDiagnostics(_ summary: PlaybackSessionSummary, at now: TimeInterval, owner: String?) {}
     static func currentDiagnosticsOwner() -> String? { nil }
+    static func currentErasureGeneration() -> UInt64 { 0 }
 }
 #endif
