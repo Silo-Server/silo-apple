@@ -118,6 +118,26 @@ final class PlayerCleanupBarrierTests: XCTestCase {
         XCTAssertTrue(finalWriteDone)
     }
 
+    func testAPlayerStillOpenWhileOthersStartKeepsItsPagesWait() async {
+        let generation = PlayerCleanupBarrier.beginPlayback()
+        _ = PlayerCleanupBarrier.playerCreated()
+        // Other pages start and close players while this one stays open.
+        for _ in 0..<10 {
+            let other = PlayerCleanupBarrier.beginPlayback()
+            _ = PlayerCleanupBarrier.playerCreated()
+            PlayerCleanupBarrier.record(Task {}, generation: other)
+        }
+        var finalWriteDone = false
+        PlayerCleanupBarrier.record(Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(50))
+            finalWriteDone = true
+        }, generation: generation)
+
+        await PlayerCleanupBarrier.waitForCleanup(of: generation)
+
+        XCTAssertTrue(finalWriteDone)
+    }
+
     func testACancelledWaitReturnsBeforeTheTeardownFinishes() async {
         let generation = PlayerCleanupBarrier.beginPlayback()
         _ = PlayerCleanupBarrier.playerCreated()

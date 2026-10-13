@@ -14,11 +14,12 @@ enum PlayerCleanupBarrier {
     private static let retainedCleanups = 8
     /// Bumped each time a page starts playback.
     private(set) static var generation = 0
-    /// The generations of the most recent players, oldest first. A page whose
-    /// playback went to a TV instead never gets a local player, so it has
-    /// nothing to wait for, even after another page's player is created. Only
-    /// newer players push a generation out, never Plays that went to a TV.
-    private static var playerGenerations: [Int] = []
+    /// Generations a player was created in. A page whose playback went to a TV
+    /// instead never gets a local player, so it has nothing to wait for, even
+    /// after another page's player is created. It grows by one entry per
+    /// playback and is never pruned, so a player that stays open while others
+    /// start, as in a second Mac window, keeps its page's wait.
+    private static var playerGenerations: Set<Int> = []
 
     /// Starts a new generation for the player a page is about to present and
     /// returns it for `waitForCleanup(of:)`.
@@ -29,12 +30,7 @@ enum PlayerCleanupBarrier {
 
     /// Called as a player is created; returns the generation it belongs to.
     static func playerCreated() -> Int {
-        if playerGenerations.last != generation {
-            playerGenerations.append(generation)
-            if playerGenerations.count > retainedCleanups {
-                playerGenerations.removeFirst(playerGenerations.count - retainedCleanups)
-            }
-        }
+        playerGenerations.insert(generation)
         return generation
     }
 
