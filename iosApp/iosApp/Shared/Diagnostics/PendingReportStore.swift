@@ -379,6 +379,12 @@ final class PendingReportStore {
             _ = try loadHostedErasureLedgersLocked()
         }
         try cleanupExpiredLocked(now: capture.capturedAt)
+        if wouldEvictOnArrivalLocked(capture) {
+            // Writing it only to delete it again would leave the caller
+            // retrying the same capture forever. Settle it here instead.
+            markFingerprintSeenLocked(capture.fingerprint, now: capture.capturedAt)
+            throw DiagnosticsStoreError.evictedOnArrival
+        }
 
         let reportDirectory = pendingDirectory.appendingPathComponent(capture.id.uuidString.lowercased(), isDirectory: true)
         let stagingDirectory = pendingDirectory.appendingPathComponent(
@@ -431,9 +437,8 @@ final class PendingReportStore {
         guard let report = loadReport(from: reportDirectory) else {
             throw DiagnosticsStoreError.unreadableReport(capture.id)
         }
-        // A delayed capture can be older than every retained report and be
-        // evicted immediately by the cap. Only suppress future delivery after
-        // confirming this report actually survived retention.
+        // Suppress future delivery only once the report is confirmed to have
+        // survived retention and is readable.
         markFingerprintSeenLocked(capture.fingerprint, now: capture.capturedAt)
         return report
     }
@@ -1168,10 +1173,41 @@ final class PendingReportStore {
         pruneFingerprintStateLocked(now: now)
     }
 
+    /// Which reports a full store gives up first: non-fatal app errors, then
+    /// unconfirmed exits, then crashes, and the user's own reports last. The
+    /// oldest goes first within a rank.
+    private static func evictionRank(_ type: ReportType) -> Int {
+        switch type {
+        case .hang, .anr:
+            return 0
+        case .abnormalExit:
+            return 1
+        case .crash, .nativeCrash:
+            return 2
+        case .manual:
+            return 3
+        }
+    }
+
+    /// Whether the cap would evict `capture` itself as soon as it is stored:
+    /// the binding already holds a full store of reports that all outrank it.
+    /// A tie goes to the report already stored.
+    private func wouldEvictOnArrivalLocked(_ capture: PendingReportCapture) -> Bool {
+        let incoming = (Self.evictionRank(capture.type), capture.capturedAt)
+        let outranking = scanReportsLocked().filter { report in
+            report.binding.binding == capture.binding
+                && (Self.evictionRank(report.binding.type), report.binding.capturedAtDate) >= incoming
+        }
+        return outranking.count >= Self.maxPendingPerBinding
+    }
+
     private func enforceCapLocked(for binding: DiagnosticsBinding) throws {
         let reports = scanReportsLocked()
             .filter { $0.binding.binding == binding }
-            .sorted { $0.binding.capturedAtDate < $1.binding.capturedAtDate }
+            .sorted {
+                (Self.evictionRank($0.binding.type), $0.binding.capturedAtDate)
+                    < (Self.evictionRank($1.binding.type), $1.binding.capturedAtDate)
+            }
         guard reports.count > Self.maxPendingPerBinding else {
             return
         }
@@ -1449,6 +1485,10 @@ final class PendingReportStore {
 enum DiagnosticsStoreError: Error, Equatable {
     case invalidArtifactPath(String)
     case unreadableReport(UUID)
+    /// The store is full of reports that outrank this capture, so it was not
+    /// kept. Its fingerprint is marked seen: the capture is settled, and a
+    /// caller holding a retry marker for it can clear that marker.
+    case evictedOnArrival
     case invalidHostedEnvelope
     case invalidHostedDeletionIntent
     case invalidHostedReadyReceipt

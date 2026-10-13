@@ -1925,6 +1925,8 @@ actor DiagnosticsCoordinator {
                 artifacts: artifacts
             ))
             return true
+        } catch DiagnosticsStoreError.evictedOnArrival {
+            return true
         } catch {
             return false
         }
