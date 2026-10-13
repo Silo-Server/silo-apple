@@ -1893,7 +1893,58 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
         let calls = harness.transport.effectiveCalls()
         XCTAssertEqual(calls.count, 1, "a refresh must be one round trip, not one per key")
-        XCTAssertEqual(Set(calls[0]), Set(SettingKey.playerDeviceSettings))
+        XCTAssertEqual(Set(calls[0]), Set(SettingKey.playerReadSettings))
+    }
+
+    /// Apple has no player setting for recaps: the player follows the
+    /// profile's value and never writes it back over that choice.
+    func testRefreshFollowsAutoSkipRecapWithoutWritingIt() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.effective = [
+            EffectiveSettingValue(
+                key: SettingKey.playbackAutoSkipRecap.rawValue,
+                value: .bool(true),
+                source: .scope(.profile),
+                scope: .profile
+            ),
+        ]
+
+        await harness.settings.refreshFromServer()
+
+        XCTAssertTrue(harness.transport.effectiveCalls()[0].contains(.playbackAutoSkipRecap))
+        XCTAssertTrue(harness.settings.autoSkipRecap)
+        XCTAssertNil(harness.transport.writesByKey()[.playbackAutoSkipRecap])
+    }
+
+    /// The web can give this device its own recap value. It counts as a
+    /// change "Use Profile Settings" makes, and the reset clears it, so the
+    /// device follows the profile again as that reset promises.
+    func testUseProfileSettingsClearsADeviceRecapValue() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.effective = [
+            EffectiveSettingValue(
+                key: SettingKey.playbackAutoSkipRecap.rawValue,
+                value: .bool(true),
+                source: .scope(.profileDevice),
+                scope: .profileDevice
+            ),
+        ]
+
+        await harness.settings.refreshFromServer()
+
+        XCTAssertTrue(harness.settings.autoSkipRecap)
+        XCTAssertEqual(harness.settings.deviceChangedSettingCount, 1)
+        XCTAssertFalse(
+            harness.settings.deviceChangesIncludeDeviceOnlySettings,
+            "the recap goes back to the profile's value, not to a default"
+        )
+
+        harness.transport.effective = []
+        await harness.settings.resetAllDeviceSettings()
+
+        XCTAssertTrue(harness.transport.deletes().contains(.playbackAutoSkipRecap))
+        XCTAssertFalse(harness.settings.autoSkipRecap)
+        XCTAssertEqual(harness.settings.deviceChangedSettingCount, 0)
     }
 
     func testRefreshAdoptsEverySyncedPlayerSetting() async throws {
@@ -2004,12 +2055,12 @@ final class PlayerSettingsFlushTests: XCTestCase {
         XCTAssertEqual(harness.settings.subtitleAppearance.fontSize, SubtitleAppearance.default.fontSize)
     }
 
-    func testResetClearsEverySyncedKeyAtTheDeviceScope() async throws {
+    func testResetClearsEveryKeyThePlayerReadsAtTheDeviceScope() async throws {
         let harness = try PlayerSettingsHarness()
 
         await harness.settings.resetAllDeviceSettings()
 
-        XCTAssertEqual(Set(harness.transport.deletes()), Set(SettingKey.playerDeviceSettings))
+        XCTAssertEqual(Set(harness.transport.deletes()), Set(SettingKey.playerReadSettings))
     }
 
     func testAnOldServerResetAppliesContractDefaultsAndDoesNotQueueDeletes() async throws {
@@ -2022,7 +2073,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
         await harness.settings.setSubtitleAppearance(appearance)
         harness.transport.reset()
         harness.transport.failNextDeletes(
-            SettingKey.playerDeviceSettings.count,
+            SettingKey.playerReadSettings.count,
             with: .serverUpgradeRequired
         )
         harness.transport.effectiveError = .serverUpgradeRequired
