@@ -63,22 +63,14 @@ enum PosterImageCache {
         priority: ImageRequest.Priority = .normal
     ) -> ImageRequest? {
         guard let pixelSize = decodePixelSize(forPointSize: pointSize, scale: scale) else { return nil }
-        ArtworkVariants.shared.record(url, pixelSize: pixelSize)
-        return makeDisplayRequest(url: url, pixelSize: pixelSize, priority: priority)
+        var request = ImageRequest(artwork: url, priority: priority)
+        request.thumbnail = displayThumbnail(pixelSize)
+        ArtworkVariants.shared.record(request.imageID, pixelSize: pixelSize)
+        return request
     }
 
-    private static func makeDisplayRequest(
-        url: URL,
-        pixelSize: CGSize,
-        priority: ImageRequest.Priority = .normal
-    ) -> ImageRequest {
-        var request = ImageRequest(artwork: url, priority: priority)
-        request.thumbnail = ImageRequest.ThumbnailOptions(
-            size: pixelSize,
-            unit: .pixels,
-            contentMode: .aspectFill
-        )
-        return request
+    private static func displayThumbnail(_ pixelSize: CGSize) -> ImageRequest.ThumbnailOptions {
+        ImageRequest.ThumbnailOptions(size: pixelSize, unit: .pixels, contentMode: .aspectFill)
     }
 
     /// Cheap request for average-color / palette sampling.
@@ -96,14 +88,17 @@ enum PosterImageCache {
         of url: URL,
         for pixelSize: CGSize
     ) -> (image: PlatformImage, isSufficient: Bool)? {
+        // Resolve the cache identity once; only the decode size varies below.
+        var request = ImageRequest(artwork: url)
         var best: (image: PlatformImage, area: CGFloat, isSufficient: Bool)?
-        for size in ArtworkVariants.shared.sizes(for: url) {
+        for size in ArtworkVariants.shared.sizes(forImageID: request.imageID) {
             let isSufficient = size.width >= pixelSize.width && size.height >= pixelSize.height
             let area = size.width * size.height
             if let best, best.isSufficient, !isSufficient { continue }
             if let best, best.isSufficient == isSufficient,
                isSufficient ? area >= best.area : area <= best.area { continue }
-            guard let image = ImagePipeline.shared.cache[makeDisplayRequest(url: url, pixelSize: size)]?.image else {
+            request.thumbnail = displayThumbnail(size)
+            guard let image = ImagePipeline.shared.cache[request]?.image else {
                 continue
             }
             best = (image, area, isSufficient)
@@ -158,8 +153,9 @@ enum PosterImageCache {
         }
     }
 
-    /// Warm full-size artwork under its bare-URL key. Only for art whose
-    /// consumers read the unprocessed decode synchronously (marquee logos).
+    /// Warm full-size artwork with no decode size, under its artwork cache
+    /// identity. Only for art whose consumers read the unprocessed decode
+    /// synchronously (marquee logos).
     static func prefetchOriginalArtwork(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
         prefetcher.startPrefetching(with: artworkRequests(urls))
@@ -405,8 +401,10 @@ final class ArtworkVariants: @unchecked Sendable {
         return cache
     }()
 
-    func record(_ url: URL, pixelSize: CGSize) {
-        let key = ArtworkCacheKey.imageID(for: url) as NSString
+    /// `imageID` is the request's cache identity (`ImageRequest.imageID`).
+    func record(_ imageID: String?, pixelSize: CGSize) {
+        guard let imageID else { return }
+        let key = imageID as NSString
         lock.withLock {
             if let sizes = sizesByImageID.object(forKey: key) {
                 if !sizes.values.contains(pixelSize) {
@@ -421,7 +419,11 @@ final class ArtworkVariants: @unchecked Sendable {
     }
 
     func sizes(for url: URL) -> [CGSize] {
-        let key = ArtworkCacheKey.imageID(for: url) as NSString
-        return lock.withLock { sizesByImageID.object(forKey: key)?.values ?? [] }
+        sizes(forImageID: ArtworkCacheKey.imageID(for: url))
+    }
+
+    func sizes(forImageID imageID: String?) -> [CGSize] {
+        guard let imageID else { return [] }
+        return lock.withLock { sizesByImageID.object(forKey: imageID as NSString)?.values ?? [] }
     }
 }
