@@ -206,8 +206,7 @@ struct TVTrailerStatusPill: View {
     /// owner acknowledges it on the coordinator.
     let onAutoDismiss: () -> Void
 
-    /// Matches the phone pill's terminal floor — full sentences need longer
-    /// than `RefreshStatusPill`'s one-word status.
+    /// Matches the phone pill's terminal floor so full sentences can be read.
     private static let terminalVisibleDuration: TimeInterval = 3
 
     var body: some View {

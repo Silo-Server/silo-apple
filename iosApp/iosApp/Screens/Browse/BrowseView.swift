@@ -470,7 +470,6 @@ struct LibraryRecommendedView: View {
     var mediaScope: LibraryVideoScope? = nil
 
     @State private var viewModel = LibraryRecommendedViewModel()
-    @State private var refreshPill = RefreshStatusPillState()
     @Environment(AppRouter.self) private var router
 
     var body: some View {
@@ -494,26 +493,20 @@ struct LibraryRecommendedView: View {
                 }
             }
 
-            if refreshPill.isVisible {
-                RefreshStatusPill()
-                    .padding(.top, SiloTheme.padding)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-                    .zIndex(2)
-            } else if ConnectionMonitor.shared.isOffline, !viewModel.sections.isEmpty {
+            if ConnectionMonitor.shared.isOffline, !viewModel.sections.isEmpty {
                 ServerUnreachablePill()
                     .padding(.top, SiloTheme.padding)
                     .transition(.move(edge: .top).combined(with: .opacity))
                     .zIndex(2)
             }
         }
-        .animation(.easeInOut(duration: 0.18), value: refreshPill.isVisible)
         .animation(.easeInOut(duration: 0.18), value: ConnectionMonitor.shared.isOffline)
         .siloPageBackground()
         .task(id: "\(libraryId):\(mediaScope?.rawValue ?? "all")") {
             await viewModel.loadSections(libraryId: libraryId, mediaScope: mediaScope)
         }
         .refreshable {
-            await refreshRecommendations()
+            await viewModel.loadSections(libraryId: libraryId, mediaScope: mediaScope)
         }
     }
 
@@ -551,11 +544,5 @@ struct LibraryRecommendedView: View {
             Button("Retry") { Task { await viewModel.loadSections(libraryId: libraryId, mediaScope: mediaScope) } }
         }
         .padding(SiloTheme.padding)
-    }
-
-    private func refreshRecommendations() async {
-        await refreshPill.run {
-            await viewModel.loadSections(libraryId: libraryId, mediaScope: mediaScope)
-        }
     }
 }

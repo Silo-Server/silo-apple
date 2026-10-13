@@ -20,7 +20,6 @@ struct HomeView: View {
 
     @State private var viewModel = HomeViewModel()
     #if !os(tvOS)
-    @State private var refreshPill = RefreshStatusPillState()
     /// Feeds the glass strip behind the floating header as rows scroll under it.
     @State private var chromeScrollState = PageChromeScrollState()
     #if os(iOS)
@@ -160,12 +159,7 @@ struct HomeView: View {
                 PageChromeGlass(scrollState: chromeScrollState)
             }
 
-            if refreshPill.isVisible {
-                RefreshStatusPill()
-                    .padding(.top, 64)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-                    .zIndex(2)
-            } else if ConnectionMonitor.shared.isOffline, !viewModel.sections.isEmpty {
+            if ConnectionMonitor.shared.isOffline, !viewModel.sections.isEmpty {
                 // Cached sections are painted but the server can't be
                 // reached — say so instead of silently showing stale data.
                 ServerUnreachablePill()
@@ -175,7 +169,6 @@ struct HomeView: View {
             }
 
         }
-        .animation(.easeInOut(duration: 0.18), value: refreshPill.isVisible)
         .animation(.easeInOut(duration: 0.18), value: ConnectionMonitor.shared.isOffline)
         #if !os(macOS)
         .toolbar(.hidden, for: .navigationBar)
@@ -298,12 +291,10 @@ struct HomeView: View {
 
     #if !os(tvOS)
     private func refreshHome() async {
-        await refreshPill.run {
-            async let homeRefresh: Void = viewModel.loadSections()
-            async let libraryRefresh: LibrariesResponse? = try? await StartupContentPrefetcher
-                .fetchUserLibraries(reusingRecent: false)
-            _ = await (homeRefresh, libraryRefresh)
-        }
+        async let homeRefresh: Void = viewModel.loadSections()
+        async let libraryRefresh: LibrariesResponse? = try? await StartupContentPrefetcher
+            .fetchUserLibraries(reusingRecent: false)
+        _ = await (homeRefresh, libraryRefresh)
     }
 
     #endif

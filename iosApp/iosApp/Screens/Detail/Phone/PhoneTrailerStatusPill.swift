@@ -4,8 +4,7 @@ import SwiftUI
 /// Feedback for the "Find Trailers" action, shown under the detail page's
 /// action row.
 ///
-/// Same chrome as `RefreshStatusPill` — this is the detail page's local
-/// version of the same idea, but the copy is supplied by
+/// Same chrome as `ServerUnreachablePill`, but the copy is supplied by
 /// `TrailerFetchCoordinator.statusMessage` and the terminal outcomes
 /// (cooldown / disabled / nothing found) clear themselves after a beat so a
 /// dead end never becomes permanent furniture on the page. While the fetch
@@ -22,8 +21,8 @@ struct PhoneTrailerStatusPill: View {
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
-    /// Terminal copy is a full sentence rather than a one-word status, so it
-    /// gets twice `RefreshStatusPill`'s floor to be read comfortably.
+    /// Terminal copy is a full sentence, so it stays up long enough to be
+    /// read comfortably.
     private static let terminalVisibleDuration: TimeInterval = 3
 
     var body: some View {
