@@ -138,9 +138,6 @@ struct PlayerView: View {
                     loadingCloseButton
                     #endif
                 } else {
-                    #if os(iOS)
-                    if viewModel.showNextUpScreen { loadingCloseButton }
-                    #endif
                     if !viewModel.showNextUpScreen {
 
                         #if os(tvOS)
@@ -303,6 +300,10 @@ struct PlayerView: View {
                     if let notice = viewModel.presentedNotice {
                         PlayerNoticeOverlay(notice: notice)
                     }
+                    #endif
+                    #if os(iOS)
+                    // Above the notice, which starts at the same corner.
+                    if viewModel.showNextUpScreen { loadingCloseButton }
                     #endif
 
                     #if os(tvOS)

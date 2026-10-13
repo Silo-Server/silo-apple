@@ -5329,25 +5329,32 @@ class PlayerViewModel {
             isLoadingNextUpEpisode = false
             showNextUpScreen = true
             nextUpScreenVideoEnded = true
+            var noticeTitle = "Couldn't start the next episode"
             // A shuffle keeps offering the pick that failed: Play Now
             // retries it, since it never reached a first frame. A later part
             // of an item that already played moves on to the next pick.
             if let shuffleState {
-                shuffleActionError = lastLoadRequest?.contentId == shuffleState.advanceFromContentId
-                    ? "Couldn't play the next part."
-                    : "Couldn't start the next pick."
+                let isNextPart = lastLoadRequest?.contentId == shuffleState.advanceFromContentId
+                shuffleActionError = isNextPart ? "Couldn't play the next part." : "Couldn't start the next pick."
+                noticeTitle = isNextPart ? "Couldn't play the next part" : "Couldn't start the next pick"
                 publishShuffleNextUp()
             }
-            // The restored postroll already says the start failed; only
-            // macOS, which has no postroll screen, needs the notice.
-            #if os(macOS)
-            showNotice(
-                title: "Couldn't start the next episode",
-                message: message,
-                tone: .warning,
-                duration: 6
-            )
+            // The tvOS episode panel shows the reason itself. The other
+            // panels only say the start failed, and macOS has no postroll, so
+            // there the notice carries the reason.
+            #if os(tvOS)
+            let panelShowsReason = shuffleState == nil
+            #else
+            let panelShowsReason = false
             #endif
+            if !panelShowsReason {
+                showNotice(
+                    title: noticeTitle,
+                    message: message,
+                    tone: .warning,
+                    duration: 6
+                )
+            }
         case .recovery:
             let logMessage = MediaLogRedactor.sanitize(message)
             Self.logger.warning(
