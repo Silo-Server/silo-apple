@@ -67,6 +67,9 @@ def next_release(tags, bump, version=None, min_build=None, drafts=()):
     with_builds = [(tag[2], name) for name, tag in parsed.items() if tag[2] is not None]
     previous_build, previous_tag = max(with_builds, default=(0, None))
     betas = [(tag[2], tag[0]) for tag in parsed.values() if BETA.fullmatch(tag[1] or "")]
+    # A hotfix can ship while a newer version is still in testing, so continue
+    # the newest version that hasn't been released.
+    unreleased = [beta for beta in betas if beta[1] not in released]
 
     if version:
         match = VERSION.fullmatch(version.removeprefix("v"))
@@ -76,12 +79,12 @@ def next_release(tags, bump, version=None, min_build=None, drafts=()):
     elif bump == "build":
         if not betas:
             raise ReleaseError("There is no tester build to continue yet. Pass the version to start with, for example 1.0.0.")
-        if max(betas)[1] in released:
+        if not unreleased:
             raise ReleaseError(
                 "There is no unreleased version to add a build to. "
                 "Run with bump=minor (new features) or bump=patch (fixes only) to start the next version."
             )
-        target = max(betas)[1]
+        target = max(unreleased)[1]
     elif latest_release is None:
         raise ReleaseError("Nothing has been released yet, so there is nothing to bump. Pass an explicit version.")
     elif bump == "minor":

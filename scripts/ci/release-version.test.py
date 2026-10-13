@@ -40,6 +40,10 @@ class NextReleaseTest(unittest.TestCase):
         tags = LEGACY_TAGS + ["v1.0.0-beta.66", "v1.0.0", "v1.0.1-beta.67", "v1.1.0-beta.68"]
         self.assertEqual("v1.1.0-beta.69", release.next_release(tags, "build", min_build=69)["tag"])
 
+    def test_build_continues_testing_after_a_hotfix_ships(self):
+        tags = LEGACY_TAGS + ["v1.0.0-beta.66", "v1.0.0", "v1.1.0-beta.67", "v1.0.1-beta.68", "v1.0.1"]
+        self.assertEqual("v1.1.0-beta.69", release.next_release(tags, "build", min_build=69)["tag"])
+
     def test_a_draft_store_release_counts_as_released(self):
         tags = LEGACY_TAGS + ["v1.0.0-beta.66"]
         with self.assertRaisesRegex(release.ReleaseError, "bump=minor"):
