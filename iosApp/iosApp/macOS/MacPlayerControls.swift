@@ -42,7 +42,9 @@ struct MacPlayerControls: View {
                         showOptions(.playback)
                     }
 
-                    qualityButton
+                    if viewModel.hasQualityChoice {
+                        qualityButton
+                    }
 
                     Spacer(minLength: 8)
 

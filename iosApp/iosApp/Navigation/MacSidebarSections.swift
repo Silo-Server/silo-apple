@@ -92,7 +92,7 @@ func macSidebarHighlight(
 ) -> MainTabDestinationID? {
     for route in pushedRoutes.reversed() {
         switch route {
-        case .settings, .serverList, .requestsHub, .myRequests, .requestApprovals,
+        case .settings, .serverList, .requestsHub, .myRequests,
              .requestDetail:
             return nil
         case .search:

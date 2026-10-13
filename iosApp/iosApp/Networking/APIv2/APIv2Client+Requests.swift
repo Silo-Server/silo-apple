@@ -4,6 +4,9 @@ import Foundation
 /// it needs a selected profile, sends `X-Profile-Id` (and the profile proof
 /// when one is held), and runs under the owner captured at the start.
 ///
+/// Follow and unfollow are naturally idempotent: repeating one leaves the
+/// same state, so a lost answer is safe to send again.
+///
 /// Create and cancel are `non_retryable` in the contract. Neither is replayed
 /// after an uncertain outcome; the callers re-read server state instead. An
 /// owner change once a mutation has captured its owner is uncertain too: the
@@ -56,7 +59,7 @@ extension APIv2Client {
 
     /// The acting profile's own requests, up to 100 pages (see `requestList`).
     func myRequests() async throws -> [MediaRequest] {
-        try await requestList(path: "/api/v2/requests/mine", filters: [:], maxPages: 100)
+        try await requestList(path: "/api/v2/requests/mine", maxPages: 100)
     }
 
     // MARK: cancelRequest (non_retryable)
@@ -66,36 +69,27 @@ extension APIv2Client {
         return try await requestsCall("POST", path: path, body: try Self.encode(CancelRequestBody(reason: reason)), status: 200)
     }
 
-    // MARK: Admin moderation (acting admin)
+    // MARK: followRequestMedia / unfollowRequestMedia (naturally idempotent)
 
-    /// `GET /api/v2/admin/requests/capabilities`. Answers only for an admin
-    /// acting as the account's primary profile; anyone else gets a
-    /// permission problem, which callers read as "no approvals".
-    func adminRequestCapabilities() async throws -> AdminRequestCapabilities {
-        try await requestsCall("GET", path: "/api/v2/admin/requests/capabilities", status: 200)
+    /// `PUT /api/v2/requests/follows/{media_type}/{tmdb_id}`: hear when a
+    /// title someone else requested becomes available. Answers the title's
+    /// request state for the viewer.
+    func followRequestMedia(mediaType: RequestMediaType, tmdbId: Int) async throws -> RequestState {
+        let type = try Self.requestableMediaType(mediaType)
+        return try await requestsCall("PUT", path: "/api/v2/requests/follows/\(type)/\(tmdbId)", status: 200)
     }
 
-    /// Every request matching the filter, across all users, newest first, up
-    /// to 40 pages (see `requestList`). `tmdbId` narrows the list to one title through `q`, which also
-    /// matches titles containing the number, so callers still match the id.
-    func adminRequests(
-        status: RequestStatus?,
-        outcome: RequestOutcome?,
-        mediaType: RequestMediaType? = nil,
-        tmdbId: Int? = nil
-    ) async throws -> [MediaRequest] {
-        var filters: [String: String] = [:]
-        if let status { filters["status"] = status.rawValue }
-        if let outcome { filters["outcome"] = outcome.rawValue }
-        if let mediaType, mediaType == .movie || mediaType == .series { filters["media_type"] = mediaType.rawValue }
-        if let tmdbId { filters["q"] = String(tmdbId) }
-        return try await requestList(path: "/api/v2/admin/requests", filters: filters, maxPages: 40)
+    /// `DELETE /api/v2/requests/follows/{media_type}/{tmdb_id}`. Answers 204
+    /// with no body.
+    func unfollowRequestMedia(mediaType: RequestMediaType, tmdbId: Int) async throws {
+        let type = try Self.requestableMediaType(mediaType)
+        _ = try await requestsSend("DELETE", path: "/api/v2/requests/follows/\(type)/\(tmdbId)", status: 204)
     }
 
     /// Follows `page.next_cursor` under one owner captured at the start. A
     /// failed page, a missing or repeated cursor, or the page bound fails the
     /// whole load instead of returning a partial list.
-    private func requestList(path: String, filters: [String: String], maxPages: Int) async throws -> [MediaRequest] {
+    private func requestList(path: String, maxPages: Int) async throws -> [MediaRequest] {
         guard let auth = await tokenStore.captureOrdinaryRequestAuth(),
               let profile = auth.profileId else { throw HTTPError.requestIdentityChanged }
         let identity = Self.requestIdentity(auth, profile: profile)
@@ -104,8 +98,7 @@ extension APIv2Client {
         var seen: Set<String> = []
         for _ in 0..<maxPages {
             try await gate()
-            var query = filters
-            query["limit"] = "50"
+            var query = ["limit": "50"]
             if let cursor { query["cursor"] = cursor }
             let requestQuery = query
             let raw = try await tokenStore.withOwnerFence(auth) {
@@ -126,17 +119,18 @@ extension APIv2Client {
         throw APIv2Error.incompleteRequestList
     }
 
-    /// `POST /api/v2/admin/requests/{id}/{approve|decline|retry}`
-    /// (non_retryable). Decline carries an optional reason.
-    func adminRequestAction(id: String, action: AdminRequestAction, reason: String?) async throws -> MediaRequest {
-        let path = "/api/v2/admin/requests/\(try catalogPathSegment(id))/\(action.rawValue)"
-        return try await requestsCall("POST", path: path, body: try Self.encode(CancelRequestBody(reason: reason)), status: 200)
-    }
-
     // MARK: Transport
 
     private func requestsCall<T: Decodable>(_ method: String, path: String, query: [String: String] = [:],
                                             body: Data? = nil, status: Int) async throws -> T {
+        let response = try await requestsSend(method, path: path, query: query, body: body, status: status)
+        return try HTTPClient.makeJSONDecoder(artworkServerURL: response.url).decode(T.self, from: response.data)
+    }
+
+    /// Sends one profile-scoped call and requires `status`; the caller reads
+    /// the body, if there is one.
+    private func requestsSend(_ method: String, path: String, query: [String: String] = [:],
+                              body: Data? = nil, status: Int) async throws -> HTTPRawResponse {
         try await gate()
         guard let auth = await tokenStore.captureOrdinaryRequestAuth(), let profile = auth.profileId else {
             throw HTTPError.requestIdentityChanged
@@ -158,7 +152,7 @@ extension APIv2Client {
             throw APIv2RequestsError.outcomeUnknownOwnerChanged
         }
         guard response.statusCode == status else { throw APIv2Error.httpStatus(response.statusCode) }
-        return try HTTPClient.makeJSONDecoder(artworkServerURL: response.url).decode(T.self, from: response.data)
+        return response
     }
 
     private static func requestableMediaType(_ type: RequestMediaType) throws -> String {

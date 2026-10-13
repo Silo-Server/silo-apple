@@ -23,11 +23,16 @@ struct MacPlayerOptionsPanel: View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Picker("Options", selection: $selectedTab) {
-                    ForEach(Tab.allCases) { tab in
+                    ForEach(Tab.allCases.filter { $0 != .quality || viewModel.hasQualityChoice }) { tab in
                         Text(tab.rawValue).tag(tab)
                     }
                 }
                 .pickerStyle(.segmented)
+                // The Quality tab is gone when a replan leaves one quality;
+                // leave it rather than keep showing its content.
+                .onChange(of: viewModel.hasQualityChoice, initial: true) { _, hasChoice in
+                    if !hasChoice, selectedTab == .quality { selectedTab = .playback }
+                }
 
                 Button {
                     onDismiss()

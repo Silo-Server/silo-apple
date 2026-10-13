@@ -42,8 +42,13 @@ struct MediaRow: View {
     /// focus on cold launch) should use the preference, keeping directional
     /// entry geometric.
     var defaultFocusPriority: DefaultFocusEvaluationPriority = .userInitiated
+    /// tvOS-only: once focus leaves the row, scroll the strip back to its
+    /// first card. Pair with `prefersDefaultFocusOnFirstItem` so d-pad
+    /// re-entry finds that card loaded; a strip left deep in a LazyHStack
+    /// unloads it and entry falls back to the nearest visible card.
+    var scrollsToFirstItemWhenFocusLeaves: Bool = false
     /// Programmatic kick: when this value changes to non-zero, focus
-    /// jumps to the first item. Used by callers (e.g. PlayerView) that
+    /// jumps to the first item. Used by callers (e.g. Home's SectionRow) that
     /// shift focus from an unrelated view rather than via d-pad entry —
     /// where `.userInitiated` defaultFocus alone doesn't fire because the
     /// focus engine isn't doing the moving.
@@ -161,6 +166,20 @@ struct MediaRow: View {
         DispatchQueue.main.async {
             Self.focusLogger.debug("mediaRow.applyFocus request=\(request, privacy: .public)")
             claimRequestedItemFocus(targetItem, generation: generation)
+        }
+    }
+
+    /// Wait a turn before scrolling: focus can read nil briefly while it moves
+    /// between cards or a context menu dismisses, and scrolling then would
+    /// pull the strip out from under the user.
+    private func scrollToFirstItemIfUnfocused(proxy: ScrollViewProxy) {
+        DispatchQueue.main.async {
+            guard focusedItemId == nil, let firstItem = items.first else { return }
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                proxy.scrollTo(firstItem.id, anchor: .leading)
+            }
         }
     }
 
@@ -405,6 +424,10 @@ struct MediaRow: View {
         }
         .onChange(of: detailReturnFocusRequest) { _, request in
             restoreFocusAfterDetailReturn(request, proxy: rowProxy)
+        }
+        .onChange(of: focusedItemId) { _, focusedId in
+            guard scrollsToFirstItemWhenFocusLeaves, focusedId == nil else { return }
+            scrollToFirstItemIfUnfocused(proxy: rowProxy)
         }
         #endif
     }
