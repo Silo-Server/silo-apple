@@ -264,6 +264,26 @@ final class DiagnosticsRedactionTests: XCTestCase {
         XCTAssertTrue(sentence.contains("]."))
     }
 
+    /// An address inside a path must not stop the path rules short: the
+    /// whole path is redacted, as it is when no address is present.
+    func testPathWithEmbeddedAddressIsRedactedWhole() throws {
+        let unc = try rendered(#"open path=\\192.168.1.42\PrivateShare\Family\index.txt failed"#)
+        XCTAssertFalse(unc.contains("192.168.1.42"))
+        XCTAssertFalse(unc.contains("PrivateShare"))
+        XCTAssertFalse(unc.contains("Family"))
+        XCTAssertTrue(unc.contains("path=[redacted_path] failed"))
+
+        let ipv4 = try rendered("mount /Volumes/192.168.1.42/Family/notes.txt failed")
+        XCTAssertFalse(ipv4.contains("192.168.1.42"))
+        XCTAssertFalse(ipv4.contains("Family"))
+        XCTAssertTrue(ipv4.contains("mount [redacted_path] failed"))
+
+        let hostPort = try rendered("mount /Volumes/nas.local:445/Family/notes.txt failed")
+        XCTAssertFalse(hostPort.contains("nas.local"))
+        XCTAssertFalse(hostPort.contains("Family"))
+        XCTAssertTrue(hostPort.contains("mount [redacted_path] failed"))
+    }
+
     /// Colon-separated text that is not an address stays readable now that
     /// an address may follow a colon or end in punctuation.
     func testColonSeparatedLookalikesStayLiteral() throws {

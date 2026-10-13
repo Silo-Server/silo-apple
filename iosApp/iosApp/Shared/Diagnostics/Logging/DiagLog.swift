@@ -406,8 +406,6 @@ private enum DiagnosticsRedactor {
         result = replaceMatches(in: result, regex: emailRegex, replacement: "[redacted_email]")
         result = replaceSecretKeyValues(in: result)
         result = replaceMatches(in: result, regex: tokenWrapperRegex, replacement: "$1(…[redacted])")
-        result = replaceBareNetworkAddresses(in: result)
-        result = replaceKnownHosts(in: result)
         // Filesystem paths and bare media filenames are the one class this
         // layer never covered on its own, and every DiagTrace, breadcrumb, and
         // early-boot line lands here. Compose the OSLog boundary's rules for
@@ -415,6 +413,11 @@ private enum DiagnosticsRedactor {
         // reused, because hashing the host while keeping the API path is what
         // makes these lines correlatable.
         result = houseStyleMarkers(MediaLogRedactor.sanitizeFilesystemAndMediaIdentity(result))
+        // Hosts are hashed after paths are redacted: a `[host:…]` token inside
+        // `\\192.168.1.42\Share\…` or `/Volumes/10.0.0.5/…` would stop the
+        // path rules short and leave the share and folder names behind.
+        result = replaceBareNetworkAddresses(in: result)
+        result = replaceKnownHosts(in: result)
         return trim(result, maxLength: maxLength)
     }
 
