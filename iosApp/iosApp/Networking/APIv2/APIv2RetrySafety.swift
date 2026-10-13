@@ -143,6 +143,10 @@ enum APIv2MutationCatalog {
         .init("POST", "/api/v2/watch-together/rooms/{room_id}/member-state", .naturalIdempotent),
         .init("POST", "/api/v2/watch-together/rooms/{room_id}/ws-ticket", .naturalIdempotent),
         .init("POST", "/api/v2/watch-together/rooms/{room_id}/source-fallback", .naturalIdempotent),
+        // Media requests: following a title is keyed by the title, so a
+        // repeat leaves the same state.
+        .init("PUT", "/api/v2/requests/follows/{media_type}/{tmdb_id}", .naturalIdempotent),
+        .init("DELETE", "/api/v2/requests/follows/{media_type}/{tmdb_id}", .naturalIdempotent),
     ]
 
     /// `non_retryable` operations the client sends. They would be sent once

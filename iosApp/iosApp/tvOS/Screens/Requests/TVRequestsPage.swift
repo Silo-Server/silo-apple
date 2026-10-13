@@ -3,13 +3,11 @@ import SwiftUI
 
 /// Which rows a `TVRequestsPage` shows.
 enum TVRequestsPageMode {
-    /// The top-bar Requests tab: approvals (admins), the user's requests,
-    /// then the discover carousels.
+    /// The top-bar Requests tab: the user's requests, then the discover
+    /// carousels.
     case hub
     /// The user's requests grouped In progress / Needs you / Available.
     case mine
-    /// Everyone's requests awaiting a decision, and failed ones.
-    case approvals
 }
 
 /// The Requests page in the Skyline layout Home and the library tabs use:
@@ -29,10 +27,8 @@ struct TVRequestsPage: View {
     /// Up from the first row. Nil on pushed pages, which have no top bar.
     var onTopMenuFocusRequest: (() -> Void)? = nil
 
-    /// The page reads the approval queue itself, so the hub doesn't count it.
-    @State private var hub = RequestsHubViewModel(countsPendingApprovals: false)
+    @State private var hub = RequestsHubViewModel()
     @State private var mine = MyRequestsViewModel()
-    @State private var approvals = RequestApprovalsViewModel()
     @State private var marquee = TVFocusMarqueeModel()
     @State private var hasLoaded = false
     @FocusState private var focusedKey: String?
@@ -40,7 +36,6 @@ struct TVRequestsPage: View {
     @State private var lastFocusedKey: String?
     @State private var pendingEntryRequest: Int?
     @State private var appliedEntryRequest = 0
-    @State private var pendingDecline: MediaRequest?
     @Environment(AppRouter.self) private var router
 
     var body: some View {
@@ -61,20 +56,15 @@ struct TVRequestsPage: View {
             switch mode {
             case .hub: hub.applyRequestUpdate(update)
             case .mine: mine.applyRequestUpdate(update)
-            case .approvals: break
             }
         }
-        .onChange(of: RequestsEventBus.shared.lastModeration) { _, record in
-            guard let record else { return }
-            approvals.applyModeration(record)
-        }
-        .onChange(of: RequestsFeatureStore.shared.canModerate) { _, canModerate in
-            // Moderation can be confirmed after the page's first load.
-            guard canModerate, hasLoaded, mode != .mine else { return }
-            Task { await approvals.load() }
+        .onChange(of: RequestsEventBus.shared.lastTitleState) { _, update in
+            // Only discover cards carry a title's follow state.
+            guard let update, mode == .hub else { return }
+            hub.applyTitleState(update)
         }
         .overlay(alignment: .bottomLeading) {
-            if let message = actionMessage {
+            if let message = mine.actionErrorMessage {
                 Text(message)
                     .font(.system(size: 22, weight: .semibold))
                     .foregroundStyle(Color.siloOnSurface)
@@ -90,18 +80,6 @@ struct TVRequestsPage: View {
         .onChange(of: rows.map(\.id)) { _, _ in
             seedMarquee()
             if let pending = pendingEntryRequest { requestEntryFocus(pending) }
-        }
-        .alert(
-            "Decline this request?",
-            isPresented: Binding(get: { pendingDecline != nil }, set: { if !$0 { pendingDecline = nil } }),
-            presenting: pendingDecline
-        ) { request in
-            Button("Decline", role: .destructive) {
-                Task { await approvals.perform(.decline, on: request) }
-            }
-            Button("Keep", role: .cancel) {}
-        } message: { request in
-            Text("\(request.title) will show as declined to the person who asked for it.")
         }
     }
 
@@ -138,24 +116,15 @@ struct TVRequestsPage: View {
         switch mode {
         case .hub: hub.error
         case .mine: mine.error
-        case .approvals: approvals.error
         }
     }
 
-    /// A failed action's message (cancel, approve, decline, retry).
-    private var actionMessage: String? {
-        approvals.actionErrorMessage ?? mine.actionErrorMessage
-    }
-
-    private var emptyIcon: String {
-        mode == .approvals ? "checkmark.circle" : "tray"
-    }
+    private var emptyIcon: String { "tray" }
 
     private var emptyTitle: String {
         switch mode {
         case .hub: "Nothing here yet"
         case .mine: "No requests yet"
-        case .approvals: "Nothing waiting on you"
         }
     }
 
@@ -163,7 +132,6 @@ struct TVRequestsPage: View {
         switch mode {
         case .hub: "Use Search to find a movie or series to request"
         case .mine: "Movies and series you request will show up here"
-        case .approvals: "New requests that need approval will show up here"
         }
     }
 
@@ -176,25 +144,11 @@ struct TVRequestsPage: View {
         switch mode {
         case .hub:
             var rows: [TVRequestRow] = []
-            if RequestsFeatureStore.shared.canModerate, !approvals.awaitingApproval.isEmpty {
-                rows.append(TVRequestRow(
-                    id: "approvals",
-                    title: "Waiting for your approval",
-                    items: approvals.awaitingApproval.map { .approval($0) }
-                ))
-            }
             if !hub.myRequests.isEmpty {
                 rows.append(TVRequestRow(
                     id: "mine",
                     title: "Your requests",
                     items: hub.myRequests.map { .record($0) }
-                ))
-            }
-            if RequestsFeatureStore.shared.canModerate, !approvals.failed.isEmpty {
-                rows.append(TVRequestRow(
-                    id: "failed",
-                    title: "Failed requests",
-                    items: approvals.failed.map { .approval($0) }
                 ))
             }
             for (index, carousel) in hub.carousels.enumerated() {
@@ -214,36 +168,15 @@ struct TVRequestsPage: View {
                     items: entry.requests.map { .record($0) }
                 )
             }
-        case .approvals:
-            var rows: [TVRequestRow] = []
-            if !approvals.awaitingApproval.isEmpty {
-                rows.append(TVRequestRow(
-                    id: "approvals",
-                    title: "Waiting for approval",
-                    items: approvals.awaitingApproval.map { .approval($0) }
-                ))
-            }
-            if !approvals.failed.isEmpty {
-                rows.append(TVRequestRow(
-                    id: "failed",
-                    title: "Failed",
-                    items: approvals.failed.map { .approval($0) }
-                ))
-            }
-            return rows
         }
     }
 
     private func load() async {
         switch mode {
         case .hub:
-            async let discover = hub.load()
-            async let moderation: Void = loadApprovalsIfModerating()
-            _ = await (discover, moderation)
+            await hub.load()
         case .mine:
             await mine.load()
-        case .approvals:
-            await approvals.load()
         }
         hasLoaded = true
     }
@@ -251,12 +184,6 @@ struct TVRequestsPage: View {
     private func retry() async {
         hasLoaded = false
         await load()
-    }
-
-    private func loadApprovalsIfModerating() async {
-        if RequestsFeatureStore.shared.canModerate {
-            await approvals.load()
-        }
     }
 
     // MARK: - Feed
@@ -378,32 +305,6 @@ struct TVRequestsPage: View {
                         }
                     }
                 }
-        case .approval(let record):
-            RequestMediaCard(record: record, onTap: { router.openModerationRecord(record) })
-                .cardWidth(SiloTheme.Skyline.densePosterCardWidth)
-                .focused($focusedKey, id: key)
-                .contextMenu {
-                    if !approvals.canAct(on: record) {
-                        EmptyView()
-                    } else if RequestDisplayState(record: record) == .pending {
-                        Button {
-                            Task { await approvals.perform(.approve, on: record) }
-                        } label: {
-                            Label("Approve", systemImage: "checkmark")
-                        }
-                        Button(role: .destructive) {
-                            pendingDecline = record
-                        } label: {
-                            Label("Decline", systemImage: "xmark")
-                        }
-                    } else if case .needsAttention(.failed, _) = RequestDisplayState(record: record) {
-                        Button {
-                            Task { await approvals.perform(.retry, on: record) }
-                        } label: {
-                            Label("Retry", systemImage: "arrow.clockwise")
-                        }
-                    }
-                }
         case .result(let result):
             RequestMediaCard(result: result, onTap: { router.openRequestResult(result) })
                 .cardWidth(SiloTheme.Skyline.densePosterCardWidth)
@@ -485,7 +386,7 @@ struct TVRequestsPage: View {
         let statusText: String?
         var rating: DisplayRating?
         switch item {
-        case .record(let record), .approval(let record):
+        case .record(let record):
             meta.append("Requested \(record.createdAt.formatted(.dateTime.month(.abbreviated).day()))")
             let recordProgress = RequestProgress(record: record)
             progress = recordProgress
@@ -551,56 +452,53 @@ struct TVRequestRow: Identifiable {
 
 enum TVRequestItem: Identifiable {
     case record(MediaRequest)
-    /// Someone's request, shown to an admin who can decide on it.
-    case approval(MediaRequest)
     case result(RequestMediaResult)
 
     var id: String {
         switch self {
         case .record(let record): "request:\(record.id)"
-        case .approval(let record): "approval:\(record.id)"
         case .result(let result): "tmdb:\(result.id)"
         }
     }
 
     var title: String {
         switch self {
-        case .record(let r), .approval(let r): r.title
+        case .record(let r): r.title
         case .result(let r): r.title
         }
     }
 
     var year: Int? {
         switch self {
-        case .record(let r), .approval(let r): r.year
+        case .record(let r): r.year
         case .result(let r): r.year
         }
     }
 
     var mediaType: RequestMediaType {
         switch self {
-        case .record(let r), .approval(let r): r.mediaType
+        case .record(let r): r.mediaType
         case .result(let r): r.mediaType
         }
     }
 
     var overview: String? {
         switch self {
-        case .record(let r), .approval(let r): r.overview
+        case .record(let r): r.overview
         case .result(let r): r.overview
         }
     }
 
     var posterPath: String? {
         switch self {
-        case .record(let r), .approval(let r): r.posterPath
+        case .record(let r): r.posterPath
         case .result(let r): r.posterPath
         }
     }
 
     var backdropPath: String? {
         switch self {
-        case .record(let r), .approval(let r): r.backdropPath
+        case .record(let r): r.backdropPath
         case .result(let r): r.backdropPath
         }
     }

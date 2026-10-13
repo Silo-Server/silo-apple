@@ -4,7 +4,8 @@ import Foundation
 
 /// User-facing endpoints of the server's media-request system
 /// (`/api/v2/requests`, TMDB movies + series): search, create, track, and
-/// cancel, plus the admin approval queue (`/api/v2/admin/requests`).
+/// cancel. Request administration (approve, decline, retry, limits) is
+/// web-admin only and has no client here.
 extension SiloAPI {
     /// Profile-scoped capability probe. Entry points gate on
     /// `RequestsFeatureStatus.isAvailable`.
@@ -46,22 +47,12 @@ extension SiloAPI {
         try await apiV2Client.cancelRequest(id: id, reason: reason)
     }
 
-    // MARK: Admin approvals
-
-    func adminRequestCapabilities() async throws -> AdminRequestCapabilities {
-        try await apiV2Client.adminRequestCapabilities()
+    /// Notify the viewer when a title someone else requested lands.
+    func followRequestMedia(mediaType: RequestMediaType, tmdbId: Int) async throws -> RequestState {
+        try await apiV2Client.followRequestMedia(mediaType: mediaType, tmdbId: tmdbId)
     }
 
-    func adminRequests(
-        status: RequestStatus? = nil,
-        outcome: RequestOutcome? = nil,
-        mediaType: RequestMediaType? = nil,
-        tmdbId: Int? = nil
-    ) async throws -> [MediaRequest] {
-        try await apiV2Client.adminRequests(status: status, outcome: outcome, mediaType: mediaType, tmdbId: tmdbId)
-    }
-
-    func adminRequestAction(id: String, action: AdminRequestAction, reason: String? = nil) async throws -> MediaRequest {
-        try await apiV2Client.adminRequestAction(id: id, action: action, reason: reason)
+    func unfollowRequestMedia(mediaType: RequestMediaType, tmdbId: Int) async throws {
+        try await apiV2Client.unfollowRequestMedia(mediaType: mediaType, tmdbId: tmdbId)
     }
 }

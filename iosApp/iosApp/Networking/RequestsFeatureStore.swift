@@ -23,10 +23,9 @@ final class RequestsFeatureStore {
     /// default, so no separate loading state exists.
     private(set) var isEnabled = false
 
-    /// Whether the signed-in user can moderate everyone's requests: an admin
-    /// acting as the primary profile on a server with the integration
-    /// configured. Probed only after `isEnabled`, and false on any failure.
-    private(set) var canModerate = false
+    /// Whether the server lets a viewer follow a title someone else already
+    /// requested ("Notify Me"). False whenever `isEnabled` is.
+    private(set) var followSupported = false
 
     /// Bumped on every `reset()` so a probe that finishes after a sign-out
     /// or profile switch discards its result instead of repopulating the
@@ -47,30 +46,13 @@ final class RequestsFeatureStore {
         // yank an already-visible entry point, and foreground/auth-state
         // transitions retry naturally.
         let enabled = status?.isAvailable ?? isEnabled
-        var moderates = canModerate
-        if !enabled {
-            moderates = false
-        } else {
-            do {
-                moderates = try await api.adminRequestCapabilities().available
-            } catch APIv2Error.problem {
-                // The server answered: not an admin, not the primary
-                // profile, or no integration configured.
-                moderates = false
-            } catch {
-                // Transport trouble: keep the previous value.
-            }
-            guard gen == generation else { return }
-        }
-        // Published together, moderation first: a screen that appears when
-        // Requests does already knows whether to load the approval queue.
-        canModerate = moderates
+        followSupported = enabled && (status.map { $0.followSupported == true } ?? followSupported)
         isEnabled = enabled
     }
 
     func reset() {
         generation &+= 1
         isEnabled = false
-        canModerate = false
+        followSupported = false
     }
 }

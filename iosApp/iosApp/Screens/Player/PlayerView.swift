@@ -834,7 +834,6 @@ struct PlayerNextUpScreen: View {
     let onBack: () -> Void
     var onStopShuffling: () -> Void = {}
     @FocusState private var focusedTarget: PlayerNextUpFocusTarget?
-    @State private var onDeckFocusRequest = 0
     @State private var didRequestInitialActionFocus = false
     @State private var uiCustomization = UICustomizationPreferences.shared
 
@@ -1304,8 +1303,6 @@ struct PlayerNextUpScreen: View {
         .onMoveCommand { direction in
             if direction == .up {
                 focusPreferredAction()
-            } else if direction == .down {
-                focusFirstOnDeckItem()
             }
         }
         #endif
@@ -1320,7 +1317,12 @@ struct PlayerNextUpScreen: View {
             icon: "play.circle.fill",
             layout: .thumbnail,
             usesProvidedThumbnailTapAction: onDeckUsesProvidedThumbnailTapAction,
-            focusRequest: onDeckFocusRequest,
+            // The panel sits above the third card, so a geometric Down entry
+            // would skip the first. Let the focus engine enter the row and
+            // land on its first card instead of redirecting the move, and
+            // scroll the strip home on exit so that card is loaded next time.
+            prefersDefaultFocusOnFirstItem: true,
+            scrollsToFirstItemWhenFocusLeaves: true,
             onMoveUp: focusAboveOnDeck
         )
     }
@@ -1386,11 +1388,9 @@ struct PlayerNextUpScreen: View {
     }
 
     private func focusBelowActions() {
-        if viewModel.nextUpEpisode != nil {
-            focusedTarget = .autoPlay
-            return
-        }
-        focusFirstOnDeckItem()
+        // Without the Auto-play toggle, Down enters On Deck natively.
+        guard viewModel.nextUpEpisode != nil else { return }
+        focusedTarget = .autoPlay
     }
 
     private func focusAboveOnDeck() {
@@ -1399,11 +1399,6 @@ struct PlayerNextUpScreen: View {
             return
         }
         focusPreferredAction()
-    }
-
-    private func focusFirstOnDeckItem() {
-        guard !viewModel.nextUpCarouselItems.isEmpty else { return }
-        onDeckFocusRequest &+= 1
     }
 
     private func requestInitialActionFocusIfNeeded() {

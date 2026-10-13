@@ -410,7 +410,7 @@ final class SettingsConformanceTests: XCTestCase {
     /// `minimumServerRevision` from dropping below it.
     func testBatchesWithoutAFallbackAreServedAtTheMinimumRevision() {
         let batches: [(name: String, keys: [SettingKey])] = [
-            ("player", SettingKey.playerDeviceSettings),
+            ("player", SettingKey.playerReadSettings),
             ("profile", ProfileSettingKeys.all),
         ]
         for batch in batches {
