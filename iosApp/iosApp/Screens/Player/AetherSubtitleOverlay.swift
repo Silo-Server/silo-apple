@@ -49,10 +49,10 @@ struct AetherSubtitleOverlay: View {
                 if assSubtitles.handlesCurrentTrack {
                     ASSSubtitleLayer(session: assSubtitles, videoRect: videoRect, delaySeconds: subtitleDelaySeconds)
                 } else {
-                    cueLayer(activeCues(primaryCursor, usesMovieTimeline: primaryUsesMovieTimeline),
+                    cueLayer(activeCues(primaryCursor, of: primary, usesMovieTimeline: primaryUsesMovieTimeline),
                              style: style, videoRect: videoRect, secondary: false)
                 }
-                cueLayer(activeCues(secondaryCursor, usesMovieTimeline: secondaryUsesMovieTimeline),
+                cueLayer(activeCues(secondaryCursor, of: secondary, usesMovieTimeline: secondaryUsesMovieTimeline),
                          style: style, videoRect: videoRect, secondary: true)
                 liveCueLayer(activeLiveCues(livePrimaryCursor, in: livePrimaryCues),
                              style: style, videoRect: videoRect, secondary: false)
@@ -112,7 +112,15 @@ struct AetherSubtitleOverlay: View {
         (usesMovieTimeline ? movieTime : engineTime) - delaySeconds
     }
 
-    private func activeCues(_ cursor: SubtitleCueCursor<SubtitleCue>, usesMovieTimeline: Bool) -> [SubtitleCue] {
+    /// `cues` is the list `cursor` was last reset with. Reading it here makes
+    /// the body depend on it: the cursor is a plain object, so cues decoded
+    /// while paused would otherwise wait for a clock tick to show.
+    private func activeCues(
+        _ cursor: SubtitleCueCursor<SubtitleCue>,
+        of cues: [SubtitleCue],
+        usesMovieTimeline: Bool
+    ) -> [SubtitleCue] {
+        guard !cues.isEmpty else { return [] }
         // Complete sidecars use original movie timestamps; embedded cues use
         // the served stream's clock, which may be rebased by a server remux.
         let renderClock = Self.renderClock(movieTime: sourceTime, engineTime: aetherSourceTime,
