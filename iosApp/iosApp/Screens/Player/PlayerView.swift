@@ -1062,11 +1062,11 @@ struct PlayerNextUpScreen: View {
         .accessibilityIdentifier("next-up-stop-shuffling")
         #if os(tvOS)
         .focused($focusedTarget, equals: .stopShuffling)
+        // Down is left to the focus engine, which enters On Deck at its
+        // first card, as it does from the actions row.
         .onMoveCommand { direction in
             if direction == .up {
                 focusPreferredAction()
-            } else if direction == .down {
-                focusFirstOnDeckItem()
             }
         }
         #endif
