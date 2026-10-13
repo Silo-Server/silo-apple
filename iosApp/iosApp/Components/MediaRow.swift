@@ -425,8 +425,10 @@ struct MediaRow: View {
         .onChange(of: detailReturnFocusRequest) { _, request in
             restoreFocusAfterDetailReturn(request, proxy: rowProxy)
         }
-        .onChange(of: focusedItemId) { _, focusedId in
-            guard scrollsToFirstItemWhenFocusLeaves, focusedId == nil else { return }
+        .applyFocusLeaveScroll(
+            enabled: scrollsToFirstItemWhenFocusLeaves,
+            focusedItemId: $focusedItemId
+        ) {
             scrollToFirstItemIfUnfocused(proxy: rowProxy)
         }
         #endif
@@ -707,6 +709,20 @@ private struct TVRowFocusObserver: ViewModifier {
     }
 }
 
+/// Runs `onFocusLeave` when focus leaves the row. Like `TVRowFocusObserver`,
+/// it reads focus here rather than in the strip's body, so moving between
+/// cards does not re-evaluate the LazyHStack and every card in it.
+private struct TVRowFocusLeaveObserver: ViewModifier {
+    let focusedItemId: FocusState<String?>.Binding
+    let onFocusLeave: () -> Void
+
+    func body(content: Content) -> some View {
+        content.onChange(of: focusedItemId.wrappedValue) { _, itemId in
+            if itemId == nil { onFocusLeave() }
+        }
+    }
+}
+
 /// Bridges the row's boundary up/down move commands to the host. Only
 /// attaches an `onMoveCommand` when at least one handler is supplied, so a
 /// row that should stay out of the focus path (e.g. a non-paged row)
@@ -733,6 +749,21 @@ private struct TVRowMoveHandler: ViewModifier {
 }
 
 private extension View {
+    /// Only rows that ask for it observe focus leaving; the rest carry no
+    /// extra focus dependency.
+    @ViewBuilder
+    func applyFocusLeaveScroll(
+        enabled: Bool,
+        focusedItemId: FocusState<String?>.Binding,
+        onFocusLeave: @escaping () -> Void
+    ) -> some View {
+        if enabled {
+            modifier(TVRowFocusLeaveObserver(focusedItemId: focusedItemId, onFocusLeave: onFocusLeave))
+        } else {
+            self
+        }
+    }
+
     /// Routes both initial and user-initiated (d-pad) focus into the
     /// row's first card. The `.userInitiated` priority is the bit that
     /// `prefersDefaultFocus(_:in:)` lacks — it makes default focus win
