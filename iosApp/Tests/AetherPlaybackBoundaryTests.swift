@@ -190,6 +190,20 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         ))
     }
 
+    func testMediaWithVideoResolvesCredentialsButAudioOnlyKeepsReloadPath() {
+        typealias Delivery = PlaybackProtocolV3.PlanDelivery
+        for delivery in [Delivery.originalHTTP, Delivery.remuxProgressive, Delivery.remuxHLS, Delivery.transcodeHLS] {
+            XCTAssertTrue(AetherAuthenticationRecoveryPolicy.resolvesRequestCredentials(
+                delivery: delivery, hasVideo: true
+            ), delivery)
+            // Audio-only media keeps its opening headers and the existing
+            // reload-after-rotation and 401-reload recovery.
+            XCTAssertFalse(AetherAuthenticationRecoveryPolicy.resolvesRequestCredentials(
+                delivery: delivery, hasVideo: false
+            ), delivery)
+        }
+    }
+
     func testPeriodicProgressReloadsOnlyAfterSuccessWithChangedAuthorization() {
         let active = ["Authorization": "Bearer old-token"]
         let refreshed = ["authorization": "Bearer new-token"]
@@ -599,6 +613,41 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         XCTAssertTrue(spec.options.nativeRemoteHLS)
         XCTAssertEqual(spec.options.httpHeaders["Authorization"], "Bearer test")
         XCTAssertTrue(spec.options.httpRequestAuthorization === authorization)
+    }
+
+    func testDirectPlayWithVideoResolvesCredentialsPerRequest() throws {
+        let authorization = HTTPRequestAuthorization { _, _ in ["Authorization": "Bearer current"] }
+        let videoSpec = try directPlaySpec(videoCodec: "h264", requestAuthorization: authorization)
+        XCTAssertFalse(videoSpec.options.nativeRemoteHLS)
+        XCTAssertTrue(videoSpec.options.httpRequestAuthorization === authorization)
+
+        let audioSpec = try directPlaySpec(videoCodec: nil, requestAuthorization: authorization)
+        XCTAssertTrue(audioSpec.options.audioOnly)
+        XCTAssertNil(audioSpec.options.httpRequestAuthorization)
+    }
+
+    private func directPlaySpec(
+        videoCodec: String?,
+        requestAuthorization: HTTPRequestAuthorization
+    ) throws -> AetherLoadSpec {
+        var object = try PlaybackV3FixtureTestSupport.v2DecisionObject(bundleClass: Self.self)
+        var planObject = try XCTUnwrap(object["playback_plan"] as? [String: Any])
+        XCTAssertEqual(planObject["delivery"] as? String, PlaybackProtocolV3.PlanDelivery.originalHTTP)
+        var recipe = try XCTUnwrap(planObject["effective_recipe"] as? [String: Any])
+        recipe["video_codec"] = videoCodec ?? NSNull()
+        planObject["effective_recipe"] = recipe
+        object["playback_plan"] = planObject
+        let validation = try PlaybackV3FixtureTestSupport.v2Decision(object).validatedForApple()
+        guard case .playable(let plan, let sessionID) = validation else {
+            throw UnplayableFixture(description: "Expected a playable direct-play fixture, got \(validation)")
+        }
+        return try AetherLoadSpec(
+            validating: plan,
+            sessionID: sessionID,
+            matchContentEnabled: true,
+            requestAuthorization: requestAuthorization,
+            resolveURL: { URL(string: $0, relativeTo: URL(string: "https://dev.example.test")) }
+        )
     }
 
     /// The Dolby Vision setting has to reach Aether as well as the server's
