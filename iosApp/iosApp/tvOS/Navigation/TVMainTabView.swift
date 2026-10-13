@@ -1421,8 +1421,6 @@ struct TVMainTabView: View {
             RequestDetailView(mediaType: mediaType, tmdbId: tmdbId)
         case .myRequests:
             MyRequestsView()
-        case .requestApprovals:
-            MyRequestsView(initialScope: .everyone)
         case .search:
             SearchView(usesTVTopMenuInset: false, seededQuery: $siriSearchRequest)
         case .settings:

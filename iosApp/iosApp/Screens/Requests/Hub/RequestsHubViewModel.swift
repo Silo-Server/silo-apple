@@ -39,8 +39,6 @@ final class RequestsHubViewModel {
     }
     /// Kept in step with `myRequests` so the body reads stored counts.
     private(set) var statusCounts = RequestStatusCounts()
-    /// Requests waiting on this admin's decision; zero for everyone else.
-    private(set) var pendingApprovals = 0
     var isLoading = false
     var error: ErrorState?
 
@@ -54,13 +52,9 @@ final class RequestsHubViewModel {
 
     private var searchTask: Task<Void, Never>?
     private let api: SiloAPI
-    /// False where the page reads the full approval queue itself (tvOS), so
-    /// the hub doesn't read it a second time just to count it.
-    private let countsPendingApprovals: Bool
 
-    init(api: SiloAPI = .shared, countsPendingApprovals: Bool = true) {
+    init(api: SiloAPI = .shared) {
         self.api = api
-        self.countsPendingApprovals = countsPendingApprovals
     }
 
     /// True while the hub should show discover content (no active query).
@@ -73,9 +67,6 @@ final class RequestsHubViewModel {
     func load() async -> Bool {
         isLoading = carousels.isEmpty && myRequests.isEmpty
         error = nil
-        // The admin queue can take many pages; it fills its row when it
-        // lands instead of holding the hub on placeholders.
-        async let approvals: Void = loadPendingApprovals()
         async let discover = api.requestsDiscover()
         async let mine = api.myRequests()
         var succeeded = false
@@ -94,23 +85,7 @@ final class RequestsHubViewModel {
             }
         }
         isLoading = false
-        await approvals
         return succeeded
-    }
-
-    /// The hub's approvals row is a nudge, not a list: a failed read hides it.
-    private func loadPendingApprovals() async {
-        guard countsPendingApprovals, RequestsFeatureStore.shared.canModerate else {
-            pendingApprovals = 0
-            return
-        }
-        let pending = try? await api.adminRequests(status: .pending, outcome: .active)
-        pendingApprovals = pending?.count ?? 0
-    }
-
-    /// Bus consumer for admin decisions made anywhere in the app.
-    func applyModeration() {
-        Task { await loadPendingApprovals() }
     }
 
     /// Debounced TMDB search, mirroring `SearchViewModel`'s 300ms feel.
@@ -153,6 +128,16 @@ final class RequestsHubViewModel {
             hasSearched = true
         }
         isSearching = false
+    }
+
+    /// Bus consumer: a follow toggle patches the title's cards in place.
+    func applyTitleState(_ update: RequestTitleStateUpdate) {
+        searchResults.applyTitleState(update)
+        carousels = carousels.map { carousel in
+            var results = carousel.results
+            results.applyTitleState(update)
+            return RequestCarousel(id: carousel.id, title: carousel.title, results: results)
+        }
     }
 
     /// Bus consumer: patch every visible surface in place after a mutation

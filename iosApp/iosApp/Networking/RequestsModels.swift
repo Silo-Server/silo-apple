@@ -104,6 +104,10 @@ struct RequestsFeatureStatus: Decodable {
     let requestsEnabled: Bool
     let state: String
     let allowed: Bool?
+    /// The server offers `PUT`/`DELETE /api/v2/requests/follows/…`, so a
+    /// viewer can ask to hear when someone else's request lands. Absent on
+    /// older servers, which reads as unsupported.
+    var followSupported: Bool? = nil
 
     /// The feature is on and this profile may use it. A blocked account sees
     /// `requests_enabled: true` with `allowed: false`.
@@ -127,6 +131,12 @@ struct RequestState: Codable, Hashable {
     /// rendered verbatim.
     let reason: String?
     let requestId: String?
+    /// The viewer hears when the title becomes available: they requested it
+    /// or follow it. Absent on older servers.
+    var following: Bool? = nil
+    /// The viewing profile made the active request, so there is nothing to
+    /// follow. Absent on older servers.
+    var requestedByViewer: Bool? = nil
 }
 
 /// One TMDB search/discover result annotated with this server's
@@ -143,7 +153,8 @@ struct RequestMediaResult: Codable, Identifiable, Hashable {
     let voteAverage: Double?
     let availability: RequestAvailability
     let libraryContentId: String?
-    let request: RequestState
+    /// Mutable so a follow toggle can patch the viewer's state in place.
+    var request: RequestState
 
     var id: String { "\(mediaType.rawValue):\(tmdbId)" }
 }
@@ -201,7 +212,8 @@ struct RequestMediaDetail: Codable {
     let recommendations: [RequestMediaResult]?
     let availability: RequestAvailability
     let libraryContentId: String?
-    let request: RequestState
+    /// Mutable so a follow toggle can patch the viewer's state in place.
+    var request: RequestState
 }
 
 // MARK: - Request records

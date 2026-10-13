@@ -152,8 +152,10 @@ final class ExitSentinelLeftoverPolicyTests: XCTestCase {
         let crashed = marker(environment: environment)
         store.writeCurrent(crashed)
         XCTAssertEqual(store.preserveLeftoverFromCurrentSlot(currentRunID: "relaunch") { _ in true }, crashed)
+        // The relaunch armed its own marker and a reboot cut it off, so the
+        // next launch finds a previous run in the current slot and a crash
+        // waiting in the leftover slot.
         store.writeCurrent(ExitSentinelMarker(runID: "relaunch", startedAt: "2026-10-04T11:00:00.000Z"))
-        store.clearCurrent()
 
         XCTAssertEqual(store.preserveLeftoverFromCurrentSlot(currentRunID: "after-reboot") { _ in false }, crashed)
         XCTAssertEqual(store.readLeftover(), crashed)
