@@ -430,24 +430,34 @@ final class PendingReportStoreTests: XCTestCase {
         XCTAssertNil(store.report(id: first.id, now: start)?.manifest.report.occurrenceCount)
     }
 
-    /// A report that can never be delivered would swallow the repeat, so the
-    /// repeat starts a report of its own.
+    /// A report that is never sent automatically (too large, refused by the
+    /// server or collector, or waiting for a server update) would swallow
+    /// the repeat, so the repeat starts a report of its own that can be.
     func testRepeatOfAnUndeliverableReportStartsANewReport() throws {
-        let store = try makeStore()
-        let binding = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "42")
-        let start = Date(timeIntervalSince1970: 100_000)
-        let first = try store.save(makeCapture(binding: binding, fingerprint: "event-1", capturedAt: start, issue: "issue-a"))
-        store.markTooLarge(first)
+        let marks: [(String, (PendingReportStore, PendingReport) -> Void)] = [
+            ("too large", { $0.markTooLarge($1) }),
+            ("server rejected", { $0.markServerRejected($1) }),
+            ("needs server update", { $0.markNeedsServerUpdate($1) }),
+            ("hosted rejected", { $0.markHostedRejected($1, code: "invalid_manifest") }),
+        ]
+        for (label, mark) in marks {
+            let store = try makeStore()
+            let binding = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "42")
+            let start = Date(timeIntervalSince1970: 100_000)
+            let first = try store.save(makeCapture(binding: binding, fingerprint: "event-1", capturedAt: start, issue: "issue-a"))
+            mark(store, first)
 
-        let repeated = try store.save(makeCapture(
-            binding: binding,
-            fingerprint: "event-2",
-            capturedAt: start.addingTimeInterval(60),
-            issue: "issue-a"
-        ))
+            let repeated = try store.save(makeCapture(
+                binding: binding,
+                fingerprint: "event-2",
+                capturedAt: start.addingTimeInterval(60),
+                issue: "issue-a"
+            ))
 
-        XCTAssertNotEqual(repeated.id, first.id)
-        XCTAssertNil(store.report(id: first.id, now: start)?.manifest.report.occurrenceCount)
+            XCTAssertNotEqual(repeated.id, first.id, label)
+            XCTAssertFalse(repeated.state.isPermanentFailure, label)
+            XCTAssertNil(store.report(id: first.id, now: start)?.manifest.report.occurrenceCount, label)
+        }
     }
 
     /// An upload builds from the report reloaded when it starts, so a repeat
