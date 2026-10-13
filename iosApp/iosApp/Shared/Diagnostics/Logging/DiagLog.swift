@@ -30,6 +30,13 @@ enum DiagLog {
         DiagnosticsRedactor.resetSensitiveHostsForTesting()
     }
 
+    /// Applies the URL, address, email, and credential rules every log line
+    /// gets to text that did not come through the log, such as the free-text
+    /// fields of a MetricKit payload.
+    static func redactFreeText(_ value: String, maxLength: Int) -> String {
+        DiagnosticsRedactor.sanitize(value, maxLength: maxLength)
+    }
+
     static func d(_ category: Category, _ tag: String, _ message: String, _ attrs: [String: DiagLogAttributeValue] = [:]) {
         append(level: .debug, category: category, tag: tag, message: message, attrs: attrs)
     }
