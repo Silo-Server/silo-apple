@@ -70,4 +70,8 @@ final class RequestSearchSectionViewModel {
     func applyRequestUpdate(_ record: MediaRequest) {
         results.applyRequestUpdate(record)
     }
+
+    func applyTitleState(_ update: RequestTitleStateUpdate) {
+        results.applyTitleState(update)
+    }
 }

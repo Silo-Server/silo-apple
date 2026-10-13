@@ -39,6 +39,11 @@ struct RequestSearchSectionView: View {
                     viewModel.applyRequestUpdate(update)
                 }
             }
+            .onChange(of: RequestsEventBus.shared.lastTitleState) { _, update in
+                if let update {
+                    viewModel.applyTitleState(update)
+                }
+            }
         }
     }
 

@@ -11,32 +11,25 @@ final class RequestsEventBus {
     static let shared = RequestsEventBus()
 
     private(set) var lastUpdate: MediaRequest?
-    /// The most recent admin decision (approve/decline/retry) on anyone's
-    /// request. Kept apart from `lastUpdate`, whose consumers treat every
-    /// record as the signed-in user's own.
-    private(set) var lastModeration: MediaRequest?
+    /// The most recent follow toggle. Kept apart from `lastUpdate`: no
+    /// record of the user's own changed, only their state on the title.
+    private(set) var lastTitleState: RequestTitleStateUpdate?
 
     func publish(_ request: MediaRequest) {
         RequestDetailCache.shared.storeOwnRecord(request)
         lastUpdate = request
     }
 
-    func publishModeration(_ request: MediaRequest) {
-        let cache = RequestDetailCache.shared
-        cache.unpinModeration(request)
-        // An admin deciding on their own request: their own lists update too.
-        let key = RequestDetailCache.Key(mediaType: request.mediaType, tmdbId: request.tmdbId)
-        if cache.ownRecord(key)?.id == request.id {
-            publish(request)
-        }
-        lastModeration = request
+    func publishTitleState(_ update: RequestTitleStateUpdate) {
+        RequestDetailCache.shared.applyTitleState(update)
+        lastTitleState = update
     }
 
     /// Sign-out / profile switch: don't leak one account's last mutation
     /// into the next session's `.onChange` observers.
     func reset() {
         lastUpdate = nil
-        lastModeration = nil
+        lastTitleState = nil
         RequestDetailCache.shared.clear()
     }
 }

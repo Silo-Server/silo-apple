@@ -150,6 +150,16 @@ extension SettingKey {
         .playerVideoGravity,
         .playerOrientationMode,
     ]
+
+    /// Profile settings the player follows but has no Apple setting for.
+    /// `playback.auto_skip_recap` is set from the profile, for example on the
+    /// web, so the player never writes or migrates it. The web can still give
+    /// this device its own value, which "Use Profile Settings" clears like any
+    /// other.
+    static let playerFollowedSettings: [SettingKey] = [.playbackAutoSkipRecap]
+
+    /// What a player refresh reads: the synced keys plus the followed ones.
+    static let playerReadSettings: [SettingKey] = playerDeviceSettings + playerFollowedSettings
 }
 
 /// A Playback setting the profile can hold as well as this device, so the
@@ -188,6 +198,7 @@ private extension SettingKey {
     static var audioLanguage: SettingKey { .playbackAudioLanguage }
     static var introSkipMode: SettingKey { .playbackIntroSkipMode }
     static var autoSkipCredits: SettingKey { .playbackAutoSkipCredits }
+    static var autoSkipRecap: SettingKey { .playbackAutoSkipRecap }
     static var autoPlayNext: SettingKey { .playbackAutoPlayNext }
     static var nextUpPromptSeconds: SettingKey { .playbackNextUpPromptSeconds }
     static var subtitleAppearance: SettingKey { .playbackSubtitleAppearance }
@@ -305,6 +316,15 @@ final class PlayerSettings {
         didSet {
             guard !isLoadingCache else { return }
             defaults.set(autoSkipCredits, forKey: Self.cacheKey(Keys.autoSkipCredits))
+        }
+    }
+
+    /// `playback.auto_skip_recap`, followed from the effective settings read.
+    /// Read only: Apple has no player setting for it.
+    private(set) var autoSkipRecap: Bool {
+        didSet {
+            guard !isLoadingCache else { return }
+            defaults.set(autoSkipRecap, forKey: Self.cacheKey(Keys.autoSkipRecap))
         }
     }
 
@@ -589,6 +609,7 @@ final class PlayerSettings {
         audioLanguage = defaults.string(forKey: Self.cacheKey(Keys.audioLanguage)) ?? ""
         introSkipMode = Self.cachedIntroSkipMode(defaults)
         autoSkipCredits = Self.cachedBool(defaults, key: Keys.autoSkipCredits, defaultValue: false)
+        autoSkipRecap = Self.cachedBool(defaults, key: Keys.autoSkipRecap, defaultValue: false)
         hdrEnabled = Self.cachedBool(defaults, key: Keys.hdrEnabled, defaultValue: true)
         dolbyVisionEnabled = Self.cachedBool(defaults, key: Keys.dolbyVisionEnabled, defaultValue: true)
         seekCacheEnabled = Self.cachedBool(
@@ -730,7 +751,7 @@ final class PlayerSettings {
         let scopeID = Self.currentScopeIdentifier
 
         do {
-            let response = try await flusher.effectiveValues(keys: SettingKey.playerDeviceSettings)
+            let response = try await flusher.effectiveValues(keys: SettingKey.playerReadSettings)
             knownManifestRevision = flusher.knownManifestRevision
             // The read goes to whichever scope is active when it is sent. If the
             // scope changed while this refresh awaited, the revision belongs to
@@ -952,19 +973,21 @@ final class PlayerSettings {
         setting.keys.contains { deviceOverriddenKeys.contains($0) }
     }
 
-    /// How many settings "Use Profile Settings" would change: each synced
-    /// setting this device holds its own value for (quality's two keys count
-    /// once), plus each device-only preference away from its default.
+    /// How many settings "Use Profile Settings" would change: each setting
+    /// this device holds its own value for (quality's two keys count once),
+    /// plus each device-only preference away from its default.
     var deviceChangedSettingCount: Int {
-        let synced = Set(deviceOverriddenKeys.map { $0 == .maxBitrateKbps ? .preferredQuality : $0 })
-        return synced.count + changedDeviceLocalPreferenceCount
+        let overridden = Set(deviceOverriddenKeys.map { $0 == .maxBitrateKbps ? .preferredQuality : $0 })
+        return overridden.count + changedDeviceLocalPreferenceCount
     }
 
     /// Whether "Use Profile Settings" would reset something the profile has
     /// no value for — a device-only synced key or a local preference — which
     /// goes back to its default rather than to a profile value.
     var deviceChangesIncludeDeviceOnlySettings: Bool {
-        let profileBacked = Set(ProfileBackedPlaybackSetting.allCases.flatMap(\.keys))
+        let profileBacked = Set(
+            ProfileBackedPlaybackSetting.allCases.flatMap(\.keys) + SettingKey.playerFollowedSettings
+        )
         return changedDeviceLocalPreferenceCount > 0
             || deviceOverriddenKeys.contains { !profileBacked.contains($0) }
     }
@@ -1054,7 +1077,7 @@ final class PlayerSettings {
         if let resetScopeID {
             markMigrationComplete(for: resetScopeID)
         }
-        for key in SettingKey.playerDeviceSettings {
+        for key in SettingKey.playerReadSettings {
             enqueueDeviceClear(key)
         }
         await flushPendingDeviceSettings()
@@ -1118,7 +1141,7 @@ final class PlayerSettings {
     @MainActor
     func discardHeldDeviceSettingChanges() async -> Bool {
         do {
-            let response = try await flusher.effectiveValues(keys: SettingKey.playerDeviceSettings)
+            let response = try await flusher.effectiveValues(keys: SettingKey.playerReadSettings)
             knownManifestRevision = flusher.knownManifestRevision
             flusher.discardHeldChanges()
             applyEffectiveSettings(overlayingUnsettledValues(on: response.byKey))
@@ -1201,6 +1224,7 @@ final class PlayerSettings {
             wireValue: effectiveByKey[.introSkipMode]?.value.stringValue
         ) ?? .default
         autoSkipCredits = effectiveBool(.autoSkipCredits, in: effectiveByKey, default: false)
+        autoSkipRecap = effectiveBool(.autoSkipRecap, in: effectiveByKey, default: false)
         autoPlayNextEpisode = effectiveBool(.autoPlayNext, in: effectiveByKey, default: true)
         nextUpPromptSeconds = Self.clampNextUpPromptSeconds(
             effectiveByKey[.nextUpPromptSeconds]?.value.intValue ?? 30
@@ -1392,6 +1416,7 @@ final class PlayerSettings {
         audioLanguage = defaults.string(forKey: Self.cacheKey(Keys.audioLanguage)) ?? ""
         introSkipMode = Self.cachedIntroSkipMode(defaults)
         autoSkipCredits = Self.cachedBool(defaults, key: Keys.autoSkipCredits, defaultValue: false)
+        autoSkipRecap = Self.cachedBool(defaults, key: Keys.autoSkipRecap, defaultValue: false)
         autoPlayNextEpisode = Self.cachedBool(
             defaults,
             key: Keys.autoPlayNextEpisode,
@@ -1582,6 +1607,7 @@ final class PlayerSettings {
         defaults.set(false, forKey: key(Keys.autoSkipIntro))
         defaults.set(IntroSkipMode.default.wireValue, forKey: key(Keys.introSkipMode))
         defaults.set(false, forKey: key(Keys.autoSkipCredits))
+        defaults.set(false, forKey: key(Keys.autoSkipRecap))
         defaults.set(true, forKey: key(Keys.autoPlayNextEpisode))
         defaults.set(30, forKey: key(Keys.nextUpPromptSeconds))
         defaults.set(true, forKey: key(Keys.hdrEnabled))
@@ -1753,6 +1779,7 @@ final class PlayerSettings {
         static let autoSkipIntro = "skipIntros"
         static let introSkipMode = "player.introSkipMode"
         static let autoSkipCredits = "skipCredits"
+        static let autoSkipRecap = "player.autoSkipRecap"
         static let hdrEnabled = "player.hdrEnabled"
         static let dolbyVisionEnabled = "player.dolbyVisionEnabled"
         static let seekCacheEnabled = "player.seekCacheEnabled"
