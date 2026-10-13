@@ -125,7 +125,8 @@ final class MetricKitCapture: NSObject, MXMetricManagerSubscriber {
             capturedAt: periodEnd,
             manifest: manifest,
             deviceSnapshot: device,
-            artifacts: artifacts
+            artifacts: artifacts,
+            issueFingerprint: MetricKitDiagnosticParser.issueFingerprint(for: rawJSON, type: type)
         ))
     }
 }
@@ -133,6 +134,81 @@ final class MetricKitCapture: NSObject, MXMetricManagerSubscriber {
 enum MetricKitDiagnosticParser {
     static func fingerprint(for rawJSON: Data) -> String {
         DiagnosticsSHA256.hex(data: canonicalJSON(rawJSON))
+    }
+
+    /// Groups repeats of one crash or hang: the build, the exception, and the
+    /// top of the attributed call stack. Unlike `fingerprint(for:)` it leaves
+    /// out everything that differs from one event to the next.
+    static func issueFingerprint(
+        for rawJSON: Data,
+        type: ReportType,
+        appBinaryName: String? = Bundle.main.infoDictionary?["CFBundleExecutable"] as? String
+    ) -> String {
+        let object = (try? JSONSerialization.jsonObject(with: rawJSON)) as? [String: Any] ?? [:]
+        let metadata = object["diagnosticMetaData"] as? [String: Any] ?? [:]
+        let reason = metadata["objectiveCexceptionReason"] as? [String: Any] ?? [:]
+        let exception = ["appBuildVersion", "exceptionType", "exceptionCode", "signal"]
+            .map { key in metadata[key].map { "\($0)" } ?? "" }
+            + ["exceptionName", "className"].map { key in reason[key].map { "\($0)" } ?? "" }
+        let frames = attributedTopFrames(in: object["callStackTree"], appBinaryName: appBinaryName, limit: 8)
+        let key = ([type.rawValue] + exception + frames).joined(separator: "|")
+        return DiagnosticsSHA256.hex(data: Data(key.utf8))
+    }
+
+    /// The top frames of the attributed thread (or the first thread). MetricKit
+    /// nests each frame's caller in its `subFrames`, so the root frame is the
+    /// top of the stack: the crash site, or a hang's busiest frame. The walk
+    /// reads arrays only, never dictionary order, which is not stable between
+    /// launches.
+    ///
+    /// The top frames of a signal or an uncaught exception are often the same
+    /// system frames for every crash, so when none of them is in the app's
+    /// own binary the first app frame further down is added.
+    private static func attributedTopFrames(in tree: Any?, appBinaryName: String?, limit: Int) -> [String] {
+        guard let stacks = (tree as? [String: Any])?["callStacks"] as? [[String: Any]] else {
+            return []
+        }
+        let stack = stacks.first { $0["threadAttributed"] as? Bool == true } ?? stacks.first
+        var level = stack?["callStackRootFrames"] as? [[String: Any]] ?? []
+        var frames: [String] = []
+        var hasAppFrame = appBinaryName == nil
+        for _ in 0..<maxFingerprintStackDepth {
+            guard let frame = heaviestFrame(in: level) else { break }
+            let binary = frame["binaryName"].map { "\($0)" } ?? "?"
+            let isAppFrame = binary == appBinaryName
+            if frames.count < limit || isAppFrame {
+                let offset = frame["offsetIntoBinaryTextSegment"].map { "\($0)" } ?? "?"
+                frames.append("\(binary)+\(offset)")
+            }
+            hasAppFrame = hasAppFrame || isAppFrame
+            if frames.count >= limit, hasAppFrame {
+                break
+            }
+            level = frame["subFrames"] as? [[String: Any]] ?? []
+        }
+        return frames
+    }
+
+    /// Bounds the walk to the first app frame on a pathological tree.
+    private static let maxFingerprintStackDepth = 512
+
+    /// A crash stack has one frame per level. A sampled hang tree can branch;
+    /// follow the branch with the most samples, breaking ties by binary and
+    /// offset so the same tree always yields the same path.
+    private static func heaviestFrame(in frames: [[String: Any]]) -> [String: Any]? {
+        func sampleCount(_ frame: [String: Any]) -> Int {
+            (frame["sampleCount"] as? NSNumber)?.intValue ?? 0
+        }
+        func tieBreak(_ frame: [String: Any]) -> (String, Int64) {
+            (
+                frame["binaryName"].map { "\($0)" } ?? "",
+                (frame["offsetIntoBinaryTextSegment"] as? NSNumber)?.int64Value ?? -1
+            )
+        }
+        return frames.min { lhs, rhs in
+            let (left, right) = (sampleCount(lhs), sampleCount(rhs))
+            return left != right ? left > right : tieBreak(lhs) < tieBreak(rhs)
+        }
     }
 
     static func crashInfo(

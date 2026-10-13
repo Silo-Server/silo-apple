@@ -44,6 +44,9 @@ struct PendingReportBinding: Codable, Equatable {
     let capturedAt: String
     let type: ReportType
     let fingerprint: String
+    /// Identifies the issue rather than the event; see
+    /// `PendingReportCapture.issueFingerprint`.
+    var issueFingerprint: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case serverInstanceID = "server_instance_id"
@@ -52,6 +55,7 @@ struct PendingReportBinding: Codable, Equatable {
         case capturedAt = "captured_at"
         case type
         case fingerprint
+        case issueFingerprint = "issue_fingerprint"
     }
 
     var binding: DiagnosticsBinding {
@@ -124,6 +128,17 @@ struct PendingReportState: Codable, Equatable {
     /// poll its status rather than offering to send it again.
     var isAwaitingHostedStatus: Bool {
         hostedRemoteShortID != nil && hostedRejectionCode == nil
+    }
+
+    /// The destination does not have this report yet, so the manifest can
+    /// still count a repeat. A collector ID or a self-hosted upload that may
+    /// have been sent means it might. A report that is never sent
+    /// automatically (a permanent failure: too large, refused by the server or
+    /// collector, or waiting for a server update) would only hide the repeat,
+    /// so the repeat starts a new report instead. An upload that is building
+    /// right now also holds repeats off; see `PendingReportStore.deliveryHolds`.
+    var acceptsRepeats: Bool {
+        hostedRemoteShortID == nil && !isPermanentFailure
     }
 
     enum CodingKeys: String, CodingKey {
@@ -220,11 +235,16 @@ struct PendingReportCapture {
     let binding: DiagnosticsBinding
     let profileID: String?
     let type: ReportType
+    /// Identifies this event, so the same evidence is never stored twice.
     let fingerprint: String
     let capturedAt: Date
     let manifest: DiagnosticsManifestDraft
     let deviceSnapshot: DeviceSnapshotPayload
     let artifacts: [PendingReportArtifact]
+    /// Identifies the issue: the same for every repeat of one crash, hang, or
+    /// abnormal exit, independent of run IDs and timestamps. Nil for reports
+    /// that are never grouped, such as manual ones.
+    var issueFingerprint: String? = nil
 }
 
 struct DiagnosticsCaptureContext {
@@ -327,6 +347,9 @@ final class PendingReportStore {
     static let hostedReadyReceiptInterval: TimeInterval = 37 * 24 * 60 * 60
 
     private static let maxPendingPerBinding = 3
+    /// A repeat of an issue within this long of its pending report's capture
+    /// counts on that report instead of taking another slot.
+    static let repeatGroupingWindow: TimeInterval = 24 * 60 * 60
     private static let maxHostedReadyReceipts = 4_096
     private static let maxHostedDeletionIntents = 4_096
     /// Bounds defensive reads before allocating ledger contents. Four thousand
@@ -347,6 +370,14 @@ final class PendingReportStore {
     private let fileManager: FileManager
     private let hostedDeletionRemover: (URL) throws -> Void
     private let lock = NSLock()
+    /// Reports an upload attempt is building from, with how many attempts
+    /// hold each. A repeat must not join a held report: the attempt already
+    /// read its count, so the repeat would be marked seen but never sent.
+    /// Kept in memory, guarded by `lock`, because a hold only means something
+    /// while its attempt runs; a process that dies mid-upload must not leave
+    /// the report refusing repeats. What outlives an attempt is on disk: the
+    /// self-hosted delivery claim, the hosted collector ID, or deletion.
+    private var deliveryHolds: [UUID: Int] = [:]
 
     init(
         rootDirectory: URL? = nil,
@@ -379,6 +410,9 @@ final class PendingReportStore {
             _ = try loadHostedErasureLedgersLocked()
         }
         try cleanupExpiredLocked(now: capture.capturedAt)
+        if let repeated = try countRepeatLocked(capture) {
+            return repeated
+        }
 
         let reportDirectory = pendingDirectory.appendingPathComponent(capture.id.uuidString.lowercased(), isDirectory: true)
         let stagingDirectory = pendingDirectory.appendingPathComponent(
@@ -393,7 +427,8 @@ final class PendingReportStore {
             profileID: capture.profileID,
             capturedAt: DiagnosticsTimestamp.string(from: capture.capturedAt),
             type: capture.type,
-            fingerprint: capture.fingerprint
+            fingerprint: capture.fingerprint,
+            issueFingerprint: capture.issueFingerprint
         )
 
         do {
@@ -851,45 +886,64 @@ final class PendingReportStore {
         updateState(of: report) { $0.deliveryUncertain = false }
     }
 
+    /// Ends the upload attempt that `preparingDelivery(of:consent:holdingRepeats:)`
+    /// started with a hold, whatever its outcome. Call it exactly once per
+    /// such attempt.
+    func finishDelivery(_ report: PendingReport) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard let holds = deliveryHolds[report.id] else { return }
+        deliveryHolds[report.id] = holds > 1 ? holds - 1 : nil
+    }
+
     /// Records that the user declined this report's prompt, suppressing further
     /// prompts for its lifetime while leaving it sendable from settings.
     func markPromptDeclined(_ report: PendingReport) {
         updateState(of: report) { $0.promptDeclined = true }
     }
 
-    /// Rewrites the stored manifest's consent `mode` and `notice_version` so an
-    /// upload built from this report reflects the current consent record. If
-    /// the server's notice advanced after capture and demoted the account
+    /// Starts building an upload of `report` and returns the report to build
+    /// it from. Reloads the report under the lock and rewrites the manifest's
+    /// consent from the current consent record. Never build from the
+    /// caller's snapshot instead: a repeat counted after it was loaded would
+    /// be marked seen but never sent.
+    ///
+    /// With `holdingRepeats`, the report stops counting repeats (later ones
+    /// start a new pending report) until the attempt calls `finishDelivery`.
+    /// An upload whose destination never receives the count, such as the
+    /// hosted collector, has nothing to protect and passes false.
+    ///
+    /// Both consent `mode` and `notice_version` are refreshed. If the
+    /// server's notice advanced after capture and demoted the account
     /// Always→Ask, refreshing only the notice version would leave the manifest
-    /// claiming `mode = always` for the new notice; refreshing the mode too
-    /// keeps it honest. Everything else — crash evidence, logs, device summary
-    /// — stays frozen as captured. Returns the updated report, or the original
-    /// if nothing changed or the rewrite failed.
-    @discardableResult
-    func updatingConsent(_ report: PendingReport, mode: ConsentMode, noticeVersion: Int) -> PendingReport {
+    /// claiming `mode = always` for the new notice. Everything else — crash
+    /// evidence, logs, device summary — stays frozen as captured.
+    func preparingDelivery(
+        of report: PendingReport,
+        consent: DiagnosticsManifest.Consent,
+        holdingRepeats: Bool = true
+    ) throws -> PendingReport {
         lock.lock()
         defer { lock.unlock() }
 
-        guard report.manifest.consent.mode != mode
-            || report.manifest.consent.noticeVersion != noticeVersion else {
-            return report
+        guard let current = loadReport(from: report.directoryURL) else {
+            throw DiagnosticsStoreError.unreadableReport(report.id)
         }
-        var manifest = report.manifest
-        manifest.consent = DiagnosticsManifest.Consent(
-            mode: mode,
-            noticeVersion: noticeVersion
-        )
-        do {
-            try writeJSON(manifest, to: report.directoryURL.appendingPathComponent("manifest.json"))
-        } catch {
-            return report
+        var manifest = current.manifest
+        if manifest.consent != consent {
+            manifest.consent = consent
+            try writeJSON(manifest, to: current.directoryURL.appendingPathComponent("manifest.json"))
+        }
+        if holdingRepeats {
+            deliveryHolds[current.id, default: 0] += 1
         }
         return PendingReport(
-            id: report.id,
-            directoryURL: report.directoryURL,
-            binding: report.binding,
+            id: current.id,
+            directoryURL: current.directoryURL,
+            binding: current.binding,
             manifest: manifest,
-            state: report.state
+            state: current.state
         )
     }
 
@@ -1166,6 +1220,42 @@ final class PendingReportStore {
             }
         }
         pruneFingerprintStateLocked(now: now)
+    }
+
+    /// Count `capture` on the newest pending report of the same issue, binding
+    /// and profile captured within `repeatGroupingWindow`, if one still
+    /// accepts repeats. Returns that report, or nil to store a new one.
+    private func countRepeatLocked(_ capture: PendingReportCapture) throws -> PendingReport? {
+        guard let issue = capture.issueFingerprint else { return nil }
+        // A hosted report with a deletion intent may still be on disk if its
+        // removal failed or the app died first. It is hidden and never
+        // uploaded, so a repeat counted there would be lost with it.
+        let deleting = (try? loadHostedDeletionIntentsLocked()).map { Set($0.keys) } ?? []
+        let existing = scanReportsLocked()
+            .filter { report in
+                !deleting.contains(report.id.uuidString.lowercased())
+                    && report.binding.issueFingerprint == issue
+                    && report.binding.binding == capture.binding
+                    && report.binding.profileID == capture.profileID
+                    && report.state.acceptsRepeats
+                    && deliveryHolds[report.id] == nil
+                    && abs(capture.capturedAt.timeIntervalSince(report.binding.capturedAtDate))
+                        <= Self.repeatGroupingWindow
+            }
+            .max { $0.binding.capturedAtDate < $1.binding.capturedAtDate }
+        guard let existing else { return nil }
+
+        var manifest = existing.manifest
+        manifest.report.occurrenceCount = min(
+            (manifest.report.occurrenceCount ?? 1) + 1,
+            DiagnosticsManifest.Report.maxOccurrenceCount
+        )
+        try writeJSON(manifest, to: existing.directoryURL.appendingPathComponent("manifest.json"))
+        markFingerprintSeenLocked(capture.fingerprint, now: capture.capturedAt)
+        guard let report = loadReport(from: existing.directoryURL) else {
+            throw DiagnosticsStoreError.unreadableReport(existing.id)
+        }
+        return report
     }
 
     private func enforceCapLocked(for binding: DiagnosticsBinding) throws {

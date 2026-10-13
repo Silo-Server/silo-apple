@@ -1110,22 +1110,13 @@ actor DiagnosticsCoordinator {
         } else {
             refreshedMode = currentConsent.mode.manifestMode
         }
-        if destination == .hosted {
-            return await uploadHosted(
-                report: report,
-                context: context,
-                consent: DiagnosticsManifest.Consent(
-                    mode: refreshedMode,
-                    noticeVersion: currentConsent.noticeVersion
-                )
-            )
-        }
-
-        let report = pendingStore.updatingConsent(
-            report,
+        let consent = DiagnosticsManifest.Consent(
             mode: refreshedMode,
             noticeVersion: currentConsent.noticeVersion
         )
+        if destination == .hosted {
+            return await uploadHosted(report: report, context: context, consent: consent)
+        }
 
         do {
             // Snapshot the stable destination identity (server registry id +
@@ -1144,7 +1135,12 @@ actor DiagnosticsCoordinator {
             guard let destinationOwner = try? await api.captureOwner() else {
                 return .keptRetryable
             }
-            let bundle = try await buildBundle(for: report)
+            // Repeats start a new report while this attempt builds from the
+            // count read here. Once it ends, the delivery claim (or deletion)
+            // is what keeps a report the server may have from counting more.
+            let deliveryReport = try pendingStore.preparingDelivery(of: report, consent: consent)
+            defer { pendingStore.finishDelivery(deliveryReport) }
+            let bundle = try await buildBundle(for: deliveryReport)
             let activeProfileID = await TokenStore.shared.getProfileId()
             guard await Self.currentAccessTokenFingerprint() != nil,
                   ServerRegistry.activeServerIDSnapshot == destinationServerRegistryID,
@@ -1162,7 +1158,7 @@ actor DiagnosticsCoordinator {
             // the claim; an earlier attempt still holding it blocks this one.
             let claimed: Bool
             do {
-                claimed = try pendingStore.claimSelfHostedDelivery(report)
+                claimed = try pendingStore.claimSelfHostedDelivery(deliveryReport)
             } catch {
                 return .keptRetryable
             }
@@ -1189,10 +1185,10 @@ actor DiagnosticsCoordinator {
                     )
                 }
             } catch let error as DiagnosticsUploadError where error != .deliveryUncertain {
-                pendingStore.releaseSelfHostedDelivery(report)
+                pendingStore.releaseSelfHostedDelivery(deliveryReport)
                 throw error
             }
-            pendingStore.delete(report)
+            pendingStore.delete(deliveryReport)
             return .uploaded(response)
         } catch let error as DiagnosticsUploadError {
             return handleUploadError(error, report: report)
@@ -1244,12 +1240,14 @@ actor DiagnosticsCoordinator {
                     mustPersistEnvelope = false
                 }
             case .missing:
-                let framedReport = pendingStore.updatingConsent(
-                    report,
-                    mode: consent.mode,
-                    noticeVersion: consent.noticeVersion
+                // The collector never receives occurrence_count, so repeats
+                // can keep counting while this builds.
+                let prepared = try pendingStore.preparingDelivery(
+                    of: report,
+                    consent: consent,
+                    holdingRepeats: false
                 )
-                bundle = try await buildBundle(for: framedReport)
+                bundle = try await buildBundle(for: prepared)
                 mustPersistEnvelope = true
             }
             guard bundle.manifest.report.profileID == nil,
@@ -1922,7 +1920,12 @@ actor DiagnosticsCoordinator {
                 capturedAt: capturedAt,
                 manifest: manifest,
                 deviceSnapshot: device,
-                artifacts: artifacts
+                artifacts: artifacts,
+                // An abnormal exit carries no stack, so every one from the
+                // same build is the same issue.
+                issueFingerprint: DiagnosticsSHA256.hex(
+                    data: Data("exit_sentinel|\(boundContext.appBuild)".utf8)
+                )
             ))
             return true
         } catch {
