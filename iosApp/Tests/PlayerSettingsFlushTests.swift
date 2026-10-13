@@ -1893,7 +1893,48 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
         let calls = harness.transport.effectiveCalls()
         XCTAssertEqual(calls.count, 1, "a refresh must be one round trip, not one per key")
-        XCTAssertEqual(Set(calls[0]), Set(SettingKey.playerDeviceSettings))
+        XCTAssertEqual(Set(calls[0]), Set(SettingKey.playerReadSettings))
+    }
+
+    /// Apple has no player setting for recaps: the player follows the
+    /// profile's value and never writes it back over that choice.
+    func testRefreshFollowsAutoSkipRecapWithoutWritingIt() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.effective = [
+            EffectiveSettingValue(
+                key: SettingKey.playbackAutoSkipRecap.rawValue,
+                value: .bool(true),
+                source: .scope(.profile),
+                scope: .profile
+            ),
+        ]
+
+        await harness.settings.refreshFromServer()
+
+        XCTAssertTrue(harness.transport.effectiveCalls()[0].contains(.playbackAutoSkipRecap))
+        XCTAssertTrue(harness.settings.autoSkipRecap)
+        XCTAssertNil(harness.transport.writesByKey()[.playbackAutoSkipRecap])
+    }
+
+    /// "Use Profile Settings" clears only the synced keys, so a device row for
+    /// the followed-only recap key must not count as a change it would make:
+    /// the count would never reach zero after the reset.
+    func testADeviceRecapValueIsNotAChangeUseProfileSettingsWouldMake() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.effective = [
+            EffectiveSettingValue(
+                key: SettingKey.playbackAutoSkipRecap.rawValue,
+                value: .bool(true),
+                source: .scope(.profileDevice),
+                scope: .profileDevice
+            ),
+        ]
+
+        await harness.settings.refreshFromServer()
+
+        XCTAssertTrue(harness.settings.autoSkipRecap)
+        XCTAssertEqual(harness.settings.deviceChangedSettingCount, 0)
+        XCTAssertFalse(harness.settings.deviceChangesIncludeDeviceOnlySettings)
     }
 
     func testRefreshAdoptsEverySyncedPlayerSetting() async throws {
