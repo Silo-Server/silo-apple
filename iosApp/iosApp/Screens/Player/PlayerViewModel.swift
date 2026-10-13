@@ -5286,7 +5286,11 @@ class PlayerViewModel {
                 Self.logger.error(
                     "Load failed: \(MediaLogRedactor.sanitize(error), privacy: .public)"
                 )
-                self.handleBeginFreshLoadFailure(error: error, origin: origin)
+                // A failed renewal of a Keep Watching remount offers Retry,
+                // as the remount itself does.
+                let failureOrigin: LoadOrigin = origin == .recovery && continuesResumeAfterEnd
+                    ? .resumeAfterEnd : origin
+                self.handleBeginFreshLoadFailure(error: error, origin: failureOrigin)
             }
         }
     }
@@ -6358,6 +6362,8 @@ class PlayerViewModel {
             // The transport is dead, or its replacement is not installed
             // yet; the reconnect resumes where the viewer wants to be.
             reconnectCycle.updatePosition(clampedTarget)
+            // A Keep Watching remount that has not played retries here too.
+            if pendingResumeAfterEndPosition != nil { pendingResumeAfterEndPosition = clampedTarget }
             currentTime = clampedTarget
             scrubPreviewTime = clampedTarget
             isScrubbing = false
