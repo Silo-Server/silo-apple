@@ -6682,12 +6682,16 @@ class PlayerViewModel {
         return "\(sessionId):\(fileId):credits:\(range.start):\(range.end)"
     }
 
+    /// Names the marker, not the session, like the intro key: a protocol-v3
+    /// replan can replace the session id mid-playback, and a recap already
+    /// skipped must stay skipped across it.
     private func currentRecapSkipKey(for range: TimeRange) -> String? {
-        guard let sessionId = activePlaybackSessionId,
+        guard activePlaybackSessionId != nil,
+              let contentId = currentWatchDetail?.contentId,
               let fileId = currentSelectedVersion?.fileId else {
             return nil
         }
-        return "\(sessionId):\(fileId):recap:\(range.start):\(range.end)"
+        return "\(contentId):\(fileId):recap:\(range.start):\(range.end)"
     }
 
     func beginScrub(fraction: Double) {
