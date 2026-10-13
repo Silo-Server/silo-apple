@@ -330,8 +330,8 @@ struct ContentView: View {
             if router.authState != .authenticated {
                 // The initial `.loading` state is not an identity boundary.
                 // Keep the previous run's persisted breadcrumbs and playback
-                // sessions intact until tvOS can capture any abnormal-exit
-                // leftover after restored authentication resolves. Explicit
+                // sessions intact until the exit sentinel can capture any
+                // abnormal-exit leftover after restored authentication resolves. Explicit
                 // profile/server switches and sign-out own their destructive
                 // cleanup paths separately.
                 DiagnosticsCoordinator.authenticationStateBecameUnavailable()

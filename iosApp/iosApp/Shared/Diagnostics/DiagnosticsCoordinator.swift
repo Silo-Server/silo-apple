@@ -311,7 +311,7 @@ actor DiagnosticsCoordinator {
     ///
     /// A `.flush` decision deliberately does *not* latch it. Consent said yes,
     /// but child-profile eligibility resolves asynchronously and still holds
-    /// the live gate closed, and on the tvOS relaunch path that window contains
+    /// the live gate closed, and on the relaunch path that window contains
     /// `captureAbnormalExit`'s read of the previous run's breadcrumbs — the
     /// exact lines a purge there would destroy.
     ///
@@ -2585,8 +2585,8 @@ actor DiagnosticsCoordinator {
     /// Close the synchronous capture gate while authentication is unresolved
     /// without treating that transient state as a server/profile boundary.
     /// In particular, a cold launch begins in `.loading`; purging there would
-    /// erase the previous failed run's persisted evidence before tvOS consumes
-    /// its abnormal-exit marker after restored auth resolves.
+    /// erase the previous failed run's persisted evidence before the exit
+    /// sentinel consumes its abnormal-exit marker after restored auth resolves.
     nonisolated static func authenticationStateBecameUnavailable() {
         _ = beginActiveProfileEligibilityResolution(invalidateCurrent: true)
     }
@@ -2723,7 +2723,7 @@ actor DiagnosticsCoordinator {
 
     /// Re-evaluate breadcrumb eligibility for the profile now active. Call on
     /// profile switches: a child profile can't manage diagnostics, so breadcrumb
-    /// capture and the tvOS exit sentinel must disarm even though the
+    /// capture and the exit sentinel must disarm even though the
     /// server/account binding (and its consent) is unchanged. Fails closed
     /// immediately, then confirms asynchronously so a switch into a child profile
     /// can't capture even one breadcrumb before the child lookup lands.
@@ -2783,7 +2783,7 @@ actor DiagnosticsCoordinator {
         //
         // Nothing this launch wrote can be in the journal before that decision —
         // the gate has never been open — so its entire contents are the previous
-        // run's, which on tvOS is exactly the evidence `captureAbnormalExit`
+        // run's, which is exactly the evidence `captureAbnormalExit`
         // reads once authentication lands. Purging there isolates nothing; it
         // empties the crash report before anyone opens it. Two neighbours
         // already take that position for the same reason:
@@ -2961,7 +2961,7 @@ actor DiagnosticsCoordinator {
 
     nonisolated private static func breadcrumbCaptureEnabledUncached() -> Bool {
         // A child profile can't manage diagnostics, so breadcrumb capture (and
-        // the tvOS exit sentinel that shares this gate) must disarm the moment
+        // the exit sentinel that shares this gate) must disarm the moment
         // one becomes active — even though the server/account binding and its
         // consent are unchanged. Mirrors the persistent-capture child gate in
         // captureContext(); the eligibility flag is re-resolved on profile

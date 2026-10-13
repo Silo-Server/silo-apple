@@ -14,8 +14,8 @@ import os
 ///
 /// Staging is not only about keeping those lines. A refused journal write
 /// *purges the journal directory*, so routing a pre-consent line through it
-/// would delete the previous run's breadcrumbs — the tvOS abnormal-exit
-/// report's entire content — before the relaunch gets far enough to read them.
+/// would delete the previous run's breadcrumbs — the abnormal-exit report's
+/// entire content — before the relaunch gets far enough to read them.
 /// `DiagnosticsCoordinator.recordBreadcrumb` therefore stages here directly
 /// rather than treating a refusal as the signal to stage.
 ///

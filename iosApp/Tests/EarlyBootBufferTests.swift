@@ -401,7 +401,7 @@ final class EarlyBootBufferTests: XCTestCase {
 
     // MARK: - The previous run's journal survives a pre-consent launch
 
-    /// The load-bearing case for the tvOS abnormal-exit report.
+    /// The load-bearing case for the abnormal-exit report.
     ///
     /// `BreadcrumbJournal.appendRenderedLine` purges the whole journal
     /// directory whenever its gate is closed. A cold launch starts with the

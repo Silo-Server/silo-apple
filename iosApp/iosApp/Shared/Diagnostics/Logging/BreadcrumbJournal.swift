@@ -109,7 +109,7 @@ final class BreadcrumbJournal {
         // That makes offering a line to this journal a destructive act while
         // the gate is closed, so callers must not use it to *ask* whether
         // capture is allowed. In particular, the directory at cold launch holds
-        // the previous run's breadcrumbs — the tvOS abnormal-exit report's only
+        // the previous run's breadcrumbs — the abnormal-exit report's only
         // content — and this launch's capture decision does not exist until
         // after authentication. `DiagnosticsCoordinator.recordBreadcrumb` owns
         // that distinction: it stages pre-decision lines in `EarlyBootBuffer`
