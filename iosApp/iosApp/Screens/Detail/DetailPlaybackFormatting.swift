@@ -207,13 +207,16 @@ enum DetailPlaybackFormatting {
 
     static func audioDetail(_ track: AudioTrack, ordinal: Int, version: FileVersion?) -> String {
         var tokens: [String] = []
-        if let title = TrackLabels.qualifier(usefulAudioTitle(track), name: audioTitle(track, ordinal: ordinal)) {
+        let layout = compactAudioLayout(track)
+        // A title of "Atmos" says nothing a layout of "Atmos" doesn't.
+        if let title = TrackLabels.qualifier(usefulAudioTitle(track), name: audioTitle(track, ordinal: ordinal)),
+           title.caseInsensitiveCompare(layout ?? "") != .orderedSame {
             tokens.append(title)
         }
         if let codec = normalizedAudioCodec(track.codec) {
             tokens.append(codec)
         }
-        if let layout = compactAudioLayout(track) {
+        if let layout {
             tokens.append(layout)
         }
         if track.isDefault == true {

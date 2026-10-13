@@ -1571,7 +1571,7 @@ class PlayerViewModel {
     private func projectPlaybackStats() -> PlaybackStats {
         guard let spec = aetherPlaybackController.activeSpec else { return .empty }
         let secondaryLabel = selectedSecondarySubtitleId.flatMap { selectedID in
-            subtitleTracks.first { $0.trackId == selectedID }?.primaryLabel
+            subtitleTracks.first { $0.trackId == selectedID }?.singleLineLabel
         }
         let playbackPlan = activePreparedProtocolV3?.plan
         let source = AetherPlaybackStatsSourceMetadata(

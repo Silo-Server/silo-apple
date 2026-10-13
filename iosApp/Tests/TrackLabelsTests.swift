@@ -63,14 +63,14 @@ final class TrackLabelsTests: XCTestCase {
         XCTAssertEqual(player.primaryLabel, "English")
         XCTAssertNil(player.detailLabel)
         XCTAssertEqual(player.attributePillLabels(), ["PGS", "SDH"])
-        XCTAssertEqual(
-            playerTrack(kind: .sub, title: "ASS", lang: nil, codec: "ass").primaryLabel,
-            "Track 3"
-        )
+        // With no language either, the format names the row and isn't repeated as a pill.
+        let unlabeled = playerTrack(kind: .sub, title: "ASS", lang: nil, codec: "ass")
+        XCTAssertEqual(unlabeled.primaryLabel, "ASS")
+        XCTAssertEqual(unlabeled.attributePillLabels(), [])
     }
 
     func testAudioTitleDropsCodecNamesButKeepsWordsThatContainThem() {
-        for codecTitle in ["AAC2.0", "DTS-HD MA 5.1", "DTSHD", "Dolby TrueHD Atmos", "E-AC-3 JOC", "EAC3", "FLAC"] {
+        for codecTitle in ["AAC2.0", "DTS-HD MA 5.1", "DTSHD", "Dolby TrueHD", "E-AC-3 JOC", "EAC3", "FLAC"] {
             XCTAssertNil(TrackLabels.audioTitle(codecTitle), codecTitle)
         }
         for title in ["Commentary by Isaac", "Midtsommar Director's Cut", "Flack Interview"] {
@@ -161,7 +161,7 @@ final class TrackLabelsTests: XCTestCase {
         let subtitle = playerTrack(kind: .sub, title: release, lang: "eng", codec: "subrip")
         XCTAssertEqual(subtitle.primaryLabel, "English")
         XCTAssertNil(subtitle.detailLabel)
-        XCTAssertEqual(playerTrack(kind: .sub, title: release, lang: nil, codec: "subrip").primaryLabel, "Track 3")
+        XCTAssertEqual(playerTrack(kind: .sub, title: release, lang: nil, codec: "subrip").primaryLabel, "SRT")
 
         let audio = playerTrack(kind: .audio, title: "Movie.2026.1080p.BluRay.x264", lang: "eng", codec: "aac", channels: 2)
         XCTAssertEqual(audio.primaryLabel, "English")
@@ -241,5 +241,72 @@ final class TrackLabelsTests: XCTestCase {
         XCTAssertEqual(player.primaryLabel, "Signs & Songs")
         XCTAssertEqual(DetailPlaybackFormatting.subtitleDetail(detail, ordinal: 0, isSelectable: true), "SRT")
         XCTAssertEqual(player.attributesLabel, "SRT")
+    }
+
+    /// The server titles an untitled stream with ffprobe's description of
+    /// its codec. Like the codec name, it says nothing the pills don't.
+    func testServerCodecDescriptionsAreNotTitles() {
+        for description in [
+            "AAC (Advanced Audio Coding)", "ATSC A/52A (AC-3)", "ATSC A/52B (AC-3, E-AC-3)",
+            "DCA (DTS Coherent Acoustics)", "FLAC (Free Lossless Audio Codec)",
+            "Opus (Opus Interactive Audio Codec)", "MP3 (MPEG audio layer 3)",
+            "ALAC (Apple Lossless Audio Codec)", "PCM signed 24-bit little-endian", "TrueHD", "Vorbis",
+        ] {
+            XCTAssertNil(TrackLabels.audioTitle(description, language: "fr"), description)
+        }
+
+        let detail = AudioTrack(
+            index: 4, codec: "ac3", channels: 6, channelLayout: "5.1(side)", bitrate: nil,
+            sampleRate: nil, language: "fr", title: "ATSC A/52A (AC-3)", embeddedTitle: nil, isDefault: false
+        )
+        XCTAssertEqual(DetailPlaybackFormatting.audioDetail(detail, ordinal: 3, version: nil), "AC3 · 5.1")
+    }
+
+    /// Bit rates, sample rates, bit depths, and codec variants are as
+    /// technical as the codec, and separators or brackets left around a
+    /// kept title go with them.
+    func testAudioTitleDropsTechnicalFragments() {
+        for title in [
+            "HE-AAC", "AAC-LC 2.0", "DTS-HD MA 5.1 @ 3500 kbps", "FLAC 24-bit 96kHz",
+            "AC3 640kbps", "AAC 2 ch", "DTS-HD.MA.5.1", "LPCM 2.0",
+        ] {
+            XCTAssertNil(TrackLabels.audioTitle(title), title)
+        }
+        XCTAssertEqual(TrackLabels.audioTitle("TrueHD 7.1.4 Commentary"), "Commentary")
+        XCTAssertEqual(TrackLabels.audioTitle("Director's Commentary – DTS 5.1"), "Director's Commentary")
+        XCTAssertEqual(TrackLabels.audioTitle("English (Commentary)", language: "eng"), "Commentary")
+    }
+
+    /// The player knows the codec and channel count but not Atmos, so the
+    /// title keeps it.
+    func testAudioTitleKeepsAtmos() {
+        XCTAssertEqual(TrackLabels.audioTitle("Dolby TrueHD Atmos 7.1"), "Atmos")
+        let player = playerTrack(kind: .audio, title: "Dolby TrueHD Atmos 7.1", lang: "eng", codec: "truehd", channels: 8)
+        XCTAssertEqual(player.attributesLabel, "Atmos · TrueHD · 7.1")
+    }
+
+    /// A language code counts only when written as one ("ENG", "FR"); a
+    /// short word that happens to spell the track's code stays.
+    func testShortWordsThatSpellTheLanguageCodeStay() {
+        XCTAssertEqual(TrackLabels.audioTitle("Comentário por João Silva", language: "por"), "Comentário por João Silva")
+        XCTAssertEqual(TrackLabels.audioTitle("Commentary with Dan Gilroy", language: "dan"), "Commentary with Dan Gilroy")
+        XCTAssertEqual(TrackLabels.audioTitle("Making It Work", language: "ita"), "Making It Work")
+    }
+
+    func testMonoLayoutNameReadsLikeThePlayer() {
+        XCTAssertEqual(TrackLabels.audioLayout(channelLayout: "mono", channels: 1), "Mono")
+    }
+
+    /// A subtitle with no language and no usable title is named by its
+    /// format, as on Android, rather than by an internal track id.
+    func testUnlabeledSubtitleIsNamedByItsFormat() {
+        let sidecar = PlayerTrack(
+            trackId: 0x4000_0001, kind: .sub, title: "SUBRIP", lang: nil, codec: "subrip",
+            audioChannelCount: nil, bitrate: nil, isDefault: false, isForced: false,
+            isHearingImpaired: false, isExternal: true, isSelected: false, ffIndex: nil, srcId: nil
+        )
+        XCTAssertEqual(sidecar.primaryLabel, "SRT")
+        XCTAssertEqual(sidecar.attributePillLabels(), ["External"])
+        XCTAssertEqual(PlayerTrack.singleLineLabels([sidecar, sidecar]), ["SRT", "SRT"])
     }
 }

@@ -50,14 +50,17 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
     }
 
     /// The row name, in the detail page's vocabulary (`TrackLabels`): the
-    /// language, else a meaningful title, else "Track N".
+    /// language, else a meaningful title, else "Track N". A subtitle falls
+    /// back to its format ("SRT"), as on Android, because sidecar and server
+    /// inventory ids aren't ordinals ("Track 1073741825").
     var primaryLabel: String {
         switch kind {
         case .audio, .sub:
+            let format = kind == .sub ? subtitleFormat : nil
             return TrackLabels.name(
                 language: normalizedLanguageCode,
                 meaningfulTitle: meaningfulTitle,
-                fallback: "Track \(trackId)"
+                fallback: format ?? "Track \(trackId)"
             )
         case .video, .unknown:
             return normalizedTitle ?? TrackLabels.languageName(normalizedLanguageCode) ?? "Track \(trackId)"
@@ -101,7 +104,7 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
             let format: [String?]
             switch kind {
             case .audio: format = [TrackLabels.audioCodec(Self.normalizedText(codec)), channelCountLabel]
-            case .sub: format = [TrackLabels.subtitleCodec(Self.normalizedText(codec))]
+            case .sub: format = [subtitleFormatPill]
             case .video, .unknown: format = []
             }
             let joined = format.compactMap { $0 }.joined(separator: " ")
@@ -122,7 +125,7 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
             if let codec = TrackLabels.audioCodec(Self.normalizedText(codec)) { parts.append(codec) }
             if let layout = channelCountLabel { parts.append(layout) }
         case .sub:
-            if let codec = TrackLabels.subtitleCodec(Self.normalizedText(codec)) { parts.append(codec) }
+            if let format = subtitleFormatPill { parts.append(format) }
         case .video, .unknown:
             if let codec = Self.normalizedText(codec) { parts.append(codec.uppercased()) }
         }
@@ -155,6 +158,15 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
     /// when the demuxer reported no usable count.
     var channelCountLabel: String? {
         TrackLabels.audioLayout(channelLayout: nil, channels: audioChannelCount)
+    }
+
+    private var subtitleFormat: String? {
+        TrackLabels.subtitleCodec(Self.normalizedText(codec))
+    }
+
+    /// The format pill, left out when the format already names the row.
+    private var subtitleFormatPill: String? {
+        subtitleFormat == primaryLabel ? nil : subtitleFormat
     }
 
     private var meaningfulTitle: String? {

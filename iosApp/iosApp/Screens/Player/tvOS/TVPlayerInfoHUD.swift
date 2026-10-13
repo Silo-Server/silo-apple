@@ -696,13 +696,12 @@ private struct InfoPane: View {
         var rows: [(String, String)] = [("Route", viewModel.playbackRouteDisplay)]
         if let audio = viewModel.audioTracks.first(where: { $0.trackId == viewModel.selectedAudioId }) {
             var bits: [String] = []
-            if let codec = audio.codec, !codec.isEmpty { bits.append(codec.uppercased()) }
+            if let codec = TrackLabels.audioCodec(audio.codec) { bits.append(codec) }
             if let channels = audio.channelCountLabel { bits.append(channels) }
             if !bits.isEmpty { rows.append(("Audio", bits.joined(separator: " · "))) }
         }
         if let sub = viewModel.subtitleTracks.first(where: { $0.trackId == viewModel.selectedSubtitleId }) {
-            let name = sub.title ?? sub.lang ?? "On"
-            rows.append(("Subtitles", name))
+            rows.append(("Subtitles", sub.singleLineLabel))
         } else {
             rows.append(("Subtitles", "Off"))
         }
@@ -1572,7 +1571,7 @@ private struct AudioPane: View {
     }
 
     private var selectedCodec: String? {
-        selectedTrack?.codec?.uppercased()
+        TrackLabels.audioCodec(selectedTrack?.codec)
     }
 }
 
@@ -2181,8 +2180,15 @@ private struct HUDTrackRow: View {
         .buttonStyle(HUDRowButtonStyle(cornerRadius: 8))
         .disabled(isDisabled)
         .opacity(isDisabled ? 0.35 : 1.0)
-        .accessibilityLabel(name)
+        .accessibilityLabel(accessibilityName)
         .accessibilityValue(isSelected ? "Selected" : "")
+    }
+
+    /// Rows lead with the language, so the name alone reads "English" for
+    /// every English track; VoiceOver hears the detail line too.
+    private var accessibilityName: String {
+        guard let attributes else { return name }
+        return "\(name), \(attributes.replacingOccurrences(of: " · ", with: ", "))"
     }
 }
 

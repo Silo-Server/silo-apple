@@ -4,9 +4,10 @@ import Foundation
 /// page's selectors and the player's track lists so a track reads the same
 /// before and during playback.
 ///
-/// As on Android, the language leads; a track's own title follows only when
-/// it says something the language, codec, and flags don't; codecs use the
-/// short names people know ("EAC3", "TrueHD", "SRT", "PGS").
+/// The language leads; a track's own title follows only when it says
+/// something the language, codec, and flags don't; codecs use the short
+/// names people know ("EAC3", "TrueHD", "SRT", "PGS"). Android's players
+/// don't follow all of these rules yet.
 enum TrackLabels {
     /// A row's name: the language, else a meaningful title, else `fallback`.
     static func name(language: String?, meaningfulTitle: String?, fallback: String) -> String {
@@ -78,6 +79,7 @@ enum TrackLabels {
             if lowered.contains("7.1") { return "7.1" }
             if lowered.contains("5.1") { return "5.1" }
             if lowered.contains("stereo") { return "Stereo" }
+            if lowered.contains("mono") { return "Mono" }
             return layout
         }
         switch channels {
@@ -93,41 +95,74 @@ enum TrackLabels {
     /// An audio title without the codec, channel layout, and language the
     /// row already shows: "Director Commentary AAC" reads "Director
     /// Commentary"; "DTS-HD MA 5.1", "English 5.1", or "ENG (eac3)" for an
-    /// English track leave nothing, so they are nil.
+    /// English track leave nothing, so they are nil. Atmos stays: the
+    /// player knows the codec and channel count but not that.
     static func audioTitle(_ title: String?, language: String? = nil) -> String? {
         guard let title = nonEmpty(title), !looksLikeReleaseName(title) else { return nil }
-        var remainder = title
-            .replacingOccurrences(of: audioTechnicalTerm, with: " ", options: [.regularExpression, .caseInsensitive])
+        var remainder = replacingMatches(of: audioTechnicalTerm, in: title)
         if let language = languageName(language) {
             remainder = removingWords(from: remainder) { word in
+                // A code counts only when written as one ("ENG (eac3)"),
+                // so "por" or "It" in a title stays.
                 word.caseInsensitiveCompare(language) == .orderedSame
-                    || ((2...3).contains(word.count) && languageName(word) == language)
+                    || ((2...3).contains(word.count) && word == word.uppercased() && languageName(word) == language)
             }
         }
-        remainder = remainder
-            .replacingOccurrences(of: #"\([^\p{L}\p{N}]*\)|\[[^\p{L}\p{N}]*\]"#, with: " ", options: .regularExpression)
-            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "-_:/|,.+·").union(.whitespaces))
+        remainder = replacingMatches(of: emptyBrackets, in: remainder)
+        remainder = replacingMatches(of: whitespaceRun, in: remainder)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-–—_:/|,.+·•@").union(.whitespaces))
+        // "English (Commentary)" leaves its title in brackets.
+        if let match = wholeBracketed.firstMatch(in: remainder, range: fullRange(of: remainder)),
+           let inner = Range(match.range(at: 1), in: remainder) {
+            remainder = String(remainder[inner]).trimmingCharacters(in: .whitespaces)
+        }
         // A lone leftover letter ("X" from "DTS:X") says nothing, nor does
         // the "Track 2" left of a name the demuxer made up.
         guard remainder.filter(\.isLetter).count > 1,
-              remainder.range(of: #"^(?:audio\s+)?track\s*\d+$"#, options: [.regularExpression, .caseInsensitive]) == nil
+              demuxerTrackName.firstMatch(in: remainder, range: fullRange(of: remainder)) == nil
         else { return nil }
         return displayTitle(remainder)
     }
 
     /// Codec names and their qualifiers as whole words, so "Commentary by
-    /// Isaac" keeps its title while "AAC2.0" and "DTSHD" still match; and
-    /// channel layouts such as "5.1" or "6ch".
-    private static let audioTechnicalTerm = #"(?<![0-9.])(?:\d\.\d(?:ch)?|\d+ch)(?![0-9a-z])"#
-        + #"|\b(?:atsc|a/52b?|e?-?ac-?3|ec-?3|true[\s-]?hd|aac|flac|alac|opus|vorbis|mp3|pcm(?:_[a-z0-9]+)?"#
-        + #"|atmos|joc|dd\+?|ddp|stereo|mono|surround|dolby|digital(?:\s*plus)?"#
-        + #"|dts(?:-?hd)?(?:[\s:-]*(?:ma|master\s+audio|hra?|high\s+resolution(?:\s+audio)?|es|x))?)(?![a-z])"#
+    /// Isaac" keeps its title while "AAC2.0" and "DTSHD" still match;
+    /// channel layouts ("5.1", "7.1.4", "6ch", "2 ch"), bit rates, sample
+    /// rates, and bit depths; and ffprobe's codec descriptions, which the
+    /// server uses as the title of an untitled stream ("ATSC A/52A (AC-3)",
+    /// "AAC (Advanced Audio Coding)").
+    private static let audioTechnicalTerm = try! NSRegularExpression(
+        pattern: #"(?<![0-9])(?<![0-9]\.)(?:\d\.\d(?:\.\d)?(?:\s?ch)?|\d+\s?ch(?:annels?)?)(?![0-9a-z])"#
+            + #"|(?<![0-9a-z.])\d+(?:[.,]\d+)?[\s-]?(?:[km]?(?:bps|b/s|bit/s)|k?hz|bits?)(?![a-z])"#
+            + #"|\b(?:atsc|a/52[ab]?|he-?aac(?:[\s-]?v?2)?|aac[\s-]?lc|aac\s+latm|e?-?ac-?3|ec-?3|true[\s-]?hd|aac|flac|alac"#
+            + #"|opus|vorbis|mp[23]|pcm\s+(?:un)?signed\s+[\d|]+-bit\s+(?:little|big)-endian(?:\s+for\s+blu-ray\s+media)?"#
+            + #"|l?pcm(?:_[a-z0-9]+)?|joc|dd\+?|ddp|stereo|mono|surround|dolby|digital(?:\s*plus)?|dca|mlp"#
+            + #"|advanced\s+audio\s+coding(?:\s+latm\s+syntax)?|coherent\s+acoustics|(?:free|apple)\s+lossless\s+audio\s+codec"#
+            + #"|interactive\s+audio\s+codec|mpeg\s+audio\s+layer\s+\d|meridian\s+lossless\s+packing"#
+            + #"|dts(?:-?hd)?(?:[\s:._-]*(?:ma|master\s+audio|hra?|high\s+resolution(?:\s+audio)?|es|x))?)(?![a-z])"#,
+        options: [.caseInsensitive]
+    )
+
+    private static let emptyBrackets = try! NSRegularExpression(pattern: #"\([^\p{L}\p{N}]*\)|\[[^\p{L}\p{N}]*\]"#)
+    private static let whitespaceRun = try! NSRegularExpression(pattern: #"\s+"#)
+    private static let wholeBracketed = try! NSRegularExpression(pattern: #"^[(\[]([^()\[\]]+)[)\]]$"#)
+    private static let demuxerTrackName = try! NSRegularExpression(
+        pattern: #"^(?:audio\s+)?track\s*\d+$"#,
+        options: [.caseInsensitive]
+    )
+
+    /// `text` with every match of `pattern` replaced by a space.
+    private static func replacingMatches(of pattern: NSRegularExpression, in text: String) -> String {
+        pattern.stringByReplacingMatches(in: text, range: fullRange(of: text), withTemplate: " ")
+    }
+
+    private static func fullRange(of text: String) -> NSRange {
+        NSRange(text.startIndex..., in: text)
+    }
 
     /// `text` with every whole word that `matches` replaced by a space.
     private static func removingWords(from text: String, where matches: (String) -> Bool) -> String {
         let result = NSMutableString(string: text)
-        let words = wordPattern.matches(in: text, range: NSRange(text.startIndex..., in: text))
+        let words = wordPattern.matches(in: text, range: fullRange(of: text))
         for word in words.reversed() where matches(result.substring(with: word.range)) {
             result.replaceCharacters(in: word.range, with: " ")
         }
