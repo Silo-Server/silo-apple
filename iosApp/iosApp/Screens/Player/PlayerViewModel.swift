@@ -5338,12 +5338,16 @@ class PlayerViewModel {
                     : "Couldn't start the next pick."
                 publishShuffleNextUp()
             }
+            // The restored postroll already says the start failed; only
+            // macOS, which has no postroll screen, needs the notice.
+            #if os(macOS)
             showNotice(
                 title: "Couldn't start the next episode",
                 message: message,
                 tone: .warning,
                 duration: 6
             )
+            #endif
         case .recovery:
             let logMessage = MediaLogRedactor.sanitize(message)
             Self.logger.warning(

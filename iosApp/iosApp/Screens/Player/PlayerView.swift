@@ -286,21 +286,24 @@ struct PlayerView: View {
                         }
                         #endif
 
-                        #if os(tvOS)
-                        if let identity = remoteIdentityNotice {
-                            RemotePlaybackIdentityNotice(identity: identity)
-                                .transition(.opacity)
-                        } else if let notice = viewModel.presentedNotice {
-                            PlayerNoticeOverlay(notice: notice)
-                        }
-                        #else
-                        if let notice = viewModel.presentedNotice {
-                            PlayerNoticeOverlay(notice: notice)
-                        }
-                        #endif
-
                         subtitleSyncIndicator
                     }
+
+                    // Outside the playback-only branch, so an end that stopped
+                    // short explains itself on the end-of-playback screen too,
+                    // above that screen's video preview.
+                    #if os(tvOS)
+                    if let identity = remoteIdentityNotice {
+                        RemotePlaybackIdentityNotice(identity: identity)
+                            .transition(.opacity)
+                    } else if let notice = viewModel.presentedNotice {
+                        PlayerNoticeOverlay(notice: notice)
+                    }
+                    #else
+                    if let notice = viewModel.presentedNotice {
+                        PlayerNoticeOverlay(notice: notice)
+                    }
+                    #endif
 
                     #if os(tvOS)
                     if let message = watchPartySyncMessage {
@@ -889,13 +892,6 @@ struct PlayerNextUpScreen: View {
         #if os(tvOS)
         .ignoresSafeArea()
         #endif
-        // The player's notice layer is hidden behind this screen, and an end
-        // that stopped short explains itself here.
-        .overlay(alignment: .top) {
-            if let notice = viewModel.presentedNotice {
-                PlayerNoticeOverlay(notice: notice)
-            }
-        }
         .animation(.easeInOut(duration: 0.2), value: viewModel.nextUpCountdownSeconds)
         .animation(.easeInOut(duration: 0.2), value: viewModel.nextUpEpisode)
         .animation(.easeInOut(duration: 0.2), value: viewModel.nextUpCarouselItems)
