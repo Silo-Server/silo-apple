@@ -675,25 +675,8 @@ final class ReceiverPairingCoordinator {
 
     /// Commit the now-trusted server + tokens. Runs only after a successful poll.
     static func persistServer(_ pairing: PersistedPairing) async -> Bool {
-        // A server already saved under a differently cased URL keeps that
-        // entry's id and URL, which key its credentials and settings.
-        let pairedID = ServerRegistry.serverId(for: pairing.url)
-        let saved = ServerRegistry.shared.entry(matching: pairedID)
-        let url = saved?.url ?? pairing.url
-        let id = saved?.id ?? pairedID
         let access = pairing.accessToken
         let refresh = pairing.refreshToken
-        let entry = ServerEntry(
-            id: id,
-            url: url,
-            fetchedName: pairing.fetchedName,
-            profileId: nil,
-            lastUsedAt: Date(),
-            verifiedServerId: pairing.verifiedServerId
-        )
-        // Device authorization can replace the account for an already-saved
-        // server URL. Preserve its name, but never carry the previous account's
-        // profile selection across that credential boundary.
         guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
             return false
         }
@@ -710,6 +693,24 @@ final class ReceiverPairingCoordinator {
         let previousServerURL = await TokenStore.shared.getServerUrl()
         let previousProfileID = await TokenStore.shared.getProfileId()
         let previousProfileToken = await TokenStore.shared.getProfileToken()
+        // A server already saved under a differently cased URL keeps that
+        // entry's id and URL, which key its credentials and settings. Look
+        // it up inside the transition so a pairing that saved it first is seen.
+        let pairedID = ServerRegistry.serverId(for: pairing.url)
+        let saved = ServerRegistry.shared.entry(matching: pairedID)
+        let url = saved?.url ?? pairing.url
+        let id = saved?.id ?? pairedID
+        // Device authorization can replace the account for an already-saved
+        // server URL. Preserve its name, but never carry the previous account's
+        // profile selection across that credential boundary.
+        let entry = ServerEntry(
+            id: id,
+            url: url,
+            fetchedName: pairing.fetchedName,
+            profileId: nil,
+            lastUsedAt: Date(),
+            verifiedServerId: pairing.verifiedServerId
+        )
         // Re-pairing an already saved server replaces its credential slot in
         // the session install below (and adopts the slot even when the write fails
         // part way), before the registry commit can still fail. Keep what
