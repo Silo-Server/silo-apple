@@ -5062,7 +5062,8 @@ class PlayerViewModel {
                         request: request,
                         resumePosition: resumePositionOverride,
                         allowNearEndResume: allowNearEndResume,
-                        timeout: origin == .userInitiated ? nil : Self.autoplayStartSessionTimeout
+                        timeout: origin == .userInitiated || origin == .resumeAfterEnd
+                            ? nil : Self.autoplayStartSessionTimeout
                     )
                 }
                 try self.requireCurrentStreamLoad(currentStreamLoadGeneration)
