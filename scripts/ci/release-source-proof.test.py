@@ -303,10 +303,10 @@ class SourceProofTests(unittest.TestCase):
                 self.assertFalse(proof.execute("record", dict(self.env, **{field: value}),
                                                self.root, self.api())["created"])
 
-    def test_identity_covers_all_18_pins_and_immutable_packaging_inputs(self):
-        self.assertEqual(len(self.source["graph"]), 18)
+    def test_identity_covers_all_19_pins_and_immutable_packaging_inputs(self):
+        self.assertEqual(len(self.source["graph"]), 19)
         self.assertEqual([item["kind"] for item in self.source["graph"]],
-                         ["package"] * 11 + ["builder"] + ["native"] * 6)
+                         ["package"] * 12 + ["builder"] + ["native"] * 6)
         path = "scripts/ci/package-release-source.py"
         (self.root / path).write_bytes(self.inputs[path] + b"\n# changed after checkout\n")
         with self.assertRaises(proof.Rejected):

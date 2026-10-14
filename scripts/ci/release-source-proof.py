@@ -83,7 +83,7 @@ def identity(env):
     locked, native = parse_json(contents[RESOLVED]), parse_json(contents[PINS])
     graph = [{"kind": "package", "name": pin["identity"], "repository": pin["location"],
               "revision": pin["state"]["revision"]} for pin in locked["pins"]]
-    require(len(graph) == 11 and len({item["name"] for item in graph}) == 11,
+    require(len(graph) == 12 and len({item["name"] for item in graph}) == 12,
             "Incomplete locked package graph")
     require(any(item["name"] == "swift-libass"
                 and item["revision"] == native["swift_libass_revision"] for item in graph),
@@ -92,7 +92,7 @@ def identity(env):
                   "revision": native["builder"]["revision"]})
     graph.extend({"kind": "native", "name": item["name"], "repository": item["repository"],
                   "revision": item["revision"], "tag": item["tag"]} for item in native["libraries"])
-    require(len(graph) == 18 and len({item["name"] for item in graph[12:]}) == 6,
+    require(len(graph) == 19 and len({item["name"] for item in graph[13:]}) == 6,
             "Incomplete native source graph")
     for item in graph:
         require(isinstance(item["name"], str) and re.fullmatch(r"[A-Za-z0-9_.-]+", item["name"])
