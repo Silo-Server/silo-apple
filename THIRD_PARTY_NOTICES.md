@@ -17,7 +17,7 @@ The authoritative dependency lock is
 
 | Component | Exact revision | Shipped form | License |
 | --- | --- | --- | --- |
-| AetherEngine 7.36.0 + Silo subtitle, HLS authorization and playback recovery patches | `23889c5be4ae1195cacb93d4168c6d9487fcf668` | Swift package target linked into each host app | LGPL-3.0-only with AetherEngine's Apple Store / DRM exception |
+| AetherEngine 7.36.0 + Silo subtitle, HLS authorization and playback recovery patches | `b0712217abb7399aeb21f875bcc7c26e7af92fd8` | Swift package target linked into each host app | LGPL-3.0-only with AetherEngine's Apple Store / DRM exception |
 | FFmpegBuild 3.7.1 | `013c48bd4d3073428f31cade039ec4ed958d0ceb` | Nine separately embedded dynamic frameworks | See the component table below |
 | LibTrueHD 2.3.0 (formerly SiloObjectAudio) | `577de495184254e2c660ebfd6ce3f7d97f45899d` | Static `TrueHD.xcframework` linked through AetherEngine | MIT; embedded `truehd` and `oamd` crates are Apache-2.0 |
 | LibDTSX 1.0.1 | `9906f8fe9b72eb4d79a85754adbba6fa52cfe7b2` | Static `DTSX.xcframework` linked through AetherEngine | Apache-2.0, including the embedded `dca` crate |
@@ -49,9 +49,10 @@ published under the LGPL at the exact source revision below. The bundled
 acknowledgements include AetherEngine's complete license and exception plus
 the GNU GPL version 3 text incorporated by LGPLv3.
 
-- Exact source: <https://github.com/Silo-Server/AetherEngine/tree/23889c5be4ae1195cacb93d4168c6d9487fcf668>
+- Exact source: <https://github.com/Silo-Server/AetherEngine/tree/b0712217abb7399aeb21f875bcc7c26e7af92fd8>
   (engine pull requests: <https://github.com/Silo-Server/AetherEngine/pull/2>,
   <https://github.com/Silo-Server/AetherEngine/pull/6>,
+  <https://github.com/Silo-Server/AetherEngine/pull/15>,
   <https://github.com/Silo-Server/AetherEngine/pull/16>,
   <https://github.com/Silo-Server/AetherEngine/pull/17>,
   <https://github.com/Silo-Server/AetherEngine/pull/18>,
