@@ -121,8 +121,12 @@ final class WatchPartyStateTests: XCTestCase {
         XCTAssertTrue(WatchPartyCommandState.canAcknowledge(completed, roomPlaybackState: .waiting,
             sourceTime: 101.5, isHost: false), "A small pause correction outside the seekable window must not hold the readiness barrier")
         completed.action = .seek
+        // The server holds a room seek to 1s and a stalled guest's own seek to
+        // 5s; the guest reports anything within 5s and the server decides.
+        XCTAssertTrue(WatchPartyCommandState.canAcknowledge(completed, roomPlaybackState: .waiting,
+            sourceTime: 95.1, isHost: false), "A rebuilt stream that lands short still reports")
         XCTAssertFalse(WatchPartyCommandState.canAcknowledge(completed, roomPlaybackState: .waiting,
-            sourceTime: 101.5, isHost: false), "A guest must still land within one second of an explicit seek")
+            sourceTime: 105.1, isHost: false), "A guest must still land near an explicit seek")
         XCTAssertTrue(WatchPartyCommandState.canAcknowledge(completed, roomPlaybackState: .waiting,
             sourceTime: 101, isHost: false))
         XCTAssertTrue(WatchPartyCommandState.canAcknowledge(completed, roomPlaybackState: .waiting,

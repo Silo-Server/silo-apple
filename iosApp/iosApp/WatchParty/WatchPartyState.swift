@@ -78,13 +78,23 @@ struct WatchPartyCommandState {
         command.positionSeconds + (command.playbackState == .playing ? max(0, serverNow.timeIntervalSince(command.executeAt)) : 0)
     }
 
+    /// How far from a waiting seek's target a guest still acknowledges it.
+    /// The server applies the tolerance that fits the seek: 1s for the room's
+    /// own seek, 5s for the seek it sends a stalled guest, whose rebuilt stream
+    /// often lands short and then closes the rest by rate. This client cannot
+    /// tell the two apart and has no pre-roll, so it reports and lets the
+    /// server decide.
+    static let guestSeekAcknowledgeTolerance: Double = 5
+    static let hostSeekAcknowledgeTolerance: Double = 15
+
     /// Waiting seeks require a landed destination; a buffering pause only
     /// requires the applied command and actual media readiness.
     static func canAcknowledge(_ completed: WatchPartyTransportCommand?, roomPlaybackState: WatchPartyPlaybackState,
                                sourceTime: Double, isHost: Bool) -> Bool {
         guard let completed, sourceTime.isFinite, sourceTime >= 0 else { return false }
         guard roomPlaybackState == .waiting, completed.action == .seek else { return true }
-        return abs(sourceTime - completed.positionSeconds) <= (isHost ? 15 : 1)
+        let tolerance = isHost ? hostSeekAcknowledgeTolerance : guestSeekAcknowledgeTolerance
+        return abs(sourceTime - completed.positionSeconds) <= tolerance
     }
 
     /// The room waits for this member's `ready` only at a barrier, or while the
