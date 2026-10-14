@@ -50,6 +50,30 @@ struct WatchPartyCommandState {
         pending = nil
     }
 
+    /// How long after a command finished before the drift loop measures
+    /// again; the player's clock settles after a play or seek.
+    static let nudgeSettle: TimeInterval = 1
+
+    /// What a command does to this member's position when it executes.
+    enum PositionStep: Equatable {
+        /// The room's explicit seek: a barrier everyone lands on exactly.
+        case roomSeek
+        /// A playing member staying in a playing room: rate, or a large seek.
+        case correct
+        /// A stopped member moves before it plays or pauses there.
+        case realign
+        case none
+    }
+
+    static func positionStep(_ command: WatchPartyTransportCommand, memberPlaying: Bool,
+                             drift: Double, reachableInPlace: Bool) -> PositionStep {
+        if command.action == .seek { return .roomSeek }
+        if command.playbackState == .playing, memberPlaying { return .correct }
+        return WatchPartyCorrection.seeksWhileStopped(drift: drift, reachableInPlace: reachableInPlace) ? .realign : .none
+    }
+
+    /// The room's position at `serverNow`: a command carries the room's
+    /// position at its execute time, and a playing room advances at 1x.
     static func projectedPosition(_ command: WatchPartyTransportCommand, serverNow: Date) -> Double {
         command.positionSeconds + (command.playbackState == .playing ? max(0, serverNow.timeIntervalSince(command.executeAt)) : 0)
     }
@@ -74,6 +98,49 @@ struct WatchPartyCommandState {
         if room.playbackState == .waiting { return true }
         return room.phase == .playing && (room.playbackState == .playing || room.playbackState == .paused)
             && (room.selfIgnoreWait || member?.isBuffering == true)
+    }
+}
+
+/// The offset from this device's clock to the server's, from ping/pong
+/// samples. A sample's error is at most half its round trip, so the offset in
+/// use is the one from the fastest recent round trip, not the latest: one slow
+/// pong would otherwise move every command's local execute time.
+struct WatchPartyClock {
+    static let sampleLimit = 8
+    static let maxRoundTrip: TimeInterval = 5
+    /// Pings this fast until a connection has this many samples, then slowly.
+    static let warmupSamples = 4
+    static let warmupInterval: TimeInterval = 2
+    static let interval: TimeInterval = 15
+
+    private(set) var samples: [(roundTrip: TimeInterval, offset: TimeInterval)] = []
+
+    /// Server time minus local time, or 0 before any sample.
+    var offset: TimeInterval { samples.min(by: { $0.roundTrip < $1.roundTrip })?.offset ?? 0 }
+
+    /// Millisecond timestamps can make a LAN round trip read slightly negative.
+    static let roundingSlack: TimeInterval = 0.002
+    /// Beyond their round-trip error bounds, two offsets disagree by this much
+    /// only when this device's clock moved between them.
+    static let stepMargin: TimeInterval = 0.05
+
+    /// Records a sample and returns whether it was usable.
+    @discardableResult
+    mutating func record(clientSent: Date, serverReceived: Date, serverSent: Date, clientReceived: Date) -> Bool {
+        var roundTrip = clientReceived.timeIntervalSince(clientSent) - serverSent.timeIntervalSince(serverReceived)
+        if roundTrip < 0, roundTrip >= -Self.roundingSlack { roundTrip = 0 }
+        guard roundTrip.isFinite, roundTrip >= 0, roundTrip <= Self.maxRoundTrip else { return false }
+        let offset = (serverReceived.timeIntervalSince(clientSent) + serverSent.timeIntervalSince(clientReceived)) / 2
+        // Each offset is within half its round trip of the truth. When the new
+        // one cannot agree with the best kept one, the device clock stepped
+        // (a time sync, or waking from sleep) and the old samples are stale.
+        if let best = samples.min(by: { $0.roundTrip < $1.roundTrip }),
+           abs(offset - best.offset) > (roundTrip + best.roundTrip) / 2 + Self.stepMargin {
+            samples.removeAll()
+        }
+        samples.append((roundTrip: roundTrip, offset: offset))
+        if samples.count > Self.sampleLimit { samples.removeFirst() }
+        return true
     }
 }
 

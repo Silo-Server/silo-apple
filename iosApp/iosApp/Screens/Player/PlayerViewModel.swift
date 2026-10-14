@@ -986,10 +986,12 @@ class PlayerViewModel {
     private var activePlaybackSessionId: String?
     var watchPartyAdapter: WatchPartyPlaybackAdapter?
     private var watchPartyLocalPreparation = false
+    /// The rate a party member should play at: 1, or a correction nudge.
     private var watchPartyCorrectionRate: Double = 1
-    /// An active rate catch-up: the room target it converges on and when that
-    /// target was taken. The room advances at 1x from then.
-    private var watchPartyCatchup: (target: Double, startedAt: Date)?
+    /// The rate last handed to Aether, or nil when unknown. Aether starts
+    /// playback on any nonzero rate, so the rate only reaches it while it
+    /// plays; a paused member picks the rate up when it next plays.
+    private var watchPartyAppliedRate: Double?
     private var watchPartyReloadBudget = WatchPartyReloadBudget()
     var isWatchPartyPlayback: Bool { watchPartyAdapter?.context != nil }
     var canRequestPlayPause: Bool { !isWatchPartyPlayback || watchPartyAdapter?.canPlayPause == true }
@@ -3742,6 +3744,9 @@ class PlayerViewModel {
             shouldPlayWhenReady: shouldPlayWhenReady
         )
         activeAetherLoadEpoch = loadEpoch
+        // Aether keeps a speed only across a reload of the same source, so a
+        // party member's rate is handed over again once this load plays.
+        watchPartyAppliedRate = nil
         // A progressive remux opens at its stream origin, behind the position
         // the caller just published. Clock updates earlier than `currentTime`
         // are dropped as stale, so move it back to where the engine starts or
@@ -4145,7 +4150,9 @@ class PlayerViewModel {
     }
 
     func applySettingsToPlayer() {
-        aetherPlaybackController.setSpeed(effectivePlaybackSpeed)
+        // Aether starts a paused player on any rate; a party member's rate is
+        // the room's to set, and only while it plays.
+        if isWatchPartyPlayback { syncWatchPartyRate() } else { aetherPlaybackController.setSpeed(effectivePlaybackSpeed) }
         aetherPlaybackController.engine.videoGravity = settings.videoGravity.avGravity
     }
 
@@ -9409,6 +9416,7 @@ extension PlayerViewModel {
         watchPartyAdapter = adapter
         watchPartyLocalPreparation = false
         cancelWatchPartyCorrection()
+        watchPartyAppliedRate = nil
         watchPartyReloadBudget = WatchPartyReloadBudget()
         aetherPlaybackController.requiresExplicitTransportResume = true
         aetherPlaybackController.permitsExternalPlayback = false
@@ -9491,44 +9499,59 @@ extension PlayerViewModel {
 
     func cancelWatchPartyCorrection() {
         watchPartyCorrectionRate = 1
-        watchPartyCatchup = nil
-        if isWatchPartyPlayback { aetherPlaybackController.setSpeed(1) }
+        syncWatchPartyRate()
     }
 
-    /// Applies a server correction to a playing member: no change inside the
-    /// deadband, a rate catch-up for small drift, and for larger drift a seek
-    /// to media already buffered or a budgeted load for media that is not.
-    /// Returns without waiting for a rate catch-up, so the member keeps
-    /// reporting while it converges.
+    /// Hands the member's rate to Aether while it plays. Setting a rate on a
+    /// paused Aether player starts it, which made a paused member play from
+    /// every room command, socket renewal, and seek until the command ran.
+    private func syncWatchPartyRate() {
+        guard isWatchPartyPlayback, !isDisposed, aetherPlaybackController.engine.state == .playing,
+              watchPartyAppliedRate != watchPartyCorrectionRate else { return }
+        aetherPlaybackController.setSpeed(watchPartyCorrectionRate)
+        watchPartyAppliedRate = watchPartyCorrectionRate
+    }
+
+    /// Applies a room command to a playing member: drift up to the hard-seek
+    /// band converges by rate, larger drift seeks to media already buffered
+    /// or takes a budgeted load for media that is not. Returns without
+    /// waiting for a rate nudge, so the member keeps reporting meanwhile.
     func correctWatchPartyPlayback(
         to position: Double, context: WatchPartyPlaybackContext
     ) async throws -> WatchPartyPlaybackSnapshot {
         guard position.isFinite, position >= 0, !isDisposed,
               watchPartyAdapter?.context == context else { throw WatchPartyPlaybackError.invalidated }
         let local = watchPartyPlaybackSnapshot.sourceTime
-        let locallySeekable = canSeekWatchPartyLocally(to: position)
-        switch WatchPartyCorrection.resolve(drift: position - local) {
-        case .none:
-            // Already at the room position; drop any stale catch-up.
-            cancelWatchPartyCorrection()
-            watchPartyReloadBudget.settle()
-            return watchPartyPlaybackSnapshot
-        case .seek:
-            if WatchPartyCorrection.targetBuffered(
-                position, local: local, locallySeekable: locallySeekable,
-                forwardBuffer: aetherPlaybackController.engine.liveTelemetry?.forwardBufferSeconds
-            ) {
-                return try await applyWatchPartyTransport(.seek(position), context: context, origin: .realign)
-            }
-            return try await loadWatchPartyCorrection(to: position, context: context)
-        case .rate(let rate):
-            guard watchPartyPlaybackSnapshot.isPlaying else { return watchPartyPlaybackSnapshot }
-            cancelWatchPartyCorrection()
-            watchPartyCorrectionRate = rate
-            watchPartyCatchup = (position, Date())
-            aetherPlaybackController.setSpeed(rate)
+        guard WatchPartyCorrection.resolve(drift: position - local) == .seek else {
+            nudgeWatchPartyPlayback(drift: position - local)
             return watchPartyPlaybackSnapshot
         }
+        if watchPartyTargetReachableInPlace(position) {
+            return try await applyWatchPartyTransport(.seek(position), context: context, origin: .realign)
+        }
+        return try await loadWatchPartyCorrection(to: position, context: context)
+    }
+
+    /// Converges a playing member on the room by playback rate, with the
+    /// hysteresis in `WatchPartyCorrection.nudge`. It never seeks, and it
+    /// leaves a correction load in flight to land first.
+    func nudgeWatchPartyPlayback(drift: Double) {
+        guard isWatchPartyPlayback, !isDisposed, !watchPartyReloadBudget.inFlight(at: Date()),
+              watchPartyPlaybackSnapshot.isPlaying else { return }
+        let rate = WatchPartyCorrection.nudge(drift: drift, currentRate: watchPartyCorrectionRate)
+        if rate == 1 { watchPartyReloadBudget.settle() }
+        guard rate != watchPartyCorrectionRate else { return }
+        watchPartyCorrectionRate = rate
+        syncWatchPartyRate()
+    }
+
+    /// Whether a seek to `position` lands in media this member already has.
+    func watchPartyTargetReachableInPlace(_ position: Double) -> Bool {
+        WatchPartyCorrection.targetBuffered(
+            position, local: watchPartyPlaybackSnapshot.sourceTime,
+            locallySeekable: canSeekWatchPartyLocally(to: position),
+            forwardBuffer: aetherPlaybackController.engine.liveTelemetry?.forwardBufferSeconds
+        )
     }
 
     /// A correction to media that is not buffered loads it and lands late by
@@ -9558,20 +9581,20 @@ extension PlayerViewModel {
         }
     }
 
-    /// Runs on each playback clock update, like the web client's timeupdate
-    /// handler: a rate catch-up that reached the advancing room returns to
-    /// 1x, and a correction load that is playing records its load time as the
-    /// next load's lead.
+    /// Runs on each playback clock update. The room session drives the rate
+    /// nudge; here a rate that could not reach Aether while it was paused or
+    /// rebuffering is handed over once it plays, and a correction load that is
+    /// playing records its load time as the next load's lead.
     private func updateWatchPartyCatchup() {
-        guard isWatchPartyPlayback, watchPartyCatchup != nil || watchPartyReloadBudget.target != nil else { return }
-        let snapshot = watchPartyPlaybackSnapshot
+        guard isWatchPartyPlayback else { return }
+        syncWatchPartyRate()
+        guard watchPartyReloadBudget.target != nil else { return }
         let now = Date()
-        if let catchup = watchPartyCatchup,
-           WatchPartyCorrection.converged(target: catchup.target, elapsed: now.timeIntervalSince(catchup.startedAt),
-                                          local: snapshot.sourceTime) {
-            cancelWatchPartyCorrection()
-            watchPartyReloadBudget.settle()
+        guard watchPartyReloadBudget.inFlight(at: now) else {
+            watchPartyReloadBudget.abandon(at: now)
+            return
         }
+        let snapshot = watchPartyPlaybackSnapshot
         if snapshot.isPlaying, snapshot.isReady, watchPartyReloadBudget.landed(at: snapshot.sourceTime) {
             watchPartyReloadBudget.land(at: now)
         }
@@ -9647,7 +9670,13 @@ extension PlayerViewModel {
             // or revive a dead one at the position it dropped. Stay paused at
             // the end; the room's next seek remounts this member.
             if hasReachedEndOfFile { break }
-            aetherPlaybackController.setSpeed(watchPartyCorrectionRate)
+            // The room wants this member playing, so the rate may start it.
+            // A member already playing at that rate is left alone: on the
+            // software path every rate write re-times the audio clock.
+            if aetherPlaybackController.engine.state != .playing || watchPartyAppliedRate != watchPartyCorrectionRate {
+                aetherPlaybackController.setSpeed(watchPartyCorrectionRate)
+                watchPartyAppliedRate = watchPartyCorrectionRate
+            }
             aetherPlaybackController.play()
         case .pause:
             cancelWatchPartyCorrection()

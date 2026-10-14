@@ -1668,14 +1668,18 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertTrue(WatchPartyPlaybackAction.seek(10).isPermitted(canPlayPause: true, canSeek: true))
     }
 
-    func testWatchPartySmallCorrectionConvergesByRate() {
+    func testWatchPartyDriftBelowTheHardSeekBandConvergesByRate() {
         XCTAssertEqual(WatchPartyCorrection.resolve(drift: 0.3), .none)
-        XCTAssertEqual(WatchPartyCorrection.resolve(drift: 1), .rate(1.125))
-        XCTAssertEqual(WatchPartyCorrection.resolve(drift: 2), .rate(WatchPartyCorrection.maxRate))
-        XCTAssertEqual(WatchPartyCorrection.resolve(drift: -1.2), .rate(WatchPartyCorrection.minRate))
-        XCTAssertEqual(WatchPartyCorrection.resolve(drift: 3), .seek)
-        XCTAssertEqual(WatchPartyCorrection.resolve(drift: -3), .seek)
+        XCTAssertEqual(WatchPartyCorrection.resolve(drift: 0.4), .none)
         XCTAssertEqual(WatchPartyCorrection.resolve(drift: .nan), .none)
+        for drift in [0.5, 1, 3, 4.9, -0.5, -2, -4.9] {
+            guard case .rate(let rate) = WatchPartyCorrection.resolve(drift: drift) else {
+                return XCTFail("drift \(drift) did not converge by rate")
+            }
+            XCTAssertEqual(rate > 1, drift > 0, "drift \(drift) moved the wrong way at \(rate)")
+        }
+        XCTAssertEqual(WatchPartyCorrection.resolve(drift: 5.1), .seek)
+        XCTAssertEqual(WatchPartyCorrection.resolve(drift: -5.1), .seek)
     }
 
     func testWatchPartyScrubResumeIsPartOfTheSeekRequest() {

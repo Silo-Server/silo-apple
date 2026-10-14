@@ -30,7 +30,9 @@ enum WatchPartyServerMessage: Decodable {
     case snapshot(WatchPartyRoom)
     case transport(WatchPartyTransportCommand)
     case suggestions([WatchPartySuggestion])
-    case pong(client: Date, received: Date, sent: Date)
+    /// `receivedAt` is this device's clock when the frame was decoded, before
+    /// it queues behind other room frames for the session.
+    case pong(client: Date, received: Date, sent: Date, receivedAt: Date)
     case closed(String)
     case connectionReplaced(reason: String?)
     case error(code: String, message: String)
@@ -48,7 +50,7 @@ enum WatchPartyServerMessage: Decodable {
         case "suggestions_update": self = .suggestions(try c.decode([WatchPartySuggestion].self, forKey: .suggestions))
         case "pong": self = .pong(client: try c.decode(Date.self, forKey: .clientSentAt),
                                   received: try c.decode(Date.self, forKey: .serverReceivedAt),
-                                  sent: try c.decode(Date.self, forKey: .serverSentAt))
+                                  sent: try c.decode(Date.self, forKey: .serverSentAt), receivedAt: Date())
         case "room_closed": self = .closed(try c.decodeIfPresent(String.self, forKey: .reason) ?? "ended")
         case "connection_replaced": self = .connectionReplaced(reason: try c.decodeIfPresent(String.self, forKey: .reason))
         case "error": self = .error(code: try c.decode(String.self, forKey: .code), message: try c.decode(String.self, forKey: .message))

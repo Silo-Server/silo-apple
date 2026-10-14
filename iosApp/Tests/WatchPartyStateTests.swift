@@ -277,11 +277,13 @@ final class WatchPartyStateTests: XCTestCase {
         XCTAssertTrue(decoded.members[1].lobbyReady)
         XCTAssertFalse(decoded.members[1].isReady)
         let pong = #"{"client_sent_at":"2026-09-22T00:09:45.037Z","server_received_at":"2026-09-22T00:09:45.074218282Z","server_sent_at":"2026-09-22T00:09:45.074224932Z","type":"pong"}"#
-        guard case .pong(let client, let received, let sent) = try decoder.decode(WatchPartyServerMessage.self, from: Data(pong.utf8)) else {
+        let beforeDecode = Date()
+        guard case .pong(let client, let received, let sent, let receivedAt) = try decoder.decode(WatchPartyServerMessage.self, from: Data(pong.utf8)) else {
             return XCTFail("Expected observed pong")
         }
         XCTAssertEqual(received.timeIntervalSince(client), 0.037218282, accuracy: 0.002)
         XCTAssertGreaterThanOrEqual(sent, received)
+        XCTAssertGreaterThanOrEqual(receivedAt, beforeDecode)
         let closed = #"{"reason":"host_left","type":"room_closed"}"#
         guard case .closed(let reason) = try decoder.decode(WatchPartyServerMessage.self, from: Data(closed.utf8)) else {
             return XCTFail("Expected observed terminal frame")

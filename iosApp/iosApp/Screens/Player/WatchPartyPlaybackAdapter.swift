@@ -42,42 +42,58 @@ enum WatchPartyPlaybackError: Error {
     case notReady
 }
 
-/// How a member applies a room correction, following the web client's
-/// `roomSyncCatchup.ts` so native and browser members converge the same way.
-/// Small drift converges by playback rate and larger drift seeks. Unlike the
-/// web client, small drift stays a rate catch-up even when the stream can
-/// reach the target in place: Aether seeks frame-accurately, so on direct
-/// play every correction would otherwise be a visible hitch.
+/// How a member converges on the room. Every client (web, Apple, Android)
+/// uses these bands and rates, so a mixed room behaves the same everywhere.
+/// Drift up to `hardSeek` converges by a pitch-preserved playback rate of at
+/// most 4 percent, too small for viewers to notice; only larger drift seeks.
 enum WatchPartyCorrection: Equatable {
     case none
     case seek
     case rate(Double)
 
-    /// Drift within this band converges by rate instead of seeking.
-    static let catchupBand: Double = 2
-    /// Playback already this close to the room needs no correction.
-    static let deadband: Double = 0.35
-    static let minRate: Double = 0.9
-    static let maxRate: Double = 1.25
-    /// A 1s deficit plays at 1.125x and converges in about 8s; the band edge
-    /// reaches the cap. Gentle on purpose: this runs during normal playback.
-    private static let rateDivisor: Double = 8
+    /// No correction starts below this drift.
+    static let deadband: Double = 0.4
+    /// A rate nudge in progress ends once playback is this close.
+    static let settle: Double = 0.1
+    /// Only drift beyond this makes a playing member seek.
+    static let hardSeek: Double = 5
+    /// A member that is not playing seeks beyond this drift when the target
+    /// is reachable in place; it costs a frame jump, not a rebuild.
+    static let stoppedSeek: Double = 1
+    static let minRateDelta: Double = 0.01
+    static let maxRateDelta: Double = 0.04
+    /// One second of drift plays 4 percent fast and converges in about 25s.
+    private static let rateGain: Double = 25
+    private static let rateStep: Double = 0.005
 
-    /// `drift` is the room target minus the local position, in seconds.
+    /// `drift` is the room position minus the local position, in seconds:
+    /// positive when this member is behind.
     static func resolve(drift: Double) -> Self {
         guard drift.isFinite, abs(drift) > deadband else { return .none }
-        if abs(drift) > catchupBand { return .seek }
-        return .rate(min(maxRate, max(minRate, 1 + drift / rateDivisor)))
+        if abs(drift) > hardSeek { return .seek }
+        return .rate(rate(for: drift))
     }
 
-    /// The room keeps advancing at 1x after a correction executes, so a rate
-    /// catch-up converges on that moving position, not the static target.
-    static func expectedPosition(_ target: Double, elapsed: TimeInterval) -> Double {
-        max(0, target + max(0, elapsed))
+    /// The rate to play at for `drift`, given the rate playing now. A nudge
+    /// starts beyond `deadband` and runs until `settle`, so playback that
+    /// hovers at the deadband does not flip between rates.
+    static func nudge(drift: Double, currentRate: Double) -> Double {
+        guard drift.isFinite else { return 1 }
+        let threshold = currentRate == 1 ? deadband : settle
+        return abs(drift) <= threshold ? 1 : rate(for: drift)
     }
 
-    static func converged(target: Double, elapsed: TimeInterval, local: Double) -> Bool {
-        abs(expectedPosition(target, elapsed: elapsed) - local) <= deadband
+    /// Whether a member that is not playing moves to the target before it
+    /// plays or pauses there. Smaller drift is left to the nudge once it plays.
+    static func seeksWhileStopped(drift: Double, reachableInPlace: Bool) -> Bool {
+        guard drift.isFinite else { return false }
+        return abs(drift) > hardSeek || (reachableInPlace && abs(drift) > stoppedSeek)
+    }
+
+    static func rate(for drift: Double) -> Double {
+        let delta = min(maxRateDelta, max(minRateDelta, abs(drift) / rateGain))
+        let stepped = (delta / rateStep).rounded() * rateStep
+        return drift > 0 ? 1 + stepped : 1 - stepped
     }
 
     /// Whether a correction can seek at once instead of loading new media.
@@ -120,6 +136,8 @@ struct WatchPartyReloadBudget: Equatable {
     /// A load that never lands stops blocking the next one after this long.
     static let staleAfter: TimeInterval = 30
     static let maxLead: TimeInterval = 10
+    /// How far past its target a load may play and still count as landed.
+    static let landingWindow: TimeInterval = 2
 
     /// Identifies the current load, so a completion from an earlier load
     /// cannot act on a later one aimed at the same position.
@@ -138,6 +156,13 @@ struct WatchPartyReloadBudget: Equatable {
     func allowed(at now: Date) -> Bool {
         if target != nil { return now.timeIntervalSince(startedAt) >= Self.staleAfter }
         return now >= nextAllowedAt
+    }
+
+    /// Whether a load is still expected to land. One that never lands, such
+    /// as a rebuilt stream that opened far past its aim, stops counting after
+    /// `staleAfter`, so it cannot hold off rate corrections indefinitely.
+    func inFlight(at now: Date) -> Bool {
+        target != nil && now.timeIntervalSince(startedAt) < Self.staleAfter
     }
 
     /// Records a load toward `roomPosition` and returns where to aim it. The
@@ -164,7 +189,7 @@ struct WatchPartyReloadBudget: Equatable {
     func landed(at position: Double) -> Bool {
         guard let target, loadStarted else { return false }
         let offset = position - target
-        return offset >= -WatchPartyCorrection.deadband && offset <= WatchPartyCorrection.catchupBand
+        return offset >= -WatchPartyCorrection.deadband && offset <= Self.landingWindow
     }
 
     /// The load is playing: remember its load time and space the next one.
@@ -246,6 +271,14 @@ final class WatchPartyPlaybackAdapter {
     }
 
     func cancelCorrection() { player?.cancelWatchPartyCorrection() }
+
+    /// Converges a playing member on the room by playback rate; never seeks.
+    func nudge(drift: Double) { player?.nudgeWatchPartyPlayback(drift: drift) }
+
+    /// Whether `position` can be reached without rebuilding the stream.
+    func canReachInPlace(_ position: Double) -> Bool {
+        player?.watchPartyTargetReachableInPlace(position) == true
+    }
 
     /// A suspended native pipeline may have been released by Aether. Mount it
     /// paused before the room's attachment/readiness handshake can continue.

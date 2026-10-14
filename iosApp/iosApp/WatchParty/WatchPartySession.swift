@@ -79,12 +79,16 @@ final class WatchPartySession {
     @ObservationIgnored private var lastAttach: Date = .distantPast
     @ObservationIgnored private var lastReport: Date = .distantPast
     @ObservationIgnored private var lastPing: Date = .distantPast
+    /// Clock samples taken on the current socket; until there are a few,
+    /// pings run fast to fill the clock.
+    @ObservationIgnored private var connectionSamples = 0
     @ObservationIgnored private var lastReady: Date = .distantPast
     /// The playback session whose media has been playable at least once. Its
     /// position is real from then on, including while it rebuffers.
     @ObservationIgnored private var playableSession: String?
     @ObservationIgnored private var stall = WatchPartyStallTimer()
-    @ObservationIgnored private var serverOffset: TimeInterval = 0
+    @ObservationIgnored private var clock = WatchPartyClock()
+    private var serverOffset: TimeInterval { clock.offset }
     /// Local receipt time of the current room snapshot. Its anchor position is
     /// already projected to the server's build time, so only this age remains.
     @ObservationIgnored private var roomReceivedAt: Date = .distantPast
@@ -271,7 +275,7 @@ final class WatchPartySession {
         capabilities = nil
         supportsPlayback = false
         supportsFallback = false
-        serverOffset = 0
+        clock = WatchPartyClock()
         playbackContext = nil
         connection = .idle
         errorMessage = nil
@@ -512,8 +516,9 @@ final class WatchPartySession {
         case .snapshot(let room): accept(room)
         case .transport(let command):
             guard let room, commands.receive(command, room: room, sessionId: adapter?.snapshot.sessionId) else { return }
+            // A rate nudge keeps running until the command executes; changing
+            // the rate or play state on receipt would act a lead early.
             commandTask?.cancel()
-            adapter?.cancelCorrection()
             commandTask = nil
             applyingCommand = nil
             applyPendingCommand()
@@ -521,11 +526,10 @@ final class WatchPartySession {
             guard let room, suggestions.allSatisfy({ $0.roomId == room.roomId }) else { return }
             votes.receive(suggestions)
             refreshSuggestions()
-        case .pong(let client, let received, let sent):
-            let now = Date()
-            let roundTrip = now.timeIntervalSince(client) - sent.timeIntervalSince(received)
-            guard roundTrip >= 0, roundTrip < 5 else { return }
-            serverOffset = (received.timeIntervalSince(client) + sent.timeIntervalSince(now)) / 2
+        case .pong(let client, let received, let sent, let receivedAt):
+            if clock.record(clientSent: client, serverReceived: received, serverSent: sent, clientReceived: receivedAt) {
+                connectionSamples += 1
+            }
         case .closed: terminate("This party has ended.", canRejoin: false)
         case .connectionReplaced:
             terminate("This profile joined the party on another device. Rejoin here to take over playback.", replaced: true)
@@ -676,16 +680,17 @@ final class WatchPartySession {
                       adapter.snapshot.sessionId == sessionID else { return }
                 let target = WatchPartyCommandState.projectedPosition(command, serverNow: Date().addingTimeInterval(self.serverOffset))
                 if command.playbackState != .playing { _ = try await adapter.apply(.pause) }
-                // Server drift corrections use play/pause. An explicit seek
-                // enters the waiting barrier and must always land on its target.
-                if command.action == .play, command.playbackState == .playing, adapter.snapshot.isPlaying {
-                    _ = try await adapter.correct(to: target)
-                } else if command.action == .seek || abs(adapter.snapshot.sourceTime - target) > 1 {
-                    let smallPausedCorrection = command.action == .pause
-                        && abs(adapter.snapshot.sourceTime - target) <= 2 && !adapter.canSeekLocally(to: target)
-                    if !smallPausedCorrection {
-                        _ = try await adapter.apply(.seek(target), origin: command.action == .seek ? .room : .realign)
-                    }
+                // An explicit seek enters the waiting barrier and must always
+                // land on its target. A play or pause, including the server's
+                // corrections, converges a playing member by rate and moves a
+                // stopped one only when the move is cheap or the drift large.
+                switch WatchPartyCommandState.positionStep(command, memberPlaying: adapter.snapshot.isPlaying,
+                                                           drift: target - adapter.snapshot.sourceTime,
+                                                           reachableInPlace: adapter.canReachInPlace(target)) {
+                case .roomSeek: _ = try await adapter.apply(.seek(target), origin: .room)
+                case .correct: _ = try await adapter.correct(to: target)
+                case .realign: _ = try await adapter.apply(.seek(target), origin: .realign)
+                case .none: break
                 }
                 try Task.checkCancellation()
                 guard owner == self.engagement, socketID == self.connectionID,
@@ -706,6 +711,7 @@ final class WatchPartySession {
     private func startReporting(owner: UUID, socketID: UUID) {
         reportTask?.cancel()
         lastAttach = .distantPast; lastPing = .distantPast; lastReady = .distantPast
+        connectionSamples = 0
         reportTask = Task { [weak self] in
             while let self, !Task.isCancelled, owner == self.engagement, socketID == self.connectionID {
                 guard await self.validateIdentity() else { return }
@@ -722,7 +728,8 @@ final class WatchPartySession {
         let context = playbackContext
         let now = Date()
         do {
-            if now.timeIntervalSince(lastPing) >= 15 {
+            let pingInterval = connectionSamples < WatchPartyClock.warmupSamples ? WatchPartyClock.warmupInterval : WatchPartyClock.interval
+            if now.timeIntervalSince(lastPing) >= pingInterval {
                 lastPing = now
                 try await socket.send(WatchPartyClientMessage(type: "ping", clientSentAt: now))
             }
@@ -765,8 +772,13 @@ final class WatchPartySession {
                 try await socket.send(WatchPartyClientMessage(type: "buffering", sessionId: session,
                     positionSeconds: snapshot.sourceTime, isPaused: !snapshot.isPlaying))
             }
-            if snapshot.isBuffering { return }
-            guard snapshot.isReady else { return }
+            // A rebuffering member resumes at 1x; a nudge would drain the
+            // buffer it just refilled. The loop starts it again if needed.
+            guard !snapshot.isBuffering, snapshot.isReady else {
+                adapter.cancelCorrection()
+                return
+            }
+            nudgeTowardRoom(room, snapshot: snapshot, adapter: adapter)
             let completed = commands.completed
             let ready = WatchPartyCommandState.canAcknowledge(completed, roomPlaybackState: room.playbackState,
                 sourceTime: snapshot.sourceTime, isHost: room.selfRole == .host)
@@ -783,6 +795,26 @@ final class WatchPartySession {
                     positionSeconds: snapshot.sourceTime, isPaused: !snapshot.isPlaying, isReady: true))
             }
         } catch { socket.close() }
+    }
+
+    /// Keeps a playing member on the room between commands. The last command
+    /// this member ran is the room's position at its execute time, advancing
+    /// at 1x while the room plays, so drift is measured locally every tick and
+    /// closed by rate; the server only steps in for drift the nudge has not
+    /// fixed.
+    private func nudgeTowardRoom(_ room: WatchPartyRoom, snapshot: WatchPartyPlaybackSnapshot,
+                                 adapter: WatchPartyPlaybackAdapter) {
+        // Sampled after the report's sends, alongside the player position.
+        let now = Date()
+        guard let reference = commands.completed, reference.playbackState == .playing,
+              reference.selectionRevision == room.selectionRevision,
+              room.phase == .playing, room.playbackState == .playing, !room.isPaused, snapshot.isPlaying else {
+            adapter.cancelCorrection()
+            return
+        }
+        guard now.timeIntervalSince(lastCommandCompleted) >= WatchPartyCommandState.nudgeSettle else { return }
+        let target = WatchPartyCommandState.projectedPosition(reference, serverNow: now.addingTimeInterval(serverOffset))
+        adapter.nudge(drift: target - snapshot.sourceTime)
     }
 
     private func send(_ message: WatchPartyClientMessage) {

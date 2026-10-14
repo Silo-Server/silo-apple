@@ -10,16 +10,117 @@ final class WatchPartyCatchupTests: XCTestCase {
 
     private func at(_ seconds: TimeInterval) -> Date { start.addingTimeInterval(seconds) }
 
-    func testCatchupConvergesOnTheAdvancingRoomPosition() {
-        XCTAssertEqual(WatchPartyCorrection.expectedPosition(100, elapsed: -0.5), 100)
-        XCTAssertEqual(WatchPartyCorrection.expectedPosition(100, elapsed: 3), 103)
-        XCTAssertTrue(WatchPartyCorrection.converged(target: 100, elapsed: 3, local: 102.8))
-        XCTAssertFalse(WatchPartyCorrection.converged(target: 100, elapsed: 3, local: 102))
-        // A member slowed from ahead of the room converges once the advancing
-        // room position reaches it, not the command's static target.
-        XCTAssertFalse(WatchPartyCorrection.converged(target: 100, elapsed: 0, local: 102.8))
-        XCTAssertFalse(WatchPartyCorrection.converged(target: 100, elapsed: 2, local: 102.8))
-        XCTAssertTrue(WatchPartyCorrection.converged(target: 100, elapsed: 2.5, local: 102.8))
+    func testNudgeStartsPastTheDeadbandAndRunsToTheSettlePoint() {
+        // Playback inside the deadband stays at 1x.
+        XCTAssertEqual(WatchPartyCorrection.nudge(drift: 0.35, currentRate: 1), 1)
+        XCTAssertEqual(WatchPartyCorrection.nudge(drift: -0.35, currentRate: 1), 1)
+        // Past it, a member behind the room speeds up and one ahead slows down.
+        XCTAssertGreaterThan(WatchPartyCorrection.nudge(drift: 0.6, currentRate: 1), 1)
+        XCTAssertLessThan(WatchPartyCorrection.nudge(drift: -0.6, currentRate: 1), 1)
+        // A nudge in progress keeps going inside the deadband until it settles,
+        // so playback hovering at the deadband does not flip between rates.
+        XCTAssertGreaterThan(WatchPartyCorrection.nudge(drift: 0.3, currentRate: 1.01), 1)
+        XCTAssertEqual(WatchPartyCorrection.nudge(drift: 0.08, currentRate: 1.01), 1)
+        XCTAssertEqual(WatchPartyCorrection.nudge(drift: .nan, currentRate: 1.02), 1)
+    }
+
+    func testNudgeRatesStayBetweenOneAndFourPercent() {
+        for step in -120...120 {
+            let drift = Double(step) / 20
+            guard abs(drift) > WatchPartyCorrection.deadband else { continue }
+            let delta = abs(WatchPartyCorrection.nudge(drift: drift, currentRate: 1) - 1)
+            XCTAssertLessThanOrEqual(delta, WatchPartyCorrection.maxRateDelta + 1e-9, "drift \(drift)")
+            XCTAssertGreaterThanOrEqual(delta, WatchPartyCorrection.minRateDelta - 1e-9, "drift \(drift)")
+        }
+        XCTAssertEqual(WatchPartyCorrection.rate(for: 0.5), 1.02, accuracy: 1e-9)
+        XCTAssertEqual(WatchPartyCorrection.rate(for: -0.5), 0.98, accuracy: 1e-9)
+        XCTAssertEqual(WatchPartyCorrection.rate(for: 1), 1.04, accuracy: 1e-9)
+        XCTAssertEqual(WatchPartyCorrection.rate(for: 30), 1.04, accuracy: 1e-9)
+        XCTAssertEqual(WatchPartyCorrection.rate(for: 0.15), 1.01, accuracy: 1e-9)
+    }
+
+    func testAStoppedMemberSeeksOnlyWhenTheMoveIsCheapOrTheDriftLarge() {
+        XCTAssertFalse(WatchPartyCorrection.seeksWhileStopped(drift: 0.9, reachableInPlace: true))
+        XCTAssertTrue(WatchPartyCorrection.seeksWhileStopped(drift: -1.5, reachableInPlace: true))
+        XCTAssertFalse(WatchPartyCorrection.seeksWhileStopped(drift: 4.9, reachableInPlace: false))
+        XCTAssertTrue(WatchPartyCorrection.seeksWhileStopped(drift: 5.1, reachableInPlace: false))
+        XCTAssertFalse(WatchPartyCorrection.seeksWhileStopped(drift: .infinity, reachableInPlace: true))
+    }
+
+    func testRoomPositionAdvancesFromTheCommandsExecuteTimeOnlyWhilePlaying() {
+        func command(_ state: WatchPartyPlaybackState) -> WatchPartyTransportCommand {
+            WatchPartyTransportCommand(commandId: "c", selectionRevision: 1, action: .play, positionSeconds: 100,
+                                       executeAt: at(10), issuedAt: at(9.5), playbackState: state)
+        }
+        XCTAssertEqual(WatchPartyCommandState.projectedPosition(command(.playing), serverNow: at(9)), 100)
+        XCTAssertEqual(WatchPartyCommandState.projectedPosition(command(.playing), serverNow: at(12.5)), 102.5)
+        XCTAssertEqual(WatchPartyCommandState.projectedPosition(command(.paused), serverNow: at(12.5)), 100)
+        XCTAssertEqual(WatchPartyCommandState.projectedPosition(command(.waiting), serverNow: at(12.5)), 100)
+    }
+
+    func testClockUsesTheFastestRecentRoundTrip() {
+        var clock = WatchPartyClock()
+        XCTAssertEqual(clock.offset, 0)
+        // Server 10s ahead, 0.2s round trip split evenly.
+        clock.record(clientSent: at(0), serverReceived: at(10.1), serverSent: at(10.1), clientReceived: at(0.2))
+        XCTAssertEqual(clock.offset, 10, accuracy: 1e-9)
+        // A slow, lopsided round trip would read 10.5; the fast sample stands.
+        clock.record(clientSent: at(1), serverReceived: at(12.1), serverSent: at(12.1), clientReceived: at(2.2))
+        XCTAssertEqual(clock.offset, 10, accuracy: 1e-9)
+        // Impossible and stale-looking samples are dropped.
+        clock.record(clientSent: at(3), serverReceived: at(13), serverSent: at(13.5), clientReceived: at(3.2))
+        clock.record(clientSent: at(4), serverReceived: at(14), serverSent: at(14), clientReceived: at(10))
+        XCTAssertEqual(clock.samples.count, 2)
+        // The fast sample ages out after enough newer ones (0.5s, reading 10.5).
+        for i in 0..<WatchPartyClock.sampleLimit {
+            let sent = at(20 + Double(i))
+            clock.record(clientSent: sent, serverReceived: sent.addingTimeInterval(10.75),
+                         serverSent: sent.addingTimeInterval(10.75), clientReceived: sent.addingTimeInterval(0.5))
+        }
+        XCTAssertEqual(clock.samples.count, WatchPartyClock.sampleLimit)
+        XCTAssertEqual(clock.offset, 10.5, accuracy: 1e-9)
+    }
+
+    func testCommandPositionStepFollowsTheSharedRules() {
+        func command(_ action: WatchPartyTransportAction, _ state: WatchPartyPlaybackState) -> WatchPartyTransportCommand {
+            WatchPartyTransportCommand(commandId: "c", selectionRevision: 1, action: action, positionSeconds: 100,
+                                       executeAt: at(10), issuedAt: at(9.5), playbackState: state)
+        }
+        typealias Step = WatchPartyCommandState.PositionStep
+        // A room seek always lands exactly, however small the drift.
+        XCTAssertEqual(WatchPartyCommandState.positionStep(command(.seek, .waiting), memberPlaying: true,
+                                                           drift: 0.1, reachableInPlace: true), Step.roomSeek)
+        // A playing member in a playing room converges; it never realigns.
+        XCTAssertEqual(WatchPartyCommandState.positionStep(command(.play, .playing), memberPlaying: true,
+                                                           drift: 3, reachableInPlace: true), Step.correct)
+        // A stopped member moves only for a cheap move or a large gap.
+        XCTAssertEqual(WatchPartyCommandState.positionStep(command(.play, .playing), memberPlaying: false,
+                                                           drift: 3, reachableInPlace: false), Step.none)
+        XCTAssertEqual(WatchPartyCommandState.positionStep(command(.play, .playing), memberPlaying: false,
+                                                           drift: 3, reachableInPlace: true), Step.realign)
+        XCTAssertEqual(WatchPartyCommandState.positionStep(command(.pause, .paused), memberPlaying: true,
+                                                           drift: 0.8, reachableInPlace: true), Step.none)
+        XCTAssertEqual(WatchPartyCommandState.positionStep(command(.pause, .paused), memberPlaying: true,
+                                                           drift: -6, reachableInPlace: false), Step.realign)
+    }
+
+    func testClockDropsSamplesFromBeforeTheDeviceClockStepped() {
+        var clock = WatchPartyClock()
+        clock.record(clientSent: at(0), serverReceived: at(10.1), serverSent: at(10.1), clientReceived: at(0.2))
+        // The device clock jumps 3s ahead; the old fast sample can no longer be right.
+        XCTAssertTrue(clock.record(clientSent: at(23), serverReceived: at(20.2), serverSent: at(20.2), clientReceived: at(23.4)))
+        XCTAssertEqual(clock.samples.count, 1)
+        XCTAssertEqual(clock.offset, -3, accuracy: 1e-9)
+        // A LAN round trip that rounds below zero is a zero round trip, not a rejection.
+        XCTAssertTrue(clock.record(clientSent: at(30), serverReceived: at(27.0005), serverSent: at(27.0015), clientReceived: at(30.0005)))
+    }
+
+    func testAStaleLoadStopsCountingAsInFlight() {
+        var budget = WatchPartyReloadBudget()
+        XCTAssertFalse(budget.inFlight(at: at(0)))
+        _ = budget.begin(roomPosition: 100, at: at(0), duration: 0)
+        XCTAssertTrue(budget.inFlight(at: at(WatchPartyReloadBudget.staleAfter - 1)))
+        XCTAssertFalse(budget.inFlight(at: at(WatchPartyReloadBudget.staleAfter)))
     }
 
     func testOnlyATargetReachableInPlaceCountsAsBuffered() {
