@@ -809,15 +809,13 @@ final class WatchPartySession {
                                  adapter: WatchPartyPlaybackAdapter) {
         // Sampled after the report's sends, alongside the player position.
         let now = Date()
-        guard let reference = commands.completed, reference.playbackState == .playing,
-              reference.selectionRevision == room.selectionRevision,
-              room.phase == .playing, room.playbackState == .playing, !room.isPaused, snapshot.isPlaying else {
-            adapter.cancelCorrection()
-            return
+        switch WatchPartyCommandState.loopStep(reference: commands.completed, room: room, memberPlaying: snapshot.isPlaying,
+                                               sourceTime: snapshot.sourceTime, serverNow: now.addingTimeInterval(serverOffset),
+                                               sinceCompleted: now.timeIntervalSince(lastCommandCompleted)) {
+        case .reset: adapter.cancelCorrection()
+        case .wait: break
+        case .nudge(let drift): adapter.nudge(drift: drift)
         }
-        guard now.timeIntervalSince(lastCommandCompleted) >= WatchPartyCommandState.nudgeSettle else { return }
-        let target = WatchPartyCommandState.projectedPosition(reference, serverNow: now.addingTimeInterval(serverOffset))
-        adapter.nudge(drift: target - snapshot.sourceTime)
     }
 
     private func send(_ message: WatchPartyClientMessage) {

@@ -81,6 +81,36 @@ final class WatchPartyCatchupTests: XCTestCase {
         XCTAssertEqual(clock.offset, 10.5, accuracy: 1e-9)
     }
 
+    func testDriftLoopFollowsTheAdvancingRoomPosition() {
+        let reference = WatchPartyTransportCommand(commandId: "c", selectionRevision: 1, action: .play, positionSeconds: 100,
+                                                    executeAt: at(10), issuedAt: at(9.5), playbackState: .playing)
+        var room = WatchPartyRoom(roomId: "room")
+        room.phase = .playing
+        room.playbackState = .playing
+        room.isPaused = false
+        room.selectionRevision = 1
+        func step(_ serverNow: Double, local: Double, room: WatchPartyRoom, playing: Bool = true,
+                  since: TimeInterval = 5, reference: WatchPartyTransportCommand? = reference) -> WatchPartyCommandState.LoopStep {
+            WatchPartyCommandState.loopStep(reference: reference, room: room, memberPlaying: playing,
+                                            sourceTime: local, serverNow: at(serverNow), sinceCompleted: since)
+        }
+        // The target is the room's position now, not the command's fixed position.
+        XCTAssertEqual(step(13, local: 102.5, room: room), .nudge(0.5))
+        XCTAssertEqual(step(40, local: 129.5, room: room), .nudge(0.5))
+        XCTAssertEqual(step(40, local: 130.25, room: room), .nudge(-0.25))
+        // Just after a command it waits; when the room or member stops it resets.
+        XCTAssertEqual(step(13, local: 102.5, room: room, since: 0.5), .wait)
+        XCTAssertEqual(step(13, local: 102.5, room: room, playing: false), .reset)
+        var paused = room
+        paused.playbackState = .paused
+        paused.isPaused = true
+        XCTAssertEqual(step(13, local: 102.5, room: paused), .reset)
+        var newSelection = room
+        newSelection.selectionRevision = 2
+        XCTAssertEqual(step(13, local: 102.5, room: newSelection), .reset)
+        XCTAssertEqual(step(13, local: 102.5, room: room, reference: nil), .reset)
+    }
+
     func testCommandPositionStepFollowsTheSharedRules() {
         func command(_ action: WatchPartyTransportAction, _ state: WatchPartyPlaybackState) -> WatchPartyTransportCommand {
             WatchPartyTransportCommand(commandId: "c", selectionRevision: 1, action: action, positionSeconds: 100,

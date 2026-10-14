@@ -1462,6 +1462,9 @@ class PlayerViewModel {
             switch state {
             case .playing:
                 isPlaying = true
+                // A rate the party set while the engine rebuffered applies as
+                // soon as it plays again, not at the next clock update.
+                syncWatchPartyRate()
                 pushNowPlayingSnapshot()
                 // An audio-only load has no picture, so Aether's audio route
                 // never latches `hasFirstFrameReadyForDisplay` and the

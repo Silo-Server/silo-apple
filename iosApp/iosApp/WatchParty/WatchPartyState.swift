@@ -54,6 +54,27 @@ struct WatchPartyCommandState {
     /// again; the player's clock settles after a play or seek.
     static let nudgeSettle: TimeInterval = 1
 
+    /// What the session's drift loop does on a report tick.
+    enum LoopStep: Equatable {
+        /// The room or this member is not playing, so the member runs at 1x.
+        case reset
+        /// A command just ran; the rate stays until playback settles.
+        case wait
+        /// Close this drift (room position minus local position) by rate.
+        case nudge(Double)
+    }
+
+    /// The last command this member ran is the room's position at its execute
+    /// time, advancing at 1x while the room plays.
+    static func loopStep(reference: WatchPartyTransportCommand?, room: WatchPartyRoom, memberPlaying: Bool,
+                         sourceTime: Double, serverNow: Date, sinceCompleted: TimeInterval) -> LoopStep {
+        guard let reference, reference.playbackState == .playing,
+              reference.selectionRevision == room.selectionRevision,
+              room.phase == .playing, room.playbackState == .playing, !room.isPaused, memberPlaying else { return .reset }
+        guard sinceCompleted >= nudgeSettle else { return .wait }
+        return .nudge(projectedPosition(reference, serverNow: serverNow) - sourceTime)
+    }
+
     /// What a command does to this member's position when it executes.
     enum PositionStep: Equatable {
         /// The room's explicit seek: a barrier everyone lands on exactly.
