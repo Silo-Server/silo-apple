@@ -82,8 +82,9 @@ struct AetherPlaybackStatsSnapshot: Equatable {
     let outputVideoFormat: VideoFormat
     let sourceDVProfile: Int?
     let dolbyVisionConversion: DolbyVisionConversion?
-    /// What the display can present, sampled only on tvOS while Match
-    /// Dynamic Range is on; nil everywhere else.
+    /// What the display can present, sampled only on tvOS when the active
+    /// load asked to match the content's range and Match Dynamic Range is
+    /// still on; nil everywhere else.
     let matchedDisplay: DisplayCapabilities?
     let sourceVideoWidth: Int32
     let sourceVideoHeight: Int32
@@ -98,7 +99,7 @@ struct AetherPlaybackStatsSnapshot: Equatable {
     let isSecondarySubtitleActive: Bool
 
     @MainActor
-    init(engine: AetherEngine) {
+    init(engine: AetherEngine, loadMatchesContent: Bool) {
         route = engine.videoRoute
         phase = engine.playbackPhase
         telemetry = engine.liveTelemetry
@@ -109,7 +110,9 @@ struct AetherPlaybackStatsSnapshot: Equatable {
         sourceDVProfile = engine.sourceDVProfile
         dolbyVisionConversion = engine.dolbyVisionConversion
         #if os(tvOS)
-        matchedDisplay = AetherDisplayContext.matchContentEnabled ? AetherEngine.displayCapabilities : nil
+        matchedDisplay = loadMatchesContent && AetherDisplayContext.matchContentEnabled
+            ? AetherEngine.displayCapabilities
+            : nil
         #else
         matchedDisplay = nil
         #endif
@@ -335,20 +338,26 @@ enum AetherPlaybackStatsProjection {
     /// and an Apple TV set to SDR with Match Dynamic Range on never proves it:
     /// its EDR headroom reads 1.0 even after the switch. Aether still serves
     /// the HDR stream to such a panel and tvOS switches it to the content's
-    /// range, so label the source's own range when the matched display
-    /// supports it.
+    /// range, so label what the matched display presents: the source's own
+    /// range when it supports it, or, as Aether routes it, the HDR10 base of
+    /// a Dolby Vision profile that always has one (5 and 7 are PQ; 8 can be
+    /// HLG) on a display without Dolby Vision.
     private static func presentedVideoFormat(_ snapshot: AetherPlaybackStatsSnapshot) -> VideoFormat {
         guard snapshot.outputVideoFormat == .sdr,
               snapshot.route == .loopback || snapshot.route == .remoteBypass,
               let display = snapshot.matchedDisplay else { return snapshot.outputVideoFormat }
-        let supported: Bool
         switch snapshot.sourceVideoFormat {
-        case .sdr: supported = false
-        case .hdr10, .hdr10Plus: supported = display.supportsHDR10
-        case .hlg: supported = display.supportsHLG
-        case .dolbyVision: supported = display.supportsDolbyVision
+        case .sdr:
+            return .sdr
+        case .hdr10, .hdr10Plus:
+            return display.supportsHDR10 ? snapshot.sourceVideoFormat : .sdr
+        case .hlg:
+            return display.supportsHLG ? .hlg : .sdr
+        case .dolbyVision:
+            if display.supportsDolbyVision { return .dolbyVision }
+            let hasPQBase = snapshot.sourceDVProfile == 5 || snapshot.sourceDVProfile == 7
+            return hasPQBase && display.supportsHDR10 ? .hdr10 : .sdr
         }
-        return supported ? snapshot.sourceVideoFormat : snapshot.outputVideoFormat
     }
 
     /// A server-transformed stream reaches Aether after conversion, so both of

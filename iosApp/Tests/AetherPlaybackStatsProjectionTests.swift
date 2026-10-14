@@ -153,7 +153,7 @@ final class AetherPlaybackStatsProjectionTests: XCTestCase {
         let cases: [(VideoRoute, VideoFormat, DisplayCapabilities?, String)] = [
             (.loopback, .dolbyVision, dolbyVisionPanel, "Dolby Vision Profile 7 → Profile 8.1"),
             (.remoteBypass, .hdr10, dolbyVisionPanel, "HDR10"),
-            (.loopback, .dolbyVision, hdr10Panel, "Dolby Vision Profile 7 → SDR"),
+            (.loopback, .dolbyVision, hdr10Panel, "Dolby Vision Profile 7 → HDR10"),
             (.loopback, .dolbyVision, nil, "Dolby Vision Profile 7 → SDR"),
             (.software, .dolbyVision, dolbyVisionPanel, "Dolby Vision Profile 7 → SDR"),
         ]

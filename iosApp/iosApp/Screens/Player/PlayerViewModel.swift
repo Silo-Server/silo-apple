@@ -1627,7 +1627,10 @@ class PlayerViewModel {
             plannedSourceDolbyVisionProfile: playbackPlan?.source.dolbyVisionProfile
         )
         return AetherPlaybackStatsProjection.make(
-            snapshot: AetherPlaybackStatsSnapshot(engine: aetherPlaybackController.engine),
+            snapshot: AetherPlaybackStatsSnapshot(
+                engine: aetherPlaybackController.engine,
+                loadMatchesContent: spec.options.matchContentEnabled
+            ),
             source: source
         )
     }
