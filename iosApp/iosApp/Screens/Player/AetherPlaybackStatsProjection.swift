@@ -82,6 +82,9 @@ struct AetherPlaybackStatsSnapshot: Equatable {
     let outputVideoFormat: VideoFormat
     let sourceDVProfile: Int?
     let dolbyVisionConversion: DolbyVisionConversion?
+    /// What the display can present, sampled only on tvOS while Match
+    /// Dynamic Range is on; nil everywhere else.
+    let matchedDisplay: DisplayCapabilities?
     let sourceVideoWidth: Int32
     let sourceVideoHeight: Int32
     let sourceVideoPixelAspectRatio: Double
@@ -105,6 +108,11 @@ struct AetherPlaybackStatsSnapshot: Equatable {
         outputVideoFormat = engine.videoFormat
         sourceDVProfile = engine.sourceDVProfile
         dolbyVisionConversion = engine.dolbyVisionConversion
+        #if os(tvOS)
+        matchedDisplay = AetherDisplayContext.matchContentEnabled ? AetherEngine.displayCapabilities : nil
+        #else
+        matchedDisplay = nil
+        #endif
         sourceVideoWidth = engine.sourceVideoWidth
         sourceVideoHeight = engine.sourceVideoHeight
         sourceVideoPixelAspectRatio = engine.sourceVideoPixelAspectRatio
@@ -128,6 +136,7 @@ struct AetherPlaybackStatsSnapshot: Equatable {
         outputVideoFormat: VideoFormat = .sdr,
         sourceDVProfile: Int? = nil,
         dolbyVisionConversion: DolbyVisionConversion? = nil,
+        matchedDisplay: DisplayCapabilities? = nil,
         sourceVideoWidth: Int32 = 0,
         sourceVideoHeight: Int32 = 0,
         sourceVideoPixelAspectRatio: Double = 1,
@@ -149,6 +158,7 @@ struct AetherPlaybackStatsSnapshot: Equatable {
         self.outputVideoFormat = outputVideoFormat
         self.sourceDVProfile = sourceDVProfile
         self.dolbyVisionConversion = dolbyVisionConversion
+        self.matchedDisplay = matchedDisplay
         self.sourceVideoWidth = sourceVideoWidth
         self.sourceVideoHeight = sourceVideoHeight
         self.sourceVideoPixelAspectRatio = sourceVideoPixelAspectRatio
@@ -310,14 +320,35 @@ enum AetherPlaybackStatsProjection {
         guard snapshot.sourceVideoWidth > 0, snapshot.sourceVideoHeight > 0 else { return nil }
         if let planned = plannedDynamicRangeLabel(metadata) { return planned }
         let source = videoFormatLabel(snapshot.sourceVideoFormat, dvProfile: snapshot.sourceDVProfile)
-        if snapshot.outputVideoFormat == .dolbyVision,
+        let outputFormat = presentedVideoFormat(snapshot)
+        if outputFormat == .dolbyVision,
            snapshot.dolbyVisionConversion == .profile7ToProfile81 {
             return "\(source) → Profile 8.1"
         }
-        let output = videoFormatLabel(snapshot.outputVideoFormat, dvProfile: nil)
-        return snapshot.sourceVideoFormat == snapshot.outputVideoFormat
+        let output = videoFormatLabel(outputFormat, dvProfile: nil)
+        return snapshot.sourceVideoFormat == outputFormat
             ? source
             : "\(source) → \(output)"
+    }
+
+    /// Aether's `videoFormat` stays SDR until the panel proves it left SDR,
+    /// and an Apple TV set to SDR with Match Dynamic Range on never proves it:
+    /// its EDR headroom reads 1.0 even after the switch. Aether still serves
+    /// the HDR stream to such a panel and tvOS switches it to the content's
+    /// range, so label the source's own range when the matched display
+    /// supports it.
+    private static func presentedVideoFormat(_ snapshot: AetherPlaybackStatsSnapshot) -> VideoFormat {
+        guard snapshot.outputVideoFormat == .sdr,
+              snapshot.route == .loopback || snapshot.route == .remoteBypass,
+              let display = snapshot.matchedDisplay else { return snapshot.outputVideoFormat }
+        let supported: Bool
+        switch snapshot.sourceVideoFormat {
+        case .sdr: supported = false
+        case .hdr10, .hdr10Plus: supported = display.supportsHDR10
+        case .hlg: supported = display.supportsHLG
+        case .dolbyVision: supported = display.supportsDolbyVision
+        }
+        return supported ? snapshot.sourceVideoFormat : snapshot.outputVideoFormat
     }
 
     /// A server-transformed stream reaches Aether after conversion, so both of

@@ -143,6 +143,45 @@ final class AetherPlaybackStatsProjectionTests: XCTestCase {
         }
     }
 
+    /// An Apple TV set to SDR with Match Dynamic Range on switches to the
+    /// content's range, but Aether cannot prove it and keeps reporting SDR.
+    func testMatchedDisplayShowsTheRangeItSwitchesTo() {
+        let dolbyVisionPanel = DisplayCapabilities(
+            supportsHDR: true, supportsDolbyVision: true, supportsHDR10: true, supportsHLG: true)
+        let hdr10Panel = DisplayCapabilities(
+            supportsHDR: true, supportsDolbyVision: false, supportsHDR10: true, supportsHLG: true)
+        let cases: [(VideoRoute, VideoFormat, DisplayCapabilities?, String)] = [
+            (.loopback, .dolbyVision, dolbyVisionPanel, "Dolby Vision Profile 7 → Profile 8.1"),
+            (.remoteBypass, .hdr10, dolbyVisionPanel, "HDR10"),
+            (.loopback, .dolbyVision, hdr10Panel, "Dolby Vision Profile 7 → SDR"),
+            (.loopback, .dolbyVision, nil, "Dolby Vision Profile 7 → SDR"),
+            (.software, .dolbyVision, dolbyVisionPanel, "Dolby Vision Profile 7 → SDR"),
+        ]
+        for (route, sourceFormat, display, expected) in cases {
+            let stats = AetherPlaybackStatsProjection.make(
+                snapshot: AetherPlaybackStatsSnapshot(
+                    route: route,
+                    phase: .playing,
+                    sourceVideoFormat: sourceFormat,
+                    outputVideoFormat: .sdr,
+                    sourceDVProfile: sourceFormat == .dolbyVision ? 7 : nil,
+                    dolbyVisionConversion: sourceFormat == .dolbyVision ? .profile7ToProfile81 : nil,
+                    matchedDisplay: display,
+                    sourceVideoWidth: 3840,
+                    sourceVideoHeight: 2160
+                ),
+                source: AetherPlaybackStatsSourceMetadata(
+                    sourceURL: nil,
+                    delivery: "original_http",
+                    container: "mkv",
+                    playbackRate: 1
+                )
+            )
+
+            XCTAssertEqual(stats.dynamicRange, expected, "\(route) \(sourceFormat)")
+        }
+    }
+
     func testRouteAsymmetricTelemetryDoesNotInventForwardBuffer() {
         let telemetry = LiveTelemetry(
             instantBitrateMbps: nil,
