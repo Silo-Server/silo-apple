@@ -362,16 +362,16 @@ enum AetherPlaybackStatsProjection {
         case .hlg:
             return display.supportsHLG ? .hlg : nil
         case .dolbyVision:
+            let transfer = snapshot.sourceVideoTransfer
+            let hasHLGBase = transfer == "arib-std-b67"
+            // Aether treats an unspecified transfer as PQ (Profile 5 often has an empty VUI).
+            let hasPQBase = transfer == nil || transfer == "smpte2084"
+            // Aether strips Dolby Vision from an SDR base layer (Profiles 8.2
+            // and 10.2) and plays that base as SDR on every display.
+            guard hasHLGBase || hasPQBase else { return nil }
             if display.supportsDolbyVision { return .dolbyVision }
-            switch snapshot.sourceVideoTransfer {
-            case "arib-std-b67":
-                return display.supportsHLG ? .hlg : nil
-            case nil, "smpte2084":
-                return display.supportsHDR10 ? .hdr10 : nil
-            default:
-                // An SDR base layer (Profile 8.2) is presented as SDR.
-                return nil
-            }
+            if hasHLGBase { return display.supportsHLG ? .hlg : nil }
+            return display.supportsHDR10 ? .hdr10 : nil
         }
     }
 

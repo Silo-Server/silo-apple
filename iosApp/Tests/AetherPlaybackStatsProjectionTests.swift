@@ -159,6 +159,7 @@ final class AetherPlaybackStatsProjectionTests: XCTestCase {
             (.loopback, .dolbyVision, 7, "smpte2084", hdr10TV, "Dolby Vision Profile 7 → HDR10 (unconfirmed)"),
             (.loopback, .dolbyVision, 8, "arib-std-b67", hdr10TV, "Dolby Vision Profile 8 → HLG (unconfirmed)"),
             (.loopback, .dolbyVision, 8, "bt709", hdr10TV, "Dolby Vision Profile 8 → SDR"),
+            (.loopback, .dolbyVision, 8, "bt709", dolbyVisionTV, "Dolby Vision Profile 8 → SDR"),
             (.loopback, .dolbyVision, 7, "smpte2084", sdrTV, "Dolby Vision Profile 7 → SDR"),
             (.loopback, .dolbyVision, 7, "smpte2084", nil, "Dolby Vision Profile 7 → SDR"),
             (.software, .dolbyVision, 7, "smpte2084", dolbyVisionTV, "Dolby Vision Profile 7 → SDR"),
