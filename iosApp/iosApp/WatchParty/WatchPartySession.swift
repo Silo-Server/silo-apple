@@ -766,6 +766,9 @@ final class WatchPartySession {
                   now.timeIntervalSince(lastCommandCompleted) >= 0.25,
                   snapshot.fileId == playbackContext?.fileId else {
                 stall.interrupt(buffering: snapshot.isBuffering)
+                // A pending command keeps a running nudge until it executes,
+                // but a member that rebuffers meanwhile resumes at 1x.
+                if snapshot.isBuffering { adapter.cancelCorrection() }
                 return
             }
             if stall.observe(buffering: snapshot.isBuffering, at: now) {

@@ -121,6 +121,10 @@ final class WatchPartyCatchupTests: XCTestCase {
         _ = budget.begin(roomPosition: 100, at: at(0), duration: 0)
         XCTAssertTrue(budget.inFlight(at: at(WatchPartyReloadBudget.staleAfter - 1)))
         XCTAssertFalse(budget.inFlight(at: at(WatchPartyReloadBudget.staleAfter)))
+        // Expiring it lets the next load start at once, as a stale load always could.
+        budget.expire(at: at(WatchPartyReloadBudget.staleAfter))
+        XCTAssertNil(budget.target)
+        XCTAssertTrue(budget.allowed(at: at(WatchPartyReloadBudget.staleAfter)))
     }
 
     func testOnlyATargetReachableInPlaceCountsAsBuffered() {

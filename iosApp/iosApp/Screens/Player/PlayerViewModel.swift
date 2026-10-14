@@ -9591,7 +9591,7 @@ extension PlayerViewModel {
         guard watchPartyReloadBudget.target != nil else { return }
         let now = Date()
         guard watchPartyReloadBudget.inFlight(at: now) else {
-            watchPartyReloadBudget.abandon(at: now)
+            watchPartyReloadBudget.expire(at: now)
             return
         }
         let snapshot = watchPartyPlaybackSnapshot

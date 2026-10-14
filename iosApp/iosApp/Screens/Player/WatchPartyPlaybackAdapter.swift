@@ -209,6 +209,16 @@ struct WatchPartyReloadBudget: Equatable {
         abandon(at: now)
     }
 
+    /// The load went stale without landing. As `allowed(at:)` already does
+    /// for a stale load, the next one may start at once: the viewer is still
+    /// behind, and backing off here would leave it there for up to a minute.
+    mutating func expire(at now: Date) {
+        guard target != nil else { return }
+        generation &+= 1
+        target = nil
+        nextAllowedAt = now
+    }
+
     /// The load was refused or superseded; space the next one.
     mutating func abandon(at now: Date) {
         generation &+= 1
