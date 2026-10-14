@@ -107,11 +107,13 @@ reported end of media at 59:45 of a 1:42:55 film. The app's premature-end handli
 parked the player at the end of the film, and closing it recorded the film as watched.
 
 `PlayerViewModel.handleEndOfFile` now reconnects at the position the stream dropped,
-through the existing playback reconnect, when a progressive remux ends early outside a
-watch party. The reconnect keeps a viewer's pause and has its own attempt budget. An
-earlier version of this change used the stale-session renewal, which always resumed
-playing; that version reloaded a stream that ended 261 s early and played to the real
-end. The reconnect version has not been exercised against a real early end.
+through the existing playback reconnect, when a stream the server produces (a progressive
+or HLS remux, or a transcode) ends early outside a watch party
+(`PlaybackReconnectPolicy.endOfStreamReconnectPosition`). The reconnect keeps a viewer's
+pause and has its own attempt budget. An earlier version of this change used the
+stale-session renewal, which always resumed playing; that version reloaded a stream that
+ended 261 s early and played to the real end. The reconnect version has not been exercised
+against a real early end.
 
 The engine could avoid the reload by re-requesting the stream itself, which needs the
 host to supply a URL for the new position, since only the server can seek this delivery.

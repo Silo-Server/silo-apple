@@ -149,18 +149,43 @@ enum PlaybackReconnectPolicy {
     /// stream actually played from (`PlaybackSourceWatch.playhead`). An end
     /// of stream short of the end while the source was failing is a lost
     /// connection (§6.2).
+    ///
+    /// So is one from a stream the server produces (`delivery`, see
+    /// `sessionProducedDeliveries`), even with no sign of failure, unless it
+    /// ends again where the previous reconnect after an early end resumed
+    /// (`lastEndReconnect`). Then the stream is ending where its media does,
+    /// and reconnecting would only replay the same tail.
     static func endOfStreamReconnectPosition(
         playhead: Double,
         duration: Double,
         sourceStalled: Bool,
-        serverUnreachable: Bool
+        serverUnreachable: Bool,
+        delivery: String?,
+        lastEndReconnect: Double?
     ) -> Double? {
-        guard sourceStalled || serverUnreachable,
-              isBeforeNaturalEnd(position: playhead, duration: duration) else {
+        guard isBeforeNaturalEnd(position: playhead, duration: duration) else { return nil }
+        if sourceStalled || serverUnreachable { return playhead }
+        guard playhead > 0, let delivery, sessionProducedDeliveries.contains(delivery) else { return nil }
+        if let lastEndReconnect,
+           abs(playhead - lastEndReconnect) < PlaybackSourceWatch.confirmationSeconds {
             return nil
         }
         return playhead
     }
+
+    /// Deliveries the server produces from the playback session it holds: a
+    /// remux or a transcode. When that session goes (a server restart loses
+    /// it, or its producer stops), the engine can report a clean end short of
+    /// the item without the stall the source watch waits for. A progressive
+    /// remux is one response the engine cannot reconnect, and AVPlayer skips
+    /// every HLS segment a lost session refuses until it runs out of
+    /// playlist. An original file takes range requests, so the engine
+    /// reconnects it itself and reports the stall when it cannot.
+    static let sessionProducedDeliveries: Set<String> = [
+        PlaybackProtocolV3.PlanDelivery.remuxProgressive,
+        PlaybackProtocolV3.PlanDelivery.remuxHLS,
+        PlaybackProtocolV3.PlanDelivery.transcodeHLS,
+    ]
 
     /// `NSURLErrorDomain` codes that mean the request never got an answer.
     static let connectivityErrorCodes: Set<Int> = [

@@ -843,6 +843,12 @@ class PlayerViewModel {
     /// stream is a lost connection and where a reconnect resumes.
     @ObservationIgnored
     private var sourceWatch = PlaybackSourceWatch()
+    /// Where the last reconnect after an early end of stream resumed, until a
+    /// load other than a reconnect starts. A server-produced stream that ends
+    /// there again is ending where its media does
+    /// (`PlaybackReconnectPolicy.endOfStreamReconnectPosition`).
+    @ObservationIgnored
+    private var lastEndReconnect: Double?
     /// Set when the latest end of stream came short of the end of the item.
     /// Such an end never finishes the item: no watched state, no completed
     /// progress report.
@@ -4310,8 +4316,10 @@ class PlayerViewModel {
 
     /// Called when the active backend reports natural EOF. Move the shell into
     /// a paused end-state immediately so the player does not look frozen if
-    /// auto-play-next is unavailable.
-    func handleEndOfFile() {
+    /// auto-play-next is unavailable. `sourceEnded` is false when the player
+    /// finishes the item itself, as a credits skip that runs to the end does:
+    /// nothing was lost, so it never reconnects.
+    func handleEndOfFile(sourceEnded: Bool = true) {
         // Once per load. Two callers can land here for the same end — the
         // `.ended` event and a near-end playback error reclassified as a
         // natural finish — and running twice would raise the Next Up postroll
@@ -4326,24 +4334,30 @@ class PlayerViewModel {
 
         // Aether reports a source that stopped delivering as an ordinary end
         // of stream once its reader gives up, for example after a seek past
-        // the buffer while the server is down. Short of the end, that is a
-        // lost connection, not the item finishing (§6.2): reconnect at the
-        // position the stream last played from, and neither finish the item
-        // nor start the next one.
-        if currentTransportHasShownFrame,
+        // the buffer while the server is down. A remux or transcode whose
+        // session the server lost (a restart) can end cleanly with no stall
+        // at all. Short of the end, either is a lost connection, not the item
+        // finishing (§6.2): reconnect at the position the stream last played
+        // from, and neither finish the item nor start the next one. The
+        // reconnect carries the viewer's pause and is bounded by its own
+        // attempt budget.
+        if sourceEnded,
+           currentTransportHasShownFrame,
            let position = PlaybackReconnectPolicy.endOfStreamReconnectPosition(
                playhead: sourcePlayhead,
                duration: duration,
                sourceStalled: sourceWatch.isStalled,
-               serverUnreachable: isServerUnreachable
-           ) {
+               serverUnreachable: isServerUnreachable,
+               delivery: aetherPlaybackController.activeSpec?.delivery,
+               lastEndReconnect: lastEndReconnect
+           ),
+           beginReconnect(position: position, resume: aetherPlaybackController.shouldPlayWhenReady) {
             Self.logger.warning(
-                "[CMP] handleEndOfFile: source ended short of the end at \(position, privacy: .public)/\(self.duration, privacy: .public) clock=\(self.currentTime, privacy: .public); treating as a lost connection"
+                "[CMP] handleEndOfFile: source ended short of the end at \(position, privacy: .public)/\(self.duration, privacy: .public) clock=\(self.currentTime, privacy: .public) route=\(self.activeRouteLabel, privacy: .public) stalled=\(self.sourceWatch.isStalled, privacy: .public); treating as a lost connection"
             )
-            if beginReconnect(position: position, resume: aetherPlaybackController.shouldPlayWhenReady) {
-                currentTime = position
-                return
-            }
+            lastEndReconnect = position
+            currentTime = position
+            return
         }
 
         hasReachedEndOfFile = true
@@ -4374,27 +4388,6 @@ class PlayerViewModel {
             // Not a finish: the reload must not record the item as completed.
             hasReachedEndOfFile = false
             if remountWatchPartyPlayback(at: observedPosition) { return }
-            hasReachedEndOfFile = true
-        }
-
-        // A progressive remux is one response the engine cannot reconnect: a
-        // connection dropped mid-film (a long pause is enough) ends the
-        // stream for good, and the engine reports it as a clean end without
-        // the stall the check above waits for. Reconnect where it dropped
-        // instead of parking the viewer at the end of a film they have not
-        // finished. The reconnect carries the viewer's pause and is bounded
-        // by its own attempt budget.
-        if isPremature, !isWatchPartyPlayback, offlinePlaybackContext == nil,
-           aetherPlaybackController.activeSpec?.delivery == PlaybackProtocolV3.PlanDelivery.remuxProgressive {
-            Self.logger.warning(
-                "[CMP] handleEndOfFile reconnecting progressive remux: premature EOF at \(observedPosition, privacy: .public)/\(safeDuration, privacy: .public)"
-            )
-            // Not a finish: the reconnect must not record the item as completed.
-            hasReachedEndOfFile = false
-            if beginReconnect(position: observedPosition, resume: aetherPlaybackController.shouldPlayWhenReady) {
-                currentTime = observedPosition
-                return
-            }
             hasReachedEndOfFile = true
         }
 
@@ -4941,9 +4934,12 @@ class PlayerViewModel {
             cancelReconnect()
             reconnectCycle.resetBudget()
         }
-        // Any other start takes the session over from a running reconnect.
+        // Any other start takes the session over from a running reconnect,
+        // and from where one last resumed: a retry, a version switch or a
+        // remount is a fresh look at the stream.
         if origin != .reconnect {
             cancelReconnect()
+            lastEndReconnect = nil
         }
         lastLoadRequest = request
         offlinePlaybackContext = nil
@@ -6663,7 +6659,7 @@ class PlayerViewModel {
            target >= duration - 0.5 {
             if presentNextUpOverCredits() { return }
             currentTime = duration
-            handleEndOfFile()
+            handleEndOfFile(sourceEnded: false)
             return
         }
         seekTo(seconds: target)

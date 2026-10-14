@@ -13,7 +13,8 @@ final class PlaybackEndOfStreamTests: XCTestCase {
     func testFailingSourceShortOfTheEndReconnectsAtThePlayhead() {
         XCTAssertEqual(
             PlaybackReconnectPolicy.endOfStreamReconnectPosition(
-                playhead: 2160, duration: hour, sourceStalled: true, serverUnreachable: false
+                playhead: 2160, duration: hour, sourceStalled: true, serverUnreachable: false,
+                delivery: nil, lastEndReconnect: nil
             ),
             2160
         )
@@ -21,7 +22,17 @@ final class PlaybackEndOfStreamTests: XCTestCase {
         // was not seen.
         XCTAssertEqual(
             PlaybackReconnectPolicy.endOfStreamReconnectPosition(
-                playhead: 2160, duration: hour, sourceStalled: false, serverUnreachable: true
+                playhead: 2160, duration: hour, sourceStalled: false, serverUnreachable: true,
+                delivery: nil, lastEndReconnect: nil
+            ),
+            2160
+        )
+        // A source that fails again where the last reconnect resumed is still
+        // failing; only a clean end there is the end of the media.
+        XCTAssertEqual(
+            PlaybackReconnectPolicy.endOfStreamReconnectPosition(
+                playhead: 2160, duration: hour, sourceStalled: true, serverUnreachable: false,
+                delivery: PlaybackProtocolV3.PlanDelivery.transcodeHLS, lastEndReconnect: 2160
             ),
             2160
         )
@@ -31,7 +42,8 @@ final class PlaybackEndOfStreamTests: XCTestCase {
         for playhead in [hour - 8, hour - 1, hour * 0.99, hour] {
             XCTAssertNil(
                 PlaybackReconnectPolicy.endOfStreamReconnectPosition(
-                    playhead: playhead, duration: hour, sourceStalled: true, serverUnreachable: true
+                    playhead: playhead, duration: hour, sourceStalled: true, serverUnreachable: true,
+                    delivery: nil, lastEndReconnect: nil
                 ),
                 "playhead \(playhead)"
             )
@@ -41,16 +53,79 @@ final class PlaybackEndOfStreamTests: XCTestCase {
     func testHealthySourceKeepsTheReportedEnd() {
         XCTAssertNil(
             PlaybackReconnectPolicy.endOfStreamReconnectPosition(
-                playhead: 2160, duration: hour, sourceStalled: false, serverUnreachable: false
+                playhead: 2160, duration: hour, sourceStalled: false, serverUnreachable: false,
+                delivery: nil, lastEndReconnect: nil
             )
         )
+    }
+
+    /// A server restart loses the session a remux or transcode is produced
+    /// from. AVPlayer skips the segments it then refuses and ends cleanly at
+    /// the end of its buffer, with no stall and the API still answering.
+    func testServerProducedStreamThatEndsEarlyReconnects() {
+        let deliveries = [
+            PlaybackProtocolV3.PlanDelivery.transcodeHLS,
+            PlaybackProtocolV3.PlanDelivery.remuxHLS,
+            PlaybackProtocolV3.PlanDelivery.remuxProgressive,
+        ]
+        for delivery in deliveries {
+            XCTAssertEqual(
+                PlaybackReconnectPolicy.endOfStreamReconnectPosition(
+                    playhead: 2394, duration: 3003, sourceStalled: false, serverUnreachable: false,
+                    delivery: delivery, lastEndReconnect: nil
+                ),
+                2394,
+                delivery
+            )
+        }
+    }
+
+    /// A later restart ends the stream again further on; that is another
+    /// lost session, not the same end.
+    func testServerProducedStreamThatEndsEarlyAgainFurtherOnReconnects() {
+        for playhead in [2396.1, 2700] {
+            XCTAssertEqual(
+                PlaybackReconnectPolicy.endOfStreamReconnectPosition(
+                    playhead: playhead, duration: 3003, sourceStalled: false, serverUnreachable: false,
+                    delivery: PlaybackProtocolV3.PlanDelivery.transcodeHLS, lastEndReconnect: 2394
+                ),
+                playhead
+            )
+        }
+    }
+
+    func testEarlyEndThatIsNoLostSessionKeepsTheReportedEnd() {
+        let transcode = PlaybackProtocolV3.PlanDelivery.transcodeHLS
+        let cases: [(String, String?, Double, Double?)] = [
+            // The reconnect's stream ended where the last one did, even when
+            // it restarted a segment before it: that is where the media
+            // ends, and reconnecting would replay the same tail.
+            ("same end again", transcode, 2394.2, 2394),
+            ("same end, a frame early", transcode, 2393.96, 2394),
+            ("same end, just inside the window", transcode, 2395.9, 2394),
+            // The engine reconnects an original file itself.
+            ("original file", PlaybackProtocolV3.PlanDelivery.originalHTTP, 2394, nil),
+            ("unknown delivery", nil, 2394, nil),
+            ("natural end", transcode, 2990, nil),
+            ("an end at the start", transcode, 0, nil),
+        ]
+        for (label, delivery, playhead, lastEndReconnect) in cases {
+            XCTAssertNil(
+                PlaybackReconnectPolicy.endOfStreamReconnectPosition(
+                    playhead: playhead, duration: 3003, sourceStalled: false, serverUnreachable: false,
+                    delivery: delivery, lastEndReconnect: lastEndReconnect
+                ),
+                label
+            )
+        }
     }
 
     func testUnknownDurationKeepsTheReportedEnd() {
         for duration in [0, -1, .nan, .infinity] {
             XCTAssertNil(
                 PlaybackReconnectPolicy.endOfStreamReconnectPosition(
-                    playhead: 2160, duration: duration, sourceStalled: true, serverUnreachable: true
+                    playhead: 2160, duration: duration, sourceStalled: true, serverUnreachable: true,
+                    delivery: nil, lastEndReconnect: nil
                 ),
                 "duration \(duration)"
             )
@@ -81,7 +156,9 @@ final class PlaybackEndOfStreamTests: XCTestCase {
                 playhead: watch.playhead(currentTime: 3598),
                 duration: hour,
                 sourceStalled: watch.isStalled,
-                serverUnreachable: false
+                serverUnreachable: false,
+                delivery: nil,
+                lastEndReconnect: nil
             ),
             2160
         )
