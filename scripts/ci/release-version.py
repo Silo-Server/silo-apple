@@ -4,10 +4,10 @@
 Every Release run makes a TestFlight build tagged vX.Y.Z-beta.B:
 
 - X.Y.Z is the marketing version (CFBundleShortVersionString). It stays the
-  same for every TestFlight build until that version is approved for the App
-  Store, so later builds skip Beta App Review. After approval App Store
-  Connect refuses more X.Y.Z builds, and the next run starts a new version
-  with bump=minor/patch.
+  same for every TestFlight build until promote.yml drafts the store release
+  vX.Y.Z, so later builds skip Beta App Review. The draft counts as released,
+  and the next run starts a new version with bump=minor/patch. (App Store
+  Connect itself refuses more X.Y.Z builds only once it approves X.Y.Z.)
 - B is the build number (CFBundleVersion), shared by iOS and tvOS: the next
   TestFlight build number (--min-build), or one more than every build already
   in a tag if that is higher.
@@ -97,7 +97,7 @@ def next_release(tags, bump, version=None, min_build=None, drafts=()):
     if latest_release is not None and target <= latest_release:
         raise ReleaseError(
             f"{version_text(target)} is not newer than the latest release, {version_text(latest_release)}. "
-            "App Store Connect closes a version to new builds once it is approved."
+            "A store release, including a draft, closes its version to new builds."
         )
 
     build = max(previous_build + 1, min_build or 1)

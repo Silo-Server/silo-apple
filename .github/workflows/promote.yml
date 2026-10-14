@@ -75,6 +75,6 @@ jobs:
             echo "Drafted $release_tag."
             echo
             echo "1. In App Store Connect, add build $build to the iOS and tvOS $version versions and submit them for review."
-            echo "2. Edit the draft notes on GitHub."
-            echo "3. When Apple approves $version, publish the GitHub release. The next TestFlight build then needs bump: minor or patch."
+            echo "2. Start the next version now: run TestFlight Release with bump: patch or minor. Its first build's Beta App Review then runs alongside App Review."
+            echo "3. Edit the draft notes on GitHub, and publish the release when Apple approves $version."
           } >> "$GITHUB_STEP_SUMMARY"

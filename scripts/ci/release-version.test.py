@@ -49,6 +49,14 @@ class NextReleaseTest(unittest.TestCase):
         with self.assertRaisesRegex(release.ReleaseError, "bump=minor"):
             release.next_release(tags, "build", min_build=67, drafts=["v1.0.0"])
         self.assertEqual("v1.1.0-beta.67", release.next_release(tags, "minor", min_build=67, drafts=["v1.0.0"])["tag"])
+        with self.assertRaisesRegex(release.ReleaseError, "including a draft"):
+            release.next_release(tags, "build", "1.0.0", min_build=67, drafts=["v1.0.0"])
+
+    def test_rejected_version_needs_an_explicit_version_once_the_next_started(self):
+        # The draft v1.0.0 was deleted after App Review rejected the build.
+        tags = LEGACY_TAGS + ["v1.0.0-beta.66", "v1.0.1-beta.67"]
+        self.assertEqual("v1.0.1-beta.68", release.next_release(tags, "build", min_build=68)["tag"])
+        self.assertEqual("v1.0.0-beta.68", release.next_release(tags, "build", "1.0.0", min_build=68)["tag"])
 
     def test_build_refuses_an_approved_version(self):
         tags = LEGACY_TAGS + ["v1.0.0-beta.66", "v1.0.0"]
@@ -62,7 +70,7 @@ class NextReleaseTest(unittest.TestCase):
 
     def test_explicit_version_must_be_newer_than_the_latest_release(self):
         tags = LEGACY_TAGS + ["v1.0.0-beta.66", "v1.0.0"]
-        with self.assertRaisesRegex(release.ReleaseError, "closes a version"):
+        with self.assertRaisesRegex(release.ReleaseError, "closes its version"):
             release.next_release(tags, "build", "1.0.0", min_build=67)
         with self.assertRaisesRegex(release.ReleaseError, "look like"):
             release.next_release(tags, "build", "1.1", min_build=67)

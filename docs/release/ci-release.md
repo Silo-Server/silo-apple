@@ -38,26 +38,28 @@ both.
    commit, with notes since the last App Store release. Nothing is rebuilt.
 2. In App Store Connect, add that build to the iOS and tvOS versions and submit
    them for review.
-3. Edit the draft notes on GitHub, and publish them as the latest release once
+3. Start the next version right away: run TestFlight Release with `bump: patch`
+   (fixes only) or `bump: minor` (new features). Its first build goes through
+   Beta App Review while App Review checks the submitted version, so external
+   testers wait only for that review. Internal testers get the build as soon as
+   it is processed.
+4. Edit the draft notes on GitHub, and publish them as the latest release once
    Apple approves the version.
 
-While the draft exists, the version counts as released: TestFlight Release
-refuses `bump: build`, and `bump: minor` starts the next version. If App Review
-rejects the build, delete the draft, fix the problem, make another TestFlight
-build of the same version, and promote that one.
+App Store Connect accepts more builds of a submitted version until Apple
+approves it, then closes it to new builds, TestFlight included. Release stops
+earlier, at the draft: while it exists the version counts as released and
+`bump: build` refuses it, so only one version is in testing at a time.
 
-## After an App Store release
-
-App Store Connect closes a marketing version to new builds, TestFlight
-included, once it is approved. The next run needs `bump: minor` (the next
-version has new features) or `bump: patch` (fixes only); `bump: build` refuses a
-released version. The first build of each new version goes through Beta App
-Review once; later builds of the same version don't.
+If App Review rejects the build, delete the draft and fix the problem. Then run
+TestFlight Release with `version: 1.0.0`, because once the next version has
+started, `bump: build` continues that one. Promote the new build.
 
 ## Numbers
 
 - `1.0.0` is the marketing version. It stays the same for every TestFlight build
-  until it is approved for the App Store.
+  until it is promoted to the App Store. The first build of each version goes
+  through Beta App Review; later builds of the same version usually don't.
 - `66` is the build number, shared by iOS and tvOS: one more than the latest
   TestFlight build on either platform (and any build already tagged).
 - Tags: `vX.Y.Z-beta.B` for TestFlight builds (GitHub prereleases) and `vX.Y.Z`
