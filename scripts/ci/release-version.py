@@ -20,6 +20,7 @@ Commands print key=value lines for $GITHUB_OUTPUT:
     release-version.py beta vX.Y.Z-beta.B
     release-version.py previous-release vX.Y.Z
     release-version.py store-notes LIMIT < generated-notes.md
+    release-version.py titles < generated-notes.md
 """
 
 import argparse
@@ -174,6 +175,25 @@ def store_notes(markdown, limit):
     return "\n".join(notes)
 
 
+def pr_titles(markdown):
+    """The generated notes reduced to section names and pull request titles.
+
+    This is all summarize-what-to-test.sh sends to the model: no authors,
+    links, pull request bodies or the New Contributors list.
+    """
+    lines = []
+    for line in markdown.splitlines():
+        if line.startswith("## ") and "What's Changed" not in line:
+            break
+        if line.startswith("### "):
+            lines.append(re.sub(r"^###\s*\W*", "", line).strip() + ":")
+            continue
+        match = ENTRY.fullmatch(line.strip())
+        if match:
+            lines.append(f"- {match.group(1)}")
+    return "\n".join(lines)
+
+
 def git_tags():
     return subprocess.run(
         ["git", "tag", "--list", "v*"], check=True, capture_output=True, text=True
@@ -195,11 +215,15 @@ def main(argv):
     previous_parser.add_argument("tag")
     notes_parser = commands.add_parser("store-notes")
     notes_parser.add_argument("limit", type=int)
+    commands.add_parser("titles")
     args = parser.parse_args(argv)
 
     try:
         if args.command == "store-notes":
             print(store_notes(sys.stdin.read(), args.limit))
+            return 0
+        if args.command == "titles":
+            print(pr_titles(sys.stdin.read()))
             return 0
         if args.command == "next":
             result = next_release(git_tags(), args.bump, args.version, args.min_build, args.draft)

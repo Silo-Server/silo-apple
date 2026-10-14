@@ -214,16 +214,37 @@ jobs:
           gh api "repos/$GH_REPO/releases/generate-notes" \
             -f tag_name="$TAG" -f target_commitish="$GITHUB_SHA" \
             ${PREVIOUS_TAG:+-f previous_tag_name="$PREVIOUS_TAG"} --jq .body > "$RUNNER_TEMP/notes.md"
-      # TestFlight's "What to Test": the Features and Fixes since the last build,
-      # leaving room for the source line the Fastfile appends (4,000 max).
+      # TestFlight's "What to Test", leaving room for the source line the
+      # Fastfile appends (4,000 max): Claude's summary of the pull request
+      # titles, or the plain list of Features and Fixes when that fails or
+      # ANTHROPIC_API_KEY isn't set. The key exists only in this step, on a
+      # GitHub-hosted runner, and the workflow only runs by manual dispatch.
       - name: Write What to Test
         id: changelog
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           set -euo pipefail
+          what_to_test="$RUNNER_TEMP/what-to-test.txt"
+          if scripts/ci/summarize-what-to-test.sh "$RUNNER_TEMP/notes.md" 3800 > "$what_to_test"; then
+            source="Claude's summary of the merged pull requests"
+          else
+            echo "::warning::What to Test uses the plain list because the summary failed (see above)."
+            python3 scripts/ci/release-version.py store-notes 3800 < "$RUNNER_TEMP/notes.md" > "$what_to_test"
+            source="the plain list of Features and Fixes"
+          fi
+          {
+            echo "### What to Test"
+            echo
+            echo "From $source:"
+            echo
+            # Indented, so the text shows as a code block whatever it contains.
+            sed 's/^/    /' "$what_to_test"
+          } >> "$GITHUB_STEP_SUMMARY"
           delimiter="silo_changelog_$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
           {
             echo "value<<$delimiter"
-            python3 scripts/ci/release-version.py store-notes 3800 < "$RUNNER_TEMP/notes.md"
+            cat "$what_to_test"
             echo "$delimiter"
           } >> "$GITHUB_OUTPUT"
       - name: Publish the GitHub prerelease

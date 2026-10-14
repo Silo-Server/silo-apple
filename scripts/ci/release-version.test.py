@@ -117,6 +117,19 @@ GENERATED = """## What's Changed
 
 
 class StoreNotesTest(unittest.TestCase):
+    def test_titles_keep_sections_and_titles_only(self):
+        notes = GENERATED.replace("**Full Changelog**", "## New Contributors\n* @newcomer made their first contribution in https://github.com/x/y/pull/9\n\n**Full Changelog**")
+        self.assertEqual(
+            "Features:\n"
+            "- feat(player): skip recaps automatically\n"
+            "Fixes:\n"
+            "- fix(home): reload Home when the app returns\n"
+            "Other changes:\n"
+            "- ci: cache packages\n"
+            "- Fix: restore the Up Next row",
+            release.pr_titles(notes),
+        )
+
     def test_keeps_features_and_fixes_as_plain_text(self):
         self.assertEqual(
             "• Skip recaps automatically\n• Reload Home when the app returns\n• Restore the Up Next row",

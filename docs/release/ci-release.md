@@ -11,8 +11,14 @@ earlier tag to continue from: enter `1.0.0` as `version`.
 
 The run tags the commit `v1.0.0-beta.66`, publishes a GitHub prerelease with the
 pull requests merged since the previous build (grouped by label), and uploads
-iOS and tvOS `1.0.0 (66)` to TestFlight's external groups. The Features and
-Fixes from those notes become TestFlight's "What to Test".
+iOS and tvOS `1.0.0 (66)` to TestFlight's external groups.
+
+TestFlight's "What to Test" is Claude's short summary of those pull request
+titles: what's new, and where to test. The run sends Claude only the section
+names and titles, never pull request bodies, comments, or code. If the summary
+fails, or `ANTHROPIC_API_KEY` isn't set, the run uses the plain list of
+Features and Fixes instead. Either way the run's summary page shows the text,
+and you can edit it in App Store Connect.
 
 Every run first runs the Apple regression workflow (SiloTests, SiloTVTests,
 SiloMac build) on the release commit, or reuses a matching main run's result.
@@ -77,6 +83,7 @@ started, `bump: build` continues that one. Promote the new build.
 | `APP_STORE_CONNECT_API_KEY_ISSUER_ID` | ASC API key issuer ID |
 | `APP_STORE_CONNECT_API_KEY_KEY` | base64 of the `.p8` key (`base64 < AuthKey_XXX.p8 \| tr -d '\n'`) |
 | `TESTFLIGHT_EXTERNAL_GROUPS` | comma-separated external TestFlight group name(s) |
+| `ANTHROPIC_API_KEY` | Optional. Claude API key for the What to Test summary; without it the run uses the plain list |
 
 ## Renewing signing assets (run LOCALLY, not in CI)
 CI runs `match` read-only and cannot create certs/profiles. When a cert expires,
