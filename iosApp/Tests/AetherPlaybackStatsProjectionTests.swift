@@ -182,6 +182,39 @@ final class AetherPlaybackStatsProjectionTests: XCTestCase {
         }
     }
 
+    /// Profile 8 can carry a PQ base (8.1) or an HLG base (8.4); a display
+    /// without Dolby Vision presents that base.
+    func testMatchedDisplayWithoutDolbyVisionShowsTheProfile8Base() {
+        let hdr10Panel = DisplayCapabilities(
+            supportsHDR: true, supportsDolbyVision: false, supportsHDR10: true, supportsHLG: true)
+        for (transfer, expected) in [
+            ("smpte2084", "Dolby Vision Profile 8 → HDR10"),
+            ("arib-std-b67", "Dolby Vision Profile 8 → HLG"),
+        ] {
+            let stats = AetherPlaybackStatsProjection.make(
+                snapshot: AetherPlaybackStatsSnapshot(
+                    route: .loopback,
+                    phase: .playing,
+                    sourceVideoFormat: .dolbyVision,
+                    outputVideoFormat: .sdr,
+                    sourceDVProfile: 8,
+                    sourceVideoTransfer: transfer,
+                    matchedDisplay: hdr10Panel,
+                    sourceVideoWidth: 3840,
+                    sourceVideoHeight: 2160
+                ),
+                source: AetherPlaybackStatsSourceMetadata(
+                    sourceURL: nil,
+                    delivery: "original_http",
+                    container: "mkv",
+                    playbackRate: 1
+                )
+            )
+
+            XCTAssertEqual(stats.dynamicRange, expected, transfer)
+        }
+    }
+
     func testRouteAsymmetricTelemetryDoesNotInventForwardBuffer() {
         let telemetry = LiveTelemetry(
             instantBitrateMbps: nil,

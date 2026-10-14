@@ -82,6 +82,9 @@ struct AetherPlaybackStatsSnapshot: Equatable {
     let outputVideoFormat: VideoFormat
     let sourceDVProfile: Int?
     let dolbyVisionConversion: DolbyVisionConversion?
+    /// FFmpeg's name for the source's transfer, e.g. `arib-std-b67` for an
+    /// HLG Dolby Vision base layer.
+    let sourceVideoTransfer: String?
     /// What the display can present, sampled only on tvOS when the active
     /// load asked to match the content's range and Match Dynamic Range is
     /// still on; nil everywhere else.
@@ -109,6 +112,7 @@ struct AetherPlaybackStatsSnapshot: Equatable {
         outputVideoFormat = engine.videoFormat
         sourceDVProfile = engine.sourceDVProfile
         dolbyVisionConversion = engine.dolbyVisionConversion
+        sourceVideoTransfer = engine.sourceVideoStreamFormat?.transfer
         #if os(tvOS)
         matchedDisplay = loadMatchesContent && AetherDisplayContext.matchContentEnabled
             ? AetherEngine.displayCapabilities
@@ -139,6 +143,7 @@ struct AetherPlaybackStatsSnapshot: Equatable {
         outputVideoFormat: VideoFormat = .sdr,
         sourceDVProfile: Int? = nil,
         dolbyVisionConversion: DolbyVisionConversion? = nil,
+        sourceVideoTransfer: String? = nil,
         matchedDisplay: DisplayCapabilities? = nil,
         sourceVideoWidth: Int32 = 0,
         sourceVideoHeight: Int32 = 0,
@@ -161,6 +166,7 @@ struct AetherPlaybackStatsSnapshot: Equatable {
         self.outputVideoFormat = outputVideoFormat
         self.sourceDVProfile = sourceDVProfile
         self.dolbyVisionConversion = dolbyVisionConversion
+        self.sourceVideoTransfer = sourceVideoTransfer
         self.matchedDisplay = matchedDisplay
         self.sourceVideoWidth = sourceVideoWidth
         self.sourceVideoHeight = sourceVideoHeight
@@ -339,9 +345,9 @@ enum AetherPlaybackStatsProjection {
     /// its EDR headroom reads 1.0 even after the switch. Aether still serves
     /// the HDR stream to such a panel and tvOS switches it to the content's
     /// range, so label what the matched display presents: the source's own
-    /// range when it supports it, or, as Aether routes it, the HDR10 base of
-    /// a Dolby Vision profile that always has one (5 and 7 are PQ; 8 can be
-    /// HLG) on a display without Dolby Vision.
+    /// range when it supports it, or, on a display without Dolby Vision, the
+    /// Dolby Vision base layer the way Aether's `effectiveVideoFormat` routes
+    /// it (HLG for an HLG base, otherwise HDR10).
     private static func presentedVideoFormat(_ snapshot: AetherPlaybackStatsSnapshot) -> VideoFormat {
         guard snapshot.outputVideoFormat == .sdr,
               snapshot.route == .loopback || snapshot.route == .remoteBypass,
@@ -355,8 +361,10 @@ enum AetherPlaybackStatsProjection {
             return display.supportsHLG ? .hlg : .sdr
         case .dolbyVision:
             if display.supportsDolbyVision { return .dolbyVision }
-            let hasPQBase = snapshot.sourceDVProfile == 5 || snapshot.sourceDVProfile == 7
-            return hasPQBase && display.supportsHDR10 ? .hdr10 : .sdr
+            if snapshot.sourceVideoTransfer == "arib-std-b67" {
+                return display.supportsHLG ? .hlg : .sdr
+            }
+            return display.supportsHDR10 ? .hdr10 : .sdr
         }
     }
 
