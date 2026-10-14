@@ -85,10 +85,9 @@ struct AetherPlaybackStatsSnapshot: Equatable {
     /// FFmpeg's name for the source's transfer, e.g. `arib-std-b67` for an
     /// HLG Dolby Vision base layer.
     let sourceVideoTransfer: String?
-    /// What the display can present, sampled only on tvOS when the active
-    /// load asked to match the content's range and Match Dynamic Range is
-    /// still on; nil everywhere else.
-    let matchedDisplay: DisplayCapabilities?
+    /// What the display can present. Sampled only on tvOS, where Aether
+    /// cannot confirm which mode the TV is in; nil everywhere else.
+    let tvDisplay: DisplayCapabilities?
     let sourceVideoWidth: Int32
     let sourceVideoHeight: Int32
     let sourceVideoPixelAspectRatio: Double
@@ -102,7 +101,7 @@ struct AetherPlaybackStatsSnapshot: Equatable {
     let isSecondarySubtitleActive: Bool
 
     @MainActor
-    init(engine: AetherEngine, loadMatchesContent: Bool) {
+    init(engine: AetherEngine) {
         route = engine.videoRoute
         phase = engine.playbackPhase
         telemetry = engine.liveTelemetry
@@ -114,11 +113,9 @@ struct AetherPlaybackStatsSnapshot: Equatable {
         dolbyVisionConversion = engine.dolbyVisionConversion
         sourceVideoTransfer = engine.sourceVideoStreamFormat?.transfer
         #if os(tvOS)
-        matchedDisplay = loadMatchesContent && AetherDisplayContext.matchContentEnabled
-            ? AetherEngine.displayCapabilities
-            : nil
+        tvDisplay = AetherEngine.displayCapabilities
         #else
-        matchedDisplay = nil
+        tvDisplay = nil
         #endif
         sourceVideoWidth = engine.sourceVideoWidth
         sourceVideoHeight = engine.sourceVideoHeight
@@ -144,7 +141,7 @@ struct AetherPlaybackStatsSnapshot: Equatable {
         sourceDVProfile: Int? = nil,
         dolbyVisionConversion: DolbyVisionConversion? = nil,
         sourceVideoTransfer: String? = nil,
-        matchedDisplay: DisplayCapabilities? = nil,
+        tvDisplay: DisplayCapabilities? = nil,
         sourceVideoWidth: Int32 = 0,
         sourceVideoHeight: Int32 = 0,
         sourceVideoPixelAspectRatio: Double = 1,
@@ -167,7 +164,7 @@ struct AetherPlaybackStatsSnapshot: Equatable {
         self.sourceDVProfile = sourceDVProfile
         self.dolbyVisionConversion = dolbyVisionConversion
         self.sourceVideoTransfer = sourceVideoTransfer
-        self.matchedDisplay = matchedDisplay
+        self.tvDisplay = tvDisplay
         self.sourceVideoWidth = sourceVideoWidth
         self.sourceVideoHeight = sourceVideoHeight
         self.sourceVideoPixelAspectRatio = sourceVideoPixelAspectRatio
@@ -329,42 +326,52 @@ enum AetherPlaybackStatsProjection {
         guard snapshot.sourceVideoWidth > 0, snapshot.sourceVideoHeight > 0 else { return nil }
         if let planned = plannedDynamicRangeLabel(metadata) { return planned }
         let source = videoFormatLabel(snapshot.sourceVideoFormat, dvProfile: snapshot.sourceDVProfile)
-        let outputFormat = presentedVideoFormat(snapshot)
+        let unconfirmed = unconfirmedSentVideoFormat(snapshot)
+        let outputFormat = unconfirmed ?? snapshot.outputVideoFormat
+        let suffix = unconfirmed == nil ? "" : " (unconfirmed)"
         if outputFormat == .dolbyVision,
            snapshot.dolbyVisionConversion == .profile7ToProfile81 {
-            return "\(source) → Profile 8.1"
+            return "\(source) → Profile 8.1\(suffix)"
         }
         let output = videoFormatLabel(outputFormat, dvProfile: nil)
         return snapshot.sourceVideoFormat == outputFormat
-            ? source
-            : "\(source) → \(output)"
+            ? "\(source)\(suffix)"
+            : "\(source) → \(output)\(suffix)"
     }
 
-    /// Aether's `videoFormat` stays SDR until the panel proves it left SDR,
-    /// and an Apple TV set to SDR with Match Dynamic Range on never proves it:
-    /// its EDR headroom reads 1.0 even after the switch. Aether still serves
-    /// the HDR stream to such a panel and tvOS switches it to the content's
-    /// range, so label what the matched display presents: the source's own
-    /// range when it supports it, or, on a display without Dolby Vision, the
-    /// Dolby Vision base layer the way Aether's `effectiveVideoFormat` routes
-    /// it (HLG for an HLG base, otherwise HDR10).
-    private static func presentedVideoFormat(_ snapshot: AetherPlaybackStatsSnapshot) -> VideoFormat {
+    /// The range Aether sent to an Apple TV when it can't confirm the TV's
+    /// mode, or nil when its own `videoFormat` stands.
+    ///
+    /// `videoFormat` stays SDR until the panel proves it left SDR, and an
+    /// Apple TV whose format is set to SDR never proves it: its EDR headroom
+    /// reads 1.0 even after Match Dynamic Range switches it. Aether sends an
+    /// HDR display the HDR stream anyway, and tvOS doesn't say whether the TV
+    /// switched (its one setting covers frame-rate and range matching both),
+    /// so the label names what was sent and marks it unconfirmed. On a display
+    /// without Dolby Vision that is the Dolby Vision base layer, as Aether's
+    /// `effectiveVideoFormat` routes it.
+    private static func unconfirmedSentVideoFormat(_ snapshot: AetherPlaybackStatsSnapshot) -> VideoFormat? {
         guard snapshot.outputVideoFormat == .sdr,
               snapshot.route == .loopback || snapshot.route == .remoteBypass,
-              let display = snapshot.matchedDisplay else { return snapshot.outputVideoFormat }
+              let display = snapshot.tvDisplay else { return nil }
         switch snapshot.sourceVideoFormat {
         case .sdr:
-            return .sdr
+            return nil
         case .hdr10, .hdr10Plus:
-            return display.supportsHDR10 ? snapshot.sourceVideoFormat : .sdr
+            return display.supportsHDR10 ? snapshot.sourceVideoFormat : nil
         case .hlg:
-            return display.supportsHLG ? .hlg : .sdr
+            return display.supportsHLG ? .hlg : nil
         case .dolbyVision:
             if display.supportsDolbyVision { return .dolbyVision }
-            if snapshot.sourceVideoTransfer == "arib-std-b67" {
-                return display.supportsHLG ? .hlg : .sdr
+            switch snapshot.sourceVideoTransfer {
+            case "arib-std-b67":
+                return display.supportsHLG ? .hlg : nil
+            case nil, "smpte2084":
+                return display.supportsHDR10 ? .hdr10 : nil
+            default:
+                // An SDR base layer (Profile 8.2) is presented as SDR.
+                return nil
             }
-            return display.supportsHDR10 ? .hdr10 : .sdr
         }
     }
 

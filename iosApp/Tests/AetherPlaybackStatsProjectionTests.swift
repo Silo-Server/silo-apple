@@ -143,63 +143,37 @@ final class AetherPlaybackStatsProjectionTests: XCTestCase {
         }
     }
 
-    /// An Apple TV set to SDR with Match Dynamic Range on switches to the
-    /// content's range, but Aether cannot prove it and keeps reporting SDR.
-    func testMatchedDisplayShowsTheRangeItSwitchesTo() {
-        let dolbyVisionPanel = DisplayCapabilities(
+    /// Aether reports SDR on an Apple TV it can't prove left SDR, though it
+    /// sent the HDR stream; the label names what was sent, unconfirmed.
+    func testUnprovenAppleTVShowsTheSentRangeAsUnconfirmed() {
+        let dolbyVisionTV = DisplayCapabilities(
             supportsHDR: true, supportsDolbyVision: true, supportsHDR10: true, supportsHLG: true)
-        let hdr10Panel = DisplayCapabilities(
+        let hdr10TV = DisplayCapabilities(
             supportsHDR: true, supportsDolbyVision: false, supportsHDR10: true, supportsHLG: true)
-        let cases: [(VideoRoute, VideoFormat, DisplayCapabilities?, String)] = [
-            (.loopback, .dolbyVision, dolbyVisionPanel, "Dolby Vision Profile 7 → Profile 8.1"),
-            (.remoteBypass, .hdr10, dolbyVisionPanel, "HDR10"),
-            (.loopback, .dolbyVision, hdr10Panel, "Dolby Vision Profile 7 → HDR10"),
-            (.loopback, .dolbyVision, nil, "Dolby Vision Profile 7 → SDR"),
-            (.software, .dolbyVision, dolbyVisionPanel, "Dolby Vision Profile 7 → SDR"),
+        let sdrTV = DisplayCapabilities(
+            supportsHDR: false, supportsDolbyVision: false, supportsHDR10: false, supportsHLG: false)
+        let cases: [(VideoRoute, VideoFormat, Int?, String?, DisplayCapabilities?, String)] = [
+            (.loopback, .dolbyVision, 7, "smpte2084", dolbyVisionTV,
+             "Dolby Vision Profile 7 → Profile 8.1 (unconfirmed)"),
+            (.remoteBypass, .hdr10, nil, "smpte2084", dolbyVisionTV, "HDR10 (unconfirmed)"),
+            (.loopback, .dolbyVision, 7, "smpte2084", hdr10TV, "Dolby Vision Profile 7 → HDR10 (unconfirmed)"),
+            (.loopback, .dolbyVision, 8, "arib-std-b67", hdr10TV, "Dolby Vision Profile 8 → HLG (unconfirmed)"),
+            (.loopback, .dolbyVision, 8, "bt709", hdr10TV, "Dolby Vision Profile 8 → SDR"),
+            (.loopback, .dolbyVision, 7, "smpte2084", sdrTV, "Dolby Vision Profile 7 → SDR"),
+            (.loopback, .dolbyVision, 7, "smpte2084", nil, "Dolby Vision Profile 7 → SDR"),
+            (.software, .dolbyVision, 7, "smpte2084", dolbyVisionTV, "Dolby Vision Profile 7 → SDR"),
         ]
-        for (route, sourceFormat, display, expected) in cases {
+        for (route, sourceFormat, profile, transfer, display, expected) in cases {
             let stats = AetherPlaybackStatsProjection.make(
                 snapshot: AetherPlaybackStatsSnapshot(
                     route: route,
                     phase: .playing,
                     sourceVideoFormat: sourceFormat,
                     outputVideoFormat: .sdr,
-                    sourceDVProfile: sourceFormat == .dolbyVision ? 7 : nil,
-                    dolbyVisionConversion: sourceFormat == .dolbyVision ? .profile7ToProfile81 : nil,
-                    matchedDisplay: display,
-                    sourceVideoWidth: 3840,
-                    sourceVideoHeight: 2160
-                ),
-                source: AetherPlaybackStatsSourceMetadata(
-                    sourceURL: nil,
-                    delivery: "original_http",
-                    container: "mkv",
-                    playbackRate: 1
-                )
-            )
-
-            XCTAssertEqual(stats.dynamicRange, expected, "\(route) \(sourceFormat)")
-        }
-    }
-
-    /// Profile 8 can carry a PQ base (8.1) or an HLG base (8.4); a display
-    /// without Dolby Vision presents that base.
-    func testMatchedDisplayWithoutDolbyVisionShowsTheProfile8Base() {
-        let hdr10Panel = DisplayCapabilities(
-            supportsHDR: true, supportsDolbyVision: false, supportsHDR10: true, supportsHLG: true)
-        for (transfer, expected) in [
-            ("smpte2084", "Dolby Vision Profile 8 → HDR10"),
-            ("arib-std-b67", "Dolby Vision Profile 8 → HLG"),
-        ] {
-            let stats = AetherPlaybackStatsProjection.make(
-                snapshot: AetherPlaybackStatsSnapshot(
-                    route: .loopback,
-                    phase: .playing,
-                    sourceVideoFormat: .dolbyVision,
-                    outputVideoFormat: .sdr,
-                    sourceDVProfile: 8,
+                    sourceDVProfile: profile,
+                    dolbyVisionConversion: profile == 7 ? .profile7ToProfile81 : nil,
                     sourceVideoTransfer: transfer,
-                    matchedDisplay: hdr10Panel,
+                    tvDisplay: display,
                     sourceVideoWidth: 3840,
                     sourceVideoHeight: 2160
                 ),
@@ -211,7 +185,7 @@ final class AetherPlaybackStatsProjectionTests: XCTestCase {
                 )
             )
 
-            XCTAssertEqual(stats.dynamicRange, expected, transfer)
+            XCTAssertEqual(stats.dynamicRange, expected, "\(route) \(profile.map(String.init) ?? "-") \(transfer ?? "-")")
         }
     }
 
