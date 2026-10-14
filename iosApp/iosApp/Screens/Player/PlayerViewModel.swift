@@ -1463,8 +1463,17 @@ class PlayerViewModel {
             case .playing:
                 isPlaying = true
                 // A rate the party set while the engine rebuffered applies as
-                // soon as it plays again, not at the next clock update.
-                syncWatchPartyRate()
+                // soon as it plays again, not at the next clock update. The
+                // engine publishes this state from `willSet`, so it still
+                // reads the old one here; hand the rate over once it is set.
+                if isWatchPartyPlayback {
+                    let epoch = scopedEvent.epoch
+                    Task { @MainActor [weak self] in
+                        await Task.yield()
+                        guard let self, self.activeAetherLoadEpoch == epoch else { return }
+                        self.syncWatchPartyRate()
+                    }
+                }
                 pushNowPlayingSnapshot()
                 // An audio-only load has no picture, so Aether's audio route
                 // never latches `hasFirstFrameReadyForDisplay` and the
