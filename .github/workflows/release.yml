@@ -3,15 +3,15 @@ name: TestFlight Release
 # Makes a TestFlight build: tags the commit vX.Y.Z-beta.B, publishes a GitHub
 # prerelease with notes on what changed since the last build, and uploads iOS
 # and tvOS build B of marketing version X.Y.Z to TestFlight. X.Y.Z stays the
-# same until it is approved for the App Store, so later builds skip Beta App
-# Review. promote.yml turns a TestFlight build into a store release.
+# same until promote.yml drafts its App Store release, so later builds skip
+# Beta App Review.
 # See docs/release/ci-release.md.
 
 on:
   workflow_dispatch:
     inputs:
       bump:
-        description: 'build = another build of the unreleased version. minor or patch = start the next version after an App Store release.'
+        description: 'build = another build of the unreleased version. minor or patch = start the next version once the current one is promoted.'
         required: true
         type: choice
         default: build
