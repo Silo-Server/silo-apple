@@ -35,18 +35,24 @@ enum PlayerNextUpCompletionPolicy {
     /// `skippedCredits` means the viewer skipped credits that run to the end
     /// of the file. The credits keep playing, but the item is finished, as a
     /// jump to EOF would have made it.
+    ///
+    /// `endedPrematurely` means the stream ended short of the end of the
+    /// item (the source went away). The "Connection lost" postroll shows
+    /// Next Up too, so such an end finishes nothing even inside the prompt
+    /// window.
     static func shouldFinalizeAsCompleted(
         isNextUpPresented: Bool,
         hasReachedEndOfFile: Bool,
         currentTime: Double,
         duration: Double,
         promptSeconds: Int,
-        skippedCredits: Bool = false
+        skippedCredits: Bool = false,
+        endedPrematurely: Bool = false
     ) -> Bool {
         if hasReachedEndOfFile || skippedCredits {
             return true
         }
-        guard isNextUpPresented else { return false }
+        guard isNextUpPresented, !endedPrematurely else { return false }
         return isInPromptWindow(
             currentTime: currentTime,
             duration: duration,
@@ -60,7 +66,8 @@ enum PlayerNextUpCompletionPolicy {
         currentTime: Double,
         duration: Double,
         promptSeconds: Int,
-        skippedCredits: Bool = false
+        skippedCredits: Bool = false,
+        endedPrematurely: Bool = false
     ) -> Double {
         guard duration.isFinite, duration > 0 else {
             return currentTime
@@ -71,7 +78,8 @@ enum PlayerNextUpCompletionPolicy {
             currentTime: currentTime,
             duration: duration,
             promptSeconds: promptSeconds,
-            skippedCredits: skippedCredits
+            skippedCredits: skippedCredits,
+            endedPrematurely: endedPrematurely
         ) ? duration : currentTime
     }
 }
