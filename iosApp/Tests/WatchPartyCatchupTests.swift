@@ -181,6 +181,17 @@ final class WatchPartyCatchupTests: XCTestCase {
         XCTAssertTrue(budget.allowed(at: at(WatchPartyReloadBudget.staleAfter)))
     }
 
+    func testOnlyTheRoomSeekToTheHeldRequestReleasesIt() {
+        // Skips to 110, 120 and 130: the room's seeks for the first two land
+        // while 130 is still held, so the next skip builds on 130.
+        XCTAssertEqual(WatchPartyHeldSeek.remaining(130, afterRoomSeekTo: 110), 130)
+        XCTAssertEqual(WatchPartyHeldSeek.remaining(130, afterRoomSeekTo: 120), 130)
+        XCTAssertNil(WatchPartyHeldSeek.remaining(130, afterRoomSeekTo: 130))
+        // The server folds a repeat seek within a second into its waiting seek.
+        XCTAssertNil(WatchPartyHeldSeek.remaining(130.6, afterRoomSeekTo: 130))
+        XCTAssertNil(WatchPartyHeldSeek.remaining(nil, afterRoomSeekTo: 110))
+    }
+
     func testOnlyATargetReachableInPlaceCountsAsBuffered() {
         // Server HLS reports no forward buffer. A target outside the seek
         // window rebuilds the stream, so it goes through the load budget.

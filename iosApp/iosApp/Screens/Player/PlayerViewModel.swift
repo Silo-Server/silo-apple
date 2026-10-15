@@ -885,6 +885,9 @@ class PlayerViewModel {
     /// scrubber to the optimistic target forever.
     private var seekOriginTime: Double?
     private var seekTargetTime: Double?
+    /// This member's newest room seek request the room has not run yet; see
+    /// `WatchPartyHeldSeek`.
+    private var watchPartyHeldSeek: Double?
     private var seekFilterTimeoutTask: Task<Void, Never>?
     /// The in-flight `commitSeek` await. Held so a new load can cancel a seek
     /// whose `.requiresReplan` answer would otherwise arrive after the item
@@ -1534,6 +1537,7 @@ class PlayerViewModel {
                 }
                 seekOriginTime = nil
                 seekTargetTime = nil
+                watchPartyHeldSeek = nil
                 seekFilterTimeoutTask?.cancel()
                 seekFilterTimeoutTask = nil
             }
@@ -4658,6 +4662,7 @@ class PlayerViewModel {
         scrubPreviewImageSourceTime = nil
         seekOriginTime = nil
         seekTargetTime = nil
+        watchPartyHeldSeek = nil
         showControls = false
         // The HUD belongs to the outgoing item. Replans deliberately bypass
         // this reset so the HUD survives them; a replacement load must close
@@ -6354,6 +6359,7 @@ class PlayerViewModel {
             let requested = duration > 0 ? min(max(0, target), duration) : max(0, target)
             seekOriginTime = watchPartyPlaybackSnapshot.sourceTime
             seekTargetTime = requested
+            watchPartyHeldSeek = requested
             currentTime = requested
             scrubPreviewTime = requested
             armSeekFilterTimeout(restoringRoomPosition: true)
@@ -6382,11 +6388,19 @@ class PlayerViewModel {
             "[CMP-SEEK] commit requested source=\(source, privacy: .public) target=\(clampedTarget, privacy: .public) current=\(self.currentTime, privacy: .public) route=\(self.activeRouteLabel, privacy: .public) replan=\(requiresReplan, privacy: .public)"
         )
         hasReachedEndOfFile = false
-        seekOriginTime = currentTime
-        seekTargetTime = clampedTarget
-        currentTime = clampedTarget
+        // A room seek for an earlier skip in a burst moves the engine but
+        // leaves the newest request on the timeline, and ticks from the
+        // engine's new position are filtered as stale until the room's seek
+        // to that request runs.
+        let heldTarget = roomCommand
+            ? WatchPartyHeldSeek.remaining(watchPartyHeldSeek, afterRoomSeekTo: clampedTarget) : nil
+        watchPartyHeldSeek = heldTarget
+        let shownTarget = heldTarget ?? clampedTarget
+        seekOriginTime = heldTarget == nil ? currentTime : clampedTarget
+        seekTargetTime = shownTarget
+        currentTime = shownTarget
         sourceWatch.seekCommitted(to: clampedTarget)
-        scrubPreviewTime = clampedTarget
+        scrubPreviewTime = shownTarget
         isScrubbing = false
         scrubPreviewProvider.endInteraction()
 
@@ -6453,7 +6467,7 @@ class PlayerViewModel {
             }
         }
 
-        armSeekFilterTimeout()
+        armSeekFilterTimeout(restoringRoomPosition: heldTarget != nil)
         // Playback ticks stop while paused, so a seek out of (or back into)
         // the intro has to reach the pill here rather than on the next tick.
         // Last, after this seek is fully issued: a seek into an unresolved
@@ -6807,10 +6821,6 @@ class PlayerViewModel {
         scheduleHideControls()
     }
 
-    /// Abandon an in-progress scrub without seeking. Used when the user
-    /// transitions focus away from the scrubber for a reason that's not a
-    /// commit — most commonly, opening a sheet — so the scrub preview
-    /// doesn't become an accidental seek.
     /// Lets playback ticks through again if the seek never arrives. A held
     /// room request the room never ran (dropped while disconnected or not yet
     /// attached) also puts the timeline back on the engine's position: ticks
@@ -6823,6 +6833,7 @@ class PlayerViewModel {
             guard !Task.isCancelled, let self else { return }
             self.seekOriginTime = nil
             self.seekTargetTime = nil
+            self.watchPartyHeldSeek = nil
             self.seekFilterTimeoutTask = nil
             if restoringRoomPosition, self.isWatchPartyPlayback, !self.isScrubbing {
                 self.currentTime = self.watchPartyPlaybackSnapshot.sourceTime
@@ -6831,6 +6842,10 @@ class PlayerViewModel {
         }
     }
 
+    /// Abandon an in-progress scrub without seeking. Used when the user
+    /// transitions focus away from the scrubber for a reason that's not a
+    /// commit — most commonly, opening a sheet — so the scrub preview
+    /// doesn't become an accidental seek.
     func cancelScrub() {
         guard isScrubbing else { return }
         skipDebounceTask?.cancel()

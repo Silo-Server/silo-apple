@@ -124,6 +124,22 @@ enum WatchPartySeekOrigin: Equatable {
     case correctionLoad
 }
 
+/// A seek this member asked the room for, held on the timeline until the room
+/// runs it. In a burst of skips the room's seeks for the earlier skips land
+/// first: they move the engine but leave the newest request on the timeline,
+/// so the next skip still builds on it. Mirrors Android's pending seek.
+enum WatchPartyHeldSeek {
+    /// A room seek this close to the held request answers it. The server
+    /// folds a repeat seek this close to its waiting seek into that seek.
+    static let match: Double = 1
+
+    /// The request still held after the room's seek to `commanded` runs.
+    static func remaining(_ held: Double?, afterRoomSeekTo commanded: Double) -> Double? {
+        guard let held, held.isFinite, commanded.isFinite, abs(held - commanded) > match else { return nil }
+        return held
+    }
+}
+
 /// Correction-driven media loads, matching the web client. A correction whose
 /// target is not buffered has to load media and lands late by its load time;
 /// with a load on every correction a slow viewer chases the advancing room
