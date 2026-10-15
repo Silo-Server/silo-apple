@@ -844,8 +844,8 @@ class PlayerViewModel {
     @ObservationIgnored
     private var sourceWatch = PlaybackSourceWatch()
     /// Where the last reconnect after an early end of stream resumed, until a
-    /// load other than a reconnect starts. A server-produced stream that ends
-    /// there again is ending where its media does
+    /// load or replan other than a reconnect starts. A server-produced stream
+    /// that ends there again is ending where its media does
     /// (`PlaybackReconnectPolicy.endOfStreamReconnectPosition`).
     @ObservationIgnored
     private var lastEndReconnect: Double?
@@ -2330,6 +2330,11 @@ class PlayerViewModel {
             && (resolvedOperation == PlaybackProtocolV3.ReplanOperation.failureRecovery
                 || resolvedOperation == PlaybackProtocolV3.ReplanOperation.seekReanchor)
         let playIntentAtRequest = aetherPlaybackController.shouldPlayWhenReady
+        // A quality, track or seek replan is a fresh look at the stream; only
+        // the reconnect's own replan keeps where the last one resumed.
+        if classification != PlaybackReconnectPolicy.classification {
+            lastEndReconnect = nil
+        }
         progressTask?.cancel()
         isLoading = true
         isBuffering = false
@@ -4369,8 +4374,9 @@ class PlayerViewModel {
         // treating that as a natural end would trigger autoplay against the
         // same dead network that just dropped us.
         // While the source was failing the clock may have run on without a
-        // frame; the position the stream last played from decides.
-        let sourceFailing = sourceWatch.isStalled || isServerUnreachable
+        // frame; the position the stream last played from decides. A finish
+        // the player made itself ends at the clock it set.
+        let sourceFailing = sourceEnded && (sourceWatch.isStalled || isServerUnreachable)
         let observedPosition = sourceFailing ? sourcePlayhead : currentTime
         let safeDuration = duration
         let isPremature = observedPosition > 0
