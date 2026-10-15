@@ -1531,13 +1531,15 @@ class PlayerViewModel {
                 return
             }
             if let origin = seekOriginTime, let target = seekTargetTime {
-                if abs(movieTime - origin) < abs(movieTime - target) {
+                // A held room request is released only by the room's seek to
+                // it or the timeout: playback from an earlier room seek in the
+                // burst can cross the midpoint before that seek arrives.
+                if watchPartyHeldSeek != nil || abs(movieTime - origin) < abs(movieTime - target) {
                     pushNowPlayingIfDue()
                     return
                 }
                 seekOriginTime = nil
                 seekTargetTime = nil
-                watchPartyHeldSeek = nil
                 seekFilterTimeoutTask?.cancel()
                 seekFilterTimeoutTask = nil
             }
