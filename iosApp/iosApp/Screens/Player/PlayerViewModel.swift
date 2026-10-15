@@ -1537,8 +1537,8 @@ class PlayerViewModel {
                 return
             }
             if let origin = seekOriginTime, let target = seekTargetTime {
-                // A held room request is released only by the room's seek to
-                // it or the timeout: playback from an earlier room seek in the
+                // A held room request is released by the room's seek to it,
+                // not by ticks: playback from an earlier room seek in the
                 // burst can cross the midpoint before that seek arrives.
                 if watchPartyHeldSeek != nil || Self.isStaleSeekTick(movieTime, origin: origin, target: target) {
                     pushNowPlayingIfDue()
@@ -6835,8 +6835,8 @@ class PlayerViewModel {
     }
 
     /// Lets playback ticks through again if the seek never arrives. A held
-    /// room request the room never ran (dropped while disconnected or not yet
-    /// attached) also puts the timeline back on the engine's position: ticks
+    /// room request the room never answered (refused, or lost in flight)
+    /// also puts the timeline back on the engine's position: ticks
     /// behind the held target would be filtered out as stale, and a paused
     /// member sends none.
     private func armSeekFilterTimeout(restoringRoomPosition: Bool = false) {
@@ -9575,6 +9575,30 @@ extension PlayerViewModel {
     func cancelWatchPartyCorrection() {
         watchPartyCorrectionRate = 1
         syncWatchPartyRate()
+    }
+
+    func noteWatchPartyRoomSeekArrived(at position: Double) {
+        guard watchPartyHeldSeek?.isAnswered(byRoomSeekTo: position) == true else { return }
+        watchPartyHeldSeek?.seekArrived = true
+    }
+
+    func watchPartyRoomCommandStarts(seekingTo position: Double?) {
+        guard watchPartyHeldSeek?.isReleased(byCommandSeekingTo: position) == true else { return }
+        releaseWatchPartyHeldSeek()
+    }
+
+    /// Ends a held seek request the room will not run and puts the timeline
+    /// back on the engine, as the seek filter's timeout would.
+    func releaseWatchPartyHeldSeek() {
+        guard watchPartyHeldSeek != nil else { return }
+        watchPartyHeldSeek = nil
+        seekOriginTime = nil
+        seekTargetTime = nil
+        seekFilterTimeoutTask?.cancel()
+        seekFilterTimeoutTask = nil
+        guard isWatchPartyPlayback, !isScrubbing else { return }
+        currentTime = watchPartyPlaybackSnapshot.sourceTime
+        scrubPreviewTime = currentTime
     }
 
     /// Hands the member's rate to Aether while it plays. Setting a rate on a

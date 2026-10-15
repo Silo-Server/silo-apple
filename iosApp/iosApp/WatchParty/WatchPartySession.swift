@@ -405,12 +405,15 @@ final class WatchPartySession {
         isLoadingMemberState = false
         socket?.close(); socket = nil
         adapter?.cancelCorrection()
+        adapter?.releaseHeldSeek()
         attachmentConfirmed = false
         applyingCommand = nil
     }
 
     /// Drops queued and in-flight transport commands and the attach handshake.
+    /// A held seek request waits on a command dropped here, so it ends too.
     private func resetCommandState() {
+        adapter?.releaseHeldSeek()
         commandTask?.cancel()
         commandTask = nil
         applyingCommand = nil
@@ -478,6 +481,8 @@ final class WatchPartySession {
                 self.reportTask?.cancel()
                 self.commandTask?.cancel()
                 self.adapter?.cancelCorrection()
+                // The room's seek for a held request may never arrive now.
+                self.adapter?.releaseHeldSeek()
                 self.attachmentConfirmed = false
                 // The server ends every room socket at its connection deadline
                 // (five minutes, or sooner when the bearer expires). A socket
@@ -519,6 +524,7 @@ final class WatchPartySession {
         case .snapshot(let room): accept(room)
         case .transport(let command):
             guard let room, commands.receive(command, room: room, sessionId: adapter?.snapshot.sessionId) else { return }
+            if command.action == .seek { adapter?.roomSeekArrived(at: command.positionSeconds) }
             // A rate nudge keeps running until the command executes; changing
             // the rate or play state on receipt would act a lead early.
             commandTask?.cancel()
@@ -684,6 +690,7 @@ final class WatchPartySession {
                 guard await self.validateIdentity(), !Task.isCancelled, owner == self.engagement, socketID == self.connectionID,
                       self.commands.pending?.commandId == command.commandId, self.playbackContext == context,
                       adapter.snapshot.sessionId == sessionID else { return }
+                adapter.roomCommandStarts(seekingTo: command.action == .seek ? command.positionSeconds : nil)
                 let target = WatchPartyCommandState.projectedPosition(command, serverNow: Date().addingTimeInterval(self.serverOffset))
                 if command.playbackState != .playing { _ = try await adapter.apply(.pause) }
                 // An explicit seek enters the waiting barrier and must always

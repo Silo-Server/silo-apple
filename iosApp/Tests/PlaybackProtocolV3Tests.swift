@@ -1730,6 +1730,44 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertNotEqual(player.progressReportPosition, 60)
     }
 
+    func testWatchPartyHeldSeekEndsWhenItsRoomSeekIsReplacedOrTheConnectionDrops() {
+        let player = PlayerViewModel()
+        let adapter = WatchPartyPlaybackAdapter(player: player)
+        defer { adapter.stop() }
+        adapter.prepare(WatchPartyPlaybackContext(
+            roomId: "room", selectionRevision: 1, contentId: "movie",
+            fileId: 42, libraryId: nil, startPosition: 0
+        ))
+        adapter.canSeek = true
+        adapter.onUserTransport = { _, _, _ in true }
+        player.currentTime = 23
+        player.duration = 600
+        let engine = player.watchPartyPlaybackSnapshot.sourceTime
+        player.seekTo(seconds: 50)
+        XCTAssertEqual(player.currentTime, 50)
+        // A correction the room sent before its seek leaves the request held,
+        // and so does the room's seek for an earlier skip in a burst.
+        adapter.roomCommandStarts(seekingTo: nil)
+        adapter.roomSeekArrived(at: 30)
+        adapter.roomCommandStarts(seekingTo: 30)
+        adapter.roomCommandStarts(seekingTo: nil)
+        XCTAssertEqual(player.currentTime, 50)
+        // The room's seek to 50 arrives. When it runs it answers the request.
+        adapter.roomSeekArrived(at: 50)
+        adapter.roomCommandStarts(seekingTo: 50)
+        XCTAssertEqual(player.currentTime, 50)
+        // The host pauses before that seek runs: the pause replaces it, so
+        // the seek never runs here and the timeline returns to the engine.
+        adapter.roomCommandStarts(seekingTo: nil)
+        XCTAssertEqual(player.currentTime, engine)
+        XCTAssertEqual(player.progressReportPosition, engine)
+        // A lost connection releases a held request too.
+        player.seekTo(seconds: 80)
+        XCTAssertEqual(player.currentTime, 80)
+        adapter.releaseHeldSeek()
+        XCTAssertEqual(player.currentTime, engine)
+    }
+
     func testWatchPartySeekRequestTheSessionDropsDoesNotHoldTheTimeline() async throws {
         let player = PlayerViewModel()
         let adapter = WatchPartyPlaybackAdapter(player: player)

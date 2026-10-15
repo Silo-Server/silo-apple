@@ -220,6 +220,19 @@ final class WatchPartyCatchupTests: XCTestCase {
         XCTAssertEqual(unheld.origin, 40)
     }
 
+    func testANewerCommandReleasesAHeldRequestOnlyAfterItsRoomSeekArrived() {
+        var held = WatchPartyHeldSeek(target: 130, origin: 23)
+        // A command the room sent before its seek, such as a correction.
+        XCTAssertFalse(held.isReleased(byCommandSeekingTo: nil))
+        XCTAssertFalse(held.isReleased(byCommandSeekingTo: 110))
+        held.seekArrived = true
+        // The seek itself runs and answers the request.
+        XCTAssertFalse(held.isReleased(byCommandSeekingTo: 130.5))
+        // Any other command replaced that seek before it ran.
+        XCTAssertTrue(held.isReleased(byCommandSeekingTo: nil))
+        XCTAssertTrue(held.isReleased(byCommandSeekingTo: 110))
+    }
+
     func testTheRoomSeekThatAnswersAHeldRequestStillRejectsTicksFromTheOldStream() {
         // The host asked for 120 while playing at 23, and the timeline shows
         // 120 already. The room's seek rebuilds the stream, whose first ticks

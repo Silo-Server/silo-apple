@@ -143,7 +143,9 @@ enum WatchPartySeekOrigin: Equatable {
 /// A seek this member asked the room for, held on the timeline until the room
 /// runs it. In a burst of skips the room's seeks for the earlier skips land
 /// first: they move the engine but leave the newest request on the timeline,
-/// so the next skip still builds on it. Mirrors Android's pending seek.
+/// so the next skip still builds on it. A newer command that replaces the
+/// room's seek before it runs, a disconnect, or a timeout releases the
+/// request instead. Mirrors Android's pending seek.
 struct WatchPartyHeldSeek: Equatable {
     /// A room seek this close to the held request answers it. The server
     /// folds a repeat seek this close to its waiting seek into that seek.
@@ -155,9 +157,21 @@ struct WatchPartyHeldSeek: Equatable {
     /// position at the request, or where an earlier room seek since sent it.
     /// Clock ticks from there are stale, also after that seek runs.
     var origin: Double
+    /// The room's seek to `target` has arrived and waits to run.
+    var seekArrived = false
 
     func isAnswered(byRoomSeekTo commanded: Double) -> Bool {
         target.isFinite && commanded.isFinite && abs(target - commanded) <= Self.match
+    }
+
+    /// Whether a room command starting now releases this request. Once the
+    /// room's seek to it has arrived, any other command that runs replaced
+    /// that seek, which will never run here. A command the room sent before
+    /// its seek, such as a correction, leaves the request held.
+    func isReleased(byCommandSeekingTo position: Double?) -> Bool {
+        guard seekArrived else { return false }
+        guard let position else { return true }
+        return !isAnswered(byRoomSeekTo: position)
     }
 
     /// The room's seek to `commanded` runs while the timeline shows
@@ -354,6 +368,16 @@ final class WatchPartyPlaybackAdapter {
     }
 
     func cancelCorrection() { player?.cancelWatchPartyCorrection() }
+
+    /// The room's seek to `position` arrived; it runs a lead later.
+    func roomSeekArrived(at position: Double) { player?.noteWatchPartyRoomSeekArrived(at: position) }
+
+    /// A room command starts to run; `position` is its target when it seeks.
+    func roomCommandStarts(seekingTo position: Double?) { player?.watchPartyRoomCommandStarts(seekingTo: position) }
+
+    /// The room will not run this member's held seek request: the
+    /// connection ended or its commands were dropped.
+    func releaseHeldSeek() { player?.releaseWatchPartyHeldSeek() }
 
     /// Converges a playing member on the room by playback rate; never seeks.
     func nudge(drift: Double) { player?.nudgeWatchPartyPlayback(drift: drift) }
