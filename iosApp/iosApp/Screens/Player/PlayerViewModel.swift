@@ -1164,6 +1164,9 @@ class PlayerViewModel {
 
     private static let autoplayStartSessionTimeout: TimeInterval = 15
     private var lastLoadRequest: LoadRequest?
+    /// The local route the stream on screen was loaded over (`LocalRoute`),
+    /// or nil when it came from the saved address.
+    private var streamLocalRoute: LocalRoute?
     private static let nextUpCountdownDefaultSeconds = 10
     private static let nextUpHUDCountdownThresholdSeconds: Double = 100
     private static let nearEndPlaybackErrorThresholdSeconds: Double = 8
@@ -3525,6 +3528,7 @@ class PlayerViewModel {
         shouldPlayWhenReady: Bool
     ) async throws {
         try requireCurrentStreamLoad(expectedStreamLoadGeneration)
+        streamLocalRoute = nil
         let preferredSubtitles = subtitleOrderingLanguage.map { [$0] } ?? []
         let preferredAudio = AetherInitialAudioPreference.languages(
             selectedOrdinal: prepared.protocolV3?.plan.selectedTracks.audio?.index,
@@ -3584,6 +3588,7 @@ class PlayerViewModel {
             let streamRequest = resolvesRequestCredentials && !isWatchPartyPlayback
                 ? streamRequest.routed(over: LocalRoute.active)
                 : streamRequest
+            streamLocalRoute = streamRequest.localRoute
             let audioSourceStreamIndex: Int32?
             let selectedAudioOrdinal = v3.plan.selectedTracks.audio?.index
             let catalogAudioTracks = prepared.selectedVersion.audioTracks ?? []
@@ -5595,10 +5600,15 @@ class PlayerViewModel {
         sourceWatch.playhead(currentTime: currentTime)
     }
 
-    /// The app's own requests could not reach the server either.
+    /// The app's own requests could not reach the server either, or the
+    /// stream came over the local route, whose address stops leading to the
+    /// server once the device leaves the network. A stream on the local route
+    /// that dies is therefore reconnected first; the reconnect drops the
+    /// route and loads from the saved address, where a genuine failure meets
+    /// the ordinary recovery.
     private var isServerUnreachable: Bool {
         let monitor = ConnectionMonitor.shared
-        return !monitor.isDeviceOnline || monitor.serverStatus == .unreachable
+        return !monitor.isDeviceOnline || monitor.serverStatus == .unreachable || streamLocalRoute != nil
     }
 
     /// Starts a reconnect, or joins the one already running. Returns false
@@ -5616,6 +5626,9 @@ class PlayerViewModel {
             return false
         }
         if reconnectCycle.isActive { return true }
+        if let streamLocalRoute {
+            LocalRouteController.reportFailure(of: streamLocalRoute)
+        }
         // Taken while the viewer's selection is still published. After a
         // give-up the session is torn down, so Try again reuses it.
         if activePreparedProtocolV3 != nil || reconnectLoadRequest == nil {
