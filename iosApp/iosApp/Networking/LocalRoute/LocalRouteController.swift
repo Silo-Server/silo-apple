@@ -463,7 +463,7 @@ extension LocalRouteController.Environment {
                   auth.account.serverId == server.id,
                   ServerRegistry.normalize(url: auth.account.serverURL) == server.savedURL,
                   let bearer = auth.accessToken else { return nil }
-            return await ServerIdentityResolver().fetchConnections(serverURL: server.savedURL, bearer: bearer)
+            return await LocalRouteProbe.connections(origin: server.savedOrigin, bearer: bearer)
         },
         probe: { origin, pin, identity in
             await LocalRouteProbe.confirms(origin: origin, pin: pin, identity: identity)
@@ -484,6 +484,29 @@ extension LocalRouteController.Environment {
 /// One candidate check: TLS that presents the pinned key, no redirects, and
 /// the server's identity in `GET /api/v2/system/identity`.
 enum LocalRouteProbe {
+    /// The connections document from the saved HTTPS address, where the pin
+    /// is learned. Follows no redirect: one to another address, or to plain
+    /// HTTP, would let whoever answers there hand over their own pin.
+    static func connections(
+        origin: String,
+        bearer: String,
+        configuration: URLSessionConfiguration = .ephemeral
+    ) async -> ServerConnectionsDocument? {
+        guard let url = URL(string: origin + ServerIdentity.connectionsPath) else { return nil }
+        var request = URLRequest(url: url, timeoutInterval: ServerIdentity.probeTimeout)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
+        configuration.urlCache = nil
+        let session = URLSession(configuration: configuration, delegate: RedirectRefusingDelegate(), delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+        guard let (data, response) = try? await session.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let document = try? HTTPClient.makeJSONDecoder().decode(ServerConnectionsDocument.self, from: data),
+              document.isAvailable
+        else { return nil }
+        return document
+    }
+
     static func confirms(origin: String, pin: String, identity: String) async -> Bool {
         guard let url = URL(string: origin + ServerIdentity.identityPath) else { return false }
         let configuration = URLSessionConfiguration.ephemeral
@@ -522,9 +545,22 @@ enum LocalRouteProbe {
     }
 }
 
+/// Follows no redirect: the answer has to come from the address asked.
+private class RedirectRefusingDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        completionHandler(nil)
+    }
+}
+
 /// Trusts exactly the pinned key and follows no redirect: a candidate that
 /// sends the probe elsewhere is not the server.
-private final class PinnedProbeDelegate: NSObject, URLSessionTaskDelegate, Sendable {
+private final class PinnedProbeDelegate: RedirectRefusingDelegate {
     let pin: String
 
     init(pin: String) {
@@ -547,15 +583,5 @@ private final class PinnedProbeDelegate: NSObject, URLSessionTaskDelegate, Senda
             return
         }
         completionHandler(.useCredential, URLCredential(trust: trust))
-    }
-
-    func urlSession(
-        _ session: URLSession,
-        task: URLSessionTask,
-        willPerformHTTPRedirection response: HTTPURLResponse,
-        newRequest request: URLRequest,
-        completionHandler: @escaping (URLRequest?) -> Void
-    ) {
-        completionHandler(nil)
     }
 }

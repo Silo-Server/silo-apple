@@ -334,6 +334,45 @@ final class LocalRouteTests: XCTestCase {
 
         XCTAssertEqual(stub.requests.map { $0.url?.host }, ["local-route-tests.example"])
     }
+
+    // MARK: - Learning the pin
+
+    func testThePinIsReadWithTheSavedAddresssBearer() async throws {
+        let stub = StubURLProtocol.Handler()
+        stub.route(StubURLProtocol.method("GET", path: ServerIdentity.connectionsPath)) { _ in
+            .json(Self.connectionsJSON(pin: "pin"))
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        stub.install(into: configuration)
+
+        let document = await LocalRouteProbe.connections(origin: savedOrigin, bearer: "token", configuration: configuration)
+
+        XCTAssertEqual(document?.localRoute?.spkiSha256, "pin")
+        XCTAssertEqual(stub.requests.map { $0.header("Authorization") }, ["Bearer token"])
+    }
+
+    func testAPinBehindARedirectIsNotLearned() async throws {
+        let stub = StubURLProtocol.Handler()
+        let elsewhere = try XCTUnwrap(URL(string: "http://192.168.1.20:8080" + ServerIdentity.connectionsPath))
+        stub.route(StubURLProtocol.path(ServerIdentity.connectionsPath)) { request in
+            request.url?.scheme == "https" ? .redirect(to: elsewhere) : .json(Self.connectionsJSON(pin: "elsewhere"))
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        stub.install(into: configuration)
+
+        let document = await LocalRouteProbe.connections(origin: savedOrigin, bearer: "token", configuration: configuration)
+
+        XCTAssertNil(document)
+        XCTAssertEqual(stub.requests.map { $0.url?.host }, ["local-route-tests.example"])
+        // An ordinary session follows the same redirect.
+        let saved = try XCTUnwrap(URL(string: savedOrigin + ServerIdentity.connectionsPath))
+        let (_, followed) = try await URLSession(configuration: configuration).data(from: saved)
+        XCTAssertEqual(followed.url, elsewhere)
+    }
+
+    private static func connectionsJSON(pin: String) -> String {
+        #"{"state":"available","allowed":true,"server_id":"deployment","endpoints":[],"local_route":{"spki_sha256":"\#(pin)"}}"#
+    }
 }
 
 /// When `LocalRouteController` turns the route on and off.

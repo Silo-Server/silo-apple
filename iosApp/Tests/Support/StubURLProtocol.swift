@@ -37,6 +37,9 @@ import Foundation
 //   common "await the request that matches" helper.
 // - A request no route matches is answered with HTTP 599 and a body naming
 //   the method and path, recorded in `unmatched`, and never left hanging.
+// - `Response.redirect(to:)` redirects the way a server would: the session
+//   asks its delegate, then sends the request on to the new URL (answered by
+//   the same handler) or, refused, completes with the redirect itself.
 //
 // Sessions
 //
@@ -102,11 +105,18 @@ final class StubURLProtocol: URLProtocol {
         var status: Int
         var headers: [String: String]
         var body: Data
+        var redirectLocation: URL?
 
         init(status: Int, headers: [String: String] = [:], body: Data = Data()) {
             self.status = status
             self.headers = headers
             self.body = body
+        }
+
+        static func redirect(to location: URL, status: Int = 302) -> Response {
+            var response = Response(status: status, headers: ["Location": location.absoluteString])
+            response.redirectLocation = location
+            return response
         }
 
         static func json(_ body: String, status: Int = 200, headers: [String: String] = [:]) -> Response {
@@ -443,6 +453,12 @@ final class StubURLProtocol: URLProtocol {
         ) else {
             client.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
             return
+        }
+        if let location = response.redirectLocation {
+            // The request keeps its headers, the handler marker among them.
+            var redirected = request
+            redirected.url = location
+            client.urlProtocol(self, wasRedirectedTo: redirected, redirectResponse: httpResponse)
         }
         client.urlProtocol(self, didReceive: httpResponse, cacheStoragePolicy: .notAllowed)
         if !response.body.isEmpty {
