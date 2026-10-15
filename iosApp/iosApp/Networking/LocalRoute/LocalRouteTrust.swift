@@ -20,8 +20,12 @@ enum LocalRouteTrust {
     }
 
     /// Forget every pinned address, when the active server or its key changes.
+    /// The playback engine goes back to the system's handling everywhere.
     static func removeAll() {
         pins.withLock { $0.removeAll() }
+        #if canImport(AetherEngine)
+        EngineTLS.serverTrustEvaluator = nil
+        #endif
     }
 
     /// Nil when `space` is not a pinned address (leave it to the system);
@@ -67,22 +71,9 @@ enum LocalRouteTrust {
     static func spkiPin(of key: SecKey) -> String? {
         guard let attributes = SecKeyCopyAttributes(key) as? [CFString: Any],
               attributes[kSecAttrKeyType] as? String == kSecAttrKeyTypeECSECPrimeRandom as String,
-              (attributes[kSecAttrKeySizeInBits] as? Int) == 256,
               let point = SecKeyCopyExternalRepresentation(key, nil) as Data?,
-              point.count == 65 else { return nil }
-        return spkiPin(ofUncompressedP256Point: point)
-    }
-
-    /// The DER SubjectPublicKeyInfo of a P-256 key is this fixed header
-    /// (id-ecPublicKey, prime256v1, a 66-byte bit string) followed by the
-    /// uncompressed point.
-    static func spkiPin(ofUncompressedP256Point point: Data) -> String {
-        let header: [UInt8] = [
-            0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01,
-            0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07, 0x03, 0x42, 0x00,
-        ]
-        let digest = SHA256.hash(data: Data(header) + point)
-        return Data(digest).base64EncodedString()
+              let publicKey = try? P256.Signing.PublicKey(x963Representation: point) else { return nil }
+        return Data(SHA256.hash(data: publicKey.derRepresentation)).base64EncodedString()
     }
 
     private static func key(forOrigin origin: String) -> String? {
@@ -123,7 +114,10 @@ extension LocalRouteTrust {
     /// Lets the playback engine's own sessions reach the local route: Aether
     /// asks once per challenge whether to accept a certificate that failed
     /// system trust. Only a pinned address presenting its pinned key is
-    /// accepted; everything else keeps the system's answer.
+    /// accepted; everything else keeps the system's answer. Installed only
+    /// once a route is in use: with any evaluator set, Aether checks system
+    /// trust before each HTTPS stream it loads without per-request
+    /// authorization.
     static func installEngineEvaluator() {
         EngineTLS.serverTrustEvaluator = { space in
             switch evaluate(space) {

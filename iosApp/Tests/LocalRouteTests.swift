@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Nuke
 import Security
 import XCTest
 @testable import Silo
@@ -81,11 +82,24 @@ final class LocalRouteTests: XCTestCase {
         XCTAssertFalse(LocalRoute.mayRetryOnSavedAddress(after: CocoaError(.fileNoSuchFile), method: "GET"))
     }
 
-    func testCancelledTasksSayNothingAboutTheRoute() {
-        XCTAssertTrue(LocalRoute.isRouteFailure(URLError(.timedOut), taskCancelled: false))
-        XCTAssertTrue(LocalRoute.isRouteFailure(URLError(.cancelled), taskCancelled: false))
-        XCTAssertFalse(LocalRoute.isRouteFailure(URLError(.cancelled), taskCancelled: true))
-        XCTAssertFalse(LocalRoute.isRouteFailure(CancellationError(), taskCancelled: false))
+    func testOnlyConnectionFailuresSayTheRouteStoppedWorking() {
+        XCTAssertTrue(LocalRoute.isRouteFailure(URLError(.timedOut)))
+        XCTAssertTrue(LocalRoute.isRouteFailure(URLError(.cannotConnectToHost)))
+        XCTAssertTrue(LocalRoute.isRouteFailure(URLError(.networkConnectionLost)))
+        // An identity change cancels every task; a refused key is reported by
+        // the trust check itself.
+        XCTAssertFalse(LocalRoute.isRouteFailure(URLError(.cancelled)))
+        XCTAssertFalse(LocalRoute.isRouteFailure(CancellationError()))
+        XCTAssertFalse(LocalRoute.isRouteFailure(URLError(.badServerResponse)))
+    }
+
+    func testDroppingTakesOnlyTheRouteThatFailed() {
+        let current = route(generation: 2)
+        LocalRoute.publish(current)
+        LocalRoute.drop(route(generation: 1))
+        XCTAssertEqual(LocalRoute.active, current)
+        LocalRoute.drop(current)
+        XCTAssertNil(LocalRoute.active)
     }
 
     // MARK: - Pins
@@ -102,18 +116,22 @@ final class LocalRouteTests: XCTestCase {
         """
     private static let certificatePin = "mQuI10m45NjfkRTAse2d3Yh1LRWZ1fvUpC1L5I7+YNM="
 
-    func testPinOfAPresentedCertificateMatchesTheServerForm() throws {
+    func testPinOfAPresentedCertificateMatchesTheServerForm() async throws {
         let der = try XCTUnwrap(Data(base64Encoded: Self.certificateDER))
-        let certificate = try XCTUnwrap(SecCertificateCreateWithData(nil, der as CFData))
-        var trust: SecTrust?
-        XCTAssertEqual(SecTrustCreateWithCertificates(certificate, SecPolicyCreateSSL(true, nil), &trust), errSecSuccess)
-        XCTAssertEqual(LocalRouteTrust.spkiPin(of: try XCTUnwrap(trust)), Self.certificatePin)
+        // Off the main thread, as URLSession asks: trust APIs warn there.
+        let pin = await Task.detached { () -> String? in
+            guard let certificate = SecCertificateCreateWithData(nil, der as CFData) else { return nil }
+            var trust: SecTrust?
+            guard SecTrustCreateWithCertificates(certificate, SecPolicyCreateSSL(true, nil), &trust) == errSecSuccess,
+                  let trust else { return nil }
+            return LocalRouteTrust.spkiPin(of: trust)
+        }.value
+        XCTAssertEqual(pin, Self.certificatePin)
     }
 
     func testPinOfAKeyIsTheHashOfItsSubjectPublicKeyInfo() throws {
         let key = P256.Signing.PrivateKey().publicKey
         let expected = Data(SHA256.hash(data: key.derRepresentation)).base64EncodedString()
-        XCTAssertEqual(LocalRouteTrust.spkiPin(ofUncompressedP256Point: key.x963Representation), expected)
 
         let attributes: [CFString: Any] = [
             kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
@@ -193,6 +211,100 @@ final class LocalRouteTests: XCTestCase {
         }
         XCTAssertEqual(stub.requests.count, 1)
     }
+
+    func testSignInStaysOnTheSavedAddress() async throws {
+        let stub = StubURLProtocol.Handler()
+        stub.route(StubURLProtocol.method("POST", path: "/api/v2/auth/device/start")) { _ in .json("{}") }
+        let http = try await makeClient(stub)
+        LocalRoute.publish(route())
+
+        _ = try await http.requestData(method: "POST", path: "/api/v2/auth/device/start", body: Data("{}".utf8))
+
+        XCTAssertEqual(stub.requests.map { $0.url?.host }, ["local-route-tests.example"],
+                       "the server builds verification links from the origin a sign-in arrives on")
+    }
+
+    func testTheHealthCheckFollowsTheRoute() async throws {
+        let stub = StubURLProtocol.Handler()
+        stub.route(StubURLProtocol.method("GET", path: ServerIdentity.identityPath)) { _ in .json(#"{"server_id":"id"}"#) }
+        let http = try await makeClient(stub)
+        LocalRoute.publish(route())
+
+        let _: ServerIdentityDocument = try await http.getUnauthenticatedFromActiveServer(ServerIdentity.identityPath)
+
+        XCTAssertEqual(stub.requests.map { $0.url?.host }, ["192.168.1.20"],
+                       "reachability describes the server every other request goes to")
+    }
+
+    func testArtworkLoadsOverTheRouteUnderTheSavedAddress() async throws {
+        let stub = StubURLProtocol.Handler()
+        stub.route(StubURLProtocol.any) { _ in .init(status: 200, headers: ["Content-Type": "image/png"], body: Data([1, 2, 3])) }
+        let configuration = URLSessionConfiguration.ephemeral
+        stub.install(into: configuration)
+        let loader = LocalRouteDataLoader(loader: DataLoader(configuration: configuration))
+        LocalRoute.publish(route())
+        let request = URLRequest(url: try XCTUnwrap(URL(string: savedOrigin + "/api/v2/artwork/poster.png")))
+
+        let responses = ResponseLog()
+        let error: Error? = await withCheckedContinuation { continuation in
+            _ = loader.loadData(
+                with: request,
+                didReceiveData: { _, response in responses.append(response) },
+                completion: { continuation.resume(returning: $0) }
+            )
+        }
+
+        XCTAssertNil(error)
+        XCTAssertEqual(stub.requests.map { $0.url?.host }, ["192.168.1.20"])
+        XCTAssertEqual(responses.urls, [savedOrigin + "/api/v2/artwork/poster.png"])
+    }
+
+    // MARK: - Playback
+
+    private func owner(serverID: String = "server", serverURL: String? = nil) -> CapturedOrdinaryRequestAuth {
+        CapturedOrdinaryRequestAuth(
+            account: RefreshAccountIdentity(serverId: serverID, serverURL: serverURL ?? savedOrigin, credentialGenerationID: UUID()),
+            credentialOwner: .persistentServer(serverId: serverID),
+            accessToken: "token", profileId: nil, profileToken: nil
+        )
+    }
+
+    func testOnlyTheOwnersSavedOriginMediaMovesToTheRoute() throws {
+        let media = try XCTUnwrap(URL(string: savedOrigin + "/api/v2/stream/session-one?seek=12"))
+        let request = StreamRequest(url: media, headers: ["Authorization": "Bearer token"], serverUrl: savedOrigin, capturedAuth: owner())
+
+        let routed = request.routed(over: route())
+        XCTAssertEqual(routed.url.absoluteString, localOrigin + "/api/v2/stream/session-one?seek=12")
+        XCTAssertEqual(routed.serverUrl, savedOrigin, "subtitles, fonts and the credentials stay on the saved address")
+        XCTAssertEqual(routed.headers, request.headers)
+        XCTAssertEqual(routed.localRoute, route())
+
+        let proxy = StreamRequest(url: try XCTUnwrap(URL(string: "https://proxy.example/stream/v3/session-one")),
+                                  headers: [:], serverUrl: savedOrigin, capturedAuth: owner())
+        XCTAssertEqual(proxy.routed(over: route()).url, proxy.url, "a proxy node's origin is not the saved address")
+        let otherServer = StreamRequest(url: media, headers: [:], serverUrl: savedOrigin, capturedAuth: owner(serverID: "other"))
+        XCTAssertNil(otherServer.routed(over: route()).localRoute)
+        XCTAssertNil(request.routed(over: nil).localRoute)
+    }
+
+    #if canImport(AetherEngine)
+    func testRoutedMediaIsScopedToTheRouteButOwnedByTheSavedAddress() throws {
+        let media = try XCTUnwrap(URL(string: localOrigin + "/api/v2/stream/session-one"))
+        XCTAssertNoThrow(try PlaybackMediaAuthorization.make(
+            sourceURL: media, serverURL: savedOrigin, transportServerURL: localOrigin, sessionID: "session-one",
+            expectedAuth: owner(), baseHeaders: [:], http: HTTPClient(session: URLSession(configuration: .ephemeral))))
+        XCTAssertThrowsError(try PlaybackMediaAuthorization.make(
+            sourceURL: media, serverURL: savedOrigin, sessionID: "session-one",
+            expectedAuth: owner(), baseHeaders: [:], http: HTTPClient(session: URLSession(configuration: .ephemeral))),
+            "without the route, media on another origin is outside the session's scope")
+        XCTAssertThrowsError(try PlaybackMediaAuthorization.make(
+            sourceURL: media, serverURL: savedOrigin, transportServerURL: localOrigin, sessionID: "session-one",
+            expectedAuth: owner(serverURL: "https://elsewhere.example"), baseHeaders: [:],
+            http: HTTPClient(session: URLSession(configuration: .ephemeral)))) { error in
+            XCTAssertEqual(error as? PlaybackMediaAuthorization.ValidationError, .credentialOwnerMismatch)
+        }
+    }
+    #endif
 
     func testExplicitAddressReadsNeverTakeTheRoute() async throws {
         let stub = StubURLProtocol.Handler()
@@ -290,6 +402,53 @@ final class LocalRouteControllerTests: XCTestCase {
         controller.update(activeServer: entry(), isSignedIn: false)
         await controller.settle()
         XCTAssertNil(controller.activeLocalOrigin, "signed out")
+    }
+
+    func testAnyNetworkChangeDropsTheRouteUntilItChecksOutAgain() async throws {
+        let document = try connections(pin: pin)
+        let controller = makeController(document: { document }, confirms: { _ in true })
+        controller.update(activeServer: entry(), isSignedIn: true)
+        await controller.settle()
+        XCTAssertNotNil(LocalRoute.active)
+
+        controller.pathChanged(allowsLocal: true)
+        XCTAssertNil(LocalRoute.active, "the old address may lead somewhere else on the new network")
+
+        await controller.settle()
+        XCTAssertNotNil(LocalRoute.active)
+    }
+
+    func testAKnownKeyIsCheckedWithoutWaitingForTheSavedAddress() async throws {
+        let store = LocalRouteStore(defaultsKey: storeKey)
+        store.save(LocalRouteRecord(pin: pin, localURL: "http://192.168.1.20:8080"), for: "server")
+        let gate = AsyncStream<Void>.makeStream()
+        let document = try connections(pin: pin)
+        let controller = LocalRouteController(environment: .init(
+            fetchConnections: { _ in
+                for await _ in gate.stream { break }
+                return document
+            },
+            probe: { _, _, _ in true },
+            resolveIPv4: { _ in [] },
+            registerSensitiveHost: { _ in },
+            store: store,
+            startsSystemMonitors: false,
+            retryDelay: .seconds(3600),
+            connectionsRefreshInterval: 3600
+        ))
+
+        controller.update(activeServer: entry(), isSignedIn: true)
+        let deadline = Date().addingTimeInterval(5)
+        while controller.activeLocalOrigin == nil, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(controller.activeLocalOrigin, "https://192.168.1.20:8080",
+                       "the saved address had not answered yet")
+
+        gate.continuation.yield()
+        gate.continuation.finish()
+        await controller.settle()
+        XCTAssertEqual(controller.activeLocalOrigin, "https://192.168.1.20:8080")
     }
 
     func testLosingTheLANDropsTheRouteAtOnce() async throws {
@@ -393,5 +552,18 @@ private final class LockedBox<Value>: @unchecked Sendable {
     var value: Value {
         get { lock.withLock { stored } }
         set { lock.withLock { stored = newValue } }
+    }
+}
+
+private final class ResponseLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var responses: [URLResponse] = []
+
+    func append(_ response: URLResponse) {
+        lock.withLock { responses.append(response) }
+    }
+
+    var urls: [String] {
+        lock.withLock { Array(Set(responses.compactMap { $0.url?.absoluteString })) }
     }
 }

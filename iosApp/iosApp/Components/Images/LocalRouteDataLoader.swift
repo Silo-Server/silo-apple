@@ -3,8 +3,8 @@ import Nuke
 
 /// Loads artwork over the active server's local route (`LocalRoute`) when
 /// one is active. Image requests and their cache keys keep the saved address;
-/// only the transfer moves. A failure on the route drops it, and the
-/// artwork's own retry then loads from the saved address.
+/// only the transfer moves. A connection failure on the route drops it, and
+/// the artwork's own retry then loads from the saved address.
 final class LocalRouteDataLoader: DataLoading {
     private let loader: DataLoader
 
@@ -21,41 +21,38 @@ final class LocalRouteDataLoader: DataLoading {
         guard let route = LocalRoute.active, let routed = route.routed(request) else {
             return loader.loadData(with: request, didReceiveData: didReceiveData, completion: completion)
         }
-        let cancellation = LocalRouteCancellation()
-        let task = loader.loadData(
+        let relabeled = RelabeledResponse(route: route)
+        return loader.loadData(
             with: routed,
-            didReceiveData: { data, response in didReceiveData(data, route.relabeled(response)) },
+            didReceiveData: { data, response in didReceiveData(data, relabeled.saved(for: response)) },
             completion: { error in
-                if let error, LocalRoute.isRouteFailure(error, taskCancelled: cancellation.isCancelled) {
+                if let error, LocalRoute.isRouteFailure(error) {
                     LocalRouteController.reportFailure(of: route)
                 }
                 completion(error)
             }
         )
-        cancellation.task = task
-        return cancellation
     }
 }
 
-/// Tells a cancelled load from a refused TLS challenge, which also surfaces
-/// as a cancellation.
-private final class LocalRouteCancellation: Cancellable, @unchecked Sendable {
+/// Every chunk of one load carries the same response; relabel it once.
+private final class RelabeledResponse: @unchecked Sendable {
+    private let route: LocalRoute
     private let lock = NSLock()
-    private var cancelled = false
-    private var inner: (any Cancellable)?
+    private var original: URLResponse?
+    private var saved: URLResponse?
 
-    var task: (any Cancellable)? {
-        get { lock.withLock { inner } }
-        set { lock.withLock { inner = newValue } }
+    init(route: LocalRoute) {
+        self.route = route
     }
 
-    var isCancelled: Bool { lock.withLock { cancelled } }
-
-    func cancel() {
-        let task = lock.withLock { () -> (any Cancellable)? in
-            cancelled = true
-            return inner
+    func saved(for response: URLResponse) -> URLResponse {
+        lock.withLock {
+            if let saved, original === response { return saved }
+            let relabeled = route.relabeled(response)
+            original = response
+            saved = relabeled
+            return relabeled
         }
-        task?.cancel()
     }
 }

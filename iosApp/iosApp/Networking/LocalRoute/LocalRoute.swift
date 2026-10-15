@@ -31,6 +31,13 @@ struct LocalRoute: Sendable, Equatable {
         current.withLock { $0 = route }
     }
 
+    /// Takes `route` out of use at once if it is still the active one, so
+    /// requests sent from now on go to the saved address without waiting for
+    /// `LocalRouteController` to hear about the failure.
+    static func drop(_ route: LocalRoute) {
+        current.withLock { if $0?.generation == route.generation { $0 = nil } }
+    }
+
     /// `request` addressed to the local origin, or nil when it is not
     /// addressed to the saved origin.
     func routed(_ request: URLRequest) -> URLRequest? {
@@ -64,14 +71,20 @@ struct LocalRoute: Sendable, Equatable {
 
     // MARK: - Failures
 
-    /// Whether a failure on the local route says anything about the route.
-    /// A cancelled task does not; a cancelled challenge (the presented key
-    /// did not match the pin) does, so the caller passes whether its own task
-    /// was cancelled.
-    static func isRouteFailure(_ error: Error, taskCancelled: Bool) -> Bool {
-        if taskCancelled || error is CancellationError { return false }
-        return error is URLError
+    /// Whether a failure on the local route says the route stopped working:
+    /// the connection could not be made or was lost. A cancellation never
+    /// does, whoever cancelled; a presented key that did not match the pin
+    /// also surfaces as one, and `LocalRouteTrust` reports that itself.
+    static func isRouteFailure(_ error: Error) -> Bool {
+        guard let code = (error as? URLError)?.code else { return false }
+        return connectionFailureCodes.contains(code)
     }
+
+    private static let connectionFailureCodes: Set<URLError.Code> = [
+        .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed, .notConnectedToInternet,
+        .networkConnectionLost, .timedOut, .secureConnectionFailed, .cannotLoadFromNetwork,
+        .internationalRoamingOff, .callIsActive, .dataNotAllowed,
+    ]
 
     /// Whether a request that failed on the local route may be sent again to
     /// the saved address: always when it cannot have reached a server (the
@@ -94,19 +107,14 @@ struct LocalRoute: Sendable, Equatable {
 
     // MARK: - Origins
 
-    /// `scheme://host[:port]`, lowercased, without a default port. Nil for
-    /// anything but an http(s) URL with a host.
+    /// `scheme://host[:port]`, the form saved servers are compared in
+    /// (`NativeSignIn.origin(of:)`). Nil for anything but an http(s) URL.
     static func origin(of url: URL) -> String? {
-        guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
-              let host = url.host?.lowercased(), !host.isEmpty else { return nil }
-        let defaultPort = scheme == "https" ? 443 : 80
-        let hostPart = host.contains(":") ? "[\(host)]" : host
-        if let port = url.port, port != defaultPort { return "\(scheme)://\(hostPart):\(port)" }
-        return "\(scheme)://\(hostPart)"
+        NativeSignIn.origin(of: url)
     }
 
     static func origin(of string: String) -> String? {
-        URL(string: string.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { origin(of: $0) }
+        URL(string: string.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap(NativeSignIn.origin(of:))
     }
 
     /// The local-route origin for a server address on the local network:

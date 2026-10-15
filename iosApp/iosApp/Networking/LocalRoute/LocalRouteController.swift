@@ -85,19 +85,23 @@ final class LocalRouteController {
     /// otherwise. Settings show it as "Local network".
     private(set) var activeLocalOrigin: String?
 
-    private(set) var server: Server?
-    private var record: LocalRouteRecord?
-    private var generation: UInt64 = 0
-    private var isForeground = true
-    private var pathAllowsLocal: Bool
-    private var advertisedOrigins: [String: String] = [:]
-    private var lastConnectionsRefresh: Date?
-    private var evaluation: Task<Void, Never>?
-    private var retry: Task<Void, Never>?
-    private var pathMonitor: NWPathMonitor?
-    private var browser: NWBrowser?
-    private var browserGeneration = 0
-    private let environment: Environment
+    // Views read only `activeLocalOrigin`; the rest is bookkeeping.
+    @ObservationIgnored private var server: Server?
+    @ObservationIgnored private var record: LocalRouteRecord?
+    @ObservationIgnored private var generation: UInt64 = 0
+    @ObservationIgnored private var isForeground = true
+    @ObservationIgnored private var pathAllowsLocal: Bool
+    @ObservationIgnored private var pathSignature: String?
+    @ObservationIgnored private var advertisedOrigins: [String: String] = [:]
+    @ObservationIgnored private var lastConnectionsRefresh: Date?
+    @ObservationIgnored private var evaluation: Task<Void, Never>?
+    @ObservationIgnored private var retry: Task<Void, Never>?
+    @ObservationIgnored private var pathMonitor: NWPathMonitor?
+    @ObservationIgnored private var pathDebounce: Task<Void, Never>?
+    @ObservationIgnored private var browser: NWBrowser?
+    @ObservationIgnored private var browserGeneration = 0
+    @ObservationIgnored private var browseSequence = 0
+    @ObservationIgnored private let environment: Environment
 
     nonisolated static let probeTimeout: TimeInterval = 3
     private nonisolated static let logger = Logger(subsystem: "org.siloserver.silo", category: "local.route")
@@ -145,9 +149,11 @@ final class LocalRouteController {
         stopBrowser()
     }
 
-    /// A request on `route` failed at the connection level. Drops the route
-    /// if it is still the active one, and checks again shortly.
+    /// A request on `route` failed at the connection level. Takes the route
+    /// out of use at once if it is still the active one, and checks again
+    /// shortly.
     nonisolated static func reportFailure(of route: LocalRoute) {
+        LocalRoute.drop(route)
         Task { @MainActor in shared.routeFailed(route) }
     }
 
@@ -174,12 +180,13 @@ final class LocalRouteController {
         scheduleRetry()
     }
 
-    /// The device's network changed. Without a Wi-Fi, wired or other
-    /// non-cellular interface the route goes at once; otherwise it is
-    /// checked again.
+    /// The device's network changed. The route goes at once, since its
+    /// address may now lead somewhere else; with a Wi-Fi, wired or other
+    /// non-cellular interface it is checked again and comes back if the
+    /// server still answers there.
     func pathChanged(allowsLocal: Bool) {
         pathAllowsLocal = allowsLocal
-        if !allowsLocal { demote() }
+        demote()
         refresh()
     }
 
@@ -192,15 +199,21 @@ final class LocalRouteController {
 
     // MARK: - Evaluation
 
-    /// Re-reads the connections document when it is due and re-checks the
-    /// candidates. Runs one evaluation at a time; a newer one replaces it.
+    /// Re-checks the candidates and re-reads the connections document when it
+    /// is due. A known key is checked first: the saved address may be slow or
+    /// unreachable from home, which is when the local route helps most. Runs
+    /// one evaluation at a time; a newer one replaces it.
     func refresh() {
         guard let server, isForeground else { return }
         evaluation?.cancel()
         evaluation = Task { [weak self] in
-            await self?.refreshConnectionsIfDue(for: server)
+            guard let self else { return }
+            let checkedKnownKey = self.record != nil
+            if checkedKnownKey { await self.evaluate(for: server) }
             guard !Task.isCancelled else { return }
-            await self?.evaluate(for: server)
+            let changed = await self.refreshConnectionsIfDue(for: server)
+            guard !Task.isCancelled, !checkedKnownKey || changed else { return }
+            await self.evaluate(for: server)
         }
     }
 
@@ -209,16 +222,18 @@ final class LocalRouteController {
         await evaluation?.value
     }
 
-    private func refreshConnectionsIfDue(for server: Server) async {
+    /// Whether the record changed.
+    private func refreshConnectionsIfDue(for server: Server) async -> Bool {
         if let last = lastConnectionsRefresh,
-           Date().timeIntervalSince(last) < environment.connectionsRefreshInterval { return }
+           Date().timeIntervalSince(last) < environment.connectionsRefreshInterval { return false }
         guard let document = await environment.fetchConnections(server),
-              self.server == server, document.serverId == server.identity else { return }
+              self.server == server, document.serverId == server.identity else { return false }
         lastConnectionsRefresh = Date()
         guard let local = document.localRoute, !local.spkiSha256.isEmpty else {
             // The server does not offer a local route (an older server).
-            if record != nil { forgetRecord() }
-            return
+            guard record != nil else { return false }
+            forgetRecord()
+            return true
         }
         var next = record ?? LocalRouteRecord(pin: local.spkiSha256)
         if next.pin != local.spkiSha256 {
@@ -236,7 +251,9 @@ final class LocalRouteController {
             // Adverts are worth browsing for only once there is a key to
             // check them against.
             if isFirstPin { restartBrowser() }
+            return true
         }
+        return false
     }
 
     private func evaluate(for server: Server) async {
@@ -286,6 +303,9 @@ final class LocalRouteController {
         guard activeLocalOrigin != origin else { return }
         if let host = URL(string: origin)?.host { environment.registerSensitiveHost(host) }
         generation += 1
+        #if canImport(AetherEngine)
+        LocalRouteTrust.installEngineEvaluator()
+        #endif
         LocalRoute.publish(LocalRoute(
             serverID: server.id, savedOrigin: server.savedOrigin, localOrigin: origin, generation: generation))
         activeLocalOrigin = origin
@@ -348,37 +368,36 @@ final class LocalRouteController {
 
     private func startPathMonitor() {
         let monitor = NWPathMonitor()
-        monitor.pathUpdateHandler = { path in
+        monitor.pathUpdateHandler = { [weak self] path in
             let allows = path.status == .satisfied
                 && (path.usesInterfaceType(.wifi) || path.usesInterfaceType(.wiredEthernet)
                     || path.usesInterfaceType(.other))
-            Task { @MainActor in LocalRouteController.shared.pathChangedDebounced(allowsLocal: allows) }
+            let signature = "\(path.status)|" + path.availableInterfaces.map { "\($0.name):\($0.type)" }.joined(separator: ",")
+            Task { @MainActor [weak self] in self?.pathUpdated(allowsLocal: allows, signature: signature) }
         }
         monitor.start(queue: .main)
         pathMonitor = monitor
     }
 
-    private var pathDebounce: Task<Void, Never>?
-
-    /// A VPN or interface change reports several paths in a row; losing the
-    /// LAN applies at once, anything else after they settle.
-    private func pathChangedDebounced(allowsLocal: Bool) {
+    /// Updates that leave the interfaces as they were change nothing. Any
+    /// other drops the route at once; the re-check waits for a VPN or an
+    /// interface change to finish reporting paths.
+    private func pathUpdated(allowsLocal: Bool, signature: String) {
+        guard signature != pathSignature else { return }
+        pathSignature = signature
+        pathAllowsLocal = allowsLocal
+        demote()
         pathDebounce?.cancel()
-        if !allowsLocal {
-            pathChanged(allowsLocal: false)
-            return
-        }
         pathDebounce = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(500))
             guard !Task.isCancelled else { return }
-            self?.pathChanged(allowsLocal: true)
+            self?.refresh()
         }
     }
 
     private func restartBrowser() {
         stopBrowser()
-        guard environment.startsSystemMonitors, isForeground, let server,
-              record != nil || environment.store.record(for: server.id) != nil else { return }
+        guard environment.startsSystemMonitors, isForeground, let server, record != nil else { return }
         browserGeneration += 1
         let generation = browserGeneration
         let identity = server.identity
@@ -386,12 +405,17 @@ final class LocalRouteController {
         parameters.includePeerToPeer = false
         let browser = NWBrowser(
             for: .bonjourWithTXTRecord(type: ServerDiscoveryProtocol.serviceType, domain: nil), using: parameters)
-        browser.browseResultsChangedHandler = { results, _ in
+        browser.browseResultsChangedHandler = { [weak self] results, _ in
             let matching = results.filter { result in
                 guard case let .bonjour(txt) = result.metadata else { return false }
                 return ServerIdentity.usable(txt.dictionary[ServerDiscoveryProtocol.txtServerID]) == identity
             }
-            Task {
+            Task { @MainActor [weak self] in
+                guard let self, self.browserGeneration == generation else { return }
+                // Only the newest set of results may land: resolving an
+                // older one can finish later.
+                self.browseSequence += 1
+                let sequence = self.browseSequence
                 var origins: [String: String] = [:]
                 for result in matching {
                     if let resolved = await ServerDiscovery.resolveOrigin(result.endpoint),
@@ -399,11 +423,8 @@ final class LocalRouteController {
                         origins["\(result.endpoint)"] = origin
                     }
                 }
-                let resolved = origins
-                await MainActor.run {
-                    guard LocalRouteController.shared.browserGeneration == generation else { return }
-                    LocalRouteController.shared.advertised(resolved)
-                }
+                guard self.browserGeneration == generation, self.browseSequence == sequence else { return }
+                self.advertised(origins)
             }
         }
         browser.stateUpdateHandler = { state in
@@ -460,10 +481,9 @@ enum LocalRouteProbe {
         let session = URLSession(configuration: configuration, delegate: PinnedProbeDelegate(pin: pin), delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
         guard let (data, response) = try? await session.data(from: url),
-              (response as? HTTPURLResponse)?.statusCode == 200 else { return false }
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        guard let document = try? decoder.decode(ServerIdentityDocument.self, from: data) else { return false }
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let document = try? HTTPClient.makeJSONDecoder().decode(ServerIdentityDocument.self, from: data)
+        else { return false }
         return ServerIdentity.usable(document.serverId) == identity
     }
 

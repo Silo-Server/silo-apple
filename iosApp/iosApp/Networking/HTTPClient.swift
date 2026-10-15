@@ -330,7 +330,8 @@ actor HTTPClient {
             quietStatuses: [],
             timeout: nil,
             dispatchRevision: dispatchRevision,
-            reportReachability: true
+            reportReachability: true,
+            routesLocally: true
         )
     }
 
@@ -360,7 +361,8 @@ actor HTTPClient {
         quietStatuses: Set<Int>,
         timeout: TimeInterval?,
         dispatchRevision capturedRevision: UInt64? = nil,
-        reportReachability: Bool = false
+        reportReachability: Bool = false,
+        routesLocally: Bool = false
     ) async throws -> T {
         let dispatchRevision = try capturedRevision ?? captureRequestDispatchRevision()
         var request = try buildRequest(
@@ -378,7 +380,8 @@ actor HTTPClient {
         let (data, response) = try await perform(
             request: request,
             dispatchRevision: dispatchRevision,
-            reportReachability: reportReachability
+            reportReachability: reportReachability,
+            routesLocally: routesLocally
         )
         try ensureSuccess(data, response, method: "GET", quietStatuses: quietStatuses)
         return try Self.decode(data, path: path, decoder: decoder)
@@ -1558,16 +1561,10 @@ actor HTTPClient {
         return (data, http)
     }
 
-    /// One token-refresh round trip, classified the way ``perform`` classifies
-    /// an ordinary request. Refresh bypasses `perform` (it runs as a detached
-    /// single-flight `Task` and builds its own request so it never picks up
-    /// ambient auth headers), so this is its diagnostics chokepoint, shared by
-    /// the scoped and ordinary refresh paths. It only observes: errors are
-    /// rethrown and non-2xx responses returned unchanged.
-    ///
-    /// **No credential may reach a log line from here.** The request and a 2xx
-    /// response both carry tokens, so never read `httpBody`,
-    /// `allHTTPHeaderFields` or `data`; keep the attribute list literal.
+    private static func isAuthPath(_ url: URL?) -> Bool {
+        url.map { $0.path.hasPrefix("/api/v2/auth/") } ?? false
+    }
+
     /// Sends `request`, over the local route when it is allowed and one is
     /// active for its origin. The route is read once, so the response and any
     /// failure belong to the route this request used; the response reports the
@@ -1581,22 +1578,30 @@ actor HTTPClient {
         routesLocally: Bool,
         dispatchRevision: UInt64
     ) async throws -> (Data, URLResponse) {
-        guard routesLocally, let route = LocalRoute.active, let routed = route.routed(request) else {
+        // Sign-in stays on the saved address: the server builds verification
+        // and redirect links from the origin a request arrived on.
+        guard routesLocally, !Self.isAuthPath(request.url), let route = LocalRoute.active,
+              let routed = route.routed(request) else {
             return try await session.data(for: request)
         }
         do {
             let (data, response) = try await session.data(for: routed)
             return (data, route.relabeled(response))
         } catch {
-            guard LocalRoute.isRouteFailure(error, taskCancelled: Task.isCancelled) else { throw error }
-            LocalRouteController.reportFailure(of: route)
-            #if os(iOS) || os(tvOS)
-            DiagTrace.log(
-                .essential, level: .warning, category: .network, tag: "HTTP",
-                message: "local route failed",
-                attrs: ["error_code": .string(HTTPDiagnosticsErrorCode.classify(transport: error))]
-            )
-            #endif
+            // A cancelled task stays cancelled; that is not the route's doing.
+            if Task.isCancelled || error is CancellationError { throw error }
+            if LocalRoute.isRouteFailure(error) {
+                LocalRouteController.reportFailure(of: route)
+                #if os(iOS) || os(tvOS)
+                DiagTrace.log(
+                    .essential, level: .warning, category: .network, tag: "HTTP",
+                    message: "local route failed",
+                    attrs: ["error_code": .string(HTTPDiagnosticsErrorCode.classify(transport: error))]
+                )
+                #endif
+            }
+            // A cancellation pass for an identity change fails the fence below;
+            // a challenge the pin refused goes again to the saved address.
             guard LocalRoute.mayRetryOnSavedAddress(after: error, method: request.httpMethod) else {
                 throw LocalRouteFailure(underlying: error)
             }
@@ -1605,6 +1610,16 @@ actor HTTPClient {
         }
     }
 
+    /// One token-refresh round trip, classified the way ``perform`` classifies
+    /// an ordinary request. Refresh bypasses `perform` (it runs as a detached
+    /// single-flight `Task` and builds its own request so it never picks up
+    /// ambient auth headers), so this is its diagnostics chokepoint, shared by
+    /// the scoped and ordinary refresh paths. It only observes: errors are
+    /// rethrown and non-2xx responses returned unchanged.
+    ///
+    /// **No credential may reach a log line from here.** The request and a 2xx
+    /// response both carry tokens, so never read `httpBody`,
+    /// `allHTTPHeaderFields` or `data`; keep the attribute list literal.
     private static func performRefreshTransport(
         request: URLRequest,
         session: URLSession
