@@ -54,6 +54,11 @@ struct WatchPartyCommandState {
     /// again; the player's clock settles after a play or seek.
     static let nudgeSettle: TimeInterval = 1
 
+    /// A playhead that moved less than `heldClockAdvance` over at least
+    /// `heldClockInterval` is held, not playing.
+    static let heldClockInterval: TimeInterval = 0.4
+    static let heldClockAdvance: Double = 0.1
+
     /// What the session's drift loop does on a report tick.
     enum LoopStep: Equatable {
         /// The room or this member is not playing, so the member runs at 1x.
@@ -66,12 +71,17 @@ struct WatchPartyCommandState {
 
     /// The last command this member ran is the room's position at its execute
     /// time, advancing at 1x while the room plays.
+    /// `playheadAdvancing` is false when the player claims to play but its
+    /// position has not moved since the last tick: Aether's software path
+    /// holds its clock to rebuffer without reporting it, and a rate written
+    /// then restarts that clock. The loop waits it out.
     static func loopStep(reference: WatchPartyTransportCommand?, room: WatchPartyRoom, memberPlaying: Bool,
-                         sourceTime: Double, serverNow: Date, sinceCompleted: TimeInterval) -> LoopStep {
+                         sourceTime: Double, serverNow: Date, sinceCompleted: TimeInterval,
+                         playheadAdvancing: Bool = true) -> LoopStep {
         guard let reference, reference.playbackState == .playing,
               reference.selectionRevision == room.selectionRevision,
               room.phase == .playing, room.playbackState == .playing, !room.isPaused, memberPlaying else { return .reset }
-        guard sinceCompleted >= nudgeSettle else { return .wait }
+        guard sinceCompleted >= nudgeSettle, playheadAdvancing else { return .wait }
         return .nudge(projectedPosition(reference, serverNow: serverNow) - sourceTime)
     }
 
@@ -147,7 +157,12 @@ struct WatchPartyClock {
     private(set) var samples: [(roundTrip: TimeInterval, offset: TimeInterval)] = []
 
     /// Server time minus local time, or 0 before any sample.
-    var offset: TimeInterval { samples.min(by: { $0.roundTrip < $1.roundTrip })?.offset ?? 0 }
+    var offset: TimeInterval { fastest?.offset ?? 0 }
+
+    /// The fastest sample, the newest on a tie.
+    private var fastest: (roundTrip: TimeInterval, offset: TimeInterval)? {
+        samples.reversed().min(by: { $0.roundTrip < $1.roundTrip })
+    }
 
     /// Millisecond timestamps can make a LAN round trip read slightly negative.
     static let roundingSlack: TimeInterval = 0.002
@@ -165,7 +180,7 @@ struct WatchPartyClock {
         // Each offset is within half its round trip of the truth. When the new
         // one cannot agree with the best kept one, the device clock stepped
         // (a time sync, or waking from sleep) and the old samples are stale.
-        if let best = samples.min(by: { $0.roundTrip < $1.roundTrip }),
+        if let best = fastest,
            abs(offset - best.offset) > (roundTrip + best.roundTrip) / 2 + Self.stepMargin {
             samples.removeAll()
         }

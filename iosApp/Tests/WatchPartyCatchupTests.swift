@@ -79,6 +79,9 @@ final class WatchPartyCatchupTests: XCTestCase {
         }
         XCTAssertEqual(clock.samples.count, WatchPartyClock.sampleLimit)
         XCTAssertEqual(clock.offset, 10.5, accuracy: 1e-9)
+        // On equal round trips the newer sample wins.
+        clock.record(clientSent: at(40), serverReceived: at(50.6), serverSent: at(50.6), clientReceived: at(40.5))
+        XCTAssertEqual(clock.offset, 10.35, accuracy: 1e-9)
     }
 
     func testDriftLoopFollowsTheAdvancingRoomPosition() {
@@ -109,6 +112,10 @@ final class WatchPartyCatchupTests: XCTestCase {
         newSelection.selectionRevision = 2
         XCTAssertEqual(step(13, local: 102.5, room: newSelection), .reset)
         XCTAssertEqual(step(13, local: 102.5, room: room, reference: nil), .reset)
+        // A held clock gets no rate write until it moves again.
+        XCTAssertEqual(WatchPartyCommandState.loopStep(reference: reference, room: room, memberPlaying: true,
+                                                       sourceTime: 102.5, serverNow: at(13), sinceCompleted: 5,
+                                                       playheadAdvancing: false), .wait)
     }
 
     func testCommandPositionStepFollowsTheSharedRules() {
@@ -151,6 +158,14 @@ final class WatchPartyCatchupTests: XCTestCase {
         _ = budget.begin(roomPosition: 100, at: at(0), duration: 0)
         XCTAssertTrue(budget.inFlight(at: at(WatchPartyReloadBudget.staleAfter - 1)))
         XCTAssertFalse(budget.inFlight(at: at(WatchPartyReloadBudget.staleAfter)))
+        // A load whose seek completed counts as landed even far past its aim.
+        var completed = WatchPartyReloadBudget()
+        _ = completed.begin(roomPosition: 100, at: at(0), duration: 0)
+        completed.noteLoading()
+        XCTAssertFalse(completed.landed(at: 104))
+        completed.noteSeekCompleted()
+        XCTAssertTrue(completed.landed(at: 104))
+        XCTAssertFalse(completed.landed(at: 99))
         // Expiring it lets the next load start at once, as a stale load always could.
         budget.expire(at: at(WatchPartyReloadBudget.staleAfter))
         XCTAssertNil(budget.target)

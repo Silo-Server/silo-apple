@@ -9548,8 +9548,9 @@ extension PlayerViewModel {
     /// hysteresis in `WatchPartyCorrection.nudge`. It never seeks, and it
     /// leaves a correction load in flight to land first.
     func nudgeWatchPartyPlayback(drift: Double) {
+        let snapshot = watchPartyPlaybackSnapshot
         guard isWatchPartyPlayback, !isDisposed, !watchPartyReloadBudget.inFlight(at: Date()),
-              watchPartyPlaybackSnapshot.isPlaying else { return }
+              snapshot.isPlaying, snapshot.isReady, !snapshot.isBuffering else { return }
         let rate = WatchPartyCorrection.nudge(drift: drift, currentRate: watchPartyCorrectionRate)
         if rate == 1 { watchPartyReloadBudget.settle() }
         guard rate != watchPartyCorrectionRate else { return }
@@ -9579,7 +9580,10 @@ extension PlayerViewModel {
         let generation = watchPartyReloadBudget.generation
         do {
             let snapshot = try await applyWatchPartyTransport(.seek(aim), context: context, origin: .correctionLoad)
-            if watchPartyReloadBudget.generation == generation { watchPartyReloadBudget.noteLoading() }
+            if watchPartyReloadBudget.generation == generation {
+                watchPartyReloadBudget.noteLoading()
+                watchPartyReloadBudget.noteSeekCompleted()
+            }
             return snapshot
         } catch is CancellationError {
             // A newer room command cancelled the wait, not the seek, which is
@@ -9683,8 +9687,10 @@ extension PlayerViewModel {
             // the end; the room's next seek remounts this member.
             if hasReachedEndOfFile { break }
             // The room wants this member playing, so the rate may start it.
-            // A member already playing at that rate is left alone: on the
-            // software path every rate write re-times the audio clock.
+            // A stopped member starts at 1x and the drift loop nudges from
+            // there. A member already playing at its rate is left alone: on
+            // the software path every rate write re-times the audio clock.
+            if aetherPlaybackController.engine.state != .playing { watchPartyCorrectionRate = 1 }
             if aetherPlaybackController.engine.state != .playing || watchPartyAppliedRate != watchPartyCorrectionRate {
                 aetherPlaybackController.setSpeed(watchPartyCorrectionRate)
                 watchPartyAppliedRate = watchPartyCorrectionRate

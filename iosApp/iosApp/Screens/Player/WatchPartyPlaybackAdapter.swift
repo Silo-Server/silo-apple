@@ -146,6 +146,8 @@ struct WatchPartyReloadBudget: Equatable {
     private(set) var target: Double?
     /// Whether this load's own seek was taken.
     private(set) var loadStarted = false
+    /// Whether that seek finished, so playback is this load's stream.
+    private(set) var seekCompleted = false
     private(set) var startedAt: Date = .distantPast
     private(set) var nextAllowedAt: Date = .distantPast
     /// Loads since the viewer last converged on the room.
@@ -173,6 +175,7 @@ struct WatchPartyReloadBudget: Equatable {
         if duration > 0 { aim = min(aim, max(roomPosition, duration)) }
         target = aim
         loadStarted = false
+        seekCompleted = false
         startedAt = now
         attempts += 1
         nextAllowedAt = now.addingTimeInterval(Self.staleAfter)
@@ -183,13 +186,19 @@ struct WatchPartyReloadBudget: Equatable {
         if target != nil { loadStarted = true }
     }
 
+    /// The load's seek finished. Whatever plays now is this load, however
+    /// far past its aim the rebuilt stream opened.
+    mutating func noteSeekCompleted() {
+        if target != nil, loadStarted { seekCompleted = true }
+    }
+
     /// Whether playback at `position` is this load playing. The stream it
     /// replaces can sit on either side of the target, so position alone
     /// cannot settle a load whose seek has not been taken.
     func landed(at position: Double) -> Bool {
         guard let target, loadStarted else { return false }
         let offset = position - target
-        return offset >= -WatchPartyCorrection.deadband && offset <= Self.landingWindow
+        return offset >= -WatchPartyCorrection.deadband && (seekCompleted || offset <= Self.landingWindow)
     }
 
     /// The load is playing: remember its load time and space the next one.

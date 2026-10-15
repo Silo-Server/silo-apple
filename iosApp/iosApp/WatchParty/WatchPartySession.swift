@@ -82,6 +82,9 @@ final class WatchPartySession {
     /// Clock samples taken on the current socket; until there are a few,
     /// pings run fast to fill the clock.
     @ObservationIgnored private var connectionSamples = 0
+    /// The playhead at the drift loop's last tick, to tell a held clock from
+    /// a playing one.
+    @ObservationIgnored private var lastLoopSample: (at: Date, sourceTime: Double)?
     @ObservationIgnored private var lastReady: Date = .distantPast
     /// The playback session whose media has been playable at least once. Its
     /// position is real from then on, including while it rebuffers.
@@ -607,6 +610,8 @@ final class WatchPartySession {
             self.issuedAttachSession = nil
             self.stall.reset()
             self.lastAttach = .distantPast
+            // A nudge belongs to the stream it measured, not the new session.
+            adapter?.cancelCorrection()
         }
         adapter.onResyncRequired = { [weak self, weak adapter] in
             guard let self, self.adapter === adapter else { return }
@@ -728,7 +733,9 @@ final class WatchPartySession {
         let context = playbackContext
         let now = Date()
         do {
-            let pingInterval = connectionSamples < WatchPartyClock.warmupSamples ? WatchPartyClock.warmupInterval : WatchPartyClock.interval
+            // A clock step discards older samples; warm up again until it refills.
+            let warming = min(connectionSamples, clock.samples.count) < WatchPartyClock.warmupSamples
+            let pingInterval = warming ? WatchPartyClock.warmupInterval : WatchPartyClock.interval
             if now.timeIntervalSince(lastPing) >= pingInterval {
                 lastPing = now
                 try await socket.send(WatchPartyClientMessage(type: "ping", clientSentAt: now))
@@ -771,7 +778,9 @@ final class WatchPartySession {
                 if snapshot.isBuffering { adapter.cancelCorrection() }
                 return
             }
-            if stall.observe(buffering: snapshot.isBuffering, at: now) {
+            // Only a playing room pauses for a stall; in a waiting room the
+            // barrier already waits for this member.
+            if stall.observe(buffering: snapshot.isBuffering, at: now), room.playbackState == .playing {
                 try await socket.send(WatchPartyClientMessage(type: "buffering", sessionId: session,
                     positionSeconds: snapshot.sourceTime, isPaused: !snapshot.isPlaying))
             }
@@ -809,9 +818,16 @@ final class WatchPartySession {
                                  adapter: WatchPartyPlaybackAdapter) {
         // Sampled after the report's sends, alongside the player position.
         let now = Date()
+        let previous = lastLoopSample
+        lastLoopSample = (at: now, sourceTime: snapshot.sourceTime)
+        let advancing = previous.map {
+            now.timeIntervalSince($0.at) < WatchPartyCommandState.heldClockInterval
+                || snapshot.sourceTime - $0.sourceTime >= WatchPartyCommandState.heldClockAdvance
+        } ?? true
         switch WatchPartyCommandState.loopStep(reference: commands.completed, room: room, memberPlaying: snapshot.isPlaying,
                                                sourceTime: snapshot.sourceTime, serverNow: now.addingTimeInterval(serverOffset),
-                                               sinceCompleted: now.timeIntervalSince(lastCommandCompleted)) {
+                                               sinceCompleted: now.timeIntervalSince(lastCommandCompleted),
+                                               playheadAdvancing: advancing) {
         case .reset: adapter.cancelCorrection()
         case .wait: break
         case .nudge(let drift): adapter.nudge(drift: drift)
