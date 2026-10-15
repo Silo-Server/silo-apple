@@ -383,7 +383,9 @@ final class LocalRouteController {
     private func startPathMonitor() {
         let monitor = NWPathMonitor()
         monitor.pathUpdateHandler = { [weak self] path in
+            // A VPN tunnel reports `.other`; over cellular it is still not the LAN.
             let allows = path.status == .satisfied
+                && !path.usesInterfaceType(.cellular)
                 && (path.usesInterfaceType(.wifi) || path.usesInterfaceType(.wiredEthernet)
                     || path.usesInterfaceType(.other))
             // Cellular coming and going does not move the LAN; a new router
