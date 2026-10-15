@@ -1702,6 +1702,31 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertFalse(player.isScrubbing)
     }
 
+    func testWatchPartySeekRequestHoldsItsTargetAndSkipsBuildOnIt() async throws {
+        let player = PlayerViewModel()
+        let adapter = WatchPartyPlaybackAdapter(player: player)
+        defer { adapter.stop() }
+        adapter.prepare(WatchPartyPlaybackContext(
+            roomId: "room", selectionRevision: 1, contentId: "movie",
+            fileId: 42, libraryId: nil, startPosition: 0
+        ))
+        adapter.canSeek = true
+        var seeks: [WatchPartyPlaybackAction] = []
+        adapter.onUserTransport = { action, _, _ in seeks.append(action) }
+        player.currentTime = 23
+        player.duration = 600
+        // The room runs the seek a lead later; the timeline holds the target.
+        player.seekTo(seconds: 50)
+        XCTAssertEqual(seeks, [.seek(50)])
+        XCTAssertEqual(player.currentTime, 50)
+        // A skip pressed before the room's seek arrives builds on the target,
+        // not on the position the room is about to move away from.
+        player.skipForward(10)
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(seeks, [.seek(50), .seek(60)])
+        XCTAssertEqual(player.currentTime, 60)
+    }
+
     func testWatchPartyGuestSeekCannotMutateLocalPlayhead() {
         let player = PlayerViewModel()
         let adapter = WatchPartyPlaybackAdapter(player: player)

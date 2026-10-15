@@ -6340,8 +6340,21 @@ class PlayerViewModel {
     ) -> Bool {
         if !roomCommand, watchPartyAdapter?.request(.seek(target), isPaused: requestedPaused) == true {
             isScrubbing = false
-            scrubPreviewTime = watchPartyPlaybackSnapshot.sourceTime
             scrubPreviewProvider.endInteraction()
+            guard canRequestSeek else {
+                scrubPreviewTime = watchPartyPlaybackSnapshot.sourceTime
+                return true
+            }
+            // The room runs the seek a lead later. Until then show the
+            // requested target, as a local seek does, so the timeline does
+            // not snap back and the next relative skip builds on it instead
+            // of on the stream the room is about to move.
+            let requested = duration > 0 ? min(max(0, target), duration) : max(0, target)
+            seekOriginTime = currentTime
+            seekTargetTime = requested
+            currentTime = requested
+            scrubPreviewTime = requested
+            armSeekFilterTimeout()
             return true
         }
         let clampedTarget = duration > 0 ? min(max(0, target), duration) : max(0, target)
@@ -6438,14 +6451,7 @@ class PlayerViewModel {
             }
         }
 
-        seekFilterTimeoutTask?.cancel()
-        seekFilterTimeoutTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: Self.seekFilterNanos)
-            guard !Task.isCancelled, let self else { return }
-            self.seekOriginTime = nil
-            self.seekTargetTime = nil
-            self.seekFilterTimeoutTask = nil
-        }
+        armSeekFilterTimeout()
         // Playback ticks stop while paused, so a seek out of (or back into)
         // the intro has to reach the pill here rather than on the next tick.
         // Last, after this seek is fully issued: a seek into an unresolved
@@ -6803,6 +6809,19 @@ class PlayerViewModel {
     /// transitions focus away from the scrubber for a reason that's not a
     /// commit — most commonly, opening a sheet — so the scrub preview
     /// doesn't become an accidental seek.
+    /// Lets playback ticks through again if the seek never arrives, such as a
+    /// room seek the room dropped.
+    private func armSeekFilterTimeout() {
+        seekFilterTimeoutTask?.cancel()
+        seekFilterTimeoutTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: Self.seekFilterNanos)
+            guard !Task.isCancelled, let self else { return }
+            self.seekOriginTime = nil
+            self.seekTargetTime = nil
+            self.seekFilterTimeoutTask = nil
+        }
+    }
+
     func cancelScrub() {
         guard isScrubbing else { return }
         skipDebounceTask?.cancel()
