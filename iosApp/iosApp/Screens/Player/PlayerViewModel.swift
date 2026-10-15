@@ -154,7 +154,7 @@ struct PlayerNextUpEpisode: Identifiable, Hashable {
         let section = item.sectionItem
         isFromOnDeck = true
         contentId = item.contentId
-        isEpisode = section.type == "episode"
+        isEpisode = section.isEpisodeItem
         seriesId = isEpisode ? section.seriesId : nil
         seriesTitle = isEpisode ? section.seriesTitle : nil
         seasonNumber = section.seasonNumber ?? 0
@@ -2795,7 +2795,11 @@ class PlayerViewModel {
                 guard !Task.isCancelled, !self.isDisposed else { return }
                 guard isCurrentOwner else { throw HTTPError.requestIdentityChanged }
                 let response = read.response
-                self.nextUpOnDeckItems = await self.resolveOnDeckItems(from: response, currentDetail: detail)
+                let items = await self.resolveOnDeckItems(from: response, currentDetail: detail)
+                // A newer load cancels this task; its items would become that
+                // load's Up Next pick.
+                guard !Task.isCancelled, !self.isDisposed else { return }
+                self.nextUpOnDeckItems = items
                 self.isLoadingNextUpOnDeck = false
                 if self.offerOnDeckItemIfNothingNext() { return }
                 self.updateNextUpPresentation(for: self.currentTime)
@@ -2813,6 +2817,11 @@ class PlayerViewModel {
     /// series may still have a next episode. Returns whether it offered one.
     @discardableResult
     private func offerOnDeckItemIfNothingNext() -> Bool {
+        #if os(macOS)
+        // macOS has no Up Next screen, so the pick would start another title
+        // with no countdown on screen and no way to cancel it.
+        return false
+        #else
         guard !isWatchPartyPlayback,
               shuffleState == nil,
               nextUpEpisode == nil,
@@ -2827,6 +2836,7 @@ class PlayerViewModel {
             updateNextUpPresentation(for: currentTime)
         }
         return true
+        #endif
     }
 
     private func resolveOnDeckItems(
@@ -3557,13 +3567,16 @@ class PlayerViewModel {
         }
         // The player closed while the next episode was still loading. Autoplay
         // keeps that episode's season in `nextUpEpisode`; otherwise assume the
-        // previous episode's season.
-        guard let loadingId = lastLoadRequest?.contentId, let lastSeriesPlayback else { return nil }
+        // previous episode's season. An On Deck pick belongs to its own
+        // series, or to none, not to the one that just finished.
+        guard let loadingId = lastLoadRequest?.contentId else { return nil }
         let queued = nextUpEpisode?.contentId == loadingId ? nextUpEpisode : nil
+        let seriesId = queued?.isFromOnDeck == true ? queued?.seriesId : lastSeriesPlayback?.seriesId
+        guard let seriesId = Self.nonEmpty(seriesId) else { return nil }
         return SeriesPlaybackReturn(
             episodeContentId: loadingId,
-            seriesContentId: lastSeriesPlayback.seriesId,
-            seasonNumber: queued?.seasonNumber ?? lastSeriesPlayback.seasonNumber,
+            seriesContentId: seriesId,
+            seasonNumber: queued?.seasonNumber ?? lastSeriesPlayback?.seasonNumber,
             completed: false
         )
     }

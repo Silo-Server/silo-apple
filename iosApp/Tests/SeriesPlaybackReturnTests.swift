@@ -205,6 +205,23 @@ final class SeriesPlaybackReturnTests: XCTestCase {
         XCTAssertEqual(SeriesPlaybackReturnInbox.take(seriesContentId: seriesId)?.episodeContentId, "s1e2")
     }
 
+    func testClosingWhileAnOnDeckPickLoadsReturnsToItsOwnSeries() throws {
+        SeriesPlaybackReturnInbox.discardPending()
+        let model = PlayerViewModel()
+        model.loadAndPlay(contentId: "finale", startFromBeginning: false)
+        let pick = try JSONDecoder().decode(SectionItem.self, from: Data(
+            #"{"contentId":"b-s3e4","type":"episode","title":"Pick","seriesId":"series-b","seasonNumber":3,"episodeNumber":4}"#.utf8
+        ))
+        model.nextUpEpisode = PlayerNextUpEpisode(onDeckItem: PlayerOnDeckItem(item: pick))
+        model.showNextUpScreen = true
+        model.playNextEpisodeNow()
+        model.cleanup()
+
+        let returned = SeriesPlaybackReturnInbox.take(seriesContentId: "series-b")
+        XCTAssertEqual(returned?.episodeContentId, "b-s3e4")
+        XCTAssertEqual(returned?.seasonNumber, 3)
+    }
+
     // MARK: - Fixtures
 
     /// A Series page showing `season`. Regular seasons have two episodes each.
