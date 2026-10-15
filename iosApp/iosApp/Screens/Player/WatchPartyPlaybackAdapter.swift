@@ -24,6 +24,18 @@ enum WatchPartyPlaybackAction: Equatable, Sendable {
     }
 }
 
+/// What became of a transport request made through the adapter.
+enum WatchPartyRequestOutcome: Equatable {
+    /// No party: the caller runs its own transport.
+    case solo
+    /// The room session sent the request to the room.
+    case sent
+    /// The party took the request but did not send it: not permitted, a play
+    /// from the end, or a session not connected and attached. The caller
+    /// still must not run it locally.
+    case dropped
+}
+
 struct WatchPartyPlaybackSnapshot: Equatable, Sendable {
     var sessionId: String?
     var fileId: Int?
@@ -307,7 +319,8 @@ final class WatchPartyPlaybackAdapter {
     var canSeek = false
     @ObservationIgnored var onSnapshot: ((WatchPartyPlaybackSnapshot) -> Void)?
     @ObservationIgnored var onSessionCommitted: ((String) -> Void)?
-    @ObservationIgnored var onUserTransport: ((WatchPartyPlaybackAction, Double, Bool) -> Void)?
+    /// Returns whether the room session sent the request.
+    @ObservationIgnored var onUserTransport: ((WatchPartyPlaybackAction, Double, Bool) -> Bool)?
     @ObservationIgnored var onLocalExit: (() -> Void)?
     @ObservationIgnored var onResyncRequired: (() -> Void)?
     @ObservationIgnored var onFailure: ((String?, String) -> Void)?
@@ -360,14 +373,18 @@ final class WatchPartyPlaybackAdapter {
     /// Return true even when denied: the caller must never fall through to solo transport.
     @discardableResult
     func request(_ action: WatchPartyPlaybackAction, isPaused: Bool? = nil) -> Bool {
-        guard context != nil else { return false }
+        submit(action, isPaused: isPaused) != .solo
+    }
+
+    /// `request`, telling the caller whether the room will hear of it.
+    func submit(_ action: WatchPartyPlaybackAction, isPaused: Bool? = nil) -> WatchPartyRequestOutcome {
+        guard context != nil else { return .solo }
         // Play from the end would re-anchor the room at a finished or dead
         // position. A seek is how a member leaves the end.
-        if action == .play, snapshot.isEnded { return true }
-        if action.isPermitted(canPlayPause: canPlayPause, canSeek: canSeek) {
-            onUserTransport?(action, snapshot.sourceTime, isPaused ?? !snapshot.isPlaying)
-        }
-        return true
+        if action == .play, snapshot.isEnded { return .dropped }
+        guard action.isPermitted(canPlayPause: canPlayPause, canSeek: canSeek),
+              onUserTransport?(action, snapshot.sourceTime, isPaused ?? !snapshot.isPlaying) == true else { return .dropped }
+        return .sent
     }
 
     func stop() {

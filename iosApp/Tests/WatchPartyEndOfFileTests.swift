@@ -33,7 +33,7 @@ final class WatchPartyEndOfFileTests: XCTestCase {
         defer { adapter.stop() }
         adapter.canSeek = true
         var requests: [WatchPartyPlaybackAction] = []
-        adapter.onUserTransport = { action, _, _ in requests.append(action) }
+        adapter.onUserTransport = { action, _, _ in requests.append(action); return true }
         player.duration = 1_200
         player.currentTime = 1_200
         player.hasReachedEndOfFile = true
@@ -55,7 +55,7 @@ final class WatchPartyEndOfFileTests: XCTestCase {
         adapter.canPlayPause = true
         adapter.canSeek = true
         var requests: [WatchPartyPlaybackAction] = []
-        adapter.onUserTransport = { action, _, _ in requests.append(action) }
+        adapter.onUserTransport = { action, _, _ in requests.append(action); return true }
         player.hasReachedEndOfFile = true
         adapter.update(player.watchPartyPlaybackSnapshot)
 

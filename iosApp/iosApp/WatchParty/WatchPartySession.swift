@@ -624,8 +624,8 @@ final class WatchPartySession {
             }
         }
         adapter.onUserTransport = { [weak self, weak adapter] action, position, paused in
-            guard let self, self.adapter === adapter else { return }
-            self.requestTransport(action, position: position, paused: paused)
+            guard let self, self.adapter === adapter else { return false }
+            return self.requestTransport(action, position: position, paused: paused)
         }
         adapter.onLocalExit = { [weak self, weak adapter] in
             guard let self, self.adapter === adapter else { return }
@@ -638,9 +638,10 @@ final class WatchPartySession {
         adapter.prepare(context)
     }
 
-    private func requestTransport(_ action: WatchPartyPlaybackAction, position: Double, paused: Bool) {
+    /// Returns whether the request was sent; a dropped one never reaches the room.
+    private func requestTransport(_ action: WatchPartyPlaybackAction, position: Double, paused: Bool) -> Bool {
         guard connection == .connected, attachmentConfirmed, let room,
-              action.isPermitted(canPlayPause: room.selfCanControlTransport, canSeek: room.selfRole == .host) else { return }
+              action.isPermitted(canPlayPause: room.selfCanControlTransport, canSeek: room.selfRole == .host) else { return false }
         // Play and pause carry the local position, which the room adopts as
         // its anchor. Before the media has first become playable that
         // position isn't real, so the press is dropped (#410 tracks queueing
@@ -649,7 +650,7 @@ final class WatchPartySession {
         case .seek: break
         case .play, .pause:
             guard let snapshot = adapter?.snapshot, let session = snapshot.sessionId,
-                  snapshot.isReady || playableSession == session else { return }
+                  snapshot.isReady || playableSession == session else { return false }
         }
         let wire: WatchPartyTransportAction
         let target: Double
@@ -658,7 +659,7 @@ final class WatchPartySession {
         case .pause: wire = .pause; target = position
         case .seek(let value): wire = .seek; target = value
         }
-        send(WatchPartyClientMessage(type: "transport_request", action: wire, positionSeconds: target, isPaused: paused))
+        return send(WatchPartyClientMessage(type: "transport_request", action: wire, positionSeconds: target, isPaused: paused))
     }
 
     private func applyPendingCommand() {
@@ -837,10 +838,12 @@ final class WatchPartySession {
         }
     }
 
-    private func send(_ message: WatchPartyClientMessage) {
+    /// Returns false when there is no socket to send on.
+    @discardableResult
+    private func send(_ message: WatchPartyClientMessage) -> Bool {
         let owner = engagement
         let socketID = connectionID
-        guard let socket, let room else { return }
+        guard let socket, let room else { return false }
         let sessionId = adapter?.snapshot.sessionId
         Task { [weak self] in
             guard let self, await self.validateIdentity(), owner == self.engagement, socketID == self.connectionID,
@@ -851,6 +854,7 @@ final class WatchPartySession {
             }
             do { try await socket.send(message) } catch { socket.close() }
         }
+        return true
     }
 
     func setLobbyReady(_ ready: Bool) {

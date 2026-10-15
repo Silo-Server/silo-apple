@@ -888,6 +888,12 @@ class PlayerViewModel {
     /// This member's newest room seek request the room has not run yet; see
     /// `WatchPartyHeldSeek`.
     private var watchPartyHeldSeek: WatchPartyHeldSeek?
+    /// The position progress reports save. A held room seek request is on
+    /// the timeline before the room runs it, and may never run; until it
+    /// does, the engine has not moved, so the resume point stays there.
+    var progressReportPosition: Double {
+        watchPartyHeldSeek == nil ? currentTime : watchPartyPlaybackSnapshot.sourceTime
+    }
     private var seekFilterTimeoutTask: Task<Void, Never>?
     /// The in-flight `commitSeek` await. Held so a new load can cancel a seek
     /// whose `.requiresReplan` answer would otherwise arrive after the item
@@ -1387,7 +1393,7 @@ class PlayerViewModel {
             return
         }
         guard activePlaybackSessionId != nil else { return }
-        let position = currentTime
+        let position = progressReportPosition
         guard position.isFinite, position >= 0 else { return }
         let isPaused = !isPlaying
         Self.logger.debug("Flushing playback progress (\(reason, privacy: .public))")
@@ -3479,7 +3485,7 @@ class PlayerViewModel {
         PlayerNextUpCompletionPolicy.progressPosition(
             isNextUpPresented: showNextUpScreen,
             hasReachedEndOfFile: finishedAtEndOfFile,
-            currentTime: currentTime,
+            currentTime: progressReportPosition,
             duration: duration,
             promptSeconds: settings.nextUpPromptSeconds,
             skippedCredits: skippedCreditsToEnd
@@ -6345,10 +6351,14 @@ class PlayerViewModel {
         to target: Double, source: String = "unspecified", roomCommand: Bool = false,
         requestedPaused: Bool? = nil
     ) -> Bool {
-        if !roomCommand, watchPartyAdapter?.request(.seek(target), isPaused: requestedPaused) == true {
+        if !roomCommand, let outcome = watchPartyAdapter?.submit(.seek(target), isPaused: requestedPaused),
+           outcome != .solo {
             isScrubbing = false
             scrubPreviewProvider.endInteraction()
-            guard canRequestSeek else {
+            // A request the room session did not send (denied, or not
+            // connected and attached) never runs: nothing is held, and the
+            // timeline stays on the engine.
+            guard outcome == .sent else {
                 scrubPreviewTime = watchPartyPlaybackSnapshot.sourceTime
                 return true
             }
@@ -7802,10 +7812,11 @@ class PlayerViewModel {
         // teardown below clears `creditsRange` before the final progress
         // flush reads the latch.
         didSkipCreditsToEnd = skippedCreditsToEnd
+        let reportedPosition = progressReportPosition
         let currentItemCompleted = PlayerNextUpCompletionPolicy.shouldFinalizeAsCompleted(
             isNextUpPresented: showNextUpScreen,
             hasReachedEndOfFile: finishedAtEndOfFile,
-            currentTime: currentTime,
+            currentTime: reportedPosition,
             duration: duration,
             promptSeconds: settings.nextUpPromptSeconds,
             skippedCredits: skippedCreditsToEnd
@@ -7815,7 +7826,7 @@ class PlayerViewModel {
         // often before the Next Up prompt. Leaving during the credits must
         // still move the Series page on to the next episode.
         let crossedWatchedThreshold = duration.isFinite && duration > 0
-            && currentTime / duration > Self.defaultWatchedFraction
+            && reportedPosition / duration > Self.defaultWatchedFraction
         SeriesPlaybackReturnInbox.publish(
             seriesPlaybackReturn(completed: currentItemCompleted || crossedWatchedThreshold),
             generation: seriesReturnGeneration
@@ -9161,7 +9172,7 @@ class PlayerViewModel {
                     continue
                 }
                 let result = await self.sessionBridge.reportProgress(
-                    position: self.currentTime,
+                    position: self.progressReportPosition,
                     isPaused: !self.isPlaying
                 )
                 if result == .sessionEnded {
@@ -9176,7 +9187,7 @@ class PlayerViewModel {
                 if result == .missingSession {
                     _ = self.attemptStaleSessionRenewal(
                         reason: "progress",
-                        observedPosition: self.currentTime
+                        observedPosition: self.progressReportPosition
                     )
                 } else {
                     await self.attemptProtocolV3AuthenticationReloadAfterProgress(result)
@@ -9505,7 +9516,7 @@ extension PlayerViewModel {
         request.allowAlternateVersions = false
         beginFreshLoad(
             request: request,
-            progressPosition: activePlaybackSessionId == nil ? nil : currentTime,
+            progressPosition: activePlaybackSessionId == nil ? nil : progressReportPosition,
             resumePositionOverride: context.startPosition,
             allowNearEndResume: true
         )
