@@ -9578,11 +9578,16 @@ extension PlayerViewModel {
         guard watchPartyReloadBudget.allowed(at: now) else { return watchPartyPlaybackSnapshot }
         let aim = watchPartyReloadBudget.begin(roomPosition: position, at: now, duration: duration)
         let generation = watchPartyReloadBudget.generation
+        let before = watchPartyPlaybackSnapshot.sourceTime
         do {
             let snapshot = try await applyWatchPartyTransport(.seek(aim), context: context, origin: .correctionLoad)
             if watchPartyReloadBudget.generation == generation {
                 watchPartyReloadBudget.noteLoading()
-                watchPartyReloadBudget.noteSeekCompleted()
+                // A refused reanchor returns too, with the old stream still
+                // playing; only a stream that moved toward the aim is this load.
+                if WatchPartyReloadBudget.moved(from: before, to: snapshot.sourceTime, toward: aim) {
+                    watchPartyReloadBudget.noteSeekCompleted()
+                }
             }
             return snapshot
         } catch is CancellationError {

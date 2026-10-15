@@ -780,7 +780,7 @@ final class WatchPartySession {
             }
             // Only a playing room pauses for a stall; in a waiting room the
             // barrier already waits for this member.
-            if stall.observe(buffering: snapshot.isBuffering, at: now), room.playbackState == .playing {
+            if room.playbackState == .playing, stall.observe(buffering: snapshot.isBuffering, at: now) {
                 try await socket.send(WatchPartyClientMessage(type: "buffering", sessionId: session,
                     positionSeconds: snapshot.sourceTime, isPaused: !snapshot.isPlaying))
             }

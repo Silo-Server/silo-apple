@@ -186,6 +186,13 @@ struct WatchPartyReloadBudget: Equatable {
         if target != nil { loadStarted = true }
     }
 
+    /// Whether playback went from `before` to `after` by moving toward `aim`,
+    /// rather than staying on the stream the load was meant to replace.
+    static func moved(from before: Double, to after: Double, toward aim: Double) -> Bool {
+        guard before.isFinite, after.isFinite, aim.isFinite else { return false }
+        return abs(after - aim) + WatchPartyCorrection.stoppedSeek < abs(before - aim)
+    }
+
     /// The load's seek finished. Whatever plays now is this load, however
     /// far past its aim the rebuilt stream opened.
     mutating func noteSeekCompleted() {

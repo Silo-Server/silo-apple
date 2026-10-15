@@ -166,6 +166,11 @@ final class WatchPartyCatchupTests: XCTestCase {
         completed.noteSeekCompleted()
         XCTAssertTrue(completed.landed(at: 104))
         XCTAssertFalse(completed.landed(at: 99))
+        // A refused reanchor leaves the old stream playing; it did not move.
+        XCTAssertTrue(WatchPartyReloadBudget.moved(from: 90, to: 104, toward: 100))
+        XCTAssertTrue(WatchPartyReloadBudget.moved(from: 120, to: 101, toward: 100))
+        XCTAssertFalse(WatchPartyReloadBudget.moved(from: 120, to: 120.5, toward: 100))
+        XCTAssertFalse(WatchPartyReloadBudget.moved(from: 90, to: 90.4, toward: 100))
         // Expiring it lets the next load start at once, as a stale load always could.
         budget.expire(at: at(WatchPartyReloadBudget.staleAfter))
         XCTAssertNil(budget.target)
