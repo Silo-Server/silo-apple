@@ -9569,17 +9569,17 @@ extension PlayerViewModel {
         watchPartyAppliedRate = watchPartyCorrectionRate
     }
 
-    /// Applies a room command to a playing member: drift up to the hard-seek
-    /// band converges by rate, larger drift seeks to media already buffered
-    /// or takes a budgeted load for media that is not. Returns without
-    /// waiting for a rate nudge, so the member keeps reporting meanwhile.
+    /// Applies a room command to a playing member: drift up to `seekBand`
+    /// converges by rate, larger drift seeks to media already buffered or
+    /// takes a budgeted load for media that is not. Returns without waiting
+    /// for a rate nudge, so the member keeps reporting meanwhile.
     func correctWatchPartyPlayback(
-        to position: Double, context: WatchPartyPlaybackContext
+        to position: Double, seekBand: Double, context: WatchPartyPlaybackContext
     ) async throws -> WatchPartyPlaybackSnapshot {
         guard position.isFinite, position >= 0, !isDisposed,
               watchPartyAdapter?.context == context else { throw WatchPartyPlaybackError.invalidated }
         let local = watchPartyPlaybackSnapshot.sourceTime
-        guard WatchPartyCorrection.seeks(drift: position - local) else {
+        guard WatchPartyCorrection.seeks(drift: position - local, band: seekBand) else {
             nudgeWatchPartyPlayback(drift: position - local)
             return watchPartyPlaybackSnapshot
         }

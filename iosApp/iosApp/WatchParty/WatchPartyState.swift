@@ -96,11 +96,14 @@ struct WatchPartyCommandState {
         case none
     }
 
+    /// `seekBand` is `WatchPartyCorrection.seekBand(isHost:)` for this member.
     static func positionStep(_ command: WatchPartyTransportCommand, memberPlaying: Bool,
-                             drift: Double, reachableInPlace: Bool) -> PositionStep {
+                             drift: Double, reachableInPlace: Bool,
+                             seekBand: Double) -> PositionStep {
         if command.action == .seek { return .roomSeek }
         if command.playbackState == .playing, memberPlaying { return .correct }
-        return WatchPartyCorrection.seeksWhileStopped(drift: drift, reachableInPlace: reachableInPlace) ? .realign : .none
+        return WatchPartyCorrection.seeksWhileStopped(drift: drift, reachableInPlace: reachableInPlace,
+                                                      band: seekBand) ? .realign : .none
     }
 
     /// The room's position at `serverNow`: a command carries the room's

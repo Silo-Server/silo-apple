@@ -689,11 +689,14 @@ final class WatchPartySession {
                 // land on its target. A play or pause, including the server's
                 // corrections, converges a playing member by rate and moves a
                 // stopped one only when the move is cheap or the drift large.
+                // The host seeks from a narrower band; see `WatchPartyCorrection.hostSeek`.
+                let seekBand = WatchPartyCorrection.seekBand(isHost: self.room?.selfRole == .host)
                 switch WatchPartyCommandState.positionStep(command, memberPlaying: adapter.snapshot.isPlaying,
                                                            drift: target - adapter.snapshot.sourceTime,
-                                                           reachableInPlace: adapter.canReachInPlace(target)) {
+                                                           reachableInPlace: adapter.canReachInPlace(target),
+                                                           seekBand: seekBand) {
                 case .roomSeek: _ = try await adapter.apply(.seek(target), origin: .room)
-                case .correct: _ = try await adapter.correct(to: target)
+                case .correct: _ = try await adapter.correct(to: target, seekBand: seekBand)
                 case .realign: _ = try await adapter.apply(.seek(target), origin: .realign)
                 case .none: break
                 }

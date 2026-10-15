@@ -124,21 +124,41 @@ final class WatchPartyCatchupTests: XCTestCase {
                                        executeAt: at(10), issuedAt: at(9.5), playbackState: state)
         }
         typealias Step = WatchPartyCommandState.PositionStep
+        func step(_ action: WatchPartyTransportAction, _ state: WatchPartyPlaybackState, playing: Bool,
+                  drift: Double, reachable: Bool, host: Bool = false) -> Step {
+            WatchPartyCommandState.positionStep(command(action, state), memberPlaying: playing, drift: drift,
+                                                reachableInPlace: reachable,
+                                                seekBand: WatchPartyCorrection.seekBand(isHost: host))
+        }
         // A room seek always lands exactly, however small the drift.
-        XCTAssertEqual(WatchPartyCommandState.positionStep(command(.seek, .waiting), memberPlaying: true,
-                                                           drift: 0.1, reachableInPlace: true), Step.roomSeek)
+        XCTAssertEqual(step(.seek, .waiting, playing: true, drift: 0.1, reachable: true), Step.roomSeek)
         // A playing member in a playing room converges; it never realigns.
-        XCTAssertEqual(WatchPartyCommandState.positionStep(command(.play, .playing), memberPlaying: true,
-                                                           drift: 3, reachableInPlace: true), Step.correct)
+        XCTAssertEqual(step(.play, .playing, playing: true, drift: 3, reachable: true), Step.correct)
         // A stopped member moves only for a cheap move or a large gap.
-        XCTAssertEqual(WatchPartyCommandState.positionStep(command(.play, .playing), memberPlaying: false,
-                                                           drift: 3, reachableInPlace: false), Step.none)
-        XCTAssertEqual(WatchPartyCommandState.positionStep(command(.play, .playing), memberPlaying: false,
-                                                           drift: 3, reachableInPlace: true), Step.realign)
-        XCTAssertEqual(WatchPartyCommandState.positionStep(command(.pause, .paused), memberPlaying: true,
-                                                           drift: 0.8, reachableInPlace: true), Step.none)
-        XCTAssertEqual(WatchPartyCommandState.positionStep(command(.pause, .paused), memberPlaying: true,
-                                                           drift: -6, reachableInPlace: false), Step.realign)
+        XCTAssertEqual(step(.play, .playing, playing: false, drift: 3, reachable: false), Step.none)
+        XCTAssertEqual(step(.play, .playing, playing: false, drift: 3, reachable: true), Step.realign)
+        XCTAssertEqual(step(.pause, .paused, playing: true, drift: 0.8, reachable: true), Step.none)
+        XCTAssertEqual(step(.pause, .paused, playing: true, drift: -6, reachable: false), Step.realign)
+        // A stopped host moves from 2 seconds off even when the move rebuilds
+        // the stream, where a guest waits for the nudge.
+        XCTAssertEqual(step(.play, .playing, playing: false, drift: 3, reachable: false, host: true), Step.realign)
+        XCTAssertEqual(step(.pause, .paused, playing: false, drift: -2.5, reachable: false, host: true), Step.realign)
+        XCTAssertEqual(step(.pause, .paused, playing: false, drift: 1.5, reachable: false, host: true), Step.none)
+    }
+
+    func testAHostRunningARoomCommandSeeksFromTwoSecondsAndAGuestFromFive() {
+        // A released server re-anchors the room to a host report more than
+        // 2 seconds off, so a lagging host must not rely on the nudge.
+        let host = WatchPartyCorrection.seekBand(isHost: true)
+        let guest = WatchPartyCorrection.seekBand(isHost: false)
+        XCTAssertEqual(host, 2)
+        XCTAssertEqual(guest, WatchPartyCorrection.hardSeek)
+        for drift in [2.1, -2.1, 4.9, -4.9] {
+            XCTAssertTrue(WatchPartyCorrection.seeks(drift: drift, band: host), "host drift \(drift)")
+            XCTAssertFalse(WatchPartyCorrection.seeks(drift: drift, band: guest), "guest drift \(drift)")
+        }
+        XCTAssertFalse(WatchPartyCorrection.seeks(drift: 1.9, band: host))
+        XCTAssertTrue(WatchPartyCorrection.seeks(drift: 5.1, band: guest))
     }
 
     func testClockDropsSamplesFromBeforeTheDeviceClockStepped() {

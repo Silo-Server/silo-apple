@@ -53,6 +53,11 @@ enum WatchPartyCorrection {
     static let settle: Double = 0.1
     /// Only drift beyond this makes a playing member seek.
     static let hardSeek: Double = 5
+    /// The seek band when this member is the host and runs a room command.
+    /// A released server takes a host report more than 2 seconds off as the
+    /// host's decision and moves the room to it, so a host left up to
+    /// `hardSeek` behind would pull every viewer back with it.
+    static let hostSeek: Double = 2
     /// A member that is not playing seeks beyond this drift when the target
     /// is reachable in place; it costs a frame jump, not a rebuild.
     static let stoppedSeek: Double = 1
@@ -62,11 +67,15 @@ enum WatchPartyCorrection {
     private static let rateGain: Double = 25
     private static let rateStep: Double = 0.005
 
+    /// The seek band for a room command this member runs. The drift loop
+    /// between commands never seeks, so it has no band.
+    static func seekBand(isHost: Bool) -> Double { isHost ? hostSeek : hardSeek }
+
     /// Whether a playing member seeks for `drift` instead of converging by
     /// rate. `drift` is the room position minus the local position, in
     /// seconds: positive when this member is behind.
-    static func seeks(drift: Double) -> Bool {
-        drift.isFinite && abs(drift) > hardSeek
+    static func seeks(drift: Double, band: Double = hardSeek) -> Bool {
+        drift.isFinite && abs(drift) > band
     }
 
     /// The rate to play at for `drift`, given the rate playing now. A nudge
@@ -80,9 +89,9 @@ enum WatchPartyCorrection {
 
     /// Whether a member that is not playing moves to the target before it
     /// plays or pauses there. Smaller drift is left to the nudge once it plays.
-    static func seeksWhileStopped(drift: Double, reachableInPlace: Bool) -> Bool {
+    static func seeksWhileStopped(drift: Double, reachableInPlace: Bool, band: Double = hardSeek) -> Bool {
         guard drift.isFinite else { return false }
-        return abs(drift) > hardSeek || (reachableInPlace && abs(drift) > stoppedSeek)
+        return abs(drift) > band || (reachableInPlace && abs(drift) > stoppedSeek)
     }
 
     static func rate(for drift: Double) -> Double {
@@ -304,10 +313,11 @@ final class WatchPartyPlaybackAdapter {
     }
 
     /// Only for a server-targeted correction of an already playing viewer.
-    /// Explicit host seeks continue to use apply(.seek).
-    func correct(to position: Double) async throws -> WatchPartyPlaybackSnapshot {
+    /// Explicit host seeks continue to use apply(.seek). Drift beyond
+    /// `seekBand` seeks; see `WatchPartyCorrection.seekBand(isHost:)`.
+    func correct(to position: Double, seekBand: Double) async throws -> WatchPartyPlaybackSnapshot {
         guard let player, let context else { throw WatchPartyPlaybackError.invalidated }
-        return try await player.correctWatchPartyPlayback(to: position, context: context)
+        return try await player.correctWatchPartyPlayback(to: position, seekBand: seekBand, context: context)
     }
 
     func cancelCorrection() { player?.cancelWatchPartyCorrection() }
