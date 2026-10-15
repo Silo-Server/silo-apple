@@ -1164,6 +1164,9 @@ class PlayerViewModel {
 
     private static let autoplayStartSessionTimeout: TimeInterval = 15
     private var lastLoadRequest: LoadRequest?
+    /// The local route the stream on screen was loaded over (`LocalRoute`),
+    /// or nil when it came from the saved address.
+    private var streamLocalRoute: LocalRoute?
     private static let nextUpCountdownDefaultSeconds = 10
     private static let nextUpHUDCountdownThresholdSeconds: Double = 100
     private static let nearEndPlaybackErrorThresholdSeconds: Double = 8
@@ -3525,6 +3528,7 @@ class PlayerViewModel {
         shouldPlayWhenReady: Bool
     ) async throws {
         try requireCurrentStreamLoad(expectedStreamLoadGeneration)
+        streamLocalRoute = streamRequest.localRoute
         let preferredSubtitles = subtitleOrderingLanguage.map { [$0] } ?? []
         let preferredAudio = AetherInitialAudioPreference.languages(
             selectedOrdinal: prepared.protocolV3?.plan.selectedTracks.audio?.index,
@@ -3617,6 +3621,7 @@ class PlayerViewModel {
                 requestAuthorization = try PlaybackMediaAuthorization.make(
                     sourceURL: streamRequest.url,
                     serverURL: streamRequest.serverUrl,
+                    transportServerURL: streamRequest.localRoute?.localOrigin,
                     sessionID: prepared.session.sessionId,
                     expectedAuth: owner,
                     baseHeaders: streamRequest.headers,
@@ -5585,10 +5590,19 @@ class PlayerViewModel {
         sourceWatch.playhead(currentTime: currentTime)
     }
 
-    /// The app's own requests could not reach the server either.
+    /// The app's own requests could not reach the server either, or the
+    /// local route this stream was loaded over has since been dropped.
     private var isServerUnreachable: Bool {
         let monitor = ConnectionMonitor.shared
-        return !monitor.isDeviceOnline || monitor.serverStatus == .unreachable
+        return !monitor.isDeviceOnline || monitor.serverStatus == .unreachable || streamLocalRouteDropped
+    }
+
+    /// Whether the stream on screen was loaded over a local route that is no
+    /// longer the active one (the device left the network, or the route
+    /// failed), so its source cannot recover without a reload.
+    private var streamLocalRouteDropped: Bool {
+        guard let streamLocalRoute else { return false }
+        return LocalRoute.active?.generation != streamLocalRoute.generation
     }
 
     /// Starts a reconnect, or joins the one already running. Returns false
@@ -5606,6 +5620,11 @@ class PlayerViewModel {
             return false
         }
         if reconnectCycle.isActive { return true }
+        // A stream on the local route that lost its connection drops the
+        // route, so the reconnect asks for a plan over the saved address.
+        if let streamLocalRoute {
+            LocalRouteController.shared.routeFailed(streamLocalRoute)
+        }
         // Taken while the viewer's selection is still published. After a
         // give-up the session is torn down, so Try again reuses it.
         if activePreparedProtocolV3 != nil || reconnectLoadRequest == nil {
@@ -8265,7 +8284,7 @@ class PlayerViewModel {
             serverUrl = await SiloAPI.shared.currentServerUrl()
             token = await SiloAPI.shared.currentAccessToken()
         }
-        return StreamRequest.resolve(
+        let request = StreamRequest.resolve(
             rawURL: session.streamUrl,
             serverURL: serverUrl,
             additionalHeaders: additionalHeaders,
@@ -8278,6 +8297,11 @@ class PlayerViewModel {
                 : nil,
             capturedAuth: owner
         )
+        // Header-authenticated media can take the local route: its credentials
+        // are refreshed per request and scoped to the origin it is on. A Watch
+        // Party stays on the saved address, which it can always remount from.
+        guard requiresHeaderAuthenticatedMedia, !isWatchPartyPlayback else { return request }
+        return request?.routed(over: LocalRoute.active)
     }
 
     /// Turns a server-supplied URL (absolute or API-rooted) into an absolute URL.

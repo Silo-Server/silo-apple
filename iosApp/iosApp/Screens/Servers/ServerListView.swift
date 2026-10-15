@@ -223,6 +223,11 @@ struct ServerListView: View {
                         .lineLimit(2)
                         .truncationMode(.middle)
                         .fixedSize(horizontal: false, vertical: true)
+                    if entry.id == registry.activeServerId, LocalRouteController.shared.isOnLocalNetwork {
+                        LocalRouteStatusLine()
+                            .font(.siloCaption)
+                            .foregroundColor(.siloSecondaryText)
+                    }
                 }
                 .multilineTextAlignment(.leading)
                 Spacer()
@@ -309,6 +314,11 @@ private struct TVServerSummaryLabel: View {
                     .font(.system(size: 19))
                     .opacity(0.62)
                     .lineLimit(1)
+                if isActive, LocalRouteController.shared.isOnLocalNetwork {
+                    LocalRouteStatusLine()
+                        .font(.system(size: 19))
+                        .opacity(0.62)
+                }
             }
 
             Spacer(minLength: 16)
@@ -325,3 +335,17 @@ private struct TVServerSummaryLabel: View {
     }
 }
 #endif
+
+/// "Connected on your local network" under the active server while its
+/// requests use the local route; the icon sits inline so the text starts
+/// where the address above it does.
+private struct LocalRouteStatusLine: View {
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "house.fill")
+                .imageScale(.small)
+            Text(LocalRouteController.statusText)
+        }
+        .accessibilityElement(children: .combine)
+    }
+}

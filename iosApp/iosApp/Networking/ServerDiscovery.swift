@@ -591,7 +591,7 @@ final class ServerDiscovery {
     /// The `http://host:port` origin of a browse result: its IPv4 address
     /// when it has one, otherwise a routable IPv6 address. Link-local IPv6 is
     /// skipped because a URL host cannot carry its interface scope.
-    private nonisolated static func resolveOrigin(_ endpoint: NWEndpoint) async -> String? {
+    nonisolated static func resolveOrigin(_ endpoint: NWEndpoint) async -> String? {
         if let (address, port) = await resolve(endpoint, version: .v4) {
             return "http://\(address):\(port)"
         }

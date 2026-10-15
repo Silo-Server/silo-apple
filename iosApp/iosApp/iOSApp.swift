@@ -18,6 +18,10 @@ struct SiloApp: App {
         // both iOS and tvOS.
         PosterImageCache.install()
 
+        // The playback engine reaches the server's local route only through
+        // the pinned key (LocalRouteTrust).
+        LocalRouteTrust.installEngineEvaluator()
+
         #if os(iOS) || os(tvOS)
         // Aether's optional host stream enters Silo diagnostics only through a
         // media-specific redactor and the existing consent/debug-logging gate.

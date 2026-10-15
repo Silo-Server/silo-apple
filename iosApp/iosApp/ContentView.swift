@@ -302,6 +302,15 @@ struct ContentView: View {
         #endif
     }
 
+    /// What the local route depends on: the active server's saved address and
+    /// identity, and whether the app is signed in.
+    private var localRouteKey: String {
+        let server = serverRegistry.activeServer
+        return [server?.id, server?.url, server?.verifiedServerId,
+                router.authState == .authenticated ? "signed-in" : "signed-out"]
+            .map { $0 ?? "-" }.joined(separator: "|")
+    }
+
     private var sessionTaskContent: some View {
         appEventContent
         #if DEBUG
@@ -441,6 +450,15 @@ struct ContentView: View {
                 #endif
             }
         }
+        // The local route follows the active server, its identity and whether
+        // the app is signed in to it (LocalRouteController).
+        .task(id: localRouteKey) {
+            guard await HTTPClient.shared.waitForRequestDispatchOpen(), !Task.isCancelled else { return }
+            LocalRouteController.shared.update(
+                activeServer: serverRegistry.activeServer,
+                isSignedIn: router.authState == .authenticated
+            )
+        }
         .task(id: serverRegistry.activeProfileId) {
             #if os(iOS) || os(tvOS)
             diagnosticsModel.reset()
@@ -466,6 +484,11 @@ struct ContentView: View {
             // timeline) and stamps the inter-phase `duration_ms`.
             LaunchTimeline.recordScenePhase(Self.diagnosticsScenePhase(newPhase))
             #endif
+            switch newPhase {
+            case .active: LocalRouteController.shared.sceneDidBecomeActive()
+            case .background: LocalRouteController.shared.sceneDidEnterBackground()
+            default: break
+            }
             #if os(iOS)
             switch newPhase {
             case .active:

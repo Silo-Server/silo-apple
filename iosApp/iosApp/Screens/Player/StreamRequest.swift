@@ -8,6 +8,21 @@ struct StreamRequest {
     /// Owner of the credentials resolved for this load, excluding future
     /// access-token rotations. Never recapture a new owner during playback.
     let capturedAuth: CapturedOrdinaryRequestAuth?
+    /// The local route `url` was moved to, if any (`LocalRoute`). `serverUrl`
+    /// stays the saved address: it owns the credentials and every subtitle
+    /// and font route.
+    var localRoute: LocalRoute? = nil
+
+    /// This request with its media moved to `route`'s local origin, when the
+    /// route belongs to the credential owner's server and the media is on the
+    /// saved origin. A proxy-node origin or a local file stays as it is.
+    func routed(over route: LocalRoute?) -> StreamRequest {
+        guard let route, localRoute == nil,
+              let owner = capturedAuth, owner.account.serverId == route.serverID,
+              LocalRoute.origin(of: serverUrl) == route.savedOrigin,
+              let local = route.localURL(for: url) else { return self }
+        return StreamRequest(url: local, headers: headers, serverUrl: serverUrl, capturedAuth: capturedAuth, localRoute: route)
+    }
 
     /// Resolve the server's engine-neutral transport without allowing the
     /// user's API credential to cross an origin boundary. Header-authenticated

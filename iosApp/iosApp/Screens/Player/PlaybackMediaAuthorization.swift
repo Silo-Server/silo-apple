@@ -167,9 +167,13 @@ enum PlaybackMediaAuthorization {
         }
     }
 
+    /// `transportServerURL` is the local route's origin when the media moved
+    /// to it (`StreamRequest.localRoute`): the credentials still belong to
+    /// `serverURL`, and the scope admits only the origin the media is on.
     static func make(
         sourceURL: URL,
         serverURL: String,
+        transportServerURL: String? = nil,
         sessionID: String,
         expectedAuth: CapturedOrdinaryRequestAuth,
         baseHeaders: [String: String],
@@ -179,7 +183,7 @@ enum PlaybackMediaAuthorization {
                 == ServerRegistry.normalize(url: serverURL) else {
             throw ValidationError.credentialOwnerMismatch
         }
-        let scope = try Scope(sourceURL: sourceURL, serverURL: serverURL, sessionID: sessionID)
+        let scope = try Scope(sourceURL: sourceURL, serverURL: transportServerURL ?? serverURL, sessionID: sessionID)
         return HTTPRequestAuthorization { url, rejectedHeaders in
             guard scope.allows(url) else { throw ValidationError.outsideSessionScope }
             return try await http.mediaRequestHeaders(

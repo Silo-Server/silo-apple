@@ -111,11 +111,20 @@ struct ServerConnectionsDocument: Decodable, Hashable, Sendable {
         }
     }
 
+    /// How to reach the API server directly on the local network: the pin of
+    /// the key its listener presents over TLS, and the admin-set local
+    /// address when there is one. Absent on servers without the feature.
+    struct LocalRoute: Decodable, Hashable, Sendable {
+        let spkiSha256: String
+        let url: String?
+    }
+
     let state: String?
     let allowed: Bool?
     let serverId: String
     let current: AccessPath?
     let endpoints: [Endpoint]
+    let localRoute: LocalRoute?
 
     var isAvailable: Bool { state == "available" && allowed != false }
 

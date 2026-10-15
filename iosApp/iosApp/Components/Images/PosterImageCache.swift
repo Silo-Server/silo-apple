@@ -234,7 +234,7 @@ enum PosterImageCache {
             config.dataLoader = {
                 let session = URLSessionConfiguration.default
                 session.urlCache = nil
-                return DataLoader(configuration: session)
+                return LocalRouteDataLoader(loader: DataLoader(configuration: session))
             }()
 
             let memoryCache = ImageCache()

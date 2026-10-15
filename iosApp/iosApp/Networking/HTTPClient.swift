@@ -261,7 +261,9 @@ actor HTTPClient {
         // bytes, not a total budget, so slow-but-alive responses are
         // unaffected.
         config.timeoutIntervalForRequest = requestTimeout
-        return URLSession(configuration: config)
+        // The delegate only answers challenges from the active server's local
+        // route (LocalRouteTrust); every other host keeps default handling.
+        return URLSession(configuration: config, delegate: LocalRouteTrustDelegate.shared, delegateQueue: nil)
     }
 
     /// Parser for the fractional-second ISO-8601 timestamps the Silo
@@ -498,7 +500,8 @@ actor HTTPClient {
                 request: request,
                 timeout: timeout,
                 dispatchRevision: dispatchRevision,
-                dispatchRecord: dispatchRecord
+                dispatchRecord: dispatchRecord,
+                routesLocally: true
             )
 
             if response.statusCode == 401,
@@ -541,7 +544,8 @@ actor HTTPClient {
                         request: request,
                         timeout: timeout,
                         dispatchRevision: dispatchRevision,
-                        dispatchRecord: dispatchRecord
+                        dispatchRecord: dispatchRecord,
+                        routesLocally: true
                     )
                 } else {
                     // Refresh reported success but the recapture disagreed, so
@@ -1042,7 +1046,8 @@ actor HTTPClient {
             request: request,
             timeout: timeout,
             dispatchRevision: dispatchRevision,
-            dispatchRecord: dispatchRecord
+            dispatchRecord: dispatchRecord,
+            routesLocally: true
         )
 
         if response.statusCode == 401, Self.shouldAttemptRefresh(path: path, method: method) {
@@ -1071,7 +1076,8 @@ actor HTTPClient {
                     request: retry,
                     timeout: timeout,
                     dispatchRevision: dispatchRevision,
-                    dispatchRecord: dispatchRecord
+                    dispatchRecord: dispatchRecord,
+                    routesLocally: true
                 )
                 await signalProfileVerificationIfRequired(retryData, retryResponse, sent: retry, auth: refreshedAuth)
                 if !acceptedStatuses.contains(retryResponse.statusCode) {
@@ -1388,12 +1394,17 @@ actor HTTPClient {
     /// the only places in this file that may call `session.data(for:)`, apart
     /// from the best-effort, unclassified `revokeSession`; adding another
     /// would reintroduce an unclassified path.
+    ///
+    /// `routesLocally` lets an ordinary active-server request take the local
+    /// route (``LocalRoute``). Explicit-URL reads never do: they name the
+    /// address they mean.
     private func perform(
         request: URLRequest,
         timeout: HTTPTimeout = .standard,
         dispatchRevision: UInt64,
         dispatchRecord: HTTPDispatchRecord? = nil,
-        reportReachability: Bool = true
+        reportReachability: Bool = true,
+        routesLocally: Bool = false
     ) async throws -> (Data, HTTPURLResponse) {
         #if os(iOS) || os(tvOS)
         // Templated once, at capture, before anything can log it. `request.url`
@@ -1425,7 +1436,8 @@ actor HTTPClient {
         let response: URLResponse
         do {
             let session = timeout == .extended ? longWaitSession : session
-            (data, response) = try await session.data(for: request)
+            (data, response) = try await send(
+                request, on: session, routesLocally: routesLocally, dispatchRevision: dispatchRevision)
         } catch {
             if isRequestDispatchBlocked || requestDispatchRevision != dispatchRevision {
                 #if os(iOS) || os(tvOS)
@@ -1434,18 +1446,22 @@ actor HTTPClient {
                 #endif
                 throw HTTPError.requestIdentityChanged
             }
+            // A local-route failure that could not go again to the saved
+            // address says nothing about the server's reachability there.
+            let localRouteFailure = error as? LocalRouteFailure
+            let transportError = localRouteFailure?.underlying ?? error
             // Feed ConnectionMonitor from every transport failure so the app
             // learns "server down" passively. Cancellation says nothing about
             // reachability, so it is excluded.
-            if reportReachability {
-                await Self.noteServerUnreachable(for: error)
+            if reportReachability, localRouteFailure == nil {
+                await Self.noteServerUnreachable(for: transportError)
             }
             #if os(iOS) || os(tvOS)
             // Split on the same axis reachability does. A cancellation is
             // ordinary (screen dismissed, server switched) and high-volume, so
             // it is verbose; a real transport failure is the "it won't connect"
             // evidence this instrumentation exists for, so it is essential.
-            let isCancellation = (error as? URLError)?.code == .cancelled
+            let isCancellation = (transportError as? URLError)?.code == .cancelled
             DiagTrace.log(
                 isCancellation ? .verbose : .essential,
                 level: isCancellation ? .debug : .error,
@@ -1461,11 +1477,11 @@ actor HTTPClient {
                             ? HTTPDiagnosticsOutcome.cancelled
                             : HTTPDiagnosticsOutcome.transportError
                     ),
-                    "error_code": .string(HTTPDiagnosticsErrorCode.classify(transport: error)),
+                    "error_code": .string(HTTPDiagnosticsErrorCode.classify(transport: transportError)),
                 ]
             )
             #endif
-            throw HTTPError.network(underlying: error)
+            throw HTTPError.network(underlying: transportError)
         }
         if let responseReceivedBarrier {
             await responseReceivedBarrier()
@@ -1552,6 +1568,43 @@ actor HTTPClient {
     /// **No credential may reach a log line from here.** The request and a 2xx
     /// response both carry tokens, so never read `httpBody`,
     /// `allHTTPHeaderFields` or `data`; keep the attribute list literal.
+    /// Sends `request`, over the local route when it is allowed and one is
+    /// active for its origin. The route is read once, so the response and any
+    /// failure belong to the route this request used; the response reports the
+    /// saved origin. A route failure drops that route, and a request that
+    /// cannot have reached the server, or is safe to repeat, goes again to the
+    /// saved address under the same dispatch fence. Anything else is thrown as
+    /// ``LocalRouteFailure``.
+    private func send(
+        _ request: URLRequest,
+        on session: URLSession,
+        routesLocally: Bool,
+        dispatchRevision: UInt64
+    ) async throws -> (Data, URLResponse) {
+        guard routesLocally, let route = LocalRoute.active, let routed = route.routed(request) else {
+            return try await session.data(for: request)
+        }
+        do {
+            let (data, response) = try await session.data(for: routed)
+            return (data, route.relabeled(response))
+        } catch {
+            guard LocalRoute.isRouteFailure(error, taskCancelled: Task.isCancelled) else { throw error }
+            LocalRouteController.reportFailure(of: route)
+            #if os(iOS) || os(tvOS)
+            DiagTrace.log(
+                .essential, level: .warning, category: .network, tag: "HTTP",
+                message: "local route failed",
+                attrs: ["error_code": .string(HTTPDiagnosticsErrorCode.classify(transport: error))]
+            )
+            #endif
+            guard LocalRoute.mayRetryOnSavedAddress(after: error, method: request.httpMethod) else {
+                throw LocalRouteFailure(underlying: error)
+            }
+            try ensureRequestDispatchAllowed(expectedRevision: dispatchRevision)
+            return try await session.data(for: request)
+        }
+    }
+
     private static func performRefreshTransport(
         request: URLRequest,
         session: URLSession
