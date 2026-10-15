@@ -887,7 +887,7 @@ class PlayerViewModel {
     private var seekTargetTime: Double?
     /// This member's newest room seek request the room has not run yet; see
     /// `WatchPartyHeldSeek`.
-    private var watchPartyHeldSeek: Double?
+    private var watchPartyHeldSeek: WatchPartyHeldSeek?
     private var seekFilterTimeoutTask: Task<Void, Never>?
     /// The in-flight `commitSeek` await. Held so a new load can cancel a seek
     /// whose `.requiresReplan` answer would otherwise arrive after the item
@@ -1534,7 +1534,7 @@ class PlayerViewModel {
                 // A held room request is released only by the room's seek to
                 // it or the timeout: playback from an earlier room seek in the
                 // burst can cross the midpoint before that seek arrives.
-                if watchPartyHeldSeek != nil || abs(movieTime - origin) < abs(movieTime - target) {
+                if watchPartyHeldSeek != nil || Self.isStaleSeekTick(movieTime, origin: origin, target: target) {
                     pushNowPlayingIfDue()
                     return
                 }
@@ -6359,9 +6359,10 @@ class PlayerViewModel {
             // The origin is the engine's clock: an earlier request's held
             // target is not where playback ticks will come from.
             let requested = duration > 0 ? min(max(0, target), duration) : max(0, target)
-            seekOriginTime = watchPartyPlaybackSnapshot.sourceTime
+            let origin = watchPartyPlaybackSnapshot.sourceTime
+            seekOriginTime = origin
             seekTargetTime = requested
-            watchPartyHeldSeek = requested
+            watchPartyHeldSeek = WatchPartyHeldSeek(target: requested, origin: origin)
             currentTime = requested
             scrubPreviewTime = requested
             armSeekFilterTimeout(restoringRoomPosition: true)
@@ -6393,12 +6394,12 @@ class PlayerViewModel {
         // A room seek for an earlier skip in a burst moves the engine but
         // leaves the newest request on the timeline, and ticks from the
         // engine's new position are filtered as stale until the room's seek
-        // to that request runs.
-        let heldTarget = roomCommand
-            ? WatchPartyHeldSeek.remaining(watchPartyHeldSeek, afterRoomSeekTo: clampedTarget) : nil
-        watchPartyHeldSeek = heldTarget
-        let shownTarget = heldTarget ?? clampedTarget
-        seekOriginTime = heldTarget == nil ? currentTime : clampedTarget
+        // to that request runs. That seek still filters ticks from where the
+        // engine played, not from the target the timeline already shows.
+        var held = roomCommand ? watchPartyHeldSeek : nil
+        let (shownTarget, origin) = WatchPartyHeldSeek.roomSeek(to: clampedTarget, held: &held, from: currentTime)
+        watchPartyHeldSeek = held
+        seekOriginTime = origin
         seekTargetTime = shownTarget
         currentTime = shownTarget
         sourceWatch.seekCommitted(to: clampedTarget)
@@ -6469,7 +6470,7 @@ class PlayerViewModel {
             }
         }
 
-        armSeekFilterTimeout(restoringRoomPosition: heldTarget != nil)
+        armSeekFilterTimeout(restoringRoomPosition: held != nil)
         // Playback ticks stop while paused, so a seek out of (or back into)
         // the intro has to reach the pill here rather than on the next tick.
         // Last, after this seek is fully issued: a seek into an unresolved
@@ -7407,6 +7408,12 @@ class PlayerViewModel {
         default:
             return nil
         }
+    }
+
+    /// Whether a clock tick during a seek is from before it: nearer the
+    /// position the seek left than its target.
+    nonisolated static func isStaleSeekTick(_ time: Double, origin: Double, target: Double) -> Bool {
+        abs(time - origin) < abs(time - target)
     }
 
     static func isUnexpectedBackwardPlaybackTime(

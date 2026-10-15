@@ -132,15 +132,35 @@ enum WatchPartySeekOrigin: Equatable {
 /// runs it. In a burst of skips the room's seeks for the earlier skips land
 /// first: they move the engine but leave the newest request on the timeline,
 /// so the next skip still builds on it. Mirrors Android's pending seek.
-enum WatchPartyHeldSeek {
+struct WatchPartyHeldSeek: Equatable {
     /// A room seek this close to the held request answers it. The server
     /// folds a repeat seek this close to its waiting seek into that seek.
     static let match: Double = 1
 
-    /// The request still held after the room's seek to `commanded` runs.
-    static func remaining(_ held: Double?, afterRoomSeekTo commanded: Double) -> Double? {
-        guard let held, held.isFinite, commanded.isFinite, abs(held - commanded) > match else { return nil }
-        return held
+    /// The requested position the timeline shows.
+    let target: Double
+    /// Where the engine plays until the room's seek to `target` runs: its
+    /// position at the request, or where an earlier room seek since sent it.
+    /// Clock ticks from there are stale, also after that seek runs.
+    var origin: Double
+
+    func isAnswered(byRoomSeekTo commanded: Double) -> Bool {
+        target.isFinite && commanded.isFinite && abs(target - commanded) <= Self.match
+    }
+
+    /// The room's seek to `commanded` runs while the timeline shows
+    /// `current`. Returns the position to show and the origin of the seek
+    /// filter, whose ticks are stale. A seek for an earlier skip in a burst
+    /// leaves `held` waiting; the seek that answers it ends it.
+    static func roomSeek(to commanded: Double, held: inout WatchPartyHeldSeek?,
+                         from current: Double) -> (shown: Double, origin: Double) {
+        guard let request = held else { return (commanded, current) }
+        if request.isAnswered(byRoomSeekTo: commanded) {
+            held = nil
+            return (commanded, request.origin)
+        }
+        held?.origin = commanded
+        return (request.target, commanded)
     }
 }
 

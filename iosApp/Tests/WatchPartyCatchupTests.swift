@@ -204,12 +204,39 @@ final class WatchPartyCatchupTests: XCTestCase {
     func testOnlyTheRoomSeekToTheHeldRequestReleasesIt() {
         // Skips to 110, 120 and 130: the room's seeks for the first two land
         // while 130 is still held, so the next skip builds on 130.
-        XCTAssertEqual(WatchPartyHeldSeek.remaining(130, afterRoomSeekTo: 110), 130)
-        XCTAssertEqual(WatchPartyHeldSeek.remaining(130, afterRoomSeekTo: 120), 130)
-        XCTAssertNil(WatchPartyHeldSeek.remaining(130, afterRoomSeekTo: 130))
+        var held: WatchPartyHeldSeek? = WatchPartyHeldSeek(target: 130, origin: 23)
+        XCTAssertEqual(WatchPartyHeldSeek.roomSeek(to: 110, held: &held, from: 130).shown, 130)
+        XCTAssertEqual(WatchPartyHeldSeek.roomSeek(to: 120, held: &held, from: 130).shown, 130)
+        XCTAssertEqual(held, WatchPartyHeldSeek(target: 130, origin: 120))
+        XCTAssertEqual(WatchPartyHeldSeek.roomSeek(to: 130, held: &held, from: 130).shown, 130)
+        XCTAssertNil(held)
         // The server folds a repeat seek within a second into its waiting seek.
-        XCTAssertNil(WatchPartyHeldSeek.remaining(130.6, afterRoomSeekTo: 130))
-        XCTAssertNil(WatchPartyHeldSeek.remaining(nil, afterRoomSeekTo: 110))
+        XCTAssertTrue(WatchPartyHeldSeek(target: 130.6, origin: 23).isAnswered(byRoomSeekTo: 130))
+        XCTAssertFalse(WatchPartyHeldSeek(target: 131.5, origin: 23).isAnswered(byRoomSeekTo: 130))
+        // Without a request the room's seek is shown as it runs.
+        var none: WatchPartyHeldSeek?
+        let unheld = WatchPartyHeldSeek.roomSeek(to: 110, held: &none, from: 40)
+        XCTAssertEqual(unheld.shown, 110)
+        XCTAssertEqual(unheld.origin, 40)
+    }
+
+    func testTheRoomSeekThatAnswersAHeldRequestStillRejectsTicksFromTheOldStream() {
+        // The host asked for 120 while playing at 23, and the timeline shows
+        // 120 already. The room's seek rebuilds the stream, whose first ticks
+        // still come from the old position; they must not move the timeline back.
+        var held: WatchPartyHeldSeek? = WatchPartyHeldSeek(target: 120, origin: 23)
+        let answer = WatchPartyHeldSeek.roomSeek(to: 120, held: &held, from: 120)
+        XCTAssertNil(held)
+        XCTAssertEqual(answer.origin, 23)
+        XCTAssertTrue(PlayerViewModel.isStaleSeekTick(23.5, origin: answer.origin, target: answer.shown))
+        XCTAssertFalse(PlayerViewModel.isStaleSeekTick(120.2, origin: answer.origin, target: answer.shown))
+        // In a burst, the stale ticks come from where the earlier room seek
+        // sent the engine.
+        var burst: WatchPartyHeldSeek? = WatchPartyHeldSeek(target: 130, origin: 23)
+        _ = WatchPartyHeldSeek.roomSeek(to: 110, held: &burst, from: 130)
+        let last = WatchPartyHeldSeek.roomSeek(to: 130, held: &burst, from: 130)
+        XCTAssertTrue(PlayerViewModel.isStaleSeekTick(110.4, origin: last.origin, target: last.shown))
+        XCTAssertFalse(PlayerViewModel.isStaleSeekTick(129.8, origin: last.origin, target: last.shown))
     }
 
     func testOnlyATargetReachableInPlaceCountsAsBuffered() {
