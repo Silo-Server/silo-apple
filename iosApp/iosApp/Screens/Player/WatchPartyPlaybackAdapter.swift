@@ -187,10 +187,13 @@ struct WatchPartyReloadBudget: Equatable {
     }
 
     /// Whether playback went from `before` to `after` by moving toward `aim`,
-    /// rather than staying on the stream the load was meant to replace.
-    static func moved(from before: Double, to after: Double, toward aim: Double) -> Bool {
-        guard before.isFinite, after.isFinite, aim.isFinite else { return false }
-        return abs(after - aim) + WatchPartyCorrection.stoppedSeek < abs(before - aim)
+    /// rather than staying on the stream the load was meant to replace. That
+    /// stream keeps playing while a refused reanchor is waited out, so it is
+    /// judged where it would have played to, `played` seconds on.
+    static func moved(from before: Double, played: TimeInterval = 0, to after: Double, toward aim: Double) -> Bool {
+        guard before.isFinite, after.isFinite, aim.isFinite, played.isFinite else { return false }
+        let oldStream = before + max(0, played)
+        return abs(after - aim) + WatchPartyCorrection.stoppedSeek < abs(oldStream - aim)
     }
 
     /// The load's seek finished. Whatever plays now is this load, however

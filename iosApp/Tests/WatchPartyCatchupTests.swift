@@ -171,6 +171,10 @@ final class WatchPartyCatchupTests: XCTestCase {
         XCTAssertTrue(WatchPartyReloadBudget.moved(from: 120, to: 101, toward: 100))
         XCTAssertFalse(WatchPartyReloadBudget.moved(from: 120, to: 120.5, toward: 100))
         XCTAssertFalse(WatchPartyReloadBudget.moved(from: 90, to: 90.4, toward: 100))
+        // A refused forward load whose old stream kept playing for 4s only
+        // played toward the aim; it did not move there.
+        XCTAssertFalse(WatchPartyReloadBudget.moved(from: 90, played: 4, to: 94, toward: 100))
+        XCTAssertTrue(WatchPartyReloadBudget.moved(from: 90, played: 4, to: 100.5, toward: 100))
         // Expiring it lets the next load start at once, as a stale load always could.
         budget.expire(at: at(WatchPartyReloadBudget.staleAfter))
         XCTAssertNil(budget.target)
