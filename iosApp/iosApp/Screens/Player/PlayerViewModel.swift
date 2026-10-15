@@ -6349,12 +6349,14 @@ class PlayerViewModel {
             // requested target, as a local seek does, so the timeline does
             // not snap back and the next relative skip builds on it instead
             // of on the stream the room is about to move.
+            // The origin is the engine's clock: an earlier request's held
+            // target is not where playback ticks will come from.
             let requested = duration > 0 ? min(max(0, target), duration) : max(0, target)
-            seekOriginTime = currentTime
+            seekOriginTime = watchPartyPlaybackSnapshot.sourceTime
             seekTargetTime = requested
             currentTime = requested
             scrubPreviewTime = requested
-            armSeekFilterTimeout()
+            armSeekFilterTimeout(restoringRoomPosition: true)
             return true
         }
         let clampedTarget = duration > 0 ? min(max(0, target), duration) : max(0, target)
@@ -6809,9 +6811,12 @@ class PlayerViewModel {
     /// transitions focus away from the scrubber for a reason that's not a
     /// commit — most commonly, opening a sheet — so the scrub preview
     /// doesn't become an accidental seek.
-    /// Lets playback ticks through again if the seek never arrives, such as a
-    /// room seek the room dropped.
-    private func armSeekFilterTimeout() {
+    /// Lets playback ticks through again if the seek never arrives. A held
+    /// room request the room never ran (dropped while disconnected or not yet
+    /// attached) also puts the timeline back on the engine's position: ticks
+    /// behind the held target would be filtered out as stale, and a paused
+    /// member sends none.
+    private func armSeekFilterTimeout(restoringRoomPosition: Bool = false) {
         seekFilterTimeoutTask?.cancel()
         seekFilterTimeoutTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: Self.seekFilterNanos)
@@ -6819,6 +6824,10 @@ class PlayerViewModel {
             self.seekOriginTime = nil
             self.seekTargetTime = nil
             self.seekFilterTimeoutTask = nil
+            if restoringRoomPosition, self.isWatchPartyPlayback, !self.isScrubbing {
+                self.currentTime = self.watchPartyPlaybackSnapshot.sourceTime
+                self.scrubPreviewTime = self.currentTime
+            }
         }
     }
 
