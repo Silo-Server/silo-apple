@@ -3552,13 +3552,15 @@ class PlayerViewModel {
     }
 
     /// Whether a load failed to reach its source, as one over a local route
-    /// that stopped working does, rather than on what the source sent.
+    /// that stopped working does: the connection failed, or the source
+    /// presented a key the pin refused. A failure about what the source sent,
+    /// such as an HTTP status or unreadable media, leaves the route alone.
     static func isLocalRouteLoadFailure(_ error: Error) -> Bool {
         guard let load = error as? AetherPlaybackController.LoadFailure else {
             return LocalRoute.isRouteFailure(error)
         }
         return load.failure.kind == .sourceCertificateRejected
-            || PlaybackReconnectPolicy.isConnectionLoss(load.failure, serverUnreachable: true)
+            || PlaybackReconnectPolicy.isConnectionLoss(load.failure, serverUnreachable: false)
     }
 
     private func loadAetherSource(

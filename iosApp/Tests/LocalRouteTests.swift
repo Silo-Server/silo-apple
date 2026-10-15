@@ -336,7 +336,7 @@ final class LocalRouteTests: XCTestCase {
                 underlying: URLError(.unknown))
         }
         for error: Error in [
-            load(.sourceOpenFailed),
+            load(.sourceOpenFailed, code: NSURLErrorCannotConnectToHost),
             load(.nativeItemFailed, code: NSURLErrorTimedOut),
             load(.sourceCertificateRejected),
             URLError(.cannotConnectToHost),
@@ -345,6 +345,8 @@ final class LocalRouteTests: XCTestCase {
         }
         // What the server sent, or a cancelled load, says nothing about the route.
         for error: Error in [
+            load(.sourceOpenFailed),
+            load(.nativeItemFailed, code: NSURLErrorUserAuthenticationRequired),
             load(.sourceRefused, code: 403),
             load(.softwarePipelineFailed),
             load(.sourceRateLimited),
