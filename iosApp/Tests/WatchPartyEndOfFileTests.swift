@@ -43,8 +43,10 @@ final class WatchPartyEndOfFileTests: XCTestCase {
         player.endScrub()
 
         XCTAssertEqual(requests, [.seek(300), .seek(600)])
-        // The room's command moves the playhead, not the request.
-        XCTAssertEqual(player.currentTime, 1_200)
+        // The timeline holds the newest request until the room's seek runs;
+        // only that command remounts the ended stream.
+        XCTAssertEqual(player.currentTime, 600)
+        XCTAssertTrue(player.hasReachedEndOfFile)
     }
 
     func testPlayFromTheEndIsNotSentToTheRoom() {
