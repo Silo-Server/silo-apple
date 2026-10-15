@@ -1167,6 +1167,10 @@ class PlayerViewModel {
     /// The local route the stream on screen was loaded over (`LocalRoute`),
     /// or nil when it came from the saved address.
     private var streamLocalRoute: LocalRoute?
+    /// Whether the load the engine just abandoned was to play when ready, as
+    /// it stood then: Play or Pause may have changed it during the load, and
+    /// tearing the load down clears it from the controller.
+    private var abandonedLoadPlayIntent: Bool?
     private static let nextUpCountdownDefaultSeconds = 10
     private static let nextUpHUDCountdownThresholdSeconds: Double = 100
     private static let nearEndPlaybackErrorThresholdSeconds: Double = 8
@@ -3543,7 +3547,7 @@ class PlayerViewModel {
                 prepared: prepared, streamRequest: streamRequest,
                 expectedStreamLoadGeneration: expectedStreamLoadGeneration,
                 resumeSourcePosition: resumeSourcePosition, reselectsPlanSubtitle: reselectsPlanSubtitle,
-                shouldPlayWhenReady: shouldPlayWhenReady, takesLocalRoute: false)
+                shouldPlayWhenReady: abandonedLoadPlayIntent ?? shouldPlayWhenReady, takesLocalRoute: false)
         }
     }
 
@@ -3568,6 +3572,7 @@ class PlayerViewModel {
     ) async throws {
         try requireCurrentStreamLoad(expectedStreamLoadGeneration)
         streamLocalRoute = nil
+        abandonedLoadPlayIntent = nil
         let preferredSubtitles = subtitleOrderingLanguage.map { [$0] } ?? []
         let preferredAudio = AetherInitialAudioPreference.languages(
             selectedOrdinal: prepared.protocolV3?.plan.selectedTracks.audio?.index,
@@ -3828,6 +3833,7 @@ class PlayerViewModel {
                 // The engine, not the app, abandoned this load. Nobody else
                 // will tear the source down, and the load's own catch is about
                 // to retire its server session.
+                abandonedLoadPlayIntent = aetherPlaybackController.shouldPlayWhenReady
                 disposeAetherPlayback()
             }
             throw resolved
