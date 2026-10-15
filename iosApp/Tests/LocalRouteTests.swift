@@ -383,22 +383,18 @@ final class LocalRouteTests: XCTestCase {
     }
 
     func testAPinBehindARedirectIsNotLearned() async throws {
-        let stub = StubURLProtocol.Handler()
-        let elsewhere = try XCTUnwrap(URL(string: "http://192.168.1.20:8080" + ServerIdentity.connectionsPath))
-        stub.route(StubURLProtocol.path(ServerIdentity.connectionsPath)) { request in
-            request.url?.scheme == "https" ? .redirect(to: elsewhere) : .json(Self.connectionsJSON(pin: "elsewhere"))
-        }
-        let configuration = URLSessionConfiguration.ephemeral
-        stub.install(into: configuration)
+        let origin = try RedirectingOrigin(document: Self.connectionsJSON(pin: "elsewhere"))
+        let saved = try await origin.start()
+        defer { origin.stop() }
 
-        let document = await LocalRouteProbe.connections(origin: savedOrigin, bearer: "token", configuration: configuration)
+        let document = await LocalRouteProbe.connections(origin: saved, bearer: "token")
 
         XCTAssertNil(document)
-        XCTAssertEqual(stub.requests.map { $0.url?.host }, ["local-route-tests.example"])
+        XCTAssertEqual(origin.requestedPaths(), [ServerIdentity.connectionsPath])
         // An ordinary session follows the same redirect.
-        let saved = try XCTUnwrap(URL(string: savedOrigin + ServerIdentity.connectionsPath))
-        let (_, followed) = try await URLSession(configuration: configuration).data(from: saved)
-        XCTAssertEqual(followed.url, elsewhere)
+        let url = try XCTUnwrap(URL(string: saved + ServerIdentity.connectionsPath))
+        let (_, followed) = try await URLSession(configuration: .ephemeral).data(from: url)
+        XCTAssertEqual(followed.url?.path, RedirectingOrigin.elsewherePath)
     }
 
     private static func connectionsJSON(pin: String) -> String {
