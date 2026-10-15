@@ -1,3 +1,6 @@
+#if canImport(AetherEngine)
+import AetherEngine
+#endif
 import CryptoKit
 import Foundation
 import Nuke
@@ -321,6 +324,34 @@ final class LocalRouteTests: XCTestCase {
             expectedAuth: owner(serverURL: "https://elsewhere.example"), baseHeaders: [:],
             http: HTTPClient(session: URLSession(configuration: .ephemeral)))) { error in
             XCTAssertEqual(error as? PlaybackMediaAuthorization.ValidationError, .credentialOwnerMismatch)
+        }
+    }
+
+    @MainActor
+    func testOnlyALoadThatCouldNotReachItsSourceLeavesTheRoute() {
+        func load(_ kind: PlaybackErrorKind, code: Int? = nil) -> AetherPlaybackController.LoadFailure {
+            AetherPlaybackController.LoadFailure(
+                failure: PlaybackErrorInfo(kind: kind, message: "load failed",
+                                           underlyingDomain: code.map { _ in NSURLErrorDomain }, underlyingCode: code),
+                underlying: URLError(.unknown))
+        }
+        for error: Error in [
+            load(.sourceOpenFailed),
+            load(.nativeItemFailed, code: NSURLErrorTimedOut),
+            load(.sourceCertificateRejected),
+            URLError(.cannotConnectToHost),
+        ] {
+            XCTAssertTrue(PlayerViewModel.isLocalRouteLoadFailure(error), "\(error)")
+        }
+        // What the server sent, or a cancelled load, says nothing about the route.
+        for error: Error in [
+            load(.sourceRefused, code: 403),
+            load(.softwarePipelineFailed),
+            load(.sourceRateLimited),
+            URLError(.cancelled),
+            CancellationError(),
+        ] {
+            XCTAssertFalse(PlayerViewModel.isLocalRouteLoadFailure(error), "\(error)")
         }
     }
     #endif

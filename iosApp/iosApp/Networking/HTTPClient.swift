@@ -1566,8 +1566,9 @@ actor HTTPClient {
         return (data, http)
     }
 
+    /// Matched anywhere in the path, so a base path prefix cannot hide one.
     private static func isAuthPath(_ url: URL?) -> Bool {
-        url.map { $0.path.hasPrefix("/api/v2/auth/") } ?? false
+        url.map { $0.path.contains("/api/v2/auth/") } ?? false
     }
 
     /// Sends `request`, over the local route when it is allowed and one is

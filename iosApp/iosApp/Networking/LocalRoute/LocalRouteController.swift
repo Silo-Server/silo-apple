@@ -238,7 +238,7 @@ final class LocalRouteController {
         if let last = lastConnectionsRefresh,
            Date().timeIntervalSince(last) < environment.connectionsRefreshInterval { return false }
         guard let document = await environment.fetchConnections(server),
-              self.server == server, document.serverId == server.identity else { return false }
+              !Task.isCancelled, self.server == server, document.serverId == server.identity else { return false }
         lastConnectionsRefresh = Date()
         guard let local = document.localRoute, !local.spkiSha256.isEmpty else {
             // The server does not offer a local route (an older server).

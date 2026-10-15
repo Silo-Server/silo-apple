@@ -3519,6 +3519,9 @@ class PlayerViewModel {
         )
     }
 
+    /// Loads `prepared` into the engine. A load on the local route that could
+    /// not reach its source drops the route and opens the same plan once more
+    /// from the saved address, before the failure counts against the plan.
     private func loadAether(
         prepared: PreparedPlayback,
         streamRequest: StreamRequest,
@@ -3526,6 +3529,42 @@ class PlayerViewModel {
         resumeSourcePosition: Double? = nil,
         reselectsPlanSubtitle: Bool = false,
         shouldPlayWhenReady: Bool
+    ) async throws {
+        do {
+            try await loadAetherSource(
+                prepared: prepared, streamRequest: streamRequest,
+                expectedStreamLoadGeneration: expectedStreamLoadGeneration,
+                resumeSourcePosition: resumeSourcePosition, reselectsPlanSubtitle: reselectsPlanSubtitle,
+                shouldPlayWhenReady: shouldPlayWhenReady, takesLocalRoute: true)
+        } catch {
+            guard let route = streamLocalRoute, !Task.isCancelled, Self.isLocalRouteLoadFailure(error) else { throw error }
+            LocalRouteController.reportFailure(of: route)
+            try await loadAetherSource(
+                prepared: prepared, streamRequest: streamRequest,
+                expectedStreamLoadGeneration: expectedStreamLoadGeneration,
+                resumeSourcePosition: resumeSourcePosition, reselectsPlanSubtitle: reselectsPlanSubtitle,
+                shouldPlayWhenReady: shouldPlayWhenReady, takesLocalRoute: false)
+        }
+    }
+
+    /// Whether a load failed to reach its source, as one over a local route
+    /// that stopped working does, rather than on what the source sent.
+    static func isLocalRouteLoadFailure(_ error: Error) -> Bool {
+        guard let load = error as? AetherPlaybackController.LoadFailure else {
+            return LocalRoute.isRouteFailure(error)
+        }
+        return load.failure.kind == .sourceCertificateRejected
+            || PlaybackReconnectPolicy.isConnectionLoss(load.failure, serverUnreachable: true)
+    }
+
+    private func loadAetherSource(
+        prepared: PreparedPlayback,
+        streamRequest: StreamRequest,
+        expectedStreamLoadGeneration: UInt64,
+        resumeSourcePosition: Double?,
+        reselectsPlanSubtitle: Bool,
+        shouldPlayWhenReady: Bool,
+        takesLocalRoute: Bool
     ) async throws {
         try requireCurrentStreamLoad(expectedStreamLoadGeneration)
         streamLocalRoute = nil
@@ -3585,7 +3624,7 @@ class PlayerViewModel {
             // authorization below), which is also what lets the engine reach a
             // pinned origin. A Watch Party stays on the saved address, which it
             // can always remount from.
-            let streamRequest = resolvesRequestCredentials && !isWatchPartyPlayback
+            let streamRequest = takesLocalRoute && resolvesRequestCredentials && !isWatchPartyPlayback
                 ? streamRequest.routed(over: LocalRoute.active)
                 : streamRequest
             streamLocalRoute = streamRequest.localRoute

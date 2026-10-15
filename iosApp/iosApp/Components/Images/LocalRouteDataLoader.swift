@@ -25,19 +25,20 @@ final class LocalRouteDataLoader: DataLoading {
             return loader.loadData(with: request, didReceiveData: didReceiveData, completion: completion)
         }
         let load = RoutedLoad(route: route)
-        load.start(loader.loadData(
+        load.start(attempt: 0, loader.loadData(
             with: routed,
             didReceiveData: { data, response in
                 load.markReceived()
                 didReceiveData(data, load.saved(for: response))
             },
             completion: { [loader] error in
+                // The route goes whether or not this load can still fall back.
+                if let error, LocalRoute.isRouteFailure(error) { LocalRouteController.reportFailure(of: route) }
                 guard let error, load.shouldFallBack(after: error) else {
                     completion(error)
                     return
                 }
-                if LocalRoute.isRouteFailure(error) { LocalRouteController.reportFailure(of: route) }
-                load.start(loader.loadData(with: request, didReceiveData: didReceiveData, completion: completion))
+                load.start(attempt: 1, loader.loadData(with: request, didReceiveData: didReceiveData, completion: completion))
             }
         ))
         return load
@@ -51,6 +52,7 @@ private final class RoutedLoad: Cancellable, @unchecked Sendable {
     private let route: LocalRoute
     private let lock = NSLock()
     private var task: (any Cancellable)?
+    private var attempt = -1
     private var cancelled = false
     private var received = false
     private var original: URLResponse?
@@ -60,9 +62,15 @@ private final class RoutedLoad: Cancellable, @unchecked Sendable {
         self.route = route
     }
 
-    func start(_ next: any Cancellable) {
+    /// The routed load is attempt 0 and its fallback attempt 1. A fallback
+    /// can start before the routed load's own `start` runs, if the routed
+    /// load finishes that fast; the later attempt keeps its place.
+    func start(attempt: Int, _ next: any Cancellable) {
         let cancelNow = lock.withLock { () -> Bool in
-            task = next
+            if attempt > self.attempt {
+                self.attempt = attempt
+                task = next
+            }
             return cancelled
         }
         if cancelNow { next.cancel() }
