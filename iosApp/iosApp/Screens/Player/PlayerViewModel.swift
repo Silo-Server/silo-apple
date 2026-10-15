@@ -9579,7 +9579,7 @@ extension PlayerViewModel {
         guard position.isFinite, position >= 0, !isDisposed,
               watchPartyAdapter?.context == context else { throw WatchPartyPlaybackError.invalidated }
         let local = watchPartyPlaybackSnapshot.sourceTime
-        guard WatchPartyCorrection.resolve(drift: position - local) == .seek else {
+        guard WatchPartyCorrection.seeks(drift: position - local) else {
             nudgeWatchPartyPlayback(drift: position - local)
             return watchPartyPlaybackSnapshot
         }

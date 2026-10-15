@@ -46,11 +46,7 @@ enum WatchPartyPlaybackError: Error {
 /// uses these bands and rates, so a mixed room behaves the same everywhere.
 /// Drift up to `hardSeek` converges by a pitch-preserved playback rate of at
 /// most 4 percent, too small for viewers to notice; only larger drift seeks.
-enum WatchPartyCorrection: Equatable {
-    case none
-    case seek
-    case rate(Double)
-
+enum WatchPartyCorrection {
     /// No correction starts below this drift.
     static let deadband: Double = 0.4
     /// A rate nudge in progress ends once playback is this close.
@@ -66,12 +62,11 @@ enum WatchPartyCorrection: Equatable {
     private static let rateGain: Double = 25
     private static let rateStep: Double = 0.005
 
-    /// `drift` is the room position minus the local position, in seconds:
-    /// positive when this member is behind.
-    static func resolve(drift: Double) -> Self {
-        guard drift.isFinite, abs(drift) > deadband else { return .none }
-        if abs(drift) > hardSeek { return .seek }
-        return .rate(rate(for: drift))
+    /// Whether a playing member seeks for `drift` instead of converging by
+    /// rate. `drift` is the room position minus the local position, in
+    /// seconds: positive when this member is behind.
+    static func seeks(drift: Double) -> Bool {
+        drift.isFinite && abs(drift) > hardSeek
     }
 
     /// The rate to play at for `drift`, given the rate playing now. A nudge
