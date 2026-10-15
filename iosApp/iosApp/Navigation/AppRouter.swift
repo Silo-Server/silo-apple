@@ -159,14 +159,14 @@ final class AppRouter {
     /// Navigation path for push/pop within the current flow.
     var path = NavigationPath()
 
-    #if os(macOS)
     /// Routes pushed through the router, mirrored because `NavigationPath` is
     /// opaque. Entries past `path.count` are stale (the system Back button
     /// pops the path directly), so read `visiblePushedRoutes` instead.
     @ObservationIgnored private var pushedRoutes: [Route] = []
 
     /// The routes currently on the stack, oldest first. The Mac sidebar reads
-    /// this to highlight the row that matches the page in view.
+    /// this to highlight the row that matches the page in view, and closing
+    /// the Requests screens reads it to find them.
     var visiblePushedRoutes: [Route] {
         Array(pushedRoutes.prefix(path.count))
     }
@@ -175,7 +175,6 @@ final class AppRouter {
         let kept = max(0, path.count - (replacingTop ? 1 : 0))
         pushedRoutes = Array(pushedRoutes.prefix(kept)) + [route]
     }
-    #endif
 
     // MARK: - Item Detail Presentation
 
@@ -224,6 +223,27 @@ final class AppRouter {
     #if os(iOS)
     var presentedItemDetail: ItemDetailPresentation?
     var itemDetailPath = NavigationPath()
+    /// Mirror of `itemDetailPath`, kept like `pushedRoutes`: entries past
+    /// `itemDetailPath.count` are stale.
+    @ObservationIgnored private var itemDetailPushedRoutes: [Route] = []
+
+    private func appendToItemDetail(_ route: Route) {
+        itemDetailPushedRoutes = Array(itemDetailPushedRoutes.prefix(itemDetailPath.count)) + [route]
+        itemDetailPath.append(route)
+    }
+
+    /// The open detail card's pages, oldest first: its root, then the pages
+    /// pushed inside it. Empty when no card is open.
+    var visibleItemDetailRoutes: [Route] {
+        guard let presentedItemDetail else { return [] }
+        let root: Route = if let request = presentedItemDetail.request {
+            .requestDetail(mediaType: request.mediaType, tmdbId: request.tmdbId)
+        } else {
+            .itemDetail(contentId: presentedItemDetail.contentId, libraryId: presentedItemDetail.libraryId)
+        }
+        return [root] + itemDetailPushedRoutes.prefix(itemDetailPath.count)
+    }
+
     /// Kept current by the tab view: true while its phone window would split
     /// a detail page (see `PhoneDetailHeroLayout.usesSplitLayout`), as on the
     /// iPhone Duo's open display held in landscape. A sheet there is capped at
@@ -655,7 +675,7 @@ final class AppRouter {
                     request: .init(mediaType: mediaType, tmdbId: tmdbId)
                 ))
             } else {
-                itemDetailPath.append(route)
+                appendToItemDetail(route)
             }
             return
         }
@@ -670,14 +690,12 @@ final class AppRouter {
         // was pushed behind the still-presented card.
         if presentedItemDetail != nil,
            case .personDetail = route {
-            itemDetailPath.append(route)
+            appendToItemDetail(route)
             return
         }
         #endif
 
-        #if os(macOS)
         recordPush(route)
-        #endif
         path.append(route)
     }
 
@@ -703,7 +721,7 @@ final class AppRouter {
                 resumeContext: resumeContext
             ))
         } else {
-            itemDetailPath.append(Route.itemDetail(contentId: contentId, libraryId: libraryId, seriesContext: resumeContext))
+            appendToItemDetail(Route.itemDetail(contentId: contentId, libraryId: libraryId, seriesContext: resumeContext))
         }
         #else
         navigate(to: .itemDetail(contentId: contentId, libraryId: libraryId, seriesContext: resumeContext))
@@ -748,9 +766,7 @@ final class AppRouter {
     /// stack up — Back exits the chain in one step.
     func replaceCurrent(with route: Route) {
         recordScreenBreadcrumb(target: route.diagnosticsTarget, action: "replace")
-        #if os(macOS)
         recordPush(route, replacingTop: true)
-        #endif
         if !path.isEmpty {
             path.removeLast()
         }
@@ -768,6 +784,34 @@ final class AppRouter {
     func popToRoot() {
         recordScreenBreadcrumb(target: "root", action: "popToRoot")
         path = NavigationPath()
+    }
+
+    /// The server answered that requests are unavailable: close the Requests
+    /// screens in view (hub, My Requests, request detail) back to whatever
+    /// opened them. Only the run of Requests pages on top closes; a title
+    /// opened from Requests stays, and Requests pages under it close once
+    /// they are back in view. Callers decide when requests are unavailable
+    /// (`RequestsFeatureStore.isKnownUnavailable`).
+    func closeRequestsScreens() {
+        #if os(iOS)
+        // The detail card covers the main stack, which waits until it closes.
+        let cardRoutes = visibleItemDetailRoutes
+        if !cardRoutes.isEmpty {
+            let count = RequestsRouteVisibility.requestsRoutesOnTop(cardRoutes)
+            guard count > 0 else { return }
+            recordScreenBreadcrumb(target: "requestsUnavailable", action: "close")
+            if count == cardRoutes.count {
+                dismissItemDetail()
+            } else {
+                itemDetailPath.removeLast(count)
+            }
+            return
+        }
+        #endif
+        let count = RequestsRouteVisibility.requestsRoutesOnTop(visiblePushedRoutes)
+        guard count > 0 else { return }
+        recordScreenBreadcrumb(target: "requestsUnavailable", action: "close")
+        path.removeLast(count)
     }
 
     /// Why the sign-in screen is showing, when it isn't the user's own
@@ -839,8 +883,10 @@ final class AppRouter {
         guard let returnPoint, returnPoint.restores(for: authenticatedOwner) else { return }
         recordScreenBreadcrumb(target: "previous", action: "restoreAfterSessionExpired")
         path = returnPoint.path
+        pushedRoutes = returnPoint.pushedRoutes
         #if os(iOS)
         itemDetailPath = returnPoint.itemDetailPath
+        itemDetailPushedRoutes = returnPoint.itemDetailPushedRoutes
         openItemDetail(returnPoint.itemDetail)
         #endif
     }
@@ -1039,11 +1085,12 @@ final class AppRouter {
         guard authState == .authenticated, let authenticatedOwner else { return nil }
         #if os(iOS)
         guard !path.isEmpty || presentedItemDetail != nil else { return nil }
-        return SessionReturnPoint(owner: authenticatedOwner, path: path,
-                                  itemDetail: presentedItemDetail, itemDetailPath: itemDetailPath)
+        return SessionReturnPoint(owner: authenticatedOwner, path: path, pushedRoutes: visiblePushedRoutes,
+                                  itemDetail: presentedItemDetail, itemDetailPath: itemDetailPath,
+                                  itemDetailPushedRoutes: Array(itemDetailPushedRoutes.prefix(itemDetailPath.count)))
         #else
         guard !path.isEmpty else { return nil }
-        return SessionReturnPoint(owner: authenticatedOwner, path: path)
+        return SessionReturnPoint(owner: authenticatedOwner, path: path, pushedRoutes: visiblePushedRoutes)
         #endif
     }
 
@@ -1127,9 +1174,11 @@ struct SessionOwner: Equatable {
 struct SessionReturnPoint {
     let owner: SessionOwner
     let path: NavigationPath
+    let pushedRoutes: [Route]
     #if os(iOS)
     let itemDetail: AppRouter.ItemDetailPresentation?
     let itemDetailPath: NavigationPath
+    let itemDetailPushedRoutes: [Route]
     #endif
 
     /// Only the same profile of the same account on the same server goes

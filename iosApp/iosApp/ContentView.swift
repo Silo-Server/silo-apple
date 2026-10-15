@@ -549,6 +549,34 @@ struct ContentView: View {
             updateProfileAwayStartForBackgroundPlayback()
         }
         #endif
+        .onChange(of: requestsScreensCheck, initial: true) { _, check in
+            guard check.requestsUnavailable else { return }
+            router.closeRequestsScreens()
+        }
+    }
+
+    /// What decides whether open Requests screens must close: the server's
+    /// answer, and the pages in view, so a Requests page that comes back into
+    /// view (Back from a title opened from Requests) closes too.
+    private struct RequestsScreensCheck: Equatable {
+        let requestsUnavailable: Bool
+        let pathCount: Int
+        let detailCardID: UUID?
+        let detailCardPathCount: Int
+    }
+
+    private var requestsScreensCheck: RequestsScreensCheck {
+        // Only an answered probe closes anything: before the first answer,
+        // after a reset, and after a failed probe the store is not "off".
+        let unavailable = router.authState == .authenticated
+            && RequestsFeatureStore.shared.isKnownUnavailable
+        #if os(iOS)
+        return RequestsScreensCheck(requestsUnavailable: unavailable, pathCount: router.path.count,
+            detailCardID: router.presentedItemDetail?.id, detailCardPathCount: router.itemDetailPath.count)
+        #else
+        return RequestsScreensCheck(requestsUnavailable: unavailable, pathCount: router.path.count,
+            detailCardID: nil, detailCardPathCount: 0)
+        #endif
     }
 
     /// Overlay hydration is the one post-authentication refresh whose failure
