@@ -158,7 +158,9 @@ final class LocalRouteController {
     }
 
     /// A pinned address presented another key: rotated, or not the server.
+    /// Requests stop using it at once.
     nonisolated static func reportKeyMismatch(host: String, port: Int) {
+        LocalRoute.drop(host: host, port: port)
         Task { @MainActor in shared.keyMismatch(host: host, port: port) }
     }
 
@@ -181,13 +183,21 @@ final class LocalRouteController {
     }
 
     /// The device's network changed. The route goes at once, since its
-    /// address may now lead somewhere else; with a Wi-Fi, wired or other
-    /// non-cellular interface it is checked again and comes back if the
-    /// server still answers there.
-    func pathChanged(allowsLocal: Bool) {
+    /// address may now lead somewhere else, and so does any check made on the
+    /// old network; with a Wi-Fi, wired or other non-cellular interface it
+    /// is checked again after `settle` and comes back if the server still
+    /// answers there.
+    func pathChanged(allowsLocal: Bool, settle: Duration = .zero) {
         pathAllowsLocal = allowsLocal
         demote()
-        refresh()
+        evaluation?.cancel()
+        evaluation = nil
+        pathDebounce?.cancel()
+        pathDebounce = Task { [weak self] in
+            if settle > .zero { try? await Task.sleep(for: settle) }
+            guard !Task.isCancelled else { return }
+            self?.refresh()
+        }
     }
 
     /// The Bonjour adverts for this server, by browse result.
@@ -200,9 +210,9 @@ final class LocalRouteController {
     // MARK: - Evaluation
 
     /// Re-checks the candidates and re-reads the connections document when it
-    /// is due. A known key is checked first: the saved address may be slow or
-    /// unreachable from home, which is when the local route helps most. Runs
-    /// one evaluation at a time; a newer one replaces it.
+    /// is due. A known key is checked first, so a slow saved address does not
+    /// hold up the local one. Runs one evaluation at a time; a newer one
+    /// replaces it.
     func refresh() {
         guard let server, isForeground else { return }
         evaluation?.cancel()
@@ -217,8 +227,9 @@ final class LocalRouteController {
         }
     }
 
-    /// Waits for the evaluation in flight. Tests only.
+    /// Waits for a pending re-check and the evaluation in flight. Tests only.
     func settle() async {
+        await pathDebounce?.value
         await evaluation?.value
     }
 
@@ -303,6 +314,9 @@ final class LocalRouteController {
         guard activeLocalOrigin != origin else { return }
         if let host = URL(string: origin)?.host { environment.registerSensitiveHost(host) }
         generation += 1
+        // It stays installed when the route goes, so a stream already playing
+        // over it survives a brief drop; `LocalRouteTrust.removeAll` takes it
+        // away with the pins.
         #if canImport(AetherEngine)
         LocalRouteTrust.installEngineEvaluator()
         #endif
@@ -372,27 +386,23 @@ final class LocalRouteController {
             let allows = path.status == .satisfied
                 && (path.usesInterfaceType(.wifi) || path.usesInterfaceType(.wiredEthernet)
                     || path.usesInterfaceType(.other))
-            let signature = "\(path.status)|" + path.availableInterfaces.map { "\($0.name):\($0.type)" }.joined(separator: ",")
+            // Cellular coming and going does not move the LAN; a new router
+            // or subnet on the same interface does.
+            let interfaces = path.availableInterfaces.filter { $0.type != .cellular }.map { "\($0.name):\($0.type)" }
+            let signature = "\(path.status)|\(interfaces.joined(separator: ","))|\(path.gateways.map { "\($0)" }.sorted().joined(separator: ","))"
             Task { @MainActor [weak self] in self?.pathUpdated(allowsLocal: allows, signature: signature) }
         }
         monitor.start(queue: .main)
         pathMonitor = monitor
     }
 
-    /// Updates that leave the interfaces as they were change nothing. Any
-    /// other drops the route at once; the re-check waits for a VPN or an
-    /// interface change to finish reporting paths.
+    /// Updates that leave the network as it was change nothing. Any other
+    /// is a network change; its re-check waits for a VPN or an interface
+    /// change to finish reporting paths.
     private func pathUpdated(allowsLocal: Bool, signature: String) {
         guard signature != pathSignature else { return }
         pathSignature = signature
-        pathAllowsLocal = allowsLocal
-        demote()
-        pathDebounce?.cancel()
-        pathDebounce = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(500))
-            guard !Task.isCancelled else { return }
-            self?.refresh()
-        }
+        pathChanged(allowsLocal: allowsLocal, settle: .milliseconds(500))
     }
 
     private func restartBrowser() {

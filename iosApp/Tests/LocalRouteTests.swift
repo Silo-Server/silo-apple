@@ -155,7 +155,9 @@ final class LocalRouteTests: XCTestCase {
 
     // MARK: - Sending
 
-    private func makeClient(_ stub: StubURLProtocol.Handler) async throws -> HTTPClient {
+    /// A client that sees `route` as the active local route, whatever the
+    /// test host's own app is doing.
+    private func makeClient(_ stub: StubURLProtocol.Handler, route: LocalRoute?) async throws -> HTTPClient {
         let suiteName = "local-route-\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         addTeardownBlock { UserDefaults().removePersistentDomain(forName: suiteName) }
@@ -165,14 +167,13 @@ final class LocalRouteTests: XCTestCase {
         )
         await tokenStore.switchActiveServer(serverId: "server")
         await tokenStore.setServerUrl(savedOrigin)
-        return HTTPClient(session: stub.makeSession(), tokenStore: tokenStore)
+        return HTTPClient(session: stub.makeSession(), tokenStore: tokenStore, localRoute: { route })
     }
 
     func testActiveServerRequestsTakeTheRouteAndReportTheSavedOrigin() async throws {
         let stub = StubURLProtocol.Handler()
         stub.route(StubURLProtocol.method("GET", path: "/api/v2/system/info")) { _ in .json("{}") }
-        let http = try await makeClient(stub)
-        LocalRoute.publish(route())
+        let http = try await makeClient(stub, route: route())
 
         let response = try await http.requestData(method: "GET", path: "/api/v2/system/info")
 
@@ -188,8 +189,7 @@ final class LocalRouteTests: XCTestCase {
             if request.url?.host == "192.168.1.20" { throw URLError(.cannotConnectToHost) }
             return .json("{}")
         }
-        let http = try await makeClient(stub)
-        LocalRoute.publish(route())
+        let http = try await makeClient(stub, route: route())
 
         let response = try await http.requestData(method: "POST", path: "/api/v2/playback/progress", body: Data("{}".utf8))
 
@@ -200,8 +200,7 @@ final class LocalRouteTests: XCTestCase {
     func testAMutationThatMayHaveArrivedIsNotRepeated() async throws {
         let stub = StubURLProtocol.Handler()
         stub.route(StubURLProtocol.method("POST", path: "/api/v2/playback/progress")) { _ in throw URLError(.timedOut) }
-        let http = try await makeClient(stub)
-        LocalRoute.publish(route())
+        let http = try await makeClient(stub, route: route())
 
         do {
             _ = try await http.requestData(method: "POST", path: "/api/v2/playback/progress", body: Data("{}".utf8))
@@ -215,8 +214,7 @@ final class LocalRouteTests: XCTestCase {
     func testSignInStaysOnTheSavedAddress() async throws {
         let stub = StubURLProtocol.Handler()
         stub.route(StubURLProtocol.method("POST", path: "/api/v2/auth/device/start")) { _ in .json("{}") }
-        let http = try await makeClient(stub)
-        LocalRoute.publish(route())
+        let http = try await makeClient(stub, route: route())
 
         _ = try await http.requestData(method: "POST", path: "/api/v2/auth/device/start", body: Data("{}".utf8))
 
@@ -227,8 +225,7 @@ final class LocalRouteTests: XCTestCase {
     func testTheHealthCheckFollowsTheRoute() async throws {
         let stub = StubURLProtocol.Handler()
         stub.route(StubURLProtocol.method("GET", path: ServerIdentity.identityPath)) { _ in .json(#"{"server_id":"id"}"#) }
-        let http = try await makeClient(stub)
-        LocalRoute.publish(route())
+        let http = try await makeClient(stub, route: route())
 
         let _: ServerIdentityDocument = try await http.getUnauthenticatedFromActiveServer(ServerIdentity.identityPath)
 
@@ -241,22 +238,44 @@ final class LocalRouteTests: XCTestCase {
         stub.route(StubURLProtocol.any) { _ in .init(status: 200, headers: ["Content-Type": "image/png"], body: Data([1, 2, 3])) }
         let configuration = URLSessionConfiguration.ephemeral
         stub.install(into: configuration)
-        let loader = LocalRouteDataLoader(loader: DataLoader(configuration: configuration))
-        LocalRoute.publish(route())
-        let request = URLRequest(url: try XCTUnwrap(URL(string: savedOrigin + "/api/v2/artwork/poster.png")))
+        let route = route()
+        let loader = LocalRouteDataLoader(loader: DataLoader(configuration: configuration), localRoute: { route })
 
+        let (error, urls) = await load(savedOrigin + "/api/v2/artwork/poster.png", with: loader)
+
+        XCTAssertNil(error)
+        XCTAssertEqual(stub.requests.map { $0.url?.host }, ["192.168.1.20"])
+        XCTAssertEqual(urls, [savedOrigin + "/api/v2/artwork/poster.png"])
+    }
+
+    func testArtworkThatFailsOnTheRouteLoadsFromTheSavedAddress() async throws {
+        let stub = StubURLProtocol.Handler()
+        stub.route(StubURLProtocol.any) { request in
+            if request.url?.host == "192.168.1.20" { throw URLError(.cannotConnectToHost) }
+            return .init(status: 200, headers: ["Content-Type": "image/png"], body: Data([1, 2, 3]))
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        stub.install(into: configuration)
+        let route = route()
+        let loader = LocalRouteDataLoader(loader: DataLoader(configuration: configuration), localRoute: { route })
+
+        let (error, urls) = await load(savedOrigin + "/api/v2/artwork/poster.png", with: loader)
+
+        XCTAssertNil(error)
+        XCTAssertEqual(stub.requests.map { $0.url?.host }, ["192.168.1.20", "local-route-tests.example"])
+        XCTAssertEqual(urls, [savedOrigin + "/api/v2/artwork/poster.png"])
+    }
+
+    private func load(_ address: String, with loader: LocalRouteDataLoader) async -> (Error?, [String]) {
         let responses = ResponseLog()
         let error: Error? = await withCheckedContinuation { continuation in
             _ = loader.loadData(
-                with: request,
+                with: URLRequest(url: URL(string: address)!),
                 didReceiveData: { _, response in responses.append(response) },
                 completion: { continuation.resume(returning: $0) }
             )
         }
-
-        XCTAssertNil(error)
-        XCTAssertEqual(stub.requests.map { $0.url?.host }, ["192.168.1.20"])
-        XCTAssertEqual(responses.urls, [savedOrigin + "/api/v2/artwork/poster.png"])
+        return (error, responses.urls)
     }
 
     // MARK: - Playback
@@ -309,8 +328,7 @@ final class LocalRouteTests: XCTestCase {
     func testExplicitAddressReadsNeverTakeTheRoute() async throws {
         let stub = StubURLProtocol.Handler()
         stub.route(StubURLProtocol.method("GET", path: ServerIdentity.identityPath)) { _ in .json(#"{"server_id":"id"}"#) }
-        let http = try await makeClient(stub)
-        LocalRoute.publish(route())
+        let http = try await makeClient(stub, route: route())
 
         let _: ServerIdentityDocument = try await http.getUnauthenticated(serverURL: savedOrigin, path: ServerIdentity.identityPath)
 

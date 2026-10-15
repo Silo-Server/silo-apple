@@ -186,6 +186,9 @@ actor HTTPClient {
     /// Invalidates request captures even when a short transition begins and
     /// completes entirely while the request is suspended on another actor.
     private var requestDispatchRevision: UInt64 = 0
+    /// The local route requests may take (`LocalRoute.active`; tests pass
+    /// their own).
+    private let localRoute: @Sendable () -> LocalRoute?
 
     private struct IdentityTransitionWaiter {
         let id: UUID
@@ -206,7 +209,8 @@ actor HTTPClient {
         cancellationSessionBarrier: (@Sendable (Int) async -> Void)? = nil,
         scopedRefreshRetryBarrier: (@Sendable () async -> Void)? = nil,
         requestCaptureBarrier: (@Sendable () async -> Void)? = nil,
-        responseReceivedBarrier: (@Sendable () async -> Void)? = nil
+        responseReceivedBarrier: (@Sendable () async -> Void)? = nil,
+        localRoute: @escaping @Sendable () -> LocalRoute? = { LocalRoute.active }
     ) {
         // An injected session (tests) serves both timeout classes so mocks
         // observe every request regardless of the caller's timeout choice.
@@ -219,6 +223,7 @@ actor HTTPClient {
         self.scopedRefreshRetryBarrier = scopedRefreshRetryBarrier
         self.requestCaptureBarrier = requestCaptureBarrier
         self.responseReceivedBarrier = responseReceivedBarrier
+        self.localRoute = localRoute
 
         self.decoder = Self.makeJSONDecoder()
 
@@ -1580,7 +1585,7 @@ actor HTTPClient {
     ) async throws -> (Data, URLResponse) {
         // Sign-in stays on the saved address: the server builds verification
         // and redirect links from the origin a request arrived on.
-        guard routesLocally, !Self.isAuthPath(request.url), let route = LocalRoute.active,
+        guard routesLocally, !Self.isAuthPath(request.url), let route = localRoute(),
               let routed = route.routed(request) else {
             return try await session.data(for: request)
         }

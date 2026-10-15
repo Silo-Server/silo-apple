@@ -38,6 +38,16 @@ struct LocalRoute: Sendable, Equatable {
         current.withLock { if $0?.generation == route.generation { $0 = nil } }
     }
 
+    /// Takes the active route out of use at once if it points at `host` and
+    /// `port`, which just presented a key other than the pinned one.
+    static func drop(host: String, port: Int) {
+        current.withLock { route in
+            guard let local = route.flatMap({ URL(string: $0.localOrigin) }),
+                  local.host?.lowercased() == host.lowercased(), (local.port ?? 443) == port else { return }
+            route = nil
+        }
+    }
+
     /// `request` addressed to the local origin, or nil when it is not
     /// addressed to the saved origin.
     func routed(_ request: URLRequest) -> URLRequest? {
