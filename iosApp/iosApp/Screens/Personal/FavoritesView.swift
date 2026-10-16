@@ -49,9 +49,7 @@ struct IOSPersonalMediaPosterLayout: View {
     @Environment(AppRouter.self) private var router
     @State private var uiCustomization = UICustomizationPreferences.shared
     @State private var gridWidth: CGFloat = 0
-    @State private var originID = UUID().uuidString
     @Environment(\.verticalSizeClass) private var verticalSizeClass
-    @State private var rowScrollPositions: [Int: String] = [:]
 
     @ViewBuilder
     var body: some View {
@@ -93,18 +91,11 @@ struct IOSPersonalMediaPosterLayout: View {
             guard abs(width - gridWidth) >= 0.5 else { return }
             gridWidth = width
         }
-        .environment(
-            \.itemDetailBrowseSource,
-            ItemDetailBrowseSource(
-                originID: originID,
-                contentIDs: items.map(\.contentId)
-            )
-        )
     }
 
     private var tabletCarouselRows: some View {
         LazyVStack(alignment: .leading, spacing: 24) {
-            ForEach(Array(rows.enumerated()), id: \.offset) { rowIndex, rowItems in
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, rowItems in
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(alignment: .top, spacing: HomeFeedMetrics.cardSpacing) {
                         ForEach(rowItems) { item in
@@ -132,29 +123,7 @@ struct IOSPersonalMediaPosterLayout: View {
                     .scrollTargetLayout()
                 }
                 .mediaRailScrolling()
-                .scrollPosition(
-                    id: rowScrollPositionBinding(for: rowIndex),
-                    anchor: .center
-                )
                 .scrollClipDisabled()
-                .environment(
-                    \.itemDetailBrowseSource,
-                    ItemDetailBrowseSource(
-                        originID: rowOriginID(rowIndex),
-                        contentIDs: rowItems.map(\.contentId)
-                    )
-                )
-            }
-        }
-        .onChange(of: router.presentedItemDetail) { _, presentation in
-            guard let sourceID = presentation?.browseSource?.originID,
-                  let contentID = presentation?.contentId,
-                  let rowIndex = rows.indices.first(where: {
-                      rowOriginID($0) == sourceID
-                  }) else { return }
-
-            withAnimation(.easeInOut(duration: 0.28)) {
-                rowScrollPositions[rowIndex] = contentID
             }
         }
     }
@@ -197,17 +166,6 @@ struct IOSPersonalMediaPosterLayout: View {
             let end = min(start + 6, items.count)
             return Array(items[start..<end])
         }
-    }
-
-    private func rowOriginID(_ rowIndex: Int) -> String {
-        "\(originID):\(rowIndex)"
-    }
-
-    private func rowScrollPositionBinding(for rowIndex: Int) -> Binding<String?> {
-        Binding(
-            get: { rowScrollPositions[rowIndex] },
-            set: { rowScrollPositions[rowIndex] = $0 }
-        )
     }
 }
 #endif

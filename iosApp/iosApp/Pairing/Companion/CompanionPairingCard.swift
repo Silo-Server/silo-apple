@@ -37,6 +37,7 @@ struct CompanionPairingCard: View {
                 .accessibilityHidden(started)
 
             card
+                .siloFormWidth(540)
                 .padding(.horizontal, 10)
                 .padding(.bottom, 8)
                 .offset(y: appeared ? 0 : 700)

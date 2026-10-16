@@ -42,7 +42,6 @@ struct EpisodeThumbCard: View {
     #endif
     #if !os(tvOS)
     @Environment(AppRouter.self) private var router
-    @Environment(\.itemDetailBrowseSource) private var detailBrowseSource
     #endif
 
     private var cardWidth: CGFloat { Self.artworkSize(baseWidth: baseCardWidth).width }
@@ -131,11 +130,7 @@ struct EpisodeThumbCard: View {
             if usesProvidedTapAction {
                 action()
             } else {
-                router.presentItemDetail(
-                    contentId: item.contentId,
-                    libraryId: browseLibraryId,
-                    browseSource: detailBrowseSource
-                )
+                router.presentItemDetail(contentId: item.contentId, libraryId: browseLibraryId)
             }
         } label: {
             VStack(alignment: .leading, spacing: 6) {

@@ -558,6 +558,7 @@ private struct LibrariesTopBar: View {
                 onSignOut: onSignOut
             )
         }
+        .clearsWindowControls()
     }
 }
 

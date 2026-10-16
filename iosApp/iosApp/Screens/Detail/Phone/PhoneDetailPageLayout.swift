@@ -20,6 +20,7 @@ struct PhoneDetailPageLayout<Column: View, PaneHero: View, PaneContent: View>: V
 
     @State private var page = PageGeometry()
     @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @Environment(\.detailPageTopSafeArea) private var topSafeArea
 
     /// Clears the floating Close and Remote buttons, which sit 9pt below the
     /// top edge and are 44pt tall. The content pane scrolls beneath this inset
@@ -70,7 +71,9 @@ struct PhoneDetailPageLayout<Column: View, PaneHero: View, PaneContent: View>: V
                 paneContent()
             }
             .detailScrollDismissal()
-            .padding(.top, Self.contentPaneTopInset)
+            // A full-window page on iPad runs under the status bar, and the
+            // floating buttons sit below it.
+            .padding(.top, topSafeArea + Self.contentPaneTopInset)
             // iPhone Duo reserves about 20pt either side of the fold. With
             // the sections' own 16pt inset this keeps every control clear of
             // it, matching the hero pane's 28pt margin on the other side.
@@ -80,6 +83,12 @@ struct PhoneDetailPageLayout<Column: View, PaneHero: View, PaneContent: View>: V
             .clipped()
         }
     }
+}
+
+extension EnvironmentValues {
+    /// The window's top safe area, set by `PhoneDetailPageSurface` for pages
+    /// that extend beneath it.
+    @Entry var detailPageTopSafeArea: CGFloat = 0
 }
 
 private struct PageGeometry: Equatable {

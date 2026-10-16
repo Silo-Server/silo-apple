@@ -57,6 +57,7 @@ struct PhoneDetailPageSurface<Content: View>: View {
     @ViewBuilder let content: () -> Content
 
     @State private var sampledTint = Color(red: 0.04, green: 0.12, blue: 0.14)
+    @State private var topSafeArea: CGFloat = 0
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
@@ -76,7 +77,10 @@ struct PhoneDetailPageSurface<Content: View>: View {
                 .ignoresSafeArea()
             content()
                 .ignoresSafeArea(.all, edges: keepsSideSafeArea ? .vertical : .all)
+                .environment(\.detailPageTopSafeArea, topSafeArea)
         }
+        // Content reaches under the status bar, so it can't read this itself.
+        .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.top } action: { topSafeArea = $0 }
         .task(id: backdropURL) { await sampleTint() }
         #endif
     }
@@ -325,7 +329,8 @@ enum PhoneDetailHeroLayout {
     /// landscape — leaves a single hero-first column showing little more
     /// than artwork. It splits instead: the hero holds the leading half and
     /// the rest of the page scrolls in the trailing half, so the halves meet
-    /// at the fold. Taller pages (portrait, iPad page sheets) keep one column,
+    /// at the fold, and an iPad window in landscape splits the same way.
+    /// Taller pages (portrait, including iPad page sheets) keep one column,
     /// and so do compact-height ones: an iPhone turned to landscape for the
     /// player also rotates the pages beneath it, which must not re-lay out.
     static func usesSplitLayout(pageSize: CGSize, verticalSizeClass: UserInterfaceSizeClass?) -> Bool {

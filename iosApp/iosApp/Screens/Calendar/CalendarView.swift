@@ -133,6 +133,7 @@ struct CalendarView: View {
                     onSignOut: { router.signOutAndReset() }
                 )
             }
+            .clearsWindowControls()
 
             CalendarWeekStrip(
                 week: viewModel.week,

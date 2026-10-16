@@ -1,30 +1,11 @@
 import SwiftUI
 
-/// The ordered cards surrounding a detail presentation. iOS uses this to
-/// turn the open detail sheet into a small, source-aware deck: horizontal
-/// swipes move through the exact row/grid that launched it, while the source
-/// view can keep its own scroll position synchronized underneath the sheet.
-struct ItemDetailBrowseSource: Equatable {
-    let originID: String
-    let contentIDs: [String]
-
-    init(originID: String, contentIDs: [String]) {
-        self.originID = originID
-
-        var seen = Set<String>()
-        self.contentIDs = contentIDs.filter { contentID in
-            !contentID.isEmpty && seen.insert(contentID).inserted
-        }
-    }
-}
-
 extension EnvironmentValues {
     /// Set only by library browse surfaces; detail destinations carry a copy in their route.
     @Entry var browseLibraryId: Int? = nil
     /// False where picking a title must not start solo playback (the Watch
     /// Party picker). Cards keep Select but drop their Play/Pause action.
     @Entry var allowsDirectPlayback = true
-    @Entry var itemDetailBrowseSource: ItemDetailBrowseSource? = nil
 }
 
 extension Notification.Name {
@@ -185,15 +166,14 @@ final class AppRouter {
     /// keeping the content id itself available to the sheet root.
     struct ItemDetailPresentation: Identifiable, Equatable {
         let id = UUID()
-        var contentId: String
-        let browseSource: ItemDetailBrowseSource?
+        let contentId: String
         let libraryId: Int?
         let resumeContext: SeriesDetailContext?
         /// Set when the card opens on a request detail (a TMDB title) rather
         /// than a catalog item; `contentId` is then only a page identity.
         let request: RequestRoot?
-        /// Presented as a full-window cover instead of a sheet. Fixed when
-        /// the detail opens (see `presentsItemDetailFullWindow`), so folding
+        /// Presented as a sheet as large as the window instead of a page
+        /// sheet. Fixed when the detail opens (see `presentsItemDetailFullWindow`), so folding
         /// or rotating never swaps the presentation, and the player above it,
         /// out from under the user.
         var fillsWindow = false
@@ -203,10 +183,8 @@ final class AppRouter {
             let tmdbId: Int
         }
 
-        init(contentId: String, libraryId: Int? = nil, browseSource: ItemDetailBrowseSource? = nil,
-             resumeContext: SeriesDetailContext? = nil) {
+        init(contentId: String, libraryId: Int? = nil, resumeContext: SeriesDetailContext? = nil) {
             self.contentId = contentId
-            self.browseSource = browseSource
             self.libraryId = libraryId
             self.resumeContext = resumeContext
             self.request = nil
@@ -214,7 +192,6 @@ final class AppRouter {
 
         init(request: RequestRoot) {
             self.contentId = "request:\(request.mediaType.rawValue):\(request.tmdbId)"
-            self.browseSource = nil
             self.libraryId = nil
             self.resumeContext = nil
             self.request = request
@@ -224,11 +201,11 @@ final class AppRouter {
     #if os(iOS)
     var presentedItemDetail: ItemDetailPresentation?
     var itemDetailPath = NavigationPath()
-    /// Kept current by the tab view: true while its phone window would split
-    /// a detail page (see `PhoneDetailHeroLayout.usesSplitLayout`), as on the
-    /// iPhone Duo's open display held in landscape. A sheet there is capped at
-    /// a centered card about two-thirds of the width, so details opened then
-    /// cover the window.
+    /// Kept current by the tab view: true while its window would split a
+    /// detail page (see `PhoneDetailHeroLayout.usesSplitLayout`), as on an
+    /// iPad or the iPhone Duo's open display held in landscape. A page sheet
+    /// there is a centered card (about 930 x 710 on an 11-inch iPad) over a
+    /// near-black dimmed page, so details opened then fill the window.
     var presentsItemDetailFullWindow = false
 
     /// Opens or restores the detail card in the presentation the window calls
@@ -681,25 +658,19 @@ final class AppRouter {
         path.append(route)
     }
 
-    /// Opens item detail. On iOS a browse source that contains `contentId`
-    /// enables sideways paging.
+    /// Opens item detail.
     func presentItemDetail(
         contentId: String,
         libraryId: Int? = nil,
-        browseSource: ItemDetailBrowseSource? = nil,
         resumeContext: SeriesDetailContext? = nil
     ) {
         #if os(iOS)
         recordScreenBreadcrumb(target: "itemDetail", action: "present")
         if presentedItemDetail == nil {
-            let source = browseSource.flatMap { source in
-                source.contentIDs.contains(contentId) ? source : nil
-            }
             itemDetailPath = NavigationPath()
             openItemDetail(ItemDetailPresentation(
                 contentId: contentId,
                 libraryId: libraryId,
-                browseSource: source,
                 resumeContext: resumeContext
             ))
         } else {
@@ -710,28 +681,14 @@ final class AppRouter {
         #endif
     }
 
-    func presentContinueWatchingDetail(for item: SectionItem, libraryId: Int? = nil, browseSource: ItemDetailBrowseSource? = nil) {
+    func presentContinueWatchingDetail(for item: SectionItem, libraryId: Int? = nil) {
         if let context = SeriesDetailContext(item: item) {
             presentItemDetail(contentId: context.seriesContentId, libraryId: libraryId, resumeContext: context)
             return
         }
         // Movies, audio and incomplete legacy episode payloads retain their
         // existing destination; a missing parent must not make a card inert.
-        presentItemDetail(contentId: item.contentId, libraryId: libraryId, browseSource: browseSource)
-    }
-
-    /// Select a sibling while the iOS detail card stays presented. Keeping the
-    /// presentation UUID stable prevents SwiftUI from dismissing/reopening the
-    /// sheet; only the card contents animate to the new title.
-    func selectPresentedItemDetail(contentId: String) {
-        #if os(iOS)
-        guard var presentation = presentedItemDetail,
-              presentation.contentId != contentId,
-              presentation.browseSource?.contentIDs.contains(contentId) == true
-        else { return }
-        presentation.contentId = contentId
-        presentedItemDetail = presentation
-        #endif
+        presentItemDetail(contentId: item.contentId, libraryId: libraryId)
     }
 
     /// Close the complete bottom-presented detail flow and discard any nested

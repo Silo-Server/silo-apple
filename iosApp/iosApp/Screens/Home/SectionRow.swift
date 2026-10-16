@@ -46,9 +46,6 @@ struct SectionRow: View {
     var onMoveDown: (() -> Void)? = nil
     /// Live tvOS ownership gate for context-menu focus restoration.
     var focusRestorationOwner: Binding<Bool>? = nil
-    #if !os(tvOS)
-    @State private var detailBrowseOriginID = UUID().uuidString
-    #endif
     /// Reports watched changes for rows without an owning model's handler.
     @State private var watchedFeedback = MediaActionFeedback()
 
@@ -172,15 +169,6 @@ struct SectionRow: View {
             focusRestorationOwner: focusRestorationOwner
         )
         .mediaActionFeedback(watchedFeedback)
-        #if !os(tvOS)
-        .environment(
-            \.itemDetailBrowseSource,
-            ItemDetailBrowseSource(
-                originID: detailBrowseOriginID,
-                contentIDs: section.items.map(\.contentId)
-            )
-        )
-        #endif
     }
 
     private func playItem(_ item: SectionItem) {

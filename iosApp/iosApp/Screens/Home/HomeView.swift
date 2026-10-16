@@ -147,6 +147,7 @@ struct HomeView: View {
                     onSignOut: { router.signOutAndReset() }
                 )
             }
+            .clearsWindowControls()
             .padding(.horizontal, SiloTheme.padding)
             #if os(iOS)
             .padding(.top, headerTopInset)

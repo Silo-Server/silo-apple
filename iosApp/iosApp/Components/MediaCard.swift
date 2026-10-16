@@ -115,7 +115,6 @@ struct MediaCard: View {
     #if !os(tvOS)
     @Environment(AppRouter.self) private var router
     @Environment(\.browseLibraryId) private var browseLibraryId
-    @Environment(\.itemDetailBrowseSource) private var detailBrowseSource
     #endif
 
     private var uiCustomization: UICustomizationPreferences { .shared }
@@ -198,11 +197,7 @@ struct MediaCard: View {
                             resumeContext: seriesContext
                         )
                     } else {
-                        router.presentItemDetail(
-                            contentId: contentId,
-                            libraryId: browseLibraryId,
-                            browseSource: detailBrowseSource
-                        )
+                        router.presentItemDetail(contentId: contentId, libraryId: browseLibraryId)
                     }
                 } label: {
                     cardContent

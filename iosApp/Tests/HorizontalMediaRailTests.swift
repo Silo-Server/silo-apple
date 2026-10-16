@@ -173,9 +173,7 @@ final class HorizontalMediaRailTests: XCTestCase {
             posterRail.setContentOffset(CGPoint(x: offset, y: 0), animated: false)
             try await settle(window)
             let before = posterRail.contentOffset.x
-            router.presentItemDetail(contentId: posters[4].contentId, browseSource: ItemDetailBrowseSource(
-                originID: "home:trending", contentIDs: posters.map(\.contentId)
-            ))
+            router.presentItemDetail(contentId: posters[4].contentId)
             try await settle(window)
             XCTAssertEqual(posterRail.contentOffset.x, before, accuracy: 1)
             router.dismissItemDetail()

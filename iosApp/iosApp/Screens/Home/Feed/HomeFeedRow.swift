@@ -70,7 +70,6 @@ struct HomeFeedRow: View {
         cardsScroll
             .mediaRailScrolling()
             .scrollPosition(id: $visibleItemId, anchor: HorizontalMediaRailLayout.scrollAnchor)
-            .environment(\.itemDetailBrowseSource, detailBrowseSource)
             .onAppear {
                 let initialId = validSelectionId(
                     preferred: visibleItemId ?? section.items.first?.contentId
@@ -83,22 +82,6 @@ struct HomeFeedRow: View {
                     : newIds.first
                 visibleItemId = preferred
             }
-            #if os(iOS)
-            .onChange(of: router.presentedItemDetail) { _, presentation in
-                // Only iPad's horizontally paged detail deck drives its source
-                // row. An iPhone detail opens in place; scrolling the row while
-                // its zoom transition is restoring it creates a visible drift.
-                guard !HorizontalMediaRailLayout.isPhone,
-                      presentation?.browseSource?.originID == detailBrowseSource.originID,
-                      let contentID = presentation?.contentId,
-                      section.items.contains(where: { $0.contentId == contentID })
-                else { return }
-
-                withAnimation(.easeInOut(duration: 0.28)) {
-                    visibleItemId = contentID
-                }
-            }
-            #endif
     }
 
     private var cardsScroll: some View {
@@ -146,13 +129,6 @@ struct HomeFeedRow: View {
     private func warmCards(after item: SectionItem) {
         guard let index = section.items.firstIndex(where: { $0.id == item.id }) else { return }
         ArtworkLookahead.warmCards(after: index, in: section.items) { Self.cardArtwork(for: $0, in: section) }
-    }
-
-    private var detailBrowseSource: ItemDetailBrowseSource {
-        ItemDetailBrowseSource(
-            originID: "home:\(section.id)",
-            contentIDs: section.items.map(\.contentId)
-        )
     }
 
     private func validSelectionId(preferred: String?) -> String? {
